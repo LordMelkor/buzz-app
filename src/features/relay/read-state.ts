@@ -385,13 +385,36 @@ export function createReadState({
       const coordinate = readCoordinate(item.event);
       if (!coordinate) throw new Error("Read-state coordinate missing");
       const old = slots.get(coordinate);
-      if (!old || newer(old.event, item.event) === item.event)
+      if (!old || newer(old.event, item.event) === item.event) {
         slots.set(coordinate, item);
+        // Every observation keeps the capacity basis current, not only refresh.
+        snapshotSizes?.set(coordinate, encodedBytes(item.event));
+      }
     }
     if (slots.size > 4096) {
       slots.clear();
       throw new Error("Read-state coordinate capacity exceeded");
     }
+  }
+  const snapshotted = () => !!host?.communityId && !!reader.readStateSnapshot;
+  // A local projection, not a reservation: other devices can still grow the
+  // snapshot concurrently. Checked before every send, replays included.
+  function admit(events: readonly RelayEvent[]) {
+    if (!snapshotSizes) {
+      if (snapshotted())
+        throw new Error(
+          "Read-state snapshot capacity unknown; saved intent retained",
+        );
+      return;
+    }
+    const projected = new Map(snapshotSizes);
+    for (const event of events) projected.set(dTag(event), encodedBytes(event));
+    let total = 2 + Math.max(0, projected.size - 1);
+    for (const size of projected.values()) total += size;
+    if (projected.size > READ_SNAPSHOT_EVENTS || total > READ_SNAPSHOT_BYTES)
+      throw new Error(
+        "Read-state snapshot capacity reached; saved intent retained",
+      );
   }
   async function refresh(priority: Priority = "background") {
     requested = true;
@@ -406,7 +429,7 @@ export function createReadState({
       try {
         await ready;
         if (!journal) throw new Error("Saved read state unavailable");
-        const complete = !!host.communityId && !!reader.readStateSnapshot;
+        const complete = snapshotted();
         const events =
           complete && reader.readStateSnapshot
             ? await reader.readStateSnapshot({
@@ -559,7 +582,10 @@ export function createReadState({
           if (!journal) throw new Error("Saved read state unavailable");
           attemptedRevision = journal.revision;
           // Unknown outcomes retry exact bytes; only expired, rejected state may be renewed.
-          if (journal.pending) await publishPending(signal, true);
+          if (journal.pending) {
+            admit([journal.pending.event]);
+            await publishPending(signal, true);
+          }
           if (journal.revision <= journal.acceptedRevision) return;
           const owned = [journal.slot, ...(journal.spill ?? [])];
           const events = await reader.read(
@@ -579,6 +605,9 @@ export function createReadState({
             seen.some((own) => own && own.parsed.clientId !== journal?.clientId)
           )
             throw new Error("Read-state slot conflict; publication blocked");
+          // The acknowledged revision is the one this plan was packed from;
+          // anything saved later, even during the spill save, stays pending.
+          const revision = journal.revision;
           // Only own frontiers are published; peers' overrides stay in their blobs.
           const plan = packReadState(
             journal.clientId,
@@ -616,7 +645,6 @@ export function createReadState({
               ),
             )
             .sort((a, b) => Number(drops(a.index)) - Number(drops(b.index)));
-          const revision = journal.revision;
           attemptedRevision = revision;
           if (!changed.length) {
             const expired = journal.pending?.event.id;
@@ -666,22 +694,7 @@ export function createReadState({
               throw new Error("Read-state signer changed the payload");
             signed.push(event);
           }
-          // A local projection, not a reservation: other devices can still
-          // grow the snapshot concurrently.
-          if (snapshotSizes) {
-            const projected = new Map(snapshotSizes);
-            for (const event of signed)
-              projected.set(dTag(event), encodedBytes(event));
-            let total = 2 + Math.max(0, projected.size - 1);
-            for (const size of projected.values()) total += size;
-            if (
-              projected.size > READ_SNAPSHOT_EVENTS ||
-              total > READ_SNAPSHOT_BYTES
-            )
-              throw new Error(
-                "Read-state snapshot capacity reached; saved intent retained",
-              );
-          }
+          admit(signed);
           for (const [index, event] of signed.entries()) {
             // Only the last blob acknowledges the revision: a partial
             // publication never marks local intent as synchronized.
@@ -695,7 +708,6 @@ export function createReadState({
               },
             }));
             await publishPending(signal);
-            snapshotSizes?.set(dTag(event), encodedBytes(event));
           }
         });
       } catch (error) {
@@ -972,6 +984,8 @@ export function createReadState({
     },
     stale() {
       epoch++;
+      // Capacity needs a fresh complete snapshot after a gap.
+      snapshotSizes = undefined;
       health({ status: "stale", completeness: "unknown" });
     },
     dispose() {

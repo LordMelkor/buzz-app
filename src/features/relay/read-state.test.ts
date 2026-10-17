@@ -17,6 +17,8 @@ import {
 import {
   ReadStateTimestampRejected,
   READ_STATE_TIMESTAMP_REFUSAL,
+  READ_SNAPSHOT_BYTES,
+  READ_SNAPSHOT_EVENTS,
   type ReadStateSigning,
 } from "./read-state-host";
 import { acceptReadStatePublish } from "./transport";
@@ -1173,5 +1175,201 @@ describe("NIP-RS shared vectors: owner", () => {
       Record<string, unknown>[],
     ][])
       for (const filter of filters) expect(filter).not.toHaveProperty("since");
+  });
+});
+
+describe("publication fences", () => {
+  const T = 1800000000;
+  const thread = (n: number) => `thread:${n.toString(16).padStart(64, "0")}`;
+  /** Another device's coordinate, opaque to this one (decode is stubbed). */
+  const foreignAt = (pubkey: string, n: number, content = ""): RelayEvent => {
+    const id = n.toString(16).padStart(32, "0");
+    return {
+      id: id.padStart(64, "0"),
+      pubkey,
+      kind: 30078,
+      created_at: T,
+      tags: [
+        ["d", `read-state:${id}`],
+        ["t", "read-state"],
+      ],
+      content: `peer:${content}`,
+      sig: "0".repeat(128),
+    } as RelayEvent;
+  };
+  const foreign = (pubkey: string, count: number) =>
+    Array.from({ length: count }, (_, n) => foreignAt(pubkey, n));
+  /** A complete-snapshot owner over a relay already holding `peers`. */
+  function snapshotted(f: ReturnType<typeof fixture>, peers: RelayEvent[]) {
+    const decode = f.host.decode.getMockImplementation();
+    f.host.decode.mockImplementation(async (events) =>
+      (
+        await Promise.all(
+          events.map(async (event) =>
+            event.content.startsWith("peer:")
+              ? [
+                  {
+                    eventId: event.id,
+                    blob: { v: 1, client_id: "peer", contexts: {} },
+                  },
+                ]
+              : ((await decode?.([event])) ?? []),
+          ),
+        )
+      ).flat(),
+    );
+    for (const peer of peers) void f.host.publish(peer);
+    f.host.publish.mockClear();
+    return (overrides: Parameters<typeof f.make>[0] = {}) =>
+      f.make({
+        host: { ...f.host, communityId: "test-community" },
+        reader: { ...f.reader, readStateSnapshot: () => f.reader.read() },
+        ...overrides,
+      });
+  }
+
+  it("acknowledges only the revision a plan was packed from", async () => {
+    const f = fixture(T);
+    const owner = f.make();
+    await owner.ready;
+    await owner.readMessages(
+      Array.from({ length: 600 }, (_, n) => ({
+        key: thread(n),
+        timestamp: T,
+        channelId: "room",
+      })),
+      undefined,
+      () => true,
+    );
+    // Another window commits a newer frontier while new slots are being owned.
+    const update = vi.mocked(f.storage.update).getMockImplementation();
+    const other = thread(9999);
+    let raced = false;
+    vi.mocked(f.storage.update).mockImplementation(async (change) => {
+      const current = f.journal();
+      if (
+        !raced &&
+        current &&
+        (change(current).spill?.length ?? 0) > (current.spill?.length ?? 0)
+      ) {
+        raced = true;
+        f.setJournal({
+          ...current,
+          revision: current.revision + 1,
+          own: { ...current.own, [other]: T },
+          state: {
+            ...current.state,
+            frontiers: { ...current.state.frontiers, [other]: T },
+          },
+        });
+      }
+      if (!update) throw new Error("Missing fixture storage");
+      return update(change);
+    });
+    await owner.flush();
+    expect(raced).toBe(true);
+    expect(f.published()[other]).toBeUndefined();
+    expect(f.journal()?.acceptedRevision).toBeLessThan(
+      f.journal()?.revision ?? 0,
+    );
+    expect(ownerStatus(owner)).toBe("pending");
+    await owner.flush();
+    expect(f.published()[other]).toBe(T);
+    expect(f.journal()?.acceptedRevision).toBe(f.journal()?.revision);
+    expect(ownerStatus(owner)).toBe("reconciled");
+  }, 15000);
+
+  it.each([
+    ["events", 0],
+    ["events", 1],
+    ["bytes", 0],
+    ["bytes", 1],
+  ] as const)(
+    "replays a pending event only within snapshot capacity (%s, over by %i)",
+    async (limit, over) => {
+      const f = fixture(T);
+      // The original packet never arrived; its exact bytes stay pending.
+      const first = f.make();
+      await first.ready;
+      await first.read("room", T, () => true);
+      f.host.publish.mockRejectedValueOnce(new Error("packet never arrived"));
+      await first.flush();
+      const pending = f.journal()?.pending?.event;
+      if (!pending) throw new Error("Missing pending event");
+      first.dispose();
+      // Fill the relay so the replay lands exactly at, or one past, a limit.
+      const size = (event: RelayEvent) =>
+        new TextEncoder().encode(JSON.stringify(event)).byteLength;
+      const a = foreignAt(f.key.pubkey, 0);
+      const b = foreignAt(f.key.pubkey, 1);
+      const pad =
+        READ_SNAPSHOT_BYTES +
+        over -
+        (2 + 2 + size(a) + size(b) + size(pending));
+      const peers =
+        limit === "events"
+          ? foreign(f.key.pubkey, READ_SNAPSHOT_EVENTS - 1 + over)
+          : [foreignAt(f.key.pubkey, 0, "x".repeat(pad)), b];
+      const owner = snapshotted(f, peers)();
+      await owner.ready;
+      await owner.refresh();
+      await owner.flush();
+      if (over) {
+        expect(f.host.publish).not.toHaveBeenCalled();
+        expect(f.journal()?.pending?.event).toEqual(pending);
+        expect(owner.snapshot().error).toContain("capacity reached");
+      } else {
+        expect(f.host.publish).toHaveBeenCalledTimes(1);
+        expect(f.host.publish.mock.calls[0]?.[0]).toEqual(pending);
+        expect(owner.snapshot()).toMatchObject({
+          status: "reconciled",
+          error: undefined,
+        });
+      }
+    },
+    30000,
+  );
+
+  it("counts coordinates observed live after the snapshot", async () => {
+    const f = fixture(T);
+    const owner = snapshotted(
+      f,
+      foreign(f.key.pubkey, READ_SNAPSHOT_EVENTS - 1),
+    )();
+    await owner.ready;
+    await owner.refresh();
+    const late = foreignAt(f.key.pubkey, READ_SNAPSHOT_EVENTS - 1);
+    void f.host.publish(late);
+    f.host.publish.mockClear();
+    owner.accept([late]);
+    await owner.read("room", T, () => true);
+    await owner.flush();
+    expect(f.host.publish).not.toHaveBeenCalled();
+    expect(owner.snapshot().error).toContain("capacity reached");
+  }, 30000);
+
+  it("does not publish before a complete snapshot establishes capacity", async () => {
+    const f = fixture(T);
+    const owner = snapshotted(f, [])();
+    await owner.ready;
+    await owner.read("room", T, () => true);
+    await owner.flush();
+    expect(f.host.publish).not.toHaveBeenCalled();
+    expect(f.journal()?.revision).toBeGreaterThan(
+      f.journal()?.acceptedRevision ?? 0,
+    );
+    await owner.refresh();
+    await owner.flush();
+    expect(f.host.publish).toHaveBeenCalledTimes(1);
+    expect(ownerStatus(owner)).toBe("reconciled");
+    // A gap invalidates the basis until the next complete snapshot.
+    owner.stale();
+    await owner.read("room", T + 1, () => true);
+    await owner.flush();
+    expect(f.host.publish).toHaveBeenCalledTimes(1);
+    await owner.refresh();
+    await owner.flush();
+    expect(f.host.publish).toHaveBeenCalledTimes(2);
+    expect(ownerStatus(owner)).toBe("reconciled");
   });
 });
