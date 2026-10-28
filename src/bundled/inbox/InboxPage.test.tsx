@@ -2457,14 +2457,16 @@ it("a window dropped after its retry shows a soft notice with Refresh, not the f
     freshness: "observed",
     partial: true,
   });
-  const notice = await screen.findByText("Some channels could not be checked.");
+  const notice = await screen.findByText(
+    "Some recent activity could not be checked.",
+  );
   expect(notice.closest("[role=status]")).toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   h.failUnread(false);
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   await waitFor(() =>
     expect(
-      screen.queryByText("Some channels could not be checked."),
+      screen.queryByText("Some recent activity could not be checked."),
     ).not.toBeInTheDocument(),
   );
   expect(h.owner.session.unread.inbox().partial).toBeUndefined();
@@ -2504,7 +2506,7 @@ it.each(["refresh", "other"] as const)(
     }
     await waitFor(() =>
       expect(
-        screen.queryByText("Some channels could not be checked."),
+        screen.queryByText("Some recent activity could not be checked."),
       ).not.toBeInTheDocument(),
     );
     // Focus the retired Refresh owned moves to a stable Inbox control; focus
@@ -2530,7 +2532,7 @@ it("the partial notice's Refresh hands focus to the alert's Retry when the refre
     "unread window unavailable",
   );
   expect(
-    screen.queryByText("Some channels could not be checked."),
+    screen.queryByText("Some recent activity could not be checked."),
   ).not.toBeInTheDocument();
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Retry inbox" })).toHaveFocus(),
