@@ -9,6 +9,7 @@ import type { ChannelSummary } from "./contracts";
 import type { ChannelStoreOptions } from "./store";
 import { isRetryableRead } from "./read-retry";
 import {
+  bounds,
   flush,
   keypair,
   message,
@@ -29,6 +30,15 @@ function named(id: string) {
   entry.event ??= metadata(relay, id, entry.name);
   return entry.event;
 }
+const previews = new Map<string, RelayEvent>();
+const previewId = (n: number) =>
+  `20000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+/** Public metadata for nonmember channel `previewId(n)`. */
+function preview(id: string) {
+  const event = previews.get(id);
+  assert.exists(event);
+  return event;
+}
 // Preserve real page/capacity boundaries; sign metadata lazily when requested.
 beforeAll(() => {
   memberships = Array.from({ length: 1025 }, (_, i) => {
@@ -36,6 +46,17 @@ beforeAll(() => {
     names.set(id, { name: `Channel ${i}` });
     return roster(relay, id, [viewer.pubkey]);
   }).sort((a, b) => a.id.localeCompare(b.id));
+});
+// Enough nonmember previews to fill discovery's metadata capacity.
+beforeAll(() => {
+  for (let n = 0; n < 1024; n++)
+    previews.set(
+      previewId(n),
+      metadata(relay, previewId(n), `Preview ${n}`, 1_700_000_000, [
+        ["public"],
+        ["t", "stream"],
+      ]),
+    );
 });
 afterEach(() => {
   for (const owner of owners.splice(0)) owner.dispose();
@@ -562,21 +583,95 @@ it("keeps coverage partial when exact discovery overflows during omission confir
   expect(h.pending).toHaveLength(0);
 });
 
-it("marks metadata retention overflow as partial without discarding membership", async () => {
+it("keeps a name discovery cannot hold pending, without discarding membership, until a later pass names it", async () => {
   const h = setup();
-  const member = memberships[1024];
-  assert.exists(member);
-  const id = tag(member, "d");
-  assert.exists(id);
-  h.emit([...names.keys()].filter((channelId) => channelId !== id).map(named));
   h.channels.ensureList();
-  (await h.next(39002)).respond([member]);
-  (await h.next(39000)).respond([named(id)]);
-  await h.settled();
-  expect(h.channels.list().channels).toMatchObject([
-    { id, name: id.slice(0, 8) },
-  ]);
+  await h.rosters(1);
+  await h.metadata(1);
+  // Mounted links hold every other metadata slot with their previews.
+  const releases = Array.from({ length: 1023 }, (_, n) =>
+    h.channels.refer?.(previewId(n)),
+  );
+  for (let n = 0; n < 1023; n += 128) {
+    const lookup = await h.next(39000);
+    lookup.respond((lookup.filters[0]?.["#d"] ?? []).map(preview));
+  }
+  await vi.waitFor(() =>
+    expect(h.channels.describe?.(previewId(1022))).toMatchObject({
+      state: "found",
+    }),
+  );
+  const joined = memberships[1];
+  assert.exists(joined);
+  const id = tag(joined, "d");
+  assert.exists(id);
+  const row = () =>
+    h.channels.list().channels.find((channel) => channel.id === id);
+  h.channels.refreshList?.();
+  await h.rosters(2);
+  await h.metadata(2);
+  // Hidden while unnamed, never listed under its id.
+  expect(row()?.metadataPending).toBe(true);
   expect(h.channels.list().coverage).toBe("partial");
+
+  releases[0]?.();
+  h.channels.refreshList?.();
+  await h.rosters(2);
+  await h.metadata(2);
+  expect(row()).toMatchObject({ name: names.get(id)?.name });
+  expect(row()?.metadataPending).toBeUndefined();
+  expect(h.channels.list().coverage).toBeUndefined();
+  expect(h.channels.describe?.(previewId(0))).toEqual({ state: "unknown" });
+  expect(h.channels.describe?.(previewId(1))).toMatchObject({ state: "found" });
+  expect(h.pending).toHaveLength(0);
+});
+
+it("names a newly joined channel by evicting the least recently resolved preview", async () => {
+  const h = setup();
+  h.channels.ensureList();
+  await h.rosters(0);
+  await h.settled();
+  const resolve = async (from: number, count = 1) => {
+    const ids = Array.from({ length: count }, (_, n) => previewId(from + n));
+    const done = h.channels.resolve?.(ids);
+    (await h.next(39000)).respond(ids.map(preview));
+    await done;
+  };
+  for (let from = 0; from < 1024; from += 128) await resolve(from, 128);
+  // Searching for the oldest preview again keeps it; an open window holds the next.
+  await resolve(0);
+  h.channels.ensure(previewId(1));
+  await vi.waitFor(() => expect(h.pending).toHaveLength(1));
+  h.pending.shift()?.respond([
+    bounds(relay, previewId(1), "head", {
+      has_more: false,
+      next_cursor: null,
+    }),
+  ]);
+
+  const launch = "30000000-0000-4000-8000-000000000000";
+  h.emit([
+    roster(relay, launch, [viewer.pubkey]),
+    metadata(relay, launch, "Launch", 1_700_000_000, [
+      ["private"],
+      ["t", "stream"],
+    ]),
+  ]);
+  expect(h.channels.list().channels).toMatchObject([
+    { id: launch, name: "Launch", channelType: "stream", private: true },
+  ]);
+  expect(h.channels.list().channels[0]?.metadataPending).toBeUndefined();
+  expect(h.channels.list().coverage).toBeUndefined();
+  expect(h.channels.get?.(previewId(2))).toBeUndefined();
+  for (const n of [0, 1, 3, 1023])
+    expect(h.channels.get?.(previewId(n))).toMatchObject({ readOnly: true });
+  // Opening the evicted preview again reads it again.
+  await resolve(2);
+  expect(h.channels.get?.(previewId(2))).toMatchObject({
+    name: "Preview 2",
+    readOnly: true,
+  });
+  expect(h.pending).toHaveLength(0);
 });
 
 it("keeps final-page callback invalidation partial across later live traffic", async () => {

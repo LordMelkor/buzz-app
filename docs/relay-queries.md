@@ -333,7 +333,11 @@ without resurrecting purged content. Authority-only changes replace the subscrib
 even when joined rows are unchanged; search drops copied hits on loss. Signed evidence is
 bounded by discovery's existing capacity and retained for the session, including
 across fetched-cache clearing; clearing cancels reads and drops content/windows,
-not authority evidence. Every later search/open revalidates nonmember metadata.
+not authority evidence. The exception is a nonmember preview's metadata: at capacity
+it gives way, least recently resolved first, to a channel that needs a slot, unless
+an open channel or mounted link still shows it. Previews never take a joined
+channel's slot. Every later search/open revalidates nonmember metadata, so a
+preview that gave way is read again.
 An older metadata replay cannot undo a newer private event or an explicit denial.
 A newer signed public event can regrant a never-joined preview; membership loss
 still requires fresh signed membership, not metadata, to reverse it.

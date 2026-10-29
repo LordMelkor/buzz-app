@@ -247,8 +247,14 @@ export function createChannelStore(
       : UNAVAILABLE;
   let allowed: Set<string> | undefined;
   let coverage: "partial" | undefined;
+  // An open window or a mounted link still shows its preview.
   const discovery = transport
-    ? new DiscoveryState(transport.viewer, transport.relayAuthor)
+    ? new DiscoveryState(
+        transport.viewer,
+        transport.relayAuthor,
+        undefined,
+        (id) => windows.has(id) || demand.has(id),
+      )
     : null;
   // Restored metadata needs confirmation independently of roster progress/retries.
   const pendingMetadata = new Set<string>();
@@ -306,6 +312,18 @@ export function createChannelStore(
       !checkedMetadata.has(id)
       ? true
       : undefined;
+  }
+  /** Channels a read answered with relay-signed metadata. Only a read that
+   * answered none checks a name: one discovery had no room to keep stays
+   * pending, hidden, until a later read names it. */
+  function metadataIds(events: readonly RelayEvent[]) {
+    return new Set(
+      events.flatMap((event) =>
+        event.kind === 39000 && event.pubkey === transport?.relayAuthor
+          ? [tag(event, "d")]
+          : [],
+      ),
+    );
   }
   function setList(next: ChannelList, discoveryChanged = false) {
     const previous = new Map(
@@ -1608,20 +1626,21 @@ export function createChannelStore(
       controller = new AbortController();
       controllers.add(controller);
       for (let offset = 0; offset < wanted.length; offset += DISCOVERY_LIMIT) {
+        const batch = wanted.slice(offset, offset + DISCOVERY_LIMIT);
         const metadata = await transport.read(
           [
             {
               kinds: [39000],
               ...consistency,
-              "#d": wanted.slice(offset, offset + DISCOVERY_LIMIT),
+              "#d": batch,
               limit: DISCOVERY_LIMIT,
             },
           ],
           { signal: controller.signal },
         );
         if (disposed || generation !== epoch) return;
-        for (const id of wanted.slice(offset, offset + DISCOVERY_LIMIT))
-          checkedMetadata.add(id);
+        const answered = metadataIds(metadata);
+        for (const id of batch) if (!answered.has(id)) checkedMetadata.add(id);
         applyDiscovery(metadata);
         if (disposed || generation !== epoch) return;
       }
@@ -1816,7 +1835,8 @@ export function createChannelStore(
             ),
           ) || resumed;
     }
-    for (const id of ids) checkedMetadata.add(id);
+    const answered = metadataIds(events);
+    for (const id of ids) if (!answered.has(id)) checkedMetadata.add(id);
     // A bounded exact roster fills omissions from capped discovery. Apply grants
     // before private metadata so a newly resolved member never transiently loses access.
     applyDiscovery(
@@ -1846,14 +1866,7 @@ export function createChannelStore(
       )
         denyChannel(id, new Error("Conversation is unavailable"));
       // Missing evidence cannot keep an earlier public preview readable.
-      if (
-        !events.some(
-          (event) =>
-            event.kind === 39000 &&
-            event.pubkey === transport.relayAuthor &&
-            tag(event, "d") === id,
-        )
-      ) {
+      if (!answered.has(id)) {
         if (
           (discovery.get(id)?.readOnly ||
             discovery.suspendedChannels().includes(id)) &&

@@ -65,6 +65,8 @@ export class DiscoveryState {
     readonly viewer: string,
     readonly relayAuthor: string,
     readonly capacity = 1024,
+    /** Previews a reader holds open; a full metadata map never evicts them. */
+    private readonly pinned: (id: string) => boolean = () => false,
   ) {}
   /** Returns whether visible state changed. Events from other authors are ignored, not trusted. */
   accept(event: RelayEvent, cached = false): boolean {
@@ -84,12 +86,21 @@ export class DiscoveryState {
     const id = tag(event, "d");
     if (!id) return false;
     const map = event.kind === 39002 ? this.rosters : this.metadata;
-    if (!map.has(id) && map.size >= this.capacity) {
+    if (
+      !map.has(id) &&
+      map.size >= this.capacity &&
+      (map === this.rosters || !this.evictPreview())
+    ) {
       this.overflowRevision++;
       return false;
     }
     const previous = map.get(id);
     const next = newer(previous, event);
+    // Answering a channel again is use: it moves to the back of eviction order.
+    if (previous && map === this.metadata) {
+      map.delete(id);
+      map.set(id, previous);
+    }
     // Only this version or a newer one confirms saved membership. An older
     // response must not promote a newer disk roster into write authority.
     const confirmed =
@@ -281,9 +292,33 @@ export class DiscoveryState {
   named(id: string): boolean {
     return this.metadata.has(id);
   }
-  /** Metadata slots still free: `accept` drops a new channel's 39000 without one. */
+  /** Metadata slots a new channel's 39000 can take, free or held by a preview
+   * `accept` may evict. Without one, `accept` drops it. */
   headroom(): number {
-    return this.capacity - this.metadata.size;
+    let slots = this.capacity - this.metadata.size;
+    for (const id of this.metadata.keys()) if (this.preview(id)) slots++;
+    return slots;
+  }
+  /** Metadata held only to show a nonmember channel. Joined, left and denied
+   * channels, a starting chat and a preview a reader holds keep theirs. */
+  private preview(id: string) {
+    return (
+      !this.rosters.has(id) &&
+      !this.denied.has(id) &&
+      !this.starting.has(id) &&
+      !this.pinned(id)
+    );
+  }
+  /** Frees the slot of the preview that was answered least recently. Its
+   * channel reads as unresolved again; the next search or open re-reads it. */
+  private evictPreview(): boolean {
+    for (const id of this.metadata.keys())
+      if (this.preview(id)) {
+        this.metadata.delete(id);
+        this.creations.delete(id);
+        return true;
+      }
+    return false;
   }
   name(id: string): string {
     const event = this.metadata.get(id);
