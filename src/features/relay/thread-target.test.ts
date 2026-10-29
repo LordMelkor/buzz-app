@@ -183,14 +183,52 @@ it("distinguishes absent targets and failed lookup, then permits explicit retry"
   expect(h.view.snapshot().target?.id).toBe(reply.id);
 });
 
-it("rejects a capped raw overlay response before visibility filtering hides its size", async () => {
+it("opens a target with a full reaction page as limited, still loading older replies", async () => {
+  const h = setup();
+  const reading = h.view.refresh();
+  h.next().respond([reply]);
+  await flush();
+  // Reactions share the safety-overlay request: no extra round trip.
+  const overlays = h.next();
+  expect(overlays.filters.map((filter) => filter.kinds)).toEqual([
+    [39005, 40003, 5, 9005],
+    [7],
+  ]);
+  overlays.respond(
+    Array.from({ length: 500 }, (_, i) => aux(7, reply, "+", 10001 + i)),
+  );
+  await flush();
+  h.next().respond([]);
+  await flush();
+  h.next().respond([
+    root,
+    message(alice, "a", "First reply", 2, [["e", root.id, "", "reply"]]),
+  ]);
+  await reading;
+  expect(h.view.snapshot()).toMatchObject({
+    targetStatus: "ready",
+    target: { id: reply.id },
+    limited: true,
+    canLoadMore: true,
+  });
+  expect(h.view.snapshot().target?.reactions[0]?.events).toHaveLength(500);
+  const more = h.view.loadMore();
+  h.next().respond([root]);
+  await more;
+  expect(h.view.snapshot()).toMatchObject({
+    targetStatus: "ready",
+    limited: true,
+  });
+});
+
+it("rejects a capped raw safety-overlay response before visibility filtering hides its size", async () => {
   const h = setup();
   const reading = h.view.refresh();
   h.next().respond([reply]);
   await flush();
   const other = message(alice, "private", "Hidden", 2);
   h.next().respond(
-    Array.from({ length: 500 }, (_, i) => aux(7, other, `${i}`)),
+    Array.from({ length: 500 }, (_, i) => aux(5, other, `${i}`)),
   );
   await reading;
   expect(h.view.snapshot()).toMatchObject({

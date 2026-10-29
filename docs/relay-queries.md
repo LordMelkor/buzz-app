@@ -271,7 +271,11 @@ never comes from the selected row. An accessible selected reply remains availabl
 even if the original root is missing or the reply lies beyond the traversal cap.
 
 Reference queries omit `#h` for legacy edits/deletes but retain session visibility
-checks. Raw target/overlay responses reaching 500 events fail before filtering.
+checks. Raw target, edit/deletion/summary and tombstone responses reaching 500
+events fail before filtering: a truncated read cannot prove the message was not
+changed or removed. Reactions cannot hide or change the target, so the overlay
+request reads them through a separate filter. A full page of reactions still opens
+the target, with the view marked `limited`; older reactions are not read.
 Evidence shares the thread's 2,000-event / 4 MiB budget and 64-view ceiling.
 Known tombstones survive sparse refreshes and shared-cache eviction. Exact reads
 share verification, admission, access epochs and live reconciliation without

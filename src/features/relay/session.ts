@@ -2358,9 +2358,10 @@ export function createRelaySession(
             throw new DOMException("Stale thread target", "AbortError");
           settings?.signal?.throwIfAborted();
           // A capped raw target/overlay read cannot establish a safe fold.
+          // Reactions cannot hide or change a message; the thread caps them.
           if (
             !filters.some((filter) => filter.depth_limit) &&
-            events.length >= 500
+            events.filter((event) => event.kind !== 7).length >= 500
           )
             throw new Error("Selected message exceeded its evidence limit");
           // The thread owner admits the complete target fold atomically.
