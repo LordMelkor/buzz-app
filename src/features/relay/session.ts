@@ -901,6 +901,8 @@ export function createRelaySession(
           visible: (events) => events.filter(visibility(events)),
           restored: (events) => unread.accept(events),
           demand: (channelId) => demandChannel(channelId),
+          holds: (channelId) =>
+            [...threads].some((thread) => thread.channelId === channelId),
           rosterChanged: (strong) => {
             settleHintConfirmations(strong);
             publishLive();

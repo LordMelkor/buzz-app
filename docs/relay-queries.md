@@ -275,7 +275,7 @@ checks. Raw target, edit/deletion/summary and tombstone responses reaching 500
 events fail before filtering: a truncated read cannot prove the message was not
 changed or removed. Reactions cannot hide or change the target, so the overlay
 request reads them through a separate filter. A full page of reactions still opens
-the target, with the view marked `limited`; older reactions are not read.
+the target; older reactions are not read.
 Evidence shares the thread's 2,000-event / 4 MiB budget and 64-view ceiling.
 Known tombstones survive sparse refreshes and shared-cache eviction. Exact reads
 share verification, admission, access epochs and live reconciliation without
@@ -335,9 +335,9 @@ bounded by discovery's existing capacity and retained for the session, including
 across fetched-cache clearing; clearing cancels reads and drops content/windows,
 not authority evidence. The exception is a nonmember preview's metadata: at capacity
 it gives way, least recently resolved first, to a channel that needs a slot, unless
-an open channel or mounted link still shows it. Previews never take a joined
-channel's slot. Every later search/open revalidates nonmember metadata, so a
-preview that gave way is read again.
+an open channel or thread still reads it or a channel link is still looking it up.
+Previews never take a joined channel's slot. Every later search/open revalidates
+nonmember metadata, so a preview that gave way is read again.
 An older metadata replay cannot undo a newer private event or an explicit denial.
 A newer signed public event can regrant a never-joined preview; membership loss
 still requires fresh signed membership, not metadata, to reverse it.

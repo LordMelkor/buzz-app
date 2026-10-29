@@ -225,12 +225,13 @@ export function createProfileDirectory(
         reading: undefined as readonly string[] | undefined,
         work: Promise.resolve(),
       };
+      // A response over the read budget retries in halves from the same
+      // author, like AgentBrowse's catalog pages; one profile over it fails.
+      // Each part is kept as it lands, and a retry resumes at the failed part.
+      let at = 0,
+        size = authors.length;
       batch.work = retryRead(async (signal) => {
-        const result: RelayEvent[] = [];
-        filled = false;
-        // A response over the read budget retries in halves from the same
-        // author, like AgentBrowse's catalog pages; one profile over it fails.
-        for (let at = 0, size = authors.length; at < authors.length; ) {
+        while (at < authors.length) {
           const part = authors.slice(at, at + size);
           // A promotion during backoff applies to the next attempt instead.
           batch.reading = part;
@@ -239,7 +240,8 @@ export function createProfileDirectory(
               [{ kinds: [0], authors: part, limit: PROFILE_PAGE }],
               { signal, priority: batch.priority },
             );
-            result.push(...page);
+            if (!signal.aborted)
+              accept(page.filter((event) => part.includes(event.pubkey)));
             // A page at the limit may have left out authors who do have one.
             if (page.length >= PROFILE_PAGE) filled = true;
             at += part.length;
@@ -257,13 +259,8 @@ export function createProfileDirectory(
           }
         }
         answered = true;
-        return result;
+        if (!signal.aborted && !filled) missed(authors);
       }, signal)
-        .then((result) => {
-          if (signal.aborted) return;
-          accept(result.filter((event) => authors.includes(event.pubkey)));
-          if (!filled) missed(authors);
-        })
         .catch((error: unknown) => {
           // The old directory contract silently discards a retired success.
           if (!signal.aborted || !answered) throw error;

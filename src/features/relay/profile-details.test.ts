@@ -461,7 +461,7 @@ it("names the identities that fit a request larger than the cache instead of fai
 
 it("retries profiles over the read budget in halves from the same author", async () => {
   const ids = hexIds(500);
-  const absent = ids[499]!;
+  const absent = ids[499];
   const read = vi.fn(async ([filter]: readonly ReadFilter[]) => {
     const authors = filter?.authors ?? [];
     if (authors.length > 200) throw overBudget();
@@ -502,6 +502,53 @@ it("retries profiles over the read budget in halves from the same author", async
     ).toEqual([500, 250, 125, 63, 32, 16, 8, 4, 2, 1]);
     expect(directory.queries.snapshot().size).toBe(499);
   } finally {
+    directory.dispose();
+  }
+});
+
+it("keeps the parts that landed when a later part fails, and retries only that part", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const ids = hexIds(500);
+  let outages = 1;
+  const read = vi.fn(async ([filter]: readonly ReadFilter[]) => {
+    const authors = filter?.authors ?? [];
+    if (authors.length > 250) throw overBudget();
+    if (authors[0] === ids[250] && outages-- > 0)
+      throw new ReadError("unavailable", "Relay unavailable");
+    if (authors[0] === hexIds(1, 750)[0])
+      throw new ReadError("denied", "Names denied");
+    return authors.map(named);
+  });
+  const directory = createProfileDirectory({ read });
+  try {
+    const ensuring = directory.ensure(ids);
+    await vi.advanceTimersByTimeAsync(0);
+    // The first part is named while the second waits to retry.
+    expect(read).toHaveBeenCalledTimes(3);
+    expect([...directory.queries.snapshot().keys()].sort()).toEqual(
+      ids.slice(0, 250),
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    await ensuring;
+    expect(
+      read.mock.calls.map(([[filter]]) => [
+        ids.indexOf(filter?.authors?.[0] ?? ""),
+        filter?.authors?.length,
+      ]),
+    ).toEqual([
+      [0, 500],
+      [0, 250],
+      [250, 250],
+      [250, 250],
+    ]);
+    expect(directory.queries.snapshot().size).toBe(500);
+    // A part that fails for good leaves the parts before it named.
+    await expect(directory.ensure(hexIds(500, 500))).rejects.toThrow(
+      "Names denied",
+    );
+    expect(directory.queries.snapshot().size).toBe(750);
+  } finally {
+    vi.useRealTimers();
     directory.dispose();
   }
 });

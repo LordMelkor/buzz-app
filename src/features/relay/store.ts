@@ -178,6 +178,8 @@ export function createChannelStore(
         restored?(events: readonly RelayEvent[]): void;
         /** Returns true when session post-subscribe catch-up owns this demand. */
         demand?(channelId: string): boolean;
+        /** Returns true while a session thread view still reads this channel. */
+        holds?(channelId: string): boolean;
         rosterChanged?(strong?: boolean): void;
         /** The relay advertises NIP-CL; label lookups are refused without it. */
         channelIdentity?: true | undefined;
@@ -247,13 +249,14 @@ export function createChannelStore(
       : UNAVAILABLE;
   let allowed: Set<string> | undefined;
   let coverage: "partial" | undefined;
-  // An open window or a mounted link still shows its preview.
+  // An open window, a link still resolving or an open thread still shows its
+  // preview.
   const discovery = transport
     ? new DiscoveryState(
         transport.viewer,
         transport.relayAuthor,
         undefined,
-        (id) => windows.has(id) || demand.has(id),
+        (id) => windows.has(id) || demand.has(id) || !!transport.holds?.(id),
       )
     : null;
   // Restored metadata needs confirmation independently of roster progress/retries.

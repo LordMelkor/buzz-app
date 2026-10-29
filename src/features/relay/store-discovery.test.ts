@@ -8,6 +8,7 @@ import { createRelaySession } from "./session";
 import type { ChannelSummary } from "./contracts";
 import type { ChannelStoreOptions } from "./store";
 import { isRetryableRead } from "./read-retry";
+import { matchesEvent } from "./projection";
 import {
   bounds,
   flush,
@@ -672,6 +673,85 @@ it("names a newly joined channel by evicting the least recently resolved preview
     readOnly: true,
   });
   expect(h.pending).toHaveLength(0);
+});
+
+it("keeps a full map's preview while a thread still reads that channel", async () => {
+  const h = setup();
+  h.channels.ensureList();
+  await h.rosters(0);
+  await h.settled();
+  // Not a canonical id, so the thread reads without a NIP-CW window.
+  const channelId = "linked";
+  const publicChannel = (id: string) =>
+    metadata(relay, id, id, 1_700_000_000, [["public"], ["t", "stream"]]);
+  const linkedChannel = publicChannel(channelId);
+  const later = [
+    "30000000-0000-4000-8000-000000000000",
+    "30000000-0000-4000-8000-000000000001",
+  ] as const;
+  // The linked channel is the least recently resolved of 1,024 previews.
+  const fill = [
+    channelId,
+    ...Array.from({ length: 1023 }, (_, n) => previewId(n + 1)),
+  ];
+  for (let from = 0; from < fill.length; from += 128) {
+    const ids = fill.slice(from, from + 128);
+    const done = h.channels.resolve?.(ids);
+    (await h.next(39000)).respond(
+      ids.map((id) => (id === channelId ? linkedChannel : preview(id))),
+    );
+    await done;
+  }
+  const author = keypair();
+  const linked = message(author, channelId, "Linked", 1);
+  const events = [linked, ...later.map(publicChannel)];
+  /** Answers every read from `events` until `work` settles. */
+  const serve = async (work: Promise<unknown> | undefined) => {
+    let done = false;
+    void work?.finally(() => {
+      done = true;
+    });
+    while (!done) {
+      for (const request of h.pending.splice(0))
+        request.respond(
+          events.filter((event) =>
+            request.filters.some((filter) => matchesEvent(event, filter)),
+          ),
+        );
+      await flush();
+    }
+    await work;
+  };
+  // A message-link preview reads the message as an exact thread.
+  const thread = h.session.thread(channelId, linked.id, { exact: true });
+  await serve(thread.refresh());
+  expect(thread.snapshot()).toMatchObject({
+    status: "ready",
+    targetStatus: "ready",
+  });
+
+  // A new preview takes the oldest slot the thread does not hold.
+  await serve(h.channels.resolve?.([later[0]]));
+  expect(h.channels.get?.(channelId)).toMatchObject({ readOnly: true });
+  expect(h.channels.get?.(previewId(1))).toBeUndefined();
+  const reply = message(author, channelId, "Reply", 2, [
+    ["e", linked.id, "", "reply"],
+  ]);
+  h.emit([reply]);
+  await vi.waitFor(() =>
+    expect(thread.snapshot().replies.map((row) => row.id)).toContain(reply.id),
+  );
+  await serve(thread.refresh());
+  expect(thread.snapshot()).toMatchObject({
+    status: "ready",
+    targetStatus: "ready",
+    error: undefined,
+  });
+
+  // Closing the thread releases its hold.
+  thread.dispose();
+  await serve(h.channels.resolve?.([later[1]]));
+  expect(h.channels.get?.(channelId)).toBeUndefined();
 });
 
 it("keeps final-page callback invalidation partial across later live traffic", async () => {

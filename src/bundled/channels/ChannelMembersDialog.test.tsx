@@ -99,7 +99,7 @@ async function setup(
     archivedAgent?: boolean;
     channelCreation?: boolean;
     communities?: CommunityReader;
-    /** Unnamed members whose keys sort just after the viewer's. */
+    /** Unnamed members whose keys sort just before the viewer's. */
     extraMembers?: number;
   } = {},
 ) {
@@ -118,7 +118,7 @@ async function setup(
   const members = [
     viewer.pubkey,
     ...Array.from({ length: options.extraMembers ?? 0 }, (_, index) =>
-      (BigInt(`0x${viewer.pubkey}`) + BigInt(index + 1))
+      (BigInt(`0x${viewer.pubkey}`) - BigInt(index + 1))
         .toString(16)
         .padStart(64, "0"),
     ),
@@ -1338,11 +1338,10 @@ it("optional member-name failure does not block a verified addition", async () =
   expect(t.publish).toHaveBeenCalledOnce();
 });
 
-it("names a roster larger than the profile budget without a name failure", async () => {
+it("names the viewer and the members that fit a roster larger than the profile budget", async () => {
   const t = await setup("stream", false, false, undefined, undefined, {
     extraMembers: 1099,
   });
-  // The viewer's key sorts first, so its name is among those that fit.
   expect(screen.getByText("Carl (you)")).toBeVisible();
   expect(screen.getByRole("heading", { name: "People · 1100" })).toBeVisible();
   expect(
@@ -1359,9 +1358,12 @@ it("names a roster larger than the profile budget without a name failure", async
     t.session.channels.get?.("11111111-1111-4111-8111-111111111111")?.members ??
     [];
   expect(members).toHaveLength(1100);
-  expect(members.filter((key) => named.has(key))).toEqual(
-    members.slice(0, 1024),
-  );
+  // The viewer's key sorts last, past the budget.
+  expect(members.at(-1)).toBe(t.viewer.pubkey);
+  expect(members.filter((key) => named.has(key))).toEqual([
+    ...members.slice(0, 1023),
+    t.viewer.pubkey,
+  ]);
 });
 
 it.each(["pending", "failed"])(

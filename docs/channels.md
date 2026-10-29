@@ -925,7 +925,7 @@ loading spinner inside the existing scrollport until the roster, role and member
 attempts settle; no provisional identity rows or groups appear. Missing names or
 failed reads settle to public-key fallback and the existing refresh recovery rather
 than blocking forever. A roster larger than the shared profile budget names the
-members that fit; the rest keep the public-key fallback.
+viewer and then the members that fit; the rest keep the public-key fallback.
 A warm reopen with a settled role result (including an honest failure fallback)
 and all member profiles already available renders immediately. Later refreshes retain usable content and
 preserve the last verified groups on failure. Visible member names request foreground

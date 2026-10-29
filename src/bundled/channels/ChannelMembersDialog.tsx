@@ -809,8 +809,15 @@ export function ChannelMembersDialog({
       return;
     }
     let current = true;
+    const keys = memberKey.split(":");
+    // A roster past the profile budget names only its first keys; ask for
+    // the viewer's own name first.
+    const viewer = session.viewer;
     void session.profiles
-      .ensure(memberKey.split(":"), "foreground")
+      .ensure(
+        viewer && keys.includes(viewer) ? [viewer, ...keys] : keys,
+        "foreground",
+      )
       .catch(() => {
         if (current)
           setNameError(

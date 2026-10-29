@@ -183,7 +183,7 @@ it("distinguishes absent targets and failed lookup, then permits explicit retry"
   expect(h.view.snapshot().target?.id).toBe(reply.id);
 });
 
-it("opens a target with a full reaction page as limited, still loading older replies", async () => {
+it("opens a target with a full reaction page, still loading older replies", async () => {
   const h = setup();
   const reading = h.view.refresh();
   h.next().respond([reply]);
@@ -208,7 +208,7 @@ it("opens a target with a full reaction page as limited, still loading older rep
   expect(h.view.snapshot()).toMatchObject({
     targetStatus: "ready",
     target: { id: reply.id },
-    limited: true,
+    limited: false,
     canLoadMore: true,
   });
   expect(h.view.snapshot().target?.reactions[0]?.events).toHaveLength(500);
@@ -217,7 +217,7 @@ it("opens a target with a full reaction page as limited, still loading older rep
   await more;
   expect(h.view.snapshot()).toMatchObject({
     targetStatus: "ready",
-    limited: true,
+    limited: false,
   });
 });
 
