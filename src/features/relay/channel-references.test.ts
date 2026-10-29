@@ -325,6 +325,42 @@ it("looks a mounted link up again when a reset drops its in-flight reply", async
   expect(link.result.current).toMatchObject({ state: "found", name: "launch" });
 });
 
+it("looks a mounted link up again when the viewer leaves its private channel", async () => {
+  const h = await setup();
+  h.emit([
+    roster(relay, SECRET, [viewer.pubkey]),
+    metadata(relay, SECRET, "inner", 1_700_000_000, [["private"]]),
+  ]);
+  const link = renderHook(() => useChannelReference(h.channels, SECRET));
+  await vi.waitFor(() =>
+    expect(link.result.current).toMatchObject({ state: "found", joined: true }),
+  );
+  await flush();
+  expect(h.pending).toHaveLength(0);
+  await act(async () => {
+    h.emit([roster(relay, SECRET, [], 1_700_000_001)]);
+  });
+  await h.lookup([SECRET], []);
+  expect(link.result.current).toEqual({ state: "withheld" });
+});
+
+it("looks a mounted link up again when a public channel the viewer left turns private", async () => {
+  const h = await setup();
+  const link = renderHook(() => useChannelReference(h.channels, MINE));
+  await act(async () => {
+    h.emit([roster(relay, MINE, [], 1_700_000_001)]);
+  });
+  await flush();
+  expect(link.result.current).toMatchObject({ state: "found", joined: false });
+  expect(h.pending).toHaveLength(0);
+  // Access was already lost, so this revokes nothing and resets no answer.
+  await act(async () => {
+    h.emit([metadata(relay, MINE, "mine", 1_700_000_002, [["private"]])]);
+  });
+  await h.lookup([MINE], []);
+  expect(link.result.current).toEqual({ state: "withheld" });
+});
+
 it("keeps a cancelled lookup from the old cache out of the new one's backoff", async () => {
   const h = await setup();
   const release = h.channels.refer?.(SECRET);

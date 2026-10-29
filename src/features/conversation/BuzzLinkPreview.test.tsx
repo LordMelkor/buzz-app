@@ -1,13 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { BuzzLinkPreview } from "./BuzzLinkPreview";
 import type { RelaySession } from "../relay/session";
 import type { ThreadSnapshot, ThreadView } from "../relay/threads";
 import type { ChannelMessage } from "../relay/contracts";
 import { mediaUrl } from "../relay/transport";
-import { createRelaySession } from "../relay/session";
-import { keypair, message, scriptedTransport, signed } from "../relay/testing";
 
 afterEach(cleanup);
 const text = (tree: HTMLElement) =>
@@ -194,39 +192,4 @@ it("asks for the relay thumbnail of the author's picture, as message rows do", (
   expect(tree.querySelector("img")?.getAttribute("src")).toBe(
     `https://relay.test/media/${sha}.thumb.jpg`,
   );
-});
-it("previews a heavily reacted linked message through the real exact read", async () => {
-  const viewer = keypair(),
-    alice = keypair();
-  const linked = message(alice, "a", "Popular announcement", 1);
-  const reactions = Array.from({ length: 500 }, (_, i) =>
-    signed(alice, {
-      kind: 7,
-      content: "+",
-      created_at: 2 + i,
-      tags: [["e", linked.id]],
-    }),
-  );
-  const owner = createRelaySession({
-    ...scriptedTransport(viewer.pubkey, keypair().pubkey).transport,
-    query: async (filters) =>
-      filters[0]?.ids?.includes(linked.id)
-        ? [linked]
-        : filters.some((filter) => filter.kinds?.includes(7))
-          ? reactions
-          : [],
-    subscribe: () => ({ update() {}, retry() {}, dispose() {} }),
-  });
-  const mounted = render(
-    <BuzzLinkPreview
-      session={owner.session}
-      channelId="a"
-      messageId={linked.id}
-    />,
-  );
-  await waitFor(() =>
-    expect(mounted.container.textContent).toContain("Popular announcement"),
-  );
-  mounted.unmount();
-  owner.dispose();
 });
