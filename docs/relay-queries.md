@@ -926,7 +926,9 @@ the same source but obey the existing cooldown and three-retry limit. Exhausted
 or unsupported quota retries require manual Retry, not a reset each minute.
 
 One 60-second recovery timer renews established joined batches and hints the
-existing roster and unread owners to repair finite evidence. It does not renew
+existing roster and unread owners to repair finite evidence; a caught-up unread
+owner reads only what its channels gained since its last read of them (see
+[Inbox](inbox.md)). It does not renew
 singleton previews or add per-channel background history reads. When the socket
 delivered no frame for a whole interval, the timer also sends one empty probe
 REQ; if no frame arrives within the setup timeout, the socket is replaced through
