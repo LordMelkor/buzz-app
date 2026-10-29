@@ -99,6 +99,8 @@ async function setup(
     archivedAgent?: boolean;
     channelCreation?: boolean;
     communities?: CommunityReader;
+    /** Unnamed members whose keys sort just after the viewer's. */
+    extraMembers?: number;
   } = {},
 ) {
   const viewer = keypair(),
@@ -113,7 +115,14 @@ async function setup(
   const control = localAgentsFixture([agent]);
   const id = "11111111-1111-4111-8111-111111111111";
   const target = localAgent ? agent.pubkey : person.pubkey;
-  const members = [viewer.pubkey];
+  const members = [
+    viewer.pubkey,
+    ...Array.from({ length: options.extraMembers ?? 0 }, (_, index) =>
+      (BigInt(`0x${viewer.pubkey}`) + BigInt(index + 1))
+        .toString(16)
+        .padStart(64, "0"),
+    ),
+  ];
   let clock = 1700000000;
   let failure = "";
   let applyAddition = true;
@@ -1327,6 +1336,32 @@ it("optional member-name failure does not block a verified addition", async () =
   await t.user.click(add);
   await screen.findByText("Morgan is in the channel.");
   expect(t.publish).toHaveBeenCalledOnce();
+});
+
+it("names a roster larger than the profile budget without a name failure", async () => {
+  const t = await setup("stream", false, false, undefined, undefined, {
+    extraMembers: 1099,
+  });
+  // The viewer's key sorts first, so its name is among those that fit.
+  expect(screen.getByText("Carl (you)")).toBeVisible();
+  expect(screen.getByRole("heading", { name: "People · 1100" })).toBeVisible();
+  expect(
+    screen.queryByText(/Some names could not load/),
+  ).not.toBeInTheDocument();
+  const named = new Set(
+    t.query.mock.calls.flatMap(([filters]) =>
+      filters.flatMap((filter) =>
+        filter.kinds?.includes(0) ? (filter.authors ?? []) : [],
+      ),
+    ),
+  );
+  const members =
+    t.session.channels.get?.("11111111-1111-4111-8111-111111111111")?.members ??
+    [];
+  expect(members).toHaveLength(1100);
+  expect(members.filter((key) => named.has(key))).toEqual(
+    members.slice(0, 1024),
+  );
 });
 
 it.each(["pending", "failed"])(

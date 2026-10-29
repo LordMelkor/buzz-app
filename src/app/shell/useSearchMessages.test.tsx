@@ -6,6 +6,7 @@ import {
   keypair,
   message,
   metadata,
+  profile,
   roster,
   scriptedTransport,
   signed,
@@ -122,3 +123,78 @@ it.each([
     }
   },
 );
+
+it("resolves from:name on a roster larger than the profile budget when some names fail", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const alice = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const members = [
+    viewer.pubkey,
+    alice.pubkey,
+    // Keys just above Alice's sort after hers, so she is in the first batch.
+    ...Array.from({ length: 1098 }, (_, index) =>
+      (BigInt(`0x${alice.pubkey}`) + BigInt(index + 1))
+        .toString(16)
+        .padStart(64, "0"),
+    ),
+  ];
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", members),
+  ];
+  const owner = createRelaySession(
+    {
+      ...wire.transport,
+      writer: {
+        sign: async (template) => signed(viewer, template),
+        publish: async () => {},
+      },
+      query(filters, signal) {
+        if (filters.some((filter) => filter.kinds?.includes(9)))
+          return wire.transport.query(filters, signal);
+        const names = filters.find((filter) => filter.kinds?.includes(0));
+        if (names)
+          return names.authors?.includes(alice.pubkey)
+            ? Promise.resolve([profile(alice, { name: "Alice" })])
+            : Promise.reject(new Error("Names unavailable"));
+        return Promise.resolve(
+          discovery.filter((event) =>
+            filters.some((filter) => filter.kinds?.includes(event.kind)),
+          ),
+        );
+      },
+    },
+    { outboxStorage: { load: () => [], save() {} } },
+  );
+  try {
+    owner.session.channels.ensureList();
+    await waitFor(() =>
+      expect(owner.session.channels.get?.("crew")?.members).toHaveLength(1100),
+    );
+    const { result } = renderHook(() =>
+      useSearchMessages(owner.session, "from:alice ", "crew"),
+    );
+    await waitFor(() => expect(wire.pending).toHaveLength(1));
+    const read = wire.next();
+    expect(read.filters).toEqual([
+      {
+        kinds: [40002, 40008, 9],
+        limit: 20,
+        "#h": ["crew"],
+        authors: [alice.pubkey],
+      },
+    ]);
+    await act(async () =>
+      read.respond([message(alice, "crew", "hello", 1700000000)]),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBeUndefined();
+    expect(result.current.messages.map(({ preview }) => preview)).toEqual([
+      "hello",
+    ]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});

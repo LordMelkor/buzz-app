@@ -1042,9 +1042,6 @@ it("pages beyond the real profile directory budget and retains evicted agent cla
     ),
   } as unknown as Parameters<typeof createProfileDirectory>[0]);
   try {
-    await expect(
-      directory.ensure(entries.map((entry) => entry.pubkey)),
-    ).rejects.toThrow("directory budget");
     const f = fixture();
     let page = 0;
     f.readPage.mockImplementation(async ([filter]) => {

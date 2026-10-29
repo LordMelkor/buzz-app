@@ -924,7 +924,9 @@ by displayed name (public key breaks ties). Initial opening shows one accessible
 loading spinner inside the existing scrollport until the roster, role and member-name
 attempts settle; no provisional identity rows or groups appear. Missing names or
 failed reads settle to public-key fallback and the existing refresh recovery rather
-than blocking forever. A warm reopen with a settled role result (including an honest failure fallback)
+than blocking forever. A roster larger than the shared profile budget names the
+members that fit; the rest keep the public-key fallback.
+A warm reopen with a settled role result (including an honest failure fallback)
 and all member profiles already available renders immediately. Later refreshes retain usable content and
 preserve the last verified groups on failure. Visible member names request foreground
 priority; avatars, presence and manager enrichment never gate the initial list.
@@ -1186,6 +1188,8 @@ The port retains the prepared-store implementation and its behavior tests:
 - 1,024 profile entries / 2 MiB signed-record budget, narrow row profile selectors,
   and request-warmed avatars (fetched and decoded, nothing retained; disabled
   under the Save-Data preference). Signature verification yields in batches.
+  A request for more identities than the budget holds names those that fit
+  instead of failing.
 - Account/relay-scoped IndexedDB: 64 records / 8 MiB global disk budget, 24-hour
   expiry. Signed cached events are reverified before display. The same database
   stores account/relay-scoped startup discovery and sidebar organization (a separate

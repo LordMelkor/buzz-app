@@ -98,7 +98,7 @@ function relay(
     profiles: {
       subscribe: () => () => {},
       snapshot: () => profiles,
-      ensure: async () => {},
+      ensure: async (_ids: readonly string[]) => {},
     },
   };
   const value = {
@@ -110,6 +110,7 @@ function relay(
   };
   return {
     read,
+    session,
     relay: {
       snapshot: () => value,
       subscribe: () => () => {},
@@ -148,6 +149,26 @@ it("gates administration to owners and admins by the verified roster", async () 
     expect.objectContaining({ fresh: true }),
   );
   expect(screen.queryByRole("button", { name: "Invite members" })).toBeNull();
+});
+
+it("keeps public-key labels when member names cannot load", async () => {
+  broker({});
+  const { relay: data, session } = relay(owner);
+  const requested: (readonly string[])[] = [];
+  // Not a mock: a spy settles the promise itself, hiding an unhandled
+  // rejection, which Vitest otherwise fails the run on.
+  session.profiles.ensure = async (ids) => {
+    requested.push(ids);
+    throw new Error("Names unavailable");
+  };
+  render(<CommunityAdmin relay={data} active={() => true} />);
+  const keys = publicKeyLabels([owner, admin, member]);
+  expect(
+    await screen.findByRole("button", {
+      name: `Actions for ${keys.get(member)}`,
+    }),
+  ).toBeVisible();
+  expect(requested).toEqual([[owner, admin, member]]);
 });
 
 it("treats a roster signed by anyone else as unavailable", async () => {

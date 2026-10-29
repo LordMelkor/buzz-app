@@ -215,7 +215,12 @@ export function useSearchMessages(
               ? (session.channels.get?.(channelId)?.members ?? [])
               : [];
             if (knownMembers.length) {
-              await session.profiles.ensure(knownMembers, "foreground");
+              try {
+                await session.profiles.ensure(knownMembers, "foreground");
+              } catch (error) {
+                if (controller.signal.aborted) throw error;
+                // A partial directory still contains verified member profiles.
+              }
               controller.signal.throwIfAborted();
             }
             // A key matches by its profile name or, for a selectable agent,

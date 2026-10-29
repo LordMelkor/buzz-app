@@ -146,8 +146,11 @@ function Members({
     session.profiles.snapshot,
   );
   useEffect(() => {
+    // Names are optional: members without one keep their public-key label.
     if (members)
-      void session.profiles.ensure(members.map((member) => member.pubkey));
+      void session.profiles
+        .ensure(members.map((member) => member.pubkey))
+        .catch(() => {});
   }, [members, session]);
   const refresh = membership.refresh;
   const role = membershipState.role;

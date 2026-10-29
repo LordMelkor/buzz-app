@@ -7,6 +7,7 @@ import type {
 import { retryRead } from "./read-retry";
 import { attestedOwner } from "../agents/owner-attestation";
 import { hasEventProof } from "./events";
+import { ReadError } from "./errors";
 import type { Outbox } from "./outbox";
 import { ByteLru } from "./budget";
 import type { Profile } from "./contracts";
@@ -55,9 +56,9 @@ export function createProfileDirectory(
     string,
     {
       work: Promise<void>;
-      authors: string[];
       priority: Priority;
-      reading: boolean;
+      /** Authors of the read in flight, so a promotion can rejoin it. */
+      reading: readonly string[] | undefined;
     }
   >();
   const listeners = new Set<() => void>();
@@ -187,10 +188,13 @@ export function createProfileDirectory(
     refresh = false,
   ) {
     if (closed) throw new DOMException("Session closed", "AbortError");
-    const unique = [...new Set(ids)];
+    // More ids than the cache holds would only evict names this request
+    // loaded, so a larger request names its first ids and leaves the rest.
+    const unique = [...new Set(ids)].slice(
+      0,
+      refresh ? undefined : events.maxEntries,
+    );
     verified?.ensure(unique);
-    if (!refresh && unique.length > 1024)
-      throw new Error("Profile request exceeds the directory budget");
     const signal = controller.signal;
     const waiting = new Set<Promise<void>>();
     const missing = unique.filter((id) => {
@@ -203,7 +207,7 @@ export function createProfileDirectory(
           if (batch.reading)
             void reader
               .read(
-                [{ kinds: [0], authors: batch.authors, limit: PROFILE_PAGE }],
+                [{ kinds: [0], authors: batch.reading, limit: PROFILE_PAGE }],
                 { signal, priority },
               )
               .catch(() => {});
@@ -215,31 +219,50 @@ export function createProfileDirectory(
     for (let offset = 0; offset < missing.length; offset += PROFILE_PAGE) {
       const authors = missing.slice(offset, offset + PROFILE_PAGE);
       let answered = false;
+      let filled = false;
       const batch = {
-        authors,
         priority,
-        reading: false,
+        reading: undefined as readonly string[] | undefined,
         work: Promise.resolve(),
       };
       batch.work = retryRead(async (signal) => {
-        // A promotion during backoff applies to the next attempt instead.
-        batch.reading = true;
-        try {
-          const result = await reader.read(
-            [{ kinds: [0], authors, limit: PROFILE_PAGE }],
-            { signal, priority: batch.priority },
-          );
-          answered = true;
-          return result;
-        } finally {
-          batch.reading = false;
+        const result: RelayEvent[] = [];
+        filled = false;
+        // A response over the read budget retries in halves from the same
+        // author, like AgentBrowse's catalog pages; one profile over it fails.
+        for (let at = 0, size = authors.length; at < authors.length; ) {
+          const part = authors.slice(at, at + size);
+          // A promotion during backoff applies to the next attempt instead.
+          batch.reading = part;
+          try {
+            const page = await reader.read(
+              [{ kinds: [0], authors: part, limit: PROFILE_PAGE }],
+              { signal, priority: batch.priority },
+            );
+            result.push(...page);
+            // A page at the limit may have left out authors who do have one.
+            if (page.length >= PROFILE_PAGE) filled = true;
+            at += part.length;
+          } catch (error) {
+            if (
+              part.length < 2 ||
+              !(error instanceof ReadError) ||
+              error.kind !== "invalid-response" ||
+              error.message !== "Relay response exceeds the read budget"
+            )
+              throw error;
+            size = Math.ceil(part.length / 2);
+          } finally {
+            batch.reading = undefined;
+          }
         }
+        answered = true;
+        return result;
       }, signal)
         .then((result) => {
           if (signal.aborted) return;
           accept(result.filter((event) => authors.includes(event.pubkey)));
-          // A page at the limit may have left out authors who do have one.
-          if (result.length < PROFILE_PAGE) missed(authors);
+          if (!filled) missed(authors);
         })
         .catch((error: unknown) => {
           // The old directory contract silently discards a retired success.
@@ -252,7 +275,12 @@ export function createProfileDirectory(
       for (const id of authors) pending.set(id, batch);
       waiting.add(batch.work);
     }
-    await Promise.all(waiting);
+    // Every batch settles before a failure is reported, so a caller that
+    // tolerates it reads all the names that did load.
+    const failed = (await Promise.allSettled(waiting)).find(
+      (outcome) => outcome.status === "rejected",
+    );
+    if (failed) throw failed.reason;
   }
   function clear() {
     controller.abort();

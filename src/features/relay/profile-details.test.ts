@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "nostr-tools/utils";
 import { expect, it, vi } from "vitest";
-import { eventDto } from "./events";
+import { ReadError } from "./errors";
+import { eventDto, type ReadFilter, type RelayEvent } from "./events";
 import { selectProfiles } from "./profile-selection";
 import { foldProfiles } from "./profiles";
 import { createProfileDirectory } from "./profile-directory";
@@ -411,6 +412,117 @@ it("records no absence from a read that filled its page", async () => {
     read.mockResolvedValueOnce(versions.slice(1));
     await directory.ensure([other.pubkey]);
     expect(directory.queries.unnamed?.()).toEqual(new Set([other.pubkey]));
+  } finally {
+    directory.dispose();
+  }
+});
+
+const hexIds = (count: number, from = 0) =>
+  Array.from({ length: count }, (_, index) =>
+    (from + index).toString(16).padStart(64, "0"),
+  );
+/** Unsigned heads: the directory trusts its reader to have verified them. */
+const named = (pubkey: string) =>
+  ({
+    id: pubkey,
+    pubkey,
+    kind: 0,
+    created_at: 1,
+    tags: [],
+    content: JSON.stringify({ name: `Name ${pubkey.slice(-3)}` }),
+    sig: "",
+  }) as unknown as RelayEvent;
+const overBudget = () =>
+  new ReadError("invalid-response", "Relay response exceeds the read budget");
+
+it("names the identities that fit a request larger than the cache instead of failing", async () => {
+  const ids = hexIds(1100);
+  const read = vi.fn(async ([filter]: readonly ReadFilter[]) =>
+    (filter?.authors ?? []).map(named),
+  );
+  const directory = createProfileDirectory({ read });
+  try {
+    await directory.ensure(ids);
+    expect(read.mock.calls.map(([[filter]]) => filter?.authors)).toEqual([
+      ids.slice(0, 500),
+      ids.slice(500, 1000),
+      ids.slice(1000, 1024),
+    ]);
+    expect([...directory.queries.snapshot().keys()].sort()).toEqual(
+      ids.slice(0, 1024),
+    );
+    // Asking again reads nothing, so a retry cannot churn the cache.
+    await directory.ensure(ids);
+    expect(read).toHaveBeenCalledTimes(3);
+  } finally {
+    directory.dispose();
+  }
+});
+
+it("retries profiles over the read budget in halves from the same author", async () => {
+  const ids = hexIds(500);
+  const absent = ids[499]!;
+  const read = vi.fn(async ([filter]: readonly ReadFilter[]) => {
+    const authors = filter?.authors ?? [];
+    if (authors.length > 200) throw overBudget();
+    // Duplicate heads fill no page but pass the page size in total.
+    return authors
+      .filter((id) => id !== absent)
+      .flatMap((id) => [named(id), named(id)]);
+  });
+  const directory = createProfileDirectory({ read });
+  try {
+    await directory.ensure(ids);
+    expect(
+      read.mock.calls.map(([[filter]]) => [
+        ids.indexOf(filter?.authors?.[0] ?? ""),
+        filter?.authors?.length,
+      ]),
+    ).toEqual([
+      [0, 500],
+      [0, 250],
+      [0, 125],
+      [125, 125],
+      [250, 125],
+      [375, 125],
+    ]);
+    expect(directory.queries.snapshot().size).toBe(499);
+    // Every halved page came back short, so the read was complete.
+    expect(directory.queries.unnamed?.()).toEqual(new Set([absent]));
+    // A read still over the budget at one author fails, after one per halving.
+    read.mockClear();
+    read.mockImplementation(async () => {
+      throw overBudget();
+    });
+    await expect(directory.ensure(hexIds(500, 500))).rejects.toThrow(
+      "Relay response exceeds the read budget",
+    );
+    expect(
+      read.mock.calls.map(([[filter]]) => filter?.authors?.length),
+    ).toEqual([500, 250, 125, 63, 32, 16, 8, 4, 2, 1]);
+    expect(directory.queries.snapshot().size).toBe(499);
+  } finally {
+    directory.dispose();
+  }
+});
+
+it("reports a failed batch only after the request's other batches land", async () => {
+  const ids = hexIds(600);
+  const read = vi.fn(async ([filter]: readonly ReadFilter[]) => {
+    const authors = filter?.authors ?? [];
+    // Not a read-budget failure, so the batch fails without halving.
+    if (authors.length === 500) throw new ReadError("denied", "Names denied");
+    // The other batch lands in a later task than that failure.
+    await new Promise((resolve) => setTimeout(resolve));
+    return authors.map(named);
+  });
+  const directory = createProfileDirectory({ read });
+  try {
+    await expect(directory.ensure(ids)).rejects.toThrow("Names denied");
+    expect([...directory.queries.snapshot().keys()].sort()).toEqual(
+      ids.slice(500),
+    );
+    expect(read).toHaveBeenCalledTimes(2);
   } finally {
     directory.dispose();
   }
