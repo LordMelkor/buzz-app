@@ -56,6 +56,7 @@ const links = (channels: ChannelQueries, ids: readonly string[]) =>
 /** A real session whose list is ready with one joined public channel. */
 async function setup() {
   let clock = 1_000_000;
+  let clockReads = 0;
   const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
   let receive!: (events: readonly RelayEvent[]) => void;
   const owner = createRelaySession(
@@ -66,7 +67,12 @@ async function setup() {
         return { update() {}, retry() {}, dispose() {} };
       },
     },
-    { now: () => clock },
+    {
+      now: () => {
+        clockReads++;
+        return clock;
+      },
+    },
   );
   owners.push(owner);
   const channels = owner.session.channels;
@@ -93,6 +99,9 @@ async function setup() {
     tick: (ms: number) => {
       clock += ms;
     },
+    /** The store reads its clock once per demanded link when it rearms the
+     * recheck, so this counts that scan's work. */
+    clockReads: () => clockReads,
     /** One coalesced exact lookup, answered with `events`. */
     async lookup(ids: string[], events: RelayEvent[] | Error) {
       const request = await next(39000);
@@ -377,6 +386,30 @@ it("keeps a cancelled lookup from the old cache out of the new one's backoff", a
   h.channels.refer?.(SECRET);
   await h.lookup([SECRET], []);
   expect(h.channels.describe?.(SECRET)).toEqual({ state: "withheld" });
+});
+
+it("answers mounted links without rescanning every link for each answer", async () => {
+  const h = await setup();
+  const ids = [...previews.keys()].slice(0, 200);
+  render(links(h.channels, ids));
+  const mounted = h.clockReads();
+  for (let n = 0; n < ids.length; n += 128) {
+    const request = await h.next(39000);
+    request.respond(
+      (request.filters[0]?.["#d"] ?? []).flatMap(
+        (id) => previews.get(id) ?? [],
+      ),
+    );
+  }
+  await vi.waitFor(() =>
+    expect(
+      ids.filter((id) => h.channels.describe?.(id).state !== "found"),
+    ).toEqual([]),
+  );
+  await flush();
+  // Each found link refers again. Rescanning for it would cost about 150
+  // clock reads per link here, and grows with the number of links.
+  expect(h.clockReads() - mounted).toBeLessThan(10 * ids.length);
 });
 
 it("keeps mounted links' previews when a joined channel needs a slot, and reads none of them again", async () => {

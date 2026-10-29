@@ -2739,8 +2739,9 @@ export function createChannelStore(
     demand.set(id, (demand.get(id) ?? 0) + 1);
     lookUpReference(id);
     // A link remounted during a backoff or a withheld answer's lifetime is
-    // suppressed above; it still needs the wake-up at that deadline.
-    wakeReferences();
+    // suppressed above; it still needs the wake-up at that deadline. A found
+    // answer is never looked up, so it needs none.
+    if (describeReference(id).state !== "found") wakeReferences();
     let released = false;
     return () => {
       if (released) return;
