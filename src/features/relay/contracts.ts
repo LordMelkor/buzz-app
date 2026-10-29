@@ -276,11 +276,11 @@ export interface ChannelQueries {
   >[];
   /** Current reference state from local evidence; never reads. */
   describe?(channelId: string): ChannelReference;
-  /** Demand a background lookup for a reference that isn't `found`, until the
-   * returned release. The store coalesces requests into bounded reads, keeps
-   * a `withheld` answer for a few minutes, backs off after failures,
-   * rechecks demanded references when either ends, and notifies list
-   * subscribers. */
+  /** Demand a reference until the returned release: a background lookup while
+   * it isn't `found`, then its preview stays in discovery. The store
+   * coalesces requests into bounded reads, keeps a `withheld` answer for a
+   * few minutes, backs off after failures, rechecks demanded references when
+   * either ends, and notifies list subscribers. */
   refer?(channelId: string): () => void;
   /** Exact re-read of one already-listed channel's roster, merged into the
    * ready list. `resolve` admits channels the list lacks; this confirms a

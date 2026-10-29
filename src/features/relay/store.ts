@@ -249,7 +249,7 @@ export function createChannelStore(
       : UNAVAILABLE;
   let allowed: Set<string> | undefined;
   let coverage: "partial" | undefined;
-  // An open window, a link still resolving or an open thread still shows its
+  // An open window, a mounted channel link or an open thread still shows its
   // preview.
   const discovery = transport
     ? new DiscoveryState(

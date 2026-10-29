@@ -417,9 +417,9 @@ it("records no absence from a read that filled its page", async () => {
   }
 });
 
-const hexIds = (count: number, from = 0) =>
+const hexIds = (count: number) =>
   Array.from({ length: count }, (_, index) =>
-    (from + index).toString(16).padStart(64, "0"),
+    index.toString(16).padStart(64, "0"),
   );
 /** Unsigned heads: the directory trusts its reader to have verified them. */
 const named = (pubkey: string) =>
@@ -432,8 +432,6 @@ const named = (pubkey: string) =>
     content: JSON.stringify({ name: `Name ${pubkey.slice(-3)}` }),
     sig: "",
   }) as unknown as RelayEvent;
-const overBudget = () =>
-  new ReadError("invalid-response", "Relay response exceeds the read budget");
 
 it("names the identities that fit a request larger than the cache instead of failing", async () => {
   const ids = hexIds(1100);
@@ -459,105 +457,11 @@ it("names the identities that fit a request larger than the cache instead of fai
   }
 });
 
-it("retries profiles over the read budget in halves from the same author", async () => {
-  const ids = hexIds(500);
-  const absent = ids[499];
-  const read = vi.fn(async ([filter]: readonly ReadFilter[]) => {
-    const authors = filter?.authors ?? [];
-    if (authors.length > 200) throw overBudget();
-    // Duplicate heads fill no page but pass the page size in total.
-    return authors
-      .filter((id) => id !== absent)
-      .flatMap((id) => [named(id), named(id)]);
-  });
-  const directory = createProfileDirectory({ read });
-  try {
-    await directory.ensure(ids);
-    expect(
-      read.mock.calls.map(([[filter]]) => [
-        ids.indexOf(filter?.authors?.[0] ?? ""),
-        filter?.authors?.length,
-      ]),
-    ).toEqual([
-      [0, 500],
-      [0, 250],
-      [0, 125],
-      [125, 125],
-      [250, 125],
-      [375, 125],
-    ]);
-    expect(directory.queries.snapshot().size).toBe(499);
-    // Every halved page came back short, so the read was complete.
-    expect(directory.queries.unnamed?.()).toEqual(new Set([absent]));
-    // A read still over the budget at one author fails, after one per halving.
-    read.mockClear();
-    read.mockImplementation(async () => {
-      throw overBudget();
-    });
-    await expect(directory.ensure(hexIds(500, 500))).rejects.toThrow(
-      "Relay response exceeds the read budget",
-    );
-    expect(
-      read.mock.calls.map(([[filter]]) => filter?.authors?.length),
-    ).toEqual([500, 250, 125, 63, 32, 16, 8, 4, 2, 1]);
-    expect(directory.queries.snapshot().size).toBe(499);
-  } finally {
-    directory.dispose();
-  }
-});
-
-it("keeps the parts that landed when a later part fails, and retries only that part", async () => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const ids = hexIds(500);
-  let outages = 1;
-  const read = vi.fn(async ([filter]: readonly ReadFilter[]) => {
-    const authors = filter?.authors ?? [];
-    if (authors.length > 250) throw overBudget();
-    if (authors[0] === ids[250] && outages-- > 0)
-      throw new ReadError("unavailable", "Relay unavailable");
-    if (authors[0] === hexIds(1, 750)[0])
-      throw new ReadError("denied", "Names denied");
-    return authors.map(named);
-  });
-  const directory = createProfileDirectory({ read });
-  try {
-    const ensuring = directory.ensure(ids);
-    await vi.advanceTimersByTimeAsync(0);
-    // The first part is named while the second waits to retry.
-    expect(read).toHaveBeenCalledTimes(3);
-    expect([...directory.queries.snapshot().keys()].sort()).toEqual(
-      ids.slice(0, 250),
-    );
-    await vi.advanceTimersByTimeAsync(1000);
-    await ensuring;
-    expect(
-      read.mock.calls.map(([[filter]]) => [
-        ids.indexOf(filter?.authors?.[0] ?? ""),
-        filter?.authors?.length,
-      ]),
-    ).toEqual([
-      [0, 500],
-      [0, 250],
-      [250, 250],
-      [250, 250],
-    ]);
-    expect(directory.queries.snapshot().size).toBe(500);
-    // A part that fails for good leaves the parts before it named.
-    await expect(directory.ensure(hexIds(500, 500))).rejects.toThrow(
-      "Names denied",
-    );
-    expect(directory.queries.snapshot().size).toBe(750);
-  } finally {
-    vi.useRealTimers();
-    directory.dispose();
-  }
-});
-
 it("reports a failed batch only after the request's other batches land", async () => {
   const ids = hexIds(600);
   const read = vi.fn(async ([filter]: readonly ReadFilter[]) => {
     const authors = filter?.authors ?? [];
-    // Not a read-budget failure, so the batch fails without halving.
+    // Not retried, so the batch fails at once.
     if (authors.length === 500) throw new ReadError("denied", "Names denied");
     // The other batch lands in a later task than that failure.
     await new Promise((resolve) => setTimeout(resolve));

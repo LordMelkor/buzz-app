@@ -440,9 +440,10 @@ export function createThreadView({
           event.tags.some(([name, value]) => name === "e" && value === id),
       )
       .map((event) => event.id);
-    if (ids.length) {
+    // A request's 64 KiB filter budget holds about 975 ids.
+    for (let at = 0; at < ids.length; at += 900) {
       const tombstones = await targetReader.read(
-        [{ kinds: [5, 9005], "#e": ids, limit: 500 }],
+        [{ kinds: [5, 9005], "#e": ids.slice(at, at + 900), limit: 500 }],
         { signal: owned.signal },
       );
       if (!active()) return "cancelled";
@@ -542,7 +543,7 @@ export function createThreadView({
       purge();
       return;
     }
-    if (!replace && !snapshot.canLoadMore) return;
+    if (!replace && (!snapshot.canLoadMore || snapshot.limited)) return;
     const owned = new AbortController();
     controller = owned;
     // Cleared as this refresh starts, not when the stream came back: a refresh

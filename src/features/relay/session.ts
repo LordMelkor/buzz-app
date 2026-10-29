@@ -901,8 +901,11 @@ export function createRelaySession(
           visible: (events) => events.filter(visibility(events)),
           restored: (events) => unread.accept(events),
           demand: (channelId) => demandChannel(channelId),
-          holds: (channelId) =>
-            [...threads].some((thread) => thread.channelId === channelId),
+          holds: (channelId) => {
+            for (const thread of threads)
+              if (thread.channelId === channelId) return true;
+            return false;
+          },
           rosterChanged: (strong) => {
             settleHintConfirmations(strong);
             publishLive();

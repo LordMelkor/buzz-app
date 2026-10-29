@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { act, cleanup, render, renderHook } from "@testing-library/react";
+import { createElement, Fragment } from "react";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { useChannelReference } from "../conversation/channel-reference";
+import type { ChannelQueries } from "./contracts";
 import type { RelayEvent } from "./events";
 import { createRelaySession } from "./session";
 import { keypair, metadata, roster, scriptedTransport } from "./testing";
@@ -29,6 +31,27 @@ const open = (id: string, name: string, extra: string[][] = []) =>
     ["about", `About ${name}`],
     ...extra,
   ]);
+
+// With the joined channel, their previews fill discovery's 1,024 metadata
+// slots. Signed once: signing takes most of the test that uses them.
+const previews = new Map<string, RelayEvent>();
+beforeAll(() => {
+  for (let n = 0; n < 1023; n++) {
+    const id = `21000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    previews.set(id, open(id, `preview-${n}`));
+  }
+});
+/** One mounted channel link. */
+function Link({ channels, id }: { channels: ChannelQueries; id: string }) {
+  useChannelReference(channels, id);
+  return null;
+}
+const links = (channels: ChannelQueries, ids: readonly string[]) =>
+  createElement(
+    Fragment,
+    null,
+    ids.map((id) => createElement(Link, { key: id, channels, id })),
+  );
 
 /** A real session whose list is ready with one joined public channel. */
 async function setup() {
@@ -318,4 +341,58 @@ it("keeps a cancelled lookup from the old cache out of the new one's backoff", a
   h.channels.refer?.(SECRET);
   await h.lookup([SECRET], []);
   expect(h.channels.describe?.(SECRET)).toEqual({ state: "withheld" });
+});
+
+it("keeps mounted links' previews when a joined channel needs a slot, and reads none of them again", async () => {
+  const h = await setup();
+  const ids = [...previews.keys()];
+  const view = render(links(h.channels, ids));
+  for (let n = 0; n < ids.length; n += 128) {
+    const request = await h.next(39000);
+    request.respond(
+      (request.filters[0]?.["#d"] ?? []).flatMap(
+        (id) => previews.get(id) ?? [],
+      ),
+    );
+  }
+  await vi.waitFor(() =>
+    expect(
+      ids.filter((id) => h.channels.describe?.(id).state !== "found"),
+    ).toEqual([]),
+  );
+  const LAUNCH = "30000000-0000-4000-8000-000000000000";
+  const row = () =>
+    h.channels.list().channels.find((channel) => channel.id === LAUNCH);
+  /** A list pass that finds the viewer has joined LAUNCH. */
+  const refresh = async () => {
+    h.channels.refreshList?.();
+    (await h.next(39002)).respond([
+      roster(relay, MINE, [viewer.pubkey]),
+      roster(relay, LAUNCH, [viewer.pubkey]),
+    ]);
+    const request = await h.next(39000);
+    await act(async () => {
+      request.respond([open(MINE, "mine"), open(LAUNCH, "launch")]);
+      await flush();
+    });
+    await flush();
+  };
+
+  await refresh();
+  // A link whose preview gave way would look its channel up again, taking
+  // the slot of the next one, without end.
+  expect(h.pending).toHaveLength(0);
+  expect(row()?.metadataPending).toBe(true);
+  expect(h.channels.list().coverage).toBe("partial");
+  expect(h.channels.describe?.(ids[0] ?? "")).toMatchObject({ state: "found" });
+
+  // Unmounting a link frees its slot for the next pass.
+  view.rerender(links(h.channels, ids.slice(1)));
+  await refresh();
+  expect(row()).toMatchObject({ name: "launch" });
+  expect(row()?.metadataPending).toBeUndefined();
+  expect(h.channels.list().coverage).toBeUndefined();
+  expect(h.channels.describe?.(ids[0] ?? "")).toEqual({ state: "unknown" });
+  expect(h.channels.describe?.(ids[1] ?? "")).toMatchObject({ state: "found" });
+  expect(h.pending).toHaveLength(0);
 });

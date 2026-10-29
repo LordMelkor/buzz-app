@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, beforeAll, expect, it } from "vitest";
 import { createRelaySession } from "./session";
 import { createThreadView } from "./threads";
 import { ReadError } from "./errors";
@@ -27,6 +27,13 @@ const reply = message(alice, "a", "Selected reply", 10000, [
 ]);
 const aux = (kind: number, target: RelayEvent, content = "", time = 10001) =>
   signed(alice, { kind, content, created_at: time, tags: [["e", target.id]] });
+/** A full reaction page and 480 edits of `reply`, signed once. */
+const overlays: RelayEvent[] = [];
+beforeAll(() => {
+  for (let i = 0; i < 500; i++) overlays.push(aux(7, reply, "+", 10001 + i));
+  for (let i = 0; i < 480; i++)
+    overlays.push(aux(40003, reply, `Edit ${i}`, 10001 + i));
+});
 function setup(id = reply.id) {
   const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
   let traffic!: LiveCallbacks;
@@ -183,23 +190,29 @@ it("distinguishes absent targets and failed lookup, then permits explicit retry"
   expect(h.view.snapshot().target?.id).toBe(reply.id);
 });
 
-it("opens a target with a full reaction page, still loading older replies", async () => {
+it("opens a target with a full reaction page and hundreds of edits, still loading older replies", async () => {
   const h = setup();
   const reading = h.view.refresh();
   h.next().respond([reply]);
   await flush();
   // Reactions share the safety-overlay request: no extra round trip.
-  const overlays = h.next();
-  expect(overlays.filters.map((filter) => filter.kinds)).toEqual([
+  const request = h.next();
+  expect(request.filters.map((filter) => filter.kinds)).toEqual([
     [39005, 40003, 5, 9005],
     [7],
   ]);
-  overlays.respond(
-    Array.from({ length: 500 }, (_, i) => aux(7, reply, "+", 10001 + i)),
-  );
+  request.respond(overlays);
   await flush();
-  h.next().respond([]);
-  await flush();
+  // Their tombstones take two requests: one holds about 975 ids.
+  const asked: (readonly string[])[] = [];
+  for (let part = 0; part < 2; part++) {
+    const tombstones = h.next();
+    asked.push(tombstones.filters[0]?.["#e"] ?? []);
+    tombstones.respond([]);
+    await flush();
+  }
+  expect(asked.map((ids) => ids.length)).toEqual([900, 80]);
+  expect(asked.flat().sort()).toEqual(overlays.map((event) => event.id).sort());
   h.next().respond([
     root,
     message(alice, "a", "First reply", 2, [["e", root.id, "", "reply"]]),
@@ -207,7 +220,7 @@ it("opens a target with a full reaction page, still loading older replies", asyn
   await reading;
   expect(h.view.snapshot()).toMatchObject({
     targetStatus: "ready",
-    target: { id: reply.id },
+    target: { id: reply.id, content: "Edit 479" },
     limited: false,
     canLoadMore: true,
   });

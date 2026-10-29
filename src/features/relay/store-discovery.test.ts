@@ -584,49 +584,6 @@ it("keeps coverage partial when exact discovery overflows during omission confir
   expect(h.pending).toHaveLength(0);
 });
 
-it("keeps a name discovery cannot hold pending, without discarding membership, until a later pass names it", async () => {
-  const h = setup();
-  h.channels.ensureList();
-  await h.rosters(1);
-  await h.metadata(1);
-  // Mounted links hold every other metadata slot with their previews.
-  const releases = Array.from({ length: 1023 }, (_, n) =>
-    h.channels.refer?.(previewId(n)),
-  );
-  for (let n = 0; n < 1023; n += 128) {
-    const lookup = await h.next(39000);
-    lookup.respond((lookup.filters[0]?.["#d"] ?? []).map(preview));
-  }
-  await vi.waitFor(() =>
-    expect(h.channels.describe?.(previewId(1022))).toMatchObject({
-      state: "found",
-    }),
-  );
-  const joined = memberships[1];
-  assert.exists(joined);
-  const id = tag(joined, "d");
-  assert.exists(id);
-  const row = () =>
-    h.channels.list().channels.find((channel) => channel.id === id);
-  h.channels.refreshList?.();
-  await h.rosters(2);
-  await h.metadata(2);
-  // Hidden while unnamed, never listed under its id.
-  expect(row()?.metadataPending).toBe(true);
-  expect(h.channels.list().coverage).toBe("partial");
-
-  releases[0]?.();
-  h.channels.refreshList?.();
-  await h.rosters(2);
-  await h.metadata(2);
-  expect(row()).toMatchObject({ name: names.get(id)?.name });
-  expect(row()?.metadataPending).toBeUndefined();
-  expect(h.channels.list().coverage).toBeUndefined();
-  expect(h.channels.describe?.(previewId(0))).toEqual({ state: "unknown" });
-  expect(h.channels.describe?.(previewId(1))).toMatchObject({ state: "found" });
-  expect(h.pending).toHaveLength(0);
-});
-
 it("names a newly joined channel by evicting the least recently resolved preview", async () => {
   const h = setup();
   h.channels.ensureList();
