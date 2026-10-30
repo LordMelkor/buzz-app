@@ -453,6 +453,8 @@ export function createChannelWrites(
     if (active?.() === false)
       throw new DOMException("Channel addition cancelled", "AbortError");
     const original = await refreshMembership(id);
+    // Solo agents must be able to reply even with a saved Guest admission default.
+    const roleTags = original.channelType === "solo" ? [["role", "bot"]] : [];
     if (active?.() === false)
       throw new DOMException("Channel addition cancelled", "AbortError");
     const unique = [...new Set(keys)].filter(
@@ -486,21 +488,22 @@ export function createChannelWrites(
       if (!current?.members || current.archived)
         throw new Error("Channel membership is unavailable.");
       if (current.members.includes(key)) continue;
-      const previous = (receipts ?? outbox)
-        ?.snapshot()
-        .find(
-          (item) =>
-            item.event.kind === 9000 &&
-            !item.acknowledged &&
-            !["accepted", "seen"].includes(item.delivery) &&
-            item.event.tags.some(
-              ([name, value]) => name === "h" && value === id,
-            ) &&
-            item.event.tags.some(
-              ([name, value]) => name === "p" && value === key,
-            ) &&
-            !item.event.tags.some(([name]) => name === "role"),
+      const previous = (receipts ?? outbox)?.snapshot().find((item) => {
+        const roles = item.event.tags.filter(([name]) => name === "role");
+        return (
+          item.event.kind === 9000 &&
+          !item.acknowledged &&
+          !["accepted", "seen"].includes(item.delivery) &&
+          item.event.tags.some(
+            ([name, value]) => name === "h" && value === id,
+          ) &&
+          item.event.tags.some(
+            ([name, value]) => name === "p" && value === key,
+          ) &&
+          roles.length === roleTags.length &&
+          roles.every((tag) => tag.length === 2 && tag[1] === "bot")
         );
+      });
       if (previous && Date.now() / 1000 - previous.event.created_at >= 15 * 60)
         throw new Error(
           `This agent-add request expired. Open Outbox, remove the “Add agent ${key.slice(0, 12)}” item, then add the agent again. Check channel membership first if the request was unconfirmed.`,
@@ -511,10 +514,7 @@ export function createChannelWrites(
           {
             kind: 9000,
             content: "",
-            tags: [
-              ["h", id],
-              ["p", key],
-            ],
+            tags: [["h", id], ["p", key], ...roleTags],
           },
           undefined,
           active,

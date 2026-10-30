@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import { DiscoveryState } from "./discovery";
 import { eventDto } from "./events";
 import { keypair, metadata, signed } from "./testing";
+import { SOLO_LABEL } from "../solo/labels";
 
 const relay = keypair(),
   viewer = keypair();
@@ -22,6 +23,37 @@ const details = (role: string, time: number) =>
     ["t", "stream"],
     ["join_role", role],
   ]);
+
+it("keeps public Solo visitors read-only without membership and revokes their access when made private", () => {
+  const owner = keypair();
+  const state = new DiscoveryState(viewer.pubkey, relay.pubkey);
+  const chat = (visibility: "public" | "private", time: number) =>
+    metadata(relay, id, "Planning", time, [
+      [visibility],
+      ["t", "stream"],
+      ["t", SOLO_LABEL],
+      ["P", owner.pubkey],
+      ["join_role", "guest"],
+    ]);
+  state.accept(chat("private", 1));
+  expect(state.get(id)).toBeUndefined();
+  state.accept(chat("public", 2));
+  expect(state.get(id)).toMatchObject({
+    channelType: "solo",
+    readOnly: true,
+    joinRole: "guest",
+    creator: owner.pubkey,
+  });
+  expect(state.canAccess(id)).toBe(true);
+  expect(state.canWrite(id)).toBe(false);
+  expect(state.canParticipate(id)).toBe(false);
+  expect(state.channels()).toEqual([]);
+  state.accept(chat("private", 3));
+  expect(state.canAccess(id)).toBe(false);
+  expect(state.get(id)).toBeUndefined();
+  state.accept(chat("public", 2));
+  expect(state.canAccess(id)).toBe(false);
+});
 
 it("keeps a guest joined and readable across admission-default changes until explicitly promoted", () => {
   const state = new DiscoveryState(viewer.pubkey, relay.pubkey);

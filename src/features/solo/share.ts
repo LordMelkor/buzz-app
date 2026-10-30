@@ -226,6 +226,7 @@ export async function applySharedChannelDetails(
     value.name === draft.name &&
     value.description === draft.description &&
     value.visibility === draft.visibility &&
+    (draft.joinRole === undefined || value.joinRole === draft.joinRole) &&
     value.ttlSeconds === draft.ttlSeconds &&
     (draft.labels === undefined ||
       sameLabels(value.labels ?? [], draft.labels));
@@ -245,6 +246,7 @@ export async function applySharedChannelDetails(
       base.name !== expected.name ||
       base.description !== expected.description ||
       base.visibility !== expected.visibility ||
+      base.joinRole !== expected.joinRole ||
       base.ttlSeconds !== expected.ttlSeconds ||
       (draft.labels !== undefined &&
         !sameLabels(base.labels ?? [], expected.labels ?? []))

@@ -206,7 +206,7 @@ it.each(["member", "guest", undefined] as const)(
 );
 
 it.each(["private", "view-only", "legacy-public"])(
-  "offers only Private and View only for a %s Solo chat",
+  "offers only View only / Private for a %s Solo chat",
   async (policy) => {
     const h = harness();
     const current: ChannelDetails = {
@@ -239,8 +239,10 @@ it.each(["private", "view-only", "legacy-public"])(
       screen.getByRole("option", { name: "View only" }),
     ).toHaveAccessibleDescription("Anyone in the community can read.");
     expect(
-      screen.queryByRole("option", { name: "Public" }),
+      screen.queryByRole("option", { name: /^Public$/ }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(h.save).not.toHaveBeenCalled();
     await user.click(
       screen.getByRole("option", {
         name: policy === "view-only" ? "Private" : "View only",
@@ -252,10 +254,10 @@ it.each(["private", "view-only", "legacy-public"])(
       joinRole: "guest",
     };
     expect(h.save).not.toHaveBeenCalled();
-    expect(screen.getByRole("alertdialog")).toHaveTextContent(
+    expect(screen.getByRole("alertdialog")).toHaveAccessibleDescription(
       policy === "view-only"
-        ? "Only chat members will have access."
-        : "People already in the chat keep their access.",
+        ? "Only chat members will have access. People who joined while it was View only are members and keep reading until you remove them in People."
+        : `Everyone in this community will be able to read this chat’s full history and Canvas, including its workspace folders and agent instructions.${policy === "legacy-public" ? " People already in the chat keep their access." : ""}`,
     );
     h.load.mockResolvedValue(next);
     await user.click(screen.getByRole("button", { name: "Change access" }));
@@ -271,6 +273,46 @@ it.each(["private", "view-only", "legacy-public"])(
         policy === "view-only" ? "Private" : "View only",
       ),
     );
+  },
+);
+
+it.each([
+  {
+    visibility: "private",
+    joinRole: "guest",
+    option: "View only",
+    expected:
+      "Everyone in this community will be able to read this chat’s full history and Canvas, including its workspace folders and agent instructions.",
+  },
+  {
+    visibility: "public",
+    joinRole: "member",
+    option: "Private",
+    expected: "Only chat members will have access.",
+  },
+] as const)(
+  "keeps $visibility/$joinRole → $option unchanged even with a Guest member",
+  async ({ visibility, joinRole, option, expected }) => {
+    const h = harness();
+    h.load.mockResolvedValue({
+      ...base,
+      labels: ["buzz.solo"],
+      visibility,
+      joinRole,
+    });
+    const user = userEvent.setup();
+    render(
+      <ChannelGeneralAccess
+        capability={h.capability}
+        channelId="alpha"
+        mayHaveGuestMembers
+      />,
+    );
+    await select(user, "General access", option);
+    expect(screen.getByRole("alertdialog")).toHaveAccessibleDescription(
+      expected,
+    );
+    expect(h.save).not.toHaveBeenCalled();
   },
 );
 

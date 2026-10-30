@@ -9,8 +9,7 @@ import {
 } from "../relay/channel-details-protocol";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
 import { Button } from "../../shared/design-system/ui/Button";
-import { Field } from "../../shared/design-system/ui/Field";
-import { Radio, RadioGroup } from "../../shared/design-system/ui/RadioGroup";
+import { Select } from "../../shared/design-system/ui/Select";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import {
   chatConversion,
@@ -18,8 +17,14 @@ import {
   useChatConversions,
   type ChatConversion,
 } from "./conversion";
-import { SOLO_LABEL, soloLabels } from "./labels";
+import { SOLO_ACCESS_DISCLOSURE, SOLO_LABEL, soloLabels } from "./labels";
 import { applySharedChannelDetails } from "./share";
+import {
+  generalAccessOptions,
+  generalAccessPolicy,
+  generalAccessValue,
+  type GeneralAccess,
+} from "../channels/general-access";
 
 /** Presentation gating only; fresh signed details authorize the actual write. */
 export function canConvertToChannel(
@@ -68,7 +73,7 @@ export function ConvertToChannel({
   const [base, setBase] = useState<ChannelDetails>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [visibility, setVisibility] = useState<"private" | "public">("private");
+  const [access, setAccess] = useState<GeneralAccess>();
   const lifetime = useRef<AbortController | undefined>(undefined);
   const pending = useRef(false);
   const conversionAttempt =
@@ -93,14 +98,16 @@ export function ConvertToChannel({
     !soloLabels(base.labels) &&
     base.name === receipt.draft.name &&
     base.visibility === receipt.draft.visibility &&
+    (receipt.draft.joinRole === undefined ||
+      base.joinRole === receipt.draft.joinRole) &&
     base.ttlSeconds === receipt.draft.ttlSeconds
   );
   const canFinish = converted || confirmedElsewhere;
-  // Uncertain intent belongs to the details owner, including the chosen privacy.
-  const selectedVisibility =
-    receipt?.draft.visibility ??
-    conversionAttempt?.draft.visibility ??
-    visibility;
+  // Uncertain intent belongs to the details owner, including admission.
+  const savedDraft = receipt?.draft ?? conversionAttempt?.draft;
+  const selectedAccess = savedDraft
+    ? generalAccessValue(savedDraft)
+    : (access ?? (base ? generalAccessValue(base) : "private"));
 
   useEffect(() => {
     const controller = new AbortController();
@@ -110,7 +117,7 @@ export function ConvertToChannel({
       ...(signal ? [signal] : []),
     ]);
     setBase(undefined);
-    setVisibility("private");
+    setAccess(undefined);
     setError("");
     setBusy(false);
     pending.current = false;
@@ -165,7 +172,7 @@ export function ConvertToChannel({
           draft: {
             name: base?.name ?? "",
             description: base?.description ?? "",
-            visibility: selectedVisibility,
+            ...generalAccessPolicy(selectedAccess, base?.joinRole),
             ttlSeconds: base?.ttlSeconds,
             labels: withoutSolo(base?.labels),
           },
@@ -180,6 +187,8 @@ export function ConvertToChannel({
               soloLabels(fresh.labels) ||
               fresh.name !== exact.draft.name ||
               fresh.visibility !== exact.draft.visibility ||
+              (exact.draft.joinRole !== undefined &&
+                fresh.joinRole !== exact.draft.joinRole) ||
               fresh.ttlSeconds !== exact.draft.ttlSeconds
             )
               throw new Error(
@@ -228,7 +237,9 @@ export function ConvertToChannel({
           updateChatConversion(
             session,
             id,
-            exact.converted || details.snapshot(id) ? exact : undefined,
+            exact.converted || details.snapshot(id) || action === "finish"
+              ? exact
+              : undefined,
           );
       }
       if (!controller.signal.aborted) {
@@ -246,7 +257,14 @@ export function ConvertToChannel({
         if (completed.current && !signal?.aborted) onConverted?.();
       }}
       title="Convert to channel"
-      description="Move this conversation from Solo to Team. History, Canvas, members and lifetime stay the same."
+      size="compact"
+      headerGap="compact"
+      footerGap="compact"
+      description={
+        base?.visibility === "private" && selectedAccess !== "private"
+          ? SOLO_ACCESS_DISCLOSURE
+          : "Move this conversation from Solo to Team. History, Canvas, members and lifetime stay the same."
+      }
       onOpenChange={(open) => {
         if (!open) setOpen(false);
       }}
@@ -290,34 +308,26 @@ export function ConvertToChannel({
         </>
       }
     >
-      <Field label="Visibility" nativeLabel={false}>
-        <RadioGroup
-          aria-label="Visibility"
-          value={selectedVisibility}
-          disabled={
-            busy ||
-            converted ||
-            !!receipt?.running ||
-            !!attempt ||
-            !eligible ||
-            !!signal?.aborted
-          }
-          onValueChange={(value) => {
-            if (value === "private" || value === "public") setVisibility(value);
-          }}
-        >
-          <Radio
-            value="private"
-            label="Private"
-            description="Only channel members will have access."
-          />
-          <Radio
-            value="public"
-            label="Public"
-            description="Everyone in this community will be able to view this channel’s full history."
-          />
-        </RadioGroup>
-      </Field>
+      <Select
+        label="General access"
+        variant="field"
+        value={selectedAccess}
+        groups={[{ label: "", options: Object.values(generalAccessOptions) }]}
+        disabled={
+          busy ||
+          converted ||
+          !!receipt?.running ||
+          !!attempt ||
+          !eligible ||
+          !!signal?.aborted
+        }
+        onValueChange={(value) => {
+          const option = Object.values(generalAccessOptions).find(
+            (option) => option.value === value,
+          );
+          if (option) setAccess(option.value);
+        }}
+      />
       {converted && (
         <p role="status">
           Channel converted. Finish removing it from its Solo workspace.

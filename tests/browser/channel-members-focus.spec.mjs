@@ -1310,9 +1310,7 @@ test("Solo adds an agent with pointer or Enter and retains the search focus", as
       name: "Search people, agents and channels",
     });
     await expect(search).toBeFocused();
-    await expect(search).toHaveAccessibleDescription(
-      /can read the full history/,
-    );
+    await expect(search).toHaveAccessibleDescription("");
     const add = dialog.getByRole("button", { name: /Add Morgan/ });
     await expect(add).toHaveCount(0);
     await expect(dialog).toHaveAccessibleDescription("");

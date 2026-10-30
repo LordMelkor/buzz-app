@@ -6,7 +6,8 @@ client-side organization, independent of access; see [Solo](README.md).
 ## The model
 
 - A Solo chat is a channel with the `buzz.solo` label.
-- Access is membership. Sharing gives people a membership in the chat.
+- Channel visibility and signed membership control access. Sharing gives people
+  a membership in the chat.
 - A shared chat link is an ordinary message containing
   `[Chat: name](buzz://channel/<id>)`. It renders as a chat card when the target
   is a Solo chat; the `Chat:` label lets a viewer without access see it as one.
@@ -34,8 +35,10 @@ people, agents and channels** for an owner who can add agents) filters current
 access and lists people under **Not in this chat**, each with an **Add** button;
 Enter adds the highlighted person. Adding is immediate and uses the Solo share rule
 (`canShareSoloChat`), with per-person **Adding…**, error and **Retry** states. The
-owner's selectable agents are offered too and join without starting a run. Where
-the viewer cannot add agents, a note says to mention an agent in the chat instead.
+owner's selectable agents are offered too and join as Bot, even with a Guest
+admission default, without starting a run. Composer mentions use the same grant.
+Where the viewer cannot add agents, a note says to mention an agent in the chat
+instead.
 Current access uses the channel groups (**People**, **Agents**) with Owner and
 Admin tags, and each row has the channel members' actions menu, so the chat owner
 can remove someone. The verified roster shows loading or failure, never treating a
@@ -66,6 +69,44 @@ The sidebar's Shared mark is status only: it uses the verified current roster an
 cached non-agent evidence for an additional human. Unknown profiles remain
 unclassified; absence of the indicator is **not** a privacy promise. Clicking the
 indicator opens the same dialog.
+
+### General access
+
+The access dialog's **General access** offers **View only** and **Private**.
+Public is not offered. Participation through this UI is by invitation. Existing
+members keep their individual roles when the general policy changes.
+
+View only makes the chat's full history and Canvas readable by the community.
+The confirmation names this disclosure, including workspace folder paths and
+agent instructions stored in Canvas. Moving from Public (existing) also
+explains that people already in the chat keep their access. Moving from View only
+to Private warns that joined viewers remain members unless a verified role
+snapshot establishes that no Guests exist; loading or failed verification keeps
+the warning. One signed kind-9002 edit sets
+`visibility=open` and `join_role=guest` together, through the existing
+`channelDetails` save, conflict checks and exact readback.
+
+Omitting Public here is a UI restriction, not a relay or harness safeguard.
+CLI/MCP or another client can still set a Solo chat to Public with Member
+admission. The dialog shows **Public (existing)** for that policy and lets the
+owner change it to View only or Private. Public members can still post and
+address the owner's agents, and can replace the shared Canvas. Agent wake and
+owner-Canvas hardening are separate follow-up work; this picker does not fix
+those risks. Changing to View only restricts new people, not existing members.
+
+With View only, visitors can find the chat by name in Search Buzz or open its
+ordinary chat link. They read without joining and cannot send messages, react or wake agents.
+The relay's ordinary Guest/default-Guest write policy enforces this boundary;
+the absent composer is only its client presentation. View-only access grants no
+membership and adds no sidebar entry for a visitor. The owner keeps the same
+Solo label, conversation ID and private workspace filing.
+
+Changing back to Private stops nonmembers from reading; it does not remove
+members or change their roles. Guests who joined through the CLI, MCP or another
+client while the chat was View only keep read access until removed in People.
+Reading without joining creates no membership to retain. Neither transition
+changes invitations, creates a share message or adds notifications. Unconfirmed
+publication uses **Check save status**, without automatically resending.
 
 ## Sending a chat link in a channel
 
@@ -98,17 +139,21 @@ in the destination channel are not synchronized.
 The product owner approved this distinction on 2026-10-14: **Share** keeps the
 Solo label and project filing; **Convert to channel** removes the Solo label and
 the initiating viewer's project filing, so the same conversation becomes an
-ordinary Team channel, either Private or Public. It changes organization and
-conversation behavior for every member, never creates a new conversation or
-copies history.
+ordinary Team channel, with Private, View only or Public access. It changes
+organization and conversation behavior for every member, never creates a new
+conversation or copies history.
 
 The Solo chat header overflow and the Solo row menu offer **Convert to channel**
 for the viewer's own Solo chat.
-`src/features/solo/ConvertToChannel.tsx` reuses the shared Dialog, Field,
-Private/Public RadioGroup and Button. Private is the default; Public warns that the
-community can view the full existing history. A selected share channel is never
-granted by conversion. Cancel writes nothing and returns focus to the retained
-initiating control.
+`src/features/solo/ConvertToChannel.tsx` reuses the shared Dialog, Select
+and Button, with the same Private, View only and Public options and
+descriptions as channel general access. The current access policy is selected
+initially. Choosing View only or Public for a private chat discloses community
+reading of its full history and Canvas, including workspace folders and agent
+instructions. View only saves public visibility with Guest admission; Public saves
+Member admission; Private keeps reading restricted to members and retains the
+current admission default. A selected share channel is never granted by conversion.
+Cancel writes nothing and returns focus to the retained initiating control.
 
 The sequence is explicit, not atomic:
 
@@ -116,7 +161,7 @@ The sequence is explicit, not atomic:
    owner. Fresh metadata, owner/admin authority, conflict checks,
    altered-signature rejection and exact readback remain unchanged. The edit
    removes `buzz.solo` from the channel's labels and applies the chosen
-   visibility; name, lifetime and other labels are preserved.
+   visibility and admission policy; name, lifetime and other labels are preserved.
 2. Refresh Solo projects and, if this viewer filed the chat in one, clear only
    that assignment through `soloPreferences.assign(id, undefined)`. Its encrypted
    account/community record, serialization and Outbox own persistence. Other
@@ -134,7 +179,7 @@ visit.
 ### Partial success and recovery
 
 An uncertain metadata publication offers **Check status**, never automatic resend.
-The pending details owner retains exact selected visibility; **Reload chat
+The pending details owner retains the exact selected access policy; **Reload chat
 details** recovers failed reads without losing that intent. If another details
 surface confirmed the publication, fresh matching metadata can advance the retained
 conversion receipt without another kind-9002 command.
@@ -169,10 +214,9 @@ View-only role.
   [Chat settings](README.md#optional-naming) form, not Share. Persisted naming
   provenance, automatic-name reset and dynamic link titles remain deferred.
   Old and new generated links keep their numeric labels after a rename.
-- **Can view / Can participate** is deferred to a second PR. Read-only requires
-  relay-enforced authorization and a matching client capability contract; a
-  cosmetic role switch or disabled composer is not sufficient. This slice shows
-  neither a fake dropdown nor a static role tag.
+- Individual **Can view / Can participate** invitation choices remain deferred.
+  View-only Solo sharing uses the channel's relay-enforced Guest admission default,
+  without changing existing individual invitations or roles.
 - Direct-person DM/link delivery is not implemented. Access grants alone are not
   a dedicated invitation or share notification; explicit automatic handoff needs
   a separate product decision.

@@ -190,7 +190,7 @@ it("grants exact Solo chat membership to a person without touching the channel",
   expect(t.published.map((event) => event.kind)).toEqual([9000]);
   expect(t.published[0]?.tags).toContainEqual(["h", chatId]);
   expect(t.published[0]?.tags).toContainEqual(["p", t.human.pubkey]);
-  expect(t.published[0]?.tags.some(([name]) => name === "role")).toBe(false);
+  expect(t.published[0]?.tags).toContainEqual(["role", "member"]);
 });
 
 it("Everyone snapshots the destination's signed roster including agents, freezes it for retry, and only grants access", async () => {
@@ -229,14 +229,10 @@ it("Everyone snapshots the destination's signed roster including agents, freezes
     )?.tags,
   ).toContainEqual(["role", "bot"]);
   expect(
-    t.published
-      .find((event) =>
-        event.tags.some(
-          ([name, key]) => name === "p" && key === t.human.pubkey,
-        ),
-      )
-      ?.tags.some(([name]) => name === "role"),
-  ).toBe(false);
+    t.published.find((event) =>
+      event.tags.some(([name, key]) => name === "p" && key === t.human.pubkey),
+    )?.tags,
+  ).toContainEqual(["role", "member"]);
   expect(
     t.published.every((event) =>
       event.tags.some(([name, id]) => name === "h" && id === chatId),

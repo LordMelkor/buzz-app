@@ -39,7 +39,6 @@ export function canShareSoloChat(
     session.viewer &&
     session.outbox?.supports(9000) &&
     channel?.channelType === "solo" &&
-    channel.private &&
     !channel.readOnly &&
     !channel.cached &&
     !channel.archived &&
@@ -210,13 +209,13 @@ export async function addChannelMember(
       .identities.some((agent) => agent.pubkey === pubkey) ||
     session.profiles.snapshot().get(pubkey)?.isAgent;
   const current = channel();
-  // Private channel additions grant participation explicitly, even if an older
-  // saved admission default is Guest. Solo and system admission stay separate.
+  // Solo sharing and private-channel invitations grant participation explicitly,
+  // independently of the admission default for public visitors.
   const role = isAgent
     ? "bot"
-    : !soloParticipant &&
-        current?.visibility === "private" &&
-        (current.channelType === "stream" || current.channelType === "forum")
+    : soloParticipant ||
+        (current?.visibility === "private" &&
+          (current.channelType === "stream" || current.channelType === "forum"))
       ? "member"
       : undefined;
   beforeDispatch?.();

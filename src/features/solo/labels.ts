@@ -2,11 +2,14 @@ import type { ChannelSummary } from "../relay/contracts.ts";
 
 /** Presentation provenance in the relay's existing NIP-CL labels, never access. */
 export const SOLO_NAMED_LABEL = "buzz.session.named";
-/** NIP-CL label marking a Solo chat: a private channel whose owner talks with
+/** NIP-CL label marking a Solo chat: a channel whose owner talks with
  * their agents at top level. Every member and agent reads it from channel
- * metadata. Presentation and composition only; membership stays the access
- * authority. Conversion to a channel clears it. */
+ * metadata. Presentation and composition only; ordinary channel permissions
+ * remain the access authority. Conversion to a channel clears it. */
 export const SOLO_LABEL = "buzz.solo";
+
+export const SOLO_ACCESS_DISCLOSURE =
+  "Everyone in this community will be able to read this chat’s full history and Canvas, including its workspace folders and agent instructions.";
 
 export function soloLabels(labels: readonly string[] | undefined): boolean {
   return !!labels?.includes(SOLO_LABEL);

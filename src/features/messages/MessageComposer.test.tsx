@@ -5765,9 +5765,13 @@ it.each([false, true])(
   },
 );
 
-it.each(["send", "unmount", "disabled", "denied"])(
-  "waits for agent admission before saved Solo chat messages: %s",
-  async (outcome) => {
+it.each(
+  ["send", "unmount", "disabled", "denied"].flatMap((outcome) =>
+    ["private", "public"].map((visibility) => ({ outcome, visibility })),
+  ),
+)(
+  "waits for agent admission before saved $visibility Solo chat messages with a Guest default: $outcome",
+  async ({ outcome, visibility }) => {
     const view = mount();
     const list = {
       status: "ready",
@@ -5775,6 +5779,8 @@ it.each(["send", "unmount", "disabled", "denied"])(
         {
           id: "channel",
           channelType: "solo",
+          visibility,
+          joinRole: "guest",
           members: [] as string[],
         },
       ],

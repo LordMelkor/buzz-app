@@ -103,7 +103,7 @@ export function ChannelJoinNotice({
             ? `This ${place} is archived`
             : readOnly
               ? joinRole === "guest"
-                ? "This channel is read-only"
+                ? `This ${place} is read-only`
                 : "Read-only access"
               : canJoin
                 ? "Join channel to send messages"

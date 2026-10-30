@@ -582,7 +582,7 @@ test("Share grants access and posts a link without promoting or moving the Solo 
 test("explicit conversion moves the same conversation from Solo to Messages and keeps history", async ({
   page,
   app,
-}) => {
+}, testInfo) => {
   await page.goto(app.origin);
   await newChat(page);
   const sidebar = page.getByRole("navigation", {
@@ -602,15 +602,15 @@ test("explicit conversion moves the same conversation from Solo to Messages and 
     name: "Convert to channel",
     exact: true,
   });
-  await expect(
-    dialog.getByRole("radio", { name: "Private", exact: true }),
-  ).toBeChecked();
-  const publicChoice = dialog.getByRole("radio", {
+  const access = dialog.getByRole("combobox", { name: "General access" });
+  await expect(access).toHaveText("Private");
+  await access.click();
+  const publicChoice = page.getByRole("option", {
     name: "Public",
     exact: true,
   });
   await expect(publicChoice).toHaveAccessibleDescription(
-    "Everyone in this community will be able to view this channel’s full history.",
+    "Anyone in the community can participate.",
   );
   const convert = dialog.getByRole("button", {
     name: "Convert to channel",
@@ -618,7 +618,92 @@ test("explicit conversion moves the same conversation from Solo to Messages and 
   });
   await expect(convert).toBeEnabled();
   await publicChoice.click();
-  await expect(publicChoice).toBeChecked();
+  await expect(access).toHaveText("Public");
+  const disclosure =
+    "Everyone in this community will be able to read this chat’s full history and Canvas, including its workspace folders and agent instructions.";
+  await expect(dialog).toHaveAccessibleDescription(disclosure);
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(row).toBeFocused();
+  for (const { mode, width, scale } of [
+    { mode: "dark", width: 1440, scale: 1 },
+    { mode: "light", width: 1440, scale: 1 },
+    { mode: "dark", width: 390, scale: 1.5 },
+    { mode: "light", width: 390, scale: 1.5 },
+  ]) {
+    await page.setViewportSize({ width, height: width === 390 ? 720 : 950 });
+    await page.evaluate(
+      ({ mode, scale }) => {
+        localStorage.setItem("buzz-appearance.v1", mode);
+        localStorage.setItem("buzz-font-scale.v1", String(scale));
+        localStorage.setItem("buzz-accent.v1", "cobalt");
+      },
+      { mode, scale },
+    );
+    await page.reload();
+    await expect(page.locator("html")).toHaveAttribute("data-color-mode", mode);
+    await expect(page.locator("html")).toHaveCSS(
+      "--buzz-text-scale",
+      String(scale),
+    );
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page
+      .getByRole("menuitem", { name: "Convert to channel", exact: true })
+      .click();
+    await expect(access).toBeEnabled();
+    await expect(access).toHaveText("Private");
+    await access.click();
+    await page.getByRole("option", { name: "View only", exact: true }).click();
+    await expect(dialog).toHaveAccessibleDescription(disclosure);
+    await access.scrollIntoViewIfNeeded();
+    await expect(access).toBeInViewport({ ratio: 1 });
+    await access.click({ trial: true });
+    await expect
+      .poll(() =>
+        dialog.evaluate((surface) => {
+          const header = surface
+            .querySelector(".buzz-dialog-header")
+            .getBoundingClientRect();
+          const control = surface
+            .querySelector('[role="combobox"]')
+            .getBoundingClientRect();
+          const footer = surface
+            .querySelector(".buzz-dialog-actions")
+            .getBoundingClientRect();
+          return header.bottom <= control.top && control.bottom <= footer.top;
+        }),
+      )
+      .toBe(true);
+    await dialog
+      .getByText(disclosure, { exact: true })
+      .scrollIntoViewIfNeeded();
+    await expect(dialog.getByText(disclosure, { exact: true })).toBeInViewport({
+      ratio: 1,
+    });
+    await expect(convert).toBeInViewport({ ratio: 1 });
+    if (testInfo.project.name === "chromium")
+      await dialog.screenshot({
+        path: testInfo.outputPath(
+          `SOLO_CONVERSION_DISCLOSURE_${mode}_${width}.png`,
+        ),
+      });
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "Chat actions", exact: true }),
+    ).toBeFocused();
+  }
+  await page.setViewportSize({ width: 1440, height: 950 });
+  await page.evaluate(() => localStorage.setItem("buzz-font-scale.v1", "1"));
+  await page.reload();
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page
+    .getByRole("menuitem", { name: "Convert to channel", exact: true })
+    .click();
+  await expect(access).toBeEnabled();
+  await access.click();
+  await publicChoice.click();
+  await expect(dialog).toHaveAccessibleDescription(disclosure);
   expect(app.report.detailsPublications ?? []).toHaveLength(0);
   await convert.click();
   await expect(dialog).not.toBeVisible();
@@ -676,10 +761,18 @@ test("explicit conversion moves the same conversation from Solo to Messages and 
 
 // Browser-only: native modal focus handoff to a replacement Messages header.
 // The held metadata/completion ordering matrix lives in the mounted page test.
-test("Messages conversion restores focus after its chat header is replaced", async ({
+test("View-only Solo conversion preserves access and restores focus after its chat header is replaced", async ({
   page,
   app,
-}) => {
+}, testInfo) => {
+  app.setChannelMetadata(id, [
+    ["name", "Alpha"],
+    ["t", "stream"],
+    ["t", "buzz.solo"],
+    ["P", app.viewer],
+    ["public"],
+    ["join_role", "guest"],
+  ]);
   await page.goto(app.origin);
   await expect
     .poll(() =>
@@ -700,19 +793,107 @@ test("Messages conversion restores focus after its chat header is replaced", asy
     exact: true,
   });
   const convert = page.getByRole("menuitem", { name: "Convert to channel" });
-  await trigger.click();
-  await convert.click();
   const dialog = page.getByRole("dialog", { name: "Convert to channel" });
-  await expect(
-    dialog.getByRole("button", { name: "Convert to channel" }),
-  ).toBeEnabled();
-  await dialog.getByRole("button", { name: "Cancel" }).click();
-  expect(app.report.detailsPublications ?? []).toHaveLength(0);
-  await expect(trigger).toBeFocused();
+  for (const { mode, width, scale } of [
+    { mode: "dark", width: 1440, scale: 1 },
+    { mode: "light", width: 1440, scale: 1 },
+    { mode: "dark", width: 390, scale: 1.5 },
+    { mode: "light", width: 390, scale: 1.5 },
+  ]) {
+    await page.setViewportSize({ width, height: width === 390 ? 720 : 950 });
+    await page.evaluate(
+      ({ mode, scale }) => {
+        localStorage.setItem("buzz-appearance.v1", mode);
+        localStorage.setItem("buzz-font-scale.v1", String(scale));
+      },
+      { mode, scale },
+    );
+    await page.reload();
+    await expect(page.locator("html")).toHaveAttribute("data-color-mode", mode);
+    await expect(page.locator("html")).toHaveCSS(
+      "--buzz-text-scale",
+      String(scale),
+    );
+    await trigger.click();
+    await convert.click();
+    await expect(
+      dialog.getByRole("button", { name: "Convert to channel" }),
+    ).toBeEnabled();
+    const access = dialog.getByRole("combobox", { name: "General access" });
+    await expect(access).toHaveText("View only");
+    const viewOnly = page.getByRole("option", {
+      name: "View only",
+      exact: true,
+    });
+    if (mode === "dark" && width === 1440) {
+      await access.click();
+      await page.getByRole("option", { name: "Public", exact: true }).click();
+      await access.click();
+      const privateOption = page.getByRole("option", {
+        name: "Private",
+        exact: true,
+      });
+      await privateOption.click();
+      await expect(page.getByRole("listbox")).not.toBeVisible();
+      await expect(access).toBeFocused();
+      await access.press("Enter");
+      // Popup focus settles asynchronously, particularly when reopened in WebKit.
+      await expect(privateOption).toBeFocused();
+      await page.keyboard.press("Home");
+      await expect(privateOption).toBeFocused();
+      await page.keyboard.press("ArrowDown");
+      await expect(viewOnly).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(access).toHaveText("View only");
+    }
+    await access.click();
+    await expect(page.getByRole("option")).toHaveCount(3);
+    for (const name of ["Private", "View only", "Public"]) {
+      const option = page.getByRole("option", { name, exact: true });
+      await option.scrollIntoViewIfNeeded();
+      await option.click({ trial: true });
+      await expect(option).toBeInViewport();
+    }
+    await viewOnly.scrollIntoViewIfNeeded();
+    const popup = page.locator(".buzz-select-popup");
+    await expect(popup).toHaveCSS("filter", "blur(0px)");
+    await expect(popup).toHaveCSS("opacity", "1");
+    if (testInfo.project.name === "chromium") {
+      const boxes = await Promise.all([
+        dialog.boundingBox(),
+        popup.boundingBox(),
+      ]);
+      expect(boxes.every(Boolean)).toBe(true);
+      const left = Math.min(...boxes.map((box) => box.x));
+      const top = Math.min(...boxes.map((box) => box.y));
+      await page.screenshot({
+        clip: {
+          x: left,
+          y: top,
+          width: Math.max(...boxes.map((box) => box.x + box.width)) - left,
+          height: Math.max(...boxes.map((box) => box.y + box.height)) - top,
+        },
+        path: testInfo.outputPath(
+          `SOLO_CONVERSION_ACCESS_${mode}_${width}.png`,
+        ),
+      });
+    }
+    await page.keyboard.press("Escape");
+    await expect(access).toBeFocused();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    expect(app.report.detailsPublications ?? []).toHaveLength(0);
+    await expect(trigger).toBeFocused();
+  }
+  await page.setViewportSize({ width: 1440, height: 950 });
+  await page.evaluate(() => localStorage.setItem("buzz-font-scale.v1", "1"));
+  await page.reload();
   await trigger.press("Enter");
   await convert.click();
   const confirm = dialog.getByRole("button", { name: "Convert to channel" });
   await expect(confirm).toBeEnabled();
+  await expect(
+    dialog.getByRole("combobox", { name: "General access" }),
+  ).toHaveText("View only");
   await confirm.focus();
   await confirm.press("Enter");
   await expect(dialog).not.toBeVisible();

@@ -101,7 +101,8 @@ function setup(
               content: "",
               tags: [
                 ["d", id],
-                ["t", type],
+                ["t", type === "solo" ? "stream" : type],
+                ...(type === "solo" ? [["t", "buzz.solo"]] : []),
                 [visibility],
                 ["join_role", joinRole],
                 ["name", "Design"],
@@ -251,6 +252,22 @@ it("adds a participant despite a private channel's saved Guest default", async (
   await t.managedAdd();
   expect(t.publish.mock.calls[0]?.[0].tags).toContainEqual(["role", "member"]);
 });
+it.each(["private", "public"] as const)(
+  "keeps Solo invitations participatory with a %s chat's Guest visitor default",
+  async (visibility) => {
+    const t = setup("solo", visibility, "guest");
+    await t.ready();
+    await t.managedAdd();
+    expect(t.publish).toHaveBeenCalledOnce();
+    expect(t.publish.mock.calls[0]?.[0].tags).toContainEqual([
+      "role",
+      "member",
+    ]);
+    expect(t.session.channels.list().channels[0]?.members).toContain(
+      t.person.pubkey,
+    );
+  },
+);
 it.each(["member", "guest"] as const)(
   "leaves the public %s admission default to the relay",
   async (joinRole) => {

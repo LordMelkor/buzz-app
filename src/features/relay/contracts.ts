@@ -43,7 +43,7 @@ export type ChannelSummary = Readonly<{
   hidden?: true;
   /** Relay-authored metadata; absent while metadata is unavailable. */
   /** `system` (NIP-CL): access control for app data; never in list().
-   * `session`: a private stream with the Solo label (`SOLO_LABEL`). */
+   * `solo`: a stream with the Solo label (`SOLO_LABEL`), regardless of visibility. */
   channelType?: "stream" | "forum" | "dm" | "solo" | "system";
   /** Relay-authored channel visibility; private channels use restricted presentation. */
   private?: true;

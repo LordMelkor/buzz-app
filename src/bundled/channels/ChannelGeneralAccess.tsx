@@ -25,7 +25,12 @@ import {
 } from "../../shared/design-system/icons";
 import styles from "./ChannelMembersDialog.module.css";
 import { privacyConsequence } from "./ChannelPrivacyConfirmation";
-import { soloLabels } from "../../features/solo/labels";
+import { SOLO_ACCESS_DISCLOSURE, soloLabels } from "../../features/solo/labels";
+import {
+  generalAccessOptions,
+  generalAccessPolicy,
+  generalAccessValue,
+} from "../../features/channels/general-access";
 
 /** General access uses the same signed save/readback owner as channel details.
  * Each policy is confirmed once, like the individual member roles. */
@@ -34,12 +39,16 @@ export function ChannelGeneralAccess({
   recovery,
   channelId,
   channel,
+  mayHaveGuestMembers = true,
 }: {
   capability: ChannelDetailsCapability;
   recovery?: RelayRecovery | undefined;
   channelId: string;
   channel?: ChannelSummary;
+  /** False only when the signed member-role snapshot verifies no Guests. */
+  mayHaveGuestMembers?: boolean;
 }) {
+  const place = channel?.channelType === "solo" ? "chat" : "channel";
   const Icon =
     channel?.visibility === "public"
       ? channel.joinRole === "guest"
@@ -68,7 +77,7 @@ export function ChannelGeneralAccess({
               {channel.visibility === "public"
                 ? "Anyone in the community can read."
                 : channel.visibility === "private"
-                  ? "Only channel members can read."
+                  ? `Only ${place} members can read.`
                   : "Reading access could not be confirmed."}
             </p>
             <p className="text-caption text-subtle">
@@ -87,6 +96,7 @@ export function ChannelGeneralAccess({
       capability={capability}
       recovery={recovery}
       channelId={channelId}
+      mayHaveGuestMembers={mayHaveGuestMembers}
     />
   );
 }
@@ -95,10 +105,12 @@ function ChannelGeneralAccessEditor({
   capability,
   recovery,
   channelId,
+  mayHaveGuestMembers,
 }: {
   capability: ChannelDetailsCapability;
   recovery: RelayRecovery | undefined;
   channelId: string;
+  mayHaveGuestMembers: boolean;
 }) {
   const attempt = useSyncExternalStore(capability.subscribe, () =>
     capability.snapshot(channelId),
@@ -152,13 +164,7 @@ function ChannelGeneralAccessEditor({
   const locked = loading || pending || !!attempt || !base?.canEdit;
   const solo = soloLabels(base?.labels);
   const place = solo ? "chat" : "channel";
-  const access = !base
-    ? ""
-    : base.visibility === "private"
-      ? "private"
-      : base.joinRole === "guest"
-        ? "view-only"
-        : "public";
+  const access = base ? generalAccessValue(base) : "";
   const Icon =
     access === "public"
       ? GlobeIcon
@@ -167,23 +173,16 @@ function ChannelGeneralAccessEditor({
         : LockIcon;
   function choose(value: string) {
     if (locked || !base) return;
-    if (
-      value === access ||
-      !["private", "public", "view-only"].includes(value) ||
-      (solo && value === "public")
-    )
-      return;
+    const option = Object.values(generalAccessOptions).find(
+      (option) => option.value === value,
+    );
+    if (value === access || !option || (solo && value === "public")) return;
     origin.current =
       section.current?.querySelector<HTMLElement>('[role="combobox"]') ?? null;
     setError("");
-    // Private preserves even an older Guest admission default. Public choices
-    // set both fields explicitly so the label always describes the saved policy.
     setChoice({
       ...base,
-      visibility: value === "private" ? "private" : "public",
-      ...(value === "private"
-        ? {}
-        : { joinRole: value === "view-only" ? "guest" : "member" }),
+      ...generalAccessPolicy(option.value, base.joinRole),
     });
   }
   async function apply(check = false) {
@@ -289,33 +288,22 @@ function ChannelGeneralAccessEditor({
                 {
                   label: "",
                   options: [
-                    ...(!solo
-                      ? [
-                          {
-                            value: "public",
-                            label: "Public",
-                            description:
-                              "Anyone in the community can participate.",
-                            leading: <GlobeIcon size={20} />,
-                          },
-                        ]
-                      : []),
                     {
-                      value: "view-only",
-                      label: "View only",
-                      description: "Anyone in the community can read.",
+                      ...generalAccessOptions.public,
+                      leading: <GlobeIcon size={20} />,
+                    },
+                    {
+                      ...generalAccessOptions["view-only"],
                       leading: <EyeIcon size={20} />,
                     },
-                  ],
+                  ].filter((option) => !solo || option.value !== "public"),
                 },
                 {
                   label: "",
                   separator: true,
                   options: [
                     {
-                      value: "private",
-                      label: "Private",
-                      description: "Only people you add can access.",
+                      ...generalAccessOptions.private,
                       leading: <LockIcon size={20} />,
                     },
                   ],
@@ -329,14 +317,26 @@ function ChannelGeneralAccessEditor({
           <AlertDialog
             title="Change general access?"
             description={[
-              choice.visibility !== base.visibility
-                ? solo
-                  ? choice.visibility === "public"
-                    ? "Everyone in this community will be able to view this chat’s full history."
-                    : "Only chat members will have access."
-                  : privacyConsequence(choice.visibility)
+              solo && choice.visibility === "public"
+                ? SOLO_ACCESS_DISCLOSURE
+                : choice.visibility !== base.visibility
+                  ? solo
+                    ? "Only chat members will have access."
+                    : privacyConsequence(choice.visibility)
+                  : "",
+              solo &&
+              access === "view-only" &&
+              choice.visibility === "private" &&
+              mayHaveGuestMembers
+                ? "People who joined while it was View only are members and keep reading until you remove them in People."
                 : "",
-              choice.visibility === "public"
+              solo &&
+              access === "public" &&
+              choice.visibility === "public" &&
+              choice.joinRole === "guest"
+                ? "People already in the chat keep their access."
+                : "",
+              !solo && choice.visibility === "public"
                 ? `New people will ${choice.joinRole === "guest" ? "only be able to view" : "be able to participate"}. People already in the ${place} keep their access.`
                 : "",
             ]
