@@ -2,6 +2,7 @@ import { assert, afterEach, expect, it, vi } from "vitest";
 import {
   connectBrokerTransport,
   connectSignedTransport,
+  acceptPublish,
   acceptReadStatePublish,
 } from "./transport";
 import {
@@ -135,6 +136,102 @@ it("distinguishes explicit rejection from invalid or missing delivery receipts",
   await expect(
     transport.writer.publish(event, new AbortController().signal),
   ).rejects.toBeInstanceOf(PublishRejected);
+});
+const refusal = (status: number, body: unknown) =>
+  acceptPublish(Response.json(body, { status }), "id").catch(
+    (reason: unknown) => reason,
+  );
+it.each([
+  [
+    'invalid: an open channel named "Launch" already exists',
+    'An open channel named "Launch" already exists',
+  ],
+  ["blocked:   you are banned", "You are banned"],
+  ["restricted: not a channel member", "Not a channel member"],
+  ["error: internal failure", "Internal failure"],
+  ["pow: difficulty too low", "Difficulty too low"],
+  ["duplicate: already accepted", "Already accepted"],
+  ["Plain relay text", "Plain relay text"],
+  // Prefixes outside the stripped set carry meaning for writers: left as sent.
+  ["conflict: stale prev", "conflict: stale prev"],
+  ["rate-limited: slow down", "rate-limited: slow down"],
+])(
+  "shows the relay's refusal text without its NIP-01 prefix: %s",
+  async (error, message) => {
+    const result = await refusal(400, { error });
+    expect(result).toBeInstanceOf(PublishRejected);
+    expect(result).toMatchObject({ message, reason: error });
+  },
+);
+it.each([
+  [400, {}],
+  [403, { error: 7 }],
+  [422, { error: "" }],
+  [400, { error: "invalid:  " }],
+  [404, "not an object"],
+])(
+  "falls back to the status summary when a %s refusal has no usable text: %j",
+  async (status, body) => {
+    const result = await refusal(status, body);
+    expect(result).toBeInstanceOf(PublishRejected);
+    expect(result).toHaveProperty(
+      "message",
+      `Relay rejected the message (${status})`,
+    );
+  },
+);
+it("carries the relay's refusal text through both publish transports", async () => {
+  const error = 'invalid: an open channel named "Launch" already exists';
+  const shown = 'An open channel named "Launch" already exists';
+  const event = signed(key, { kind: 9, content: "hello", tags: [["h", "c"]] });
+  const publishes = async (
+    transport: Awaited<ReturnType<typeof connectSignedTransport>>,
+  ) => {
+    assert.exists(transport.writer);
+    return transport.writer
+      .publish(event, new AbortController().signal)
+      .catch((reason: unknown) => reason);
+  };
+  // Admission reduces an upstream body to a status summary unless the
+  // publish keeps the relay's refusal.
+  const signedTransport = await connectSignedTransport(
+    hostSigner(key),
+    "https://relay.test",
+    "relay",
+  );
+  vi.stubGlobal("fetch", async () => Response.json({ error }, { status: 400 }));
+  expect(await publishes(signedTransport)).toMatchObject({
+    message: shown,
+    reason: error,
+  });
+  // Other statuses stay a status summary, never upstream text.
+  vi.stubGlobal("fetch", async () => Response.json({ error }, { status: 500 }));
+  expect(await publishes(signedTransport)).toHaveProperty(
+    "message",
+    "Relay delivery could not be confirmed (500)",
+  );
+  vi.stubGlobal("fetch", async (url: string) =>
+    url.endsWith("/session")
+      ? Response.json({
+          viewer: key.pubkey,
+          relayAuthor: "relay",
+          writeKinds: [9],
+        })
+      : Response.json({ error }, { status: 400 }),
+  );
+  expect(await publishes(await connectBrokerTransport())).toMatchObject({
+    message: shown,
+    reason: error,
+  });
+});
+it("keeps the conflict refusal and the raw reason for classifying writers", async () => {
+  const conflict = await refusal(409, { error: "invalid: whatever" });
+  expect(conflict).toHaveProperty(
+    "message",
+    "conflict: the relay state changed; reload before writing again",
+  );
+  const refused = await refusal(400, { error: "restricted: nope" });
+  expect(refused).toHaveProperty("reason", "restricted: nope");
 });
 it.each([
   [

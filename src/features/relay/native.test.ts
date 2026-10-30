@@ -351,7 +351,7 @@ it.each([true, false])(
           outbox.snapshot().find((item) => item.event.id === id),
         ).toMatchObject({
           delivery: accepted ? "accepted" : "failed",
-          ...(accepted ? {} : { error: "Relay rejected the message (403)" }),
+          ...(accepted ? {} : { error: "Registration denied" }),
         }),
       );
       const publishes = requests.filter(
