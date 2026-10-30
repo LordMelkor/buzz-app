@@ -151,10 +151,11 @@ it.each([
   ["error: internal failure", "Internal failure"],
   ["pow: difficulty too low", "Difficulty too low"],
   ["duplicate: already accepted", "Already accepted"],
-  ["Plain relay text", "Plain relay text"],
-  // Prefixes outside the stripped set carry meaning for writers: left as sent.
+  ["invalid:  ", "Relay rejected the message (400)"],
+  // Prefixes writers match on carry meaning: left as sent.
   ["conflict: stale prev", "conflict: stale prev"],
   ["rate-limited: slow down", "rate-limited: slow down"],
+  ["auth-required: sign in", "auth-required: sign in"],
 ])(
   "shows the relay's refusal text without its NIP-01 prefix: %s",
   async (error, message) => {
@@ -167,10 +168,14 @@ it.each([
   [400, {}],
   [403, { error: 7 }],
   [422, { error: "" }],
-  [400, { error: "invalid:  " }],
   [404, "not an object"],
+  // A gateway or VPN edge can answer these statuses with JSON `{error}`; text
+  // without a NIP-01 prefix is not the relay's, so it is never shown.
+  [403, { error: "Forbidden by proxy" }],
+  [400, { error: "Plain relay text" }],
+  [401, { error: "Relay request failed (401)" }],
 ])(
-  "falls back to the status summary when a %s refusal has no usable text: %j",
+  "falls back to the status summary when a %s refusal has no relay text: %j",
   async (status, body) => {
     const result = await refusal(status, body);
     expect(result).toBeInstanceOf(PublishRejected);
@@ -204,6 +209,19 @@ it("carries the relay's refusal text through both publish transports", async () 
     message: shown,
     reason: error,
   });
+  // Without relay text, admission's own summary must not replace the
+  // status summary `acceptPublish` shows.
+  for (const [status, body] of [
+    [400, {}],
+    [400, { error: 7 }],
+    [403, { error: "Forbidden by proxy" }],
+  ] as const) {
+    vi.stubGlobal("fetch", async () => Response.json(body, { status }));
+    expect(await publishes(signedTransport)).toHaveProperty(
+      "message",
+      `Relay rejected the message (${status})`,
+    );
+  }
   // Other statuses stay a status summary, never upstream text.
   vi.stubGlobal("fetch", async () => Response.json({ error }, { status: 500 }));
   expect(await publishes(signedTransport)).toHaveProperty(
