@@ -1873,7 +1873,7 @@ it.each(["acquisition", "authorization"])(
       fireEvent.click(
         screen.getByRole("button", { name: "Browse plugin folder" }),
       );
-      await screen.findByRole("dialog", { name: "Review plugin access" });
+      await screen.findByRole("dialog", { name: /^Review .+ access$/ });
       await act(async () => {
         release();
         await gate;
@@ -1953,3 +1953,380 @@ it.each(["folder", "git"])(
     if (source === "git") expect(authorizeGit).toHaveBeenCalledTimes(3);
   },
 );
+
+it("previews a linked Git source once and waits for install confirmation", async () => {
+  const source = {
+    repository: "https://github.com/example/plugin",
+    reference: "release/stable",
+  };
+  const preview: ImportPreview = {
+    token: "linked-preview",
+    source: source.repository,
+    commit: "a".repeat(40),
+    warnings: [],
+    candidates: [
+      {
+        path: ".",
+        manifest: {
+          id: "example.plugin",
+          name: "Example",
+          apiVersion: 1,
+          host: { files: true },
+        },
+        revision: "one",
+      },
+    ],
+  };
+  const git = vi.fn(async () => preview);
+  const installImport = vi.fn(async () => true);
+  const manager = {
+    imports: { git, discard: vi.fn(async () => {}) },
+    installImport,
+    change: vi.fn(async () => {}),
+  } as unknown as PluginManager;
+  const view = render(
+    <StrictMode>
+      <PluginImport
+        initialGit={source}
+        plugins={manager}
+        catalog={{ profile: "test", location: "test", plugins: [] }}
+        busy={false}
+      />
+    </StrictMode>,
+  );
+  const dialog = screen.getByRole("dialog", { name: "Add a plugin" });
+  expect(within(dialog).getByLabelText("Git or GitHub repository")).toHaveValue(
+    source.repository,
+  );
+  expect(within(dialog).getByLabelText("Branch or tag (optional)")).toHaveValue(
+    source.reference,
+  );
+  expect(installImport).not.toHaveBeenCalled();
+  const install = await screen.findByRole("button", { name: "Install plugin" });
+  expect(git).toHaveBeenCalledExactlyOnceWith(
+    source.repository,
+    source.reference,
+  );
+  expect(screen.getByRole("region", { name: "Computer access" })).toBeVisible();
+  expect(installImport).not.toHaveBeenCalled();
+  await userEvent.click(install);
+  await waitFor(() =>
+    expect(installImport).toHaveBeenCalledExactlyOnceWith(
+      "linked-preview",
+      ".",
+    ),
+  );
+  view.unmount();
+});
+
+it.each([true, false])(
+  "keeps the confirmed enable choice after a new link replaces the dialog (%s)",
+  async (enabled) => {
+    let finish!: (success: boolean) => void;
+    const installed = new Promise<boolean>((resolve) => {
+      finish = resolve;
+    });
+    const change = vi.fn(async () => {});
+    const onClosed = vi.fn();
+    const tokens = new Set<string>();
+    const git = vi.fn(async (repository: string) => {
+      tokens.add(repository);
+      return {
+        ...rememberedPreview,
+        token: repository,
+        candidates: rememberedPreview.candidates.slice(0, 1),
+      };
+    });
+    const discard = vi.fn(async (token: string) => {
+      tokens.delete(token);
+    });
+    const manager = {
+      imports: { git, discard },
+      installImport: vi.fn(async (token: string) => {
+        await installed;
+        return tokens.has(token);
+      }),
+      change,
+    } as unknown as PluginManager;
+    const props = {
+      plugins: manager,
+      catalog: { profile: "test", location: "test", plugins: [] },
+      busy: false,
+    };
+    const view = render(
+      <PluginImport
+        key="first"
+        onClosed={onClosed}
+        {...props}
+        initialGit={{
+          repository: "https://example.com/first.git",
+          reference: "",
+        }}
+      />,
+    );
+    const install = await screen.findByRole("button", {
+      name: "Install plugin",
+    });
+    if (!enabled)
+      await userEvent.click(
+        screen.getByRole("switch", { name: "Enable plugin" }),
+      );
+    await userEvent.click(install);
+    expect(manager.installImport).toHaveBeenCalledTimes(1);
+    view.rerender(
+      <PluginImport
+        key="second"
+        {...props}
+        initialGit={{
+          repository: "https://example.com/second.git",
+          reference: "",
+        }}
+      />,
+    );
+    await act(async () => {});
+    expect(discard).not.toHaveBeenCalled();
+    expect(git).toHaveBeenCalledTimes(1);
+    await act(async () => finish(true));
+    if (enabled)
+      expect(change).toHaveBeenCalledExactlyOnceWith(
+        "enable",
+        rememberedPreview.candidates[0]?.manifest.id,
+      );
+    else expect(change).not.toHaveBeenCalled();
+    expect(onClosed).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("keeps a late close bound to the replaced import", async () => {
+  let finish!: () => void;
+  const discarded = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const firstClosed = vi.fn();
+  const secondClosed = vi.fn();
+  const manager = {
+    imports: {
+      git: vi.fn(async () => ({
+        ...rememberedPreview,
+        candidates: [rememberedPreview.candidates[0]],
+      })),
+      discard: vi.fn(() => discarded),
+    },
+  } as unknown as PluginManager;
+  const props = {
+    plugins: manager,
+    catalog: { profile: "test", location: "test", plugins: [] },
+    busy: false,
+  };
+  const view = render(
+    <PluginImport
+      key="first"
+      {...props}
+      onClosed={firstClosed}
+      initialGit={{
+        repository: "https://example.com/first.git",
+        reference: "",
+      }}
+    />,
+  );
+  const review = await screen.findByRole("dialog", {
+    name: /^Review .+ access$/,
+  });
+  fireEvent.keyDown(review, { key: "Escape" });
+  expect(manager.imports?.discard).toHaveBeenCalledTimes(1);
+  view.rerender(
+    <PluginImport
+      key="second"
+      {...props}
+      onClosed={secondClosed}
+      initialGit={{
+        repository: "https://example.com/second.git",
+        reference: "",
+      }}
+    />,
+  );
+  await screen.findByRole("dialog", { name: /^Review .+ access$/ });
+  await act(async () => finish());
+  expect(firstClosed).toHaveBeenCalledTimes(1);
+  expect(secondClosed).not.toHaveBeenCalled();
+  expect(
+    screen.getByRole("dialog", { name: /^Review .+ access$/ }),
+  ).toBeVisible();
+});
+
+it("waits for an occupied native acquisition slot and previews the latest link", async () => {
+  let finish!: (preview: ImportPreview) => void;
+  const first = new Promise<ImportPreview>((resolve) => {
+    finish = resolve;
+  });
+  let acquiring = false;
+  const git = vi.fn(async (repository: string) => {
+    if (acquiring) throw new Error("Another import is in progress");
+    acquiring = true;
+    try {
+      return repository.endsWith("first.git")
+        ? await first
+        : {
+            ...rememberedPreview,
+            token: "latest",
+            candidates: rememberedPreview.candidates.slice(0, 1),
+          };
+    } finally {
+      acquiring = false;
+    }
+  });
+  const discard = vi.fn(async () => {});
+  const manager = { imports: { git, discard } } as unknown as PluginManager;
+  const props = {
+    plugins: manager,
+    catalog: { profile: "test", location: "test", plugins: [] },
+    busy: false,
+  };
+  const source = (name: string) => ({
+    repository: `https://example.com/${name}.git`,
+    reference: "",
+  });
+  const view = render(
+    <PluginImport key="first" {...props} initialGit={source("first")} />,
+  );
+  await waitFor(() => expect(git).toHaveBeenCalledTimes(1));
+  view.rerender(
+    <PluginImport key="second" {...props} initialGit={source("second")} />,
+  );
+  await screen.findByRole("status");
+  view.rerender(
+    <PluginImport key="latest" {...props} initialGit={source("latest")} />,
+  );
+  await act(async () =>
+    finish({
+      ...rememberedPreview,
+      candidates: rememberedPreview.candidates.slice(0, 1),
+    }),
+  );
+  await screen.findByRole("dialog", { name: /^Review .+ access$/ });
+  expect(git.mock.calls.map(([repository]) => repository)).toEqual([
+    "https://example.com/first.git",
+    "https://example.com/latest.git",
+  ]);
+  expect(discard).toHaveBeenCalledWith("remembered");
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it.each(["Escape", "Close"])(
+  "abandons a linked preview with %s and discards its late result",
+  async (action) => {
+    let finish!: (preview: ImportPreview) => void;
+    const gate = new Promise<ImportPreview>((resolve) => {
+      finish = resolve;
+    });
+    const git = vi
+      .fn()
+      .mockReturnValueOnce(gate)
+      .mockResolvedValue({
+        ...rememberedPreview,
+        candidates: rememberedPreview.candidates.slice(0, 1),
+      });
+    const discard = vi.fn(async () => {});
+    const installImport = vi.fn();
+    const onClosed = vi.fn();
+    const manager = {
+      imports: { git, discard },
+      installImport,
+    } as unknown as PluginManager;
+    const props = {
+      plugins: manager,
+      catalog: { profile: "test", location: "test", plugins: [] },
+      busy: false,
+    };
+    const view = render(
+      <PluginImport
+        key="first"
+        {...props}
+        onClosed={onClosed}
+        initialGit={{
+          repository: "https://example.com/first.git",
+          reference: "",
+        }}
+      />,
+    );
+    try {
+      await waitFor(() => expect(git).toHaveBeenCalledTimes(1));
+      const dialog = screen.getByRole("dialog", { name: "Add a plugin" });
+      expect(
+        within(dialog).getByRole("button", { name: "Close" }),
+      ).toBeEnabled();
+      if (action === "Escape") fireEvent.keyDown(dialog, { key: "Escape" });
+      else
+        await userEvent.click(
+          within(dialog).getByRole("button", { name: "Close" }),
+        );
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(onClosed).toHaveBeenCalledTimes(1);
+      finish({
+        ...rememberedPreview,
+        candidates: rememberedPreview.candidates.slice(0, 1),
+      });
+      await waitFor(() => expect(discard).toHaveBeenCalledWith("remembered"));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(installImport).not.toHaveBeenCalled();
+      view.rerender(
+        <PluginImport
+          key="second"
+          {...props}
+          initialGit={{
+            repository: "https://example.com/second.git",
+            reference: "",
+          }}
+        />,
+      );
+      await screen.findByRole("dialog", { name: /^Review .+ access$/ });
+      expect(git).toHaveBeenCalledTimes(2);
+    } finally {
+      finish({ ...rememberedPreview, candidates: [] });
+    }
+  },
+);
+
+it("keeps a manual acquisition protected after returning from a linked preview", async () => {
+  let finish!: (preview: ImportPreview) => void;
+  const gate = new Promise<ImportPreview>((resolve) => {
+    finish = resolve;
+  });
+  const preview = {
+    ...rememberedPreview,
+    candidates: rememberedPreview.candidates.slice(0, 1),
+  };
+  const git = vi.fn().mockResolvedValueOnce(preview).mockReturnValueOnce(gate);
+  const manager = {
+    imports: { git, discard: vi.fn(async () => {}) },
+  } as unknown as PluginManager;
+  render(
+    <PluginImport
+      initialGit={{
+        repository: "https://example.com/plugin.git",
+        reference: "",
+      }}
+      plugins={manager}
+      catalog={{ profile: "test", location: "test", plugins: [] }}
+      busy={false}
+    />,
+  );
+  try {
+    const review = await screen.findByRole("dialog", {
+      name: /^Review .+ access$/,
+    });
+    await userEvent.click(within(review).getByRole("button", { name: "Back" }));
+    const dialog = screen.getByRole("dialog", { name: "Add a plugin" });
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Find plugins" }),
+    );
+    await waitFor(() => expect(git).toHaveBeenCalledTimes(2));
+    expect(
+      within(dialog).getByRole("button", { name: "Close" }),
+    ).toBeDisabled();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(dialog).toBeVisible();
+  } finally {
+    await act(async () => finish(preview));
+  }
+});

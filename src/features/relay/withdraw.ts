@@ -1,9 +1,8 @@
 import type { Outbox } from "./outbox";
 
-/** Removes a queued operation once its delivery attempt has ended; the outbox
- * keeps one that is still being attempted. */
-export function withdraw(
-  outbox: Pick<Outbox, "snapshot" | "subscribe" | "dismiss">,
+/** Settles once a queued operation's delivery attempt has ended. */
+export function attemptEnded(
+  outbox: Pick<Outbox, "snapshot" | "subscribe">,
   id: string,
 ) {
   const attempting = () =>
@@ -17,5 +16,14 @@ export function withdraw(
       unsubscribe();
       resolve();
     });
-  }).then(() => outbox.dismiss(id));
+  });
+}
+
+/** Removes a queued operation once its delivery attempt has ended; the outbox
+ * keeps one that is still being attempted. */
+export function withdraw(
+  outbox: Pick<Outbox, "snapshot" | "subscribe" | "dismiss">,
+  id: string,
+) {
+  return attemptEnded(outbox, id).then(() => outbox.dismiss(id));
 }

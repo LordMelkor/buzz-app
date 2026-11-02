@@ -38,6 +38,8 @@ import {
 import type { ComposerInputElement } from "../messages/composer-dom";
 import {
   attachmentDraft,
+  attachmentDraftCount,
+  clearAttachmentDraft,
   transferAttachmentDraft,
   type AttachmentDraft,
 } from "../messages/attachment-draft";
@@ -86,6 +88,31 @@ function dropOtherAgentTag(scope: string, key: string, agent?: string) {
     writeView(scope, key, null);
 }
 
+/** Whether New chat holds nothing of the person's since a start cleared it:
+ * tags at most, no files, and its settings and workspace untouched. */
+function blankNewChat(session: RelaySession, scope: string, key: string) {
+  const saved = mentionDraft(readView<unknown>(scope, `${key}:new-draft`, ""));
+  return (
+    (!composerMarkdown(saved).trim() || addressingOnly(saved)) &&
+    !attachmentDraftCount(session, `${scope}:${key}:new-draft`) &&
+    readView(scope, `${key}:settings`, null) === null &&
+    readView(scope, `${key}:new-project`, null) === null
+  );
+}
+/** Open New chats. Asked whether they hold work of the person's that view
+ * state does not show: a draft that couldn't be saved, or Settings being
+ * edited. Told when a refused start gives their draft back, since their
+ * composer reads it only as it mounts. */
+const openNewChats = new Set<{
+  scope: string;
+  key: string;
+  editing(): boolean;
+  restored(): void;
+}>();
+/** The prompt last given back to each New chat, as saved, so a later refusal
+ * that finds it still there can say so. */
+const restoredPrompts = new Map<string, string>();
+
 export function SoloDraft({
   session,
   scope,
@@ -107,8 +134,10 @@ export function SoloDraft({
   session: RelaySession;
   scope: string;
   onStarted: (id: string) => void;
-  /** The started chat `id` was never made, and what was sent in it is lost;
-   * `message` says why. */
+  /** The started chat `id` was never made; `message` says why, and whether
+   * what was sent in it went back to New chat. It does unless a draft was
+   * begun there since (an earlier refused prompt included) or it can't be
+   * saved on this device; its settings may be saved only in part. */
   onFailed?: ((id: string, message: string) => void) | undefined;
   projectId?: string | undefined;
 }) {
@@ -171,6 +200,25 @@ export function SoloDraft({
     // A returning draft resumes at its end, not before its first tag.
     input?.setSelectionRange(input.value.length, input.value.length);
   }, [focusRequest]);
+  // The remount replaces the editor; one that had the caret keeps it.
+  const [restored, setRestored] = useState({ count: 0, focus: false });
+  // Whether the composer holds text it couldn't save.
+  const unsaved = useRef(false);
+  useEffect(() => {
+    const chat = {
+      scope,
+      key: draftKey,
+      editing: () => settingsOpen || unsaved.current,
+      restored() {
+        const focus = !!prompt.current?.contains(document.activeElement);
+        setRestored(({ count }) => ({ count: count + 1, focus }));
+      },
+    };
+    openNewChats.add(chat);
+    return () => {
+      openNewChats.delete(chat);
+    };
+  }, [scope, draftKey, settingsOpen]);
   const available = session.channelWrites.available;
   const [channelId] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
@@ -278,6 +326,7 @@ export function SoloDraft({
       // the start instead of leaving an empty chat behind.
       const uploaded = await files.prepareForSend(new AbortController().signal);
       if (!mounted.current) return;
+      const attached = files.snapshot();
       // The chat lists at once, in its workspace, and its message goes out
       // behind the create, so the agents start on it without waiting for the
       // relay. Its Canvas is saved once the chat exists; until then local
@@ -332,15 +381,73 @@ export function SoloDraft({
       // A linked draft is reused for its source: clear it to absent so the
       // next start from that source seeds its link again.
       writeView(scope, `${draftKey}:new-draft`, source ? null : "");
+      writeView(scope, `${draftKey}:new-draft:agents`, null);
       writeView(scope, `${draftKey}:new-project`, null);
       onStarted(channelId);
       // Only a start that made no chat ends here; the chat and its messages
-      // are dropped (see channelWrites.start). Any other miss leaves the chat
-      // listed, with its messages' own Retry.
+      // are dropped (see channelWrites.start), and what was sent returns to a
+      // New chat still blank. Any other miss leaves the chat listed, with its
+      // messages' own Retry.
       void ready.catch((reason: unknown) => {
         if (!(reason instanceof ChatNotStarted)) return;
         writeView(scope, `draft:${channelId}`, null);
-        onFailed?.(channelId, `Couldn't start "${name}": ${reason.message}`);
+        clearAttachmentDraft(session, `${scope}:draft:${channelId}`);
+        const open = [...openNewChats].filter(
+          (chat) => chat.scope === scope && chat.key === draftKey,
+        );
+        const blank =
+          blankNewChat(session, scope, draftKey) &&
+          !open.some((chat) => chat.editing());
+        // The text first: when it can't be saved, an open New chat may hold
+        // unsaved text of its own, so nothing else is given back.
+        const returned =
+          blank && writeView(scope, `${draftKey}:new-draft`, draft);
+        // What else could not be saved: the toast says so, since a retry
+        // would otherwise silently use the defaults instead.
+        const missing: string[] = [];
+        const returnedTo = `${scope}\n${draftKey}`;
+        if (returned) {
+          restoredPrompts.set(returnedTo, JSON.stringify(draft));
+          if (source && !writeView(scope, draftKey, source))
+            missing.push("link");
+          if (!writeView(scope, `${draftKey}:settings`, draftSettings))
+            missing.push("settings");
+          if (!writeView(scope, `${draftKey}:new-project`, project))
+            missing.push("workspace");
+          // The pill's agents, when it routed the send; the composer reads
+          // them as it mounts. Tags in the text carry their own.
+          if (
+            addressed &&
+            !draft.recipients.length &&
+            !writeView(scope, `${draftKey}:new-draft:agents`, addressed)
+          )
+            missing.push("agents");
+          attachmentDraft(
+            session,
+            `${scope}:${draftKey}:new-draft`,
+            channelId,
+            true,
+          ).adopt(attached);
+          for (const chat of open) chat.restored();
+        }
+        const why = /[.!?]$/.test(reason.message)
+          ? reason.message
+          : `${reason.message}.`;
+        const earlier = restoredPrompts.get(returnedTo);
+        const outcome = returned
+          ? missing.length
+            ? `Your message is back in New chat, but its ${new Intl.ListFormat(
+                undefined,
+                { type: "conjunction" },
+              ).format(missing)} could not be saved on this device.`
+            : "Your message is back in New chat."
+          : blank
+            ? "Your message could not be saved on this device."
+            : earlier !== undefined &&
+                viewRevision(scope, `${draftKey}:new-draft`) === earlier
+              ? "New chat holds an earlier message that couldn't be sent, so this one was not restored."
+              : "New chat has a newer draft, so your message was not restored.";
+        onFailed?.(channelId, `Couldn't start "${name}": ${why} ${outcome}`);
       });
     } catch (reason) {
       if (mounted.current)
@@ -353,6 +460,8 @@ export function SoloDraft({
   const composer = (
     <div id="new-chat-prompt" ref={prompt}>
       <MessageComposer
+        key={restored.count}
+        focusRequest={restored.focus ? restored.count : 0}
         chatPresentation
         ownSoloConversation
         session={session}
@@ -392,6 +501,9 @@ export function SoloDraft({
           locked: busy,
           disabled: busy || !available,
           attachments: true,
+          unsaved: (held) => {
+            unsaved.current = held;
+          },
           submit: (draft, files, addressed) => {
             void start(draft, files, addressed);
           },

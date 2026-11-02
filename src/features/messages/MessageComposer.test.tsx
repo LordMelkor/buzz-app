@@ -9467,6 +9467,26 @@ it("leaves active message-edit content alone and reconciles the draft on return"
   expect(h.messages.send).not.toHaveBeenCalled();
 });
 
+it.each([
+  ["without", undefined],
+  ["with", vi.fn()],
+])("saves a submission draft %s an unsaved listener", (_, unsaved) => {
+  const h = mount({
+    submission: {
+      draftKey: "new-draft",
+      locked: false,
+      disabled: false,
+      unsaved,
+      submit: vi.fn(),
+    },
+  });
+  h.fill("Not sent yet");
+  expect(readView("scope", "new-draft", null)).toMatchObject({
+    text: "Not sent yet",
+  });
+  if (unsaved) expect(unsaved).toHaveBeenLastCalledWith(false);
+});
+
 it("does not apply ordinary draft reconciliation to submission-owned recovery", () => {
   const submit = vi.fn();
   const h = mount({

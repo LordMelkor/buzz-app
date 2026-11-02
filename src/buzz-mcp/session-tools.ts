@@ -15,6 +15,11 @@ import {
 } from "./attention";
 import type { BuzzClient, Context } from "./client";
 import {
+  callSoloWorkerTool,
+  isSoloWorkerTool,
+  SOLO_WORKER_TOOLS,
+} from "./solo-worker";
+import {
   callTool,
   captureToolBody,
   type Reply,
@@ -55,7 +60,7 @@ export type BuzzSession = Readonly<{ tools: readonly Tool[] }>;
  * never needs replacing when attention is turned on or off: the attention
  * tools refuse calls while it is off, and `turnNote` says which it is. */
 export const BUZZ_SESSION: BuzzSession = Object.freeze({
-  tools: [...TOOLS, ...ATTENTION_TOOLS],
+  tools: [...TOOLS, ...ATTENTION_TOOLS, ...SOLO_WORKER_TOOLS],
 });
 
 const listed = ({ name, description, inputSchema }: AddedTool): Listed => ({
@@ -77,6 +82,7 @@ export const sessionTools = (
 ): readonly SessionTool[] => [
   ...TOOLS.map((tool) => ({ ...tool, load: "always" as const })),
   ...ATTENTION_TOOLS.map((tool) => ({ ...tool, load: "search" as const })),
+  ...SOLO_WORKER_TOOLS.map((tool) => ({ ...tool, load: "search" as const })),
   ...added.map((tool) => ({ ...listed(tool), load: "search" as const })),
 ];
 
@@ -86,7 +92,7 @@ export function sessionHint(added: readonly AddedTool[] = []) {
   const plugins = added.length
     ? ` and tools plugins add (${added.map((tool) => tool.name).join(", ")})`
     : "";
-  return `Read and act in Buzz as this agent. Search for the rest when you need them: your attention (Interests, event watches and timers; interest_set and watch_add say how they work)${plugins}.`;
+  return `Read and act in Buzz as this agent. Search for the rest when you need them: your attention (Interests, event watches and timers; interest_set and watch_add say how they work), Nexus workers an owner lets you run (solo_worker_connections)${plugins}.`;
 }
 
 /** Changes when the added tools change, so a session that keeps the list it
@@ -175,6 +181,7 @@ async function dispatchSessionTool(
 ): Promise<Reply> {
   const tool = added.find((tool) => tool.name === name);
   if (tool) return tool.call(client, context, args);
+  if (isSoloWorkerTool(name)) return callSoloWorkerTool(client, name, args);
   if (!isAttentionTool(name)) return callTool(client, context, name, args);
   const { attention } = client;
   if (!attention) throw new Error(`No tool ${name}`);

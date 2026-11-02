@@ -3,9 +3,15 @@ import {
   parseEntityLink,
   type EntityRoute,
 } from "../repos/routes";
-import { parseOpenTarget, type NavigationScope } from "./targets";
+import {
+  parseGitPluginSource,
+  parseOpenTarget,
+  type GitPluginSource,
+  type NavigationScope,
+} from "./targets";
 
 type BuzzLink =
+  | { format: "plugin-install"; source: GitPluginSource }
   | { format: "removed" }
   | { format: "entity"; route: EntityRoute }
   | {
@@ -82,6 +88,24 @@ export function parseBuzzLink(href: string): BuzzLink | null {
       url.hash
     )
       return null;
+    if (url.hostname === "plugin-install") {
+      if (
+        (url.pathname !== "" &&
+          (url.pathname !== "/" ||
+            !/^buzz:\/\/plugin-install\/\?/i.test(href))) ||
+        ["repository", "ref"].some(
+          (key) => url.searchParams.getAll(key).length > 1,
+        )
+      )
+        return null;
+      return {
+        format: "plugin-install",
+        source: parseGitPluginSource({
+          repository: url.searchParams.get("repository") ?? "",
+          reference: url.searchParams.get("ref") ?? "",
+        }),
+      };
+    }
     if (
       url.hostname === "project" &&
       (url.pathname === "" || url.pathname === "/")
@@ -155,6 +179,13 @@ export function buzzLinkKind(href: string) {
 export function buzzLinkTarget(href: string, scope: NavigationScope) {
   const link = parseBuzzLink(href);
   if (!link) return null;
+  if (link.format === "plugin-install")
+    return parseOpenTarget({
+      version: 1,
+      kind: "settings",
+      section: "plugins",
+      pluginImport: link.source,
+    });
   if (link.format === "entity") return entityTarget(link.route, scope);
   if (link.format === "removed")
     return {

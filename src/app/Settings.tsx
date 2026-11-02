@@ -623,6 +623,7 @@ export function Settings({
   navigation,
   onSection,
   onProvider,
+  onPluginImportClosed,
   navigationPane = false,
   onDeparturePending,
   onUnsavedChange,
@@ -645,6 +646,7 @@ export function Settings({
     | undefined;
   onSection?: (section: string) => void;
   onProvider?: ((provider?: string) => void) | undefined;
+  onPluginImportClosed?: (() => void) | undefined;
   navigationPane?: boolean;
   onDeparturePending?: (pending: boolean) => void;
   onUnsavedChange?: (unsaved: boolean) => void;
@@ -1362,6 +1364,19 @@ export function Settings({
             )}
             {catalog ? (
               <PluginImport
+                key={
+                  navigation?.target.kind === "settings" &&
+                  navigation.target.pluginImport
+                    ? navigation.entryId
+                    : "add"
+                }
+                initialGit={
+                  navigation?.target.kind === "settings"
+                    ? navigation.target.pluginImport
+                    : undefined
+                }
+                requestSignal={navigation?.signal}
+                onClosed={() => onPluginImportClosed?.()}
                 actionTarget={pluginImportActions}
                 plugins={plugins}
                 catalog={catalog}

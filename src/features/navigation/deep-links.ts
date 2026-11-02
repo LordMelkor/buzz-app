@@ -58,6 +58,15 @@ export function deepLinkStep(
   const link = buzzLink(url);
   if (!link) return { fail: "invalid-target" };
   try {
+    if (link.format === "plugin-install")
+      return {
+        open: parseOpenTarget({
+          version: 1,
+          kind: "settings",
+          section: "plugins",
+          pluginImport: link.source,
+        }),
+      };
     if (!client.viewer || !client.selected) return { fail: "unavailable" };
     if (link.format === "removed")
       return {
@@ -112,6 +121,7 @@ export function bindDeepLinks(
     | {
         url: string;
         invite: InviteLink | null;
+        plugin: boolean;
         /** Names no destination, so no account or community binds it. */
         invalid: boolean;
         /** Read before the client was first ready: it launched the app. */
@@ -166,10 +176,11 @@ export function bindDeepLinks(
     const incoming = held;
     if (incoming.invalid) return reject(client, incoming.launch);
     if (
-      (incoming.viewer && incoming.viewer !== client.viewer) ||
-      (!incoming.invite &&
-        incoming.selected &&
-        incoming.selected !== client.selected)
+      !incoming.plugin &&
+      ((incoming.viewer && incoming.viewer !== client.viewer) ||
+        (!incoming.invite &&
+          incoming.selected &&
+          incoming.selected !== client.selected))
     ) {
       held = undefined;
       host.fail("denied");
@@ -206,6 +217,7 @@ export function bindDeepLinks(
     held.selected ??= client.selected;
     if (
       !held.invalid &&
+      !held.plugin &&
       ((held.viewer && held.viewer !== client.viewer) ||
         (!held.invite && held.selected && held.selected !== client.selected))
     ) {
@@ -236,11 +248,7 @@ export function bindDeepLinks(
             console.error("Could not read pending deep links", error);
           continue;
         }
-        if (
-          closed ||
-          epoch !== clientEpoch ||
-          started.id !== host.navigation.snapshot().attempt.id
-        )
+        if (closed || started.id !== host.navigation.snapshot().attempt.id)
           continue;
         let url: string | undefined;
         for (let index = urls.length - 1; index >= 0; index--) {
@@ -251,11 +259,14 @@ export function bindDeepLinks(
           }
         }
         if (url === undefined) continue;
+        const plugin = parseBuzzLink(url)?.format === "plugin-install";
+        if (epoch !== clientEpoch && !plugin) continue;
         const client = communities.snapshot();
         const invite = parseInviteLink(url);
         held = {
           url,
           invite,
+          plugin,
           invalid: !invite && !buzzLink(url),
           launch,
           viewer: client.viewer,
