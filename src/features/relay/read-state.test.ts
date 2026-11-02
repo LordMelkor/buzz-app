@@ -1348,28 +1348,38 @@ describe("publication fences", () => {
     expect(owner.snapshot().error).toContain("capacity reached");
   }, 30000);
 
-  it("does not publish before a complete snapshot establishes capacity", async () => {
+  it("takes a complete snapshot before the first send, and again after a gap", async () => {
     const f = fixture(T);
-    const owner = snapshotted(f, [])();
+    const full = snapshotted(f, foreign(f.key.pubkey, READ_SNAPSHOT_EVENTS))();
+    await full.ready;
+    await full.read("room", T, () => true);
+    // No refresh: flush itself must fetch the basis that refuses this send.
+    await full.flush();
+    expect(f.host.publish).not.toHaveBeenCalled();
+    expect(full.snapshot().error).toContain("capacity reached");
+    full.dispose();
+
+    const g = fixture(T);
+    const snapshots = vi.fn(() => g.reader.read());
+    const owner = snapshotted(
+      g,
+      [],
+    )({
+      reader: { ...g.reader, readStateSnapshot: snapshots },
+    });
     await owner.ready;
     await owner.read("room", T, () => true);
     await owner.flush();
-    expect(f.host.publish).not.toHaveBeenCalled();
-    expect(f.journal()?.revision).toBeGreaterThan(
-      f.journal()?.acceptedRevision ?? 0,
-    );
-    await owner.refresh();
-    await owner.flush();
-    expect(f.host.publish).toHaveBeenCalledTimes(1);
-    expect(ownerStatus(owner)).toBe("reconciled");
-    // A gap invalidates the basis until the next complete snapshot.
-    owner.stale();
     await owner.read("room", T + 1, () => true);
     await owner.flush();
-    expect(f.host.publish).toHaveBeenCalledTimes(1);
-    await owner.refresh();
+    expect(g.host.publish).toHaveBeenCalledTimes(2);
+    expect(snapshots).toHaveBeenCalledTimes(1);
+    // A gap invalidates the basis; the next send takes a fresh snapshot.
+    owner.stale();
+    await owner.read("room", T + 2, () => true);
     await owner.flush();
-    expect(f.host.publish).toHaveBeenCalledTimes(2);
+    expect(snapshots).toHaveBeenCalledTimes(2);
+    expect(g.host.publish).toHaveBeenCalledTimes(3);
     expect(ownerStatus(owner)).toBe("reconciled");
-  });
+  }, 30000);
 });

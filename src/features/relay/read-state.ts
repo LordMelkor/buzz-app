@@ -397,16 +397,16 @@ export function createReadState({
     }
   }
   const snapshotted = () => !!host?.communityId && !!reader.readStateSnapshot;
+  // Sizes of a complete snapshot, kept current by every later observation.
+  function basis(events: readonly RelayEvent[]) {
+    snapshotSizes = new Map(
+      events.map((event) => [dTag(event), encodedBytes(event)]),
+    );
+  }
   // A local projection, not a reservation: other devices can still grow the
   // snapshot concurrently. Checked before every send, replays included.
   function admit(events: readonly RelayEvent[]) {
-    if (!snapshotSizes) {
-      if (snapshotted())
-        throw new Error(
-          "Read-state snapshot capacity unknown; saved intent retained",
-        );
-      return;
-    }
+    if (!snapshotSizes) return;
     const projected = new Map(snapshotSizes);
     for (const event of events) projected.set(dTag(event), encodedBytes(event));
     let total = 2 + Math.max(0, projected.size - 1);
@@ -450,10 +450,7 @@ export function createReadState({
               );
         await ingest(events, signal, generation);
         if (closed || generation !== epoch) return;
-        if (complete)
-          snapshotSizes = new Map(
-            events.map((event) => [dTag(event), encodedBytes(event)]),
-          );
+        if (complete) basis(events);
         health({
           status:
             journal.pending || journal.revision > journal.acceptedRevision
@@ -581,6 +578,19 @@ export function createReadState({
           await save((current) => current, false);
           if (!journal) throw new Error("Saved read state unavailable");
           attemptedRevision = journal.revision;
+          // A restart or gap leaves no capacity basis: take one before any send.
+          if (!snapshotSizes && snapshotted() && reader.readStateSnapshot) {
+            const generation = epoch;
+            const observed = await reader.readStateSnapshot({
+              signal,
+              priority: "background",
+              fresh: true,
+            });
+            await ingest(observed, signal, generation);
+            // A gap during the fetch invalidates this basis too.
+            if (closed || generation !== epoch) return;
+            basis(observed);
+          }
           // Unknown outcomes retry exact bytes; only expired, rejected state may be renewed.
           if (journal.pending) {
             admit([journal.pending.event]);
