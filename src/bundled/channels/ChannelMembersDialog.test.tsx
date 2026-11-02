@@ -1364,7 +1364,8 @@ it("names the viewer and the members that fit a roster larger than the profile b
     ...members.slice(0, 1023),
     t.viewer.pubkey,
   ]);
-});
+  // Rendering 1,100 member rows takes about 2 s alone and more under CI load.
+}, 15_000);
 
 it.each(["pending", "failed"])(
   "shared refresh retries missing names without blocking verified additions while names are %s",

@@ -245,6 +245,24 @@ export function policyRelay({
             filters.flatMap((filter) => answer(communityOf(url), filter)),
           );
         }
+        if (filters.length === 2 && filters[1].kinds?.join() === "7") {
+          // A selected target's safety overlays and its reactions, one target.
+          const target = filters[0]["#e"];
+          expect(target).toEqual([expect.any(String)]);
+          expect(filters).toEqual([
+            { kinds: expect.any(Array), "#e": target, limit: 500 },
+            { kinds: [7], "#e": target, limit: 500 },
+          ]);
+          expect(filters[0].kinds.toSorted((a, b) => a - b)).toEqual([
+            5, 9005, 39005, 40003,
+          ]);
+          const community = communityOf(url);
+          for (const filter of filters)
+            report.queries.push({ community, filter, at: performance.now() });
+          return Response.json(
+            filters.flatMap((filter) => answer(community, filter)),
+          );
+        }
         if (filters.length === 2 && filters[0].kinds?.includes(39000)) {
           // Exact channel authority lookup, distinct from sidebar preferences.
           const ids = filters[0]["#d"];
