@@ -414,9 +414,17 @@ export function createReadState({
     );
   }
   // A local projection, not a reservation: other devices can still grow the
-  // snapshot concurrently. Checked before every send, replays included.
+  // snapshot concurrently. Checked before every send, replays included. A gap
+  // can drop the basis while a send awaits its signer or storage, so a missing
+  // basis refuses the send; the next flush takes a fresh snapshot first.
   function admit(events: readonly RelayEvent[]) {
-    if (!snapshotSizes) return;
+    if (!snapshotSizes) {
+      if (snapshotted())
+        throw new Error(
+          "Read-state capacity basis lost; saved intent retained",
+        );
+      return;
+    }
     const projected = new Map(snapshotSizes);
     for (const event of events) projected.set(dTag(event), encodedBytes(event));
     let total = 2 + Math.max(0, projected.size - 1);
@@ -727,6 +735,8 @@ export function createReadState({
                 revision: last ? revision : current.acceptedRevision,
               },
             }));
+            // Saving awaited storage: fence the send itself, not just the plan.
+            admit(signed.slice(index));
             await publishPending(signal);
           }
         });

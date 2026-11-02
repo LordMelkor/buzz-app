@@ -1492,4 +1492,48 @@ describe("publication fences", () => {
     expect(g.host.publish).toHaveBeenCalledTimes(3);
     expect(ownerStatus(owner)).toBe("reconciled");
   }, 30000);
+
+  it("refuses a send whose basis a gap dropped while signing or saving", async () => {
+    for (const gapIn of ["sign", "save"] as const) {
+      const f = fixture(T);
+      const snapshots = vi.fn(() => f.reader.read());
+      let gaps = 1;
+      const gap = () => gaps-- > 0 && owner.stale();
+      const owner = snapshotted(
+        f,
+        [],
+      )({
+        host: {
+          ...f.host,
+          communityId: "test-community",
+          sign: async (intent: ReadStateSigning) => {
+            const event = await f.host.sign(intent);
+            if (gapIn === "sign") gap();
+            return event;
+          },
+        },
+        reader: { ...f.reader, readStateSnapshot: snapshots },
+        storage: {
+          ...f.storage,
+          update: async (change) => {
+            const saved = await f.storage.update(change);
+            if (gapIn === "save" && saved.pending) gap();
+            return saved;
+          },
+        },
+      });
+      await owner.ready;
+      await owner.read("room", T, () => true);
+      await owner.flush();
+      expect(f.host.publish, gapIn).not.toHaveBeenCalled();
+      expect(owner.snapshot().error, gapIn).toContain("capacity basis lost");
+      expect(!!f.journal()?.pending, gapIn).toBe(gapIn === "save");
+      // The retained intent goes out only on a fresh complete snapshot.
+      await owner.flush();
+      expect(snapshots, gapIn).toHaveBeenCalledTimes(2);
+      expect(f.host.publish, gapIn).toHaveBeenCalledTimes(1);
+      expect(ownerStatus(owner), gapIn).toBe("reconciled");
+      owner.dispose();
+    }
+  }, 30000);
 });
