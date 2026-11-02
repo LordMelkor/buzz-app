@@ -1,7 +1,12 @@
 import { act, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach } from "vitest";
 import { readComposerDocument } from "./composer-document";
-import { type MentionDraft, mentionDraft } from "./mention-draft";
+import {
+  type DraftRecipient,
+  type MentionDraft,
+  type MentionRecipient,
+  mentionDraft,
+} from "./mention-draft";
 
 /** jsdom has no layout/hit testing. Supply only the browser APIs ProseMirror
  * needs to edit; geometry and native selection remain browser-test contracts. */
@@ -105,4 +110,30 @@ export function pasteRichDraft(input: HTMLElement, html: string) {
       },
     });
   });
+}
+
+/** Placeholder people with deterministic keys, for mention-heavy drafts. */
+export function placeholderPeople(count = 20): MentionRecipient[] {
+  return Array.from({ length: count }, (_, i) => ({
+    pubkey: (i + 1).toString(16).padStart(64, "0"),
+    name: `Member${i + 1}`,
+  }));
+}
+
+/** A long update naming people: every one of `people` is a recipient chip,
+ * two or three per sentence of placeholder prose. */
+export function longMentionDraft(people: readonly MentionRecipient[]) {
+  const words = "alpha bravo charlie delta echo foxtrot golf hotel".split(" ");
+  let text = "";
+  const recipients: DraftRecipient[] = [];
+  people.forEach((person, i) => {
+    if (i % 3 === 0) text += `${text ? ". " : ""}Thanks `;
+    else text += i % 3 === 1 ? ", " : " and ";
+    const start = text.length;
+    text += `@${person.name}`;
+    recipients.push({ ...person, start, end: text.length });
+    if (i % 3 === 2 || i === people.length - 1)
+      text += ` for ${words[i % words.length]} ${words[(i + 3) % words.length]}`;
+  });
+  return typedDraft(mentionDraft({ text, recipients }));
 }

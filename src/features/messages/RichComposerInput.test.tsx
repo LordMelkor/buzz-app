@@ -9,19 +9,31 @@ import { composerMarkdown } from "./composer-markdown";
 import type { ComposerSession } from "./composer-session";
 import {
   composerDOMFixture,
+  longMentionDraft,
   longRichDraft,
   pasteRichDraft,
+  placeholderPeople,
 } from "./composer-testing";
 import { mentionDraft, type MentionDraft } from "./mention-draft";
 import { MessageMarkdown } from "./MessageMarkdown";
 import { RichComposerInput } from "./RichComposerInput";
+import { bindNames } from "../identity-names/service";
+import type { Profile } from "../relay/contracts";
 import type { CustomEmoji } from "../relay/emoji";
 import { scanMarkdown } from "../relay/message-content";
+import { InlineChip } from "../../shared/design-system/ui/InlineChip";
 
 // Pass-through spies: the real renderer and parser run; the test counts them.
 vi.mock("./MessageMarkdown", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./MessageMarkdown")>();
   return { ...actual, MessageMarkdown: vi.fn(actual.MessageMarkdown) };
+});
+vi.mock("../../shared/design-system/ui/InlineChip", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("../../shared/design-system/ui/InlineChip")
+    >();
+  return { ...actual, InlineChip: vi.fn(actual.InlineChip) };
 });
 vi.mock("../relay/message-content", async (importOriginal) => {
   const actual =
@@ -32,18 +44,37 @@ vi.mock("../relay/message-content", async (importOriginal) => {
 composerDOMFixture();
 afterEach(cleanup);
 
-function mount() {
+function mount(initial?: MentionDraft) {
   const ref = createRef<ComposerInputElement>();
-  let draft = mentionDraft("");
+  let draft = initial ?? mentionDraft("");
   let commits = 0;
-  const profiles = new Map();
+  let profiles: ReadonlyMap<string, Profile> = new Map();
+  const profileListeners = new Set<() => void>();
   const channels = { status: "ready", channels: [] };
+  const library = { status: "ready", identities: [], definitions: [] };
   // A catalog snapshot, as MessageComposer passes it.
   const emoji: readonly CustomEmoji[] = [];
-  const session = {
+  const source = {
     media: (url: string) => url,
-    profiles: { snapshot: () => profiles, subscribe: () => () => {} },
+    profiles: {
+      snapshot: () => profiles,
+      subscribe: (listener: () => void) => {
+        profileListeners.add(listener);
+        return () => profileListeners.delete(listener);
+      },
+      ensure: async () => {},
+    },
+    agentLibrary: {
+      snapshot: () => library,
+      subscribe: () => () => {},
+      refresh: async () => {},
+      retain: () => () => {},
+    },
     channels: { list: () => channels, subscribeList: () => () => {} },
+  };
+  const session = {
+    ...source,
+    names: bindNames(source as never),
   } as unknown as ComposerSession;
   // Stands in for MessageComposer, which re-renders whenever the editor
   // reports a draft or a toolbar state.
@@ -77,10 +108,12 @@ function mount() {
   render(<Host />, { reactStrictMode: true });
   const input = ref.current;
   if (!input) throw new Error("Editor did not mount");
-  pasteRichDraft(input, longRichDraft());
-  expect(input.querySelectorAll("[data-source]")).toHaveLength(45);
-  expect(input.querySelectorAll("strong")).toHaveLength(9);
-  expect(input.querySelectorAll("li")).toHaveLength(38);
+  if (!initial) {
+    pasteRichDraft(input, longRichDraft());
+    expect(input.querySelectorAll("[data-source]")).toHaveLength(45);
+    expect(input.querySelectorAll("strong")).toHaveLength(9);
+    expect(input.querySelectorAll("li")).toHaveLength(38);
+  }
   return {
     input,
     draft: () => draft,
@@ -91,6 +124,19 @@ function mount() {
       [...input.querySelectorAll<HTMLElement>("[data-source]")].map(
         (chip) => [chip.dataset.source, chip.textContent] as const,
       ),
+    /** Each identity chip, as its kind and accessible name. */
+    identities: () =>
+      [
+        ...input.querySelectorAll<HTMLElement>("[data-source] .inline-chip"),
+      ].map(
+        (chip) => `${chip.dataset.kind}: ${chip.getAttribute("aria-label")}`,
+      ),
+    setProfiles(next: ReadonlyMap<string, Profile>) {
+      act(() => {
+        profiles = next;
+        for (const listener of profileListeners) listener();
+      });
+    },
   };
 }
 
@@ -158,4 +204,36 @@ it("deletes a chip without redrawing the chips after it, and restores it on undo
   expect(
     new Set(renders.mock.calls.map(([props]) => props.row.content)),
   ).toEqual(new Set([first[0]]));
+});
+
+it("types into a mention-heavy draft without redrawing its chips, which still follow profile changes", async () => {
+  const people = placeholderPeople(20);
+  const h = mount(longMentionDraft(people));
+  expect(h.identities()).toEqual(
+    people.map((person) => `person: Person ${person.name}`),
+  );
+  const text = h.draft().text;
+  act(() => {
+    h.input.focus();
+    h.input.setSelectionRange(text.length, text.length);
+  });
+  const user = userEvent.setup();
+  const renders = vi.mocked(InlineChip);
+  renders.mockClear();
+  for (const key of "xyz") {
+    const commits = h.commits();
+    await user.keyboard(key);
+    expect(h.commits() - commits).toBe(1);
+    expect(renders).not.toHaveBeenCalled();
+  }
+  expect(h.draft().text).toBe(`${text}xyz`);
+  expect(h.draft().recipients).toHaveLength(20);
+  // A profile's name and kind reach the chip, which redraws for them alone.
+  const [first] = people;
+  if (!first) throw new Error("No people");
+  h.setProfiles(new Map([[first.pubkey, { name: "Renamed", isAgent: true }]]));
+  expect(h.identities()).toEqual([
+    "agent: Agent Renamed",
+    ...people.slice(1).map((person) => `person: Person ${person.name}`),
+  ]);
 });

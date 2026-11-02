@@ -72,6 +72,39 @@ const TokenMarkdown = memo(function TokenMarkdown({
   );
 });
 
+/** Identity chip artwork from primitive props, so typing prose does not
+ * re-render every mention in a long draft. */
+const TokenChip = memo(function TokenChip({
+  kind,
+  id,
+  label,
+  qualifier,
+  reveal,
+}: {
+  kind: "agent" | "person";
+  id: string;
+  label: string;
+  qualifier: string | undefined;
+  reveal: boolean;
+}) {
+  return (
+    <InlineChip
+      address={{ kind, id }}
+      face={{ label, loading: false, resolved: true }}
+      qualifier={
+        qualifier
+          ? {
+              text: `· ${qualifier}`,
+              reveal,
+              accessibleLabel: `public key ending ${qualifier.split("").join(" ")}`,
+            }
+          : undefined
+      }
+      interactive={false}
+    />
+  );
+});
+
 /** Decorations never change source text or infer notification recipients from names. */
 export function RichComposerInput({
   draft,
@@ -328,30 +361,17 @@ export function RichComposerInput({
           end,
           editAsText: !!editAsText,
           content: identity ? (
-            <InlineChip
-              address={{
-                kind:
-                  directory.profiles.get(identity)?.isAgent ||
-                  directory.agents.some((agent) => agent.pubkey === identity)
-                    ? "agent"
-                    : "person",
-                id: identity,
-              }}
-              face={{
-                label: faceLabel,
-                loading: false,
-                resolved: true,
-              }}
-              qualifier={
-                qualifier
-                  ? {
-                      text: `· ${qualifier}`,
-                      reveal: !!mention && reveal.has(mention),
-                      accessibleLabel: `public key ending ${qualifier.split("").join(" ")}`,
-                    }
-                  : undefined
+            <TokenChip
+              kind={
+                directory.profiles.get(identity)?.isAgent ||
+                directory.agents.some((agent) => agent.pubkey === identity)
+                  ? "agent"
+                  : "person"
               }
-              interactive={false}
+              id={identity}
+              label={faceLabel}
+              qualifier={qualifier}
+              reveal={!!mention && reveal.has(mention)}
             />
           ) : (
             <TokenMarkdown
