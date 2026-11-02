@@ -211,10 +211,12 @@ it("shows local harnesses as unavailable for a hosted agent and keeps help keybo
   await user.tab();
   expect(trigger).toHaveFocus();
   await user.keyboard("{Enter}");
-  await screen.findByRole("menu");
-  await user.keyboard("{Home}{ArrowDown}{Enter}");
+  const menu = await screen.findByRole("menu");
+  await waitFor(() => expect(menu).toContainElement(document.activeElement));
+  await user.keyboard("{Home}{ArrowDown}");
   const local = await screen.findByRole("menuitemradio", { name: "Echo" });
-  expect(local).toHaveFocus();
+  await waitFor(() => expect(local).toHaveFocus());
+  await user.keyboard("{Enter}");
   expect(local).toHaveAttribute("aria-disabled", "true");
   expect(screen.getByRole("menuitemradio", { name: "Next" })).toHaveAttribute(
     "aria-disabled",
