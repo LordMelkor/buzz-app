@@ -44,6 +44,7 @@ import {
 } from "./LinkLabelContext";
 import { BuzzLinkPreview, ChannelLinkPreview } from "./BuzzLinkPreview";
 import { useChannelReference } from "./channel-reference";
+import { useLinkedMessageByline } from "./linked-message";
 import { messageViewKey } from "../messages/view-key";
 import { soloChatLinkName } from "../solo/labels";
 import styles from "./LinkPreview.module.css";
@@ -152,8 +153,17 @@ export function MessageLink({
   // The authored label is message text, so it stays; the lock marks it. A raw
   // destination has no name to show.
   const shown = withheld && label === undefined ? "Private channel" : children;
+  // A raw message destination names its author once read; a draft never reads.
+  const byline = useLinkedMessageByline(
+    interactive && label === undefined && children === undefined
+      ? host
+      : undefined,
+    destination?.channelId,
+    destination?.messageId,
+  );
   const display =
     label ??
+    byline ??
     directoryLabel ??
     (named ? `#${named.name}` : withheld ? "Private channel" : undefined);
   const [menuOpen, setMenuOpen] = useState(false);

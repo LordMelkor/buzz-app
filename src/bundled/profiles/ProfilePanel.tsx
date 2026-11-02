@@ -7,7 +7,10 @@ import {
   usePanelTabTitle,
 } from "../../features/panels/PanelWorkspace";
 import { useAgentOwnerEvidence } from "../../features/profiles/useAgentOwnerEvidence";
-import { UserStatusDisplay } from "../../features/user-status/StatusDisplay";
+import { StatusDisplay } from "../../features/user-status/StatusDisplay";
+import { StatusEditor } from "../../features/user-status/StatusEditor";
+import { useStatusEditor } from "../../features/user-status/useStatusEditor";
+import { useUserStatus } from "../../features/user-status/useUserStatus";
 import { ProfilePublicMetadata } from "./ProfilePublicMetadata";
 import { relayOrigin } from "../../features/communities/destination";
 import type { Navigation } from "../../features/navigation/controller";
@@ -415,6 +418,12 @@ function ProfileDetails({
       section: "profile",
       scope: scoped.scope,
     });
+  // This panel's session is its community's, so the status saves there.
+  const statusEditor = useStatusEditor(session, viewer);
+  const statusButton = useRef<HTMLButtonElement>(null);
+  const userStatus = useUserStatus(session.statuses, pubkey);
+  const canSetStatus =
+    !!scope && viewer === pubkey && session.statuses.writable;
 
   return (
     <section
@@ -467,10 +476,21 @@ function ProfileDetails({
                 }
               </p>
             )}
-            <UserStatusDisplay session={session} userId={pubkey} />
+            <StatusDisplay session={session} status={userStatus} />
           </div>
-          {(canMessage || canEdit) && (
-            <div className={hero.actions}>
+          {(canSetStatus || canMessage || canEdit) && (
+            <div className={`${hero.actions} ${styles.ownActions}`}>
+              {canSetStatus && (
+                <Button
+                  ref={statusButton}
+                  size="sm"
+                  variant={picture ? "glass" : "subtle"}
+                  aria-haspopup="dialog"
+                  onClick={() => statusEditor.open()}
+                >
+                  {userStatus ? "Update status" : "Set a status"}
+                </Button>
+              )}
               {canMessage && (
                 <Button
                   size="sm"
@@ -638,6 +658,16 @@ function ProfileDetails({
           )}
         />
       </div>
+      {statusEditor.editor && scope && (
+        <StatusEditor
+          session={session}
+          scope={scope}
+          current={statusEditor.editor.current}
+          viewer={statusEditor.editor.viewer}
+          close={statusEditor.close}
+          finalFocus={statusButton}
+        />
+      )}
     </section>
   );
 }

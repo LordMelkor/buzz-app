@@ -13,6 +13,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { useSyncExternalStore } from "react";
 import { ConversationPresentation } from "../conversation/ConversationPresentation";
@@ -29,7 +30,11 @@ import {
 } from "./MessageManagement";
 import { createRelaySession } from "../relay/session";
 import { readJournal, type ReadJournal } from "../relay/read-state-storage";
-import { PublishRejected } from "../relay/outbox";
+import {
+  PublishRejected,
+  type OutboxStorage,
+  type OutgoingEvent,
+} from "../relay/outbox";
 import {
   keypair,
   message,
@@ -38,6 +43,7 @@ import {
   roster,
   bounds,
   signed,
+  type Key,
 } from "../relay/testing";
 import type { ReadStateSigning } from "../relay/read-state-host";
 import {
@@ -72,6 +78,10 @@ async function fixture(
   chatCard = false,
   shareRead?: Promise<RelayEvent[]>,
   viewerRole: "member" | "guest" = "member",
+  {
+    outboxStorage = { load: () => [], save() {} },
+    viewer = keypair(),
+  }: { outboxStorage?: OutboxStorage; viewer?: Key } = {},
 ) {
   let role = viewerRole,
     rosterTime = 1700000000;
@@ -83,8 +93,7 @@ async function fixture(
     },
   );
   HTMLElement.prototype.scrollIntoView = vi.fn();
-  const viewer = keypair(),
-    relay = keypair(),
+  const relay = keypair(),
     peer = keypair(),
     agent = agentOwner ? keypair() : undefined,
     agentOwnerKey =
@@ -227,7 +236,7 @@ async function fixture(
       },
     },
     {
-      outboxStorage: { load: () => [], save() {} },
+      outboxStorage,
       readPublisherLock: async (_signal, work) => work(),
       readStateStorage: {
         close() {},
@@ -974,6 +983,216 @@ it("retries an owned-agent deletion without its row and disables retry when owne
   await waitFor(() => expect(revokedRetry).toBeDisabled());
   fireEvent.click(revokedRetry);
   expect(h.publications).toHaveLength(2);
+});
+
+/** Sends a message the relay does not accept and opens that row's menu. */
+async function unsent(
+  h: Awaited<ReturnType<typeof fixture>>,
+  error: Error,
+  delivery: "failed" | "unknown",
+) {
+  fireEvent.keyDown(await screen.findByRole("menu"), { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  let id = "";
+  act(() => {
+    id = h.owner.session.messages.send("room", "Unsent message");
+  });
+  await waitFor(() => expect(h.publications).toHaveLength(1));
+  await act(async () => h.publication(0).result.reject(error));
+  await waitFor(() =>
+    expect(
+      h.owner.session.channels.window("room").rows.find((row) => row.id === id)
+        ?.delivery,
+    ).toBe(delivery),
+  );
+  const row = screen.getByText("Unsent message").parentElement;
+  assert.exists(row);
+  fireEvent.click(within(row).getByRole("button", { name: "Message actions" }));
+  return id;
+}
+
+it("deletes a failed send from this device without publishing, so no restart restores or retries it", async () => {
+  let saved: readonly OutgoingEvent[] = [];
+  let refusal: string | undefined;
+  const viewer = keypair();
+  const h = await fixture(
+    true,
+    false,
+    false,
+    false,
+    false,
+    undefined,
+    false,
+    undefined,
+    "member",
+    {
+      viewer,
+      outboxStorage: {
+        load: () => saved,
+        save(records) {
+          if (refusal) throw new Error(refusal);
+          saved = records;
+        },
+      },
+    },
+  );
+  const id = await unsent(h, new PublishRejected("Message refused"), "failed");
+  // A restart restores this journal, which retains the failed send for retry.
+  await waitFor(() =>
+    expect(saved).toContainEqual(
+      expect.objectContaining({
+        event: expect.objectContaining({ id }),
+        delivery: "failed",
+      }),
+    ),
+  );
+  const remove = await screen.findByRole("menuitem", {
+    name: "Delete message",
+  });
+  expect(screen.queryByRole("menuitem", { name: "Edit message" })).toBeNull();
+  expect(
+    screen.queryByRole("menuitem", { name: /Mark (unread|read)|Follow/ }),
+  ).toBeNull();
+  fireEvent.click(remove);
+  const confirmation = await screen.findByRole("alertdialog", {
+    name: "Delete message?",
+  });
+  expect(confirmation).toHaveTextContent(
+    "This message wasn’t sent. Deleting it removes it from this device.",
+  );
+  refusal = "Storage unavailable";
+  fireEvent.click(within(confirmation).getByRole("button", { name: "Delete" }));
+  expect(await within(confirmation).findByRole("alert")).toHaveTextContent(
+    "Storage unavailable",
+  );
+  expect(saved.some((item) => item.event.id === id)).toBe(true);
+  expect(screen.getByText("Unsent message")).toBeInTheDocument();
+  refusal = undefined;
+  fireEvent.click(within(confirmation).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(screen.queryByText("Unsent message")).toBeNull();
+  expect(saved.some((item) => item.event.id === id)).toBe(false);
+  expect(
+    h.owner.session.outbox?.snapshot().some((item) => item.event.id === id),
+  ).toBe(false);
+  await waitFor(() => expect(screen.getByRole("textbox")).toHaveFocus());
+  // Neither a NIP-09 deletion nor a retry followed the refused send.
+  expect(h.publications).toHaveLength(1);
+  cleanup();
+  const restarted = await fixture(
+    true,
+    false,
+    false,
+    false,
+    false,
+    undefined,
+    false,
+    undefined,
+    "member",
+    { viewer, outboxStorage: { load: () => saved, save() {} } },
+  );
+  await restarted.owner.session.outbox?.ready();
+  expect(screen.queryByText("Unsent message")).toBeNull();
+});
+
+it("reports a failed send that started retrying instead of deleting it", async () => {
+  const h = await fixture();
+  const id = await unsent(h, new PublishRejected("Message refused"), "failed");
+  const delivery = () =>
+    h.owner.session.outbox?.snapshot().find((item) => item.event.id === id)
+      ?.delivery;
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Delete message" }),
+  );
+  const confirmation = await screen.findByRole("alertdialog", {
+    name: "Delete message?",
+  });
+  act(() => h.owner.session.outbox?.retry(id));
+  await waitFor(() => expect(h.publications).toHaveLength(2));
+  try {
+    fireEvent.click(
+      within(confirmation).getByRole("button", { name: "Delete" }),
+    );
+    expect(await within(confirmation).findByRole("alert")).toHaveTextContent(
+      "This message’s delivery changed.",
+    );
+    expect(delivery()).toBe("sending");
+  } finally {
+    await act(async () =>
+      h.publication(1).result.reject(new PublishRejected("Message refused")),
+    );
+  }
+  await waitFor(() => expect(delivery()).toBe("failed"));
+  fireEvent.click(within(confirmation).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(delivery()).toBeUndefined();
+  expect(h.publications).toHaveLength(2);
+});
+
+it.each(["archived", "left"] as const)(
+  "deletes a failed send in a channel that was %s, which only gates relay changes",
+  async (state) => {
+    const h = await fixture();
+    const id = await unsent(
+      h,
+      new PublishRejected("invalid: channel is archived"),
+      "failed",
+    );
+    cleanup();
+    const live = h.owner.session.channels.list();
+    // A channel the viewer left is no longer listed at all.
+    const closed = {
+      ...live,
+      channels:
+        state === "left"
+          ? []
+          : live.channels.map((channel) => ({
+              ...channel,
+              archived: true as const,
+              readOnly: true as const,
+            })),
+    };
+    const session = {
+      ...h.owner.session,
+      channels: { ...h.owner.session.channels, list: () => closed },
+    };
+    const row = session.channels
+      .window("room")
+      .rows.find((item) => item.id === id);
+    assert.exists(row);
+    render(
+      <MessageManagement session={session} channelId="room">
+        <MenuRoot>
+          <MenuTrigger>Message actions</MenuTrigger>
+          <MenuPopup>
+            <MessageManagementItems row={row} session={session} />
+          </MenuPopup>
+        </MenuRoot>
+      </MessageManagement>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Delete message" }),
+    );
+    const confirmation = await screen.findByRole("alertdialog", {
+      name: "Delete message?",
+    });
+    fireEvent.click(
+      within(confirmation).getByRole("button", { name: "Delete" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(
+      session.outbox?.snapshot().some((item) => item.event.id === id),
+    ).toBe(false);
+    expect(h.publications).toHaveLength(1);
+  },
+);
+
+it("does not offer local deletion for an unconfirmed send, which may have reached the relay", async () => {
+  const h = await fixture();
+  await unsent(h, new Error("Connection lost"), "unknown");
+  await screen.findByRole("menu");
+  expect(screen.queryByRole("menuitem", { name: "Delete message" })).toBeNull();
 });
 
 it("waits for confirmed membership before entering a restored channel visit", async () => {

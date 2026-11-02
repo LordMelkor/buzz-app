@@ -28,6 +28,7 @@ import { createWorkflows } from "../workflows/capability";
 import { isWorkflowOperation } from "../workflows/protocol";
 import {
   createRelayReader,
+  type Priority,
   type ReadOptions,
   type RelayReader,
 } from "./reader";
@@ -86,6 +87,7 @@ import {
   type UploadProgress,
 } from "./attachments";
 import { PRODUCT_FEEDBACK_KIND } from "./product-feedback";
+import { attemptEnded } from "./withdraw";
 import type { ReadTransport } from "./transport";
 import type { LiveSnapshot, LiveSubscription } from "./live";
 import {
@@ -101,6 +103,7 @@ import {
   browserOutboxStorage,
   createOutbox,
   type OutboxStorage,
+  type OutgoingEvent,
 } from "./outbox";
 import { relayPartition, transportPartition } from "./partition";
 import { browserThreadFollows } from "./thread-follows";
@@ -429,6 +432,90 @@ export function createRelaySession(
         for (const revoked of [...followRevocations]) revoked();
       }
     }
+  }
+  /** The channel of a failed or running timeline write: a message, reaction,
+   * edit or deletion. Only membership decides whether these can be sent. Other
+   * kinds, and workflow deletions, have their own owners or may target a
+   * channel the viewer is not on (a create, an owner removing their agent), so
+   * they are never stranded. */
+  const contribution = (item: OutgoingEvent) =>
+    (item.delivery === "failed" || item.delivery === "sending") &&
+    [5, 7, 9, 40003].includes(item.event.kind) &&
+    !isWorkflowOperation(item.event)
+      ? item.event.tags.find(([name]) => name === "h")?.[1]
+      : undefined;
+  let sweeping = false;
+  let sweepAgain = false;
+  /** Leaving or removal strands a channel's failed writes: nothing can retry
+   * or reach them, including ones an earlier session left. After a complete
+   * roster read or a confirmed Leave or Delete, the writer confirms which
+   * channels the viewer cannot participate in no longer list them: a
+   * replica's omission can be lag, and a local denial (a 401 or a ban) is not
+   * removal. Writes that had already failed go, unless retried since. One
+   * running or retried after the writer was asked is swept again once its
+   * attempt ends, even if it fails before the answer arrives, since the
+   * viewer may have rejoined meanwhile.
+   * Unconfirmed intent stays for a regrant. One writer read runs at a time;
+   * a request or a cancelled read sweeps again after it. */
+  function dropStrandedSends() {
+    const outbox = writes?.outbox;
+    if (!outbox) return;
+    if (sweeping) {
+      sweepAgain = true;
+      return;
+    }
+    sweeping = true;
+    // Restored sends can still be loading when the first roster read lands.
+    void outbox
+      .ready()
+      .then(async () => {
+        const items = outbox.snapshot();
+        const ids = [
+          ...new Set(
+            items.flatMap((item) => {
+              const id = contribution(item);
+              return id && !channels.canParticipate(id) ? [id] : [];
+            }),
+          ),
+        ];
+        if (!ids.length) return;
+        // The writer's answer covers only writes that had failed when asked.
+        // A retry keeps the ID but replaces the record, so keep the records.
+        const settled = new Set(
+          items.filter((item) => item.delivery === "failed"),
+        );
+        const gone = await channels
+          .unlisted(ids, lifetime.signal)
+          .catch((error: unknown) => {
+            // Access changes cancel this read and may strand more sends. Only
+            // another change can cancel the rerun's read, so this cannot loop.
+            if (
+              readErrorKind(error) === "cancelled" &&
+              !lifetime.signal.aborted
+            )
+              sweepAgain = true;
+            throw error;
+          });
+        for (const item of outbox.snapshot()) {
+          const channelId = contribution(item);
+          if (
+            !channelId ||
+            !gone.includes(channelId) ||
+            channels.canParticipate(channelId)
+          )
+            continue;
+          const { id } = item.event;
+          if (settled.has(item)) void outbox.dismiss(id).catch(() => {});
+          else void attemptEnded(outbox, id).then(dropStrandedSends);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        sweeping = false;
+        if (!sweepAgain) return;
+        sweepAgain = false;
+        dropStrandedSends();
+      });
   }
   /** Solo chats this device is starting; set once channel writes exist. */
   let startingChannel: (id: string) => Promise<void> | undefined = () =>
@@ -898,6 +985,7 @@ export function createRelaySession(
           channelIdentity: transport.channelIdentity,
           media: (url, size) => transport.media(url, size),
           revokeAccess,
+          rosterComplete: dropStrandedSends,
           visible: (events) => events.filter(visibility(events)),
           restored: (events) => unread.accept(events),
           demand: (channelId) => demandChannel(channelId),
@@ -945,8 +1033,10 @@ export function createRelaySession(
     relayAuthor: transport?.relayAuthor ?? "",
     canAccess: (id) => !closed && channels.canParticipate(id),
     acceptDiscovery: (events) => channels.acceptDiscovery(events),
-    removed: (id) =>
-      channels.denyChannel(id, new Error("Channel is no longer available")),
+    removed: (id) => {
+      channels.denyChannel(id, new Error("Channel is no longer available"));
+      dropStrandedSends();
+    },
   });
   const memberAdministration = createMemberAdministration({
     reader: transport && !options.cachedOnly ? requests.reader : undefined,
@@ -2326,7 +2416,7 @@ export function createRelaySession(
     thread(
       channelId: string,
       messageId: string,
-      options?: { exact?: boolean },
+      options?: { exact?: boolean; priority?: Priority },
     ) {
       if (closed || views.size >= 64)
         throw new Error("Relay view capacity unavailable");
@@ -2377,6 +2467,7 @@ export function createRelaySession(
         targetReader,
         admitTarget: (events) => accept(events, false),
         exact: options?.exact ?? false,
+        priority: options?.priority,
         admit: options?.exact ? (events) => accept(events, false) : undefined,
         seed: recent.peek(messageId)?.event ?? retainedEvent(messageId),
         local: localViews,

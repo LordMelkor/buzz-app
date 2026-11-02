@@ -5,9 +5,14 @@
 // directory `path` and `files` may read (default: the working directory).
 import { fromJsonSchema, McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
-import { nodeClient } from "./node";
+import { nodeClient, relayAuthorityLookup } from "./node";
 import { content, errorText } from "./rpc";
 import { BUZZ_HELP_PROMPT } from "./prompt";
+import {
+  callSoloWorkerTool,
+  isSoloWorkerTool,
+  SOLO_WORKER_TOOLS,
+} from "./solo-worker";
 import { callTool, TOOLS } from "./tools";
 
 const env = (name: string) => {
@@ -18,8 +23,10 @@ const env = (name: string) => {
 
 const auth = process.env.BUZZ_AUTH_TAG?.trim();
 const channel = process.env.BUZZ_CHANNEL?.trim();
+const relay = env("BUZZ_RELAY_URL");
+const relayAuthor = relayAuthorityLookup(relay);
 const client = nodeClient({
-  relay: env("BUZZ_RELAY_URL"),
+  relay,
   key: env("BUZZ_PRIVATE_KEY"),
   ...(auth ? { auth } : {}),
   root: process.env.BUZZ_MCP_ROOT?.trim() || process.cwd(),
@@ -31,17 +38,30 @@ serveStdio(() => {
     { name: "buzz", version: "1" },
     { capabilities: { tools: {} }, instructions: BUZZ_HELP_PROMPT },
   );
-  for (const tool of TOOLS)
+  const tools: readonly (
+    | (typeof TOOLS)[number]
+    | (typeof SOLO_WORKER_TOOLS)[number]
+  )[] = [...TOOLS, ...SOLO_WORKER_TOOLS];
+  for (const tool of tools)
     server.registerTool(
       tool.name,
       {
         description: tool.description,
         inputSchema: fromJsonSchema<Record<string, unknown>>(tool.inputSchema),
+        ...("annotations" in tool ? { annotations: tool.annotations } : {}),
       },
       async (args) => {
         try {
           return {
-            content: content(await callTool(client, context, tool.name, args)),
+            content: content(
+              await (isSoloWorkerTool(tool.name)
+                ? callSoloWorkerTool(
+                    { ...client, relayAuthor: await relayAuthor() },
+                    tool.name,
+                    args,
+                  )
+                : callTool(client, context, tool.name, args)),
+            ),
           };
         } catch (error) {
           return {

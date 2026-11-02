@@ -24,7 +24,7 @@ import { channelDurationLabel } from "./ChannelDurationField";
 import { ChannelSidebarRow } from "./ChannelSidebarRow";
 import { DmTypingBadge } from "./DmTypingBadge";
 import { usePresenceStatus } from "../../features/presence/react";
-import { UnreadBadge, ordinaryUnread } from "./UnreadBadge";
+import { UnreadBadge, ordinaryUnread, useConfirmedMute } from "./UnreadBadge";
 import { useWorkingAgents } from "./useWorkingAgents";
 import { WorkingAgentsBadge } from "./WorkingAgentsBadge";
 import styles from "./Channels.module.css";
@@ -101,6 +101,7 @@ function useOrdinaryUnread(
   channelId: string,
   dm: boolean,
 ) {
+  const muted = useConfirmedMute(session, channelId);
   const target = useMemo(
     () => ({ kind: "channel" as const, channelId }),
     [channelId],
@@ -110,8 +111,8 @@ function useOrdinaryUnread(
     [session, target],
   );
   const get = useCallback(
-    () => ordinaryUnread(session.unread.snapshot(target), dm),
-    [session, target, dm],
+    () => ordinaryUnread(session.unread.snapshot(target), dm, muted),
+    [session, target, dm, muted],
   );
   return useSyncExternalStore(subscribe, get, get);
 }

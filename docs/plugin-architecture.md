@@ -100,6 +100,32 @@ create a second connection, cache or outbox inside a page. The conversation prev
 source imports are not a versioned external SDK. See
 [conversation component ownership](channels.md#reusing-conversation-ui).
 
+## Open a Git import from a link
+
+Open `buzz://plugin-install?repository=<encoded-repository>[&ref=<encoded-ref>]`
+to open a preview in **Settings > Plugins > Manage plugins > Add**. The repository
+accepts HTTPS, `ssh://`, `git@host:path`, `github.com/owner/repo`, or `owner/repo`.
+Omit `ref` to use the repository default. For example, on macOS:
+
+```sh
+open 'buzz://plugin-install?repository=https%3A%2F%2Fgithub.com%2FOWNER%2FPLUGIN.git&ref=main'
+open 'buzz://plugin-install?repository=git%40github.com%3AOWNER%2FPLUGIN.git&ref=main'
+```
+
+The link fetches a preview through the existing importer. Review the plugin and
+computer access, then select **Install plugin**. Opening the link does not install,
+enable, or grant access. You can close the dialog while the preview loads. A late
+result is discarded. Confirmed installation remains protected from dismissal.
+
+SSH uses the desktop process's inherited `SSH_AUTH_SOCK` and known hosts.
+The importer disables SSH config and interactive prompts. If terminal Git uses
+an `IdentityAgent`, launch Buzz with that socket as `SSH_AUTH_SOCK`.
+
+A new installation completes identity setup before the app can show the linked
+preview. For a repository hosted by a Buzz community, select that community and
+wait for its relay connection before opening the link. Other repositories do not
+require a selected community. See [OS deep links](deep-links.md).
+
 ## The `buzzodz` CLI
 
 Run `pnpm buzzodz --help` from this repository, or install the standalone executable:
@@ -1499,14 +1525,23 @@ credential-free HTTP(S) and supported Buzz links. Markdown labels preserve their
 formatting, escaped pasted wrappers are normalized outside code, and paired `<…>`
 autolink wrappers are hidden in display. Buzz links use known channel names with corresponding icons, falling back
 to Channel, Message or Thread when that name is unavailable in the current community;
-the full destination remains on the anchor. Buzz activation stays inside the host,
+the full destination remains on the anchor. A raw message or thread link in a listed
+channel reads as “<author> in #<channel>” once its author has a name, and a workflow’s
+as “Workflow in #<channel>”; DMs, Solo chats, authored labels and drafts keep the channel
+name. So does a message the lookup cannot find or read, whether deleted or not yet
+replicated; it is looked up again when a link to it mounts again or the live stream
+connects again. An author once found stays shown for the session, even after its message
+is deleted. Buzz activation stays inside the host,
 including modifier/middle clicks, even when the optional Links plugin is disabled.
 Unsupported Buzz formats remain plain text. The host-matched author preview exports `LinkRenderer`; older hosts do not
 provide `registerLink`.
 
 Message hover/focus previews are host-owned. The entire card is a keyboard-accessible
 link to the same destination, routed through the same host navigation handler. Opening a preview allocates the current
-session's bounded thread reader; closing disposes it. The reader supplies verified
+session's bounded thread reader; closing disposes it. A live message link borrows
+the same reader only until it learns its author, and not when its channel’s timeline
+already holds the message. Its reads take background admission, so opening or previewing
+a conversation reads first. The reader supplies verified
 message content, author and timestamp and preserves edit/deletion/access handling.
 Previewing never acknowledges reading or switches community. The host offers a
 resolved label to the bundled presentation via `LinkLabelContext`, and whether

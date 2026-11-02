@@ -18,6 +18,7 @@ its `#buzz=` address form.
 The OS ingress accepts the Buzz link forms and nothing else:
 
 - `buzz://message?channel=<id>&id=<event>[&thread=<root>]`
+- `buzz://plugin-install?repository=<encoded-https-or-ssh-url>[&ref=<encoded-branch-or-tag>]`
 - `buzz://channel/<id>`
 - `buzz://channel/<id>/<event>` (the original desktop message alias)
 - `buzz://repo?owner=<64-hex key>&d=<identifier>[&tab=<section>]`
@@ -27,6 +28,20 @@ The OS ingress accepts the Buzz link forms and nothing else:
 - `buzz://connect?relay=<wss-url>`
 - `buzz://add-community?relay=<wss-url>[&name=<name>]`
 - `buzz://plugin?id=<plugin id>[&page=<page id>][&route.<key>=<value>...]`
+
+Plugin install links open **Settings > Plugins > Manage plugins** and fetch a
+preview from the Git repository and optional branch or tag. The repository accepts
+HTTPS, `ssh://`, `git@host:path`, `github.com/owner/repo`, or `owner/repo`.
+Percent-encode each query value. Review the plugin and computer access, then select
+**Install plugin**. Opening the link does not install, enable, or grant access.
+You can close a linked preview while Git loads; its late result is discarded.
+An omitted `ref` uses the repository default. Duplicate known parameters and
+repository credentials are rejected.
+
+The Settings target has no community scope. A new installation completes identity
+setup before the app can show it. Repositories hosted by a Buzz community require
+that community to be selected and connected for authentication. See
+[Git imports and SSH agents](plugin-architecture.md#open-a-git-import-from-a-link).
 
 Query-based invite, message and plugin links also accept a single `/` before `?`,
 as supplied by Windows URL activation (for example, `buzz://join/?relay=…&code=…`).

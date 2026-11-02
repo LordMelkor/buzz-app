@@ -839,7 +839,7 @@ for (const how of ["native Close", "the close button"]) {
     await expect(threads).toHaveCount(1);
     const link = side
       .locator(`[data-message-id="${reply.id}"]`)
-      .getByRole("link", { name: "Beta", exact: true });
+      .getByRole("link", { name: "Alice Fixture in #Beta", exact: true });
     await expect(link).toBeVisible();
     await virtuaIdle(page);
     await link.click({ button: "right" });
@@ -946,7 +946,7 @@ test("a wrong link hint preserves both open thread editors and selects the verif
   await main.getByRole("tab", { name: "Alpha", exact: true }).click();
   await page
     .locator(`[data-channel-timeline="alpha"] [data-message-id="${linked.id}"]`)
-    .getByRole("link", { name: "Alpha", exact: true })
+    .getByRole("link", { name: "Alice Fixture in #Alpha", exact: true })
     .click();
   await expect
     .poll(() => page.evaluate(() => window.fixtureNavigation.snapshot().status))
@@ -1095,7 +1095,10 @@ test("Back and Forward return to a root-linked thread's reading place; a fresh l
   const links = page.locator(
     `[data-channel-timeline] [data-message-id="${opener.id}"]`,
   );
-  const rootLink = links.getByRole("link", { name: "Alpha", exact: true });
+  const rootLink = links.getByRole("link", {
+    name: "Fixture Reader in #Alpha",
+    exact: true,
+  });
   const opened = () =>
     expect
       .poll(() =>
@@ -1176,7 +1179,9 @@ test("Back and Forward return to a root-linked thread's reading place; a fresh l
   for (let i = 0; i < 12 && (await gap()) >= 4; i++)
     await wheel(page, 4000, region);
   expect(await gap()).toBeLessThan(4);
-  await links.getByRole("link", { name: "Beta", exact: true }).click();
+  await links
+    .getByRole("link", { name: "Alice Fixture in #Beta", exact: true })
+    .click();
   await expect(panel.getByText("Beta reply", { exact: true })).toBeVisible();
 
   // Back remounts the thread where it was left: the end, not the root.

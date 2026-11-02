@@ -186,6 +186,76 @@ it.each(["//", "/extra", "/%2F", "/./", "/extra/..", "/%2e/"])(
   },
 );
 
+const pluginRepository = "ssh://git@github.com/example/plugin.git";
+const pluginLink = `buzz://plugin-install?repository=${encodeURIComponent(pluginRepository)}&ref=release%2Fstable`;
+it("opens Git plugin links in Settings without a community or account", () => {
+  const target = {
+    version: 1,
+    kind: "settings",
+    section: "plugins",
+    pluginImport: { repository: pluginRepository, reference: "release/stable" },
+  };
+  expect(buzzLinkKind(pluginLink)).toBe("buzz");
+  expect(buzzLinkTarget(pluginLink, scope)).toEqual(target);
+  expect(deepLinkStep(pluginLink, { selected: null })).toEqual({
+    open: target,
+  });
+  expect(
+    buzzLinkTarget(
+      pluginLink.replace("plugin-install?", "plugin-install/?"),
+      scope,
+    ),
+  ).toEqual(target);
+  expect(
+    buzzLinkTarget(`${pluginLink}&enable=true&enable=false`, scope),
+  ).toEqual(target);
+});
+it.each([
+  "buzz://plugin-install",
+  `${pluginLink}&ref=other`,
+  `${pluginLink}&repository=https://example.com/plugin`,
+  pluginLink.replace("plugin-install?", "plugin-install/other?"),
+  pluginLink.replace("plugin-install?", "plugin-install/other/../?"),
+  ...[
+    "file:///tmp/plugin",
+    "http://example.com/plugin",
+    "https://user:secret@example.com/plugin",
+    "https://example.com/plugin?token=secret",
+    "https://example.com/plugin#fragment",
+  ].map(
+    (repository) =>
+      `buzz://plugin-install?repository=${encodeURIComponent(repository)}`,
+  ),
+])("rejects invalid or ambiguous plugin import links: %s", (href) => {
+  expect(parseBuzzLink(href)).toBeNull();
+  expect(deepLinkStep(href, clientForPluginLink)).toEqual({
+    fail: "invalid-target",
+  });
+});
+const clientForPluginLink = {
+  selected: scope.communityOrigin,
+  viewer: scope.viewer,
+};
+
+it.each([
+  ["git@github.com:org/repo.git", "ssh://git@github.com/org/repo.git"],
+  ["github.com/org/repo", "https://github.com/org/repo"],
+  ["org/repo", "https://github.com/org/repo"],
+])(
+  "normalizes a Settings repository address in a plugin link: %s",
+  (input, repository) => {
+    const href = `buzz://plugin-install?repository=${encodeURIComponent(input)}`;
+    const target = {
+      version: 1,
+      kind: "settings",
+      section: "plugins",
+      pluginImport: { repository, reference: "" },
+    };
+    expect(buzzLinkTarget(href, scope)).toEqual(target);
+    expect(deepLinkStep(href, { selected: null })).toEqual({ open: target });
+  },
+);
+
 const plugin = "buzz://plugin?id=com.example.catalog";
 it("parses plugin page links into a plugin target bound to the receiving community", () => {
   expect(parseBuzzLink(plugin)).toEqual({

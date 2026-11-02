@@ -469,6 +469,13 @@ export function useAppNavigation(
         }, settings);
       }
     },
+    dismissPluginImport(request: PageNavigation | undefined) {
+      const current = request?.target;
+      if (!request || current?.kind !== "settings" || !current.pluginImport)
+        return;
+      const { pluginImport: _pluginImport, ...settings } = current;
+      navigation.dismiss([request.entryId], settings);
+    },
     leaveSettings() {
       const current = navigation.snapshot().entry.target;
       if (current.kind !== "settings") return;

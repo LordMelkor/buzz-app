@@ -973,6 +973,58 @@ it("does not revive a disposed bridge when native registration finishes", async 
   expect(listener).not.toHaveBeenCalled();
 });
 
+const localPluginLink = "buzz://plugin-install?repository=org%2Frepo";
+it.each(["viewer", "selected"] as const)(
+  "keeps a plugin link across a %s change while loading",
+  async (key) => {
+    const t = harness({ ...ready, status: "loading" }, [localPluginLink]);
+    try {
+      await vi.waitFor(() => expect(t.take).toHaveBeenCalledTimes(1));
+      t.become({
+        ...ready,
+        [key]: key === "viewer" ? "f".repeat(64) : elsewhere,
+      });
+      await vi.waitFor(() =>
+        expect(t.host.navigation.open).toHaveBeenCalledTimes(1),
+      );
+      expect(t.host.fail).not.toHaveBeenCalled();
+      expect(t.host.navigation.snapshot().entry.target).toMatchObject({
+        kind: "settings",
+        section: "plugins",
+      });
+    } finally {
+      t.stop();
+    }
+  },
+);
+it.each(["viewer", "selected"] as const)(
+  "keeps a pending plugin shell read across a %s change",
+  async (key) => {
+    const t = harness(ready);
+    let release!: (urls: string[]) => void;
+    try {
+      await vi.waitFor(() => expect(t.take).toHaveBeenCalledTimes(1));
+      t.take.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      t.arrive(localPluginLink);
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      t.become({ [key]: key === "viewer" ? "f".repeat(64) : elsewhere });
+      release([localPluginLink]);
+      await vi.waitFor(() =>
+        expect(t.host.navigation.open).toHaveBeenCalledTimes(1),
+      );
+      expect(t.host.fail).not.toHaveBeenCalled();
+    } finally {
+      release?.([]);
+      t.stop();
+    }
+  },
+);
+
 it("binds a plugin page link to the selected community and viewer", () => {
   const scope = { viewer, communityOrigin: origin };
   expect(

@@ -204,7 +204,7 @@ sidebar exits its session, and restore before paint when the roster and groups
 are available; navigation history does not own them. Search lives in the top-bar
 palette; legacy sidebar filters are ignored. Each section's ellipsis menu offers
 **Filter → All, Unreads, Active in the last**. Unreads shows channels with observed or
-manually marked unread messages or unread thread activity. Active in the last opens a compact,
+manually marked unread messages or unread thread activity. Muted channels with retained unread backlog remain eligible even when their ordinary sidebar cues are quiet: mute does not mark messages read. Active in the last opens a compact,
 content-sized dialog with visible 1-, 7-, 30-, and 90-day text-only radio tiles in two columns.
 Apply saves the selected rolling window and activates the filter;
 Cancel leaves the saved choice unchanged. The dialog retains its draft after a

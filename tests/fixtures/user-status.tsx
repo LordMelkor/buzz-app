@@ -3,6 +3,7 @@ import { ToastProvider } from "../../src/shared/design-system/ui/Toast";
 import { createRoot } from "react-dom/client";
 import { ProfileButton } from "../../src/app/shell/ProfileButton";
 import { ChannelSidebarItem } from "../../src/bundled/channels/ChannelSidebarItem";
+import channelStyles from "../../src/bundled/channels/Channels.module.css";
 import { MessageRow } from "../../src/features/messages/MessageRow";
 import { UserStatusDisplay } from "../../src/features/user-status/StatusDisplay";
 import { createRelaySession } from "../../src/features/relay/session";
@@ -36,9 +37,11 @@ Object.assign(window, {
   },
 });
 let remoteTime = Math.floor(Date.now() / 1000);
+// ?name= renames Bob in the DM row and in his message byline.
+const bobName = new URLSearchParams(location.search).get("name") ?? "Bob";
 const profiles = [
   profile(viewer, { name: "Alice" }),
-  profile(other, { name: "Bob" }),
+  profile(other, { name: bobName }),
 ];
 const catalog = signed(relay, {
   kind: 30030,
@@ -163,19 +166,22 @@ createRoot(root).render(
           className="rounded-2xl border border-line p-4"
         >
           <h2>Navigation</h2>
-          <ChannelSidebarItem
-            channel={{
-              id: "status-dm",
-              name: new URLSearchParams(location.search).get("name") ?? "Bob",
-              channelType: "dm",
-              participants: [other.pubkey],
-            }}
-            session={first}
-            working={false}
-            selected={undefined}
-            onSelect={() => {}}
-            onOpenThread={() => {}}
-          />
+          {/* The real sidebar's row metrics, including its emoji size. */}
+          <div className={channelStyles.sidebar}>
+            <ChannelSidebarItem
+              channel={{
+                id: "status-dm",
+                name: bobName,
+                channelType: "dm",
+                participants: [other.pubkey],
+              }}
+              session={first}
+              working={false}
+              selected={undefined}
+              onSelect={() => {}}
+              onOpenThread={() => {}}
+            />
+          </div>
         </section>
         <section
           aria-label="Chat"
@@ -273,6 +279,19 @@ createRoot(root).render(
         </button>
         <button type="button" onClick={() => remote("", "")}>
           Clear Bob
+        </button>
+        {/* Other clients can put text, or several emoji, in the emoji tag. */}
+        <button
+          type="button"
+          onClick={() => remote("Buzzin'", "🐝 working from the office")}
+        >
+          Free-text Bob
+        </button>
+        <button
+          type="button"
+          onClick={() => remote("Buzzin'", "🐝🏠🎉🚀🌊🔥🍕🎸👩‍💻🏳️‍🌈")}
+        >
+          Emoji-run Bob
         </button>
         <button
           type="button"

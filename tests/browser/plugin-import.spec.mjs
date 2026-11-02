@@ -27,12 +27,18 @@ async function openPlugins(page, origin) {
   await selectSettingsSection(page, "Manage plugins");
 }
 // Native IPC is the boundary fixture; Settings -> manager -> platform adapter are production.
-async function nativeImports(page, samples = [], previewOptions = {}) {
-  const input = { samples, previewOptions };
-  await page.addInitScript(({ samples, previewOptions }) => {
+async function nativeImports(
+  page,
+  samples = [],
+  previewOptions = {},
+  links = [],
+  hold = false,
+) {
+  const input = { samples, previewOptions, links, hold };
+  await page.addInitScript(({ samples, previewOptions, links, hold }) => {
     window.isTauri = true;
     window.importCalls = [];
-    window.importDelay = false;
+    window.importDelay = hold;
     const plugins = ["channels", "github", "bestie", "repos", "workflows"].map(
       (name) => ({
         manifest: { id: `buzz.${name}`, name, apiVersion: 1 },
@@ -94,7 +100,7 @@ async function nativeImports(page, samples = [], previewOptions = {}) {
       },
       invoke: async (command, args) => {
         window.importCalls.push({ command, args });
-        if (command === "deep_link_take") return [];
+        if (command === "deep_link_take") return links.splice(0);
         if (command === "deep_link_watch") {
           const wireChannel = args.onEvent.toJSON();
           if (
@@ -102,6 +108,14 @@ async function nativeImports(page, samples = [], previewOptions = {}) {
             !callbacks.has(args.onEvent.id)
           )
             throw new Error("Invalid deep-link channel");
+          let index = 0;
+          window.deliverPluginLink = (url) => {
+            links.push(url);
+            callbacks.get(args.onEvent.id)({
+              index: index++,
+              message: { pending: links.length },
+            });
+          };
           return;
         }
         if (command === "plugin_catalog") return ready();
@@ -622,7 +636,7 @@ test("folder/Git preview selects the exact subfolder and preserves enabled state
     .screenshot({ path: info.outputPath("plugin-choose-light.png") });
   await button(page, "Continue").click();
   await expect(page.getByRole("dialog")).toHaveAccessibleName(
-    "Review plugin access",
+    /^Review .+ access$/,
   );
   await expect(page.getByRole("dialog")).toHaveAccessibleDescription(
     "Only install code you trust.",
@@ -1208,13 +1222,15 @@ test("Add keeps a rejected install reachable and retries the same preview", asyn
   const dialog = page
     .getByRole("dialog")
     .and(page.locator('[aria-modal="true"]'));
-  await expect(dialog).toHaveAccessibleName("Review plugin access");
+  await expect(dialog).toHaveAccessibleName(
+    "Review Retry plugin Plugin access",
+  );
   await expect(dialog.getByRole("radio")).toHaveCount(0);
   await expect(
     dialog.getByText("Choose a plugin folder", { exact: true }),
   ).toHaveCount(0);
   await expect(
-    dialog.getByRole("heading", { name: "Retry plugin" }),
+    dialog.getByRole("heading", { name: "Retry plugin", exact: true }),
   ).toHaveCount(0);
   await expect(dialog.getByText("example.retry", { exact: true })).toHaveCount(
     0,
@@ -1516,3 +1532,163 @@ for (const source of ["folder", "git"]) {
     ).toBeFocused();
   });
 }
+
+for (const mode of ["Light", "Dark"]) {
+  test(`plugin deep link opens the consent flow in ${mode} mode`, async ({
+    page,
+    app,
+  }, info) => {
+    const repository = "ssh://git@github.com/example/plugin.git";
+    const reference = "release/stable";
+    const link = `buzz://plugin-install?repository=${encodeURIComponent(repository)}&ref=${encodeURIComponent(reference)}`;
+    await nativeImports(
+      page,
+      [
+        {
+          path: ".",
+          manifest: {
+            id: "example.linked",
+            name: "Linked plugin",
+            apiVersion: 1,
+            host: { files: true },
+          },
+          revision: "one",
+        },
+      ],
+      { warnings: [] },
+      [link],
+    );
+    await page.goto(app.origin);
+    const review = page.getByRole("dialog", {
+      name: "Review Linked plugin Plugin access",
+      exact: true,
+    });
+    await expect(review).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Computer access" }),
+    ).toBeVisible();
+    await review.getByRole("button", { name: "Back", exact: true }).click();
+    const dialog = page.getByRole("dialog", {
+      name: "Add a plugin",
+      exact: true,
+    });
+    await expect(dialog.getByLabel("Git or GitHub repository")).toHaveValue(
+      repository,
+    );
+    await expect(dialog.getByLabel("Branch or tag (optional)")).toHaveValue(
+      reference,
+    );
+    await dialog.press("Escape");
+    await expect(dialog).toBeHidden();
+    await selectSettingsSection(page, "Appearance");
+    await page.goBack();
+    await expect(dialog).toBeHidden();
+    await expect(review).toBeHidden();
+    await selectSettingsSection(page, "Appearance");
+    await chooseColorMode(page, mode);
+    await page.evaluate((link) => window.deliverPluginLink(link), link);
+    await expect(review).toBeVisible();
+    await review.press("Escape");
+    await expect(review).toBeHidden();
+    await page.evaluate((link) => window.deliverPluginLink(link), link);
+    await expect(review).toBeVisible();
+    const install = page.getByRole("button", {
+      name: "Install plugin",
+      exact: true,
+    });
+    await expect(install).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Computer access" }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(() =>
+        window.importCalls.filter(
+          (call) => call.command === "plugin_import_install",
+        ),
+      ),
+    ).toHaveLength(0);
+    await page.screenshot({
+      path: info.outputPath(`plugin-link-${mode.toLowerCase()}.png`),
+    });
+    await install.click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            window.importCalls.filter(
+              (call) => call.command === "plugin_import_install",
+            ).length,
+        ),
+      )
+      .toBe(1);
+    await expect(review).toBeHidden();
+    await selectSettingsSection(page, "Appearance");
+    await page.goBack();
+    await expect(review).toBeHidden();
+    await expect(dialog).toBeHidden();
+  });
+}
+
+test("a linked preview can close during acquisition and a later link still opens", async ({
+  page,
+  app,
+}) => {
+  const link = "buzz://plugin-install?repository=org%2Frepo&ref=first";
+  await nativeImports(
+    page,
+    [
+      {
+        path: ".",
+        manifest: {
+          id: "example.linked",
+          name: "Linked",
+          apiVersion: 1,
+          host: { files: true },
+        },
+        revision: "one",
+      },
+    ],
+    { warnings: [] },
+    [link],
+    true,
+  );
+  await page.goto(app.origin);
+  const loading = page.getByRole("dialog", {
+    name: "Add a plugin",
+    exact: true,
+  });
+  await expect(loading).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => typeof window.resolveImport))
+    .toBe("function");
+  await expect(
+    loading.getByRole("button", { name: "Close", exact: true }),
+  ).toBeEnabled();
+  await loading.press("Escape");
+  await expect(loading).toBeHidden();
+  await page.evaluate((link) => {
+    window.importDelay = false;
+    window.deliverPluginLink(link.replace("ref=first", "ref=next"));
+  }, link);
+  await expect(loading).toBeVisible();
+  await page.evaluate(() => window.resolveImport());
+  const review = page.getByRole("dialog", {
+    name: "Review Linked Plugin access",
+    exact: true,
+  });
+  await expect(review).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      window.importCalls.filter(
+        (call) => call.command === "plugin_import_install",
+      ),
+    ),
+  ).toHaveLength(0);
+  expect(
+    await page.evaluate(() =>
+      window.importCalls
+        .filter((call) => call.command === "plugin_import_git")
+        .map((call) => call.args.reference),
+    ),
+  ).toEqual(["first", "next"]);
+});

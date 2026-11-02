@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "nostr-tools/utils";
 import { keypair, signed } from "../features/relay/testing";
-import { nodeClient } from "./node";
+import { nodeClient, relayAuthority, relayAuthorityLookup } from "./node";
 import { callTool, memoryVersion } from "./tools";
 
 const agent = keypair();
@@ -243,4 +243,69 @@ it("searches profile names, signed, and reports a community without the search",
   await expect(client().searchProfiles?.("wes", 100)).rejects.toThrow(
     "500 broken",
   );
+});
+
+describe("relayAuthority", () => {
+  const key = "a".repeat(64);
+  const relay = (answer: () => Promise<Response>) => {
+    const fetch = vi.fn(answer);
+    vi.stubGlobal("fetch", fetch);
+    return fetch;
+  };
+
+  it("asks the relay's own origin for its NIP-11 key, sending no credentials", async () => {
+    const fetch = relay(async () => Response.json({ self: key, pubkey: "b" }));
+    expect(await relayAuthority("wss://relay.test/")).toBe(key);
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://relay.test");
+    expect(init.redirect).toBe("error");
+    expect(init.headers).toEqual({ Accept: "application/nostr+json" });
+  });
+
+  it.each([
+    ["no key", async () => Response.json({ name: "relay" })],
+    [
+      "only the operator-contact pubkey",
+      async () => Response.json({ pubkey: key }),
+    ],
+    ["a malformed key", async () => Response.json({ self: "A".repeat(64) })],
+    ["a non-object", async () => Response.json(null)],
+    ["a failed answer", async () => new Response("no", { status: 503 })],
+    ["unreadable JSON", async () => new Response("<html>")],
+    [
+      "a refused redirect",
+      async () => {
+        throw new TypeError("fetch failed: redirect mode is set to error");
+      },
+    ],
+  ])("learns nothing from %s", async (_, answer) => {
+    relay(answer);
+    expect(await relayAuthority("wss://relay.test")).toBeUndefined();
+  });
+
+  it("asks again after a failed lookup and keeps the key it learns", async () => {
+    const fetch = relay(async () => new Response("no", { status: 503 }));
+    const lookup = relayAuthorityLookup("wss://relay.test");
+    expect(await lookup()).toBeUndefined();
+    fetch.mockImplementation(async () => Response.json({ self: key }));
+    expect(await lookup()).toBe(key);
+    expect(await lookup()).toBe(key);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a learned key when an overlapping lookup fails later", async () => {
+    let fail = (_: Response) => {};
+    const fetch = relay(async () => Response.json({ self: key }));
+    fetch.mockImplementationOnce(async () => Response.json({ self: key }));
+    fetch.mockImplementationOnce(
+      () => new Promise<Response>((resolve) => (fail = resolve)),
+    );
+    const lookup = relayAuthorityLookup("wss://relay.test");
+    const [learned, overlapping] = [lookup(), lookup()];
+    expect(await learned).toBe(key);
+    fail(new Response("no", { status: 503 }));
+    expect(await overlapping).toBe(key);
+    expect(await lookup()).toBe(key);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
 });
