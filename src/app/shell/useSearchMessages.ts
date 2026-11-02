@@ -215,23 +215,20 @@ export function useSearchMessages(
               ? (session.channels.get?.(channelId)?.members ?? [])
               : [];
             // A partial directory still contains verified member profiles.
-            const failed =
-              knownMembers.length > 0 &&
-              (await session.profiles.ensure(knownMembers, "foreground").then(
-                () => false,
-                () => true,
-              ));
-            controller.signal.throwIfAborted();
-            // Members past the profile budget or in a failed batch may share
-            // the name, so a loaded match alone is not proof it is unique.
-            // A member the relay answered without a profile is known unnamed.
+            if (knownMembers.length) {
+              await session.profiles
+                .ensure(knownMembers, "foreground")
+                .catch(() => {});
+              controller.signal.throwIfAborted();
+            }
+            // Members past the profile budget or in a failed batch have no
+            // loaded name. A member the relay answered without a profile is
+            // known unnamed.
             const loaded = session.profiles.snapshot();
             const unnamed = session.profiles.unnamed?.();
-            const partial =
-              failed ||
-              knownMembers.some(
-                (pubkey) => !loaded.has(pubkey) && !unnamed?.has(pubkey),
-              );
+            const unread = knownMembers.filter(
+              (pubkey) => !loaded.has(pubkey) && !unnamed?.has(pubkey),
+            );
             // A key matches by its profile name or, for a selectable agent,
             // by the agent's own name.
             const named = (pubkey: string, profileName = "") =>
@@ -250,17 +247,42 @@ export function useSearchMessages(
               if (unique.length > 1) return { ambiguous: true };
               return { author: unique[0] };
             };
-            if (scoped.length && !partial) {
-              const found = resolve([...scoped, ...agentMatches]);
-              if (found.ambiguous)
+            // Relay name search is limited. A match outside its first page is
+            // unknown, so a full page is as ambiguous as duplicate names.
+            // The relay does not fold accents, so it gets the typed text.
+            const limit = 40;
+            if (scoped.length) {
+              // A member whose name did not load may share it, so search only
+              // those members' profiles. A request's 64 KiB filter budget
+              // holds about 975 keys.
+              const pages = await Promise.all(
+                Array.from(
+                  { length: Math.ceil(unread.length / 900) },
+                  (_, at) =>
+                    session.read(
+                      [
+                        {
+                          kinds: [0],
+                          authors: unread.slice(at * 900, at * 900 + 900),
+                          search: typed.toLowerCase(),
+                          search_mode: "prefix",
+                          limit,
+                        },
+                      ],
+                      { signal: controller.signal, fresh: true },
+                    ),
+                ),
+              );
+              const namesakes = pages.flatMap((page) =>
+                [...foldProfiles(page)]
+                  .filter(([pubkey, profile]) => named(pubkey, profile.name))
+                  .map(([pubkey]) => pubkey),
+              );
+              const found = resolve([...scoped, ...namesakes, ...agentMatches]);
+              if (found.ambiguous || pages.some((page) => page.length >= limit))
                 return { messages: [], ambiguousAuthor: true };
               author = found.author;
             } else {
-              // Relay name search is limited. A match outside its first page
-              // is unknown, so a full page is as ambiguous as duplicate names.
-              // The relay does not fold accents, so it gets the typed text.
-              // Beside a member match it looks only for another member.
-              const limit = 40;
               const candidates = await session.searchProfiles(
                 typed.toLowerCase(),
                 { limit, signal: controller.signal },
@@ -268,11 +290,10 @@ export function useSearchMessages(
               const matches = [...foldProfiles(candidates)]
                 .filter(
                   ([pubkey, profile]) =>
-                    (named(pubkey, profile.name) || pubkey === handle) &&
-                    (!scoped.length || knownMembers.includes(pubkey)),
+                    named(pubkey, profile.name) || pubkey === handle,
                 )
                 .map(([pubkey]) => pubkey);
-              const found = resolve([...scoped, ...matches, ...agentMatches]);
+              const found = resolve([...matches, ...agentMatches]);
               if (found.ambiguous || candidates.length >= limit)
                 return { messages: [], ambiguousAuthor: true };
               author = found.author;

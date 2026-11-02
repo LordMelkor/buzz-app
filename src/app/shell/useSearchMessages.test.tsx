@@ -156,12 +156,14 @@ it("resolves from:name on a roster larger than the profile budget when some name
         if (filters.some((filter) => filter.kinds?.includes(9)))
           return wire.transport.query(filters, signal);
         const names = filters.find((filter) => filter.kinds?.includes(0));
-        // The failed batches leave the names partial, so the relay's name
-        // search checks for a namesake among them.
+        // The failed batches leave the names partial, so a name search over
+        // their members checks for a namesake among them.
         if (names)
-          return names.search || names.authors?.includes(alice.pubkey)
+          return names.authors?.includes(alice.pubkey)
             ? Promise.resolve([profile(alice, { name: "Alice" })])
-            : Promise.reject(new Error("Names unavailable"));
+            : names.search
+              ? Promise.resolve([])
+              : Promise.reject(new Error("Names unavailable"));
         return Promise.resolve(
           discovery.filter((event) =>
             filters.some((filter) => filter.kinds?.includes(event.kind)),
@@ -213,7 +215,8 @@ function keyStarting(digit: string) {
 }
 
 /** A session that has joined "crew" with `members`. Author reads answer from
- * `profiles` and the relay's name search answers `found`. */
+ * `profiles` and the relay's name search answers `found`, within its
+ * `authors` when it has them. */
 async function crew(
   members: readonly string[],
   profiles: readonly RelayEvent[],
@@ -241,7 +244,11 @@ async function crew(
         const names = filters.find((filter) => filter.kinds?.includes(0));
         if (names?.search) {
           searches.push(names);
-          return Promise.resolve([...found]);
+          return Promise.resolve(
+            found.filter(
+              (event) => !names.authors || names.authors.includes(event.pubkey),
+            ),
+          );
         }
         if (names) {
           for (const author of names.authors ?? []) requested.add(author);
@@ -278,49 +285,124 @@ const between = Array.from(
   (_, index) => `5${index.toString(16).padStart(63, "0")}`,
 );
 
+const outsiders = Array.from({ length: 39 }, () => keypair());
+
 it.each([
   {
     roster: "namesakes on both sides of the budget",
     named: [near, far],
     found: [near, far],
     author: undefined,
+    unreadOnly: true,
   },
   {
     roster: "only the member past the budget",
     named: [far],
     found: [far],
     author: far,
+    unreadOnly: false,
   },
   {
     roster: "a named member and a namesake outside the channel",
     named: [near],
     found: [near, outsider],
     author: near,
+    unreadOnly: true,
   },
-])("resolves from:name on $roster", async ({ named, found, author }) => {
-  const { owner, wire, requested, searches } = await crew(
-    [near.pubkey, ...between, far.pubkey],
-    named.map(alice),
-    found.map(alice),
+  {
+    // A relay-wide search would return a full page of 40 Alices.
+    roster: "a named member and 39 namesakes outside the channel",
+    named: [near],
+    found: [near, ...outsiders],
+    author: near,
+    unreadOnly: true,
+  },
+])(
+  "resolves from:name on $roster",
+  async ({ named, found, author, unreadOnly }) => {
+    const { owner, wire, requested, searches } = await crew(
+      [near.pubkey, ...between, far.pubkey],
+      named.map(alice),
+      found.map(alice),
+    );
+    try {
+      const { result } = renderHook(() =>
+        useSearchMessages(owner.session, "from:alice ", "crew"),
+      );
+      if (author) {
+        await waitFor(() => expect(wire.pending).toHaveLength(1));
+        const read = wire.next();
+        expect(read.filters[0]?.authors).toEqual([author.pubkey]);
+        await act(async () => read.respond([]));
+        await waitFor(() => expect(result.current.loading).toBe(false));
+        expect(result.current.ambiguousAuthor).toBeUndefined();
+      } else {
+        await waitFor(() => expect(result.current.ambiguousAuthor).toBe(true));
+        expect(wire.pending).toHaveLength(0);
+      }
+      expect(requested.has(near.pubkey)).toBe(true);
+      expect(requested.has(far.pubkey)).toBe(false);
+      expect(searches).toHaveLength(1);
+      // Beside a loaded match only the members whose names did not load are
+      // searched; otherwise the relay-wide name search runs.
+      const authors = searches[0]?.authors;
+      expect(authors?.includes(far.pubkey) ?? false).toBe(unreadOnly);
+      expect(authors?.includes(near.pubkey) ?? false).toBe(false);
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it("treats a full page of member name matches past the budget as ambiguous", async () => {
+  // Forty members past the budget whose profiles match the typed prefix
+  // without naming Alice fill the page, so another Alice may be on the next.
+  const crowd = Array.from({ length: 40 }, () => keyStarting("f"));
+  const { owner, wire, searches } = await crew(
+    [near.pubkey, ...between.slice(0, 1057), ...crowd.map((key) => key.pubkey)],
+    [alice(near)],
+    crowd.map((key) => profile(key, { name: "Alice Smith" })),
   );
   try {
     const { result } = renderHook(() =>
       useSearchMessages(owner.session, "from:alice ", "crew"),
     );
-    if (author) {
-      await waitFor(() => expect(wire.pending).toHaveLength(1));
-      const read = wire.next();
-      expect(read.filters[0]?.authors).toEqual([author.pubkey]);
-      await act(async () => read.respond([]));
-      await waitFor(() => expect(result.current.loading).toBe(false));
-      expect(result.current.ambiguousAuthor).toBeUndefined();
-    } else {
-      await waitFor(() => expect(result.current.ambiguousAuthor).toBe(true));
-      expect(wire.pending).toHaveLength(0);
-    }
-    expect(requested.has(near.pubkey)).toBe(true);
-    expect(requested.has(far.pubkey)).toBe(false);
+    await waitFor(() => expect(result.current.ambiguousAuthor).toBe(true));
+    expect(wire.pending).toHaveLength(0);
     expect(searches).toHaveLength(1);
+    expect(searches[0]?.authors).toEqual(
+      expect.arrayContaining(crowd.map((key) => key.pubkey)),
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("searches the members whose names did not load in parts that fit the filter budget", async () => {
+  // 1,925 roster keys, so 901 are past the 1,024-id profile budget.
+  const many = Array.from(
+    { length: 1922 },
+    (_, index) => `5${index.toString(16).padStart(63, "0")}`,
+  );
+  const { owner, wire, searches } = await crew(
+    [near.pubkey, ...many, far.pubkey],
+    [alice(near)],
+    [alice(near), alice(far)],
+  );
+  try {
+    const { result } = renderHook(() =>
+      useSearchMessages(owner.session, "from:alice ", "crew"),
+    );
+    await waitFor(() => expect(result.current.ambiguousAuthor).toBe(true));
+    expect(wire.pending).toHaveLength(0);
+    expect(searches.map(({ authors }) => authors?.length).sort()).toEqual([
+      1, 900,
+    ]);
+    expect(searches.flatMap(({ authors }) => authors ?? [])).toContain(
+      far.pubkey,
+    );
   } finally {
     cleanup();
     owner.dispose();
