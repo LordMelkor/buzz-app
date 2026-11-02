@@ -1,4 +1,11 @@
-import { openPage } from "./navigation.mjs";
+import { pluginAction } from "./plugin-settings.mjs";
+import {
+  closeSettings,
+  newChat,
+  openPage,
+  openSettings,
+  selectSettingsSection,
+} from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 import { connect } from "node:net";
 import { once } from "node:events";
@@ -39,13 +46,17 @@ test("a second plugin uses the same launcher slot without remounting a legacy pa
   await button(page, "Close Companion fixture panel").click();
   await expect(draft).toHaveValue("Keep the page instance");
   await button(page, "Notes").click();
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await button(page, "Plugins").click();
-  await page.getByRole("switch", { name: "Enable Notes fixture" }).click();
+  await openSettings(page);
+  await selectSettingsSection(page, "Manage plugins");
+  await pluginAction(page, "Notes fixture").click();
+  // The workspace behind Settings is hidden; inspect it after closing.
+  await closeSettings(page);
   await expect(button(page, "Notes")).toHaveCount(0);
   await expect(card(page, "Notes")).toHaveCount(0);
-  await page.getByRole("switch", { name: "Enable Notes fixture" }).click();
+  await openSettings(page);
+  await selectSettingsSection(page, "Manage plugins");
+  await pluginAction(page, "Notes fixture").click();
+  await closeSettings(page);
   await expect(button(page, "Notes")).toBeVisible();
   await expect(card(page, "Notes")).toHaveCount(0);
   await companionLauncher(page, "Companion fixture").click();
@@ -131,7 +142,9 @@ test("companion remains usable while Channels connection is pending", async ({
     await page.goto(app.origin);
     await openPage(page, "Messages", { connected: false });
     await expect(
-      page.getByText("Connecting to your relay…", { exact: true }),
+      page
+        .getByRole("complementary", { name: "Sidebar", exact: true })
+        .getByText("Connecting…", { exact: true }),
     ).toBeVisible();
     await button(page, "Notes").click();
     await expect(card(page, "Notes")).toHaveCount(1);
@@ -150,12 +163,12 @@ test("companion remains usable while Channels connection is pending", async ({
 
 // The page promises companion placement even before a conversation exists.
 // Real shell placement and plugin disposal cannot be established by a hook test.
-test("Me places companion plugins in its new-conversation state and removes disabled cards", async ({
+test("A new Solo chat places companion plugins in its draft state and removes disabled cards", async ({
   page,
   app,
 }) => {
   await page.goto(app.origin);
-  await openPage(page, "Me");
+  await newChat(page);
   await expect(
     page.getByRole("heading", { name: "New chat", exact: true }),
   ).toBeVisible();
@@ -165,11 +178,11 @@ test("Me places companion plugins in its new-conversation state and removes disa
   await expect(card(page, "Notes")).toHaveCount(0);
   await expect(card(page, "Companion fixture")).toHaveCount(1);
   await button(page, "Notes").click();
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await button(page, "Plugins").click();
-  await page.getByRole("switch", { name: "Enable Notes fixture" }).click();
-  await openPage(page, "Me");
+  await openSettings(page);
+  await selectSettingsSection(page, "Manage plugins");
+  await pluginAction(page, "Notes fixture").click();
+  await closeSettings(page);
+  await newChat(page);
   await expect(card(page, "Notes")).toHaveCount(0);
   await expect(button(page, "Notes")).toHaveCount(0);
 });

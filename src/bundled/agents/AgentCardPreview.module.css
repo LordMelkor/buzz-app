@@ -1,0 +1,66 @@
+/* The card keeps its drawn proportions and fits whole in the room its flex
+   column leaves the stage. */
+.stage {
+  flex: 1;
+  min-height: 0;
+  container-type: size;
+  display: flex;
+  justify-content: center;
+  perspective: 1200px;
+}
+.card {
+  --card-x: 0.5;
+  --card-y: 0.5;
+  position: relative;
+  /* The drawn card's proportions and corner, from its canvas. */
+  height: min(100cqh, 100cqw * var(--card-tall));
+  aspect-ratio: var(--card-aspect);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow-sm);
+  transform: rotateX(calc((0.5 - var(--card-y)) * 12deg))
+    rotateY(calc((var(--card-x) - 0.5) * 12deg));
+  user-select: none;
+}
+/* It follows the pointer directly and settles back once the pointer leaves. */
+.card:not(:hover) {
+  transition: transform var(--duration-settle) var(--easing-settle);
+}
+.placeholder {
+  background: var(--interaction-fill);
+  box-shadow: none;
+}
+.image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+.sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  /* The foil's own colours, from the card artwork. */
+  background: var(--card-sheen);
+  background-size: 250% 250%;
+  background-position: calc(var(--card-x) * 100%) calc(var(--card-y) * 100%);
+  mix-blend-mode: multiply;
+  opacity: 0;
+  transition: opacity var(--duration-settle) var(--easing-settle);
+}
+.card:hover .sheen {
+  opacity: 0.35;
+}
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card:not(:hover) {
+    transform: none;
+    transition: none;
+  }
+  .sheen,
+  .card:hover .sheen {
+    opacity: 0.2;
+    background-position: 50% 50%;
+    transition: none;
+  }
+}

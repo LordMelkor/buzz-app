@@ -30,15 +30,11 @@ function setup() {
     pending.push(job);
     return job.promise;
   });
-  const owner = createSidebarPreferencesStore(
+  const owner = createSidebarPreferencesStore({
     read,
-    true,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    sort,
-  );
+    available: true,
+    writeSort: sort,
+  });
   return { owner, preferences: owner.queries, pending, read, sort };
 }
 

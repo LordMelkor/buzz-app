@@ -204,7 +204,11 @@ it("rejects lossy UTF-8 and unpaired JSON surrogates before head selection", asy
       [tomb, invalid],
       [invalid, tomb],
     ]) {
-      expect(await decode(records)).toEqual({ entries: [], partial: true });
+      expect(await decode(records)).toEqual({
+        entries: [],
+        deleted: [{ slug: "mem/test", createdAt: tomb.created_at }],
+        partial: true,
+      });
     }
   }
   const core = event({ slug: "core", profile: "old" });

@@ -294,6 +294,7 @@ function FeedbackForConnection({
         if (!next) close();
         else onOpenChange(next);
       }}
+      dismissOnOutsideClick={false}
       title="Send feedback"
       description="Feedback text goes to this Buzz deployment's feedback inbox, not a channel. Images and optional diagnostics use ordinary media storage, not inbox-only access; people allowed to read media on this deployment may access them if they have the link. Images upload when selected; diagnostics upload when you send. Removing an attachment or closing this form does not delete uploaded files."
       actions={

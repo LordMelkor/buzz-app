@@ -21,10 +21,6 @@ import {
   roster,
   signed,
 } from "../relay/testing";
-import { SessionMessageTarget } from "../sessions/SessionMessageTarget";
-import type { PageNavigation } from "../navigation/service";
-import { MessageManagement } from "./MessageManagement";
-import { MessageComposer } from "./MessageComposer";
 import { ThreadPanel } from "./ThreadPanel";
 import { MediaReviewViewer } from "./MediaReviewViewer";
 import { PublishRejected, type OutboxStorage } from "../relay/outbox";
@@ -136,13 +132,19 @@ it("real ThreadPanel edits its own reply and recovers emoji preparation without 
     fireEvent.keyDown(input, { key: "Enter" });
     const form = within(screen.getByRole("form", { name: "Edit message" }));
     expect(form.getByRole("alert")).toHaveTextContent(
-      "Community emoji unavailable",
+      "Community emoji isn't ready",
     );
     expect(publish).not.toHaveBeenCalled();
-    emojiAvailable = true;
-    fireEvent.click(
-      screen.getByRole("button", { name: "Retry message preparation" }),
+    // The refused edit retried the catalog; recovery is offered once that fails.
+    const retry = await screen.findByRole("button", {
+      name: "Retry message preparation",
+    });
+    // The retained refusal stays accurate once that retry has failed.
+    expect(form.getByRole("alert")).toHaveTextContent(
+      "Community emoji isn't ready. Your draft is kept; try sending again shortly.",
     );
+    emojiAvailable = true;
+    fireEvent.click(retry);
     await waitFor(() =>
       expect(form.queryByRole("alert")).not.toBeInTheDocument(),
     );
@@ -546,118 +548,6 @@ it.each(["thread", "exact"])(
           dimensions: { width: 640, height: 480 },
         },
       ]);
-    } finally {
-      cleanup();
-      owner.dispose();
-    }
-  },
-);
-
-it.each(["save", "changed", "deleted", "aborted"] as const)(
-  "exact session menu edit keeps current-row guards: %s",
-  async (outcome) => {
-    const viewer = keypair();
-    const original = message(viewer, "channel", "Exact own message", 10);
-    const events = [original];
-    const publish = vi.fn(async (_event: RelayEvent) => {});
-    const owner = editOwner(viewer, events, undefined, publish, original.id);
-    const controller = new AbortController();
-    const navigation: PageNavigation = {
-      entryId: "exact-edit",
-      target: {
-        version: 1,
-        kind: "conversation",
-        scope: { viewer: viewer.pubkey, communityOrigin: "https://edit.test" },
-        channelId: "channel",
-        messageId: original.id,
-      },
-      signal: controller.signal,
-      forSession: () => navigation,
-      resolve: () => false,
-      complete: () => true,
-    };
-    try {
-      await authorize(owner);
-      render(
-        <MessageManagement session={owner.session} channelId="channel">
-          <SessionMessageTarget
-            session={owner.session}
-            scope="exact-session-edit"
-            channelId="channel"
-            messageId={original.id}
-            navigation={navigation}
-            onOpenLink={() => false}
-            onLatest={() => {}}
-            onRetry={() => {}}
-          />
-          <MessageComposer
-            session={owner.session}
-            scope="exact-session-edit"
-            channelId="channel"
-            channelName="Session"
-            sessionConversation
-          />
-        </MessageManagement>,
-        { reactStrictMode: true },
-      );
-      await screen.findByText(original.content);
-      expect(owner.session.channels.window("channel").rows).toEqual([]);
-      fireEvent.click(
-        screen.getByRole("button", { name: "More message actions" }),
-      );
-      fireEvent.click(
-        await screen.findByRole("menuitem", { name: "Edit message" }),
-      );
-      const input = await screen.findByRole<ComposerInputElement>("textbox", {
-        name: "Edit message",
-      });
-      expect(input).toHaveValue(original.content);
-      act(() => {
-        input.value = "Revised exact message";
-        input.setSelectionRange(21, 21);
-      });
-      fireEvent.input(input);
-      if (outcome === "aborted") act(() => controller.abort());
-      else if (outcome !== "save") {
-        const overlay = signed(viewer, {
-          kind: outcome === "deleted" ? 5 : 40003,
-          content: outcome === "deleted" ? "" : "Changed elsewhere",
-          created_at: 12,
-          tags: [
-            ["h", "channel"],
-            ["e", original.id],
-          ],
-        });
-        events.push(overlay);
-        await act(async () => {
-          await owner.session.read([{ ids: [overlay.id], limit: 1 }]);
-        });
-      }
-      fireEvent.keyDown(input, { key: "Enter" });
-      if (outcome === "save") {
-        await waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
-        expect(publish.mock.calls[0]?.[0]).toMatchObject({
-          kind: 40003,
-          content: "Revised exact message",
-        });
-        await waitFor(() =>
-          expect(screen.queryByText("Editing message")).not.toBeInTheDocument(),
-        );
-      } else {
-        await waitFor(() =>
-          expect(
-            within(
-              screen.getByRole("form", { name: "Edit message" }),
-            ).getByRole("alert"),
-          ).toHaveTextContent(
-            outcome === "changed"
-              ? "changed while you were editing"
-              : "no longer available to edit",
-          ),
-        );
-        expect(publish).not.toHaveBeenCalled();
-      }
-      expect(owner.session.channels.window("channel").rows).toEqual([]);
     } finally {
       cleanup();
       owner.dispose();

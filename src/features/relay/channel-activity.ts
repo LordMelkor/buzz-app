@@ -18,7 +18,7 @@ export function createChannelActivity(
   read: ChannelActivityReader | undefined,
   notify = (listener: () => void) => listener(),
 ) {
-  let values = new Map<string, number>();
+  let values = new Map<string, number | null>();
   let generation = 0;
   let revision = 0;
   let closed = false;
@@ -46,7 +46,8 @@ export function createChannelActivity(
   };
   return {
     status: () => status,
-    last: (channelId: string) => values.get(channelId),
+    last: (channelId: string) => values.get(channelId) ?? undefined,
+    known: (channelId: string) => values.has(channelId),
     revision: () => revision,
     subscribe(listener: () => void) {
       if (closed) return () => {};
@@ -65,8 +66,26 @@ export function createChannelActivity(
       status = "loading";
       publish();
       const refreshed = new Map<string, number>();
+      const merge = (channelIds: readonly string[]) => {
+        const next = new Map(values);
+        for (const id of channelIds) {
+          const displayed = values.get(id) ?? undefined;
+          const started = atStart.get(id) ?? undefined;
+          const result = refreshed.get(id);
+          const changedDuringRead = displayed !== started;
+          if (
+            displayed !== undefined &&
+            (result !== undefined ? displayed > result : changedDuringRead)
+          )
+            continue;
+          // Retain authoritative absence through later refreshes and failures.
+          next.set(id, result ?? null);
+        }
+        return next;
+      };
+      let offset = 0;
       try {
-        for (let offset = 0; offset < ids.length; offset += CHANNEL_BATCH) {
+        for (; offset < ids.length; offset += CHANNEL_BATCH) {
           const batch = ids.slice(offset, offset + CHANNEL_BATCH);
           const events = await read(
             batch,
@@ -86,6 +105,8 @@ export function createChannelActivity(
         }
       } catch (error) {
         if (closed || controller.signal.aborted || epoch !== generation) return;
+        // Batches that landed before the failure still apply.
+        values = merge(ids.slice(0, offset));
         status = "error";
         publish();
         throw error;
@@ -94,20 +115,7 @@ export function createChannelActivity(
       }
       if (closed || epoch !== generation) return;
       const wanted = new Set(ids);
-      const next = new Map(values);
-      for (const id of ids) {
-        const displayed = values.get(id);
-        const started = atStart.get(id);
-        const result = refreshed.get(id);
-        const changedDuringRead = displayed !== started;
-        if (
-          displayed !== undefined &&
-          (result !== undefined ? displayed > result : changedDuringRead)
-        )
-          continue;
-        if (result === undefined) next.delete(id);
-        else next.set(id, result);
-      }
+      const next = merge(ids);
       for (const id of next.keys()) if (!wanted.has(id)) next.delete(id);
       status = "ready";
       values = next;
@@ -121,6 +129,20 @@ export function createChannelActivity(
         status = "idle";
         publish();
       }
+    },
+    /** Access loss fences reads and drops only channels no longer readable;
+     * the others keep their values, so Recent sections keep their order. */
+    retain(readable: (channelId: string) => boolean) {
+      if (closed) return;
+      generation++;
+      active?.abort();
+      active = undefined;
+      const next = new Map([...values].filter(([id]) => readable(id)));
+      const nextStatus = status === "loading" ? "idle" : status;
+      if (next.size === values.size && nextStatus === status) return;
+      values = next;
+      status = nextStatus;
+      publish();
     },
     clear() {
       if (closed) return;

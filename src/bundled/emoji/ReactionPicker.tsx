@@ -35,6 +35,7 @@ export function createReactionPicker() {
     return (
       <>
         <IconButton
+          hint="familiar"
           ref={trigger}
           size="toolbar"
           shape="round"
@@ -53,7 +54,7 @@ export function createReactionPicker() {
             }
             active?.();
             active = close;
-            void session.emoji.ensure();
+            void session.emoji.ensure("foreground");
             setOpen(true);
           }}
         />

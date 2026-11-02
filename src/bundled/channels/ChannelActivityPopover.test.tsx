@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { ChannelActivityPopover } from "./ChannelActivityPopover";
@@ -337,4 +337,63 @@ test("a typing agent still opens its profile activity while Agent Activity is of
     agent,
     undefined,
   );
+});
+
+test("a press while there is no activity does not block the hover preview once activity arrives", async () => {
+  const user = userEvent.setup();
+  let snapshot: ThreadActivitySnapshot = {
+    channelId: "studio",
+    items: [],
+    coverage: "observed",
+    freshness: "observed",
+  };
+  const listeners = new Set<() => void>();
+  const session = {
+    unread: {
+      activity: () => snapshot,
+      subscribeActivity: (_: string, listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+    profiles: {
+      snapshot: () => new Map(),
+      subscribe: () => () => {},
+      ensure: async () => {},
+    },
+    agentChoices: { snapshot: () => ({ identities: [] }) },
+  } as unknown as RelaySession;
+  render(
+    <ChannelActivityPopover
+      session={session}
+      channelId="studio"
+      channelName="Studio"
+      trigger={<Button>Activity</Button>}
+      onOpenThread={vi.fn()}
+    />,
+  );
+  const trigger = screen.getByRole("button", { name: "Activity" });
+  await user.click(trigger);
+  await user.unhover(trigger);
+  snapshot = {
+    ...snapshot,
+    items: [
+      {
+        channelId: "studio",
+        rootId: "thread",
+        latestMessageId: "message",
+        authorId: "alex",
+        createdAt: 1,
+        preview: "Please review the designs",
+        unreadCount: 1,
+      },
+    ],
+  };
+  act(() => {
+    for (const listener of listeners) listener();
+  });
+  await user.hover(trigger);
+  expect(
+    await screen.findByRole("dialog", { name: "Activity in Studio" }),
+  ).toBeVisible();
 });

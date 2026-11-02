@@ -1,5 +1,6 @@
 import { prepareAttachment } from "../messages/prepare-attachment";
 import { mediaUrl } from "../relay/transport";
+import type { UploadProgress } from "../relay/attachments";
 import { nativeIdentityEnabled } from "../identity/service";
 import { nativeMediaUrl } from "../relay/native";
 import { connectCommunityTransport } from "../communities/connection";
@@ -41,6 +42,7 @@ export async function uploadAvatar(
   file: File,
   community: string,
   signal: AbortSignal,
+  progress?: UploadProgress,
 ): Promise<string> {
   if (!/^image\/(png|jpeg|gif|webp|heic|heif)$/.test(file.type))
     throw new Error("Choose a PNG, JPEG, GIF, WebP or HEIC image.");
@@ -53,66 +55,88 @@ export async function uploadAvatar(
   if (!transport.uploadAttachment)
     throw new Error("Image uploads are unavailable on this connection.");
   const prepared = await prepareAttachment(file, signal, true);
-  const result = await transport.uploadAttachment(prepared, signal);
+  const result = await transport.uploadAttachment(prepared, signal, progress);
   signal.throwIfAborted();
   if (!result.type.startsWith("image/") || !avatarSource(result.url))
     throw new Error("The server did not return an avatar image.");
   return result.url;
 }
 
-/** Center painted pixels: emoji font metrics differ between browser engines. */
+/** The emoji's longer side as a share of the image: by default the square
+ * inscribed in a circular avatar, so clipping never crops it. */
+export const emojiAvatarScale = 0.7;
+
+/** Fit painted pixels: emoji font metrics differ between browser engines. */
 export function paintEmojiAvatar(
   canvas: HTMLCanvasElement,
   emoji: string,
   color?: string,
+  scale = emojiAvatarScale,
+  offset = 0,
 ) {
   canvas.width = canvas.height = 512;
   const context = canvas.getContext("2d");
-  if (!context)
+  const probe = document.createElement("canvas").getContext("2d", {
+    willReadFrequently: true,
+  });
+  if (!context || !probe)
     throw new Error("Emoji images are unavailable in this browser.");
-  context.font =
-    '258px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillStyle = "#000000";
-  context.fillText(emoji, 256, 256);
-  const pixels = context.getImageData(0, 0, 512, 512);
-  let left = 512;
+  // Measure the artwork once, then paint it at the font size that fits, so
+  // even a zoomed emoji is drawn at full resolution.
+  const paint = (
+    target: CanvasRenderingContext2D,
+    size: number,
+    x: number,
+    y: number,
+  ) => {
+    target.font = `${size}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+    target.textAlign = "center";
+    target.textBaseline = "middle";
+    target.fillStyle = "#000000";
+    target.fillText(emoji, x, y);
+  };
+  probe.canvas.width = probe.canvas.height = 1024;
+  paint(probe, 516, 512, 512);
+  const pixels = probe.getImageData(0, 0, 1024, 1024);
+  let left = 1024;
   let right = -1;
-  let top = 512;
+  let top = 1024;
   let bottom = -1;
-  for (let y = 0; y < 512; y++) {
-    for (let x = 0; x < 512; x++) {
+  for (let y = 0; y < 1024; y++) {
+    for (let x = 0; x < 1024; x++) {
       // Ignore the nearly transparent fringe/shadow around Apple emoji artwork.
-      if ((pixels.data[(y * 512 + x) * 4 + 3] ?? 0) < 32) continue;
+      if ((pixels.data[(y * 1024 + x) * 4 + 3] ?? 0) < 32) continue;
       left = Math.min(left, x);
       right = Math.max(right, x);
       top = Math.min(top, y);
       bottom = Math.max(bottom, y);
     }
   }
-  context.clearRect(0, 0, 512, 512);
-  if (right >= left) {
-    context.putImageData(
-      pixels,
-      Math.round(256 - (left + right + 1) / 2),
-      Math.round(256 - (top + bottom + 1) / 2),
-    );
-  }
   if (color) {
-    context.globalCompositeOperation = "destination-over";
     context.fillStyle = color;
     context.fillRect(0, 0, 512, 512);
-    context.globalCompositeOperation = "source-over";
   }
+  if (right < left) return;
+  const fit = (512 * scale) / Math.max(right - left + 1, bottom - top + 1);
+  paint(
+    context,
+    516 * fit,
+    256 - ((left + right + 1) / 2 - 512) * fit,
+    256 + 512 * offset - ((top + bottom + 1) / 2 - 512) * fit,
+  );
 }
 
 /** Persist ordinary square artwork; Avatar owns human/agent clipping. */
-export async function emojiAvatar(emoji: string, color: string): Promise<File> {
+export async function emojiAvatar(
+  emoji: string,
+  color: string,
+  scale = emojiAvatarScale,
+  offset = 0,
+): Promise<File> {
   if (!emoji || emoji.length > 64 || !/^#[0-9a-f]{6}$/i.test(color))
     throw new Error("Choose an emoji and a background color.");
   const canvas = document.createElement("canvas");
-  paintEmojiAvatar(canvas, emoji, color);
+  paintEmojiAvatar(canvas, emoji, color, scale, offset);
   const blob = await new Promise<Blob>((resolve, reject) =>
     canvas.toBlob(
       (value) =>

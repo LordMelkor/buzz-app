@@ -1,4 +1,5 @@
 import { formatPublicKey } from "../../shared/identity/public-key";
+import { sortParticipantNames } from "../../features/identity-names/participant-order";
 
 /** One label recipe for Inbox rows, details and Drafts; callers own profile reads. */
 export function dmLabel(
@@ -13,17 +14,18 @@ export function dmLabel(
 ) {
   if (!participants) return missing;
   if (!participants.length) return "Notes to self";
+  // Sort every name before bounding, so the shown three match other surfaces.
+  const names = sortParticipantNames(
+    participants.map((key) =>
+      resolve(
+        key,
+        profiles.get(key)?.name ?? formatPublicKey(key) ?? "Unknown person",
+        participants,
+      ),
+    ),
+  );
   return (
-    participants
-      .slice(0, 3)
-      .map((key) =>
-        resolve(
-          key,
-          profiles.get(key)?.name ?? formatPublicKey(key) ?? "Unknown person",
-          participants,
-        ),
-      )
-      .join(", ") +
-    (participants.length > 3 ? ` +${participants.length - 3}` : "")
+    names.slice(0, 3).join(", ") +
+    (names.length > 3 ? ` +${names.length - 3}` : "")
   );
 }

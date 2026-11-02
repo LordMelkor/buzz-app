@@ -14,6 +14,7 @@ import { Dialog } from "../../shared/design-system/ui/Dialog";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import { Button } from "../../shared/design-system/ui/Button";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
+import { Tooltip } from "../../shared/design-system/ui/Tooltip";
 import {
   MenuRoot,
   MenuTrigger,
@@ -177,8 +178,10 @@ export function StatusEditor({
   }
   return (
     <Dialog
+      size="compact"
       open
       title="Set a status"
+      dismissOnOutsideClick={false}
       closeLabel="Close status editor"
       onOpenChange={(open) => {
         if (!open) close();
@@ -222,25 +225,42 @@ export function StatusEditor({
         <fieldset className={styles.fields} disabled={busy}>
           <InputGroup
             leading={
-              <IconButton
-                ref={emojiTrigger}
-                size="sm"
-                aria-label="Choose a status emoji"
-                aria-expanded={pickerOpen}
-                aria-haspopup="dialog"
-                aria-controls={pickerOpen ? pickerId : undefined}
-                onClick={() => {
-                  void session.emoji.ensure();
-                  setPickerOpen(true);
-                }}
-                icon={
-                  effectiveEmoji ? (
-                    <StatusEmoji value={effectiveEmoji} session={session} />
-                  ) : (
-                    <SmileyIcon size={22} />
-                  )
-                }
-              />
+              // An unresolved code shows 💬; name the code it will save. The
+              // hint stays mounted so a refresh cannot remount the focused trigger.
+              <Tooltip
+                content={emoji}
+                {...(/^:[^:\s]+:$/.test(emoji) ? {} : { open: false })}
+                disableHoverablePopup
+              >
+                <IconButton
+                  ref={emojiTrigger}
+                  size="sm"
+                  aria-label="Choose a status emoji"
+                  aria-expanded={pickerOpen}
+                  aria-haspopup="dialog"
+                  aria-controls={pickerOpen ? pickerId : undefined}
+                  onClick={() => {
+                    void session.emoji.ensure();
+                    setPickerOpen(true);
+                  }}
+                  icon={
+                    effectiveEmoji ? (
+                      <StatusEmoji
+                        value={effectiveEmoji}
+                        url={
+                          effectiveEmoji === current?.emoji
+                            ? current.emojiUrl
+                            : undefined
+                        }
+                        fallback="💬"
+                        session={session}
+                      />
+                    ) : (
+                      <SmileyIcon size={22} />
+                    )
+                  }
+                />
+              </Tooltip>
             }
           >
             <Input

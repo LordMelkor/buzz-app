@@ -9,6 +9,7 @@ import type {
   AgentEventTemplate,
   AgentIdentity,
   AgentsNative,
+  Membership,
   PortableAgents,
 } from "./native";
 import type { AgentCommunities } from "./service";
@@ -98,6 +99,7 @@ export function fakeRelay(origin = "https://relay.example.test") {
   const memories = new Map<string, string>();
   const session = {
     archives,
+    agentChoices: { refresh: vi.fn(async () => {}) },
     agentMemories: {
       read: vi.fn(async (pubkey: string) => {
         const body = memories.get(pubkey);
@@ -110,9 +112,18 @@ export function fakeRelay(origin = "https://relay.example.test") {
     read: vi.fn(async (filters: readonly ReadFilter[]) =>
       filters[0]?.kinds?.includes(9) ? page(history, filters[0]) : [...listed],
     ),
-    mePlacement: { snapshot: () => ({ status: "ready" }), has: () => false },
+    readRemote: vi.fn(async (filters: readonly ReadFilter[]) => {
+      const ids = filters[0]?.ids ?? [];
+      return history.filter((event) => ids.includes(event.id));
+    }),
+    channelWrites: {
+      starting: (_id: string): Promise<void> | undefined => undefined,
+    },
     channels: {
-      list: () => ({ channels: rows.map((row) => ({ ...row })) }),
+      list: () => ({
+        status: "ready",
+        channels: rows.map((row) => ({ ...row })),
+      }),
       subscribeList(listener: () => void) {
         rosterChanges.add(listener);
         return () => rosterChanges.delete(listener);
@@ -263,15 +274,39 @@ export function fakeCommunities(...joined: ReturnType<typeof fakeRelay>[]) {
   };
 }
 
+/** Agents whose removal from a community a copy of the app holds, shared by
+ * every fake native over the same identities, as native's lock is. */
+const removing = new WeakMap<AgentIdentity[], Set<string>>();
+function held(identities: AgentIdentity[]) {
+  const removals = removing.get(identities) ?? new Set<string>();
+  removing.set(identities, removals);
+  return removals;
+}
+
 export function fakeNative(identities: AgentIdentity[] = []) {
   let published = 0;
   const keys = [bot, sibling];
-  const at = (pubkey: string) =>
-    identities.findIndex((identity) => identity.pubkey === pubkey);
-  const change = (pubkey: string, patch: Partial<AgentIdentity>) => {
-    const index = at(pubkey);
+  const removals = held(identities);
+  const wss = (relay: string) => relay.replace(/^https:/, "wss:");
+  /** Its live row in the membership's community, as native finds it. */
+  const at = ({ pubkey, relay }: Membership) =>
+    identities.findIndex(
+      (identity) =>
+        identity.pubkey === pubkey &&
+        identity.relay === wss(relay) &&
+        !identity.deleted,
+    );
+  const edit = (member: Membership, patch: Partial<AgentIdentity>) => {
+    const index = at(member);
     const identity = identities[index];
     if (identity) identities[index] = { ...identity, ...patch };
+  };
+  /** As native's `edit_all`: every community it is in. */
+  const change = (pubkey: string, patch: Partial<AgentIdentity>) => {
+    identities.forEach((identity, index) => {
+      if (identity.pubkey === pubkey && !identity.deleted)
+        identities[index] = { ...identity, ...patch };
+    });
   };
   const native = {
     list: vi.fn(async () => [...identities]),
@@ -328,47 +363,118 @@ export function fakeNative(identities: AgentIdentity[] = []) {
         return { agent: identity, carry: { instructions: "Triage." } };
       },
     ),
+    join: vi.fn(
+      async (
+        pubkey: string,
+        from: string,
+        destination: string,
+        picture: string | undefined,
+      ) => {
+        const source = identities[at({ pubkey, relay: from })];
+        if (!source) throw new Error("No such agent on this device");
+        if (source.deleting) throw new Error(`${source.name} is being deleted`);
+        const relay = wss(destination);
+        if (at({ pubkey, relay }) >= 0)
+          throw new Error(`${source.name} is already in that community`);
+        const { picture: _, deleting: __, home: ___, ...rest } = source;
+        const home = source.home ?? source.relay;
+        const joined: AgentIdentity = {
+          ...rest,
+          // Back in its home, it is the home row again.
+          ...(home !== relay && { home }),
+          relay,
+          ...(picture && { picture }),
+          deleted: false,
+        };
+        // A deleted row there awaiting cleanup is taken back.
+        const kept = identities.filter(
+          (identity) => identity.pubkey !== pubkey || identity.relay !== relay,
+        );
+        identities.splice(0, identities.length, ...kept, joined);
+        return joined;
+      },
+    ),
     rename: vi.fn(async (pubkey: string, name: string) => {
       change(pubkey, { name });
     }),
-    setPicture: vi.fn(async (pubkey: string, picture: string | null) => {
-      const index = at(pubkey);
+    setPicture: vi.fn(async (member: Membership, picture: string | null) => {
+      const index = at(member);
       const { picture: _, ...identity } = identities[index] as AgentIdentity;
       identities[index] = picture ? { ...identity, picture } : identity;
     }),
     setType: vi.fn(async (pubkey: string, type: string) => {
       change(pubkey, { type });
     }),
+    beginLeave: vi.fn(async (member: Membership) => {
+      const stays = identities.some(
+        (identity) =>
+          identity.pubkey === member.pubkey &&
+          identity.relay !== wss(member.relay) &&
+          !identity.deleted &&
+          !identity.deleting,
+      );
+      const row = identities[at(member)];
+      if (!row) throw new Error("No such agent on this device");
+      if (!stays && !row.deleting)
+        throw new Error("Its last community goes only when it is deleted");
+      steps.push("stop");
+      edit(member, { deleting: true });
+    }),
     beginDelete: vi.fn(async (pubkey: string) => {
       steps.push("stop");
       change(pubkey, { deleting: true });
     }),
-    remove: vi.fn(async (pubkey: string) => {
+    holdRemoval: vi.fn(async (member: Membership) => {
+      const row = identities[at(member)];
+      if (!row) throw new Error("No such agent on this device");
+      if (!row.deleting)
+        throw new Error(`${row.name} isn't being removed from that community`);
+      if (removals.has(member.pubkey))
+        throw new Error(
+          `${row.name} is being removed in another copy of the app. Try again once it's done.`,
+        );
+      removals.add(member.pubkey);
+    }),
+    releaseRemoval: vi.fn(async (member: Membership) => {
+      removals.delete(member.pubkey);
+    }),
+    remove: vi.fn(async (member: Membership) => {
+      if (!removals.has(member.pubkey))
+        throw new Error("Its removal isn't held by this app");
       steps.push("key");
-      change(pubkey, { deleted: true });
+      edit(member, { deleted: true });
     }),
-    forget: vi.fn(async (pubkey: string) => {
+    forget: vi.fn(async ({ pubkey, relay }: Membership) => {
       steps.push("forget");
-      identities.splice(at(pubkey), 1);
+      const index = identities.findIndex(
+        (identity) =>
+          identity.pubkey === pubkey &&
+          identity.relay === wss(relay) &&
+          identity.deleted,
+      );
+      if (index >= 0) identities.splice(index, 1);
     }),
-    publish: vi.fn(async (pubkey: string, template: AgentEventTemplate) =>
-      event(`p${++published}`, {
-        pubkey,
-        kind: template.kind,
-        content: template.content,
-        tags: (template.tags ?? []).map((tag) => [...tag]),
-      }),
+    publish: vi.fn(
+      async ({ pubkey }: Membership, template: AgentEventTemplate) =>
+        event(`p${++published}`, {
+          pubkey,
+          kind: template.kind,
+          content: template.content,
+          tags: (template.tags ?? []).map((tag) => [...tag]),
+        }),
     ),
-    publishProfile: vi.fn(async (_: string) => {}),
-    query: vi.fn(async () => []),
+    publishProfile: vi.fn(async (_: Membership) => {}),
+    query: vi.fn<AgentsNative["query"]>(async () => []),
     searchProfiles: vi.fn(async () => undefined),
     upload: vi.fn(async () => ({ url: "", sha256: "", size: 0, type: "" })),
-    media: vi.fn(async () => ""),
-    remember: vi.fn(async (pubkey: string) =>
+    media: vi.fn(async () => ({ path: "", type: "", size: 0 })),
+    gitAuth: vi.fn(async () => ({ url: "", header: "" })),
+    remember: vi.fn(async ({ pubkey }: Membership) =>
       event(`m${++published}`, { pubkey }),
     ),
     claim: vi.fn(async (_: string) => true),
     release: vi.fn(async (_: string) => {}),
+    keepAwake: vi.fn(async (_: boolean) => {}),
   } satisfies AgentsNative;
   return native;
 }

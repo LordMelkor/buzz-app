@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -13,6 +14,7 @@ import { CommunityDialog } from "./CommunityDialog";
 import { Context } from "@deepseek-ai/cordis";
 import { createCommunities, type Communities } from "./service";
 import { stubAvatarBrowserApis } from "../agents/avatar-testing";
+import { federatedFixture } from "../federated-identity/testing";
 
 stubAvatarBrowserApis();
 
@@ -64,21 +66,43 @@ it("publishes a description-only edit to an existing community profile", async (
     }),
     joined: vi.fn(),
   } as unknown as Communities;
+  const close = vi.fn();
   render(
-    <CommunityDialog communities={communities} mode="join" close={() => {}} />,
+    <CommunityDialog communities={communities} mode="join" close={close} />,
   );
   expect(
-    screen.getByRole("dialog", { name: "Add a community" }),
+    screen.getByRole("dialog", { name: "Join a community" }),
   ).toHaveAccessibleDescription(
     "Use your identity across communities. Your profile and conversations stay separate in each one.",
   );
-  await user.type(screen.getByLabelText("Relay URL"), "wss://relay.example");
+  await waitFor(() =>
+    expect(screen.getByLabelText("Community URL")).toHaveFocus(),
+  );
+  // Continue contacts the destination with the viewer's identity before joining.
+  expect(screen.getByLabelText("Community URL")).toHaveAccessibleDescription(
+    "Paste your community link. Continue shares your Buzz identity with the community so you can preview it before joining.",
+  );
+  await user.type(
+    screen.getByLabelText("Community URL"),
+    "wss://relay.example",
+  );
   await user.click(screen.getByRole("button", { name: "Continue" }));
   const description = await screen.findByLabelText(
     "Profile description (optional)",
   );
+  await waitFor(() =>
+    expect(screen.getByLabelText("Display name")).toHaveFocus(),
+  );
   await user.clear(description);
   await user.type(description, "After");
+  // A stray outside click keeps the dialog and the typed profile.
+  const backdrop = document.querySelector(".buzz-dialog-backdrop") as Element;
+  fireEvent.pointerDown(backdrop);
+  fireEvent.mouseDown(backdrop);
+  fireEvent.click(backdrop);
+  await Promise.resolve();
+  expect(close).not.toHaveBeenCalled();
+  expect(description).toHaveValue("After");
   await user.click(
     screen.getByRole("button", { name: "Publish profile & open" }),
   );
@@ -118,7 +142,10 @@ it("opens with an unchanged over-limit profile and blocks publishing it", async 
   render(
     <CommunityDialog communities={communities} mode="join" close={() => {}} />,
   );
-  await user.type(screen.getByLabelText("Relay URL"), "wss://relay.example");
+  await user.type(
+    screen.getByLabelText("Community URL"),
+    "wss://relay.example",
+  );
   await user.click(screen.getByRole("button", { name: "Continue" }));
   const name = await screen.findByLabelText("Display name");
   await user.type(name, " Renamed");
@@ -159,7 +186,10 @@ it("names exact relay claim refusals and keeps other failures generic", async ()
   render(
     <CommunityDialog communities={communities} mode="join" close={() => {}} />,
   );
-  await user.type(screen.getByLabelText("Relay URL"), "wss://relay.example");
+  await user.type(
+    screen.getByLabelText("Community URL"),
+    "wss://relay.example",
+  );
   await user.click(screen.getByRole("button", { name: "Continue" }));
   await user.type(
     await screen.findByLabelText("Invite code (if required)"),
@@ -220,7 +250,10 @@ it.each([
       />,
     );
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText("Relay URL"), "wss://relay.example");
+    await user.type(
+      screen.getByLabelText("Community URL"),
+      "wss://relay.example",
+    );
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await user.click(
       await screen.findByRole("button", { name: "Open community" }),
@@ -270,7 +303,10 @@ it("explains an inherited invalid avatar when editing at join and recovers on re
     <CommunityDialog communities={communities} mode="join" close={() => {}} />,
   );
   const user = userEvent.setup();
-  await user.type(screen.getByLabelText("Relay URL"), "wss://relay.example");
+  await user.type(
+    screen.getByLabelText("Community URL"),
+    "wss://relay.example",
+  );
   await user.click(screen.getByRole("button", { name: "Continue" }));
   await user.type(await screen.findByLabelText("Display name"), " changed");
   expect(
@@ -322,7 +358,7 @@ it("keeps join unavailable after native identity hydration, but still saves a lo
     expect(
       screen.getByText(/connecting to communities is not available/),
     ).toBeVisible();
-    expect(screen.queryByLabelText("Relay URL")).toBeNull();
+    expect(screen.queryByLabelText("Community URL")).toBeNull();
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
     const form = screen.getByRole("dialog").querySelector("form");
     if (!form) throw new Error("Join dialog form is missing");
@@ -372,7 +408,7 @@ it.each(["", "not-a-relay"])(
         close={() => {}}
       />,
     );
-    const input = screen.getByLabelText("Relay URL");
+    const input = screen.getByLabelText("Community URL");
     if (value) await user.type(input, value);
     await user.click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -423,7 +459,7 @@ it("prefills an invite but requires explicit discovery and claim before membersh
       }}
     />,
   );
-  expect(screen.getByLabelText("Relay URL")).toHaveValue(
+  expect(screen.getByLabelText("Community URL")).toHaveValue(
     "https://relay.example",
   );
   expect(requests).not.toHaveBeenCalled();
@@ -509,3 +545,201 @@ it("renews policy acceptance after an expired receipt instead of replaying it", 
   ).toHaveLength(2);
   expect(screen.queryByText(/current policy acceptance/)).toBeNull();
 });
+
+it("opens a checked connection address separately without replacing or removing the original", async () => {
+  const viewer = "e".repeat(64);
+  const original = "https://old.example";
+  const ctx = new Context();
+  const profile = { name: "You", picture: "", about: "" };
+  api.inspectProfile.mockResolvedValueOnce({
+    exists: true,
+    existing: profile,
+    profile,
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      const route = String(url).split("/").at(-1);
+      if (route === "register") return Response.json({});
+      if (route === "info")
+        return Response.json({ name: "New community", policy: null });
+      throw new Error(`Unexpected request: ${url}`);
+    }),
+  );
+  const communities = createCommunities(
+    ctx,
+    false,
+    undefined,
+    "",
+    undefined,
+    Promise.resolve(viewer),
+  );
+  try {
+    await waitFor(() => expect(communities.snapshot().status).toBe("ready"));
+    communities.joined({ id: original, name: "Original" }, profile);
+    const connected = {
+      ...communities,
+      snapshot: () => ({ ...communities.snapshot(), relayAvailable: true }),
+    };
+    const user = userEvent.setup();
+    render(
+      <CommunityDialog
+        communities={connected}
+        mode="join"
+        connectionFrom={original}
+        close={() => {}}
+      />,
+    );
+    expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
+      "Enter a wss:// or https:// relay address without a path. Changing the connection URL does not rename or move this community.",
+    );
+    const address = screen.getByLabelText("Community URL");
+    expect(address).toHaveValue(original);
+    fireEvent.change(address, { target: { value: "wss://new.example" } });
+    expect(address).toHaveValue("wss://new.example");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(communities.snapshot().selected).toBe(original);
+    await user.click(
+      await screen.findByRole("button", { name: "Open community" }),
+    );
+    await waitFor(() =>
+      expect(communities.snapshot().selected).toBe("https://new.example"),
+    );
+    expect(communities.snapshot().memberships.map((entry) => entry.id)).toEqual(
+      [original, "https://new.example"],
+    );
+    expect(api.publishProfile).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    await ctx.fiber.dispose();
+    localStorage.clear();
+  }
+});
+
+it("offers federated sign-in when joining refuses for it, then lets Continue run the current step", async () => {
+  const user = userEvent.setup();
+  let refuse = true;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      const route = String(url).split("/").at(-1);
+      if (route === "register") return Response.json({ id: "x" });
+      if (route === "info" && refuse)
+        return Response.json(
+          { error: "Federated sign-in is required" },
+          { status: 401 },
+        );
+      if (route === "info") return Response.json({ name: "Fixture" });
+      throw new Error(`Unexpected request: ${url}`);
+    }),
+  );
+  const communities = {
+    snapshot: () => ({
+      status: "ready",
+      relayAvailable: true,
+      profile: { name: "Local", picture: "" },
+    }),
+  } as unknown as Communities;
+  const h = federatedFixture();
+  render(
+    <CommunityDialog
+      communities={communities}
+      federatedIdentity={h.service}
+      mode="join"
+      close={() => {}}
+    />,
+  );
+  await user.type(
+    screen.getByLabelText("Community URL"),
+    "wss://relay.example",
+  );
+  await user.click(screen.getByRole("button", { name: "Continue" }));
+  const signIn = await screen.findByRole("button", { name: "Sign in" });
+  refuse = false;
+  const requests = vi.mocked(fetch).mock.calls.length;
+  await user.click(signIn);
+  expect(h.service.signIn).toHaveBeenCalledOnce();
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull(),
+  );
+  // Completing login replays nothing captured before it.
+  expect(vi.mocked(fetch).mock.calls.length).toBe(requests);
+  await user.clear(screen.getByLabelText("Community URL"));
+  await user.type(
+    screen.getByLabelText("Community URL"),
+    "wss://other.example",
+  );
+  await user.click(screen.getByRole("button", { name: "Continue" }));
+  expect(String(vi.mocked(fetch).mock.calls.at(-1)?.[0])).toContain(
+    "other.example",
+  );
+  expect(
+    await screen.findByLabelText("Invite code (if required)"),
+  ).toBeInTheDocument();
+});
+
+it.each(["edit", "close"])(
+  "replays nothing captured before a pending sign-in (%s)",
+  async (change) => {
+    const user = userEvent.setup();
+    const requests = vi.fn(async (url: string) => {
+      const route = String(url).split("/").at(-1);
+      if (route === "register") return Response.json({ id: "x" });
+      if (route === "info" && requests.mock.calls.length < 3)
+        return Response.json(
+          { error: "Federated sign-in is required" },
+          { status: 401 },
+        );
+      if (route === "info") return Response.json({ name: "Fixture" });
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", requests);
+    const communities = {
+      snapshot: () => ({
+        status: "ready",
+        relayAvailable: true,
+        profile: { name: "Local", picture: "" },
+      }),
+    } as unknown as Communities;
+    const h = federatedFixture();
+    let finish = () => {};
+    vi.mocked(h.service.signIn).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => {
+            h.publish({ status: "signed-in" });
+            resolve(h.service.snapshot());
+          };
+        }),
+    );
+    const view = render(
+      <CommunityDialog
+        communities={communities}
+        federatedIdentity={h.service}
+        mode="join"
+        close={() => {}}
+      />,
+    );
+    const field = screen.getByLabelText("Community URL");
+    await user.type(field, "wss://old.example");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(await screen.findByRole("button", { name: "Sign in" }));
+    if (change === "close") view.unmount();
+    else {
+      await user.clear(field);
+      await user.type(field, "wss://new.example");
+    }
+    const before = requests.mock.calls.length;
+    await act(async () => finish());
+    expect(requests.mock.calls.length).toBe(before);
+    expect(api.publishProfile).not.toHaveBeenCalled();
+    if (change === "edit") {
+      await user.click(screen.getByRole("button", { name: "Continue" }));
+      await waitFor(() =>
+        expect(String(requests.mock.calls.at(-1)?.[0])).toContain(
+          "new.example",
+        ),
+      );
+    }
+  },
+);

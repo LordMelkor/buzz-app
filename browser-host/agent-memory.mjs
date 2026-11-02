@@ -128,10 +128,16 @@ export async function decodeAgentMemory(events, secret, viewer, agent, signal) {
         throw new Error("Decoded memory budget exceeded");
       heads.set(d, entry);
     }
+    const all = [...heads.values()].sort((a, b) =>
+      a.slug.localeCompare(b.slug),
+    );
+    // A write that recreates a deleted slug must be dated after its tombstone.
+    const deleted = all
+      .filter((entry) => entry.body === null)
+      .map(({ slug, createdAt }) => ({ slug, createdAt }));
     return {
-      entries: [...heads.values()]
-        .filter((entry) => entry.body !== null)
-        .sort((a, b) => a.slug.localeCompare(b.slug)),
+      entries: all.filter((entry) => entry.body !== null),
+      ...(deleted.length ? { deleted } : {}),
       partial,
     };
   } finally {

@@ -4,11 +4,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
-const script = new URL(
-  "../../scripts/prune-preview-releases.mjs",
-  import.meta.url,
-).pathname;
+const script = fileURLToPath(
+  new URL("../../scripts/prune-preview-releases.mjs", import.meta.url),
+);
 const repository = "block/buzz-app";
 const now = Date.parse("2026-10-15T12:00:00Z");
 const day = 24 * 60 * 60 * 1000;

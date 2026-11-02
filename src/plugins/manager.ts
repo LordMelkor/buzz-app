@@ -9,7 +9,22 @@ import type {
   StorageResult,
   ConfigurationState,
   ManagementAction,
+  PluginInfo,
 } from "./types";
+
+export function canRetryPlugin(
+  plugin: PluginInfo | undefined,
+  activation: ReturnType<PluginRuntime["snapshot"]>[string] | undefined,
+  externalPluginsPaused: boolean,
+) {
+  return (
+    !!plugin?.enabled &&
+    !plugin.error &&
+    !(externalPluginsPaused && plugin.source === "external") &&
+    activation?.status === "failed" &&
+    activation.revision === plugin.revision
+  );
+}
 
 export type BundledPlugin = {
   manifest: PluginManifest;
@@ -22,6 +37,7 @@ export function createPluginManager(
   ctx: Context,
   {
     bundled,
+    builtIn = [],
     storage = createPluginStorage(() =>
       bundled.map(({ manifest, enabledByDefault = true }) => ({
         manifest,
@@ -35,20 +51,41 @@ export function createPluginManager(
     ),
   }: {
     bundled: readonly BundledPlugin[];
+    /** Host-owned contributions, independent of optional-plugin storage. */
+    builtIn?: readonly BundledPlugin[];
     storage?: PluginStorage | undefined;
   },
 ) {
   ctx.provide("react", React);
+  const builtInPlugins: PluginInfo[] = builtIn.map(({ manifest }) => ({
+    manifest,
+    source: "bundled",
+    enabled: true,
+    revision: "bundled",
+    previous: null,
+    reloadable: false,
+    error: null,
+  }));
+  const builtInIds = new Set(builtIn.map(({ manifest }) => manifest.id));
+  let configuration: ConfigurationState = { status: "loading" };
   const runtime = new PluginRuntime(
     ctx,
     createModuleLoader(
       Object.fromEntries(
-        bundled.map(({ manifest, module }) => [manifest.id, module]),
+        [...bundled, ...builtIn].map(({ manifest, module }) => [
+          manifest.id,
+          module,
+        ]),
       ),
       storage.readModule,
     ),
+    undefined,
+    // Reading, or retrying a read that failed: recovery the user must act on
+    // is settled.
+    () =>
+      configuration.status === "loading" ||
+      (configuration.status === "recovery" && !configuration.canReset),
   );
-  let configuration: ConfigurationState = { status: "loading" };
   let busy = false;
   let catalogPending = false;
   let error: string | null = null;
@@ -77,16 +114,21 @@ export function createPluginManager(
       return;
     configuration = next;
     refreshError = null;
-    const desired =
-      next.status === "ready"
-        ? next.catalog.plugins.filter(
+    runtime.reconcile(desiredPlugins());
+    publish();
+  }
+  function desiredPlugins() {
+    const current = configuration;
+    const optional =
+      current.status === "ready"
+        ? current.catalog.plugins.filter(
             (plugin) =>
               plugin.enabled &&
-              !(next.externalPluginsPaused && plugin.source === "external"),
+              !builtInIds.has(plugin.manifest.id) &&
+              !(current.externalPluginsPaused && plugin.source === "external"),
           )
         : [];
-    runtime.reconcile(desired);
-    publish();
+    return [...builtInPlugins, ...optional];
   }
   async function getCatalog() {
     if (catalogPending)
@@ -165,6 +207,7 @@ export function createPluginManager(
       else void pending.then(finish, finish);
     }
   }
+  runtime.reconcile(desiredPlugins());
   void refresh();
   return {
     snapshot: () => snapshot,
@@ -185,6 +228,15 @@ export function createPluginManager(
     change: (action: ManagementAction, id: string) =>
       update(() => storage.changePlugin(action, id)),
     reload: (id: string) => update(() => storage.reloadPlugin(id), 120_000),
+    retryPlugin: (id: string) => {
+      if (closed || busy) return false;
+      const desired = desiredPlugins();
+      const plugin = desired.find((item) => item.manifest.id === id);
+      const activation = runtime.snapshot()[id];
+      if (!canRetryPlugin(plugin, activation, false)) return false;
+      runtime.reconcile(desired, id);
+      return true;
+    },
     retry: () => update(getCatalog),
     recover: () => update(storage.recoverSettings),
     dismissError: () => {

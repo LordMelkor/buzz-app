@@ -10,16 +10,19 @@ import {
   SignOutIcon,
   TrashIcon,
 } from "../../shared/design-system/icons";
+import type { LifecycleNoun } from "./ChannelLifecycleDialog";
 
 /** Settings reads permissions only while open; the sidebar owns confirmation. */
 export function ChannelLifecycleActions({
   channelId,
   lifecycle,
   choose,
+  noun = "channel",
 }: {
   channelId: string;
   lifecycle: ChannelLifecycleCapability;
   choose(action: ChannelLifecycleAction, trigger: HTMLElement): void;
+  noun?: LifecycleNoun;
 }) {
   const [state, setState] = useState<{
     channelId: string;
@@ -90,7 +93,7 @@ export function ChannelLifecycleActions({
           onClick={(event) => choose("leave", event.currentTarget)}
         >
           <SignOutIcon size={16} aria-hidden="true" />
-          Leave channel
+          Leave {noun}
         </Button>
       )}
       {(permissions?.canArchive || permissions?.canUnarchive) && (
@@ -106,7 +109,7 @@ export function ChannelLifecycleActions({
           }
         >
           <ArchiveIcon size={16} aria-hidden="true" />
-          {permissions.canUnarchive ? "Unarchive channel" : "Archive channel"}
+          {permissions.canUnarchive ? "Unarchive" : "Archive"} {noun}
         </Button>
       )}
       {(state.pending || state.failed || permissions?.deleteUnavailable) && (
@@ -137,7 +140,7 @@ export function ChannelLifecycleActions({
           onClick={(event) => choose("delete", event.currentTarget)}
         >
           <TrashIcon size={16} aria-hidden="true" />
-          Delete channel
+          Delete {noun}
         </Button>
       )}
       {retry > 0 &&

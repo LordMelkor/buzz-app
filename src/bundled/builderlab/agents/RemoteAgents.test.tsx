@@ -27,13 +27,22 @@ const response = (agents: unknown[], status = 200): HostResponse => ({
 });
 async function fixture() {
   vi.stubEnv("VITE_BUZZ_BUILDERLAB_URL", "https://builderlab.example");
-  const session = createOAuthSession(async () => ({
-    value: "secret",
-    account: { subject: "user", email: "a@example.com" },
-  }));
+  const session = createOAuthSession(
+    async () => ({
+      value: "secret",
+      account: {
+        subject: "user",
+        email: "a@example.com",
+        canUseRemoteAgents: true,
+        canUseBuilderlabDecisions: false,
+      },
+    }),
+    undefined,
+    { request: (input) => request(input) },
+  );
   await session.signIn();
   const request = vi.fn(async (_input: HostRequest) => response([row]));
-  const client = createAgentClient({ request, runCommand: vi.fn() }, session);
+  const client = createAgentClient(session);
   return { session, client, request };
 }
 it("loads automatically, refreshes and hides account data on sign-out", async () => {
@@ -61,8 +70,8 @@ it("shows a held loading state and retries a failed read", async () => {
   expect(
     screen.getByRole("button", { name: "Refresh agents" }),
   ).toHaveAttribute("aria-disabled", "true");
-  await act(async () => held.resolve(response([], 503)));
-  expect(screen.getByRole("alert")).toHaveTextContent("HTTP 503");
+  await act(async () => held.resolve(response([], 400)));
+  expect(screen.getByRole("alert")).toHaveTextContent("HTTP 400");
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("Helper · Active")).toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();

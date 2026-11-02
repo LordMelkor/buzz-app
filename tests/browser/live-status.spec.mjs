@@ -297,8 +297,11 @@ test.describe("public preview recovery", () => {
       .click();
     await page.getByRole("combobox", { name: "Search Buzz" }).fill("ope");
     await page
-      .getByRole("group", { name: "Channels" })
-      .getByRole("option", { name: /^open/ })
+      .locator(
+        '[role="group"][aria-label="Channels"], [role="rowgroup"][aria-label="Channels"]',
+      )
+      .locator("[data-search-result]")
+      .filter({ hasText: /^open/ })
       .click();
     await expect(
       page.getByRole("region", {
@@ -388,8 +391,11 @@ test.describe("public preview recovery", () => {
       .click();
     await page.getByRole("combobox", { name: "Search Buzz" }).fill("ope");
     await page
-      .getByRole("group", { name: "Channels" })
-      .getByRole("option", { name: /^open/ })
+      .locator(
+        '[role="group"][aria-label="Channels"], [role="rowgroup"][aria-label="Channels"]',
+      )
+      .locator("[data-search-result]")
+      .filter({ hasText: /^open/ })
       .click();
     const invitation = page.getByRole("region", {
       name: "Channel preview",

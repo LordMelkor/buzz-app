@@ -411,7 +411,11 @@ mod tests {
         let mut plugin = super::builder().build();
         plugin.initialize(app.handle(), Value::Null).unwrap();
         for label in ["main", "other"] {
-            let window = tauri::WindowBuilder::new(&app, label).build().unwrap();
+            let window = tauri::WebviewWindowBuilder::new(&app, label, Default::default())
+                .build()
+                .unwrap()
+                .as_ref()
+                .window();
             plugin.window_created(window.clone());
             if label == "main" {
                 super::restore(&window).unwrap();
@@ -479,7 +483,11 @@ mod tests {
             }
             let mut plugin = super::builder().build();
             plugin.initialize(app.handle(), Value::Null).unwrap();
-            let window = tauri::WindowBuilder::new(&app, "main").build().unwrap();
+            let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+                .build()
+                .unwrap()
+                .as_ref()
+                .window();
             plugin.window_created(window.clone());
             super::restore(&window).unwrap();
             plugin.on_event(app.handle(), &tauri::RunEvent::Exit);

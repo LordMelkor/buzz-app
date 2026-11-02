@@ -4,7 +4,7 @@ import { test, expect } from "./source-fixture.mjs";
 test("delivery Retry explains its state on hover and focus", async ({
   page,
 }) => {
-  await page.goto("/tests/fixtures/message-gallery.html?bubble=blue");
+  await page.goto("/tests/fixtures/message-gallery.html?accent=blue");
   for (const [id, detail] of [
     ["delivery-failed", "Couldn’t send"],
     ["delivery-unknown", "Delivery not yet confirmed"],

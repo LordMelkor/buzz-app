@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { assert, expect, it, vi } from "vitest";
 import { createSidebarPreferencesStore } from "./sidebar-preferences-store";
 import type {
   SidebarAssignmentIntent,
@@ -28,15 +28,27 @@ async function setup() {
     muted: [],
   };
   const read = vi.fn(async () => data);
+  const readAfterWrite = vi.fn(async () => data);
   const assignment = vi.fn(async (intent: SidebarAssignmentIntent) => {
     const id = intent.createSection?.id ?? intent.sectionId;
     const assignments = { ...data.assignments };
-    if (id) assignments[intent.channelId] = id;
-    else delete assignments[intent.channelId];
+    if (intent.channelId !== undefined) {
+      if (id) assignments[intent.channelId] = id;
+      else delete assignments[intent.channelId];
+    }
     const sections =
       intent.createSection &&
       !data.sections.some(({ id }) => id === intent.createSection?.id)
-        ? [...data.sections, { ...intent.createSection, order: 2 }]
+        ? intent.createSection.position === "first"
+          ? [
+              {
+                id: intent.createSection.id,
+                name: intent.createSection.name,
+                order: -1,
+              },
+              ...data.sections,
+            ]
+          : [...data.sections, { ...intent.createSection, order: 2 }]
         : data.sections;
     data = { ...data, sections, assignments };
     return { sections, assignments };
@@ -64,17 +76,26 @@ async function setup() {
     data = { ...data, sort: next };
     return next;
   });
-  const owner = createSidebarPreferencesStore(
+  const owner = createSidebarPreferencesStore({
     read,
-    true,
+    readAfterWrite,
+    available: true,
+    write: assignment,
+    writeStar: star,
+    writeMute: mute,
+    writeSort: sort,
+  });
+  await owner.queries.ensure();
+  return {
+    owner,
+    prefs: owner.queries,
     assignment,
     star,
-    undefined,
+    read,
+    readAfterWrite,
     mute,
     sort,
-  );
-  await owner.queries.ensure();
-  return { owner, prefs: owner.queries, assignment, star, read, mute, sort };
+  };
 }
 
 it("moves immediately, keeps later intent through older failure, and serializes both records", async () => {
@@ -142,37 +163,46 @@ it("failure rolls back just its channel, persists a retry across refresh, and cl
   }
 });
 
-it("create-and-move appears before the first write, rolls back on failure, and reuses its ID on retry", async () => {
-  const h = await setup();
-  const gate = deferred<{
-    sections: SidebarPreferences["sections"];
-    assignments: SidebarPreferences["assignments"];
-  }>();
-  h.assignment.mockImplementationOnce(() => gate.promise);
-  const section = {
-    id: "12345678-1234-1234-1234-123456789abc",
-    name: "Launch",
-  };
-  try {
-    const creating = h.prefs.createAndAssign("alpha", section);
-    const failed = expect(creating).rejects.toThrow("offline");
-    expect(h.prefs.snapshot().data?.sections.at(-1)?.id).toBe(section.id);
-    expect(h.prefs.snapshot().data?.assignments.alpha).toBe(section.id);
-    expect(h.prefs.snapshot().data?.starred).toEqual([]);
-    await flush();
-    gate.reject(new Error("offline"));
-    await failed;
-    expect(h.prefs.snapshot().data?.sections).toHaveLength(2);
-    expect(h.prefs.snapshot().data?.starred).toEqual(["alpha"]);
-    await h.prefs.retryMove("alpha");
-    expect(
-      h.assignment.mock.calls.map(([intent]) => intent.createSection?.id),
-    ).toEqual([section.id, section.id]);
-    expect(h.prefs.snapshot().data?.sections).toHaveLength(3);
-  } finally {
-    h.owner.dispose();
-  }
-});
+it.each([undefined, "first"] as const)(
+  "create-and-move at %s appears before the first write, rolls back on failure, and reuses its ID on retry",
+  async (position) => {
+    const h = await setup();
+    const gate = deferred<{
+      sections: SidebarPreferences["sections"];
+      assignments: SidebarPreferences["assignments"];
+    }>();
+    h.assignment.mockImplementationOnce(() => gate.promise);
+    const section = {
+      id: "12345678-1234-1234-1234-123456789abc",
+      name: "Launch",
+      ...(position ? { position } : {}),
+    };
+    try {
+      const creating = h.prefs.createAndAssign("alpha", section);
+      const failed = expect(creating).rejects.toThrow("offline");
+      expect(h.prefs.snapshot().data?.sections.at(position ? 0 : -1)?.id).toBe(
+        section.id,
+      );
+      expect(h.prefs.snapshot().data?.assignments.alpha).toBe(section.id);
+      expect(h.prefs.snapshot().data?.starred).toEqual([]);
+      await flush();
+      gate.reject(new Error("offline"));
+      await failed;
+      expect(h.prefs.snapshot().data?.sections).toHaveLength(2);
+      expect(h.prefs.snapshot().data?.starred).toEqual(["alpha"]);
+      await h.prefs.retryMove("alpha");
+      expect(
+        h.assignment.mock.calls.map(([intent]) => intent.createSection?.id),
+      ).toEqual([section.id, section.id]);
+      expect(h.prefs.snapshot().data?.sections).toHaveLength(3);
+      expect(h.prefs.snapshot().data?.sections.at(position ? 0 : -1)?.id).toBe(
+        section.id,
+      );
+    } finally {
+      h.owner.dispose();
+    }
+  },
+);
 
 it.each(["clear", "dispose"] as const)(
   "%s clears optimistic placement/errors and rejects late repopulation",
@@ -560,3 +590,293 @@ it.each([false, true])(
     }
   },
 );
+
+it("creates an empty section through the queued writer without altering stars or assignments", async () => {
+  const h = await setup();
+  const section = {
+    id: "12345678-1234-1234-1234-123456789abc",
+    name: "Launch",
+  };
+  try {
+    expect(h.prefs.sectionCreationWritable).toBe(true);
+    await h.prefs.createSection(section);
+    expect(h.assignment).toHaveBeenCalledWith(
+      { createSection: section },
+      expect.any(AbortSignal),
+    );
+    expect(h.prefs.snapshot().data).toMatchObject({
+      assignments: { alpha: "work", beta: "work" },
+      starred: ["alpha"],
+    });
+    expect(h.prefs.snapshot().data?.sections.at(-1)).toMatchObject(section);
+    expect(h.star).not.toHaveBeenCalled();
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it("refreshes an accepted creation before reporting a lost response, superseding an older read", async () => {
+  const h = await setup();
+  const before = h.prefs.snapshot().data;
+  assert(before);
+  const stale = deferred<SidebarPreferences>();
+  const save = h.assignment.getMockImplementation();
+  assert(save);
+  h.assignment.mockImplementationOnce(async (intent) => {
+    await save(intent);
+    throw new Error("response lost");
+  });
+  h.read.mockImplementationOnce(() => stale.promise);
+  const oldRefresh = h.prefs.refresh();
+  const section = { id: "accepted", name: "Launch" };
+  try {
+    await expect(h.prefs.createSection(section)).rejects.toThrow(
+      "response lost",
+    );
+    expect(h.prefs.snapshot().data?.sections.at(-1)).toMatchObject(section);
+    expect(h.assignment).toHaveBeenCalledOnce(); // Recovery never replays a write.
+    expect(h.prefs.sectionCreationWritable).toBe(true);
+    stale.resolve(before);
+    await oldRefresh;
+    expect(h.prefs.snapshot().data?.sections.at(-1)).toMatchObject(section);
+  } finally {
+    stale.resolve(before);
+    h.owner.dispose();
+  }
+});
+
+it.each([false, true])(
+  "gates new creation until writer reconciliation succeeds (clear cache: %s)",
+  async (clearCache) => {
+    const h = await setup();
+    const save = h.assignment.getMockImplementation();
+    assert(save);
+    h.assignment.mockImplementationOnce(async (intent) => {
+      await save(intent);
+      throw new Error("response lost");
+    });
+    h.readAfterWrite.mockRejectedValueOnce(new Error("read offline"));
+    const section = { id: "accepted", name: "Launch" };
+    try {
+      await expect(h.prefs.createSection(section)).rejects.toThrow(
+        "response lost",
+      );
+      expect(h.prefs.snapshot()).toMatchObject({
+        status: "error",
+        error: "read offline",
+      });
+      expect(h.prefs.sectionCreationWritable).toBe(false);
+      await expect(
+        h.prefs.createSection({ id: "duplicate", name: "Launch" }),
+      ).rejects.toThrow("unavailable");
+      expect(h.assignment).toHaveBeenCalledOnce();
+      if (clearCache) h.owner.clear();
+      await h.prefs.refresh();
+      expect(h.prefs.sectionCreationWritable).toBe(true);
+      expect(h.prefs.snapshot().data?.sections.at(-1)).toMatchObject(section);
+      expect(h.readAfterWrite).toHaveBeenCalledTimes(2);
+      expect(h.read).toHaveBeenCalledOnce();
+    } finally {
+      h.owner.dispose();
+    }
+  },
+);
+
+it.each(["clear", "dispose"] as const)(
+  "fences creation reconciliation after %s",
+  async (retire) => {
+    const h = await setup();
+    const read = deferred<SidebarPreferences>();
+    const entered = deferred<void>();
+    h.assignment.mockRejectedValueOnce(new Error("response lost"));
+    h.readAfterWrite.mockImplementationOnce(() => {
+      entered.resolve();
+      return read.promise;
+    });
+    const result = expect(
+      h.prefs.createSection({ id: "accepted", name: "Launch" }),
+    ).rejects.toThrow("response lost");
+    try {
+      await entered.promise;
+      h.owner[retire]();
+      read.resolve({
+        sections: [{ id: "accepted", name: "Launch", order: 2 }],
+        assignments: {},
+        starred: [],
+        muted: [],
+      });
+      await result;
+      expect(h.prefs.snapshot().data).toBeUndefined();
+    } finally {
+      read.resolve({ sections: [], assignments: {}, starred: [], muted: [] });
+      h.owner.dispose();
+    }
+  },
+);
+
+it("reconciles a failed creation after a queued move without deadlocking or losing its result", async () => {
+  const h = await setup();
+  const save = h.assignment.getMockImplementation();
+  assert(save);
+  h.assignment.mockImplementationOnce(async (intent) => {
+    await save(intent);
+    throw new Error("response lost");
+  });
+  const section = { id: "accepted", name: "Launch" };
+  try {
+    const creating = expect(h.prefs.createSection(section)).rejects.toThrow(
+      "response lost",
+    );
+    const moving = h.prefs.assign("beta", "later");
+    await Promise.all([creating, moving]);
+    expect(h.prefs.snapshot().data?.sections.at(-1)).toMatchObject(section);
+    expect(h.prefs.snapshot().data?.assignments.beta).toBe("later");
+    expect(h.assignment).toHaveBeenCalledTimes(2);
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it("reconciles an accepted creation against the writer while ordinary reads lag", async () => {
+  const h = await setup();
+  const before = h.prefs.snapshot().data;
+  assert(before);
+  h.read.mockResolvedValue(before);
+  const save = h.assignment.getMockImplementation();
+  assert(save);
+  h.assignment.mockImplementationOnce(async (intent) => {
+    await save(intent);
+    throw new Error("response lost");
+  });
+  const section = { id: "accepted", name: "Launch" };
+  try {
+    await expect(h.prefs.createSection(section)).rejects.toThrow(
+      "response lost",
+    );
+    expect(h.prefs.snapshot().data?.sections.at(-1)).toMatchObject(section);
+    expect(h.read).toHaveBeenCalledOnce();
+    expect(h.readAfterWrite).toHaveBeenCalledOnce();
+    expect(h.assignment).toHaveBeenCalledOnce();
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it("waits for a queued non-move write before reconciling an uncertain creation", async () => {
+  const h = await setup();
+  const mute = deferred<readonly string[]>();
+  const started = deferred<void>();
+  h.assignment.mockRejectedValueOnce(new Error("response lost"));
+  h.mute.mockImplementationOnce(() => {
+    started.resolve();
+    return mute.promise;
+  });
+  const creating = expect(
+    h.prefs.createSection({ id: "accepted", name: "Launch" }),
+  ).rejects.toThrow("response lost");
+  const muting = h.prefs.setMute("alpha", true);
+  try {
+    await started.promise;
+    await flush();
+    expect(h.readAfterWrite).not.toHaveBeenCalled();
+    mute.resolve(["alpha"]);
+    await Promise.all([creating, muting]);
+    expect(h.readAfterWrite).toHaveBeenCalledOnce();
+    expect(h.prefs.sectionCreationWritable).toBe(true);
+  } finally {
+    mute.resolve([]);
+    await Promise.allSettled([creating, muting]);
+    h.owner.dispose();
+  }
+});
+
+it.each(["mute", "sort", "writer-failure"] as const)(
+  "reconciles again when %s invalidates an in-flight writer read",
+  async (kind) => {
+    const h = await setup();
+    const read = deferred<SidebarPreferences>();
+    const entered = deferred<void>();
+    const save = h.assignment.getMockImplementation();
+    assert(save);
+    const authoritative = h.readAfterWrite.getMockImplementation();
+    assert(authoritative);
+    h.assignment.mockImplementationOnce(async (intent) => {
+      await save(intent);
+      throw new Error("response lost");
+    });
+    let first!: SidebarPreferences;
+    h.readAfterWrite.mockImplementationOnce(async () => {
+      first = await authoritative();
+      entered.resolve();
+      return read.promise;
+    });
+    if (kind === "writer-failure")
+      h.readAfterWrite.mockRejectedValueOnce(new Error("writer offline"));
+    const section = { id: "accepted", name: "Launch" };
+    const creating = expect(h.prefs.createSection(section)).rejects.toThrow(
+      "response lost",
+    );
+    try {
+      await entered.promise;
+      if (kind === "sort")
+        await h.prefs.setSort("channels", "recent", ["work", "later"]);
+      else await h.prefs.setMute("alpha", true);
+      read.resolve(first);
+      await creating;
+      expect(h.readAfterWrite).toHaveBeenCalledTimes(2);
+      if (kind === "writer-failure") {
+        expect(h.prefs.snapshot()).toMatchObject({
+          status: "error",
+          error: "writer offline",
+        });
+        expect(h.prefs.sectionCreationWritable).toBe(false);
+        await h.prefs.refresh();
+      }
+      expect(h.prefs.snapshot().data?.sections.at(-1)).toMatchObject(section);
+      expect(h.prefs.snapshot().data).toMatchObject(
+        kind === "sort"
+          ? { sort: { channels: "recent" } }
+          : { muted: ["alpha"] },
+      );
+      expect(h.prefs.sectionCreationWritable).toBe(true);
+      expect(h.assignment).toHaveBeenCalledOnce();
+    } finally {
+      read.resolve(first);
+      await creating;
+      h.owner.dispose();
+    }
+  },
+);
+
+it("gates create-and-move during reconciliation while allowing existing destinations", async () => {
+  const h = await setup();
+  const entered = deferred<void>();
+  const read = deferred<SidebarPreferences>();
+  const authoritative = h.readAfterWrite.getMockImplementation();
+  assert(authoritative);
+  h.assignment.mockRejectedValueOnce(new Error("response lost"));
+  h.readAfterWrite.mockImplementationOnce(() => {
+    entered.resolve();
+    return read.promise;
+  });
+  const creating = expect(
+    h.prefs.createSection({ id: "accepted", name: "Launch" }),
+  ).rejects.toThrow("response lost");
+  try {
+    await entered.promise;
+    expect(h.prefs.writable).toBe(true);
+    await expect(
+      h.prefs.createAndAssign("beta", { id: "duplicate", name: "Launch" }),
+    ).rejects.toThrow("unavailable");
+    expect(h.assignment).toHaveBeenCalledOnce();
+    await h.prefs.assign("beta", "later");
+    read.resolve(await authoritative());
+    await creating;
+    expect(h.prefs.snapshot().data?.assignments.beta).toBe("later");
+    expect(h.prefs.sectionCreationWritable).toBe(true);
+  } finally {
+    read.resolve(await authoritative());
+    await creating;
+    h.owner.dispose();
+  }
+});

@@ -69,7 +69,7 @@ test("actual composer selects namesakes by exact key, publishes channel/reply ta
       expect(
         await popup.evaluate((element) => element.closest("form") === null),
       ).toBe(true);
-      await expect(popup).toHaveCSS("border-radius", "16px");
+      await expect(popup).toHaveCSS("border-radius", "24px");
       await expect
         .poll(() =>
           popup.evaluate((element) => {

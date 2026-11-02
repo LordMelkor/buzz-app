@@ -205,3 +205,38 @@ it("retargets an already-open community and ignores the prior session after swit
   stop();
   expect(h.project).toHaveBeenCalledTimes(calls);
 });
+
+it.each(["huddle", "metadataPending"] as const)(
+  "excludes %s channels from the Dock indicator",
+  (flag) => {
+    const h = setup();
+    h.grant();
+    const original = h.session;
+    h.relayState.session = {
+      ...original,
+      channels: {
+        ...original.channels,
+        list: () => ({
+          ...original.channels.list(),
+          channels: original.channels
+            .list()
+            .channels.map((c) => ({ ...c, [flag]: true })),
+        }),
+      },
+    };
+    h.bind();
+    h.emit([message(h.peer, "room", "arrival", 11)]);
+    expect(h.session.unread.snapshot(target).observedCount).toBe(1);
+    expect(h.project.mock.calls).toEqual([[false]]);
+  },
+);
+
+it("stays off for coordination between agents and lights for the next message to everyone", () => {
+  const h = setup();
+  h.bind();
+  h.grant();
+  h.emit([message(h.peer, "room", "Progress", 11, [["audience", "agents"]])]);
+  expect(h.project.mock.calls).toEqual([[false]]);
+  h.emit([message(h.peer, "room", "Done", 12)]);
+  expect(h.project).toHaveBeenLastCalledWith(true);
+});

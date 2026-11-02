@@ -31,17 +31,13 @@ function setup(
   mute?: SidebarMuteMutator,
 ) {
   const read = vi.fn(async () => data);
-  const store = createSidebarPreferencesStore(
+  const store = createSidebarPreferencesStore({
     read,
-    true,
-    undefined,
-    undefined,
-    undefined,
-    mute,
-    async () => data.sort ?? {},
-    undefined,
-    remove,
-  );
+    available: true,
+    writeMute: mute,
+    writeSort: async () => data.sort ?? {},
+    removeSection: remove,
+  });
   return { store, queries: store.queries, read };
 }
 it("retains confirmed data after removal failure and gates writes until a failed full read recovers", async () => {
@@ -137,17 +133,12 @@ it("resets only the removed section sort before removal and preserves unrelated 
     order.push("remove");
     return removed;
   });
-  const store = createSidebarPreferencesStore(
-    async () => sorted,
-    true,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
+  const store = createSidebarPreferencesStore({
+    read: async () => sorted,
+    available: true,
     writeSort,
-    undefined,
-    remove,
-  );
+    removeSection: remove,
+  });
   try {
     await store.queries.ensure();
     await store.queries.removeSection("work");
@@ -177,17 +168,12 @@ it("does not remove a section if its sort reset fails, and retries safely", asyn
   const remove = vi
     .fn<SidebarSectionRemovalMutator>()
     .mockResolvedValue(removed);
-  const store = createSidebarPreferencesStore(
-    async () => sorted,
-    true,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
+  const store = createSidebarPreferencesStore({
+    read: async () => sorted,
+    available: true,
     writeSort,
-    undefined,
-    remove,
-  );
+    removeSection: remove,
+  });
   try {
     await store.queries.ensure();
     await expect(store.queries.removeSection("work")).rejects.toThrow(
@@ -211,19 +197,14 @@ it.each(["success", "failure"] as const)(
     const remove = vi
       .fn<SidebarSectionRemovalMutator>()
       .mockResolvedValue(removed);
-    const store = createSidebarPreferencesStore(
+    const store = createSidebarPreferencesStore({
       read,
-      true,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      async () => {
+      available: true,
+      writeSort: async () => {
         throw new Error("sort offline");
       },
-      undefined,
-      remove,
-    );
+      removeSection: remove,
+    });
     try {
       await store.queries.ensure();
       read.mockImplementationOnce(async () => {
@@ -257,21 +238,16 @@ it("failed removal settlement preserves a concurrent full-read failure", async (
   const remove = vi
     .fn<SidebarSectionRemovalMutator>()
     .mockResolvedValue(removed);
-  const store = createSidebarPreferencesStore(
+  const store = createSidebarPreferencesStore({
     read,
-    true,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    async () => {
+    available: true,
+    writeSort: async () => {
       entered.resolve();
       await held.promise;
       throw new Error("sort offline");
     },
-    undefined,
-    remove,
-  );
+    removeSection: remove,
+  });
   try {
     await store.queries.ensure();
     const removal = store.queries.removeSection("work");
@@ -304,17 +280,12 @@ it("retains a confirmed reset after section removal fails and resets again on re
     .fn<SidebarSectionRemovalMutator>()
     .mockRejectedValueOnce(new Error("remove offline"))
     .mockResolvedValue(removed);
-  const store = createSidebarPreferencesStore(
-    async () => sorted,
-    true,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
+  const store = createSidebarPreferencesStore({
+    read: async () => sorted,
+    available: true,
     writeSort,
-    undefined,
-    remove,
-  );
+    removeSection: remove,
+  });
   try {
     await store.queries.ensure();
     await expect(store.queries.removeSection("work")).rejects.toThrow(
@@ -343,17 +314,12 @@ it("fences a late sort reset before invoking section removal", async () => {
   const remove = vi
     .fn<SidebarSectionRemovalMutator>()
     .mockResolvedValue(removed);
-  const store = createSidebarPreferencesStore(
-    async () => sorted,
-    true,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
+  const store = createSidebarPreferencesStore({
+    read: async () => sorted,
+    available: true,
     writeSort,
-    undefined,
-    remove,
-  );
+    removeSection: remove,
+  });
   try {
     await store.queries.ensure();
     const result = store.queries.removeSection("work");
@@ -397,29 +363,24 @@ it.each([false, true])(
     } as Record<string, unknown>;
     const project = () =>
       projectSidebarPreferences(sections, undefined, undefined, sort);
-    const store = createSidebarPreferencesStore(
-      async () => {
+    const store = createSidebarPreferencesStore({
+      read: async () => {
         const current = project();
         if (!stale) return current;
         const localSort = { ...current.sort };
         delete localSort["section:group-0"];
         return { ...current, sort: localSort };
       },
-      true,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      async (group, mode) => {
+      available: true,
+      writeSort: async (group, mode) => {
         sort = editSidebarSort(sort, 1, group, mode, 2);
         return project().sort ?? {};
       },
-      undefined,
-      async (id) => {
+      removeSection: async (id) => {
         sections = editSidebarSectionRemoval(sections, 1, id, 3);
         return project();
       },
-    );
+    });
     try {
       await store.queries.ensure();
       await store.queries.removeSection("group-0");
@@ -451,17 +412,11 @@ it("does not offer removal without a sort writer even when local sorting is Alph
   const remove = vi
     .fn<SidebarSectionRemovalMutator>()
     .mockResolvedValue(removed);
-  const store = createSidebarPreferencesStore(
-    async () => data,
-    true,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    remove,
-  );
+  const store = createSidebarPreferencesStore({
+    read: async () => data,
+    available: true,
+    removeSection: remove,
+  });
   try {
     await store.queries.ensure();
     expect(store.queries.removeSectionWritable).toBe(false);
@@ -486,22 +441,19 @@ it.each([true, false])(
       sections: data.sections,
       assignments: data.assignments,
     }));
-    const store = createSidebarPreferencesStore(
-      async () => data,
-      true,
-      async () => {
+    const store = createSidebarPreferencesStore({
+      read: async () => data,
+      available: true,
+      write: async () => {
         entered.resolve();
         const next = await held.promise;
         if (!succeeds) throw new Error("creation failed");
         return next;
       },
-      async () => data.starred,
-      undefined,
-      undefined,
-      async () => data.sort ?? {},
-      undefined,
-      remove,
-    );
+      writeStar: async () => data.starred,
+      writeSort: async () => data.sort ?? {},
+      removeSection: remove,
+    });
     try {
       await store.queries.ensure();
       const creating = store.queries.createAndAssign("beta", created);
@@ -531,3 +483,97 @@ it.each([true, false])(
     }
   },
 );
+
+it("confirms the filter reset before section removal and leaves failures retryable", async () => {
+  const saved: SidebarPreferences = {
+    ...data,
+    filters: { "section:work": "unreads", channels: "active" },
+  };
+  const calls: string[] = [];
+  const filter = vi.fn(async () => {
+    calls.push("filter");
+    return {
+      filters: { channels: "active" as const },
+      activeWindowSeconds: {},
+    };
+  });
+  filter.mockRejectedValueOnce(new Error("filter not confirmed"));
+  const remove = vi.fn(async () => {
+    calls.push("remove");
+    return removed;
+  });
+  const store = createSidebarPreferencesStore({
+    read: async () => saved,
+    available: true,
+    writeSort: async () => {
+      calls.push("sort");
+      return data.sort ?? {};
+    },
+    removeSection: remove,
+    writeFilter: filter,
+  });
+  try {
+    await store.queries.ensure();
+    await expect(store.queries.removeSection("work")).rejects.toThrow(
+      "filter not confirmed",
+    );
+    expect(remove).not.toHaveBeenCalled();
+    expect(store.queries.snapshot().data?.sections).toEqual(data.sections);
+    await store.queries.removeSection("work");
+    expect(filter).toHaveBeenLastCalledWith(
+      "section:work",
+      "all",
+      ["work"],
+      expect.any(AbortSignal),
+      null,
+    );
+    expect(calls).toEqual(["sort", "sort", "filter", "remove"]);
+    expect(store.queries.snapshot().data).toMatchObject({
+      ...removed,
+      filters: { channels: "active" },
+    });
+  } finally {
+    store.dispose();
+  }
+});
+
+it("clears only the removed section's failed filter save after removal succeeds", async () => {
+  const filter = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("section save failed"))
+    .mockRejectedValueOnce(new Error("channel save failed"))
+    .mockResolvedValue({ filters: {}, activeWindowSeconds: {} });
+  const remove = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("removal failed"))
+    .mockResolvedValue(removed);
+  const store = createSidebarPreferencesStore({
+    read: async () => data,
+    available: true,
+    writeSort: async () => ({}),
+    removeSection: remove,
+    writeFilter: filter,
+  });
+  try {
+    await store.queries.ensure();
+    await expect(
+      store.queries.setFilter("section:work", "active", ["work"]),
+    ).rejects.toThrow("section save failed");
+    await expect(
+      store.queries.setFilter("channels", "unreads", ["work"]),
+    ).rejects.toThrow("channel save failed");
+    await expect(store.queries.removeSection("work")).rejects.toThrow(
+      "removal failed",
+    );
+    expect(
+      store.queries.snapshot().filterErrors?.map(({ group }) => group),
+    ).toEqual(["section:work", "channels"]);
+    await store.queries.removeSection("work");
+    expect(store.queries.snapshot().data?.sections).toEqual([]);
+    expect(
+      store.queries.snapshot().filterErrors?.map(({ group }) => group),
+    ).toEqual(["channels"]);
+  } finally {
+    store.dispose();
+  }
+});

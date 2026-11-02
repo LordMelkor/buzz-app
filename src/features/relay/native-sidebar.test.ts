@@ -18,7 +18,7 @@ const records = new Map<string, ReturnType<typeof finalizeEvent>>();
 const defaultValue = (coordinate: string) =>
   coordinate === "channel-sections"
     ? { version: 1, sections: [], assignments: {} }
-    : coordinate === "channel-sort"
+    : coordinate === "channel-sort" || coordinate === "channel-filter"
       ? { version: 1, groups: {} }
       : { version: 1, channels: {} };
 function signedRecord(
@@ -54,6 +54,8 @@ function decode(events: ReturnType<typeof finalizeEvent>[]) {
         "channel-stars",
         "channel-mutes",
         "channel-sort",
+        "channel-filter",
+        "main-agent",
       ].includes(coordinate)
     )
       throw new Error("Invalid sidebar record");
@@ -157,6 +159,50 @@ it("decodes four self-encrypted coordinates through the narrow IPC command", asy
   });
   // Main also grants purpose-bound channel recipes (kind 30078); sidebar writes stay on narrow IPC.
   expect(transport.writer?.kinds).toContain(30078);
+});
+
+it("saves and reads back the account's main agent", async () => {
+  const transport = await connectNativeTransport(community);
+  expect(await transport.readMainAgent?.(signal)).toBeUndefined();
+  await transport.writeMainAgent?.("a".repeat(64), signal);
+  expect(await transport.readMainAgent?.(signal)).toBe("a".repeat(64));
+  await expect(
+    transport.writeMainAgent?.("A".repeat(64), signal),
+  ).rejects.toThrow("Invalid main agent intent");
+  records.set("main-agent", signedRecord("main-agent", { version: 2 }));
+  await expect(transport.readMainAgent?.(signal)).rejects.toThrow(
+    "Invalid main agent record",
+  );
+});
+
+it("reads a cleared main agent from development builds as none, and replaces it", async () => {
+  const transport = await connectNativeTransport(community);
+  records.set(
+    "main-agent",
+    signedRecord("main-agent", { version: 1, agent: null }),
+  );
+  expect(await transport.readMainAgent?.(signal)).toBeUndefined();
+  await transport.writeMainAgent?.("b".repeat(64), signal);
+  expect(await transport.readMainAgent?.(signal)).toBe("b".repeat(64));
+});
+
+it("prepends a drag-created section through native encrypted readback", async () => {
+  const transport = await connectNativeTransport(community);
+  const existing = "11111111-1111-1111-1111-111111111111";
+  const id = "22222222-2222-2222-2222-222222222222";
+  await transport.writeSidebarAssignment?.(
+    { channelId: "c1", createSection: { id: existing, name: "Work" } },
+    signal,
+  );
+  const groups = await transport.writeSidebarAssignment?.(
+    {
+      channelId: "c1",
+      createSection: { id, name: "Launch", position: "first" },
+    },
+    signal,
+  );
+  expect(groups?.sections.map(({ id }) => id)).toEqual([id, existing]);
+  expect(groups?.assignments).toEqual({ c1: id });
 });
 
 it("creates a section, moves a channel, stars, mutes and sorts with encrypted readback", async () => {
@@ -509,8 +555,8 @@ it.each([
       }),
     );
     const transport = await connectNativeTransport(community);
-    const owner = createSidebarPreferencesStore(
-      async () => {
+    const owner = createSidebarPreferencesStore({
+      read: async () => {
         const data = await transport.decodeSidebarPreferences?.(
           [...records.values()],
           signal,
@@ -518,10 +564,10 @@ it.each([
         if (!data) throw new Error("Sidebar decode unavailable");
         return data;
       },
-      true,
-      transport.writeSidebarAssignment,
-      transport.writeSidebarStar,
-    );
+      available: true,
+      write: transport.writeSidebarAssignment,
+      writeStar: transport.writeSidebarStar,
+    });
     try {
       const preferences = owner.queries;
       await preferences.ensure();
@@ -692,6 +738,58 @@ it("reorders sections through native signing and readback, never rewriting a sat
   expect(records.get("channel-sections")).toBe(head);
 });
 
+it("renames a section through native signing, preserving its order and assignments", async () => {
+  records.set(
+    "channel-sections",
+    signedRecord("channel-sections", {
+      version: 1,
+      sections: [
+        { id: "work", name: "Work", order: 0 },
+        { id: "later", name: "Later", order: 1 },
+      ],
+      assignments: { alpha: "work" },
+      preserved: "value",
+    }),
+  );
+  const transport = await connectNativeTransport(community);
+  if (!transport.renameSidebarSection)
+    throw new Error("Missing section rename writer");
+  await expect(
+    transport.renameSidebarSection({ sectionId: "work", name: " " }, signal),
+  ).rejects.toThrow("Invalid sidebar section rename intent");
+  await expect(
+    transport.renameSidebarSection({ sectionId: "gone", name: "X" }, signal),
+  ).rejects.toThrow("no longer exists");
+  expect(
+    await transport.renameSidebarSection(
+      { sectionId: "work", name: " Projects " },
+      signal,
+    ),
+  ).toEqual({
+    sections: [
+      { id: "work", name: "Projects", order: 0 },
+      { id: "later", name: "Later", order: 1 },
+    ],
+    assignments: { alpha: "work" },
+  });
+  const head = records.get("channel-sections");
+  if (!head) throw new Error("Missing sections head");
+  expect(
+    (decode([head])["channel-sections"] as { preserved: string }).preserved,
+  ).toBe("value");
+  vi.mocked(invoke).mockClear();
+  await transport.renameSidebarSection(
+    { sectionId: "work", name: "Projects" },
+    signal,
+  );
+  expect(
+    vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "relay_sign_sidebar"),
+  ).toEqual([]);
+  expect(records.get("channel-sections")).toBe(head);
+});
+
 it("does not report a section order overwritten before readback as saved", async () => {
   const transport = await connectNativeTransport(community);
   await transport.writeSidebarAssignment?.(
@@ -782,3 +880,126 @@ it.each([
       });
   },
 );
+
+it("uses the native filter signer and confirmed writer without changing sort", async () => {
+  const transport = await connectNativeTransport(community);
+  await transport.writeSidebarSort?.("channels", "recent", [], signal);
+  const sort = records.get("channel-sort");
+  expect(
+    await transport.writeSidebarFilter?.(
+      "section:work",
+      "unreads",
+      ["work"],
+      signal,
+    ),
+  ).toEqual({
+    filters: { "section:work": "unreads" },
+    activeWindowSeconds: {},
+  });
+  expect(
+    await transport.writeSidebarFilter?.(
+      "channels",
+      "active",
+      ["work"],
+      signal,
+      7 * 86400,
+    ),
+  ).toEqual({
+    filters: { "section:work": "unreads", channels: "active" },
+    activeWindowSeconds: { channels: 7 * 86400 },
+  });
+  expect(
+    await transport.writeSidebarFilter?.(
+      "section:work",
+      "all",
+      ["work"],
+      signal,
+    ),
+  ).toEqual({
+    filters: { channels: "active" },
+    activeWindowSeconds: { channels: 7 * 86400 },
+  });
+  expect(records.get("channel-sort")).toEqual(sort);
+  const record = records.get("channel-filter");
+  expect(record).toBeDefined();
+  expect(decode(record ? [record] : [])["channel-filter"]).toMatchObject({
+    meta: {
+      g: { "section:work": [expect.any(Number), expect.any(String), null] },
+    },
+  });
+  await expect(
+    transport.writeSidebarFilter?.("section:missing", "active", [], signal),
+  ).rejects.toThrow("Invalid sidebar filter intent");
+});
+
+it("rejects a same-mode native readback with a conflicting duration", async () => {
+  const transport = await connectNativeTransport(community);
+  records.set(
+    "channel-filter",
+    signedRecord("channel-filter", {
+      version: 1,
+      groups: { channels: "active" },
+    }),
+  );
+  const original = vi.mocked(invoke).getMockImplementation();
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    const result = await original?.(command, args);
+    if (
+      command === "relay_http" &&
+      (args as { path: string }).path === "/events"
+    )
+      records.set(
+        "channel-filter",
+        signedRecord(
+          "channel-filter",
+          {
+            version: 1,
+            groups: { channels: "active" },
+            activeWindowSeconds: { channels: 90 * 86400 },
+          },
+          2_000_000_000,
+        ),
+      );
+    return result;
+  });
+  await expect(
+    transport.writeSidebarFilter?.("channels", "active", [], signal, 7 * 86400),
+  ).rejects.toThrow("changed on another device");
+  const before = vi.mocked(invoke).mock.calls.length;
+  await expect(
+    transport.writeSidebarFilter?.("channels", "active", [], signal, 86401),
+  ).rejects.toThrow("Invalid sidebar filter intent");
+  expect(vi.mocked(invoke).mock.calls).toHaveLength(before);
+});
+
+it("creates an empty Team section and confirms retry without touching placements or stars", async () => {
+  records.set(
+    "channel-sections",
+    signedRecord("channel-sections", {
+      version: 1,
+      sections: [{ id: "work", name: "Work", order: 0 }],
+      assignments: { alpha: "work" },
+    }),
+  );
+  const transport = await connectNativeTransport(community);
+  if (!transport.writeSidebarAssignment)
+    throw new Error("Missing sidebar writer");
+  const intent = {
+    createSection: {
+      id: "12345678-1234-1234-1234-123456789abc",
+      name: " Launch ",
+    },
+  };
+  const created = await transport.writeSidebarAssignment(intent, signal);
+  expect(created.assignments).toEqual({ alpha: "work" });
+  expect(created.sections.at(-1)).toMatchObject({
+    id: intent.createSection.id,
+    name: "Launch",
+  });
+  const head = records.get("channel-sections");
+  expect(await transport.writeSidebarAssignment(intent, signal)).toEqual(
+    created,
+  );
+  expect(records.get("channel-sections")).toBe(head);
+  expect(records.has("channel-stars")).toBe(false);
+});

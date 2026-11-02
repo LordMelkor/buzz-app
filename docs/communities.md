@@ -3,24 +3,28 @@
 The app opens into Personal space with no joined community. The shell, local
 profile editor, Home, Settings and plugin management do not wait for a relay.
 `features/communities/service.ts` owns the local identity's default profile,
-saved memberships and optional selection. `features/relay/session.ts` still owns
+saved memberships, optional selection and the [known-community sync
+state](#known-communities). `features/relay/session.ts` still owns
 each community's queries, live subscriptions, projections and durable outbox.
 
 ## Try it
 
 Configure `BUZZ_DEV_VIEWER` with your existing Buzz public key in `.env.local`
-([setup and safety notes](../README.md#relay-channels)), then run
+([setup and safety notes](contributing.md#live-relay-development)), then run
 `just web` and open the Local URL it prints, or use `just desktop` instead. The
 development broker runs on macOS and Linux and refuses an OS-store identity
 that does not match your explicit public pin.
-Click the avatar → **Settings → Profile**. With a community selected in the left
-rail, Save updates only your profile in that community; there is no separate
-profile-destination selector. In Personal space, Save edits the local default for
-new communities without publishing. Use **Add a community** in the left rail and
-type a **Relay URL**. There
+Click the avatar → **Settings → Profile**. With a community selected in the
+header's community picker, Save updates only your profile in that community;
+there is no separate profile-destination selector. In Personal space, Save edits
+the local default for new communities without publishing. Open the header's
+community picker, choose **Join a community** and type a **Community URL**. With
+no community saved, the picker is labeled **Communities**; otherwise it shows the
+selected community's icon or the Personal space globe. There
 is no destination dropdown. Accepts `wss://` or `https://` origins, for example
 `wss://relay.example.com` or `wss://other.example.com`, and other
-Buzz-compatible community relays. No community is pre-joined.
+Buzz-compatible community relays. No community is pre-joined; a packaged build
+that sets [`BUZZ_DEFAULT_COMMUNITY_URL`](configuration.md) only preselects one.
 
 Surrounding whitespace, host case, a final DNS dot, default port 443 and a single
 root slash normalize to the same HTTPS origin. Non-default ports are preserved.
@@ -38,7 +42,23 @@ publication uses a signed kind:0 event and requires a matching accepted receipt
 and current profile readback before the client saves the completed membership.
 Rejected setup retains input and does not replace the currently selected community.
 An admitted invite is a remote side effect and is not undone if later profile
-setup fails or is cancelled.
+setup fails or is cancelled. The native first-run **Join Community** page
+(`features/identity/Welcome.tsx`, [identity](identity.md)) is the only other
+caller of `communities.joined`, through the same owner as the dialog
+(`join.ts`): the join is journaled before any remote effect, a code from an
+invite link or the invite page is claimed with the same policy receipt and
+signed claim (a journaled join reads before it reclaims), and the signed profile
+read proves admission; the join itself publishes no profile. The first-run
+profile step that follows, when no profile exists yet, is the dialog's: a fresh
+read, a kind 0 published when the draft differs, its readback, and only then
+the saved and selected membership. First run's
+restore of the account's [known communities](#known-communities) joins each
+admitted destination through the same read and call. `Welcome` is also the
+second caller of the invite intent (`invite-intent.ts`) beside OS deep links:
+an address typed on the welcome screen that the restore did not admit opens
+this dialog, prefilled, as the app opens.
+
+
 
 Profile editing preserves existing fields that this editor does not expose.
 After a confirmed Settings save, the profile also becomes the device-local
@@ -65,9 +85,9 @@ re-reads the effective name/picture/description after the accepted receipt; a fa
 conflicting current profile retains the draft for explicit Save retry instead of
 reporting success. This confirmation is not a transaction against other clients.
 
-Use the persistent left community rail to select a saved community or Personal
+Use the header's community picker to select a saved community or Personal
 space. Personal space
-clears selection without forgetting memberships. The rail’s Add control opens the
+clears selection without forgetting memberships. Its **Join a community** item opens the
 existing join dialog; displaying saved communities reads relay metadata but does not open sessions for them.
 Right-click a saved community (or press the ContextMenu key or Shift+F10 on it)
 for Mark all as read, Copy community URL, Invite to community, Community
@@ -99,7 +119,7 @@ promises nothing about how long; it never calls access revoked for good. Any
 other refusal or an unreachable relay keeps the membership and reports the
 failure so Leave can be tried again. Once the relay has answered, only this
 device can still fail: a device record that will not save keeps the community
-in the rail and says so, naming the storage error so a store that never saves
+in the community picker and says so, naming the storage error so a store that never saves
 is not the same promise every attempt, and leaving it again finishes through
 the not-a-member answer; a store that will not clear is logged by name and the
 success notice says some saved data remains. A left community that was selected
@@ -110,6 +130,116 @@ Messages shows an intentional
 empty state there. Try drafting in A, switching to B, then returning to A.
 Selected channels, drafts and reading offsets are partitioned by the canonical
 community origin and viewer; channel IDs alone are not sufficient keys.
+
+## Import from the previous desktop app
+
+After native startup, Buzz offers the previous desktop app's saved communities
+for the signed-in identity. The dialog lists eligible secure origins and warns
+that importing may restore communities previously removed. Nothing is added or
+queued for account sync until **Import communities** is chosen. **Skip import**,
+Close, or Escape declines the import and keeps that decision across launches.
+
+Every nonempty import requires consent. An empty local record or account list
+cannot establish an untouched account: acknowledged removals leave no history,
+and pending or unsuccessful sync cannot establish it either. Existing memberships
+and settings stay unchanged. Memberships and removals observed while the read or
+consent is pending are checked again before adding anything.
+
+The native reader opens the previous app's macOS WebKit storage read-only and
+skips symlinks. An absent root reads as empty; traversal or database errors leave
+the import retryable on the next launch. A read or save that does not complete
+does not record approval; disposing a pending prompt does not record a decline.
+Other platforms have no supported legacy storage source.
+
+## Known communities
+
+The device record also carries which saved destinations the account service
+last reported holding and the uploads still owed to it, in the same single
+write as the memberships, so a join or leave and its upload intent cannot be
+split by a failed or interrupted save. Destinations are addressed the way the
+service spells them, `wss://host[:port]` with a lowercase host, no default
+port and no trailing slash; a configured alias resolves to its origin first and
+never leaves the device. Records from before this field existed, or a field
+this reader cannot understand, read as empty, and a malformed entry is dropped
+on its own.
+
+The account's list is a set: the service's add and remove are idempotent, so
+the outbox holds at most one intent per destination, the latest. Joining queues
+an add and leaving a removal, and a newer intent replaces the older one
+outright, since whichever edit lands last is the state. An intent the latest
+word already satisfies (the pending intent, or the service holding the
+destination) queues nothing, so re-running a join the service already holds
+sends nothing; removing a destination the service is not known to hold still
+queues, in case another device saved it. An accepted upload moves the
+destination into or out of the known set and drops the intent, unless a
+different one has replaced it meanwhile, which is then sent in turn. This is
+what makes a lost answer safe: the retry simply sends whatever intent stands,
+so joining then leaving (or leaving then rejoining) across a lost
+acknowledgement converges on the latest intent. A complete list from the
+service adds destinations saved on another device under their host name
+without opening a session, and queues an upload for saved memberships the
+service has never seen, which is how a device list from before sync existed
+reaches the account; a pending intent for a destination speaks for it in that
+merge. Removals made on another device are ignored for now, a deliberate
+interim choice: a saved membership the service knew but no longer lists stays
+on this device, and sync never forgets a membership. So that this device does
+not undo the other's removal by uploading the membership again, the known set
+is cumulative for its account (everything the service has listed or accepted
+an add for, less the removals it accepted from here) rather than the last list:
+the omitted membership stays known, and so off the queue, on every later
+sign-in. Leaving it here still propagates. Until removals are followed, the
+devices of one account can disagree about a community, and an add queued while
+the service was unreachable can likewise land after another device's removal.
+Joining and leaving never wait for sync. The `knownCommunities` capability
+exposes the record, the queue and these writes to one owner, the bundled
+Builderlab plugin. First run reads the same account list after the Builderlab
+sign-in and restores it before the app opens ([identity](identity.md)): each
+destination that admits the new device's key is joined through an admission
+read, so a refused or unreachable one is not saved then; the next sign-in's
+merge adds it without a read, as for any other device. Removals are ignored
+there too. A join on first run's **Join Community** page is also posted to the
+account's add at once with the first-run sign-in's credential, since the
+Settings session that sends the outbox may not exist until a later manual
+sign-in; `joined()` still queues the add, and the next sign-in sends it again,
+which the service's idempotent add makes harmless. Restored destinations are not
+posted.
+
+The list is account-scoped, but this state is still kept under the device
+record's viewer key (`buzz-client.v1:<viewer>`), where it outlives a
+Builderlab sign-out. So the record also names the account whose list the
+known set describes, and a merge for a different account (or for a record
+that names none) starts from nothing known, with the outbox kept, so every
+saved membership the new account's list lacks is queued for it. Signing back
+in as the same account keeps the set, so a membership it once held and no
+longer lists is still neither forgotten nor uploaded again. Moving the state
+to live with the Builderlab account is a follow-up;
+until then a device whose identity changes starts from an empty record and
+re-merges on its next sign-in.
+
+The plugin starts a sync owner only where signing in is possible: the native
+app with a configured Builderlab service. The owner syncs only while signed in.
+Each sign-in reads the complete list, merges it as above, then sends each
+destination's latest intent one at a time. A newly queued intent, the window
+coming online or becoming visible runs the drain again at once; once the list
+has merged, a trigger never reads it again before the next sign-in. A failed
+request, or a device record that would not take the answer, retries at 1, 2,
+4… seconds, capped at a minute, re-sending the intent that then stands; a
+timeout, a rate limit and a server error are such failures. The service's
+refusals are never retried as sent: an address it refuses, an account that is
+full or any other client error parks that one intent until it is replaced or
+the next sign-in while the rest continue, an
+account that cannot sync or a list this client cannot read (a shape the two
+sides no longer share) stops until then, and a session the service has ended
+signs the plugin out. A service that answers any of the routes with 404 has no
+known-communities routes yet, or not all of them: sync stops until the next
+sign-in. The owner reports nothing to the app, so a halted or parked sync is
+not shown anywhere yet; each refusal is named once in a console warning (the
+route, the address and the reason), since an account without the routes'
+server capability is refused on every sign-in and would otherwise leave no
+trace on the device. A listed address this device could never save is left
+out and counted the same way, so one bad row cannot stop the account's sync.
+Signing out or disabling the plugin abandons the request in flight and leaves
+the queue intact.
 
 ## Session lifetime
 
@@ -161,7 +291,7 @@ private keys.
 Storage failure blocks the remote operation. Completing a native join requires
 successful local membership persistence before clearing its recovery record.
 
-After closing or restarting, open **Add a community** to resume the most recent
+After closing or restarting, open **Join a community** to resume the most recent
 unfinished destination. Continue makes a fresh authenticated profile read, with
 strong consistency. Successful access resumes profile setup even if the profile
 does not exist yet; it never requires reusing an expired invite after admission.
@@ -231,7 +361,47 @@ leaving (membership removal, Personal space fallback, session disposal, purged
 device state, a leave that keeps device state for the banned answer, the last
 community, a purge that leaves named failures, and a native device record that
 will not save, which throws before the snapshot, session, record or device state
-change). `CommunityRail.test.tsx` covers the leave flow end to end against the
+change), that join and leave each write the membership change and its queued
+upload in one record write which a restart restores, applying a server list
+(additions under the host name, nothing forgotten, one record write) and a
+native sync write that will not save.
+It also covers that re-running a join the service already holds queues nothing
+while a join it does not hold queues an add.
+`known-communities.test.ts` covers the queue rules on their own: one latest
+intent per destination with a newer intent replacing the older, nothing queued
+when the latest word already agrees, acknowledgements moving a destination in
+and out of the known set while keeping an intent that replaced the settled one,
+both lost-acknowledgement orders converging on the latest intent as a plain
+retry, every list-merge branch including the omitted membership kept and not
+uploaded again, the pre-sync migration upload and deference to the pending
+intent, and the
+tolerant reader of saved state.
+`src/bundled/builderlab/known-communities/client.test.ts` covers the account
+service's three routes against the native host transport: the exact request
+shapes, the device's spelling of listed addresses, omitted repeated fields,
+unsaveable addresses dropped and counted, rows of another shape and a success
+without a JSON object body answered as an invalid response, every named refusal
+in JSON and in the framework's plain text, unnamed client errors returned as
+rejections on every route while timeouts, rate limits and server errors remain
+failures, a 401 that ends the session and an unreachable service.
+`sync.test.ts` covers the owner under a controlled clock: sign-in and a
+loading record, the complete list merged once per sign-in and an intent queued
+while it is in flight, the never-uploaded rule on a later sign-in and a
+membership removed elsewhere kept and never re-sent across the sign-ins after
+it, one upload in flight at a time in queue order, identical retries at each
+backoff boundary and the reset after a success, a device record that will not
+take an answer backing off and replaying, the `online` and `visibilitychange`
+triggers and no second list once synced, parked and halting refusals
+including rejections by status, an unreadable list (through the real client,
+keeping every membership) and the 404 on the list or an upload for a service
+without the routes, addresses the list left out, a parked add replaced by the
+removal that then goes out and re-sent on the next sign-in, a withdrawn parked
+intent sent when queued anew, both lost-acknowledgement orders against a set
+service, an abandoned upload on sign-out that keeps the queue, a session ended
+by the service and disposal. `index.test.tsx` runs the real plugin wiring
+through to the list request under the signed-in credential, and that an
+unconfigured build starts no owner.
+`CommunityPicker.test.tsx` covers the leave flow end to end against the
 broker route: confirm, publish, then remove; cancel; refusals and timeouts that
 keep the membership; the not-a-member answers (purging) and the banned answer
 (keeping device state); a device record that will not save after the relay
@@ -243,8 +413,8 @@ per-store failure report. The broker and native adapter tests sign the exact
 leave shape and pass through only the relay's known refusals.
 `broker.test.ts` runs real localhost HTTP with signed fixture events to verify
 multi-community routing, profile publication, invite claims, and a captured send
-after opening another community. `destination.test.ts` checks normalization and
-rejection; `broker-url.test.ts` exercises the real middleware with isolated signing
+after opening another community. `destination.test.ts` checks normalization,
+rejection and the account service's `wss://` address; `broker-url.test.ts` exercises the real middleware with isolated signing
 keys and upstream fixtures, including registration, cross-origin guards, all route
 sinks and captured sends. Service tests cover arbitrary membership persistence,
 selected-only restore, retry registration and equivalent-URL selection. Existing relay tests cover connection generations,
@@ -253,7 +423,8 @@ late responses, delivery and revocation.
 `native-join.test.tsx` mounts the real dialog, community service and native adapter
 with fixture IPC to cover claim/profile response loss, acknowledged but superseded
 or missing profiles, read and persistence failures, interrupted setup, alias
-recovery and selected-only restart. `join-journal.test.ts` covers alias addition,
+recovery, selected-only restart and the completed join's queued upload in its
+device record. `join-journal.test.ts` covers alias addition,
 removal and unresolved legacy records across restarts. `native-api.test.ts`
 and `relay/native.test.ts` cover routing, verification, live auth, capacity,
 receipt correlation and expired-event readback. `app/services.test.ts` exercises

@@ -1,40 +1,54 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import type { AgentViewProps } from "../../../features/agents/service";
-import { Button } from "../../../shared/design-system/ui/Button";
-import { Field } from "../../../shared/design-system/ui/Field";
 import { PreferenceRow } from "../../../shared/design-system/ui/PreferenceRow";
 import { SettingsGroup } from "../../../shared/design-system/ui/SettingsGroup";
-import { Textarea } from "../../../shared/design-system/ui/Textarea";
 import inlineStyles from "../../../shared/InlineReference.module.css";
-import {
-  MAX_INSTRUCTIONS_LENGTH,
-  validInstructions,
-  type AgentClient,
-  type RemoteAgent,
-} from "../agents/client";
-import type { OAuthSession } from "../oauth/session";
+import type { AgentClient, RemoteAgent } from "../agents/client";
+import type { BuilderlabSession } from "../session";
+import { ModelSettings } from "./ModelSettings";
 
 const message = (reason: unknown) =>
   reason instanceof Error
     ? reason.message
-    : "Could not update Builderlab instructions.";
+    : "Could not load Builderlab settings.";
 
 /** Hosted settings belong to Builderlab, rather than Agents' local config. */
-export function createSettingsTab(client: AgentClient, session: OAuthSession) {
-  function Editor({ pubkey, retry }: { pubkey: string; retry(): void }) {
+export function createSettingsTab(
+  client: AgentClient,
+  session: BuilderlabSession,
+  openIdentity?: () => void,
+) {
+  function Editor({
+    pubkey,
+    retry,
+    harnessControl,
+  }: {
+    pubkey: string;
+    retry(): void;
+    harnessControl: ReactNode;
+  }) {
+    const login = useSyncExternalStore(session.subscribe, session.snapshot);
     const [loaded, setLoaded] = useState<{
       agent: RemoteAgent;
       subject: string;
+      email: string;
     }>();
-    const [draft, setDraft] = useState("");
     const [busy, setBusy] = useState(true);
     const [error, setError] = useState("");
-    const controller = useRef<AbortController | null>(null);
     useEffect(() => {
+      if (loaded || login.status !== "signed-in") return;
+      setBusy(true);
+      setError("");
       const current = new AbortController();
-      controller.current = current;
       const load = async () => {
-        await session.ensureSignedIn(current.signal);
+        // Retire a discarded mount before starting host I/O.
+        await Promise.resolve();
+        current.signal.throwIfAborted();
         const credential = session.credential();
         const remote = (await client.list(current.signal)).find(
           (row) => row.pubkey === pubkey,
@@ -45,11 +59,12 @@ export function createSettingsTab(client: AgentClient, session: OAuthSession) {
         if (!remote)
           throw new Error("Agent not found in this Builderlab account.");
         if (remote.status !== "Active")
-          throw new Error(
-            "Only Active agents can have their instructions edited.",
-          );
-        setLoaded({ agent: remote, subject: credential.account.subject });
-        setDraft(remote.instructions ?? "");
+          throw new Error("Only Active agents can have their settings edited.");
+        setLoaded({
+          agent: remote,
+          subject: credential.account.subject,
+          email: credential.account.email,
+        });
       };
       void load()
         .catch((reason: unknown) => {
@@ -59,107 +74,60 @@ export function createSettingsTab(client: AgentClient, session: OAuthSession) {
           if (!current.signal.aborted) setBusy(false);
         });
       return () => current.abort();
-    }, [pubkey]);
-    const submit = async () => {
-      const signal = controller.current?.signal;
-      if (!loaded || !signal || busy || !validInstructions(draft)) return;
-      setBusy(true);
-      setError("");
-      try {
-        await session.ensureSignedIn(signal);
-        if (session.credential().account.subject !== loaded.subject)
-          throw new Error(
-            "Sign in to the Builderlab account that loaded these instructions.",
-          );
-        await client.updateInstructions(loaded.agent, draft, signal);
-        signal.throwIfAborted();
-        setLoaded({
-          ...loaded,
-          agent: { ...loaded.agent, instructions: draft },
-        });
-      } catch (reason) {
-        if (!signal.aborted) setError(message(reason));
-      } finally {
-        if (!signal.aborted) setBusy(false);
-      }
-    };
+    }, [pubkey, login, loaded]);
     return (
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        {loaded ? (
-          <>
-            <Field
-              label="Instructions"
-              description="Saved in Builderlab. Leave empty to clear instructions."
-              error={
-                !validInstructions(draft)
-                  ? "Use text or leave this empty."
-                  : undefined
-              }
-            >
-              <Textarea
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                disabled={busy}
-                rows={8}
-                maxLength={MAX_INSTRUCTIONS_LENGTH}
-              />
-            </Field>
-            <div>
-              <Button
-                type="submit"
-                variant="prominent"
-                loading={busy}
-                disabled={
-                  !validInstructions(draft) ||
-                  draft === (loaded.agent.instructions ?? "")
-                }
-                focusableWhenDisabled
-              >
-                Save instructions
-              </Button>
-            </div>
-          </>
-        ) : busy ? (
-          <p role="status" className="m-0 text-body-sm text-secondary">
-            Loading instructions…
-          </p>
-        ) : (
-          <div>
-            <Button onClick={retry}>Retry</Button>
-          </div>
-        )}
-        {error && (
-          <p role="alert" className="m-0 text-body-sm text-danger">
-            {error}
-          </p>
-        )}
-      </form>
+      <ModelSettings
+        client={client}
+        session={session}
+        openIdentity={openIdentity}
+        settings={
+          loaded ?? {
+            pending: busy && login.status === "signed-in",
+            error,
+            retry,
+          }
+        }
+        harnessControl={harnessControl}
+      />
     );
   }
   return function Settings({
     agent,
     settingsSection,
     settingsContent,
+    settingsHost,
   }: AgentViewProps) {
     const [revision, setRevision] = useState(0);
     return (
       <div className="grid gap-4">
-        <div hidden={settingsSection === "runtime"}>
+        {settingsSection !== "runtime" && (
           <Editor
             key={`${agent.pubkey}/${revision}`}
             pubkey={agent.pubkey}
             retry={() => setRevision((value) => value + 1)}
+            harnessControl={settingsHost?.typeControl?.(false)}
           />
-        </div>
+        )}
         {settingsSection !== "identity" && (
           <>
             <SettingsGroup>
+              <PreferenceRow
+                title="Runtime"
+                subtitle={
+                  <>
+                    Hosted and managed by{" "}
+                    <a
+                      className={inlineStyles.link}
+                      href={import.meta.env.VITE_BUZZ_BUILDERLAB_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Builderlab
+                    </a>
+                    .
+                  </>
+                }
+              />
               <PreferenceRow
                 title="Workspace"
                 subtitle="Remote runtime shared with all agents by default."
@@ -172,17 +140,6 @@ export function createSettingsTab(client: AgentClient, session: OAuthSession) {
             {settingsContent}
           </>
         )}
-        <p className="m-0 text-body-sm text-secondary">
-          Remote runtime managed via{" "}
-          <a
-            className={inlineStyles.link}
-            href={import.meta.env.VITE_BUZZ_BUILDERLAB_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Builderlab
-          </a>
-        </p>
       </div>
     );
   };

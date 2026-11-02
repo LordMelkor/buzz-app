@@ -26,6 +26,7 @@ function session(
     },
     archives: {
       state: (key: string) => (key === archived ? "archived" : "active"),
+      snapshot: () => ({ status: "ready", archived: [archived] }),
     },
   } as unknown as RelaySession;
 }
@@ -39,8 +40,8 @@ it("admits any valid key where outside people can be named", () => {
   }
 });
 
-it("keeps session, roster and agent-invite limits", () => {
-  const sessionChannel = session({ channelType: "session" });
+it("keeps Solo chat, roster and agent-invite limits", () => {
+  const sessionChannel = session({ channelType: "solo" });
   const plain = mentionAdmission(sessionChannel, "channel");
   expect(plain(member)).toBe(true);
   expect(plain(outside)).toBe(false);
@@ -74,7 +75,7 @@ it("refuses invalid keys, archived identities and closed destinations", () => {
   expect(admits("A".repeat(64))).toBe(false);
   expect(admits("abc")).toBe(false);
   expect(admits(archived)).toBe(false);
-  const viewer = session({ channelType: "session" }, archived);
+  const viewer = session({ channelType: "solo" }, archived);
   expect(mentionAdmission(viewer, "channel")(archived)).toBe(true);
   for (const closed of [{ archived: true }, { readOnly: true }])
     expect(

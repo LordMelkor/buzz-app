@@ -1,0 +1,266 @@
+.scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb-quiet) transparent;
+}
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  inline-size: 100%;
+  max-inline-size: 64rem;
+  margin-inline: auto;
+  padding: var(--space-panel-inset);
+}
+.status {
+  padding: var(--space-panel-inset);
+  color: var(--text-subtle);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+}
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-subtle);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+}
+.summary {
+  max-inline-size: 44rem;
+  color: var(--text-subtle);
+  font-size: var(--text-body-lg);
+  line-height: var(--text-body-lg--line-height);
+  letter-spacing: var(--text-body-lg--letter-spacing);
+  text-wrap: pretty;
+}
+.summary b {
+  color: var(--text-standard);
+  font-weight: var(--type-weight-medium);
+}
+.hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.label {
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+  letter-spacing: var(--text-caption--letter-spacing);
+}
+.heroValue {
+  color: var(--text-standard);
+  font-size: var(--text-display);
+  line-height: var(--text-display--line-height);
+  letter-spacing: var(--text-display--letter-spacing);
+  font-variant-numeric: tabular-nums;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  color: var(--text-subtle);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+}
+.delta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+/* The icon is a line tall, so it centers on the first line when text wraps. */
+.footnote {
+  display: flex;
+  gap: var(--space-1);
+  color: var(--text-metadata);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+  letter-spacing: var(--text-caption--letter-spacing);
+}
+.footnote svg {
+  flex-shrink: 0;
+  block-size: 1lh;
+}
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-4);
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-container);
+}
+.tileValue {
+  color: var(--text-standard);
+  font-size: var(--text-heading);
+  line-height: var(--text-heading--line-height);
+  letter-spacing: var(--text-heading--letter-spacing);
+  font-weight: var(--text-heading--font-weight);
+  font-variant-numeric: tabular-nums;
+}
+.section {
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: var(--space-8);
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.agentRow,
+.staticRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-block: var(--space-2);
+}
+.agentText,
+.sessionText {
+  display: flex;
+  min-inline-size: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.name {
+  overflow: hidden;
+  color: var(--text-standard);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agentText .label,
+.sessionText .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.track {
+  display: block;
+  margin-block-start: var(--space-1);
+  block-size: 0.25rem;
+}
+.bar {
+  display: block;
+  min-inline-size: 0.25rem;
+  block-size: 100%;
+  border-start-end-radius: 0.125rem;
+  border-end-end-radius: 0.125rem;
+}
+.value {
+  color: var(--text-standard);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0;
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+  list-style: none;
+}
+.legend li,
+.tipRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.swatch {
+  display: inline-block;
+  inline-size: 0.5rem;
+  block-size: 0.5rem;
+  border-radius: 0.125rem;
+}
+.plot {
+  position: relative;
+  inline-size: 100%;
+}
+.plot svg {
+  display: block;
+  overflow: visible;
+}
+.grid {
+  stroke: var(--border-standard);
+  stroke-width: 1;
+}
+.tick {
+  fill: var(--text-metadata);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+}
+.hit {
+  position: absolute;
+  inset-block-start: 0;
+}
+.tip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-variant-numeric: tabular-nums;
+}
+.tipRow > span:last-child {
+  margin-inline-start: auto;
+  padding-inline-start: var(--space-4);
+}
+.figuresToggle [aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.figures {
+  inline-size: 100%;
+  border-collapse: collapse;
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+  letter-spacing: var(--text-caption--letter-spacing);
+  font-variant-numeric: tabular-nums;
+}
+.figures th,
+.figures td {
+  padding: var(--space-1) var(--space-2);
+  border-block-end: 1px solid var(--border-standard);
+  text-align: end;
+}
+.figures th:first-child {
+  text-align: start;
+}
+.figures thead th {
+  color: var(--text-metadata);
+  font-weight: var(--type-weight-medium);
+}
+.figures tbody th {
+  font-weight: inherit;
+}

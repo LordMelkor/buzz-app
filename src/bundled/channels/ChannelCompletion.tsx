@@ -6,7 +6,7 @@ import type {
   ComposerCompletionProps,
 } from "../../features/conversation/contracts";
 import type { ChannelSummary } from "../../features/relay/contracts";
-import { matchName } from "../../features/search/match";
+import { MatchRank, matchName } from "../../features/search/match";
 
 const LIMIT = 20;
 /** Rows kept for open channels when joined matches would fill the list. */
@@ -16,10 +16,12 @@ function referable(channel: ChannelSummary) {
   return (
     !!channel.name.trim() &&
     !/[\r\n]/.test(channel.name) &&
+    !channel.huddle &&
+    !channel.metadataPending &&
     !channel.archived &&
     !channel.hidden &&
     channel.channelType !== "dm" &&
-    channel.channelType !== "session"
+    channel.channelType !== "solo"
   );
 }
 
@@ -30,25 +32,32 @@ function joined(channel: ChannelSummary, viewer: string | undefined) {
   return (
     !!viewer &&
     referable(channel) &&
-    (!channel.readOnly || !!channel.cached) &&
+    (!channel.readOnly || channel.viewerRole === "guest" || !!channel.cached) &&
     !!channel.members?.includes(viewer)
   );
 }
 
 /** An open channel the viewer can preview but hasn't joined. */
 function open(channel: ChannelSummary) {
-  return !!channel.readOnly && !channel.private && referable(channel);
+  return (
+    !!channel.readOnly &&
+    channel.viewerRole !== "guest" &&
+    !channel.private &&
+    referable(channel)
+  );
 }
 
 /** The channel name rule the other channel pickers use (`matchName`), without
- * its fuzzy ranks: Enter and Tab pick the first row while the viewer is
- * writing prose, so a scattered-letter match must not capture a `#word`. A
- * query with a space matches only from the start of a name, as person names
- * do, so ordinary prose after `#name` closes the popup. */
+ * its last, scattered-letter rank: Enter and Tab pick the first row while the
+ * viewer is writing prose, so letters merely in order must not capture a
+ * `#word`. Letter runs that each begin a word (`team-pl`, `tlp`) still
+ * match, as in Command-K. A query with a space matches only from the start
+ * of a name, as person names do, so ordinary prose after `#name` closes the
+ * popup. */
 function rank(name: string, needle: string) {
   const found = matchName(name, needle)?.rank;
-  if (found === undefined || found > 3) return undefined;
-  if (/\s/u.test(needle) && found > 1) return undefined;
+  if (found === undefined || found > MatchRank.wordRuns) return undefined;
+  if (/\s/u.test(needle) && found > MatchRank.prefix) return undefined;
   return found;
 }
 

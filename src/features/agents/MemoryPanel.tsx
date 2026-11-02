@@ -11,6 +11,7 @@ import remarkGfm from "remark-gfm";
 import { formatFullTimestamp } from "../../shared/datetime";
 import { relativeTimestamp } from "../../shared/relative-timestamp";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
+import type { CommunityReader } from "../communities/service";
 import {
   ContextMenuRoot,
   ContextMenuTrigger,
@@ -29,6 +30,12 @@ import type { RelaySession } from "../relay/session";
 import type { MemoryEntry, MemorySnapshot } from "./memory";
 import type { Agent } from "./service";
 import styles from "./MemoryPanel.module.css";
+import {
+  AgentCommunityScope,
+  useAgentScopeCommunity,
+  type AgentScopeReader,
+} from "./AgentCommunityScope";
+import { writeClipboardText } from "../../shared/clipboard";
 
 export type AgentMemories = RelaySession["agentMemories"];
 type View = ReturnType<AgentMemories["open"]>;
@@ -116,10 +123,15 @@ function useMemory(memories: AgentMemories | undefined, pubkey: string) {
 export function MemoryPanel({
   agent,
   memories,
+  communities,
+  agents,
 }: {
   agent: Agent;
   memories: AgentMemories | undefined;
+  communities?: CommunityReader | undefined;
+  agents: AgentScopeReader;
 }) {
+  const community = useAgentScopeCommunity(agent, agents, communities);
   const { snapshot, refreshing, refresh } = useMemory(memories, agent.pubkey);
   const reducedMotion = useReducedMotion();
   const { status, listing } = snapshot;
@@ -146,19 +158,25 @@ export function MemoryPanel({
     />
   ) : null;
   return (
-    <div className="grid content-start gap-6">
+    <div className="grid min-w-0 grid-cols-1 content-start gap-6">
       {status === "ready" && listing ? (
         <>
           <MemorySection
             title="Core memories"
-            description="Automatically included when the agent works."
+            description="Included in this agent’s context for every session."
+            community={
+              <AgentCommunityScope community={community} scope="Memory" />
+            }
             entries={core ? [core] : []}
             emptyIcon={<ThinkingHighIcon size={24} aria-hidden="true" />}
             refreshing={refreshing}
           />
           <MemorySection
             title="Memories"
-            description="Saved details the agent looks up when needed."
+            description="Details the agent can look up as needed."
+            community={
+              <AgentCommunityScope community={community} scope="Memory" />
+            }
             entries={rest}
             emptyIcon={<BrainIcon size={24} aria-hidden="true" />}
             refreshing={refreshing}
@@ -201,12 +219,14 @@ export function MemoryPanel({
 function MemorySection({
   title,
   description,
+  community,
   entries,
   emptyIcon,
   refreshing = false,
 }: {
   title: string;
   description: string;
+  community: ReactNode;
   entries: readonly MemoryEntry[];
   emptyIcon: ReactNode;
   refreshing?: boolean;
@@ -216,12 +236,21 @@ function MemorySection({
       right.createdAt - left.createdAt || left.slug.localeCompare(right.slug),
   );
   return (
-    <section className="grid gap-2" aria-label={title}>
+    <section className="grid min-w-0 grid-cols-1 gap-2" aria-label={title}>
       <div className={`group ${styles.sectionHeader}`}>
-        <Header level={4} title={title} subtitle={description} />
+        <Header
+          level={4}
+          title={
+            <span className="inline-flex flex-wrap items-center gap-2">
+              {title}
+              {community}
+            </span>
+          }
+          subtitle={description}
+        />
       </div>
       <div
-        className={`grid gap-2 transition-opacity ${refreshing ? "opacity-50" : ""}`}
+        className={`grid min-w-0 grid-cols-1 gap-2 transition-opacity ${refreshing ? "opacity-50" : ""}`}
         data-memory-list=""
         data-refreshing={refreshing || undefined}
       >
@@ -257,9 +286,17 @@ function MemoryAccordion({ entry }: { entry: MemoryEntry }) {
               title: (
                 <span className="flex min-w-0 items-center gap-2">
                   {entry.slug === "core" ? (
-                    <ThinkingHighIcon size={20} aria-hidden="true" />
+                    <ThinkingHighIcon
+                      size={20}
+                      className="shrink-0"
+                      aria-hidden="true"
+                    />
                   ) : (
-                    <BrainIcon size={20} aria-hidden="true" />
+                    <BrainIcon
+                      size={20}
+                      className="shrink-0"
+                      aria-hidden="true"
+                    />
                   )}
                   <span className="min-w-0 flex-1 truncate">
                     {entry.slug.startsWith("mem/") ? (
@@ -295,7 +332,7 @@ function MemoryAccordion({ entry }: { entry: MemoryEntry }) {
 function MemoryCopyMenu({ entry }: { entry: MemoryEntry }) {
   const notify = useToastNotification();
   const copy = (value: string, label: "name" | "body") =>
-    navigator.clipboard.writeText(value).then(
+    writeClipboardText(value).then(
       () => notify(`Memory ${label} copied.`, "success"),
       () => notify(`Couldn’t copy the memory ${label}.`, "error"),
     );

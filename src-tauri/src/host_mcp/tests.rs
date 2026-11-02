@@ -59,7 +59,7 @@ async fn answers_a_request_with_the_page_reply() {
     let servers = HostMcpServers::default();
     let (channel, mut events) = channel();
     let info = servers
-        .serve(servers.page(), "plugin".into(), channel)
+        .serve(servers.page(), "plugin".into(), channel, false)
         .unwrap();
     assert!(info.url.starts_with("http://127.0.0.1:"));
     let named = initialize(&servers, &info, &mut events).await;
@@ -110,7 +110,7 @@ async fn accepts_a_notification_without_a_body() {
     let servers = HostMcpServers::default();
     let (channel, mut events) = channel();
     let info = servers
-        .serve(servers.page(), "plugin".into(), channel)
+        .serve(servers.page(), "plugin".into(), channel, false)
         .unwrap();
     let named = initialize(&servers, &info, &mut events).await;
     let request = post(
@@ -189,7 +189,7 @@ async fn admits_only_the_session_that_initialized() {
     let servers = HostMcpServers::default();
     let (channel, mut events) = channel();
     let info = servers
-        .serve(servers.page(), "plugin".into(), channel)
+        .serve(servers.page(), "plugin".into(), channel, false)
         .unwrap();
     // Before `initialize`, discovery needs no session and joins none; a tool
     // call is refused.
@@ -226,7 +226,7 @@ async fn stops_when_a_second_client_initializes() {
     let servers = HostMcpServers::default();
     let (channel, mut events) = channel();
     let info = servers
-        .serve(servers.page(), "plugin".into(), channel)
+        .serve(servers.page(), "plugin".into(), channel, false)
         .unwrap();
     initialize(&servers, &info, &mut events).await;
     // Whoever claimed the session, two clients hold the token.
@@ -236,11 +236,77 @@ async fn stops_when_a_second_client_initializes() {
 }
 
 #[tokio::test]
+async fn child_initialization_keeps_parent_callbacks_alive() {
+    let servers = HostMcpServers::default();
+    let (channel, mut events) = channel();
+    let info = servers
+        .serve(servers.page(), "plugin".into(), channel, true)
+        .unwrap();
+    let parent = initialize(&servers, &info, &mut events).await;
+    let request = post(&info, &info.token, "", INITIALIZE);
+    let child = tokio::spawn({
+        let info = info.clone();
+        async move { send(&info, request).await }
+    });
+    let event = next(&mut events).await;
+    assert_eq!(
+        event["type"], "message",
+        "child initialization must not close the parent server"
+    );
+    servers
+        .reply(
+            "plugin",
+            info.handle,
+            event["request"].as_u64().unwrap(),
+            Some(INITIALIZED.into()),
+        )
+        .unwrap();
+    let response = child.await.unwrap();
+    assert_eq!(status(&response), "200");
+    assert_eq!(
+        session(&response).map(|id| format!("Mcp-Session-Id: {id}\r\n")),
+        Some(parent.clone())
+    );
+    // A failed joining client must not revoke the working parent's session.
+    let request = post(&info, &info.token, "", INITIALIZE);
+    let failed = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"No"}}"#;
+    let response = exchange(&servers, &info, &mut events, request, Some(failed)).await;
+    assert_eq!(session(&response), None);
+    // Shared initialization still requires the token, and calls still require
+    // the session ID. Refusing a request must leave the server running.
+    for (token, extra, body) in [
+        ("wrong", "", INITIALIZE),
+        (info.token.as_str(), "Mcp-Session-Id: wrong\r\n", INITIALIZE),
+        (
+            info.token.as_str(),
+            "",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call"}"#,
+        ),
+    ] {
+        assert_eq!(
+            status(&send(&info, post(&info, token, extra, body)).await),
+            "404"
+        );
+    }
+    assert!(events.try_recv().is_err());
+    let request = post(
+        &info,
+        &info.token,
+        &parent,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call"}"#,
+    );
+    assert_eq!(
+        status(&exchange(&servers, &info, &mut events, request, Some(INITIALIZED)).await),
+        "200"
+    );
+}
+
+#[tokio::test]
 async fn releases_a_claim_that_did_not_succeed() {
     let servers = HostMcpServers::default();
     let (channel, mut events) = channel();
     let info = servers
-        .serve(servers.page(), "plugin".into(), channel)
+        .serve(servers.page(), "plugin".into(), channel, false)
         .unwrap();
     let claim = || claim(&servers, &info);
     // The page answered with an error.
@@ -284,7 +350,7 @@ async fn keeps_the_session_across_requests() {
     let servers = HostMcpServers::default();
     let (channel, mut events) = channel();
     let info = servers
-        .serve(servers.page(), "plugin".into(), channel)
+        .serve(servers.page(), "plugin".into(), channel, false)
         .unwrap();
     let named = initialize(&servers, &info, &mut events).await;
     let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
@@ -305,7 +371,7 @@ async fn holds_the_claim_while_initialize_waits() {
     let servers = HostMcpServers::default();
     let (channel, mut events) = channel();
     let info = servers
-        .serve(servers.page(), "plugin".into(), channel)
+        .serve(servers.page(), "plugin".into(), channel, false)
         .unwrap();
     let request = post(&info, &info.token, "", INITIALIZE);
     let client = tokio::spawn({
@@ -340,7 +406,7 @@ async fn refuses_without_starting_oauth() {
     let servers = HostMcpServers::default();
     let (channel, mut events) = channel();
     let info = servers
-        .serve(servers.page(), "plugin".into(), channel)
+        .serve(servers.page(), "plugin".into(), channel, false)
         .unwrap();
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
     // A wrong token and a web page are both told there is nothing here.
@@ -365,7 +431,7 @@ async fn stops_with_the_page() {
     let (events_channel, mut events) = channel();
     let page = servers.page();
     let info = servers
-        .serve(page, "plugin".into(), events_channel)
+        .serve(page, "plugin".into(), events_channel, false)
         .unwrap();
     let request = post(
         &info,
@@ -384,5 +450,5 @@ async fn stops_with_the_page() {
     assert!(!client.await.unwrap().contains("200 OK"));
     assert!(servers.reply("plugin", info.handle, 0, None).is_err());
     let (late, _events) = channel();
-    assert!(servers.serve(page, "plugin".into(), late).is_err());
+    assert!(servers.serve(page, "plugin".into(), late, false).is_err());
 }

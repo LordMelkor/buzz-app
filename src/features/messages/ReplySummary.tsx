@@ -16,9 +16,12 @@ export function ReplySummary({
   unreadCount,
   workingParticipants = [],
   activity,
+  hideEmptyLabel = false,
 }: {
   workingParticipants?: readonly string[];
   activity?: ReactNode;
+  /** Activity-only triggers already have an accessible thread action label. */
+  hideEmptyLabel?: boolean;
   count: number;
   participants: readonly string[];
   profiles?: ReadonlyMap<string, Profile> | undefined;
@@ -45,11 +48,13 @@ export function ReplySummary({
           })}
       />
       {activity}
-      <span>
-        {count > 0
-          ? `${count} ${count === 1 ? "reply" : "replies"}`
-          : "View thread"}
-      </span>
+      {(count > 0 || !hideEmptyLabel) && (
+        <span>
+          {count > 0
+            ? `${count} ${count === 1 ? "reply" : "replies"}`
+            : "View thread"}
+        </span>
+      )}
       {unreadCount ? (
         <span>({unreadCount} new)</span>
       ) : unreadLabel ? (

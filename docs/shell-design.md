@@ -11,9 +11,16 @@ disabled optional plugins
 from page choices; a retained destination whose provider is unavailable displays
 an explicit failure with retry instead of silently selecting another page.
 Browser controls, host shortcuts and toolbar arrows traverse the same visit history.
+Settings sections are destinations presented as a modal over the last workspace.
+The host retains that workspace presentation while Settings is current, without
+allowing it to complete or redirect the modal's navigation. Returning to the same
+visit resumes its request with preserved focus intent; page removal, scope changes,
+failed ingress and other destinations revoke it. Cold Settings links have no retained
+workspace and Close falls back to Messages. Cross-community Settings still selects
+its addressed community, retiring the previous scope rather than retaining access.
 Settings sections are destinations. Personal-space page visits use explicit null
 scope, distinct from a plugin's unspecified community scope. Focus-only skip links
-do not add visits. Plugin recovery remains available in Settings → Plugins without
+do not add visits. Plugin recovery remains available in Settings → Plugins → Manage plugins without
 blocking Profile or Appearance.
 
 See [design system and appearance](design-system.md) for Light/Dark settings,
@@ -26,31 +33,66 @@ semantic tokens, UI authoring rules and the local component reference.
   styles live in Tailwind's base layer, so utilities can override them normally.
   Existing feature CSS variables remain available for incremental adoption.
 - `src/app/shell/presentation.ts` owns page labels, icons and navigation ordering.
-  Me comes first, then Messages, Inbox, Reminders, Bestie and Projects; other contributed pages
+  Messages comes first, then Inbox, Reminders and Bestie; other contributed pages
   follow by displayed label with a full contribution-key tie-breaker. Sidebar
   navigation and page search share this ordering, independent of plugin
   activation/re-enable order. Primary pages choose `sidebar` (default), `topbar`
-  (centered text) or `toolbar` (top-right icon) placement. Me and Messages start
-  in the topbar; other primary bundled pages retain their sidebar rows. Me is an
-  optional, default-enabled personal-conversation workspace in the current
-  community. Its dedicated SidebarFrame reuses saved channel-sidebar width and
-  shows New conversation plus personal history, replacing Messages navigation.
-  Scoped Me page routes own sidebar/content selection. The initial implementation
-  reuses the existing session transcript and composer; see [Sessions](sessions/README.md)
-  for placement rules, remaining ingress differences and the relay privacy boundary.
-  Messages opens by default, from any channel row, its topbar button and search.
+  (header segments) or `toolbar` (top-right icon) placement for contributed pages.
+  `PrimarySidebar` is the conversation sidebar: a capsule All / Solo / Team
+  filter above one shared scrollport, Solo projects and chats above Team's channel
+  sections, one relay-recovery notice, and the connection fallback. The filter
+  never opens a destination or changes the open conversation; a new destination
+  reveals the inventory its placement belongs to unless the filter is All. Both
+  inventories stay mounted when filtered, retaining section state, and share the
+  channel sidebar's surface, resize owner, row treatment and section recipes.
+  Inbox and Bestie remain in the sidebar; other built-in global page links live in
+  the header capsule. The header plus opens the New menu for chat, project, DM
+  and channel creation. Every conversation, Solo or Team, opens in Messages; see
+  [Solo](solo/README.md) for the Solo treatment, placement and the relay privacy
+  boundary. Messages is the default destination.
   Page search lists every active page, including non-primary pages.
   Disabling an optional plugin removes its navigation entry.
   Channels is presented as Messages. Legacy tone props are retained for
   compatibility; all pages share the supplied gradient and repeating CSS dots.
   Presentation is keyed by full contribution identity, not plugin-local IDs.
-- `AppShell.tsx` owns the 48px header, vertical page navigation, contributed panel
-  launchers, Settings access, community rail, and page frames. Page navigation sits
-  above the channel list outside Settings, using its saved sidebar width
-  and resize behavior. Settings replaces that region with `SettingsSidebar.tsx`,
-  preserving the same width (220px minimum) and returning to the previous view
-  with Back. `App.tsx` composes `features/channel-navigation/ChannelSidebar`
-  through an ordinary render prop; there is no portal or plugin contract expansion.
+- `AppShell.tsx` owns the header, contributed panel launchers, Settings access,
+  community switcher, and page frames. The header uses capsule Panel surfaces:
+  flat sidebar/history controls at the left, window-centered destinations flanked by
+  separate creation and Search capsules, and flat community/profile controls at the right. Outer content
+  padding uses the same panel-gap token as the space between panes.
+  Messages, Reminders, Agents and Workflows use header segments,
+  preserving contributed placement for other plugins. The community trigger opens
+  a shared Popover containing NavigationItem rows with their existing context menus;
+  this richer picker retains community actions as well as switching. Arrow keys,
+  Home and End move focus. Join and Create community appear at the bottom; creation
+  opens the registered Builderlab settings flow. Dialogs return focus to
+  the surviving community trigger.
+  Switching pages preserves the desktop sidebar’s current visibility. The manual
+  collapse toggle remains available across destinations.
+  The conversation sidebar retains its saved width and resize behavior.
+  Settings opens in the shared expanded Dialog with an integrated sidebar; the
+  workspace remains mounted underneath. Its portal fills the shell's workspace
+  frame (navigation, main content and companion panels); the popup centers inside
+  it, capped at 72rem × 48rem with shared dialog gutters. Narrow popups fill the
+  host to preserve usable space. The host excludes the app
+  header, with equal inline gutters matching the main page’s gutter. At widths
+  up to 650px the frame also covers the wrapped header below its titlebar row. The frame
+  sits outside the content query container so fixed modal backdrops still block
+  the entire webview. Native traffic lights remain in their reserved titlebar
+  area. The shared compact dialog header centers its title and Close action
+  without a large empty band. Close and Escape return to the original workspace
+  visit, including after navigating through several Settings sections.
+  A selected page may replace the conversation sidebar through `Page.sidebar`.
+  It receives the admitted workspace target and shell-generated Pages navigation
+  as children, without navigation completion authority. Healthy sidebar state
+  survives target changes and stays mounted beneath Settings. A failed sidebar
+  shows an alert and scrollable page navigation in the standard frame; a new
+  workspace navigation request retries it independently of the page body.
+  Pages without a sidebar contribution keep the conversation sidebar.
+  `App.tsx` composes `PrimarySidebar` around `features/channel-navigation/ChannelInventory`. The inventory supplies channel rows,
+  notices, dialogs and scroll bindings through a render prop; PrimarySidebar owns
+  the common frame, Solo/Team arrangement and error fallback. The fallback retains
+  page navigation without remounting a failed inventory. There is no portal.
   Sidebar session state resets on scope/connection generation without remounting
   unrelated pages. Its own error boundary keeps page navigation and Settings usable.
   Page buttons use shared navigation rows and focus the main region on selection.
@@ -59,17 +101,18 @@ semantic tokens, UI authoring rules and the local component reference.
   Show navigation button to preserve readable content at 200% text size. The
   220px disclosure overlays content, supports Escape, and keeps sidebar state
   mounted. A navigation selection closes the phone drawer and hands focus to the
-  main content; this includes conversation and Settings-section selections.
-  Me, Messages, Agents, desktop Settings, and any selected primary page share an
+  main content for conversation selections. Settings owns its navigation inside
+  the modal instead. Messages, Agents, any selected primary page, and pages with
+  a sidebar contribution share an
   animated header toggle; hiding the sidebar preserves its mounted state and saved
-  width. Pages without a Channel or Me-specific label use generic "Hide sidebar" /
-  "Show sidebar" labels. Reduced motion disables the transition. Non-primary
-  desktop destinations retain the visible sidebar.
-  The same header keeps history and account/search actions, plus a centered
+  width. The toggle uses "Hide sidebar" / "Show sidebar" on every page, and the
+  combined Solo and Team sidebar is labelled "Sidebar". Reduced motion disables the transition. Non-primary
+  desktop destinations without a sidebar contribution retain the visible sidebar.
+  The same header keeps history and account/search actions, plus a segmented
   navigation strip and full-page toolbar icons. Real control widths, native insets
   and text scale determine whether header pages fit without overlap. Otherwise
   those entries move into a labelled More pages popover (always at <=650px).
-  Wide topbar pages use design-system chrome tabs with manual activation: arrow
+  Wide topbar pages use design-system segmented tabs with manual activation: arrow
   keys move focus, and Enter or Space selects the page while focus stays on its
   tab. Each opening carries focus intent: topbar activation suppresses destination
   autofocus, while explicit New conversation, sidebar and deep-link openings keep
@@ -86,23 +129,38 @@ semantic tokens, UI authoring rules and the local component reference.
   pages reached through search or links; their sidebar selection and route remain
   exact. Its tab labels the active child panel, and activating Messages from a
   child returns to the existing conversation view. More pages indicates this
-  containing area with `aria-current="true"` (not `page`). Me and Settings remain
-  separate; missing/unregistered destinations do not borrow Messages selection.
+  containing area with `aria-current="true"` (not `page`). Settings leaves
+  workspace selection unchanged; missing/unregistered destinations do not borrow Messages selection.
   The shell owns one joined Panel around navigation and page content, with a
   16px outer gutter (8px on narrow screens). Nested Panels keep their opaque
   fill and clipping but drop individual borders, radii, and shadows. Layout
   owners add one-pixel semantic dividers. Document pages scroll inside the
   remaining viewport.
-- `SettingsSidebar.tsx` presents community and app sections in the shell's
-  replacement sidebar. `Settings.tsx` renders the selected detail pane and retains
-  drafts across section changes. The detail pane scrolls independently and keeps
-  an accessible level-one Settings heading. Standalone Settings fixtures retain
-  their embedded navigation, which becomes a compact row at narrow widths.
+- `SettingsSidebar.tsx` composes shared SidebarNavigation with
+  NavigationSection/NavigationItem content inside Dialog's integrated navigation.
+  The same composition wraps SidebarFrame (the Solo/Team sidebar),
+  preserving main's compact gray row appearance while features retain scrolling,
+  unread, disclosure and drag behavior. `Settings.tsx` supplies the detail without
+  another Panel, padding or scrollport. The modal owns the Settings title and
+  persistent Close action; sections keep their centered reading column and forms.
+  Standalone fixtures retain embedded navigation.
   Native buttons use normal Tab/Enter navigation and expose the current section.
   `ProfileSettings.tsx` edits the local default inline with Save and Cancel,
   sharing fields and validation with community setup. Cancel restores the saved
   profile; switching sections retains an unsaved draft while Settings is open.
-  Leaving Settings discards that draft. Saving does not publish to communities.
+  Closing Settings discards that draft, as leaving the former page did.
+  Profile opens from the selected session’s already-verified kind-0 event while
+  refreshing through that session, without another profile cache or retained
+  Settings mount. Save waits for the fresh read; avatar editing stays available
+  and completed uploads update only the latest draft’s picture. Its compact
+  avatar preview uses the active session’s existing thumbnail media resolver,
+  sharing the header’s cached URL without re-registering that destination or
+  asking for original-size artwork. Visible editor avatars load eagerly; real
+  image completion still owns readiness and failed-image fallback. A refresh keeps
+  typed fields and updates untouched ones. Cold reads preserve form geometry;
+  shared LoadingRegion delays status feedback for one second and shows errors
+  immediately above the form with Retry. Community Save publishes only to its
+  addressed community; Personal Profile updates the device-local default.
   Plugin rows retain accessible native-button switches and show only names and
   controls. A Folder/Git import area above the list previews plugin subfolders and
   requires explicit install/update; its draft survives section switching, but
@@ -118,16 +176,25 @@ motion with Tailwind's `motion-reduce` variant.
 ## Desktop chrome
 
 Tauri uses `titleBarStyle: Overlay` and `hiddenTitle` on macOS. Native traffic
-lights have a reserved 104px left area before the community switcher only in the
+lights have a reserved left area before the history controls only in the
 macOS desktop runtime. Web gets no inset or imitation window controls. Linux
 and Windows desktop use undecorated windows with app-owned minimize,
 maximize/restore and close buttons in the header, including during identity
 setup. While the parser-loaded launch overlay keeps app content inert, a
 window-control header is portalled to the document body above the overlay; the
 launch owner removes it when the normal identity or shell header becomes usable.
-Drag regions are limited to the header background; controls remain clickable.
-On macOS, double-clicking that
-background follows the current system title-bar preference (Fill/Zoom, Minimize,
+Drag regions are limited to the header background; controls remain clickable
+when no modal is open. Shared Dialog and AlertDialog backdrops preserve dragging
+only over the shell’s marked empty titlebar regions. A host-provided drag handler
+hit-tests behind portal layers without forwarding clicks to blocked controls.
+A press on the empty titlebar is a click until the held mouse moves at least
+four physical CSS pixels. A click dismisses ordinary Dialogs; crossing that
+threshold starts native dragging once and suppresses the trailing click. Release,
+cancel and lost capture clear only the pending gesture; the next press resets the
+close fence. A caller opt-out or in-flight close lock still prevents dismissal. Confirmations retain
+their deliberate Cancel/confirm policy.
+Without a modal, double-clicking that
+background on macOS follows the current system title-bar preference (Fill/Zoom, Minimize,
 or no action); changing the preference does not require restarting Buzz. Other
 platforms retain Tauri's native drag-region behavior. The main-window capability
 grants titlebar dragging and the internal maximize action used by that
@@ -187,7 +254,7 @@ avatar. Search, sidebar and history controls use unfilled ghost icon buttons wit
 Their hover fills remain translucent over the colored backdrop.
 Pressed fills are slightly stronger; icons keep full opacity. Plugin launchers
 use the shared glass style.
-Bestie is available from its sidebar page, without a top-bar shortcut.
+Bestie is available in the Messages sidebar when its plugin is enabled.
 `ProfileButton.tsx` uses the selected community's profile when connected and
 local defaults in Personal space. Its anchored account menu groups profile and
 status controls above Appearance, Plugins and Settings. The avatar inside the
@@ -218,16 +285,19 @@ Avatar artwork uses the shared source/media owner, with initials on missing/fail
 pictures or a person icon when unnamed. No sample person's photo is used as the
 user's identity. See [community/profile ownership](communities.md).
 `PageSearch.tsx` uses a native modal dialog for focus containment, Escape dismissal,
-and searching available page destinations. Projects is a bundled, enabled-by-default
-page scaffold with only a centered title; Apps waits for a functional destination.
-`CommunityRail.tsx` shows Personal space, saved communities and Add persistently
-beside page content; it only delegates selection to the existing membership owner.
-The rail's Add control opens the existing join dialog and returns focus to its
-trigger. The former header picker is not mounted; the rail is the sole selector.
-The rail reads saved-community NIP-11 icons through the same-origin broker with at
+and searching available page destinations. Repository, PR and issue views live in
+the enabled-by-default `buzz.repos` plugin, reachable through entity links without
+a primary header destination. The retired Projects container has no directory or
+entity type; old project links show a removal notice. Apps waits for a functional destination.
+`CommunityPicker.tsx` opens Personal space, saved communities and Join/Create
+from the active-community button beside the profile. The picker is the sole
+community selector. It reads saved-community NIP-11 icons through the same-origin broker with at
 most two concurrent optional reads, including inactive communities without
 opening sessions; slow icon responses cannot occupy all foreground connections.
 Unavailable or unsupported images fall back to a saved icon or name initial.
+Discovered artwork is shared with the Settings community address through an
+in-memory projection scoped to the Communities instance. Both prefer the same
+validated discovered icon over saved artwork; Settings adds no metadata request.
 Each saved community has a context menu (right-click, the ContextMenu key or
 Shift+F10, labelled “Actions for <name>”) built from the shared context-menu
 primitives, in the original's order: Mark all as read, then Copy community URL,
@@ -239,7 +309,7 @@ elsewhere it stays visible but disabled with a note saying why. Invite to
 community appears only on the selected community, only when the relay-signed
 roster names the viewer an owner or admin (the same roles the Membership
 settings card reads) in both development and native builds; it opens the
-Membership settings card scoped to that community. The rail reads
+Membership settings card scoped to that community. The picker reads
 that roster through the selected community's existing session and verifies it
 against the relay authority that session already holds, so the read adds no
 session request to the connection and opens no other session. That card applies
@@ -249,9 +319,9 @@ A Settings section, history entry or `buzz://open` locator naming it still opens
 instead of reporting unavailable. Community settings is
 on every community and opens Settings scoped to that community's origin, which
 selects it on the way. Leave community is on every community and opens an alert
-dialog owned by the rail (“Leave <name>?”) whose destructive confirm shows a
+dialog owned by the picker (“Leave <name>?”) whose destructive confirm shows a
 pending state while the request runs; the menu item itself is disabled and reads
-“Leaving…” for that community until the relay answers. The rail publishes the
+“Leaving…” for that community until the relay answers. The picker publishes the
 NIP-43 leave request to the community's relay by origin, then asks the
 communities service to forget it. The relay's acceptance or its "not a member"
 answer removes the community and purges its device state; its banned answer
@@ -267,7 +337,7 @@ finishes. Only the service call can produce that message; the host's selection
 callback and the success notice run outside it, so a host that throws while
 navigating is logged as its own error and the leave still reports success.
 Saved data the purge could not clear is logged by store and adds a line to the
-success notice. When the left community was selected, the rail routes the
+success notice. When the left community was selected, the picker routes the
 fallback to Personal space through the host's selection callback so navigation
 and ingress recovery match a click on Personal space, rather than leaving a page
 scoped to a gone community. Focus
@@ -275,13 +345,13 @@ returns to the community when it is still saved; once it is gone, focus follows
 the selection, to the still-selected community or to Personal space where a
 left selection now lands. Closing a menu opened from the keyboard returns focus to
 that community. Closing one opened by pointer returns focus to the field the
-right-click interrupted: browsers focus the rail button on the click itself,
-before the menu opens, so the rail remembers what had focus ahead of that move
+right-click interrupted: browsers focus the picker button on the click itself,
+before the menu opens, so the picker remembers what had focus ahead of that move
 and restores it while it is still on the page, and a right-click while typing
-does not leave the caret on the rail. With nothing interrupted, focus lands on
+does not leave the caret on the picker. With nothing interrupted, focus lands on
 that community.
 Opening a menu or running any item never acquires an inactive session, and the
-rail still claims no unread total: the unread capability provides bounded
+picker still claims no unread total: the unread capability provides bounded
 observed evidence, not exact community totals ([unread ownership](unread.md)).
 
 Visible copy uses Buzz, never “workspace.” The legacy `workspace` layout identifier
@@ -330,6 +400,25 @@ Switching retains mounted content, scroll position, and drafts. Each tab has a
 close control; middle-click or Delete on a tab and Escape in its content close
 that tab. Middle-clicking an inactive tab preserves the editor's focus. Closing
 the selected tab selects a neighbor, and closing the last tab dismisses the pane.
+Selecting a conversation from Search focuses its writable composer after the
+search dialog closes. Message results retain their exact-message reveal behavior.
+Cmd+L on macOS or Ctrl+L on Windows/Linux focuses the writable
+composer in the focused pane. Outside a pane it uses the exposed main conversation.
+The composer shortcut yields to terminal input, preserving shell Ctrl+L.
+On macOS, Cmd+Shift+H focuses the main pane and Cmd+Shift+L the side pane.
+On Windows/Linux, F8 and Shift+F8 cycle between visible panes. Pane focus resumes
+the writable composer directly, falling back to the selected tab for tools without
+a composer. On that tab strip, arrow keys move between tabs and Enter selects one.
+Pane focus also works from the terminal, which captures Tab. When a destination is
+available, Buzz consumes F8/Shift+F8 before terminal input; rebind Focus next pane
+in Settings if a terminal application needs those keys.
+Covered targets, hidden tabs and collapsed panes are skipped. These shortcuts preserve
+drafts and selection and yield to modals and editor-owned key handling.
+Settings → Shortcuts lists Focus message box and the platform's pane focus actions
+(Focus next pane on Windows/Linux). Each action supports a device-local override
+and reset. F6 retains notification focus.
+Browser builds may reserve Cmd/Ctrl+L for the address bar; choose another binding
+in Settings when using Buzz in a browser. Native key delivery is a separate host check.
 On desktop, Cmd+W on macOS or Ctrl+W on Windows/Linux closes the selected
 closable tab in the focused pane. If focus is in the permanent main conversation,
 it closes the selected tab in the visible side pane instead. A selected closable
@@ -357,6 +446,12 @@ same menu does the same, except that the right-clicked tab stays open, selected
 and focused. On the channel conversation it is the same as Close all tabs. On a
 detail tab, such as an agent log, the tab that owns it stays instead, without
 its details.
+A tab for another conversation, or for one of its threads, also offers
+**Open in channel**, which opens that conversation in Channels; a thread opens
+there at the same message. The current channel's own threads do not offer it.
+A thread that offers it also names its conversation above its original message,
+as Inbox rows do (`#channel` or `DM · names`); that name is a link that does
+the same.
 Shift+F10 on a focused tab opens the same
 menu. Hiding the pane remains separate from closing its tabs.
 The main-header split control toggles existing pane content without closing its

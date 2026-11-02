@@ -71,7 +71,7 @@ it("removes the community from this device without contacting the relay", async 
     within(dialog).getByRole("button", { name: "Remove from this device" }),
   );
   await screen.findByText(
-    "Acme was removed from this device. Your membership wasn’t changed. You can add it again later.",
+    "Acme — https://acme.example was removed from this device. Your membership wasn’t changed. You can add it again later.",
   );
   expect(api.requestLeave).not.toHaveBeenCalled();
   expect(leave).toHaveBeenCalledWith(community.id, { purge: true });
@@ -91,7 +91,7 @@ it("leaves through the relay before removing the local community", async () => {
   await user.click(
     within(dialog).getByRole("button", { name: "Leave community" }),
   );
-  await screen.findByText("Left Acme.");
+  await screen.findByText("Left Acme — https://acme.example.");
   expect(api.requestLeave).toHaveBeenCalledWith(community.id);
   expect(leave).toHaveBeenCalledWith(community.id, { purge: true });
   expect(api.requestLeave.mock.invocationCallOrder[0]).toBeLessThan(
@@ -116,7 +116,9 @@ it("keeps both actions available after a relay refusal", async () => {
       name: "Leave community",
     }),
   );
-  await screen.findByText("The relay owner can’t leave Acme.");
+  await screen.findByText(
+    "The relay owner can’t leave Acme — https://acme.example.",
+  );
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   expect(leave).not.toHaveBeenCalled();
   expect(onRemoved).not.toHaveBeenCalled();
@@ -158,7 +160,7 @@ it("locks confirmation while departure is pending and recovers after failure", a
     await act(async () => request.reject(new Error("offline")));
   }
   await screen.findByText(
-    "Couldn’t leave Acme. Check your connection and try again.",
+    "Couldn’t leave Acme — https://acme.example. Check your connection and try again.",
   );
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   expect(screen.getByRole("button", { name: "Leave community" })).toBeEnabled();
@@ -225,8 +227,8 @@ it.each(["relay", "device"])(
     });
     await screen.findByText(
       phase === "relay"
-        ? "Couldn’t leave Acme. Check your connection and try again."
-        : "Left Acme, but this device couldn’t finish cleaning up (storage unavailable). Leave it again to finish.",
+        ? "Couldn’t leave Acme — https://acme.example. Check your connection and try again."
+        : "Left Acme — https://acme.example, but this device couldn’t finish cleaning up (storage unavailable). Leave it again to finish.",
     );
     expect(screen.getByText("Replacement destination")).toBeVisible();
     expect(onRemoved).not.toHaveBeenCalled();
@@ -234,3 +236,31 @@ it.each(["relay", "device"])(
     else expect(leave).toHaveBeenCalledWith(community.id, { purge: true });
   },
 );
+
+it("distinguishes the published name, local label and exact community address before an action", async () => {
+  const owner = harness();
+  const user = userEvent.setup();
+  render(
+    <ToastProvider>
+      <CommunityDepartureSettings
+        communities={owner.communities}
+        community={{
+          ...community,
+          publishedName: "Shared name",
+          localName: "My label",
+        }}
+        onRemoved={() => {}}
+      />
+    </ToastProvider>,
+  );
+  await user.click(screen.getByRole("button", { name: "Leave community" }));
+  const dialog = screen.getByRole("alertdialog", {
+    name: "Leave Shared name?",
+  });
+  expect(
+    within(dialog).getByText("Shown as My label on this device"),
+  ).toBeVisible();
+  expect(within(dialog).getByText(community.id)).toBeVisible();
+  expect(api.requestLeave).not.toHaveBeenCalled();
+  await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+});

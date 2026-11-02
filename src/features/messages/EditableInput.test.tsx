@@ -19,6 +19,7 @@ import {
   vi,
 } from "vitest";
 import { fromMarkdown } from "mdast-util-from-markdown";
+import { Node as EditorNode } from "prosemirror-model";
 import { MessageMarkdown } from "./MessageMarkdown";
 import {
   EditableInput,
@@ -35,7 +36,11 @@ import {
 } from "./mention-draft";
 import { messageLinkParts } from "./message-link-parts";
 import { profileMentionParts } from "./profile-mentions";
-import { serializeNode, serializeSelection } from "./selection-copy";
+import {
+  serializeNode,
+  serializeSelection,
+  spoilerDelimiter,
+} from "./selection-copy";
 import { profileKey, profileTarget } from "../profiles/target";
 import { scanMarkdown } from "../relay/message-content";
 
@@ -133,6 +138,12 @@ function mount(
   act(() => {
     input.focus();
     input.setSelectionRange(text.length, text.length);
+    // jsdom's focus() collapses the selection onto the focused element after
+    // its focus events, where a browser keeps the caret the editor placed, and
+    // reports that in a later task; ProseMirror puts its caret back on that
+    // selectionchange. Deliver it now: an empty draft moves no selection above,
+    // so a key typed before the task would land outside the paragraph.
+    document.dispatchEvent(new Event("selectionchange"));
   });
   return {
     input,
@@ -143,6 +154,16 @@ function mount(
     formats: () => formats,
   };
 }
+
+it("types the first character into the empty paragraph with no task between focus and the key", async () => {
+  const h = mount();
+  // The ordering a loaded runner produces: user-event's wait before the key
+  // fires before jsdom's queued selectionchange. With no delay, nothing runs
+  // between mount and the keystroke at all.
+  await userEvent.setup({ delay: null }).keyboard("`");
+  expect(h.input.innerHTML).toBe("<p>`</p>");
+  expect(h.draft().text).toBe("`");
+});
 
 it("refuses a closing-colon conversion when its literal undo source exceeds the limit", () => {
   const h = mount(":-1", { maxLength: 3 });
@@ -166,6 +187,107 @@ it("keeps exactly one typed colon when the conversion exceeds the limit", () => 
   expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([3, 3]);
   act(() => h.input.undo(false));
   expect(h.input).toHaveValue(":x");
+});
+
+it("reads value and selection from one projection per document", async () => {
+  const h = mount("alpha beta");
+  const read = () => [
+    h.input.value,
+    h.input.selectionStart,
+    h.input.selectionEnd,
+  ];
+  read();
+  // Each projection snapshots the document once; reads reuse it until it changes.
+  const snapshots = vi.spyOn(EditorNode.prototype, "toJSON");
+  const projections = () =>
+    snapshots.mock.contexts.filter(
+      (node) => (node as EditorNode).type.name === "doc",
+    ).length;
+  const reads = (expected: unknown[]) => {
+    snapshots.mockClear();
+    for (let i = 0; i < 3; i++) expect(read()).toEqual(expected);
+    expect(projections()).toBeLessThanOrEqual(1);
+  };
+  try {
+    act(() => h.input.setSelectionRange(2, 5));
+    snapshots.mockClear();
+    expect(read()).toEqual(["alpha beta", 2, 5]);
+    act(() => h.input.setSelectionRange(10, 10));
+    expect(read()).toEqual(["alpha beta", 10, 10]);
+    // Selection-only transactions keep the document's projection.
+    expect(projections()).toBe(0);
+    await h.user.keyboard("!");
+    reads(["alpha beta!", 11, 11]);
+    act(() => h.input.undo(false));
+    reads(["alpha beta", 10, 10]);
+    act(() => h.input.undo(true));
+    reads(["alpha beta!", 11, 11]);
+    act(() => h.input.reset(mentionDraft("replaced")));
+    reads(["replaced", 0, 0]);
+    act(() => {
+      h.input.value = "set";
+    });
+    reads(["set", 3, 3]);
+  } finally {
+    snapshots.mockRestore();
+  }
+});
+
+describe("blurred native selection", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(["MacIntel", "Linux x86_64"])(
+    "releases a WebKit caret while retaining its last native position on %s",
+    (platform) => {
+      vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+      vi.spyOn(navigator, "vendor", "get").mockReturnValue(
+        "Apple Computer, Inc.",
+      );
+      const h = mount("message");
+      const node = h.input.querySelector("p")?.firstChild;
+      if (!node) throw new Error("Editor text unavailable");
+      // Blur can precede the selectionchange which would adopt this caret.
+      document.getSelection()?.collapse(node, 2);
+      act(() => fireEvent.blur(h.input));
+      expect(document.getSelection()?.rangeCount).toBe(0);
+      expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([2, 2]);
+      act(() => h.input.focus());
+      expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([2, 2]);
+    },
+  );
+
+  it("keeps a selected WebKit range available after blur", () => {
+    vi.spyOn(navigator, "vendor", "get").mockReturnValue(
+      "Apple Computer, Inc.",
+    );
+    const h = mount("message");
+    act(() => h.input.setSelectionRange(1, 4));
+    act(() => fireEvent.blur(h.input));
+    expect(document.getSelection()?.toString()).toBe("ess");
+    expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([1, 4]);
+  });
+
+  it("leaves a caret owned by another surface alone", () => {
+    vi.spyOn(navigator, "vendor", "get").mockReturnValue(
+      "Apple Computer, Inc.",
+    );
+    const h = mount("message");
+    const other = document.createTextNode("other surface");
+    document.body.append(other);
+    document.getSelection()?.collapse(other, 2);
+    act(() => fireEvent.blur(h.input));
+    expect(document.getSelection()?.anchorNode).toBe(other);
+    expect(document.getSelection()?.anchorOffset).toBe(2);
+    other.remove();
+  });
+
+  it("leaves Chromium's native caret alone", () => {
+    vi.spyOn(navigator, "vendor", "get").mockReturnValue("Google Inc.");
+    const h = mount("message");
+    act(() => h.input.setSelectionRange(2, 2));
+    act(() => fireEvent.blur(h.input));
+    expect(document.getSelection()?.rangeCount).toBe(1);
+  });
 });
 
 describe("Mac WebKit line breaks", () => {
@@ -920,6 +1042,319 @@ it("edits a detected plain HTTP link", () => {
   expect(edit).toMatchObject({ existing: true, href: "http://localhost:3000" });
   act(() => expect(edit?.save("local", "http://localhost:3000")).toBe(true));
   expect(h.markdown()).toBe("See [local](http://localhost:3000/)");
+});
+
+describe("pasting a bare URL over a selection", () => {
+  const url = "https://example.com/release-notes";
+  const linked = `Check the [release notes](${url}) before Friday`;
+  /** Mount the sample sentence with "release notes" selected. */
+  function selectNotes(text = "Check the release notes before Friday") {
+    const h = mount(text);
+    act(() => h.input.setSelectionRange(10, 23));
+    return h;
+  }
+
+  it("links the selection as one undo step and leaves the caret unlinked", async () => {
+    const h = selectNotes();
+    paste(h.input, url);
+    expect(h.markdown()).toBe(linked);
+    expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([23, 23]);
+    await h.user.keyboard("!");
+    expect(h.markdown()).toBe(
+      `Check the [release notes](${url})! before Friday`,
+    );
+    act(() => h.input.undo(false));
+    expect(h.markdown()).toBe(linked);
+    act(() => h.input.undo(false));
+    expect(h.markdown()).toBe("Check the release notes before Friday");
+    expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([10, 23]);
+  });
+
+  it.each([
+    ["a trailing newline", `${url}\n`, ""],
+    ["a trailing space", `${url} `, ""],
+    ["the <autolink> form", `<${url}>`, ""],
+    ["an HTML anchor labelled by its URL", url, `<a href="${url}">${url}</a>`],
+  ])("links the selection from a clipboard with %s", (_name, text, html) => {
+    const h = selectNotes();
+    paste(h.input, text, html);
+    expect(h.markdown()).toBe(linked);
+  });
+
+  it("still pastes an HTML anchor with its own label over the selection", () => {
+    const h = selectNotes();
+    paste(h.input, "Release notes", `<a href="${url}">Release notes</a>`);
+    expect(h.markdown()).toBe(
+      `Check the [Release notes](${url}) before Friday`,
+    );
+  });
+
+  it("keeps bold and mention tokens inside the new link", () => {
+    const bold = selectNotes();
+    act(() => {
+      bold.input.setSelectionRange(10, 17);
+      bold.input.toggleFormat("bold");
+      bold.input.setSelectionRange(10, 23);
+    });
+    paste(bold.input, url);
+    expect(bold.markdown()).toBe(
+      `Check the [**release** notes](${url}) before Friday`,
+    );
+
+    const h = mount("Check the ");
+    const honey = { pubkey: "a".repeat(64), name: "Honey" };
+    act(() => h.input.insertText("", honey));
+    act(() => h.input.insertText("notes before Friday"));
+    const recipients = h.draft().recipients;
+    expect(recipients).toEqual([{ ...honey, start: 10, end: 16 }]);
+    act(() => h.input.setSelectionRange(10, 22));
+    paste(h.input, url);
+    expect(h.markdown()).toBe(`Check the [@Honey notes](${url}) before Friday`);
+    expect(h.draft().recipients).toEqual(recipients);
+  });
+
+  it("re-targets a fully selected link and splits a partially selected one", () => {
+    const old = "https://old.example/x";
+    const whole = selectNotes();
+    act(() => whole.input.editLink()?.save("release notes", old));
+    act(() => whole.input.setSelectionRange(10, 23));
+    paste(whole.input, url);
+    expect(whole.markdown()).toBe(linked);
+
+    // A selection inside the link widens to the whole link, as the Link dialog
+    // does, and leaves the caret after it.
+    const inside = selectNotes();
+    act(() => inside.input.editLink()?.save("release notes", old));
+    act(() => inside.input.setSelectionRange(10, 17));
+    paste(inside.input, url);
+    expect(inside.markdown()).toBe(linked);
+    expect([inside.input.selectionStart, inside.input.selectionEnd]).toEqual([
+      23, 23,
+    ]);
+
+    // The selected part follows the pasted URL; the rest keeps its destination.
+    const partial = selectNotes();
+    act(() => partial.input.editLink()?.save("release notes", old));
+    act(() => partial.input.setSelectionRange(6, 17));
+    paste(partial.input, url);
+    expect(partial.markdown()).toBe(
+      `Check [the release](${url})[ notes](${old}) before Friday`,
+    );
+  });
+
+  it("swaps a selected URL instead of labelling it", () => {
+    const old = "https://old.example/x";
+    const raw = mount(`Check ${old} before Friday`);
+    act(() => raw.input.setSelectionRange(6, 27));
+    paste(raw.input, url);
+    expect(raw.markdown()).toBe(`Check ${url} before Friday`);
+
+    const labelled = mount(`Check ${old} before Friday`);
+    act(() => labelled.input.setSelectionRange(6, 27));
+    act(() => labelled.input.editLink()?.save(old, "https://other.example/"));
+    act(() => labelled.input.setSelectionRange(6, 27));
+    paste(labelled.input, url);
+    expect(labelled.markdown()).toBe(`Check ${url} before Friday`);
+  });
+
+  it.each([
+    ["other text", "changelog", "Check the changelog before Friday"],
+    [
+      "a credentialed URL",
+      "http://user:pw@example.com",
+      "Check the http://user:pw@example.com before Friday",
+    ],
+  ])("replaces the selection with %s", (_name, text, expected) => {
+    const h = selectNotes();
+    paste(h.input, text);
+    expect(h.markdown()).toBe(expected);
+  });
+
+  it("replaces a multi-line or whitespace-only selection", () => {
+    const lines = mount("Check the\nrelease notes");
+    act(() => lines.input.setSelectionRange(6, 17));
+    paste(lines.input, url);
+    expect(lines.markdown()).toBe(`Check ${url} notes`);
+
+    const space = mount("Check the release notes before Friday");
+    act(() => space.input.setSelectionRange(9, 10));
+    paste(space.input, url);
+    expect(space.markdown()).toBe(
+      `Check the${url} release notes before Friday`,
+    );
+  });
+
+  it("pastes verbatim inside code", () => {
+    const block = mount("```\nrelease notes\n```");
+    act(() => block.input.setSelectionRange(4, 17));
+    paste(block.input, url);
+    expect(block.markdown()).toBe(`\`\`\`\n${url} \n\`\`\``);
+
+    const inline = mount("Check the `release notes` before");
+    act(() => inline.input.setSelectionRange(11, 24));
+    paste(inline.input, url);
+    expect(inline.markdown()).toBe(`Check the \`${url} \` before`);
+  });
+
+  it("falls back to the limit check when the link would exceed maxLength", () => {
+    const h = mount("Check the release notes before Friday", { maxLength: 60 });
+    act(() => h.input.setSelectionRange(10, 23));
+    paste(h.input, url);
+    expect(h.markdown()).toBe(`Check the ${url} before Friday`);
+  });
+
+  it("keeps inserting a URL at a collapsed caret with the trailing space", () => {
+    const h = mount("Check the release notes before Friday");
+    act(() => h.input.setSelectionRange(10, 10));
+    paste(h.input, url);
+    expect(h.markdown()).toBe(`Check the ${url} release notes before Friday`);
+    expect(h.input.selectionStart).toBe(44);
+    act(() => h.input.setSelectionRange(9, 9));
+    paste(h.input, url);
+    expect(h.markdown()).toBe(
+      `Check the${url} ${url} release notes before Friday`,
+    );
+  });
+});
+
+/** Mod+Shift+V: the chord's keydown, then the paste event its native command fires. */
+function pasteRaw(
+  input: ComposerInputElement,
+  text: string,
+  html = "",
+  chord: Partial<KeyboardEventInit> = { key: "V", ctrlKey: true },
+) {
+  act(() => {
+    input.focus();
+    fireEvent.keyDown(input, { code: "KeyV", shiftKey: true, ...chord });
+  });
+  paste(input, text, html);
+}
+
+describe("Mod+Shift+V pastes plain text verbatim", () => {
+  const url = "https://example.com/release-notes";
+  const chord = { key: "V", code: "KeyV", ctrlKey: true, shiftKey: true };
+
+  it("ignores rich flavors, this app's included, and keeps Markdown and line breaks literal", () => {
+    const h = mount("", { links: true });
+    const text =
+      "**bold** and [docs](https://example.com/)\n\n> quote\n- one\n- two";
+    pasteRaw(
+      h.input,
+      text,
+      copyHtml(
+        '<p><strong>bold</strong> and <a href="https://example.com/">docs</a></p><blockquote><p>quote</p></blockquote><ul><li><p>one</p></li><li><p>two</p></li></ul>',
+      ),
+    );
+    expect(h.markdown()).toBe(text);
+    expect(h.input.querySelector("strong, blockquote, ul")).toBeNull();
+    const external = mount();
+    pasteRaw(
+      external.input,
+      "Read the guide",
+      '<p>Read <a href="https://example.com/guide"><b>the guide</b></a></p>',
+    );
+    expect(external.markdown()).toBe("Read the guide");
+  });
+
+  it("replaces a selection with a URL as text in one undo step", () => {
+    const h = mount("Check the release notes before Friday");
+    act(() => h.input.setSelectionRange(10, 23));
+    pasteRaw(h.input, url);
+    expect(h.markdown()).toBe(`Check the ${url} before Friday`);
+    expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([43, 43]);
+    act(() => h.input.undo(false));
+    expect(h.markdown()).toBe("Check the release notes before Friday");
+    expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([10, 23]);
+    act(() => h.input.undo(true));
+    expect(h.markdown()).toBe(`Check the ${url} before Friday`);
+  });
+
+  it("takes the caret's formatting and leaves identity links as source", () => {
+    const accept = vi.fn((pubkey: string) => ({ pubkey, name: "Mic" }));
+    const h = mount("", { links: true, acceptRecipient: accept });
+    act(() => h.input.toggleFormat("bold"));
+    pasteRaw(h.input, `Ping ${micLink}`);
+    expect(h.markdown()).toBe(`**Ping ${micLink}**`);
+    expect(h.draft().recipients).toEqual([]);
+    expect(accept).not.toHaveBeenCalled();
+  });
+
+  it("inserts nothing for a clipboard without text", () => {
+    const h = mount("draft");
+    pasteRaw(h.input, "");
+    expect(h.markdown()).toBe("draft");
+    act(() => {
+      fireEvent.keyDown(h.input, chord);
+      fireEvent.paste(h.input, {
+        clipboardData: {
+          items: [{ kind: "file" }],
+          getData: (type: string) => (type === "text/plain" ? "name.png" : ""),
+        },
+      });
+    });
+    expect(h.markdown()).toBe("draft");
+  });
+
+  it("takes Apple chords on Apple platforms only", () => {
+    const platform = vi.spyOn(navigator, "platform", "get");
+    try {
+      platform.mockReturnValue("MacIntel");
+      for (const apple of [
+        { key: "V", metaKey: true },
+        // Option+Shift+V types ◊; the physical key still names the chord.
+        { key: "◊", metaKey: true, altKey: true },
+      ]) {
+        const h = mount("Check the release notes");
+        act(() => h.input.setSelectionRange(10, 23));
+        pasteRaw(h.input, url, "", apple);
+        expect(h.markdown()).toBe(`Check the ${url}`);
+      }
+      const control = mount("Check the release notes");
+      act(() => control.input.setSelectionRange(10, 23));
+      pasteRaw(control.input, url);
+      expect(control.markdown()).toBe(`Check the [release notes](${url})`);
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
+  it("pastes verbatim after the desktop menu's request without a key", () => {
+    const h = mount("Check the release notes");
+    act(() => h.input.setSelectionRange(10, 23));
+    act(() => {
+      h.input.focus();
+      h.input.dispatchEvent(new Event("buzz:paste-plain"));
+    });
+    paste(h.input, url);
+    expect(h.markdown()).toBe(`Check the ${url}`);
+    // The request covers one paste.
+    act(() => h.input.setSelectionRange(0, 5));
+    paste(h.input, url);
+    expect(h.markdown()).toBe(`[Check](${url}) the ${url}`);
+  });
+
+  it.each([
+    [
+      "the chord is released",
+      (input: Element) => fireEvent.keyUp(input, { key: "Shift" }),
+    ],
+    ["the pointer goes down", (input: Element) => fireEvent.mouseDown(input)],
+    [
+      "another key goes down",
+      (input: Element) =>
+        fireEvent.keyDown(input, { key: "v", code: "KeyV", ctrlKey: true }),
+    ],
+  ])("leaves a later paste ordinary once %s", (_name, after) => {
+    const h = mount("Check the release notes");
+    act(() => {
+      fireEvent.keyDown(h.input, chord);
+      after(h.input);
+    });
+    act(() => h.input.setSelectionRange(10, 23));
+    paste(h.input, url);
+    expect(h.markdown()).toBe(`Check the [release notes](${url})`);
+  });
 });
 
 it("bolds a mention typed between delimiters and keeps its chip and recipient", async () => {
@@ -1860,18 +2295,110 @@ it("does not convert an inserted or pasted marker, or one typed inside pasted fe
   expect(split.markdown()).toBe("```\n- item");
 });
 
-it("keeps a marker literal on a line holding a mention chip", async () => {
-  const h = mount();
-  const honey = { pubkey: "a".repeat(64), name: "Honey" };
-  act(() => h.input.insertText("", honey));
-  expect(h.input).toHaveValue("@Honey ");
+it.each([
+  ["- ", false, "ul > li > p"],
+  ["1. ", false, "ol > li > p"],
+  ["> ", false, "blockquote > p"],
+  ["- ", true, "ul > li > p"],
+  ["1. ", true, "ol > li > p"],
+  ["> ", true, "blockquote > p"],
+] as const)(
+  "converts %j typed before a mention, link chip, link and code, keeping each in the block (next line=%s)",
+  async (marker, followed, selector) => {
+    const h = mount("", { links: true });
+    const honey = { pubkey: "a".repeat(64), name: "Honey" };
+    const url = "https://example.com/a";
+    act(() => h.input.insertText("", honey));
+    paste(h.input, `see ${url} and docs`);
+    await h.user.keyboard(" `x`");
+    act(() => {
+      const at = h.input.value.indexOf("docs");
+      h.input.setSelectionRange(at, at + 4);
+      h.input.editLink()?.save("docs", "https://example.com/docs");
+      h.input.setSelectionRange(h.input.value.length, h.input.value.length);
+    });
+    // A later line of the same paragraph stays behind when the line converts.
+    if (followed) await h.user.keyboard("{Shift>}{Enter}{/Shift}next");
+    act(() => h.input.setSelectionRange(0, 0));
+    const line = `@Honey see ${url} and [docs](https://example.com/docs) \`x\``;
+    const tail = followed ? "\nnext" : "";
+    expect(h.markdown()).toBe(`${line}${tail}`);
+    const value = h.input.value;
+    const converted = () => {
+      const block = h.input.querySelector(selector);
+      expect(block).not.toBeNull();
+      expect(block?.querySelector('[data-source="@Honey"]')).not.toBeNull();
+      expect(block?.querySelector(`[data-source="${url}"]`)).not.toBeNull();
+      expect(
+        block?.querySelector('a[href="https://example.com/docs"]'),
+      ).toHaveTextContent("docs");
+      expect(block?.querySelector("code")).toHaveTextContent("x");
+      expect(h.input.querySelector(":scope > p")?.textContent ?? null).toBe(
+        followed ? "next" : null,
+      );
+      // Only the marker went: every chip and the recipient keep their offsets.
+      expect(h.input.value).toBe(value);
+      expect(h.draft().recipients).toEqual([{ ...honey, start: 0, end: 6 }]);
+      expect(h.markdown()).toBe(
+        `${marker}${line}${followed ? "\n\nnext" : ""}`,
+      );
+    };
+    await h.user.keyboard(marker);
+    converted();
+    act(() => h.input.undo(false));
+    expect(h.input.querySelector("ul, ol, blockquote")).toBeNull();
+    expect(h.input.value).toBe(`${marker}${value}`);
+    expect(h.draft().recipients).toEqual([
+      { ...honey, start: marker.length, end: marker.length + 6 },
+    ]);
+    expect(h.markdown()).toBe(`${marker}${line}${tail}`);
+    act(() => h.input.undo(true));
+    converted();
+  },
+);
+
+// The reported flow: a timeline message pastes its bare links as chips, and
+// `> ` typed at the start of each pasted paragraph quotes every one of them.
+it("quotes every pasted paragraph `> ` is typed before, keeping its link chips", async () => {
+  const pr = "https://github.com/example/widgets/pull/318";
+  const readme =
+    "https://github.com/example/widgets/blob/fix/meter/docs/README.md";
+  const paragraphs = [
+    `Rebased onto main and pushed. Draft PR: ${pr}`,
+    "Folds in #309, #310 and #311 (not #312), so {theme:compact} keeps the team’s (ACUL) banner.",
+    "The meter reads Weak / Moderate / Strong, and “Didn’t get the code? Resend” stays.",
+    `Rollout notes: ${readme}`,
+    "Totals: 1,163 cases; 1,150 passed; 13 skipped.",
+  ];
+  const linked = (text: string) =>
+    text.replace(/https:\S+/, (href) => `<a href="${href}">${href}</a>`);
+  const h = mount("", { links: true });
+  paste(
+    h.input,
+    paragraphs.join("\n\n"),
+    `<div data-buzz-copy="timeline">${paragraphs.map((text) => `<p>${linked(text)}</p>`).join("")}</div>`,
+  );
+  expect(h.input.querySelectorAll("[data-link]")).toHaveLength(2);
   act(() => h.input.setSelectionRange(0, 0));
-  await h.user.keyboard("- ");
-  expect(h.input.querySelector("ul")).toBeNull();
-  expect(h.input).toHaveValue("- @Honey ");
-  expect(h.input.querySelector('[data-source="@Honey"]')).not.toBeNull();
-  expect(h.draft().recipients).toEqual([{ ...honey, start: 2, end: 8 }]);
-  expect(h.markdown()).toBe("- @Honey ");
+  await h.user.keyboard("From Pip’s agent:{Shift>}{Enter}{/Shift}");
+  for (const paragraph of paragraphs) {
+    const start = h.input.value.indexOf(paragraph);
+    act(() => h.input.setSelectionRange(start, start));
+    await h.user.keyboard("> ");
+  }
+  const quotes = [...h.input.querySelectorAll(":scope > blockquote")];
+  expect(quotes).toHaveLength(5);
+  expect(quotes[0]?.querySelector(`[data-source="${pr}"]`)).not.toBeNull();
+  expect(quotes[3]?.querySelector(`[data-source="${readme}"]`)).not.toBeNull();
+  expect(h.input.value).not.toContain(">");
+  // The sent text reads as the header and five quotes, each link inside its own.
+  const blocks = scanMarkdown(h.markdown()).tree.children ?? [];
+  expect(blocks.map((node) => node.type)).toEqual([
+    "paragraph",
+    ...paragraphs.map(() => "blockquote"),
+  ]);
+  expect(JSON.stringify(blocks[1])).toContain(pr);
+  expect(JSON.stringify(blocks[4])).toContain(readme);
 });
 
 it("switches a nested bullet to its ordered ancestor's type without outdenting", async () => {
@@ -2677,6 +3204,348 @@ it("rejects a batch that exceeds message length without partial insertion", () =
   expect(h.draft()).toEqual(before);
 });
 
+// Pending mentions: Space committed a name before the chooser could decide.
+// The host resolves the chip later; the editor owns its undo and persistence.
+const example = { pubkey: "a".repeat(64), name: "Example Agent" };
+function pendingChip(h: ReturnType<typeof mount>) {
+  return h.input.querySelector('[data-state="loading"]');
+}
+it("inserts a pending chip as one undo step that restores the typed query", () => {
+  const h = mount("hi @example");
+  let id: string | false = false;
+  act(() => {
+    id = h.input.insertPendingMention("example", { start: 3, end: 11 });
+  });
+  expect(id).toMatch(/^pending-/);
+  expect(h.input).toHaveValue("hi @example ");
+  expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([12, 12]);
+  expect(h.draft().recipients).toEqual([]);
+  expect(h.draft().pending).toEqual([
+    { id, name: "example", start: 3, end: 11 },
+  ]);
+  expect(pendingChip(h)).toHaveTextContent("@example");
+  act(() => h.input.undo(false));
+  expect(h.input).toHaveValue("hi @example");
+  expect(h.draft().pending).toBeUndefined();
+  act(() => h.input.undo(true));
+  expect(h.draft().pending?.map((item) => item.id)).toEqual([id]);
+});
+it("refuses a pending chip away from the caret, over other text, or in code", () => {
+  const h = mount("hi @example");
+  act(() => h.input.setSelectionRange(5, 5));
+  act(() =>
+    expect(h.input.insertPendingMention("example", { start: 3, end: 11 })).toBe(
+      false,
+    ),
+  );
+  act(() => h.input.setSelectionRange(11, 11));
+  act(() =>
+    expect(h.input.insertPendingMention("other", { start: 3, end: 11 })).toBe(
+      false,
+    ),
+  );
+  act(() => h.input.toggleFormat("code_block"));
+  act(() =>
+    expect(h.input.insertPendingMention("example", { start: 3, end: 11 })).toBe(
+      false,
+    ),
+  );
+  expect(h.input).toHaveValue("hi @example");
+  expect(h.draft().pending).toBeUndefined();
+});
+it("settles a pending chip into its recipient's current name, keeping the caret and the typed text as the undo target", async () => {
+  const h = mount("hi @example");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("example", { start: 3, end: 11 }) || "";
+  });
+  await h.user.type(h.input, "there");
+  expect(h.input).toHaveValue("hi @example there");
+  act(() => h.input.setSelectionRange(14, 14));
+  act(() => expect(h.input.settlePendingMention(id, example)).toBe(true));
+  expect(h.input).toHaveValue("hi @Example Agent there");
+  expect(h.draft().pending).toBeUndefined();
+  expect(h.draft().recipients).toEqual([{ ...example, start: 3, end: 17 }]);
+  // The caret kept its place in the prose after the chip.
+  expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([20, 20]);
+  expect(pendingChip(h)).toBeNull();
+  act(() => expect(h.input.settlePendingMention(id, example)).toBe(false));
+  act(() => h.input.undo(false));
+  expect(h.input).toHaveValue("hi @Example Agent ");
+  act(() => h.input.undo(false));
+  expect(h.input).toHaveValue("hi @example");
+  expect(h.draft().recipients).toEqual([]);
+});
+it("settles a pending chip back into plain text while the editor is read-only", () => {
+  const h = mount("@example");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("example", { start: 0, end: 8 }) || "";
+  });
+  act(() => {
+    h.input.readOnly = true;
+  });
+  act(() => expect(h.input.settlePendingMention(id, null)).toBe(true));
+  expect(h.input).toHaveValue("@example ");
+  expect(h.draft().pending).toBeUndefined();
+  expect(h.draft().recipients).toEqual([]);
+  expect(h.input.querySelector("[data-source]")).toBeNull();
+});
+it("holds a settle that lands during a composition until the composition ends", async () => {
+  const h = mount("hi @example");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("example", { start: 3, end: 11 }) || "";
+  });
+  act(() => fireEvent.compositionStart(h.input));
+  let held: boolean | Promise<boolean> = false;
+  act(() => {
+    held = h.input.settlePendingMention(id, example);
+  });
+  expect(held).toBeInstanceOf(Promise);
+  expect(h.input).toHaveValue("hi @example ");
+  expect(pendingChip(h)).toHaveTextContent("@example");
+  expect(h.draft().recipients).toEqual([]);
+  await act(async () => fireEvent.compositionEnd(h.input));
+  await expect(held).resolves.toBe(true);
+  expect(h.input).toHaveValue("hi @Example Agent ");
+  expect(h.draft().pending).toBeUndefined();
+  expect(h.draft().recipients).toEqual([{ ...example, start: 3, end: 17 }]);
+  expect(pendingChip(h)).toBeNull();
+});
+it("applies a held settle after the composition's final text has been read", async () => {
+  const h = mount("hi @example");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("example", { start: 3, end: 11 }) || "";
+  });
+  act(() => fireEvent.compositionStart(h.input));
+  let held: boolean | Promise<boolean> = false;
+  act(() => {
+    held = h.input.settlePendingMention(id, null);
+  });
+  const after = h.input.querySelector("[data-source]")?.nextSibling;
+  if (!(after instanceof Text)) throw new Error("No text after the chip");
+  await act(async () => {
+    // The IME commits its text and ends the composition in one task;
+    // ProseMirror reads the record only after compositionend.
+    after.nodeValue = " ab";
+    fireEvent.compositionEnd(h.input);
+  });
+  await expect(held).resolves.toBe(true);
+  expect(h.input).toHaveValue("hi @example ab");
+  expect(h.draft().pending).toBeUndefined();
+  expect(pendingChip(h)).toBeNull();
+});
+it("answers a held settle false when its chip is gone by the time the composition ends", async () => {
+  const h = mount("hi @example");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("example", { start: 3, end: 11 }) || "";
+  });
+  act(() => fireEvent.compositionStart(h.input));
+  let held: boolean | Promise<boolean> = false;
+  act(() => {
+    held = h.input.settlePendingMention(id, example);
+  });
+  await act(async () => {
+    h.input.querySelector("[data-source]")?.remove();
+    fireEvent.compositionEnd(h.input);
+  });
+  await expect(held).resolves.toBe(false);
+  expect(h.input).toHaveValue("hi  ");
+  expect(h.draft().pending).toBeUndefined();
+  expect(h.draft().recipients).toEqual([]);
+});
+it("keeps the typed text when the recipient's name would overrun the limit", () => {
+  const h = mount("@example", { maxLength: 12 });
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("example", { start: 0, end: 8 }) || "";
+  });
+  act(() => expect(h.input.settlePendingMention(id, example)).toBe(true));
+  expect(h.input).toHaveValue("@example ");
+  expect(h.draft().recipients).toEqual([]);
+});
+const miraExample = { pubkey: "a".repeat(64), name: "Mira Example" };
+it("extends a pending chip over the typed words that complete a longer name, keeping the caret and the typed text as the undo target", async () => {
+  const h = mount("hi @mira");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("mira", { start: 3, end: 8 }) || "";
+  });
+  await h.user.type(h.input, "Example there");
+  expect(h.input).toHaveValue("hi @mira Example there");
+  act(() => expect(h.input.extendPendingMention(id, " Example")).toBe(true));
+  expect(h.input).toHaveValue("hi @mira Example there");
+  expect(h.draft().pending).toEqual([
+    { id, name: "mira Example", start: 3, end: 16 },
+  ]);
+  expect(pendingChip(h)).toHaveTextContent("@mira Example");
+  expect(h.input.querySelectorAll("[data-source]")).toHaveLength(1);
+  // The caret kept its place in the prose after the chip.
+  expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([22, 22]);
+  act(() => expect(h.input.settlePendingMention(id, miraExample)).toBe(true));
+  expect(h.input).toHaveValue("hi @Mira Example there");
+  expect(h.draft().pending).toBeUndefined();
+  expect(h.draft().recipients).toEqual([{ ...miraExample, start: 3, end: 16 }]);
+  // Undo takes the words typed after the chip first, then the chip's own
+  // typed query, as it does for a chip that settled unextended.
+  act(() => h.input.undo(false));
+  expect(h.input).toHaveValue("hi @Mira Example");
+  expect(h.draft().recipients).toEqual([{ ...miraExample, start: 3, end: 16 }]);
+  act(() => h.input.undo(false));
+  expect(h.input).toHaveValue("hi @mira");
+  expect(h.draft().recipients).toEqual([]);
+  expect(h.draft().pending).toBeUndefined();
+  act(() => h.input.undo(true));
+  expect(h.input).toHaveValue("hi @Mira Example");
+});
+it("refuses to extend a pending chip over text that no longer begins with the words, or that is gone", async () => {
+  const h = mount("@mira");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("mira", { start: 0, end: 5 }) || "";
+  });
+  await h.user.type(h.input, "Exam");
+  act(() => expect(h.input.extendPendingMention(id, " Example")).toBe(false));
+  act(() => expect(h.input.extendPendingMention(id, "")).toBe(false));
+  act(() => expect(h.input.extendPendingMention("other", " Exam")).toBe(false));
+  expect(h.input).toHaveValue("@mira Exam");
+  expect(h.draft().pending).toEqual([{ id, name: "mira", start: 0, end: 5 }]);
+  act(() => expect(h.input.settlePendingMention(id, null)).toBe(true));
+  act(() => expect(h.input.extendPendingMention(id, " Exam")).toBe(false));
+  expect(h.input).toHaveValue("@mira Exam");
+});
+it("extends a pending chip while the editor is read-only, and settling it to text restores the typed words", async () => {
+  const h = mount("@mira");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("mira", { start: 0, end: 5 }) || "";
+  });
+  await h.user.type(h.input, "Example");
+  act(() => {
+    h.input.readOnly = true;
+  });
+  act(() => expect(h.input.extendPendingMention(id, " Example")).toBe(true));
+  expect(h.draft().pending).toEqual([
+    { id, name: "mira Example", start: 0, end: 13 },
+  ]);
+  act(() => expect(h.input.settlePendingMention(id, null)).toBe(true));
+  expect(h.input).toHaveValue("@mira Example");
+  expect(h.draft().pending).toBeUndefined();
+  expect(h.input.querySelector("[data-source]")).toBeNull();
+});
+it("holds an extension that lands during a composition until the composition ends", async () => {
+  const h = mount("@mira");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("mira", { start: 0, end: 5 }) || "";
+  });
+  await h.user.type(h.input, "Example");
+  act(() => fireEvent.compositionStart(h.input));
+  let held: boolean | Promise<boolean> = false;
+  act(() => {
+    held = h.input.extendPendingMention(id, " Example");
+  });
+  expect(held).toBeInstanceOf(Promise);
+  expect(h.draft().pending).toEqual([{ id, name: "mira", start: 0, end: 5 }]);
+  await act(async () => fireEvent.compositionEnd(h.input));
+  await expect(held).resolves.toBe(true);
+  expect(h.draft().pending).toEqual([
+    { id, name: "mira Example", start: 0, end: 13 },
+  ]);
+  expect(pendingChip(h)).toHaveTextContent("@mira Example");
+});
+it("answers a held extension false when the composition committed name characters after the words", async () => {
+  const h = mount("@mira");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("mira", { start: 0, end: 5 }) || "";
+  });
+  await h.user.type(h.input, "Example");
+  act(() => fireEvent.compositionStart(h.input));
+  let held: boolean | Promise<boolean> = false;
+  act(() => {
+    held = h.input.extendPendingMention(id, " Example");
+  });
+  const after = h.input.querySelector("[data-source]")?.nextSibling;
+  if (!(after instanceof Text)) throw new Error("No text after the chip");
+  await act(async () => {
+    // The IME commits a longer word than the host read.
+    after.nodeValue = " Examples";
+    fireEvent.compositionEnd(h.input);
+  });
+  await expect(held).resolves.toBe(false);
+  expect(h.input).toHaveValue("@mira Examples");
+  expect(h.draft().pending).toEqual([{ id, name: "mira", start: 0, end: 5 }]);
+});
+it("returns a pending chip to its typed query when a name character is typed right after it", async () => {
+  const h = mount("@mira");
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("mira", { start: 0, end: 5 }) || "";
+  });
+  await h.user.keyboard("{Backspace}nda");
+  expect(h.input).toHaveValue("@miranda");
+  expect(h.draft().pending).toBeUndefined();
+  expect(h.input.querySelector("[data-source]")).toBeNull();
+  act(() => expect(h.input.settlePendingMention(id, miraExample)).toBe(false));
+  expect(h.draft().recipients).toEqual([]);
+  act(() => h.input.undo(false));
+  expect(h.draft().pending?.map((item) => item.id)).toEqual([id]);
+  // Punctuation is a name boundary and keeps the chip, as for a recipient.
+  const p = mount("@mira");
+  act(() => {
+    p.input.insertPendingMention("mira", { start: 0, end: 5 });
+  });
+  await p.user.keyboard("{Backspace},");
+  expect(p.input).toHaveValue("@mira,");
+  expect(p.draft().pending).toHaveLength(1);
+});
+it("leaves a pending chip to the identity link that adopts it, without restoring its typed query", async () => {
+  const h = mount("[@honey", { links: true });
+  let id = "";
+  act(() => {
+    id = h.input.insertPendingMention("honey", { start: 1, end: 7 }) || "";
+  });
+  await h.user.keyboard("{Backspace}");
+  const link = `[@honeysuckle](${profileTarget(example.pubkey)})`;
+  paste(h.input, link.slice(7));
+  expect(h.markdown()).toBe(link);
+  expect(h.input.querySelector(`[data-source="${link}"]`)).not.toBeNull();
+  expect(h.draft().pending).toBeUndefined();
+  act(() => expect(h.input.settlePendingMention(id, example)).toBe(false));
+  expect(h.draft().recipients).toEqual([]);
+});
+it("deletes a pending chip with Backspace like any chip, emptying the projection", () => {
+  const h = mount("@example");
+  act(() => h.input.insertPendingMention("example", { start: 0, end: 8 }));
+  act(() => h.input.setSelectionRange(8, 8));
+  act(() => {
+    fireEvent.keyDown(h.input, { key: "Backspace" });
+  });
+  expect(h.input).toHaveValue("@example ");
+  expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([0, 8]);
+  act(() => {
+    fireEvent.keyDown(h.input, { key: "Backspace" });
+  });
+  expect(h.input).toHaveValue(" ");
+  expect(h.draft().pending).toBeUndefined();
+});
+it("restores a persisted pending chip as plain text and copies it as its text", () => {
+  const h = mount("@example");
+  act(() => h.input.insertPendingMention("example", { start: 0, end: 8 }));
+  act(() => h.input.setSelectionRange(0, 9));
+  expect(clipboard(h.input, "copy").text).toBe("@example ");
+  const saved = JSON.parse(JSON.stringify(h.draft()));
+  expect(saved.pending).toHaveLength(1);
+  const restored = mount(saved);
+  expect(restored.input).toHaveValue("@example ");
+  expect(restored.draft().pending).toBeUndefined();
+  expect(restored.input.querySelector("[data-source]")).toBeNull();
+});
+
 // Clipboard: composer copy/cut write both flavors; paste reads this app's own
 // HTML back through selection-copy.ts and promotes accepted identity links.
 const mic = "c".repeat(64);
@@ -2787,23 +3656,26 @@ it("uses plain text when pasting rich content into an existing code block", asyn
 });
 
 it.each([
-  ["First\n\nSecond", "First\n\nSecond"],
-  ["First\nSecond", "First\nSecond"],
-  ["> First\n>\n> Second", "First\n\nSecond"],
-  ["- one\n- two", "one\ntwo"],
-  ["3. first\n4. second", "first\nsecond"],
-  ["> quoted", "quoted"],
-  ["```sh\necho hi\n```", "echo hi\n"],
-  ["```sh\necho hi\n\n```", "echo hi\n\n"],
-  ["| a | b |\n| - | - |\n| 1 | 2 |", "a\tb\n1\t2"],
-  ["para\n\n```sh\necho hi\n```\n\nafter", "para\n\necho hi\n\nafter"],
+  ["First\n\nSecond", "First\n\nSecond", ""],
+  ["First\nSecond", "First\nSecond", ""],
+  ["> First\n>\n> Second", "First\n\nSecond", "blockquote"],
+  ["- one\n- two", "one\ntwo", "ul li + li"],
+  ["3. first\n4. second", "first\nsecond", 'ol[start="3"] li + li'],
+  ["- one\n  \n  - sub\n- two", "one\n\nsub\ntwo", "ul li ul li"],
+  ["> quoted", "quoted", "blockquote"],
+  ["```sh\necho hi\n```", "echo hi\n", 'pre[data-language="sh"]'],
+  ["```sh\necho hi\n\n```", "echo hi\n\n", 'pre[data-language="sh"]'],
+  ["| a | b |\n| - | - |\n| 1 | 2 |", "a\tb\n1\t2", ""],
+  ["a ||secret|| b", "a ||secret|| b", "[data-spoiler]"],
+  ["para\n\n```sh\necho hi\n```\n\nafter", "para\n\necho hi\n\nafter", "pre"],
   [
     "intro\n\n- one\n- two\n\n> quoted\n\nouter",
     "intro\n\none\ntwo\n\nquoted\n\nouter",
+    "ul li + li, blockquote",
   ],
 ])(
   "copies real timeline structure through the composer: %s",
-  (content, plain) => {
+  (content, plain, shown) => {
     const view = render(
       <MessageMarkdown
         row={{
@@ -2843,6 +3715,129 @@ it.each([
     const target = mount();
     paste(target.input, copied.text, copied.html);
     expect(target.markdown()).toBe(content.startsWith("|") ? plain : content);
+    // The composer shows the copied blocks, not their source.
+    for (const selector of shown ? shown.split(", ") : [])
+      expect(target.input.querySelector(selector)).not.toBeNull();
+  },
+);
+
+it.each([
+  ["# Title\n\n## Sub", "Title\n\nSub", "p + p + p"],
+  ["- [ ] todo\n- [x] done", "[ ] todo\n[x] done", "ul li + li"],
+  // A rule's source is respelled: see "pastes a copied rule" below.
+  [
+    "above\n\n---\n\nbelow",
+    "above\n\n---\n\nbelow",
+    "p + p + p + p + p",
+    "above\n\n***\n\nbelow",
+  ],
+])(
+  "copies %j, which the composer has no node for, as source that sends the same",
+  (content, plain, shown, sent = content) => {
+    const view = render(
+      <MessageMarkdown
+        row={{
+          id: "m",
+          channelId: "general",
+          authorId: mic,
+          content,
+          createdAt: 1,
+          mentions: [],
+          participants: [],
+          attachments: [],
+          reactions: [],
+          replyCount: 0,
+        }}
+        media={() => undefined}
+        onOpenLink={() => false}
+      />,
+    );
+    // Select the whole message, as triple-click and select-all do.
+    const range = document.createRange();
+    range.selectNodeContents(view.container);
+    const copied = {
+      text: serializeNode(view.container, "text", range),
+      html: `<div data-buzz-copy="timeline">${serializeNode(view.container, "html", range)}</div>`,
+    };
+    expect(copied.text).toBe(plain);
+    const target = mount();
+    paste(target.input, copied.text, copied.html);
+    expect(target.markdown()).toBe(sent);
+    expect(target.input.querySelector(shown)).not.toBeNull();
+    expect(target.input.querySelector("h1, h2, hr, input")).toBeNull();
+  },
+);
+
+it("pastes a copied rule after existing text without turning it into a heading", () => {
+  // Copied as `<hr><p>after</p>`, the rule's line lands directly under `foo`,
+  // where `---` would read as a setext underline; `***` cannot.
+  const h = mount("foo");
+  act(() => h.input.setSelectionRange(3, 3));
+  paste(
+    h.input,
+    "---\n\nafter",
+    '<div data-buzz-copy="timeline"><hr><p>after</p></div>',
+  );
+  expect(h.markdown()).toBe("foo\n***\n\nafter");
+  const sent = render(
+    <MessageMarkdown
+      row={{
+        id: "m",
+        channelId: "general",
+        authorId: mic,
+        content: h.markdown(),
+        createdAt: 1,
+        mentions: [],
+        participants: [],
+        attachments: [],
+        reactions: [],
+        replyCount: 0,
+      }}
+      media={() => undefined}
+      onOpenLink={() => false}
+    />,
+  );
+  expect(sent.container.querySelector("p + hr + p")).not.toBeNull();
+  expect(sent.container.querySelector("h1, h2")).toBeNull();
+});
+
+it.each([
+  ["## Title\n\nbody", "h2", "foo## Title"],
+  ["first\n\nbody", "p", "foofirst"],
+])(
+  "pastes a triple-clicked block of %j into the current line, as when selected exactly",
+  (content, block, pasted) => {
+    const view = render(
+      <MessageMarkdown
+        row={{
+          id: "m",
+          channelId: "general",
+          authorId: mic,
+          content,
+          createdAt: 1,
+          mentions: [],
+          participants: [],
+          attachments: [],
+          reactions: [],
+          replyCount: 0,
+        }}
+        media={() => undefined}
+        onOpenLink={() => false}
+      />,
+    );
+    // Chromium and WebKit end a triple-click at the next block's start.
+    const range = document.createRange();
+    range.setStart(view.container.querySelector(block)?.firstChild as Text, 0);
+    range.setEnd(view.container.querySelector(`${block} + p`) as Element, 0);
+    const target = mount("foo");
+    act(() => target.input.setSelectionRange(3, 3));
+    paste(
+      target.input,
+      serializeNode(view.container, "text", range),
+      `<div data-buzz-copy="timeline">${serializeNode(view.container, "html", range)}</div>`,
+    );
+    expect(target.markdown()).toBe(pasted);
+    expect(target.input.querySelector("p > br:only-child")).toBeNull();
   },
 );
 
@@ -2884,6 +3879,8 @@ it.each(["-", "3."])(
     const target = mount();
     paste(target.input, text, html);
     expect(target.markdown()).toBe("sk **Morgan** ab");
+    expect(target.input.querySelector("strong")).toHaveTextContent("Morgan");
+    expect(target.input.querySelector("ul, ol")).toBeNull();
 
     // Selecting the enclosing list still keeps its marker and starting number.
     range.selectNodeContents(view.getByRole("list"));
@@ -2957,10 +3954,17 @@ it("writes blocks, breaks and spoilers as HTML the paste side reads back", async
   expect(copied).toEqual({
     text: h.markdown(),
     html: copyHtml(
-      "<p>first ||secret||<br>next</p><pre><code>ls\n</code></pre>",
+      `<p>first <span data-spoiler="">${spoilerDelimiter}secret${spoilerDelimiter}</span><br>next</p><pre><code>ls\n</code></pre>`,
     ),
   });
   expect(readBack(copied.html)).toBe(h.markdown());
+  // Composer → composer keeps the spoiler a mark, as the timeline flavor does.
+  const target = mount();
+  paste(target.input, copied.text ?? "", copied.html);
+  expect(target.markdown()).toBe(h.markdown());
+  expect(target.input.querySelector("[data-spoiler]")).toHaveTextContent(
+    "secret",
+  );
 });
 
 it("copies marked whitespace, lists, a quote and a fence as HTML that reads back as the same Markdown", () => {
@@ -3016,10 +4020,318 @@ it("copies marked whitespace, lists, a quote and a fence as HTML that reads back
     ),
   });
   expect(readBack(copied.html)).toBe(h.markdown());
-  // Pasted into another composer, the message sends with the same source.
+  // Pasted into another composer, the message sends with the same source and
+  // shows the same blocks and marks.
   const target = mount();
   paste(target.input, copied.text ?? "", copied.html);
   expect(target.markdown()).toBe(h.markdown());
+  for (const selector of [
+    "strong",
+    "ul li + li",
+    'ol[start="3"] li',
+    "blockquote p",
+    'pre[data-language="sh"] code',
+  ])
+    expect(target.input.querySelector(selector)).not.toBeNull();
+});
+
+it("pastes this app's blocks as sibling nodes, one paragraph inline, and undoes as one step", () => {
+  const list = copyHtml("<ul><li><p>one</p></li><li><p>two</p></li></ul>");
+  const h = mount("intro");
+  act(() => h.input.setSelectionRange(5, 5));
+  paste(h.input, "one\ntwo", list);
+  expect(h.input.querySelectorAll("ul li")).toHaveLength(2);
+  expect(h.markdown()).toBe("intro\n\n- one\n- two");
+  expect(h.input.selectionStart).toBe(h.input.value.length);
+  act(() => h.input.undo(false));
+  expect(h.markdown()).toBe("intro");
+  expect(h.input.querySelector("ul")).toBeNull();
+  // One marked paragraph stays in the sentence; several paragraphs split it.
+  const inline = mount("xxyy");
+  act(() => inline.input.setSelectionRange(2, 2));
+  paste(inline.input, "a b c", copyHtml("<p>a <strong>b</strong> c</p>"));
+  expect(inline.markdown()).toBe("xxa **b** cyy");
+  expect(inline.input.querySelectorAll("p")).toHaveLength(1);
+  expect(inline.input.querySelector("strong")).toHaveTextContent("b");
+  const split = mount("xxyy");
+  act(() => split.input.setSelectionRange(2, 2));
+  paste(
+    split.input,
+    "First\n\nSecond",
+    '<div data-buzz-copy="timeline"><p>First</p><p>Second</p></div>',
+  );
+  expect(split.markdown()).toBe("xx\nFirst\n\nSecond\nyy");
+});
+
+const pastedList = copyHtml("<ul><li><p>one</p></li><li><p>two</p></li></ul>");
+const pastedOrdered = copyHtml(
+  '<ol start="3"><li><p>one</p></li><li><p>two</p></li></ol>',
+);
+const pastedQuote = copyHtml("<blockquote><p>quoted</p></blockquote>");
+
+// ProseMirror renders an empty textblock as `<p><br></p>`, which `p:empty`
+// never matches; this is the shape an item-start paste must not leave.
+const emptyParagraph = "p > br:only-child";
+
+// A list item is `paragraph block*`: blocks cannot precede its first paragraph,
+// so at its start a pasted list of the same kind joins the list and other
+// blocks, including a list of the other kind, follow the paragraph, with the
+// caret at the end of the paste. Elsewhere ProseMirror's placement stands:
+// inside the last pasted block after text, before the text when pasting at its
+// start.
+it.each([
+  [
+    "bullet_list",
+    0,
+    pastedList,
+    "- one\n- two\n- alpha",
+    "ul > li + li + li",
+    "\nalpha",
+  ],
+  [
+    "bullet_list",
+    5,
+    pastedList,
+    "- alpha\n  \n  - one\n  - two",
+    "ul > li > p + ul > li + li",
+    "",
+  ],
+  [
+    "bullet_list",
+    0,
+    pastedQuote,
+    "- alpha\n  \n  > quoted",
+    "ul > li > p + blockquote",
+    "",
+  ],
+  [
+    "ordered_list",
+    0,
+    pastedOrdered,
+    "1. one\n2. two\n3. alpha",
+    "ol > li + li + li",
+    "\nalpha",
+  ],
+  [
+    "ordered_list",
+    0,
+    pastedList,
+    "1. alpha\n   \n   - one\n   - two",
+    "ol > li > p + ul > li + li",
+    "",
+  ],
+  [
+    "bullet_list",
+    0,
+    pastedOrdered,
+    "- alpha\n  \n  3. one\n  4. two",
+    'ul > li > p + ol[start="3"] > li + li',
+    "",
+  ],
+  [
+    "blockquote",
+    0,
+    pastedList,
+    "> - one\n> - two\n>\n> alpha",
+    "blockquote > ul + p",
+    "alpha",
+  ],
+  [
+    "blockquote",
+    5,
+    pastedList,
+    "> alpha\n>\n> - one\n> - two",
+    "blockquote > p + ul",
+    "",
+  ],
+] as const)(
+  "pastes this app's blocks with the caret in a %s at offset %i",
+  (format, caret, html, markdown, shown, after) => {
+    const h = mount("alpha");
+    act(() => h.input.toggleFormat(format));
+    act(() => h.input.setSelectionRange(caret, caret));
+    const original = h.markdown();
+    paste(h.input, "pasted", html);
+    expect(h.markdown()).toBe(markdown);
+    expect(h.input.querySelector(shown)).not.toBeNull();
+    expect(h.input.querySelector(emptyParagraph)).toBeNull();
+    expect(h.input.value.slice(h.input.selectionStart ?? 0)).toBe(after);
+    act(() => h.input.undo(false));
+    expect(h.markdown()).toBe(original);
+  },
+);
+
+// Deleting the selection first puts a selection from an item's start on the
+// same footing as a caret there, so no empty paragraph is left behind; a fully
+// selected item text becomes the empty item the pasted items replace.
+it.each([
+  [[0, 5], pastedList, "- one\n- two\n- beta", "ul > li + li + li"],
+  [[0, 3], pastedList, "- one\n- two\n- ha\n- beta", "ul > li + li + li + li"],
+  [[0, 8], pastedList, "- one\n- two\n- ta", "ul > li + li + li"],
+  [
+    [0, 3],
+    pastedQuote,
+    "- ha\n  \n  > quoted\n- beta",
+    "ul > li > p + blockquote",
+  ],
+  [[6, 10], pastedQuote, "- alpha\n\n> quoted", "ul + blockquote"],
+] as const)(
+  "pastes this app's blocks over a selection %j from a list item's start",
+  async ([from, to], html, markdown, shown) => {
+    const h = mount("alpha");
+    act(() => h.input.toggleFormat("bullet_list"));
+    await h.user.keyboard("{Enter}beta");
+    expect(h.markdown()).toBe("- alpha\n- beta");
+    act(() => h.input.setSelectionRange(from, to));
+    paste(h.input, "pasted", html);
+    expect(h.markdown()).toBe(markdown);
+    expect(h.input.querySelector(shown)).not.toBeNull();
+    expect(h.input.querySelector(emptyParagraph)).toBeNull();
+    act(() => h.input.undo(false));
+    expect(h.markdown()).toBe("- alpha\n- beta");
+  },
+);
+
+// A blank item that no same-kind list replaces leaves its list first, as Enter
+// there does, so a quote or a list of the other kind never sits beside an empty
+// paragraph that sends as `- `; a same-kind list still takes the item's place.
+it.each([
+  ["bullet_list", pastedQuote, "- alpha\n\n> quoted", "ul + blockquote"],
+  [
+    "bullet_list",
+    pastedOrdered,
+    "- alpha\n\n3. one\n4. two",
+    'ul + ol[start="3"]',
+  ],
+  ["bullet_list", pastedList, "- alpha\n- one\n- two", "ul > li + li + li"],
+  ["ordered_list", pastedList, "1. alpha\n\n- one\n- two", "ol + ul"],
+] as const)(
+  "pastes this app's blocks into a blank %s item after the first",
+  async (format, html, markdown, shown) => {
+    const h = mount("alpha");
+    act(() => h.input.toggleFormat(format));
+    await h.user.keyboard("{Enter}");
+    const original = h.markdown();
+    paste(h.input, "pasted", html);
+    expect(h.markdown()).toBe(markdown);
+    expect(h.input.querySelector(shown)).not.toBeNull();
+    expect(h.input.querySelector(emptyParagraph)).toBeNull();
+    act(() => h.input.undo(false));
+    expect(h.markdown()).toBe(original);
+  },
+);
+
+it("lifts a blank middle or nested item out of its list before pasting a quote", async () => {
+  const h = mount("alpha");
+  act(() => h.input.toggleFormat("bullet_list"));
+  await h.user.keyboard("{Enter}beta");
+  act(() => h.input.setSelectionRange(6, 6));
+  await h.user.keyboard("{Enter}");
+  expect(h.markdown()).toBe("- alpha\n- \n- beta");
+  act(() => h.input.setSelectionRange(6, 6));
+  paste(h.input, "pasted", pastedQuote);
+  expect(h.markdown()).toBe("- alpha\n\n> quoted\n\n- beta");
+  expect(h.input.querySelector("ul + blockquote + ul")).not.toBeNull();
+  expect(h.input.querySelector(emptyParagraph)).toBeNull();
+  // A nested blank item leaves every list it is in, as Enter twice would.
+  const nested = mount("alpha");
+  act(() => nested.input.toggleFormat("bullet_list"));
+  await nested.user.keyboard("{Enter}{Tab}");
+  expect(nested.markdown()).toBe("- alpha\n  \n  - ");
+  paste(nested.input, "pasted", pastedQuote);
+  expect(nested.markdown()).toBe("- alpha\n\n> quoted");
+  expect(nested.input.querySelector(emptyParagraph)).toBeNull();
+  // A blank nested item before a sibling leaves both lists too: the first
+  // lift moves the sibling under it, and the second takes them both out.
+  const sibling = mount("alpha");
+  act(() => sibling.input.toggleFormat("bullet_list"));
+  await sibling.user.keyboard("{Enter}{Tab}beta");
+  act(() => sibling.input.setSelectionRange(6, 6));
+  await sibling.user.keyboard("{Enter}");
+  expect(sibling.markdown()).toBe("- alpha\n  \n  - \n  - beta");
+  act(() => sibling.input.setSelectionRange(6, 6));
+  paste(sibling.input, "pasted", pastedQuote);
+  expect(sibling.markdown()).toBe("- alpha\n\n> quoted\n\n- beta");
+  expect(sibling.input.querySelector("ul + blockquote + ul")).not.toBeNull();
+  expect(sibling.input.querySelector(emptyParagraph)).toBeNull();
+});
+
+it("joins a pasted list before a later item and keeps empty-item pastes whole", async () => {
+  const h = mount("alpha");
+  act(() => h.input.toggleFormat("bullet_list"));
+  await h.user.keyboard("{Enter}beta");
+  expect(h.markdown()).toBe("- alpha\n- beta");
+  act(() => h.input.setSelectionRange(6, 6));
+  paste(h.input, "pasted", pastedList);
+  expect(h.markdown()).toBe("- alpha\n- one\n- two\n- beta");
+  // An empty item takes the pasted items' place.
+  const empty = mount();
+  act(() => empty.input.toggleFormat("bullet_list"));
+  paste(empty.input, "pasted", pastedList);
+  expect(empty.markdown()).toBe("- one\n- two");
+});
+
+it("promotes identity links inside this app's pasted blocks", () => {
+  const accept = vi.fn((pubkey: string) => ({ pubkey, name: "Mic" }));
+  const h = mount("", { links: true, acceptRecipient: accept });
+  paste(
+    h.input,
+    "Ping @Mic",
+    copyHtml(
+      `<ul><li><p>Ping <a href="${profileTarget(mic)}">@Mic</a></p></li></ul>`,
+    ),
+  );
+  expect(h.input.querySelector("ul li [data-mention]")).toHaveTextContent(
+    "@Mic",
+  );
+  expect(h.markdown()).toBe("- Ping @Mic");
+  expect(h.draft().recipients).toEqual([
+    { pubkey: mic, name: "Mic", start: 5, end: 9 },
+  ]);
+});
+
+it("offers only the pasted content for promotion when it lands after an item's text", () => {
+  const accept = vi.fn((pubkey: string) => ({ pubkey, name: "Mic" }));
+  const h = mount(`Ping ${micLink}`, { links: true, acceptRecipient: accept });
+  act(() => h.input.toggleFormat("bullet_list"));
+  expect(h.draft().recipients).toEqual([]);
+  // A quote pasted at the item's start follows its text; the display-only
+  // link in that text is not part of the paste.
+  act(() => h.input.setSelectionRange(0, 0));
+  paste(h.input, "quoted", pastedQuote);
+  expect(h.markdown()).toBe(`- Ping ${micLink}\n  \n  > quoted`);
+  expect(accept).not.toHaveBeenCalled();
+  expect(h.draft().recipients).toEqual([]);
+  // A link inside the pasted quote is offered, wherever the quote lands.
+  act(() => h.input.setSelectionRange(0, 0));
+  paste(
+    h.input,
+    "See @Mic",
+    copyHtml(
+      `<blockquote><p>See <a href="${profileTarget(mic)}">@Mic</a></p></blockquote>`,
+    ),
+  );
+  const markdown = h.markdown();
+  expect(markdown).toBe(`- Ping ${micLink}\n  \n  > See @Mic\n  \n  > quoted`);
+  expect(accept).toHaveBeenCalledTimes(1);
+  // Recipient offsets index the draft's source text, not the wire Markdown.
+  const at = h.draft().text.indexOf("See @Mic") + 4;
+  expect(h.draft().recipients).toEqual([
+    { pubkey: mic, name: "Mic", start: at, end: at + 4 },
+  ]);
+});
+
+it("keeps this app's blocks literal in a code block and within the paste limit", () => {
+  const list = copyHtml("<ul><li><p>one</p></li><li><p>two</p></li></ul>");
+  const h = mount();
+  act(() => h.input.toggleFormat("code_block"));
+  paste(h.input, "one\ntwo", list);
+  expect(h.markdown()).toBe("```\none\ntwo\n```");
+  expect(h.input.querySelector("ul")).toBeNull();
+  const limited = mount("", { maxLength: 8 });
+  paste(limited.input, "one\ntwo", list);
+  expect(limited.markdown()).toBe("");
+  expect(limited.input.querySelector("ul")).toBeNull();
 });
 
 it("pastes this app's HTML as identity Markdown and other HTML as its text/plain", () => {
@@ -3150,7 +4462,7 @@ it("keeps external linked text literal in code blocks and enforces the paste lim
   expect(limited.markdown()).toBe("");
 });
 
-it.each(["ul", "ol", "blockquote", "pre"])(
+it.each(["ul", "ol", "blockquote", "pre", "h1"])(
   "pastes external %s as linked text without importing block formatting",
   (tag) => {
     const h = mount();
@@ -3164,6 +4476,16 @@ it.each(["ul", "ol", "blockquote", "pre"])(
     expect(h.input.querySelector("ul, ol, blockquote, pre")).toBeNull();
   },
 );
+
+it("drops external rules and checkboxes that this app's copies keep as source", () => {
+  const h = mount();
+  paste(
+    h.input,
+    "guide\nnotes",
+    '<p><input type="checkbox" checked><a href="https://example.com/">guide</a></p><hr><p>notes</p>',
+  );
+  expect(h.markdown()).toBe("[guide](https://example.com/)\nnotes");
+});
 
 it.each([
   [
@@ -3235,3 +4557,77 @@ it.each([
     }
   },
 );
+
+it.each([true, false])(
+  "preserves an explicitly %s bold typing format across recipient replacement",
+  async (enabled) => {
+    const h = mount(enabled ? "" : "bold");
+    act(() => {
+      if (!enabled) {
+        h.input.setSelectionRange(0, 4);
+        h.input.toggleFormat("bold");
+        h.input.setSelectionRange(2, 2);
+      }
+      h.input.toggleFormat("bold");
+      expect(
+        h.input.replaceRecipients([{ pubkey: "a".repeat(64), name: "Honey" }]),
+      ).toBe(true);
+      h.input.insertText("X");
+    });
+    expect(
+      h.input.querySelector("strong")?.textContent?.includes("X") ?? false,
+    ).toBe(enabled);
+  },
+);
+
+it("leaves duplicate mentions and their positions unchanged for the same recipient set", () => {
+  const first = { pubkey: "a".repeat(64), name: "Honey" };
+  const second = { pubkey: "b".repeat(64), name: "Mary Jane" };
+  const text = "ask @Honey about @Mary Jane and @Honey";
+  const h = mount({
+    text,
+    recipients: [
+      { ...first, start: 4, end: 10 },
+      { ...second, start: 17, end: 27 },
+      { ...first, start: 32, end: 38 },
+    ],
+  });
+  act(() => expect(h.input.replaceRecipients([second, first])).toBe(true));
+  expect(h.input).toHaveValue(text);
+  expect(h.draft().recipients).toHaveLength(3);
+});
+
+it("keeps retained recipients in place while adding and removing others", () => {
+  const first = { pubkey: "a".repeat(64), name: "Honey" };
+  const second = { pubkey: "b".repeat(64), name: "Mary Jane" };
+  const h = mount({
+    text: "ask @Honey about X",
+    recipients: [{ ...first, start: 4, end: 10 }],
+  });
+  act(() => expect(h.input.replaceRecipients([first, second])).toBe(true));
+  expect(h.input).toHaveValue("@Mary Jane ask @Honey about X");
+  act(() => expect(h.input.replaceRecipients([first])).toBe(true));
+  expect(h.input).toHaveValue("ask @Honey about X");
+});
+
+it("rejects adding a recipient when retained duplicate mentions fill the limit", () => {
+  const first = { pubkey: "a".repeat(64), name: "Honey" };
+  const text = "@Honey ".repeat(32);
+  const h = mount({
+    text,
+    recipients: Array.from({ length: 32 }, (_, i) => ({
+      ...first,
+      start: i * 7,
+      end: i * 7 + 6,
+    })),
+  });
+  act(() =>
+    expect(
+      h.input.replaceRecipients([
+        first,
+        { pubkey: "b".repeat(64), name: "Mary Jane" },
+      ]),
+    ).toBe(false),
+  );
+  expect(h.input).toHaveValue(text);
+});

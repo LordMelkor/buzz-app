@@ -1,5 +1,12 @@
+import { pluginAction } from "./plugin-settings.mjs";
 import { expectTabler } from "./tabler.mjs";
-import { openPage, settlePanelMotion } from "./navigation.mjs";
+import {
+  closeSettings,
+  openPage,
+  openSettings,
+  selectSettingsSection,
+  settlePanelMotion,
+} from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 import { end, settle } from "./timeline.mjs";
 import { apcaContrast, wcagRatio } from "../../scripts/design-system/apca.mjs";
@@ -14,9 +21,9 @@ test.beforeEach(async ({ page }) => {
 const github = "https://github.com/block/buzz/pull/1";
 const ordinary = "https://example.test/external-link";
 const unsupported = "https://github.com/block/buzz/blob/main/README.md";
-const button = (page, name) => page.getByRole("button", { name, exact: true });
 // Presentation plugins may shorten a raw URL label; the destination remains the contract.
-const link = (page, url) => page.locator(`a[href=${JSON.stringify(url)}]`);
+const link = (page, url) =>
+  page.locator(`[data-channel-timeline] a[href=${JSON.stringify(url)}]`);
 
 async function openMessages(page) {
   await openPage(page, "Messages");
@@ -75,10 +82,10 @@ test("unhandled links open externally and disabling GitHub restores the fallback
   expect(await popup(page, link(page, unsupported))).toBe(unsupported);
   await expect(panel).toBeVisible();
 
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await button(page, "Plugins").click();
-  await page.getByRole("switch", { name: "Enable GitHub" }).click();
+  await openSettings(page);
+  await selectSettingsSection(page, "Manage plugins");
+  await pluginAction(page, "GitHub").click();
+  await closeSettings(page);
   await openMessages(page);
   await expect(panel).toHaveCount(0);
   expect(await popup(page, link(page, github))).toBe(github);
@@ -86,10 +93,10 @@ test("unhandled links open externally and disabling GitHub restores the fallback
     page.getByRole("textbox", { name: "Message #Alpha", exact: true }),
   ).toBeVisible();
 
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await button(page, "Plugins").click();
-  await page.getByRole("switch", { name: "Enable GitHub" }).click();
+  await openSettings(page);
+  await selectSettingsSection(page, "Manage plugins");
+  await pluginAction(page, "GitHub").click();
+  await closeSettings(page);
   await openMessages(page);
   await link(page, github).focus();
   await page.keyboard.press("Enter");
@@ -106,10 +113,12 @@ test("GitHub API errors offer prominent external opening before retry", async ({
   context,
   app,
 }, testInfo) => {
-  const target = `${github}#issuecomment-1`;
+  const target = github;
   const detailsUrl = "https://api.github.com/repos/block/buzz/pulls/1";
-  // Permit only this injected response's engine console report, once by exact URL.
-  app.report.githubFailures = [detailsUrl];
+  // Permit only this injected response's engine console reports by exact URL:
+  // once for the inline link's state, which then holds its public reads until
+  // GitHub's reset, and once for the panel.
+  app.report.githubFailures = [detailsUrl, detailsUrl];
   await context.route(github, (route) =>
     route.fulfill({
       contentType: "text/html",
@@ -126,8 +135,11 @@ test("GitHub API errors offer prominent external opening before retry", async ({
   );
   await page.goto(app.origin);
   await openMessages(page);
+  const stateRead = page.waitForResponse(detailsUrl);
   app.append("primary", "alpha", target);
   await expect(link(page, target)).toBeAttached();
+  // The inline link reads the state first; the panel's read is then the next.
+  await stateRead;
   await end(page);
   await link(page, target).click();
   const panel = page.getByRole("complementary", {
@@ -198,7 +210,7 @@ test("message link context menus bypass the pane and return keyboard focus", asy
   context,
   app,
 }, testInfo) => {
-  const target = `${github}?view=all#issuecomment-1`;
+  const target = `${github}?view=all`;
   for (const destination of [github, ordinary]) {
     await context.route(`${destination}**`, (route) =>
       route.fulfill({
@@ -517,6 +529,10 @@ test("PR state, changes and branch links use shared roles in both themes", async
     await expect(
       panel.getByRole("link", { name: "sample-author", exact: true }).first(),
     ).toHaveCSS("color", colors.link);
+    // Neutral prose links remain identifiable before hover or keyboard focus.
+    await expect(
+      panel.getByRole("link", { name: "sample-author", exact: true }).first(),
+    ).toHaveCSS("text-decoration-line", "underline");
     await expect(
       panel.getByRole("link", { name: "A small improvement #1" }),
     ).toHaveCSS("color", colors.standard);
@@ -574,8 +590,8 @@ test("PR state, changes and branch links use shared roles in both themes", async
       await expect(branch).toHaveCSS("color", colors.link);
       await expect(branch).toHaveCSS("background-color", colors.linkFill);
       await expect(branch).toHaveCSS("font-size", "12px");
-      // Main standardized the chip role to 4px; keep the token-owned shape.
-      await expect(branch).toHaveCSS("border-radius", "4px");
+      // Keep the chip shape on the updated radius scale.
+      await expect(branch).toHaveCSS("border-radius", "12px");
       await expect(branch).toHaveCSS("text-decoration-line", "none");
       expect(
         await branch.evaluate((node) => getComputedStyle(node).fontFamily),
@@ -770,8 +786,7 @@ test("GitHub owns status mappings while shared colors and accent stay independen
   });
 });
 
-// Last updated remains useful independently of the separate Checks feature.
-test("PR Last updated remains relative in the built pane without Checks", async ({
+test("PR Last updated remains relative in the built pane beside its checklist", async ({
   page,
   app,
 }, testInfo) => {
@@ -785,47 +800,50 @@ test("PR Last updated remains relative in the built pane without Checks", async 
       const path = new URL(route.request().url()).pathname;
       requests.push(path);
       return route.fulfill({
-        json: /\/(?:comments|reviews)$/.test(path)
-          ? []
-          : {
-              title: "A small improvement",
-              state: "open",
-              updated_at: updatedAt,
-              head: { sha: "head-sha" },
-              additions: 174,
-              deletions: 28,
-              changed_files: 6,
-            },
+        json: path.endsWith("/check-runs")
+          ? { total_count: 0, check_runs: [] }
+          : path.endsWith("/status")
+            ? { total_count: 0, statuses: [] }
+            : {
+                title: "A small improvement",
+                state: "open",
+                updated_at: updatedAt,
+                head: { sha: "head-sha" },
+                additions: 174,
+                deletions: 28,
+                changed_files: 6,
+              },
       });
     },
   );
   await page.goto(app.origin);
   await openMessages(page);
   app.append("primary", "alpha", "https://github.com/sample/project/pull/6");
+  // The inline link reads its state once before the panel opens.
+  await expect(
+    link(page, "https://github.com/sample/project/pull/6"),
+  ).toHaveAccessibleDescription("Pull request, open");
   await link(page, "https://github.com/sample/project/pull/6").click();
   const panel = page.getByRole("complementary", {
     name: "GitHub",
     exact: true,
   });
   await expect(
-    panel.getByRole("region", { name: "Pull request conversation" }),
+    panel.getByRole("list", { name: "Pull request checklist" }),
   ).toBeVisible();
-  await expect(panel.getByText(/some sources are incomplete/)).toHaveCount(0);
   await expect(panel.locator("time")).toHaveCSS("font-size", "12px");
   await expect(panel.locator("time")).toHaveText("3 minutes ago");
   await expect(panel.locator("time")).toHaveAttribute("datetime", updatedAt);
-  await expect(
-    panel.getByRole("tab", { name: "Discussion", exact: true }),
-  ).toHaveAttribute("aria-selected", "true");
-  await expect(
-    panel.getByRole("tab", { name: "Checks", exact: true }),
-  ).toHaveAttribute("aria-selected", "false");
-  await expect(panel.locator("[data-check-state]")).toHaveCount(0);
-  expect(requests.sort()).toEqual([
-    "/repos/sample/project/issues/6/comments",
-    "/repos/sample/project/pulls/6",
-    "/repos/sample/project/pulls/6/reviews",
-  ]);
+  // Without gh, the checklist reads CI on the head commit and nothing else;
+  // the pull request is read for the inline link's state and for the panel.
+  await expect
+    .poll(() => requests.slice().sort())
+    .toEqual([
+      "/repos/sample/project/commits/head-sha/check-runs",
+      "/repos/sample/project/commits/head-sha/status",
+      "/repos/sample/project/pulls/6",
+      "/repos/sample/project/pulls/6",
+    ]);
   for (const mode of ["light", "dark"]) {
     await page.emulateMedia({ colorScheme: mode });
     await expect(page.locator("html")).toHaveAttribute("data-color-mode", mode);

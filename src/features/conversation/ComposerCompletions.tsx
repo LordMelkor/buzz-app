@@ -10,6 +10,7 @@ import { useCompletionPosition } from "./useCompletionPosition";
 import {
   useId,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -33,6 +34,37 @@ import type { CompletionEditor } from "./useCompletionEditor";
 import styles from "./Completions.module.css";
 
 const RETRY = Symbol("retry-completion");
+
+/** What the popup shows, owned by the host across the per-query remount of
+ * `OwnedCompletion`. A keystroke that continues an open query (same provider,
+ * same trigger) mounts a new owner; its first commit used to close the popup
+ * until the provider's mount effect published, a paint later. The new owner
+ * now shows the previous query's result until its own first publication
+ * replaces it in the same task: a store update renders synchronously, and an
+ * owner whose provider has not published by the end of its mount effects
+ * clears it. A query opened elsewhere, by another provider, or after the
+ * popup closed starts empty: `ComposerCompletions` evicts the store in its
+ * closed render, so a carried result means only a continuing open query. */
+function createDisplay() {
+  let shown: { key: string; result: CompletionResult | undefined } = {
+    key: "",
+    result: undefined,
+  };
+  const listeners = new Set<() => void>();
+  return {
+    read: (key: string) => (shown.key === key ? shown.result : undefined),
+    set(key: string, result: CompletionResult | undefined) {
+      shown = { key, result };
+      for (const listener of listeners) listener();
+    },
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}
 
 // Channel links belong in prose, not inside existing links or code.
 // Run only after a channel trigger matches; ordinary typing does no extra parsing.
@@ -91,6 +123,8 @@ export function ComposerCompletions({
     text: string;
     document?: ComposerSnapshot;
     recipients: readonly Readonly<{ start: number; end: number }>[];
+    /** Mentions still resolving; their `@` is no more an open query. */
+    pending?: readonly Readonly<{ start: number; end: number }>[] | undefined;
   }>;
   replace(
     edit: CompletionEdit,
@@ -104,18 +138,33 @@ export function ComposerCompletions({
     registry.snapshot,
     registry.snapshot,
   );
+  const [display] = useState(createDisplay);
   const observation = editor.observation;
   // Stale chip ranges cannot classify this caret.
   const match =
     observation &&
     resolved.text === observation.text &&
-    matchCompletion(providers, observation, context, resolved.recipients);
-  if (!match || !observation) return null;
-  if (
-    match.provider.pluginId === "buzz.channels" &&
-    !channelCompletionInProse(observation.text, resolved.document, match.query)
-  )
-    return null;
+    matchCompletion(providers, observation, context, [
+      ...resolved.recipients,
+      ...(resolved.pending ?? []),
+    ]);
+  const open =
+    !!match &&
+    !!observation &&
+    (match.provider.pluginId !== "buzz.channels" ||
+      channelCompletionInProse(
+        observation.text,
+        resolved.document,
+        match.query,
+      ));
+  // A closed popup carries nothing on. A query reopened at the same trigger,
+  // after Escape, Backspace through its `@`, a send or a pending-mention hold
+  // that returned to text, starts empty as a first query does; its provider's
+  // first publication fills it in the same task.
+  useEffect(() => {
+    if (!open) display.set("", undefined);
+  }, [open, display]);
+  if (!open || !match || !observation) return null;
   return (
     <ContributionBoundary
       key={JSON.stringify([
@@ -134,6 +183,7 @@ export function ComposerCompletions({
       <OwnedCompletion
         {...context}
         registry={registry}
+        display={display}
         provider={match.provider}
         query={match.query}
         observation={observation}
@@ -147,6 +197,7 @@ export function ComposerCompletions({
 function OwnedCompletion({
   provider,
   registry,
+  display,
   query,
   observation,
   editor,
@@ -156,6 +207,7 @@ function OwnedCompletion({
 }: CompletionContext & {
   provider: Contribution<ComposerCompletion>;
   registry: ContributionReader<ComposerCompletion>;
+  display: ReturnType<typeof createDisplay>;
   query: CompletionQuery;
   observation: ComposerObservation;
   editor: CompletionEditor;
@@ -183,7 +235,13 @@ function OwnedCompletion({
       : undefined,
   );
   const list = useRef<HTMLDivElement>(null);
-  const [result, setResult] = useState<CompletionResult>();
+  const trigger = `${contributionKey(provider)}:${query.start}`;
+  const result = useSyncExternalStore(
+    display.subscribe,
+    () => display.read(trigger),
+    () => display.read(trigger),
+  );
+  // This lifetime's own publication; a carried display is never acted on.
   const latest = useRef<CompletionResult | undefined>(undefined);
   // Only user navigation pins an ID; automatic selection follows the first result.
   const [selected, setSelected] = useState<string | typeof RETRY>();
@@ -209,7 +267,7 @@ function OwnedCompletion({
       const next = completionResult(incoming);
       latest.current = next;
       revealSelection.current = true;
-      setResult(next);
+      display.set(trigger, next);
       setSelected((previous) =>
         next.items.some((item) => item.id === previous)
           ? previous
@@ -220,7 +278,7 @@ function OwnedCompletion({
       return () => {
         if (latest.current !== next) return;
         latest.current = undefined;
-        if (live.current) setResult(undefined);
+        if (live.current) display.set(trigger, undefined);
       };
     });
     return () => {
@@ -228,7 +286,14 @@ function OwnedCompletion({
       live.current = false;
       latest.current = undefined;
     };
-  }, [active]);
+  }, [active, display, trigger]);
+  // A carried result stands only until this query's provider has run its
+  // mount effects, which precede this one; a provider that has not published
+  // by then leaves the popup closed, as for a first query, so a stale display
+  // is never painted.
+  useEffect(() => {
+    if (publish && !latest.current) display.set(trigger, undefined);
+  }, [publish, display, trigger]);
   const items = result?.items ?? [];
   // Matching syntax is not evidence of pending work. Providers publish their
   // own status when needed; an empty/unpublished result must not flash a portal.
@@ -250,8 +315,9 @@ function OwnedCompletion({
     }
     // Publication is synchronous; React may still be displaying the previous
     // result. Keep the user's chosen ID, but use only its current evidence/edit.
-    const item = published.items.find((item) => item.id === items[index]?.id);
-    if (key === terminator && item?.id !== published.spaceId) return false;
+    // The terminator names its own item, which that display may not have yet.
+    const id = key === terminator ? published.spaceId : items[index]?.id;
+    const item = published.items.find((item) => item.id === id);
     if (!item || item.disabled || item.canSelect?.(key) === false) return false;
     const accepted = current.current.replace(
       item.edit,
@@ -265,8 +331,9 @@ function OwnedCompletion({
   useLayoutEffect(() => {
     const element = input.current;
     // Escape must still dismiss an unpublished provider without advertising a
-    // nonexistent listbox. A settled empty result leaves ordinary keys alone.
-    if (!element || (!visible && result)) return;
+    // nonexistent listbox. A settled empty result leaves ordinary keys alone;
+    // an undecided one still owns the terminator, with nothing to show yet.
+    if (!element || (!visible && result && !result.spacePending)) return;
     if (visible) {
       element.setAttribute("aria-autocomplete", "list");
       element.setAttribute("aria-haspopup", "listbox");
@@ -300,14 +367,45 @@ function OwnedCompletion({
         }
         return false;
       }
-      if (event.key === terminator && result?.spaceId) {
-        const exact = items.findIndex((item) => item.id === result.spaceId);
-        if (accept(exact, terminator)) {
+      // A result that has just decided the terminator may not have rendered
+      // yet, so both terminator branches read the publication. Space is not
+      // redirected away from an exact match the display showed: a publication
+      // that moves it to another id leaves Space literal. The displayed row
+      // is never accepted on its own; only the publication selects.
+      const published = latest.current;
+      if (
+        event.key === terminator &&
+        published?.spaceId &&
+        (!result?.spaceId || result.spaceId === published.spaceId)
+      ) {
+        // Selected by ID, so no displayed row is needed.
+        if (accept(-1, terminator)) {
           event.preventDefault();
           event.stopPropagation();
           return true;
         }
         return false;
+      }
+      // Undecided, not declined: the provider is still gathering evidence, so
+      // the host may hold the name as a pending mention and resolve it later.
+      // This includes a display whose exact match the publication withdrew
+      // as undecided: no other recipient overrules what the user saw, the
+      // decision is deferred to the resolver under the full rule.
+      if (
+        event.key === terminator &&
+        published?.spacePending &&
+        !published.spaceId &&
+        current.current.replace(
+          { pending: published.spacePending },
+          query,
+          observation,
+          terminator,
+        )
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        current.current.editor.invalidate();
+        return true;
       }
       if ((event.key === "ArrowDown" || event.key === "ArrowUp") && count) {
         event.preventDefault();

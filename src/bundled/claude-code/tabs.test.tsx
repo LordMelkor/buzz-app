@@ -1,5 +1,14 @@
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { AgentTabs } from "../agents/AgentTabs";
-import { ProviderDialog } from "../agents/ProviderDialog";
 import type {
   Agents,
   RegisteredAgentType,
@@ -19,10 +28,19 @@ import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Agent, AgentType } from "../../features/agents/service";
+import {
+  fileStore,
+  localStore,
+  type AgentStore,
+} from "../../features/agents/state";
 import type { HostProcessOptions } from "../../features/host/service";
+import type { ChannelSummary } from "../../features/relay/contracts";
+import type { RelayData } from "../../features/relay/service";
 import { ClaudeLogoIcon } from "../../shared/design-system/icons";
+import { manifestProcesses } from "./claude-testing";
 import { apply, inject } from "./index";
 import { type Config, DEFAULT_CONFIG } from "./runtime";
+import { ClaudeSetup } from "./setup";
 import { ClaudeDefaults } from "./defaults";
 
 const desktop = vi.hoisted(() => ({ tauri: true }));
@@ -41,7 +59,10 @@ beforeEach(() => {
     },
   );
 });
+const homes: string[] = [];
 afterEach(() => {
+  for (const home of homes.splice(0))
+    rmSync(home, { recursive: true, force: true });
   cleanup();
   vi.unstubAllGlobals();
   localStorage.clear();
@@ -50,6 +71,7 @@ afterEach(() => {
 
 const agent = (config: Config = DEFAULT_CONFIG) =>
   ({
+    key: "c".repeat(64),
     pubkey: "c".repeat(64),
     name: "Claude",
     type: "buzz.claude-code/claude-code",
@@ -70,6 +92,8 @@ const CATALOG = [
   },
   {
     value: "opus",
+    supportsEffort: true,
+    supportedEffortLevels: ["low", "high"],
     resolvedModel: "claude-opus-5-5",
     displayName: "Opus",
     description: "Opus 5.5 · Best for everyday, complex tasks",
@@ -106,7 +130,13 @@ function applied({
   latest = version,
   files = {},
   catalog = { listed: true },
+  storage,
+  channels,
 }: {
+  /** Agent storage; this page's localStorage without it. */
+  storage?: AgentStore;
+  /** The community's channels; no community connection without them. */
+  channels?: readonly ChannelSummary[];
   loggedIn?: boolean;
   available?: boolean;
   version?: string;
@@ -116,34 +146,25 @@ function applied({
   catalog?: { listed: boolean; ready?: Promise<void> };
 } = {}) {
   let type: AgentType<Config> | undefined;
+  const home = mkdtempSync(join(tmpdir(), "claude-tabs-"));
+  homes.push(home);
+  for (const [path, content] of Object.entries(files)) {
+    const copy = join(home, ".claude/projects", path);
+    mkdirSync(dirname(copy), { recursive: true });
+    writeFileSync(copy, content);
+    // Written an hour ago, so a later listing finds it unchanged.
+    const hourAgo = new Date(Date.now() - 3_600_000);
+    utimesSync(copy, hourAgo, hourAgo);
+  }
+  const listed = manifestProcesses(home);
   const spawn = vi.fn(async (id: string, options: HostProcessOptions = {}) => {
     // Claude and its install steps run as steps of claude.sh: its script, $0
     // and step come first.
     const step = id === "claude-sh" ? options.args?.[2] : undefined;
     const name = step === "run" ? "claude" : (step ?? id);
     const args = (options.args ?? []).slice(step ? 3 : 0).join(" ");
-    if (name === "find") {
-      // Session files in the project folder that mention the pattern.
-      const project = options.cwd?.split("/").pop();
-      const [pattern = ""] = options.args ?? [];
-      const found = Object.keys(files).filter(
-        (path) =>
-          path.startsWith(`./${project}/`) && files[path]?.includes(pattern),
-      );
-      queueMicrotask(() =>
-        options.onStdout?.(
-          found.map((path) => `./${path.split("/").pop()}\n`).join(""),
-        ),
-      );
-      return {
-        write: async () => undefined,
-        end: async () => undefined,
-        kill: async () => undefined,
-        exited: new Promise<number>((resolve) =>
-          setTimeout(() => resolve(found.length ? 0 : 1), 0),
-        ),
-      };
-    }
+    // The manifest's listing and search run for real on a copy of `files`.
+    if (name === "list" || name === "starts") return listed(name, options);
     if (name === "workspace" || name === "read") {
       const file = files[args];
       queueMicrotask(() =>
@@ -234,22 +255,30 @@ function applied({
       })),
     },
     agents: {
+      storage,
       register: (registered: AgentType<Config>) => {
         type = registered;
       },
       snapshot: () => ({ status: "ready", agents: [], running: [] }),
-      relay: () => undefined,
+      relay: () =>
+        channels &&
+        ({
+          snapshot: () => ({
+            status: "ready",
+            session: { channels: { list: () => ({ channels }) } },
+          }),
+        } as unknown as RelayData),
       subscribe: () => () => undefined,
     },
     effect: vi.fn(),
   };
   apply(ctx as never);
-  return { type, spawn };
+  return { type, spawn, home };
 }
 function installed(options?: Parameters<typeof applied>[0]) {
-  const { type, spawn } = applied(options);
+  const { type, spawn, home } = applied(options);
   if (!type) throw new Error("no type registered");
-  return { type, spawn };
+  return { type, spawn, home };
 }
 function tab(type: AgentType<Config>, index: number) {
   const component = type.tabs?.[index]?.component;
@@ -266,12 +295,54 @@ async function choose(label: string, option: string) {
   await user.click(await screen.findByRole("option", { name: option }));
 }
 
+it("shows each saved conversation's channel with the sidebar's icon", () => {
+  localStorage.setItem(
+    "buzz.claude-code.sessions.v1",
+    JSON.stringify({
+      [agent().key]: {
+        public: { id: "s1", seen: 0, at: 4 },
+        private: { id: "s2", seen: 0, at: 3 },
+        dm: { id: "s3", seen: 0, at: 2 },
+        solo: { id: "s4", seen: 0, at: 1 },
+      },
+    }),
+  );
+  const Activity = tab(
+    installed({
+      channels: [
+        { id: "public", name: "general", channelType: "stream" },
+        { id: "private", name: "plans", channelType: "stream", private: true },
+        { id: "dm", name: "Pinky", channelType: "dm", hidden: true },
+        { id: "solo", name: "Notes", channelType: "solo", private: true },
+      ],
+    }).type,
+    1,
+  );
+  render(<Activity agent={agent()} save={vi.fn()} />);
+  const shown = (row: HTMLElement) => {
+    const name = within(row).getByTitle(/ · channel$/);
+    const icon = name.querySelector("svg")?.getAttribute("class");
+    return `${icon?.match(/tabler-icon-[\w-]+/)?.[0]} ${name.textContent}`;
+  };
+  expect(
+    screen.getAllByRole("listitem").map((row) => shown(row as HTMLElement)),
+  ).toEqual([
+    "tabler-icon-hash general",
+    "tabler-icon-lock plans",
+    "tabler-icon-message-circle Pinky",
+    "tabler-icon-message-circle Notes",
+  ]);
+  expect(
+    screen.getByRole("button", { name: "View transcript: plans · channel" }),
+  ).toBeVisible();
+});
+
 it("lists saved conversations and shows one's transcript, or that it is gone", async () => {
   const thread = `channel/${"e".repeat(64)}`;
   localStorage.setItem(
     "buzz.claude-code.sessions.v1",
     JSON.stringify({
-      [agent().pubkey]: {
+      [agent().key]: {
         channel: { id: "deleted", seen: 0, at: 1 },
         [thread]: { id: "kept", seen: 0, at: 2 },
       },
@@ -302,22 +373,28 @@ it("lists saved conversations and shows one's transcript, or that it is gone", a
   render(<Activity agent={agent()} save={save} />);
   const user = userEvent.setup();
   const rows = screen.getAllByRole("listitem");
-  expect(rows.map((row) => row.textContent)).toEqual([
-    expect.stringContaining("channel · thread eeeeeeee"),
-    expect.stringContaining("channel · channel"),
-  ]);
+  expect(
+    within(rows[0] as HTMLElement).getByRole("button", {
+      name: "View transcript: channel · thread eeeeeeee",
+    }),
+  ).toBeVisible();
+  expect(
+    within(rows[1] as HTMLElement).getByRole("button", {
+      name: "View transcript: channel · channel",
+    }),
+  ).toBeVisible();
   const viewButton = (index: number) =>
-    screen.getAllByRole("button", { name: "View transcript" })[
+    screen.getAllByRole("button", { name: /^View transcript/ })[
       index
     ] as HTMLElement;
   await user.click(viewButton(0));
   expect(await screen.findByText("what changed?")).toBeVisible();
   expect(screen.getByText("Two files.")).toBeVisible();
-  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await user.click(screen.getByRole("button", { name: "Refresh transcript" }));
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Refresh" })).not.toHaveAttribute(
-      "data-loading",
-    ),
+    expect(
+      screen.getByRole("button", { name: "Refresh transcript" }),
+    ).not.toHaveAttribute("data-loading"),
   );
   expect(screen.getByText("Two files.")).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Back to profile" }));
@@ -329,12 +406,135 @@ it("lists saved conversations and shows one's transcript, or that it is gone", a
   expect(save).not.toHaveBeenCalled();
 });
 
+it("opens the conversation's transcript when opened from its activity, once", async () => {
+  const root = "e".repeat(64);
+  localStorage.setItem(
+    "buzz.claude-code.sessions.v1",
+    JSON.stringify({
+      [agent().key]: { [`channel/${root}`]: { id: "kept", seen: 0, at: 2 } },
+    }),
+  );
+  const transcript = JSON.stringify({
+    type: "assistant",
+    uuid: "u1",
+    timestamp: "2026-10-09T10:00:05Z",
+    message: { content: [{ type: "text", text: "Two files." }] },
+  });
+  const Activity = tab(
+    installed({ files: { "./-Users-me--buzz/kept.jsonl": transcript } }).type,
+    1,
+  );
+  const conversation = { channelId: "channel", rootId: root };
+  const { unmount } = render(
+    <Activity
+      agent={agent()}
+      save={vi.fn()}
+      conversation={conversation}
+      initialTranscript={{ opening: 1, done: () => undefined }}
+    />,
+  );
+  const user = userEvent.setup();
+  expect(await screen.findByText("Two files.")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Back to profile" }));
+  expect(
+    screen.getByRole("button", {
+      name: "View transcript: channel",
+    }),
+  ).toBeVisible();
+  expect(screen.queryByText("Two files.")).toBeNull();
+  unmount();
+  // Opened from the profile itself, it lists conversations instead.
+  render(
+    <Activity agent={agent()} save={vi.fn()} conversation={conversation} />,
+  );
+  expect(
+    screen.getByRole("button", {
+      name: "View transcript: channel",
+    }),
+  ).toBeVisible();
+  expect(screen.queryByText("Two files.")).toBeNull();
+});
+
+it("opens a channel's session transcript when opened from one of its threads' activity", async () => {
+  // A Solo chat, DM or channel-scoped agent keeps one session per channel, so
+  // the thread's own lookup finds it only after the profile is shown.
+  localStorage.setItem(
+    "buzz.claude-code.sessions.v1",
+    JSON.stringify({
+      [agent().key]: { channel: { id: "kept", seen: 0, at: 2 } },
+    }),
+  );
+  const transcript = JSON.stringify({
+    type: "assistant",
+    uuid: "u1",
+    timestamp: "2026-10-09T10:00:05Z",
+    message: { content: [{ type: "text", text: "Two files." }] },
+  });
+  const Activity = tab(
+    installed({ files: { "./-Users-me--buzz/kept.jsonl": transcript } }).type,
+    1,
+  );
+  const done = vi.fn();
+  render(
+    <Activity
+      agent={agent()}
+      save={vi.fn()}
+      conversation={{ channelId: "channel", rootId: "e".repeat(64) }}
+      initialTranscript={{ opening: 1, done }}
+    />,
+  );
+  expect(await screen.findByText("Two files.")).toBeVisible();
+  expect(done).toHaveBeenCalledTimes(1);
+});
+
+it("shows the transcript and that sessions may be missing when some history cannot be read", async () => {
+  localStorage.setItem(
+    "buzz.claude-code.sessions.v1",
+    JSON.stringify({
+      [agent().key]: {
+        [`channel/${"e".repeat(64)}`]: { id: "kept", seen: 0, at: 2 },
+      },
+    }),
+  );
+  const transcript = [
+    JSON.stringify({
+      type: "user",
+      uuid: "u1",
+      timestamp: "2026-10-09T10:00:00Z",
+      message: {
+        content:
+          "<buzz-event>\nEvent ID: e\nContent: what changed?\nTags: []\n</buzz-event>",
+      },
+    }),
+  ].join("\n");
+  const { type, home } = installed({
+    files: {
+      "./-Users-me--buzz/kept.jsonl": transcript,
+      "./-Users-me--buzz/unreadable.jsonl": transcript,
+    },
+  });
+  chmodSync(join(home, ".claude/projects/-Users-me--buzz/unreadable.jsonl"), 0);
+  const Activity = tab(type, 1);
+  render(<Activity agent={agent()} save={vi.fn()} />);
+  const user = userEvent.setup();
+  await user.click(
+    screen.getAllByRole("button", {
+      name: /^View transcript/,
+    })[0] as HTMLElement,
+  );
+  expect(await screen.findByText("what changed?")).toBeVisible();
+  expect(
+    screen.getByText(/sessions may be missing\. Refresh to try again\./),
+  ).toHaveTextContent(/unreadable\.jsonl/);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
 it("sets the conversation the profile was opened from apart from recent conversations", () => {
   const root = "e".repeat(64);
   localStorage.setItem(
     "buzz.claude-code.sessions.v1",
     JSON.stringify({
-      [agent().pubkey]: {
+      [agent().key]: {
         channel: { id: "channel-session", seen: 0, at: 1 },
         [`channel/${root}`]: { id: "thread-session", seen: 0, at: 2 },
       },
@@ -350,10 +550,17 @@ it("sets the conversation the profile was opened from apart from recent conversa
   );
   const opened = screen.getByRole("region", { name: "This thread" });
   expect(
-    within(opened).getByRole("button", { name: "View transcript" }),
+    within(opened).getByRole("button", { name: /^View transcript/ }),
   ).toBeVisible();
   expect(screen.getAllByRole("listitem")).toHaveLength(1);
-  expect(screen.getByText(/channel · channel/)).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "View transcript: channel · channel" }),
+  ).toBeVisible();
+  // Unlisted by the community, their kind is unknown: no icon claims one.
+  expect(within(opened).getByTitle("channel").querySelector("svg")).toBeNull();
+  expect(
+    screen.getByTitle("channel · channel").querySelector("svg"),
+  ).toBeNull();
 });
 
 it("finds the thread's Claude session another build started", async () => {
@@ -363,25 +570,85 @@ it("finds the thread's Claude session another build started", async () => {
     uuid: "u1",
     timestamp: "2026-10-09T10:00:00Z",
     message: {
-      content: `<context>\nScope: thread\nSession scope: thread\nChannel: dev (#channel)\nThread root: ${root}\nAgent: ${agent().pubkey}\n</context>\n\n<buzz-event>\nEvent ID: e\nContent: what changed?\nTags: []\n</buzz-event>`,
+      content: `<context>\nScope: thread\nSession scope: thread\nChannel: dev (#channel)\nThread root: ${root}\nAgent: ${agent().key}\n</context>\n\n<buzz-event>\nEvent ID: e\nContent: what changed?\nTags: []\n</buzz-event>`,
     },
   });
-  const Activity = tab(
-    installed({ files: { "./-Users-me--buzz/elsewhere.jsonl": started } }).type,
-    1,
-  );
-  render(
+  const { type, spawn } = installed({
+    files: { "./-Users-me--buzz/elsewhere.jsonl": started },
+  });
+  const Activity = tab(type, 1);
+  const open = async () => {
+    const view = render(
+      <Activity
+        agent={agent()}
+        save={vi.fn()}
+        conversation={{ channelId: "channel", rootId: root }}
+      />,
+    );
+    const opened = screen.getByRole("region", { name: "This thread" });
+    fireEvent.click(
+      await within(opened).findByRole("button", { name: /^View transcript/ }),
+    );
+    expect(await screen.findByText("what changed?")).toBeVisible();
+    view.unmount();
+  };
+  const searches = () =>
+    spawn.mock.calls.filter(([id]) => id === "starts").length;
+  await open();
+  const searched = searches();
+  // Opened again, it searches no file it already searched.
+  await open();
+  expect(searched).toBeGreaterThan(0);
+  expect(searches()).toBe(searched);
+});
+
+it("shows the channel's current kind for a session another build started", async () => {
+  const root = "f".repeat(64);
+  const started = JSON.stringify({
+    type: "user",
+    uuid: "u1",
+    timestamp: "2026-10-09T10:00:00Z",
+    message: {
+      content: `<context>\nScope: thread\nSession scope: thread\nChannel: dev (#channel)\nThread root: ${root}\nAgent: ${agent().key}\n</context>\n\n<buzz-event>\nEvent ID: e\nContent: what changed?\nTags: []\n</buzz-event>`,
+    },
+  });
+  const channels: ChannelSummary[] = [
+    { id: "channel", name: "dev", channelType: "stream" },
+  ];
+  const { type, spawn } = installed({
+    files: { "./-Users-me--buzz/elsewhere.jsonl": started },
+    channels,
+  });
+  const Activity = tab(type, 1);
+  // A new element each time, so that rerendering renders the tab again.
+  const shown = () => (
     <Activity
       agent={agent()}
       save={vi.fn()}
       conversation={{ channelId: "channel", rootId: root }}
-    />,
+    />
   );
-  const opened = screen.getByRole("region", { name: "This thread" });
-  fireEvent.click(
-    await within(opened).findByRole("button", { name: "View transcript" }),
+  const view = render(shown());
+  const here = screen.getByRole("region", { name: "This thread" });
+  await within(here).findByRole("button", { name: /^View transcript/ });
+  expect(within(here).getByTitle("dev").querySelector("svg")).toHaveClass(
+    "tabler-icon-hash",
   );
-  expect(await screen.findByText("what changed?")).toBeVisible();
+  const searched = spawn.mock.calls.filter(([id]) => id === "starts").length;
+
+  channels[0] = {
+    id: "channel",
+    name: "plans",
+    channelType: "stream",
+    private: true,
+  };
+  view.rerender(shown());
+  expect(within(here).getByTitle("plans").querySelector("svg")).toHaveClass(
+    "tabler-icon-lock",
+  );
+  expect(spawn.mock.calls.filter(([id]) => id === "starts").length).toBe(
+    searched,
+  );
 });
 
 it("is an agent type on the desktop app", () => {
@@ -465,11 +732,8 @@ it("keeps provider readiness quiet and agent sessions out of Settings", async ()
   const installedType = installed().type;
   const Setup = providerSetup(installedType);
   render(<Setup onClose={vi.fn()} />);
-  await waitFor(() =>
-    expect(
-      screen.getByRole("combobox", { name: "Default model" }),
-    ).toHaveTextContent("Opus 5.5 · Default"),
-  );
+  expect(await screen.findByText("Claude is signed in.")).toBeVisible();
+  expect(screen.queryByLabelText("Default model")).not.toBeInTheDocument();
   expect(screen.queryByText("Connection")).not.toBeInTheDocument();
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
   cleanup();
@@ -481,90 +745,26 @@ it("keeps provider readiness quiet and agent sessions out of Settings", async ()
   const Activity = tab(installedType, 1);
   render(<Activity agent={agent()} save={vi.fn()} />);
   expect(
-    screen.getByText(/None\. A conversation's session starts/),
+    screen.getByText("No other conversations saved in this app yet."),
   ).toBeInTheDocument();
 });
 
-it("loads provider models inside a disabled picker without a loading subtitle", async () => {
-  let finish!: () => void;
-  const ready = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
-  const Provider = providerSetup(
-    installed({ catalog: { listed: true, ready } }).type,
-  );
-  render(<Provider onClose={vi.fn()} />);
-  try {
-    const picker = await screen.findByRole("combobox", {
-      name: "Default model",
-    });
-    await waitFor(() => expect(picker).toHaveTextContent("Loading models…"));
-    expect(picker).toBeDisabled();
-    expect(picker).toContainElement(screen.getByText("Loading models…"));
-    expect(
-      screen.queryByText("Loading Claude's models…"),
-    ).not.toBeInTheDocument();
-    await userEvent.setup().click(picker);
-    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
-    await act(async () => finish());
-    await waitFor(() => expect(picker).toBeEnabled());
-    expect(screen.getByRole("combobox", { name: "Default model" })).toBe(
-      picker,
-    );
-    expect(picker).toHaveTextContent("Opus 5.5 · Default");
-    expect(screen.queryByText("Loading models…")).not.toBeInTheDocument();
-  } finally {
-    finish();
-  }
-});
-
-it("saves a provider model default explicitly and leaves blank agent config inherited", async () => {
+it("edits the model through the Settings dropdown and preserves agent inheritance", async () => {
   const installedType = installed().type;
-  const onClose = vi.fn();
-  render(
-    <ProviderDialog
-      type={installedType as unknown as RegisteredAgentType}
-      finalFocus={{ current: null }}
-      onClose={onClose}
-    />,
-  );
-  await waitFor(() =>
-    expect(
-      screen.getByRole("combobox", { name: "Default model" }),
-    ).toHaveTextContent("Opus 5.5 · Default"),
-  );
+  const Control = installedType.provider?.DefaultControl;
+  if (!Control) throw new Error("Missing default control");
+  render(<Control onConfigure={vi.fn()} />);
   const user = userEvent.setup();
-  const defaultModel = screen.getByRole("combobox", { name: "Default model" });
-  const cancel = screen.getByRole("button", { name: "Cancel" });
-  const saveDefaults = screen.getByRole("button", { name: "Save defaults" });
-  const footer = saveDefaults.closest(".buzz-dialog-actions");
-  expect(footer).not.toBeNull();
-  expect(footer).toContainElement(cancel);
-  expect(within(footer as HTMLElement).getAllByRole("button")).toEqual([
-    cancel,
-    saveDefaults,
-  ]);
-  expect(saveDefaults).toHaveAttribute(
-    "form",
-    defaultModel.closest("form")?.id,
+  const control = await screen.findByRole("button", {
+    name: /^Claude default model:/,
+  });
+  await waitFor(() => expect(control).toHaveTextContent("Opus 5.5"));
+  await user.click(control);
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Claude" }));
+  fireEvent.click(
+    await screen.findByRole("menuitemradio", { name: "Fable 5.1" }),
   );
-  expect(defaultModel).toHaveTextContent("Opus 5.5 · Default");
-  await user.click(defaultModel);
-  expect(
-    await screen.findByRole("option", {
-      name: "Opus 5.5 · Default",
-    }),
-  ).toHaveAccessibleDescription("Following Claude Code's recommendation");
-  // Every model Claude lists is offered, not only the aliases.
-  const fable = await screen.findByRole("option", { name: "Fable 5.1" });
-  expect(fable).toHaveAccessibleDescription(
-    "Most capable for your hardest tasks",
-  );
-  await user.click(fable);
-  await user.click(screen.getByRole("button", { name: "Save defaults" }));
-  expect(onClose).toHaveBeenCalledOnce();
   cleanup();
-
   const Settings = tab(installedType, 0);
   const save = vi.fn(async () => undefined);
   render(<Settings agent={agent()} save={save} />);
@@ -576,107 +776,48 @@ it("saves a provider model default explicitly and leaves blank agent config inhe
   expect(save).not.toHaveBeenCalled();
 });
 
-it("cancels a provider defaults draft without saving", async () => {
-  const type = installed().type;
-  const onClose = vi.fn();
-  render(
-    <ProviderDialog
-      type={type as unknown as RegisteredAgentType}
-      finalFocus={{ current: null }}
-      onClose={onClose}
-    />,
-  );
-  await waitFor(() =>
-    expect(
-      screen.getByRole("combobox", { name: "Default model" }),
-    ).toHaveTextContent("Opus 5.5 · Default"),
-  );
-  await choose("Default model", "Fable 5.1");
-  await userEvent.setup().click(screen.getByRole("button", { name: "Cancel" }));
-  expect(onClose).toHaveBeenCalledOnce();
-  expect(new ClaudeDefaults(localStorage).snapshot().model).toBe("");
-});
-
-it("closes a provider defaults draft without stopping a hidden background update", async () => {
-  const { type, spawn } = installed({ latest: "2.1.293" });
-  await waitFor(() =>
-    expect(spawn).toHaveBeenCalledWith(
-      "claude-sh",
-      expect.objectContaining({ args: expect.arrayContaining(["install"]) }),
-    ),
-  );
-  const installIndex = spawn.mock.calls.findIndex(
-    ([, options]) => options?.args?.[2] === "install",
-  );
-  const installation = await spawn.mock.results[installIndex]?.value;
-  if (!installation || !type.provider) throw new Error("No background update");
-  const kill = vi.spyOn(installation, "kill");
-  const onClose = vi.fn();
-  try {
-    render(
-      <ProviderDialog
-        type={type as unknown as RegisteredAgentType}
-        finalFocus={{ current: null }}
-        onClose={onClose}
-      />,
-    );
-    await waitFor(() =>
-      expect(
-        screen.getByRole("combobox", { name: "Default model" }),
-      ).toHaveTextContent("Opus 5.5 · Default"),
-    );
-    expect(type.provider.snapshot()).toMatchObject({
-      readiness: "ready",
-      blocking: true,
-    });
-    expect(screen.getByText("Setting up Claude Code...")).not.toBeVisible();
-    await choose("Default model", "Fable 5.1");
-    await userEvent
-      .setup()
-      .click(screen.getByRole("button", { name: "Cancel" }));
-    expect(onClose).toHaveBeenCalledOnce();
-    expect(new ClaudeDefaults(localStorage).snapshot().model).toBe("");
-    expect(kill).not.toHaveBeenCalled();
-    expect(type.provider.snapshot()).toMatchObject({
-      readiness: "ready",
-      blocking: true,
-    });
-  } finally {
-    await act(async () => installation.kill());
-    await waitFor(() =>
-      expect(type.provider?.snapshot().blocking).not.toBe(true),
-    );
-  }
-});
-
-it("says when Claude's models could not be loaded and tries again", async () => {
-  const catalog = { listed: false };
-  const Provider = providerSetup(installed({ catalog }).type);
-  render(<Provider onClose={() => undefined} />);
-  const defaultModel = await screen.findByRole("combobox", {
-    name: "Default model",
+it("keeps the saved default and shows the error while a default could not be saved", async () => {
+  let failing = true;
+  const storage = fileStore(new Map(), async () => {
+    if (failing) throw new Error("disk full");
   });
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Couldn't load Claude's models: Claude did not list its models",
-  );
-  const retry = await screen.findByRole("button", { name: "Try again" });
-  catalog.listed = true;
-  const user = userEvent.setup();
-  await user.click(retry);
+  const Control = installed({ storage }).type.provider?.DefaultControl;
+  if (!Control) throw new Error("Missing default control");
+  render(<Control onConfigure={vi.fn()} />);
+  const control = await screen.findByRole("button", {
+    name: /^Claude default model:/,
+  });
+  await waitFor(() => expect(control).toHaveTextContent("Opus 5.5"));
+  const pick = async () => {
+    fireEvent.click(control);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Claude" }));
+    fireEvent.click(
+      await screen.findByRole("menuitemradio", { name: "Fable 5.1" }),
+    );
+  };
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  await pick();
+  expect(await screen.findByRole("alert")).toHaveTextContent("disk full");
+  error.mockRestore();
+  expect(control).toHaveTextContent("Opus 5.5");
+  expect(storage.get("buzz.claude-code.provider-defaults.v1")).toBeNull();
+  // The same choice can be saved again.
+  failing = false;
+  await pick();
   await waitFor(() =>
     expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
   );
-  await user.click(defaultModel);
-  expect(
-    await screen.findByRole("option", { name: "Fable 5.1" }),
-  ).toBeInTheDocument();
+  expect(control).toHaveTextContent("Fable 5.1");
+  expect(storage.get("buzz.claude-code.provider-defaults.v1")).toContain(
+    "fable",
+  );
 });
 
-it("preserves native behavior for invalid defaults and keeps explicit agent models", () => {
+it("preserves native behavior for invalid defaults and keeps explicit agent models", async () => {
   localStorage.setItem("buzz.claude-code.provider-defaults.v1", "not json");
-  const defaults = new ClaudeDefaults(localStorage);
+  const defaults = new ClaudeDefaults(localStore());
   expect(defaults.resolve(DEFAULT_CONFIG)).toEqual(DEFAULT_CONFIG);
-  defaults.save({ model: "sonnet" });
+  await defaults.save({ model: "sonnet" });
   const inherited = { ...DEFAULT_CONFIG };
   expect(defaults.resolve(inherited).model).toBe("sonnet");
   expect(inherited).toEqual(DEFAULT_CONFIG);
@@ -905,8 +1046,8 @@ it("starts a new agent with finite model choices and preserves its other setting
     }),
   );
   expect(onChange).toHaveBeenLastCalledWith({ ...config, model: "" });
-  expect(screen.getByLabelText("Instructions")).toHaveValue("Triage.");
-  fireEvent.change(screen.getByLabelText("Instructions"), {
+  expect(screen.getByLabelText("Instructions Optional")).toHaveValue("Triage.");
+  fireEvent.change(screen.getByLabelText("Instructions Optional"), {
     target: { value: "Plan." },
   });
   expect(onChange).toHaveBeenLastCalledWith({
@@ -919,7 +1060,7 @@ it("disables a new agent's controls while it is being created", () => {
   const Create = installed().type.Create;
   if (!Create) throw new Error("no create choices");
   render(<Create config={DEFAULT_CONFIG} onChange={vi.fn()} disabled />);
-  expect(screen.getByLabelText("Instructions")).toBeDisabled();
+  expect(screen.getByLabelText("Instructions Optional")).toBeDisabled();
 });
 
 it("edits a custom model and instructions in settings", async () => {
@@ -1157,7 +1298,7 @@ it("keeps the shared Claude catalog across repeated provider checks", async () =
 });
 
 it.each(["Identity", "Settings"])(
-  "preserves both settings drafts and retries a failed save from %s",
+  "keeps editing after cancelling a tab switch and retries a failed save from %s",
   async (saveFrom) => {
     const f = installed();
     const Settings = tab(f.type, 0);
@@ -1168,7 +1309,15 @@ it.each(["Identity", "Settings"])(
       .fn()
       .mockRejectedValueOnce(new Error("Save failed"))
       .mockResolvedValue(undefined);
-    const agents = { save } as unknown as Agents;
+    const agents = {
+      save,
+      configHistory: () => undefined,
+      addedTabs: () => [],
+      registerTab: () => {},
+      controlAttention: () => {},
+      memberships: () => [],
+      subscribe: () => () => {},
+    } as unknown as Agents;
     const type = {
       tabs: [
         {
@@ -1191,30 +1340,204 @@ it.each(["Identity", "Settings"])(
         settingsContent={<p>Agent details</p>}
       />,
     );
-    await user.clear(screen.getByLabelText("Instructions"));
-    await user.type(
-      screen.getByLabelText("Instructions"),
-      "Keep this identity draft.",
-    );
-    await user.click(screen.getByRole("tab", { name: "Settings" }));
-    await user.clear(screen.getByLabelText("Workspace"));
-    await user.type(screen.getByLabelText("Workspace"), "/tmp/combined-draft");
-    await user.click(screen.getByRole("tab", { name: "Memory" }));
-    await user.click(screen.getByRole("tab", { name: "Identity" }));
-    expect(screen.getByLabelText("Instructions")).toHaveValue(
-      "Keep this identity draft.",
-    );
     if (saveFrom === "Settings")
       await user.click(screen.getByRole("tab", { name: "Settings" }));
+    const label = saveFrom === "Identity" ? "Instructions" : "Workspace";
+    const value =
+      saveFrom === "Identity" ? "Keep this identity draft." : "/tmp/kept-draft";
+    await user.clear(screen.getByLabelText(label));
+    await user.type(screen.getByLabelText(label), value);
+    await user.click(screen.getByRole("tab", { name: "Memory" }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+      "unsaved changes will be lost",
+    );
+    await user.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.getByLabelText(label)).toHaveValue(value);
     expect(screen.getAllByRole("button", { name: "Save" })).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Save failed");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(save).toHaveBeenLastCalledWith(savedAgent.pubkey, {
       config: expect.objectContaining({
-        instructions: "Keep this identity draft.",
-        workspace: "/tmp/combined-draft",
+        [saveFrom === "Identity" ? "instructions" : "workspace"]: value,
       }),
     });
   },
 );
+
+it("saves model-specific default effort from the nested menu and inherits it", async () => {
+  const installedType = installed().type;
+  const Control = installedType.provider?.DefaultControl;
+  if (!Control) throw new Error("Missing default control");
+  render(<Control onConfigure={vi.fn()} />);
+  const control = await screen.findByRole("button", {
+    name: /^Claude default model:/,
+  });
+  await waitFor(() => expect(control).toHaveTextContent("Opus 5.5"));
+  expect(control).toHaveTextContent("Automatic");
+  fireEvent.click(control);
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Claude" }));
+  fireEvent.click(
+    await screen.findByRole("menuitemradio", { name: "Sonnet 5.5" }),
+  );
+  fireEvent.click(await screen.findByRole("menuitemradio", { name: "High" }));
+  await waitFor(() =>
+    expect(control).toHaveAccessibleName(
+      "Claude default model: Sonnet 5.5, High",
+    ),
+  );
+
+  const reopened = new ClaudeDefaults(localStore());
+  expect(reopened.resolve(DEFAULT_CONFIG)).toMatchObject({
+    model: "sonnet",
+    effort: "high",
+  });
+  expect(reopened.resolve({ ...DEFAULT_CONFIG, effort: "low" }).effort).toBe(
+    "low",
+  );
+  expect(reopened.resolve({ ...DEFAULT_CONFIG, model: "haiku" }).effort).toBe(
+    "",
+  );
+  fireEvent.click(control);
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Use Claude default" }),
+  );
+  expect(new ClaudeDefaults(localStore()).snapshot().model).toBe("");
+});
+
+it("retries failed model discovery from the defaults row", async () => {
+  const catalog = { listed: false };
+  const Control = installed({ catalog }).type.provider?.DefaultControl;
+  if (!Control) throw new Error("Missing default control");
+  render(<Control onConfigure={vi.fn()} />);
+  await screen.findByRole("alert");
+  catalog.listed = true;
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: /^Claude default model:/ }),
+    ).toHaveTextContent("Opus 5.5"),
+  );
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("keeps the model inherited when changing the default model's effort", async () => {
+  const Control = installed().type.provider?.DefaultControl;
+  if (!Control) throw new Error("Missing default control");
+  render(<Control onConfigure={vi.fn()} />);
+  const control = await screen.findByRole("button", {
+    name: /^Claude default model:/,
+  });
+  await waitFor(() => expect(control).toHaveTextContent("Opus 5.5 · Default"));
+  fireEvent.click(control);
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Claude" }));
+  fireEvent.click(
+    await screen.findByRole("menuitemradio", { name: "Opus 5.5" }),
+  );
+  fireEvent.click(await screen.findByRole("menuitemradio", { name: "High" }));
+  expect(new ClaudeDefaults(localStore()).snapshot()).toMatchObject({
+    model: "",
+    effort: "high",
+  });
+  expect(control).toHaveTextContent("· Default");
+});
+
+it("keeps keyboard focus through Claude defaults discovery retries", async () => {
+  const startup = vi.spyOn(ClaudeSetup.prototype, "update");
+  const calls = vi.spyOn(ClaudeSetup.prototype, "loadModels");
+  const catalog: { listed: boolean; ready?: Promise<void> } = { listed: false };
+  const Control = installed({ catalog }).type.provider?.DefaultControl;
+  if (!Control) throw new Error("Missing default control");
+  // Plugin activation checks/updates Claude before the recovery flow begins.
+  // Its final readiness check otherwise races the keyboard retry.
+  expect(startup).toHaveBeenCalledOnce();
+  await startup.mock.results[0]?.value;
+  render(<Control onConfigure={vi.fn()} />);
+  await screen.findByRole("alert");
+  const retry = screen.getByRole("button", { name: "Try again" });
+  await act(async () => {
+    await Promise.all(calls.mock.results.map((result) => result.value));
+  });
+  const user = userEvent.setup();
+  for (const succeeds of [false, true]) {
+    let release!: () => void;
+    catalog.ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    catalog.listed = succeeds;
+    await waitFor(() =>
+      expect(retry).not.toHaveAttribute("aria-disabled", "true"),
+    );
+    retry.focus();
+    const previousCalls = calls.mock.calls.length;
+    try {
+      await user.keyboard("{Enter}");
+      await waitFor(() => {
+        expect(calls.mock.calls.length).toBeGreaterThan(previousCalls);
+        expect(retry).toHaveAttribute("aria-disabled", "true");
+      });
+      expect(retry).toHaveFocus();
+      expect(retry).not.toHaveAttribute("disabled");
+    } finally {
+      await act(async () => release());
+    }
+    if (!succeeds) {
+      await screen.findByRole("alert");
+      expect(retry).toHaveFocus();
+    }
+  }
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(
+    screen.getByRole("button", { name: /^Claude default model:/ }),
+  ).toHaveFocus();
+});
+
+it("keeps same-channel recent threads visibly distinguishable", () => {
+  localStorage.setItem(
+    "buzz.claude-code.sessions.v1",
+    JSON.stringify({
+      [agent().key]: Object.fromEntries(
+        ["e", "f"].map((char) => [
+          `channel/${char.repeat(64)}`,
+          { id: char, seen: 0, at: 1 },
+        ]),
+      ),
+    }),
+  );
+  const Activity = tab(installed().type, 1);
+  render(<Activity agent={agent()} save={vi.fn()} />);
+  const rows = screen.getAllByRole("listitem");
+  expect(rows).toHaveLength(2);
+  expect(rows.map((row) => row.textContent)).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining("Thread eeeeeeee"),
+      expect.stringContaining("Thread ffffffff"),
+    ]),
+  );
+});
+
+it("focuses the code only when its compact sign-in disclosure is expanded", async () => {
+  const { type } = installed({ loggedIn: false });
+  const Model = type.CreateModel;
+  if (!Model) throw new Error("Missing model controls");
+  const user = userEvent.setup();
+  render(<Model config={DEFAULT_CONFIG} onChange={vi.fn()} disabled={false} />);
+  await user.click(await screen.findByRole("button", { name: "Sign in" }));
+  const dialog = await screen.findByRole("dialog", {
+    name: "Sign in to Claude",
+  });
+  await user.click(within(dialog).getByRole("button", { name: "Sign in" }));
+  const expand = await screen.findByRole("button", { name: "Enter a code" });
+  expect(screen.queryByLabelText("Sign-in code")).toBeNull();
+  await user.click(expand);
+  const code = await screen.findByLabelText("Sign-in code");
+  await waitFor(() => expect(code).toHaveFocus());
+  await user.type(code, "retained-code");
+  await user.click(expand);
+  expect(screen.queryByLabelText("Sign-in code")).toBeNull();
+  await user.click(expand);
+  await waitFor(() =>
+    expect(screen.getByLabelText("Sign-in code")).toHaveFocus(),
+  );
+  expect(screen.getByLabelText("Sign-in code")).toHaveValue("retained-code");
+});

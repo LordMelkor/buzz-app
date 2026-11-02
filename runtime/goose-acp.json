@@ -1,7 +1,26 @@
 {
-  "repository": "https://github.com/aaif-goose/goose.git",
-  "revision": "9686d674000a5fbb8139214863289e4820714771",
-  "features": "rustls-tls,system-keyring,online-model-meta",
-  "profile": "lean",
-  "devProfile": "dev"
+  "version": "1.57.0",
+  "revision": "30bba95105e59bc3e7df624cf6b4d433690cfe12",
+  "assets": {
+    "aarch64-apple-darwin": {
+      "url": "https://github.com/aaif-goose/goose/releases/download/v1.57.0/goose-acp-aarch64-apple-darwin.tar.gz",
+      "sha256": "939d133bd4233d40d16cea5e3380dac95d5bd28bceae585e7d05f40849aa6b4c"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "url": "https://github.com/aaif-goose/goose/releases/download/v1.57.0/goose-acp-aarch64-unknown-linux-gnu.tar.gz",
+      "sha256": "4c832916626f5743f3551d267c7068c46cbeea203ecc5ab77bfb4101845beb5f"
+    },
+    "x86_64-apple-darwin": {
+      "url": "https://github.com/aaif-goose/goose/releases/download/v1.57.0/goose-acp-x86_64-apple-darwin.tar.gz",
+      "sha256": "a39c317256197c55e8ba29cb1be3d91a4979e4815070dbed6c91521f65c3bbf7"
+    },
+    "x86_64-pc-windows-msvc": {
+      "url": "https://github.com/aaif-goose/goose/releases/download/v1.57.0/goose-acp-x86_64-pc-windows-msvc.zip",
+      "sha256": "d5d338d3a51f916a7df5f139957b16cd791e131b2101b9a18eb5548714f9b8a1"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "url": "https://github.com/aaif-goose/goose/releases/download/v1.57.0/goose-acp-x86_64-unknown-linux-gnu.tar.gz",
+      "sha256": "647e4a68ff60ca6e49fee5d7b4c7a27a891b840c55e209b6830e05a2223ec7e7"
+    }
+  }
 }

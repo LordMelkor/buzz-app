@@ -41,7 +41,7 @@ test("Move conversation saves a DM in a section and restores it there after relo
   await move.focus();
   await page.keyboard.press("ArrowRight");
   const destinations = page.getByRole("menu", {
-    name: "Move conversation",
+    name: "Move Alice Fixture to section",
     exact: true,
   });
   await expect(destinations).toBeVisible();
@@ -81,7 +81,7 @@ test("Move conversation saves a DM in a section and restores it there after relo
   await page.getByRole("menuitem", { name: "Move conversation" }).focus();
   await page.keyboard.press("ArrowRight");
   const returnDestinations = page.getByRole("menu", {
-    name: "Move conversation",
+    name: "Move Alice Fixture to section",
     exact: true,
   });
   await expect(returnDestinations).toBeVisible();

@@ -300,7 +300,7 @@ it("restores for an offline message that sorts behind the previous head", async 
   expect(restored.result.current.hiddenIds.has("dm")).toBe(false);
 });
 
-it("retries a transient hidden-DM history failure", async () => {
+it("leaves hidden-DM history retries to the session read", async () => {
   vi.useFakeTimers();
   const h = fixture();
   h.failNextRead();
@@ -308,11 +308,10 @@ it("retries a transient hidden-DM history failure", async () => {
     useHiddenDms("community:alice", h.session, h.list),
   );
   act(() => view.result.current.hide("dm"));
-  expect(h.read).toHaveBeenCalledTimes(1);
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(10_000);
   });
-  expect(h.read).toHaveBeenCalledTimes(2);
+  expect(h.read).toHaveBeenCalledTimes(1);
   expect(view.result.current.hiddenIds.has("dm")).toBe(true);
 });
 

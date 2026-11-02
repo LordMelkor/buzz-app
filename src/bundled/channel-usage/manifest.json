@@ -1,7 +1,0 @@
-{
-  "id": "buzz.channel-usage",
-  "name": "Channel Usage",
-  "apiVersion": 1,
-  "description": "Inspect agent session usage for a channel.",
-  "discovery": { "category": "agents" }
-}

@@ -104,6 +104,21 @@ export const channelTemplates = {
     );
     return template;
   },
+  /** Points every template on team `from` at team `to` instead. */
+  replaceTeam(from: string, to: string) {
+    const saved = channelTemplates.snapshot();
+    if (saved.some((item) => item.teams.includes(from)))
+      write(
+        saved.map((item) =>
+          Object.freeze({
+            ...item,
+            teams: Object.freeze([
+              ...new Set(item.teams.map((id) => (id === from ? to : id))),
+            ]),
+          }),
+        ),
+      );
+  },
   remove(id: string) {
     write(channelTemplates.snapshot().filter((item) => item.id !== id));
   },

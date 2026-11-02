@@ -18,9 +18,13 @@ export function messageReferences(
   channels: readonly ChannelSummary[],
   agents: AgentLibrary["identities"],
 ): MessageReference[] {
+  // A warm public directory can name thousands of channels; keep only those
+  // this text can reference before allocating candidates.
   const candidates = [
     ...channels
-      .filter((channel) => !channel.archived)
+      .filter(
+        (channel) => !channel.archived && text.includes(`#${channel.name}`),
+      )
       .map((channel) => ({
         label: `#${channel.name}`,
         kind: "channel" as const,

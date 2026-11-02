@@ -3,13 +3,17 @@ import {
   editSidebarAssignment,
   editSidebarSectionOrder,
   editSidebarSectionRemoval,
+  editSidebarSectionRename,
   validSidebarSectionOrder,
   validSidebarSectionRemoval,
+  validSidebarSectionRename,
   editSidebarSort,
+  editSidebarFilter,
   editSidebarToggle,
   validSidebarAssignment,
   validSidebarChannelId,
   validSidebarSort,
+  validSidebarFilter,
 } from "./sidebar-edits";
 import { invoke } from "@tauri-apps/api/core";
 import { eventDto, type RelayEvent } from "./events";
@@ -18,6 +22,7 @@ import {
   type SidebarAssignmentIntent,
   type SidebarGroups,
   type SidebarSortMode,
+  type SidebarFilterMode,
 } from "./sidebar-preferences";
 import type { ReadTransport } from "./transport";
 
@@ -26,15 +31,32 @@ const coordinates = [
   "channel-stars",
   "channel-mutes",
   "channel-sort",
+  "channel-filter",
+  "main-agent",
 ] as const;
 type Coordinate = (typeof coordinates)[number];
 type Head = { payload: Record<string, unknown>; createdAt: number };
 const empty = (coordinate: Coordinate): Record<string, unknown> =>
-  coordinate === "channel-sections"
-    ? { version: 1, sections: [], assignments: {} }
-    : coordinate === "channel-sort"
-      ? { version: 1, groups: {} }
-      : { version: 1, channels: {} };
+  coordinate === "main-agent"
+    ? { version: 1, agent: null }
+    : coordinate === "channel-sections"
+      ? { version: 1, sections: [], assignments: {} }
+      : coordinate === "channel-sort" || coordinate === "channel-filter"
+        ? { version: 1, groups: {} }
+        : { version: 1, channels: {} };
+const agentKey = /^[0-9a-f]{64}$/;
+/** The main agent the viewer chose. A null one, written by development
+ * builds that cleared it, is read as none. */
+function mainAgent(value: Record<string, unknown>) {
+  const { version, agent, ...rest } = value;
+  if (
+    version !== 1 ||
+    Object.keys(rest).length ||
+    (agent !== null && !(typeof agent === "string" && agentKey.test(agent)))
+  )
+    throw new Error("Invalid main agent record");
+  return agent ?? undefined;
+}
 const cancelled = (signal: AbortSignal) => signal.throwIfAborted();
 const same = (a: unknown, b: unknown) =>
   JSON.stringify(a) === JSON.stringify(b);
@@ -55,6 +77,8 @@ export function nativeSidebar(transport: ReadTransport) {
       raw["channel-stars"],
       raw["channel-mutes"],
       raw["channel-sort"],
+      undefined,
+      raw["channel-filter"],
     );
   }
   async function head(
@@ -85,10 +109,13 @@ export function nativeSidebar(transport: ReadTransport) {
       throw new Error("Invalid sidebar record");
     // The Rust decoder checks signature, author, coordinate and plaintext budget.
     const value = payload as Record<string, unknown>;
-    project(coordinate, value);
+    if (coordinate === "main-agent") mainAgent(value);
+    else project(coordinate, value);
     return {
       payload:
-        coordinate === "channel-sections" || coordinate === "channel-sort"
+        coordinate === "channel-sections" ||
+        coordinate === "channel-sort" ||
+        coordinate === "channel-filter"
           ? projectSidebarRecord(coordinate, value)
           : value,
       createdAt: events[0]?.created_at ?? 0,
@@ -105,6 +132,7 @@ export function nativeSidebar(transport: ReadTransport) {
       coordinate === "channel-mutes" ? value : undefined,
       coordinate === "channel-sort" ? value : undefined,
       sectionIds,
+      coordinate === "channel-filter" ? value : undefined,
     );
   }
   async function mutate<T>(
@@ -124,7 +152,8 @@ export function nativeSidebar(transport: ReadTransport) {
     const draft = prepare(current.payload, current.createdAt);
     if (same(current.payload, draft.next)) return draft.result;
     // Reject unsupported/over-budget writes at the existing projection boundary.
-    project(coordinate, draft.next);
+    if (coordinate === "main-agent") mainAgent(draft.next);
+    else project(coordinate, draft.next);
     if (
       new TextEncoder().encode(JSON.stringify(draft.next)).length >
       128 * 1024
@@ -149,6 +178,20 @@ export function nativeSidebar(transport: ReadTransport) {
   }
   return {
     decodeSidebarPreferences: decode,
+    async readMainAgent(signal: AbortSignal) {
+      const current = await head("main-agent", signal);
+      return current.createdAt ? mainAgent(current.payload) : undefined;
+    },
+    async writeMainAgent(agent: string, signal: AbortSignal) {
+      if (!agentKey.test(agent)) throw new Error("Invalid main agent intent");
+      await mutate(
+        "main-agent",
+        signal,
+        () => ({ next: { version: 1, agent }, result: undefined }),
+        (value) => value.agent === agent,
+        "The main agent changed on another device; reload and try again",
+      );
+    },
     async removeSidebarSection(
       sectionId: string,
       signal: AbortSignal,
@@ -171,6 +214,32 @@ export function nativeSidebar(transport: ReadTransport) {
             !Object.values(assignments).includes(sectionId)
           );
         },
+        "Sidebar groups changed on another device; reload and try again",
+      );
+    },
+    async renameSidebarSection(
+      intent: { sectionId: string; name: string },
+      signal: AbortSignal,
+    ): Promise<SidebarGroups> {
+      const { sectionId, name } = intent;
+      if (!validSidebarSectionRename(sectionId, name))
+        throw new Error("Invalid sidebar section rename intent");
+      const prepare = (current: Record<string, unknown>, createdAt: number) => {
+        const next = editSidebarSectionRename(
+          current,
+          createdAt,
+          sectionId,
+          name,
+        );
+        const { sections, assignments } = project("channel-sections", next);
+        return { next, result: { sections, assignments } };
+      };
+      return mutate(
+        "channel-sections",
+        signal,
+        prepare,
+        (value) =>
+          same(value, editSidebarSectionRename(value, 0, sectionId, name)),
         "Sidebar groups changed on another device; reload and try again",
       );
     },
@@ -216,7 +285,7 @@ export function nativeSidebar(transport: ReadTransport) {
         (value) => {
           const assigned = value.assignments as Record<string, string>;
           return (
-            assigned[channelId] === section &&
+            (channelId === undefined || assigned[channelId] === section) &&
             (!createSection ||
               (value.sections as SidebarGroups["sections"]).some(
                 (entry) =>
@@ -274,6 +343,49 @@ export function nativeSidebar(transport: ReadTransport) {
         (value) =>
           ((value.groups as Record<string, string>)[group] ?? "alpha") === mode,
         "Sidebar sort changed on another device; reload and try again",
+      );
+    },
+    async writeSidebarFilter(
+      group: string,
+      mode: SidebarFilterMode,
+      sectionIds: readonly string[],
+      signal: AbortSignal,
+      activeWindowSeconds?: number | null,
+    ) {
+      if (!validSidebarFilter(group, mode, sectionIds, activeWindowSeconds))
+        throw new Error("Invalid sidebar filter intent");
+      const prepare = (current: Record<string, unknown>, createdAt: number) => {
+        const next = editSidebarFilter(
+          current,
+          createdAt,
+          group,
+          mode,
+          Date.now(),
+          activeWindowSeconds,
+        );
+        const settings = project("channel-filter", next, sectionIds);
+        return {
+          next,
+          result: {
+            filters: settings.filters ?? {},
+            activeWindowSeconds: settings.activeWindowSeconds ?? {},
+          },
+        };
+      };
+      return mutate(
+        "channel-filter",
+        signal,
+        prepare,
+        (value) =>
+          editSidebarFilter(
+            value,
+            0,
+            group,
+            mode,
+            Date.now(),
+            activeWindowSeconds,
+          ) === value,
+        "Sidebar filter changed on another device; reload and try again",
       );
     },
   };

@@ -37,7 +37,7 @@ import {
   detailsDraftErrors,
 } from "../../features/relay/channel-details-protocol";
 import { Switch } from "../../shared/design-system/ui/Switch";
-import { DEFAULT_TEMPORARY_CHANNEL_TTL_SECONDS } from "../../features/relay/work-sessions";
+import { DEFAULT_TEMPORARY_CHANNEL_TTL_SECONDS } from "../../features/relay/channel-writes";
 import styles from "./CreateChannelDialog.module.css";
 
 export type CreateChannelInput = ChannelCreationInput;
@@ -46,7 +46,6 @@ type Props = {
   open: boolean;
   onOpenChange(open: boolean): void;
   onCreate(input: CreateChannelInput): Promise<void>;
-  pending?: CreateChannelInput | undefined;
   finalFocus?: RefObject<HTMLElement | null> | undefined;
   session: RelaySession;
   /** Supplies the agents and teams a template adds. */
@@ -82,7 +81,6 @@ function OpenCreateChannelDialog({
   open,
   onOpenChange,
   onCreate,
-  pending,
   finalFocus,
   session,
   agents,
@@ -113,7 +111,6 @@ function OpenCreateChannelDialog({
   }, [privacyChoice]);
   const mounted = useRef(true);
   const previousOpen = useRef(false);
-  const previousPending = useRef(pending);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [lifetime, setLifetime] = useState<"ongoing" | "temporary">("ongoing");
@@ -195,36 +192,32 @@ function OpenCreateChannelDialog({
       .join(" · ") ||
       "None of its agents are in this community, and it has no Canvas.");
   const destination = destinations.find((g) => g.id === groupId);
-  const summary = pending?.setup;
   const editing = useRef(false);
-  editing.current = !pending && !busy && !privacyChoice && !confirmDiscard;
+  editing.current = !busy && !privacyChoice && !confirmDiscard;
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      // Closing forgets an unconfirmed attempt; nothing restores it later.
+      session.channelCreation.forget();
     };
-  }, []);
+  }, [session]);
   useEffect(() => {
     const opening = open && !previousOpen.current;
-    const restoring =
-      open && pending !== undefined && previousPending.current === undefined;
     previousOpen.current = open;
-    previousPending.current = pending;
-    if (!opening && !restoring) return;
-    setName(pending?.name ?? "");
-    setDescription(pending?.description ?? "");
-    setLifetime(pending?.ttlSeconds === undefined ? "ongoing" : "temporary");
-    setTemporaryTtl(
-      pending?.ttlSeconds ?? DEFAULT_TEMPORARY_CHANNEL_TTL_SECONDS,
-    );
-    setPrivateChannel(pending?.visibility === "private");
+    if (!opening) return;
+    setName("");
+    setDescription("");
+    setLifetime("ongoing");
+    setTemporaryTtl(DEFAULT_TEMPORARY_CHANNEL_TTL_SECONDS);
+    setPrivateChannel(false);
     setPrivacyChoice(undefined);
     setConfirmDiscard(false);
     setError("");
-    setGroupId(pending ? (pending.setup?.groupId ?? "") : initialGroup);
-    setStarred(pending ? !!pending.setup?.starred : initialStarred);
+    setGroupId(initialGroup);
+    setStarred(initialStarred);
     setTemplateId("");
-  }, [open, pending, initialGroup, initialStarred]);
+  }, [open, initialGroup, initialStarred]);
 
   const normalizedName = canonicalDetailsName(name);
   const errors = detailsDraftErrors({
@@ -232,17 +225,14 @@ function OpenCreateChannelDialog({
     description,
     visibility: privateChannel ? "private" : "public",
   });
-  // Recovery must retain the original frozen request, not reinterpret its fields.
-  const invalid =
-    !pending && (Object.values(errors).some(Boolean) || unresolved);
+  const invalid = Object.values(errors).some(Boolean) || unresolved;
 
   const dirty =
-    !pending &&
-    (name !== "" ||
-      description !== "" ||
-      privateChannel ||
-      lifetime !== "ongoing" ||
-      templateId !== "");
+    name !== "" ||
+    description !== "" ||
+    privateChannel ||
+    lifetime !== "ongoing" ||
+    templateId !== "";
   const requestClose = () => {
     if (busy) return;
     if (privacyChoice) setPrivacyChoice(undefined);
@@ -258,7 +248,6 @@ function OpenCreateChannelDialog({
     setError("");
     try {
       if (
-        !pending &&
         groupId &&
         (!groupsReady || !destinations.some((g) => g.id === groupId))
       )
@@ -267,28 +256,25 @@ function OpenCreateChannelDialog({
             ? "This group is no longer available. Close this dialog and create from another sidebar group or Channels."
             : "Wait for saved sidebar groups to load, then try again.",
         );
-      await onCreate(
-        pending ?? {
-          name: normalizedName,
-          visibility: privateChannel ? "private" : "open",
-          ...(lifetime === "temporary" ? { ttlSeconds: temporaryTtl } : {}),
-          ...(description.trim() ? { description: description.trim() } : {}),
-          ...(groupId ||
-          starred ||
-          templateSetup?.agents.length ||
-          templateSetup?.canvas
-            ? {
-                setup: {
-                  agents: templateSetup?.agents ?? [],
-                  canvas: templateSetup?.canvas ?? "",
-                  groupId,
-                  ...(starred ? { starred: true } : {}),
-                  templateId,
-                },
-              }
-            : {}),
-        },
-      );
+      await onCreate({
+        name: normalizedName,
+        visibility: privateChannel ? "private" : "open",
+        ...(lifetime === "temporary" ? { ttlSeconds: temporaryTtl } : {}),
+        ...(description.trim() ? { description: description.trim() } : {}),
+        // The selected template stays part of the request even when it
+        // currently resolves to nothing, so a retry still matches it.
+        ...(groupId || starred || templateId
+          ? {
+              setup: {
+                agents: templateSetup?.agents ?? [],
+                canvas: templateSetup?.canvas ?? "",
+                groupId,
+                ...(starred ? { starred: true } : {}),
+                templateId,
+              },
+            }
+          : {}),
+      });
       if (mounted.current) onOpenChange(false);
     } catch (reason) {
       if (mounted.current)
@@ -301,19 +287,6 @@ function OpenCreateChannelDialog({
       if (mounted.current) setBusy(false);
     }
   };
-
-  const recoverySummary = summary && (
-    <section aria-label="Channel setup summary">
-      <p>
-        {summary.agents.length
-          ? `${summary.agents.length} selected agent${summary.agents.length === 1 ? "" : "s"}.`
-          : "Only you."}
-        {summary.groupId &&
-          ` Destination: ${destinations.find((g) => g.id === summary.groupId)?.name ?? "saved group"}.`}
-        {summary.starred && " Destination: Starred."}
-      </p>
-    </section>
-  );
 
   return (
     <Dialog
@@ -384,7 +357,7 @@ function OpenCreateChannelDialog({
             <Button
               variant="destructive"
               onClick={() => {
-                if (!busy && !pending) onOpenChange(false);
+                if (!busy) onOpenChange(false);
               }}
             >
               Discard changes
@@ -400,9 +373,9 @@ function OpenCreateChannelDialog({
             </Button>
             <Button
               variant="prominent"
-              disabled={busy || !!pending}
+              disabled={busy}
               onClick={() => {
-                if (busy || pending) return;
+                if (busy) return;
                 if (skipWarning) rememberPrivacyConfirmation(session.scope);
                 setPrivateChannel(privacyChoice === "private");
                 setPrivacyChoice(undefined);
@@ -420,9 +393,8 @@ function OpenCreateChannelDialog({
                 ref={privateSwitch}
                 aria-label="Private"
                 checked={privateChannel}
-                disabled={!!pending}
                 readOnly={busy}
-                aria-disabled={busy || !!pending || undefined}
+                aria-disabled={busy || undefined}
                 onCheckedChange={(checked) => {
                   if (!editing.current) return;
                   const choice = checked ? "private" : "public";
@@ -446,7 +418,7 @@ function OpenCreateChannelDialog({
               loading={busy}
               disabled={invalid}
             >
-              {pending ? "Retry channel" : "Create channel"}
+              Create channel
             </Button>
           </>
         )
@@ -469,101 +441,86 @@ function OpenCreateChannelDialog({
             void submit();
           }}
         >
-          {pending && (
-            <p role="status">
-              This attempt may already have created a channel. Retry checks it
-              first and, if unconfirmed, resends only the same creation request.
-              It will not create another channel or continue its setup.
-            </p>
+          <ChannelTextField
+            field="name"
+            creation
+            inputRef={input}
+            value={name}
+            error={name ? errors.name : undefined}
+            onChange={(value) => {
+              setName(value);
+              setError("");
+            }}
+          />
+          <ChannelTextField
+            field="description"
+            value={description}
+            error={errors.description}
+            onChange={(value) => {
+              setDescription(value);
+              setError("");
+            }}
+          />
+          {templates.length > 0 && (
+            <div ref={templateField} style={{ display: "contents" }}>
+              <Select
+                label="Template"
+                variant="field"
+                value={templateId}
+                description={
+                  checkingAgents
+                    ? "Checking which of its agents are in this community…"
+                    : templateNote
+                }
+                error={
+                  (unresolved && !checkingAgents) ||
+                  (needsAgents && retrying) ? (
+                    <>
+                      Its agents can’t be checked right now, so they can’t be
+                      added. Retry, or choose None to create the channel without
+                      them.{" "}
+                      <Button
+                        ref={retryButton}
+                        size="xs"
+                        variant="outline"
+                        loading={retrying}
+                        onClick={() => void retryAgents()}
+                      >
+                        Retry
+                      </Button>
+                    </>
+                  ) : undefined
+                }
+                groups={[
+                  {
+                    label: "",
+                    options: [
+                      { value: "", label: "None" },
+                      ...templates.map((item) => ({
+                        value: item.id,
+                        label: item.name,
+                      })),
+                    ],
+                  },
+                ]}
+                onValueChange={(value) => {
+                  if (!editing.current) return;
+                  setTemplateId(value);
+                  setError("");
+                }}
+              />
+            </div>
           )}
-          <fieldset
-            disabled={!!pending}
-            inert={!!pending}
-            style={{ display: "contents", border: 0, padding: 0 }}
-          >
-            <ChannelTextField
-              field="name"
-              creation
-              inputRef={input}
-              value={name}
-              error={name ? errors.name : undefined}
-              onChange={(value) => {
-                setName(value);
-                setError("");
-              }}
-            />
-            <ChannelTextField
-              field="description"
-              value={description}
-              error={errors.description}
-              onChange={(value) => {
-                setDescription(value);
-                setError("");
-              }}
-            />
-            {!pending && templates.length > 0 && (
-              <div ref={templateField} style={{ display: "contents" }}>
-                <Select
-                  label="Template"
-                  variant="field"
-                  value={templateId}
-                  description={
-                    checkingAgents
-                      ? "Checking which of its agents are in this community…"
-                      : templateNote
-                  }
-                  error={
-                    (unresolved && !checkingAgents) ||
-                    (needsAgents && retrying) ? (
-                      <>
-                        Its agents can’t be checked right now, so they can’t be
-                        added. Retry, or choose None to create the channel
-                        without them.{" "}
-                        <Button
-                          ref={retryButton}
-                          size="xs"
-                          variant="outline"
-                          loading={retrying}
-                          onClick={() => void retryAgents()}
-                        >
-                          Retry
-                        </Button>
-                      </>
-                    ) : undefined
-                  }
-                  groups={[
-                    {
-                      label: "",
-                      options: [
-                        { value: "", label: "None" },
-                        ...templates.map((item) => ({
-                          value: item.id,
-                          label: item.name,
-                        })),
-                      ],
-                    },
-                  ]}
-                  onValueChange={(value) => {
-                    if (!editing.current) return;
-                    setTemplateId(value);
-                    setError("");
-                  }}
-                />
-              </div>
-            )}
-            <ChannelDurationField
-              temporary={lifetime === "temporary"}
-              ttlSeconds={temporaryTtl}
-              disabled={!!pending}
-              onChange={(ttlSeconds) => {
-                if (!editing.current) return;
-                setLifetime(ttlSeconds === undefined ? "ongoing" : "temporary");
-                if (ttlSeconds !== undefined) setTemporaryTtl(ttlSeconds);
-                setError("");
-              }}
-            />
-          </fieldset>
-          {recoverySummary}
+          <ChannelDurationField
+            temporary={lifetime === "temporary"}
+            ttlSeconds={temporaryTtl}
+            onChange={(ttlSeconds) => {
+              if (!editing.current) return;
+              setLifetime(ttlSeconds === undefined ? "ongoing" : "temporary");
+              if (ttlSeconds !== undefined) setTemporaryTtl(ttlSeconds);
+              setError("");
+            }}
+          />
           {error && (
             <p role="alert" className={styles.error}>
               {error}

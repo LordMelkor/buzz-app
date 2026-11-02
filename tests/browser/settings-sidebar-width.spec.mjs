@@ -1,6 +1,13 @@
 import { test, expect } from "./fixture.mjs";
 import { stopRoutes } from "./playwright-test.mjs";
 import { open } from "./timeline.mjs";
+import {
+  closeSettings,
+  openSettings,
+  selectSettingsSection,
+  settingsDialog,
+  settingsSections,
+} from "./navigation.mjs";
 
 // The shell owns the divider; the inner aside excludes its 1px border.
 const sidebarWidth = (sidebar) =>
@@ -11,6 +18,15 @@ const sidebarWidth = (sidebar) =>
         .getBoundingClientRect().width,
   );
 
+// Settings is a modal over the retained workspace: the channel sidebar stays
+// mounted behind it but is hidden from the accessibility tree while it is open.
+const retainedChannels = (page) =>
+  page.getByRole("complementary", {
+    name: "Sidebar",
+    exact: true,
+    includeHidden: true,
+  });
+
 // Real shell layout and route remounts must preserve the user's resized width.
 test("Settings keeps the channel sidebar width across navigation and reload", async ({
   page,
@@ -18,13 +34,10 @@ test("Settings keeps the channel sidebar width across navigation and reload", as
 }) => {
   await open(page, app);
   const channels = page.getByRole("complementary", {
-    name: "Channel sidebar",
+    name: "Sidebar",
     exact: true,
   });
-  const settings = page.getByRole("complementary", {
-    name: "Settings sidebar",
-    exact: true,
-  });
+  const retained = retainedChannels(page);
   const handle = page.getByRole("separator", {
     name: "Resize sidebar",
     exact: true,
@@ -35,19 +48,22 @@ test("Settings keeps the channel sidebar width across navigation and reload", as
   ]) {
     await handle.press(key);
     await expect.poll(() => sidebarWidth(channels)).toBe(width);
-    await page
-      .getByRole("button", { name: "Your profile", exact: true })
-      .click();
-    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-    await expect.poll(() => sidebarWidth(settings)).toBe(width);
+    await openSettings(page);
+    await expect(channels).toHaveCount(0);
+    await expect.poll(() => sidebarWidth(retained)).toBe(width);
+    await selectSettingsSection(page, "Notifications");
     await page.reload();
-    await expect.poll(() => sidebarWidth(settings)).toBe(width);
-    await settings.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(settingsDialog(page)).toBeVisible();
+    await expect(channels).toHaveCount(0);
+    await expect.poll(() => sidebarWidth(retained)).toBe(width);
+    await closeSettings(page);
     await expect.poll(() => sidebarWidth(channels)).toBe(width);
   }
 });
 
-test("narrow Settings drawer matches the clamped channel sidebar", async ({
+// Settings has no drawer of its own; at narrow widths its modal stacks its
+// navigation, and the channel drawer behind it keeps the clamped width.
+test("narrow Settings keeps the clamped channel drawer behind its modal", async ({
   page,
   app,
 }) => {
@@ -55,19 +71,21 @@ test("narrow Settings drawer matches the clamped channel sidebar", async ({
   await page.getByRole("separator", { name: "Resize sidebar" }).press("End");
   await page.setViewportSize({ width: 600, height: 950 });
   await expect(
-    page.getByRole("complementary", { name: "Channel sidebar" }),
+    page.getByRole("complementary", { name: "Sidebar", exact: true }),
   ).not.toBeVisible();
   const conversation = page.getByRole("article", {
     name: "Conversation",
     exact: true,
   });
   const contentWidth = (await conversation.boundingBox()).width;
-  await page
-    .getByRole("button", { name: "Show navigation", exact: true })
-    .click();
+  const showNavigation = page.getByRole("button", {
+    name: "Show navigation",
+    exact: true,
+  });
+  await showNavigation.click();
   expect((await conversation.boundingBox()).width).toBe(contentWidth);
   const channels = page.getByRole("complementary", {
-    name: "Channel sidebar",
+    name: "Sidebar",
     exact: true,
   });
   await expect.poll(() => sidebarWidth(channels)).toBe(220);
@@ -83,40 +101,31 @@ test("narrow Settings drawer matches the clamped channel sidebar", async ({
   await page.keyboard.type("Usable destination");
   await expect(composer).toHaveText("Usable destination");
   await composer.fill("");
-  await page.getByRole("button", { name: "Your profile", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Show navigation", exact: true })
-    .click();
-  const settings = page.getByRole("complementary", {
-    name: "Settings sidebar",
+  await openSettings(page);
+  // The workspace's drawer toggle is behind the modal; Settings keeps its own
+  // section navigation in view instead of a drawer.
+  await expect(showNavigation).toHaveCount(0);
+  const sections = settingsSections(page);
+  await expect(sections).toBeInViewport();
+  const notifications = sections.getByRole("button", {
+    name: "Notifications",
     exact: true,
   });
-  await expect.poll(() => sidebarWidth(settings)).toBe(220);
-  await settings
-    .getByRole("button", { name: "Notifications", exact: true })
-    .press("Enter");
-  await expect(settings).toBeHidden();
-  await expect(page.getByRole("main")).toBeFocused();
+  await notifications.press("Enter");
+  await expect(notifications).toHaveAttribute("aria-current", "page");
   await expect(
     page.getByRole("region", { name: "Notifications", exact: true }),
   ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Show navigation", exact: true })
-    .click();
   // Selecting the current section is a new attempt, not a new history visit.
-  await settings
-    .getByRole("button", { name: "Notifications", exact: true })
-    .press("Enter");
-  await expect(settings).toBeHidden();
-  await expect(page.getByRole("main")).toBeFocused();
-  await page
-    .getByRole("button", { name: "Show navigation", exact: true })
-    .click();
-  await settings.getByRole("button", { name: "Back", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Show navigation", exact: true })
-    .click();
+  await notifications.press("Enter");
+  await expect(notifications).toHaveAttribute("aria-current", "page");
+  await page.goBack();
+  await expect(
+    sections.getByRole("button", { name: "Profile", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  await closeSettings(page);
+  await expect(composer).toBeVisible();
+  await showNavigation.click();
   await expect.poll(() => sidebarWidth(channels)).toBe(220);
   await page.setViewportSize({ width: 1440, height: 950 });
   await expect.poll(() => sidebarWidth(channels)).toBe(520);
@@ -141,18 +150,16 @@ test("sidebar width survives route remounts when saving it fails", async ({
   });
   await page.getByRole("separator", { name: "Resize sidebar" }).press("End");
   const channels = page.getByRole("complementary", {
-    name: "Channel sidebar",
+    name: "Sidebar",
     exact: true,
   });
   await expect.poll(() => sidebarWidth(channels)).toBe(520);
-  await page.getByRole("button", { name: "Your profile", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  const settings = page.getByRole("complementary", {
-    name: "Settings sidebar",
-    exact: true,
-  });
-  await expect.poll(() => sidebarWidth(settings)).toBe(520);
-  await settings.getByRole("button", { name: "Back", exact: true }).click();
+  await openSettings(page);
+  await expect.poll(() => sidebarWidth(retainedChannels(page))).toBe(520);
+  // Section changes are route changes; the retained sidebar keeps its width.
+  await selectSettingsSection(page, "Notifications");
+  await expect.poll(() => sidebarWidth(retainedChannels(page))).toBe(520);
+  await closeSettings(page);
   await expect.poll(() => sidebarWidth(channels)).toBe(520);
 });
 
@@ -165,7 +172,7 @@ test("sidebar width updates across open windows without losing a draft", async (
 }) => {
   await open(page, app);
   const channels = page.getByRole("complementary", {
-    name: "Channel sidebar",
+    name: "Sidebar",
     exact: true,
   });
   const resize = page.getByRole("separator", {
@@ -183,17 +190,11 @@ test("sidebar width updates across open windows without losing a draft", async (
   app.watchPageErrors(other);
   try {
     await open(other, app);
-    await other
-      .getByRole("button", { name: "Your profile", exact: true })
-      .click();
-    await other
-      .getByRole("menuitem", { name: "Settings", exact: true })
-      .click();
-    const settings = other.getByRole("complementary", {
-      name: "Settings sidebar",
-      exact: true,
-    });
-    await expect.poll(() => sidebarWidth(settings)).toBe(520);
+    await openSettings(other);
+    const retained = retainedChannels(other);
+    await expect.poll(() => sidebarWidth(retained)).toBe(520);
+    // The resize handle is behind the modal; resize from the restored workspace.
+    await closeSettings(other);
     await other
       .getByRole("separator", { name: "Resize sidebar", exact: true })
       .press("Home");
@@ -201,10 +202,12 @@ test("sidebar width updates across open windows without losing a draft", async (
     await expect(composer).toHaveText(
       "Keep this draft while another window resizes",
     );
+    await openSettings(other);
     await resize.press("ArrowRight");
-    await expect.poll(() => sidebarWidth(settings)).toBe(236);
+    await expect.poll(() => sidebarWidth(retained)).toBe(236);
     await other.reload();
-    await expect.poll(() => sidebarWidth(settings)).toBe(236);
+    await expect(settingsDialog(other)).toBeVisible();
+    await expect.poll(() => sidebarWidth(retained)).toBe(236);
   } finally {
     await stopRoutes(context);
     await other.close();

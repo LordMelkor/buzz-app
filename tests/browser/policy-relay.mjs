@@ -325,12 +325,12 @@ export function policyRelay({
             filters.flatMap((filter) => answer(communityOf(url), filter)),
           );
         }
-        if (filters.length === 2 && "#buzz-channel" in filters[0]) {
-          // A channel's project-home read: projects and repositories, one channel.
+        if (filters.length === 1 && "#buzz-channel" in filters[0]) {
+          // A channel’s listed repositories, one channel.
           const channel = filters[0]["#buzz-channel"];
           expect(channel).toEqual([expect.any(String)]);
           expect(filters).toEqual(
-            [30621, 30617].map((kind) => ({
+            [30617].map((kind) => ({
               kinds: [kind],
               "#buzz-channel": channel,
               limit: 100,
@@ -365,10 +365,37 @@ export function policyRelay({
             filters.flatMap((filter) => answer(community, filter)),
           );
         }
+        if (
+          filters.every(
+            (filter) => filter.kinds?.length === 1 && filter.kinds[0] === 9007,
+          )
+        ) {
+          // Advisory creator receipts use bounded batches, independently of sidebar reads.
+          expect(filters.length).toBeGreaterThan(0);
+          expect(filters.length).toBeLessThanOrEqual(4);
+          for (const filter of filters) {
+            expect(filter).toEqual({
+              kinds: [9007],
+              authors: [expect.any(String)],
+              "#h": [expect.any(String)],
+              limit: 1,
+              ...(filter.consistency ? { consistency: "strong" } : {}),
+            });
+            report.queries.push({
+              community: communityOf(url),
+              filter,
+              at: performance.now(),
+            });
+          }
+          return Response.json(
+            filters.flatMap((filter) => answer(communityOf(url), filter)),
+          );
+        }
         if (filters.length !== 1) {
-          // Sidebar preferences read only these four exact own-author coordinates.
-          expect(filters).toHaveLength(4);
+          // Sidebar preferences read only these five exact own-author coordinates.
+          expect(filters).toHaveLength(5);
           expect(filters.map((filter) => filter["#d"]?.[0]).sort()).toEqual([
+            "channel-filter",
             "channel-mutes",
             "channel-sections",
             "channel-sort",
@@ -683,6 +710,20 @@ export function policyRelay({
           ),
       );
     },
+    hasPresenceRoute(community, author) {
+      return sockets.some(
+        (socket) =>
+          socket.readyState === 1 &&
+          socket.community === community &&
+          [...socket.routes.values()].some((filters) =>
+            filters.some(
+              (filter) =>
+                filter.kinds.includes(20001) &&
+                filter.authors?.includes(author),
+            ),
+          ),
+      );
+    },
     presence(community, event) {
       let deliveries = 0;
       for (const socket of sockets) {
@@ -726,7 +767,7 @@ export function policyRelay({
         "observer must traverse the production owner-only route",
       ).toBeGreaterThan(0);
     },
-    publish(community, event) {
+    publish(community, event, { requireSubscriber = true } = {}) {
       let deliveries = 0;
       // Relay-authored group state names its channel with d, not h.
       const destinationTag =
@@ -751,10 +792,11 @@ export function policyRelay({
           deliveries++;
         }
       }
-      expect(
-        deliveries,
-        "event must traverse an explicit production channel REQ",
-      ).toBeGreaterThan(0);
+      if (requireSubscriber)
+        expect(
+          deliveries,
+          "event must traverse an explicit production channel REQ",
+        ).toBeGreaterThan(0);
     },
     failRoute(
       community,

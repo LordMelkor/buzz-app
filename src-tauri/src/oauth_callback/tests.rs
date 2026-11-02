@@ -162,6 +162,7 @@ async fn real_listener_preserves_callback_parameters_and_closes_after_completion
     let state = OAuthCallbackHost::default();
     let attempt = begin(&state, "/oauth2redirect/provider".into()).unwrap();
     let id = attempt.id.as_str();
+    state.1.arm(id, Some("synthetic-browser".into()));
     let url = url::Url::parse(&attempt.callback_url).unwrap();
     assert_eq!(url.host_str(), Some("127.0.0.1"));
     assert!(uuid::Uuid::parse_str(id).is_ok());
@@ -195,8 +196,70 @@ async fn real_listener_preserves_callback_parameters_and_closes_after_completion
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("Cache-Control: no-store"));
         assert!(response.contains("Referrer-Policy: no-referrer"));
-        assert!(response.contains("<title>Sign-in callback</title>"));
-        assert!(response.contains("Return to the app"));
+        assert!(response.contains("<title>Builderlab sign-in</title>"));
+        assert!(response.contains("role=\"img\" aria-label=\"Builderlab\""));
+        assert!(response.contains(include_str!("../../../public/builderlab-mark.svg")));
+        assert!(response.contains("<h1 id=\"heading\">Signing you in…</h1>"));
+        assert!(!response.contains("Sign-in received. Return to the app to finish verification."));
+        assert!(response.contains("data-complete=\"true\""));
+        assert!(response.contains("data-close-delay=\"3\""));
+        assert!(response.contains("Closing this window automatically</span>"));
+        assert!(response.contains("You can close this window.</span>"));
+        assert!(response.contains("id=\"close-spinner\""));
+        assert!(!response.contains("{{"));
+        let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+        let style = body
+            .split_once("<style>")
+            .unwrap()
+            .1
+            .split_once("</style>")
+            .unwrap()
+            .0;
+        let hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(style));
+        assert!(headers.contains(&format!("style-src 'sha256-{hash}'")));
+        assert!(headers.contains("default-src 'none'"));
+        assert!(headers.contains("img-src data:;"));
+        assert!(headers.contains("font-src data:;"));
+        let font = style
+            .split_once("url(\"data:font/woff2;base64,")
+            .unwrap()
+            .1
+            .split_once('"')
+            .unwrap()
+            .0;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(font)
+                .unwrap(),
+            include_bytes!("inter-latin.woff2")
+        );
+        let artwork = body
+            .split_once("src=\"data:image/webp;base64,")
+            .unwrap()
+            .1
+            .split_once('"')
+            .unwrap()
+            .0;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(artwork)
+                .unwrap(),
+            include_bytes!("cubes.webp")
+        );
+        assert!(headers.contains("base-uri 'none'; frame-ancestors 'none'"));
+        assert!(headers.contains(&format!("Content-Length: {}\r\n", body.len())));
+        assert!(!headers.contains("unsafe-inline"));
+        let script = body
+            .split_once("<script>")
+            .unwrap()
+            .1
+            .split_once("</script>")
+            .unwrap()
+            .0;
+        assert_eq!(script, include_str!("page.js"));
+        let script_hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script));
+        assert!(headers.contains(&format!("script-src 'sha256-{script_hash}'")));
+        assert_eq!(body.matches("<script").count(), 1);
         assert!(!response.contains("one+time"));
         assert!(!response.contains("attempt"));
         assert!(!response.contains("one%2Btime"));
@@ -215,6 +278,9 @@ async fn real_listener_preserves_callback_parameters_and_closes_after_completion
     );
     assert_eq!(result, Ok(expected));
     assert!(state.0.lock().unwrap().is_none());
+    assert!(state.1.deadline(id).is_some());
+    state.cancel(id).unwrap();
+    assert!(state.1.deadline(id).is_none());
     let mut byte = [0];
     let closed = tokio::time::timeout(Duration::from_secs(5), queued.read(&mut byte))
         .await
@@ -376,6 +442,8 @@ async fn default_state_rejects_invalid_success_and_error_callbacks_then_complete
             let html = send(&url, &format!("{}?{response}{suffix}", url.path()), "").await;
             assert!(html.starts_with("HTTP/1.1 400"));
             assert!(html.contains("Invalid callback"));
+            assert!(html.contains("<h1 id=\"heading\">Sign-in needs attention</h1>"));
+            assert!(html.contains("data-complete=\"false\""));
             assert!(!html.contains(&state));
             assert!(!html.contains("access_denied"));
             assert!(host.0.lock().unwrap().is_some());
@@ -416,6 +484,8 @@ async fn default_state_rejects_invalid_success_and_error_callbacks_then_complete
         ]))
     );
     assert!(html.starts_with("HTTP/1.1 400"));
+    assert!(html.contains("<h1 id=\"heading\">Sign-in needs attention</h1>"));
+    assert!(html.contains("data-complete=\"false\""));
     assert!(!html.contains("access_denied"));
     assert!(!html.contains(&next_state));
     assert!(!html.contains("private detail"));
@@ -476,4 +546,112 @@ async fn launch_failure_cleans_up_but_cannot_cancel_a_replacement_after_reload()
     let next = next.unwrap();
     assert_eq!(host.0.lock().unwrap().as_ref().unwrap().id, next.id);
     host.cancel(&next.id).unwrap();
+}
+
+#[tokio::test]
+async fn federated_handoff_uses_return_to_without_legacy_oauth_fields_and_keeps_its_result() {
+    let host = OAuthCallbackHost::default();
+    let mut opened = None;
+    let attempt = host.begin_federated(
+        "https://identity.example/prefix/v1/login/start?handoff_challenge=fixture&handoff_challenge_method=S256".into(),
+        |url| { opened = Some(url::Url::parse(url).unwrap()); Ok(()) },
+    ).unwrap();
+    let opened = opened.unwrap();
+    let params: Vec<_> = opened.query_pairs().into_owned().collect();
+    assert_eq!(opened.path(), "/prefix/v1/login/start");
+    assert_eq!(
+        params
+            .iter()
+            .filter(|(name, _)| name == "return_to")
+            .count(),
+        1
+    );
+    assert!(!params
+        .iter()
+        .any(|(name, _)| matches!(name.as_str(), "state" | "redirect_uri" | "type" | "product")));
+    let callback = url::Url::parse(&attempt.callback_url).unwrap();
+    assert_eq!(callback.host_str(), Some("127.0.0.1"));
+    assert!(callback.port().is_some_and(|port| port > 0));
+    for (target, status, message) in [
+        ("/wrong?code=fixture-code".to_string(), "404", "Not found"),
+        (
+            format!("{}?code=", callback.path()),
+            "400",
+            "Invalid callback",
+        ),
+    ] {
+        let html = send(&callback, &target, "").await;
+        assert!(html.starts_with(&format!("HTTP/1.1 {status}")));
+        assert_neutral_callback(&html, message);
+    }
+    let html = send(
+        &callback,
+        &format!("{}?code=fixture-code", callback.path()),
+        "",
+    )
+    .await;
+    assert!(html.starts_with("HTTP/1.1 200"));
+    assert_neutral_callback(
+        &html,
+        "Sign-in received. Return to the app to finish verification.",
+    );
+    assert!(!html.contains("fixture-code"));
+    assert!(host
+        .begin(options("/other"), |_| panic!(
+            "A completed but unconsumed callback still owns the listener"
+        ))
+        .is_err());
+    assert_eq!(
+        host.wait(&attempt.id).await.unwrap(),
+        response(&[("code", "fixture-code")])
+    );
+    assert!(host.wait(&attempt.id).await.is_err());
+    let next = start(&host, options("/other")).unwrap();
+    host.cancel(&next.id).unwrap();
+}
+
+fn assert_neutral_callback(response: &str, message: &str) {
+    let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+    assert_eq!(
+        body,
+        format!("<!doctype html><title>Sign-in callback</title><p>{message}</p>")
+    );
+    assert!(headers.contains(
+        "Content-Security-Policy: default-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n"
+    ));
+    assert!(headers.contains("Cache-Control: no-store\r\n"));
+    assert!(headers
+        .split("\r\n")
+        .any(|header| header == "Referrer-Policy: no-referrer"));
+    assert!(headers.contains(&format!("Content-Length: {}\r\n", body.len())));
+}
+
+#[tokio::test]
+async fn federated_error_keeps_the_neutral_page_and_private_details_native() {
+    let host = OAuthCallbackHost::default();
+    let attempt = host
+        .begin_federated("https://organization.example/v1/login/start".into(), |_| {
+            Ok(())
+        })
+        .unwrap();
+    let callback = url::Url::parse(&attempt.callback_url).unwrap();
+    let html = send(
+        &callback,
+        &format!(
+            "{}?error=access_denied&error_description=private-detail",
+            callback.path()
+        ),
+        "",
+    )
+    .await;
+    assert!(html.starts_with("HTTP/1.1 400"));
+    assert_neutral_callback(&html, "Sign-in failed. Return to the app to retry.");
+    assert!(!html.contains("private-detail"));
+    assert_eq!(
+        host.wait(&attempt.id).await.unwrap(),
+        response(&[
+            ("error", "access_denied"),
+            ("error_description", "private-detail")
+        ])
+    );
 }

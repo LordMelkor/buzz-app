@@ -6,8 +6,10 @@ import {
   useReducedMotion,
 } from "motion/react";
 import { XIcon } from "../icons";
-import { useState, type ComponentProps, type ReactNode } from "react";
+import { useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useModalWindowDrag } from "./ModalWindowDrag";
 import { IconButton } from "./IconButton";
+import { ScrollEdgeMaterial } from "./ScrollEdgeMaterial";
 import { useFinalFocusUnlessMoved } from "./finalFocus";
 
 type PopupProps = ComponentProps<typeof BaseDialog.Popup>;
@@ -18,8 +20,18 @@ export type DialogProps = {
     typeof BaseDialog.Root
   >["onOpenChangeComplete"];
   title: ReactNode;
+  /** Artwork above a centered title lockup, with Close kept at the top right. */
+  artwork?: ReactNode;
+  /** Search palettes keep an accessible title without visible header chrome. */
+  presentation?: "default" | "search";
+  /** Introductory copy belongs in the title lockup, not a body paragraph. */
   description?: ReactNode;
-  children: ReactNode;
+  /** Omit for a header-only message; no empty body spacing is rendered. */
+  children?: ReactNode;
+  /** Integrated sections for an expanded modal; Dialog owns framing and scrollports. */
+  navigation?: { label: string; content: ReactNode };
+  /** Position within a host; sectioned modals stay bounded. Null waits for its ref. */
+  container?: HTMLElement | null;
   actions?: ReactNode;
   /** Tighter heading-to-body spacing for compact forms. */
   headerGap?: "default" | "compact";
@@ -40,8 +52,8 @@ export type DialogProps = {
   height?: "content" | "stable" | "stable-tall";
   /** Let bounded content own its scrolling instead of the shared body. */
   bodyLayout?: "flow" | "flex";
-  /** Wide catalogs and expanded reading surfaces retain the same modal/focus behavior. */
-  size?: "default" | "wide" | "expanded";
+  /** Compact dialogs; standard, wide, and expanded task modals. */
+  size?: "compact" | "default" | "wide" | "expanded";
   /** Keep frequent surfaces such as search palettes immediate. */
   motion?: "default" | "none";
   /** A pending operation can prevent all user dismissal paths. */
@@ -56,8 +68,12 @@ export function Dialog({
   onOpenChange,
   onOpenChangeComplete,
   title,
+  artwork,
+  presentation = "default",
   description,
   children,
+  navigation,
+  container,
   actions,
   headerGap = "default",
   chromeSpacing = "default",
@@ -67,7 +83,7 @@ export function Dialog({
   headerActions,
   onEscape,
   placement = "center",
-  dismissOnOutsideClick = false,
+  dismissOnOutsideClick = true,
   closeLabel = "Close",
   size = "default",
   preventClose = false,
@@ -78,62 +94,124 @@ export function Dialog({
   finalFocus,
 }: DialogProps) {
   const [instantClose, setInstantClose] = useState(false);
+  const windowDrag = useModalWindowDrag();
+  const detail = useRef<HTMLDivElement>(null);
   const focus = useFinalFocusUnlessMoved(finalFocus, undefined);
   const transition =
     motion === "none" || (!open && instantClose) ? "none" : "default";
   const contents = (
     <>
-      <header
-        className="buzz-dialog-header"
-        data-chrome-spacing={chromeSpacing}
-      >
-        <div className="buzz-dialog-heading">
-          {step ? (
-            <div className="text-label" aria-hidden="true">
-              {title}
+      {presentation === "search" ? (
+        <>
+          {!step && (
+            <BaseDialog.Title className="sr-only">{title}</BaseDialog.Title>
+          )}
+          {description && !step && (
+            <BaseDialog.Description className="sr-only">
+              {description}
+            </BaseDialog.Description>
+          )}
+        </>
+      ) : (
+        <header
+          className="buzz-dialog-header"
+          data-chrome-spacing={chromeSpacing}
+          data-artwork={artwork != null || undefined}
+        >
+          <ScrollEdgeMaterial edge="top" className="buzz-dialog-bar-material" />
+          <div className="buzz-dialog-heading">
+            {artwork != null && (
+              <div className="buzz-dialog-artwork">{artwork}</div>
+            )}
+            {step ? (
+              <div className="text-label" aria-hidden="true">
+                {title}
+              </div>
+            ) : (
+              <BaseDialog.Title className="text-label">
+                {title}
+              </BaseDialog.Title>
+            )}
+            {description &&
+              (step ? (
+                <p className="buzz-dialog-description" aria-hidden="true">
+                  {description}
+                </p>
+              ) : (
+                <BaseDialog.Description className="buzz-dialog-description">
+                  {description}
+                </BaseDialog.Description>
+              ))}
+          </div>
+          <div className="buzz-dialog-header-actions">
+            {headerActions}
+            <BaseDialog.Close
+              disabled={preventClose}
+              render={
+                <IconButton
+                  aria-label={closeLabel}
+                  variant="subtle"
+                  disabled={preventClose}
+                  size="compact"
+                  icon={<XIcon size={16} aria-hidden="true" />}
+                />
+              }
+            />
+          </div>
+        </header>
+      )}
+      {((children != null && children !== false) || navigation) && (
+        <div
+          className="buzz-dialog-body buzz-dialog-content"
+          data-chrome-spacing={chromeSpacing}
+          data-header-gap={headerGap}
+          data-footer-gap={footerGap}
+        >
+          {navigation ? (
+            <div className="buzz-dialog-navigation-layout">
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: Delegated buttons emit click for both keyboard and pointer activation. */}
+              <nav
+                aria-label={navigation.label}
+                className="buzz-dialog-navigation"
+                onClick={() => {
+                  const content = detail.current;
+                  if (!content) return;
+                  const nav = content.previousElementSibling;
+                  if (
+                    nav &&
+                    nav.getBoundingClientRect().width > 0 &&
+                    nav.getBoundingClientRect().bottom <=
+                      content.getBoundingClientRect().top
+                  ) {
+                    content.focus();
+                    content.scrollIntoView({ block: "start" });
+                  }
+                }}
+              >
+                {navigation.content}
+              </nav>
+              <div
+                className="buzz-dialog-navigation-detail"
+                ref={detail}
+                tabIndex={-1}
+              >
+                {children}
+              </div>
             </div>
           ) : (
-            <BaseDialog.Title className="text-label">{title}</BaseDialog.Title>
+            children
           )}
-          {description &&
-            (step ? (
-              <p className="buzz-dialog-description" aria-hidden="true">
-                {description}
-              </p>
-            ) : (
-              <BaseDialog.Description className="buzz-dialog-description">
-                {description}
-              </BaseDialog.Description>
-            ))}
         </div>
-        <div className="buzz-dialog-header-actions">
-          {headerActions}
-          <BaseDialog.Close
-            disabled={preventClose}
-            render={
-              <IconButton
-                aria-label={closeLabel}
-                disabled={preventClose}
-                size="compact"
-                icon={<XIcon size={16} aria-hidden="true" />}
-              />
-            }
-          />
-        </div>
-      </header>
-      <div
-        className="buzz-dialog-body buzz-dialog-content"
-        data-chrome-spacing={chromeSpacing}
-        data-header-gap={headerGap}
-        data-footer-gap={footerGap}
-      >
-        {children}
-      </div>
+      )}
       {(actions || leadingActions) && (
         <footer
           className="buzz-dialog-actions"
           data-chrome-spacing={chromeSpacing}
         >
+          <ScrollEdgeMaterial
+            edge="bottom"
+            className="buzz-dialog-bar-material"
+          />
           {leadingActions && (
             <div className="buzz-dialog-leading-actions">{leadingActions}</div>
           )}
@@ -148,7 +226,11 @@ export function Dialog({
       onOpenChangeComplete={onOpenChangeComplete}
       disablePointerDismissal={!dismissOnOutsideClick}
       onOpenChange={(next, details) => {
-        if (!next && preventClose) {
+        if (
+          !next &&
+          (preventClose ||
+            (details.reason === "outside-press" && windowDrag.wasWindowDrag()))
+        ) {
           details.cancel();
           return;
         }
@@ -160,9 +242,14 @@ export function Dialog({
         onOpenChange(next);
       }}
     >
-      <BaseDialog.Portal>
+      <BaseDialog.Portal container={container}>
         <BaseDialog.Backdrop
-          forceRender={placement === "right" || dismissOnOutsideClick}
+          forceRender
+          onPointerDown={windowDrag.onPointerDown}
+          onPointerMove={windowDrag.onPointerMove}
+          onPointerUp={windowDrag.onPointerUp}
+          onPointerCancel={windowDrag.onPointerCancel}
+          onLostPointerCapture={windowDrag.onLostPointerCapture}
           data-outside-dismissal={dismissOnOutsideClick || undefined}
           data-placement={placement}
           data-buzz-ui=""
@@ -173,10 +260,13 @@ export function Dialog({
           data-buzz-ui=""
           className="buzz-dialog gap-0"
           data-placement={placement}
+          data-presentation={presentation}
           data-height={height}
           data-body-layout={bodyLayout}
           data-stepped={step ? "" : undefined}
-          data-size={size}
+          data-size={navigation ? "expanded" : size}
+          data-navigation={navigation ? "" : undefined}
+          data-contained={container ? "" : undefined}
           data-motion={transition}
           aria-modal="true"
           initialFocus={initialFocus}

@@ -29,4 +29,8 @@ else
   echo "No .env.local to copy from $source"
 fi
 
+# Install the pinned toolchain before editors or parallel commands use the Rust
+# proxies: concurrent first-use installs into the shared ~/.rustup can corrupt it.
+(cd "$target" && bin/rustup toolchain install)
+
 "$target/bin/pnpm" install --dir "$target" --frozen-lockfile

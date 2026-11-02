@@ -1,7 +1,6 @@
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
 import { openPage } from "./navigation.mjs";
-import { resizeInboxDetail } from "./inbox-resize.mjs";
 
 // Browser-only contract: actual sidebar/plugin routing -> exact thread target,
 // browser history, and responsive/light-dark CSS. Matrices stay in RTL/unread tests.
@@ -27,7 +26,7 @@ test("Inbox opens the exact thread, shares read state, and fits the workspace", 
   ).toBeVisible();
   await expect(inbox.getByText("Checking recent activity…")).toHaveCount(0);
   // The unselected list must keep the full scroll area after grid simplification.
-  const workspace = inbox.locator('[class*="workspace"]');
+  const workspace = inbox.locator('[class*="listPane"]').locator("xpath=..");
   await expect
     .poll(
       async () =>
@@ -56,7 +55,8 @@ test("Inbox opens the exact thread, shares read state, and fits the workspace", 
       .click();
     await expect(filters).not.toBeVisible();
   };
-  await expect(inbox.getByRole("tab")).toHaveCount(0);
+  // The list is the page's only tab until a row opens a conversation beside it.
+  await expect(inbox.getByRole("tab")).toHaveText(["Inbox"]);
   await expect(
     inbox.getByRole("navigation", { name: "Inbox history" }),
   ).toHaveCount(0);
@@ -324,28 +324,34 @@ test("Inbox opens the exact thread, shares read state, and fits the workspace", 
     .find((event) => event.content === "Thread root 1");
   await mentionRow.getByRole("button", { name: /^Open / }).focus();
   await page.keyboard.press("Enter");
-  const detail = inbox.getByRole("region", { name: "Inbox detail" });
-  await expect(detail).toBeVisible();
-  // The exact-target reveal focuses its row after the thread loads. Let it land
-  // before keyboard sizing, or it can take focus from the handle mid-press.
+  // The row opens its exact thread in a side tab; the list stays the main tab.
+  const sideTabs = inbox.getByRole("tablist", { name: "Panel tabs" });
+  await expect(sideTabs.getByRole("tab")).toHaveText(["Thread root 1"]);
   await expect(
-    detail.locator("[data-message-id]").filter({ hasText: "Unread reply 1" }),
-  ).toBeFocused();
-  const resizedWidth = await resizeInboxDetail(page, detail);
-  await detail
-    .getByRole("button", { name: "Close detail", exact: true })
-    .click();
-  await mentionRow.getByRole("button", { name: /^Open / }).click();
-  await expect
-    .poll(async () => (await detail.boundingBox()).width)
-    .toBeCloseTo(resizedWidth, 0);
+    sideTabs.getByRole("tab", { name: "Thread root 1", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    inbox
+      .getByRole("tablist", { name: "Inbox tabs" })
+      .getByRole("tab", { name: "Inbox", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    inbox.getByRole("list", { name: "Inbox conversations" }),
+  ).toBeVisible();
+  const detail = inbox.getByRole("region", {
+    name: "Conversation in Alpha",
+    exact: true,
+  });
   const thread = detail.getByRole("region", {
     name: "Thread messages",
     exact: true,
   });
   await expect(
-    thread.getByText("Unread reply 1", { exact: true }),
+    thread.locator(`[data-message-id="${expected.id}"]`),
   ).toBeVisible();
+  await expect(
+    thread.locator("[data-message-id]").filter({ hasText: "Unread reply 1" }),
+  ).toBeInViewport();
   // Main owns the floating message actions/grouping. Hover must not reserve a
   // new row or displace content in this embedded consumer.
   const firstMessage = thread.locator("[data-message-id]").first();
@@ -354,50 +360,11 @@ test("Inbox opens the exact thread, shares read state, and fits the workspace", 
   await expect
     .poll(async () => (await firstMessage.boundingBox())?.height)
     .toBe(beforeHover?.height);
-  const heading = detail
-    .locator("header")
-    .getByRole("heading", { name: "Alpha", exact: true });
-  await expect(detail.locator("header")).toHaveCount(1);
-  await expect(detail.locator("header").getByRole("heading")).toHaveCount(1);
-  await expect(
-    detail.locator("header .panel-header-label-icon svg"),
-  ).toHaveCount(1);
-  const embedded = detail.getByRole("complementary", {
-    name: "Thread",
-    exact: true,
-  });
-  await expect(embedded.locator("header")).toHaveCount(0);
-  await expect(embedded.getByRole("button", { name: /^Close / })).toHaveCount(
-    0,
-  );
-  await expect(embedded).toHaveCSS("border-width", "0px");
-  await expect(embedded).toHaveCSS("border-radius", "0px");
-  await expect(embedded).toHaveCSS("box-shadow", "none");
-  const filterBox = await filter.boundingBox();
-  const headingBox = await heading.boundingBox();
-  const listBox = await rows.first().boundingBox();
-  const threadBox = await detail
-    .locator('aside[aria-label="Thread"]')
-    .boundingBox();
-  expect(
-    filterBox && headingBox && Math.abs(filterBox.y - headingBox.y),
-  ).toBeLessThan(24);
-  expect(
-    listBox && threadBox && Math.abs(listBox.y - threadBox.y),
-  ).toBeLessThan(3);
-  const inset = await detail.evaluate((element) => ({
-    bottom: element.getBoundingClientRect().bottom,
-    threadBottom: element
-      .querySelector('aside[aria-label="Thread"]')
-      .getBoundingClientRect().bottom,
-    padding: Number.parseFloat(getComputedStyle(element).paddingBottom),
-  }));
-  expect(inset.bottom - inset.threadBottom).toBeCloseTo(inset.padding, 0);
-  await expect(inbox.getByText("Back to list")).toHaveCount(0);
-  await expect(inbox.getByText("Open in channel")).toHaveCount(0);
+  // Opening does not visit Channels; the Inbox page stays in view.
+  await expect(page.getByRole("region", { name: "Channels" })).toHaveCount(0);
   await expect(mentionRow.getByRole("img", { name: "Unread" })).toHaveCount(0);
-  // Available Inbox width, not the viewport, must collapse the selected panes:
-  // the persistent sidebar leaves too little room at both 720px and 900px.
+  // Narrow widths follow the shared tab layout: the open tab, its reader and
+  // composer stay within the available Inbox width without overflow.
   for (const [mode, width] of [
     ["light", 720],
     ["dark", 900],
@@ -407,17 +374,11 @@ test("Inbox opens the exact thread, shares read state, and fits the workspace", 
     await page.evaluate((mode) => {
       document.documentElement.dataset.colorMode = mode;
     }, mode);
-    await expect(
-      inbox.getByRole("list", { name: "Inbox conversations" }),
-    ).not.toBeVisible();
-    await expect(filter).not.toBeVisible();
-    await expect(
-      detail.getByRole("separator", {
-        name: "Resize main and secondary panels",
-      }),
-    ).not.toBeVisible();
     const editor = detail.getByRole("textbox", { name: "Reply to thread" });
-    const close = detail.getByRole("button", { name: "Close detail" });
+    const close = inbox.getByRole("button", {
+      name: "Close Thread root 1 tab",
+      exact: true,
+    });
     const send = detail.getByRole("button", { name: "Send message" });
     const available = await inbox.boundingBox();
     for (const control of [detail, thread, editor, close, send]) {
@@ -436,93 +397,15 @@ test("Inbox opens the exact thread, shares read state, and fits the workspace", 
         (element) => element.scrollWidth <= element.clientWidth,
       ),
     ).toBe(true);
-    await page.screenshot({
-      path: testInfo.outputPath(`inbox-selected-${mode}-${width}.png`),
-    });
-    await close.click();
-    await expect(detail).toHaveCount(0);
-    await expect(
-      mentionRow.getByRole("button", { name: /^Open / }),
-    ).toBeFocused();
-    for (const control of [filter, unread]) {
-      await expect(control).toBeVisible();
-      const box = await control.boundingBox();
-      expect(box.x).toBeGreaterThanOrEqual(available.x);
-      expect(box.x + box.width).toBeLessThanOrEqual(
-        available.x + available.width,
-      );
-    }
-    await page.keyboard.press("Enter");
-    await expect(detail).toBeVisible();
     await expect(
       thread.getByText("Unread reply 1", { exact: true }),
     ).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath(`inbox-selected-${mode}-${width}.png`),
+    });
   }
   await page.setViewportSize({ width: 1280, height: 900 });
   await expect(filter).toBeVisible();
-  await detail.getByRole("button", { name: "Open in channel" }).click();
-  const target = await page.evaluate(
-    () => history.state.buzzNavigationV1.entry.target,
-  );
-  expect(target.threadRootId).toBe(expected.id);
-  expect(target.messageId).toMatch(/^[a-f0-9]{64}$/);
-  await page.getByRole("button", { name: "Go back", exact: true }).click();
-  await expect(inbox).toBeVisible();
-  await mentionRow.getByRole("button", { name: /^Open / }).click();
-  const channelHeading = detail.getByRole("heading", {
-    name: "Alpha",
-    exact: true,
-  });
-  const channelLink = channelHeading.getByRole("button", { name: "Alpha" });
-  await expect(channelLink).toHaveAttribute("title", "Open full thread");
-  await page.keyboard.press("Tab");
-  const focusRing = await channelLink.evaluate((button) => {
-    document.documentElement.setAttribute("data-keyboard-navigation", "");
-    button.focus();
-    const style = getComputedStyle(button);
-    return {
-      focused: document.activeElement === button,
-      focusVisible: button.matches(":focus-visible"),
-      width: Number.parseFloat(style.outlineWidth),
-      offset: Number.parseFloat(style.outlineOffset),
-      color: style.outlineColor,
-      background: getComputedStyle(button.parentElement).backgroundColor,
-      clipping: getComputedStyle(button.parentElement).overflow,
-      link: button.getBoundingClientRect().toJSON(),
-      heading: button.parentElement.getBoundingClientRect().toJSON(),
-    };
-  });
-  expect(focusRing.focused).toBe(true);
-  expect(focusRing.focusVisible).toBe(true);
-  expect(focusRing.clipping).toBe("hidden");
-  expect(focusRing.width).toBeGreaterThanOrEqual(2);
-  expect(focusRing.color).not.toBe(focusRing.background);
-  const outside = focusRing.width + focusRing.offset;
-  expect(focusRing.link.left - outside).toBeGreaterThanOrEqual(
-    focusRing.heading.left,
-  );
-  expect(focusRing.link.top - outside).toBeGreaterThanOrEqual(
-    focusRing.heading.top,
-  );
-  expect(focusRing.link.right + outside).toBeLessThanOrEqual(
-    focusRing.heading.right,
-  );
-  expect(focusRing.link.bottom + outside).toBeLessThanOrEqual(
-    focusRing.heading.bottom,
-  );
-  await channelLink.click();
-  await expect(page.getByRole("region", { name: "Channels" })).toBeVisible();
-  const channelTarget = await page.evaluate(
-    () => history.state.buzzNavigationV1.entry.target,
-  );
-  expect(channelTarget).toMatchObject({
-    kind: "conversation",
-    channelId: "alpha",
-    messageId: target.messageId,
-    threadRootId: expected.id,
-  });
-  await page.getByRole("button", { name: "Go back", exact: true }).click();
-  await expect(inbox).toBeVisible();
   await chooseFilter("Mentions");
   // Opening reads; right-click and keyboard still expose local unread.
   const row = mentionRow;
@@ -551,32 +434,42 @@ test("Inbox opens the exact thread, shares read state, and fits the workspace", 
     page.getByRole("menuitem", { name: "Mark unread" }),
   ).toBeDisabled();
   await page.keyboard.press("Escape");
+  // A re-click does not undo the user's mark; a new visit after another
+  // conversation does.
+  await row.getByRole("button", { name: /^Open / }).click();
+  await expect(row.getByRole("img", { name: "Unread" })).toBeVisible();
   await inbox.getByRole("button", { name: "Unread only" }).click();
   await expect(rows).toHaveCount(2);
+  await rows
+    .filter({ hasText: "Broadcast descendant" })
+    .getByRole("button", { name: /^Open / })
+    .click();
+  await expect(sideTabs.getByRole("tab")).toHaveCount(1);
+  await expect(
+    sideTabs.getByRole("tab", { name: "Thread root 1", exact: true }),
+  ).toHaveCount(0);
   await row.getByRole("button", { name: /^Open / }).click();
+  await expect(sideTabs.getByRole("tab")).toHaveText(["Thread root 1"]);
   await expect(row.getByRole("img", { name: "Unread" })).toHaveCount(0);
   await row.getByRole("button", { name: /^Open / }).click({ button: "right" });
   action = page.getByRole("menuitem", { name: "Mark unread" });
   await action.click();
   await expect(row.getByRole("img", { name: "Unread" })).toBeVisible();
-  // A re-click does not undo the user's mark; a new visit after closing does.
-  await row.getByRole("button", { name: /^Open / }).click();
-  await expect(row.getByRole("img", { name: "Unread" })).toBeVisible();
-  await detail.getByRole("button", { name: "Close detail" }).click();
-  await expect(row.getByRole("button", { name: /^Open / })).toBeFocused();
-  await row.getByRole("button", { name: /^Open / }).click();
-  await expect(row.getByRole("img", { name: "Unread" })).toHaveCount(0);
-  // The DM timeline and composer must occupy one vertical detail column.
+  // The DM timeline and composer must occupy one vertical column in its tab.
   await chooseFilter("DMs");
   await rows
     .first()
     .getByRole("button", { name: /^Open / })
     .click();
-  const direct = detail.getByRole("region", { name: "Conversation preview" });
-  await expect(detail.locator("header")).toHaveCount(1);
+  await expect(sideTabs.getByRole("tab")).toHaveText(["Alice Fixture"]);
+  const direct = inbox.getByRole("region", {
+    name: "Conversation in Alice Fixture",
+    exact: true,
+  });
   await expect(direct.locator("header")).toHaveCount(0);
+  await expect(direct.getByRole("form")).toHaveCount(1);
   await expect(
-    direct.getByRole("form", { name: /Send a message/ }),
+    direct.getByRole("textbox", { name: /^Message / }),
   ).toBeVisible();
   const geometry = await direct.evaluate((element) => {
     const history = element.querySelector(
@@ -585,21 +478,15 @@ test("Inbox opens the exact thread, shares read state, and fits the workspace", 
     const composer = element.querySelector("form");
     if (!history || !composer) return;
     return {
-      direction: getComputedStyle(element).flexDirection,
       history: history.getBoundingClientRect().toJSON(),
       composer: composer.getBoundingClientRect().toJSON(),
     };
   });
-  expect(geometry?.direction).toBe("column");
   expect(geometry?.composer.top).toBeGreaterThanOrEqual(
     geometry.history.bottom,
   );
   expect(geometry?.composer.left).toBeGreaterThanOrEqual(geometry.history.left);
   expect(geometry?.composer.right).toBeLessThanOrEqual(geometry.history.right);
-  // Unread-only now filters the read DM away. Closing leaves the pane clean;
-  // a separate keyboard case verifies fallback focus with another visible row.
-  await detail.getByRole("button", { name: "Close detail" }).click();
-  await expect(detail).toHaveCount(0);
 });
 
 // Newest-first integration: exact Inbox selection must not be replaced by the
@@ -627,15 +514,17 @@ test.describe("signed newest-first Inbox windows", () => {
 
     const inbox = page.getByRole("region", { name: "Inbox", exact: true });
     await expect(inbox.getByText("Checking recent activity…")).toHaveCount(0);
-    const row = inbox
+    const rows = inbox
       .getByRole("list", { name: "Inbox conversations" })
-      .getByRole("listitem")
-      .filter({ hasText: "Inbox strict reply 0" });
+      .getByRole("listitem");
+    const row = rows.filter({ hasText: "Window room" });
     await row.getByRole("button", { name: /^Open / }).click();
-    const detail = inbox.getByRole("region", { name: "Inbox detail" });
+    const detail = inbox.getByRole("region", {
+      name: "Conversation in Window room",
+      exact: true,
+    });
     const target = detail.locator(`[data-message-id="${oldest.id}"]`);
     await expect(target).toBeInViewport();
-    await expect(target).toBeFocused();
     await expect(
       detail.getByRole("textbox", { name: "Reply to thread" }),
     ).toBeVisible();
@@ -658,124 +547,40 @@ test.describe("signed newest-first Inbox windows", () => {
       detail.getByText("New peer reply", { exact: true }),
     ).toBeAttached();
     await expect(target).toBeInViewport();
-    await detail.getByRole("button", { name: "Close detail" }).click();
-    const readRow = inbox
-      .getByRole("list", { name: "Inbox conversations" })
-      .getByRole("listitem")
-      .filter({ hasText: "Window room" });
-    await readRow.getByRole("button", { name: /^Open / }).click();
-    await expect(
-      detail.getByRole("textbox", { name: "Reply to thread" }),
-    ).toBeVisible();
-    await detail.getByRole("button", { name: "Open in channel" }).click();
-    const origin = await page.evaluate(
-      () => history.state.buzzNavigationV1.entry.target,
-    );
-    expect(origin.channelId).toBe(channel);
-    expect(origin.threadRootId).toBe(root.id);
-    await page.getByRole("button", { name: "Go back", exact: true }).click();
-    await expect(inbox).toBeVisible();
-    const again = inbox
-      .getByRole("list", { name: "Inbox conversations" })
-      .getByRole("listitem")
-      .filter({ hasText: "Window room" });
+    // Re-clicking the selected row reveals its current message in the same tab.
+    const again = rows.filter({ hasText: "Window room" });
+    await expect(again).toContainText("New peer reply");
     await again.getByRole("button", { name: /^Open / }).click();
+    await expect(
+      inbox.getByRole("tablist", { name: "Panel tabs" }).getByRole("tab"),
+    ).toHaveCount(1);
     const current = detail
       .locator("[data-message-id]")
       .filter({ hasText: "New peer reply" });
+    await expect(current).toBeInViewport();
     await expect(current).toBeFocused();
     // This removal is signed by the synthetic author and arrives through the
     // actual shared relay stream. It cannot turn a vanished target into a tail reveal.
     app.deleteInboxAnchor(arrival);
     await expect(current).toHaveCount(0);
-    // The unread owner retires this selected target; other participating
-    // replies can still keep the same conversation in the list.
-    await expect(detail).toHaveCount(0);
+    // Other participating replies keep the conversation in the list, and its
+    // tab stays open on the thread.
     await expect(again).toHaveCount(1);
     await expect(again).not.toContainText("New peer reply");
+    await expect(
+      detail.locator(`[data-message-id="${root.id}"]`),
+    ).toBeAttached();
   });
 });
 
-// Browser boundary: shared top-level head cannot reveal a row it does not contain.
-// The exact thread fallback must own focus/scroll and canonical origin, not a mock DOM.
-test.describe("DM exact opening outside the head", () => {
-  test.use({ inboxDmOldAnchor: true });
-  test("retains and focuses the selected old DM instead of silently substituting the newest head", async ({
-    page,
-    app,
-  }) => {
-    await open(page, app);
-    await openPage(page, "Inbox");
-    const inbox = page.getByRole("region", { name: "Inbox", exact: true });
-    await expect(inbox.getByText("Checking recent activity…")).toHaveCount(0);
-    const row = inbox
-      .getByRole("list", { name: "Inbox conversations" })
-      .getByRole("listitem")
-      .filter({ hasText: "Inbox old DM anchor" });
-    await row.getByRole("button", { name: /^Open / }).click();
-    const detail = inbox.getByRole("region", { name: "Inbox detail" });
-    const target = detail.locator(
-      `[data-message-id="${app.inboxDmAnchor.id}"]`,
-    );
-    await expect(target).toBeInViewport();
-    await expect(target).toBeFocused();
-    await expect(
-      detail.getByRole("complementary", { name: "Thread" }),
-    ).toBeVisible();
-    await expect(detail.getByRole("form")).toHaveCount(1);
-    await expect(detail.getByRole("button", { name: /^Close / })).toHaveCount(
-      1,
-    );
-    await expect
-      .poll(() =>
-        app.report.queries.some(
-          ({ filter }) => filter.top_level && filter["#h"]?.includes("dm-peer"),
-        ),
-      )
-      .toBe(true);
-    await expect
-      .poll(() =>
-        app.report.queries.some(({ filter }) =>
-          filter.ids?.includes(app.inboxDmAnchor.id),
-        ),
-      )
-      .toBe(true);
-    // The row now describes the newest read message, but clicking the already
-    // selected conversation must retain this exact reader and captured origin.
-    const selectedRow = inbox
-      .getByRole("list", { name: "Inbox conversations" })
-      .getByRole("listitem")
-      .filter({ has: page.locator('[aria-current="page"]') });
-    await expect(selectedRow).toContainText("Inbox DM fixture reply");
-    const retainedTarget = await target.elementHandle();
-    if (!retainedTarget) throw new Error("Missing exact DM target");
-    await selectedRow.getByRole("button", { name: /^Open / }).click();
-    expect(
-      await retainedTarget.evaluate((element) => element.isConnected),
-    ).toBe(true);
-    await expect(target).toBeInViewport();
-    await expect(
-      detail.getByRole("complementary", { name: "Thread" }),
-    ).toBeVisible();
-    await retainedTarget.dispose();
-    await detail.getByRole("button", { name: "Open in channel" }).click();
-    const origin = await page.evaluate(
-      () => history.state.buzzNavigationV1.entry.target,
-    );
-    expect(origin.channelId).toBe("dm-peer");
-    expect(origin.messageId).toBe(app.inboxDmAnchor.id);
-  });
-});
-
-// Session policy must survive bundled Inbox -> shared thread composer -> broker
-// publication, including the inferred exact recipient and signed roster preflight.
-test.describe("Inbox session reply admission", () => {
+// Solo agents answer at top level: Inbox still opens a Solo thread, read-only.
+test.describe("Inbox Solo chat thread", () => {
   test.use({
-    sessionChannels: ["alpha"],
+    soloChannels: ["alpha"],
     agentPeers: true,
-    inboxSessionAgent: true,
+    inboxSoloAgent: true,
   });
-  test("plain session reply notifies the sole member agent through the shared composer", async ({
+  test("a Solo chat thread reply opens its thread without a reply composer", async ({
     page,
     app,
   }) => {
@@ -788,47 +593,21 @@ test.describe("Inbox session reply admission", () => {
       .getByRole("listitem")
       .filter({ hasText: "Unread reply 1" });
     await row.getByRole("button", { name: /^Open / }).click();
-    const detail = inbox.getByRole("region", { name: "Inbox detail" });
-    const editor = detail.getByRole("textbox", { name: "Reply to thread" });
-    await expect(editor).toBeVisible();
-    const root = app.histories
-      .get("primary/alpha")
-      .find((event) => event.content === "Thread root 1");
-    if (!root) throw new Error("Missing session root fixture");
-    const roster = app
-      .startupCache()
-      .discovery.find(
-        (event) =>
-          event.kind === 39002 &&
-          event.tags.some(([name, value]) => name === "d" && value === "alpha"),
-      );
-    if (!roster) throw new Error("Missing verified session roster");
-    const agents = roster.tags
-      .filter(([name, key]) => name === "p" && key !== app.viewer)
-      .map(([, key]) => key);
-    expect(agents).toHaveLength(1);
-    await editor.fill("Inbox session reply without a typed mention");
-    await detail.getByRole("button", { name: "Send message" }).click();
-    await expect
-      .poll(() =>
-        app.report.publications.filter(({ event }) => event?.kind === 9),
-      )
-      .toHaveLength(1);
-    const sent = app.report.publications.find(
-      ({ event }) => event?.kind === 9,
-    )?.event;
-    if (!sent) throw new Error("Missing signed session reply");
-    expect(sent.tags).toContainEqual(["h", "alpha"]);
-    expect(sent.tags).toContainEqual(["e", root.id, "", "reply"]);
-    expect(sent.tags.filter(([name]) => name === "p")).toEqual([
-      ["p", agents[0]],
-    ]);
+    // A session's thread reply opens its thread tab, not the whole session.
+    const detail = inbox.getByRole("region", { name: /^Conversation in / });
+    await expect(
+      inbox.getByRole("tablist", { name: "Panel tabs" }).getByRole("tab"),
+    ).toHaveCount(1);
+    await expect(detail.getByText("Unread reply 1")).toBeVisible();
+    await expect(
+      detail.getByRole("textbox", { name: "Reply to thread" }),
+    ).toHaveCount(0);
   });
 });
 
-// Browser-only: CSS hides the list at this width. Real IndexedDB rejection must
-// remain visible/retryable while the selected detail is mounted, not just in DOM.
-test("narrow selected detail keeps a rejected read save and its captured Retry visible", async ({
+// Browser-only: the open tab covers the list at this width. Real IndexedDB
+// rejection must stay retryable above the list once its tab pane is closed.
+test("narrow Inbox keeps a rejected read save and its captured Retry behind an open tab", async ({
   page,
   app,
 }) => {
@@ -868,7 +647,8 @@ test("narrow selected detail keeps a rejected read save and its captured Retry v
   await page.getByRole("button", { name: "Inbox", exact: true }).click();
   const inbox = page.getByRole("region", { name: "Inbox", exact: true });
   await expect(inbox.getByText("Checking recent activity…")).toHaveCount(0);
-  await inbox.getByRole("button", { name: "Inbox filters" }).click();
+  const filters = inbox.getByRole("button", { name: "Inbox filters" });
+  await filters.click();
   await page
     .getByRole("menuitemradio", { name: "Mentions", exact: true })
     .click();
@@ -880,12 +660,13 @@ test("narrow selected detail keeps a rejected read save and its captured Retry v
   await page.evaluate(() => {
     window.inboxReadFailure.armed = true;
   });
-  // The fixed pause point is beyond this test's timeout, never runner now.
+  // The fixed pause point is beyond this test's timeout, never runner now, so
+  // reader dwell cannot save behind Retry.
   await page.clock.pauseAt(base + 180_000);
   try {
     await row.getByRole("button", { name: /^Open / }).click();
     const detail = inbox.getByRole("region", {
-      name: "Inbox detail",
+      name: "Conversation in Alpha",
       exact: true,
     });
     await expect(detail).toBeVisible();
@@ -893,47 +674,34 @@ test("narrow selected detail keeps a rejected read save and its captured Retry v
       .getByRole("alert")
       .filter({ hasText: "Synthetic read storage failure" });
     await expect(alert).toBeVisible();
-    await expect(
-      alert.getByRole("button", { name: "Retry inbox" }),
-    ).toBeInViewport();
-    await expect(
-      inbox.getByRole("list", { name: "Inbox conversations" }),
-    ).not.toBeVisible();
+    const retry = alert.getByRole("button", { name: "Retry inbox" });
+    // Closing the pane uncovers the list and its Retry; the failure survives.
+    await inbox
+      .getByRole("button", { name: "Toggle tab pane", exact: true })
+      .click();
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(16);
+        return retry.click({ trial: true, timeout: 100 }).then(
+          () => true,
+          () => false,
+        );
+      })
+      .toBe(true);
+    await expect(retry).toBeInViewport();
+    await expect(alert).toBeVisible();
     const saves = await page.evaluate(() => {
       window.inboxReadFailure.armed = false;
       return window.inboxReadFailure.saves;
     });
-    // Move to Retry after initial reveal focus, even if verification is pending.
-    const target = detail
-      .locator("[data-message-id]")
-      .filter({ hasText: "Unread reply 1" });
-    await expect
-      .poll(async () => {
-        await page.clock.runFor(16);
-        return target.evaluate((element) => document.activeElement === element);
-      })
-      .toBe(true);
-    const retry = alert.getByRole("button", { name: "Retry inbox" });
     await retry.focus();
     await page.keyboard.press("Enter");
     await expect(alert).toHaveCount(0);
     await expect
       .poll(() => page.evaluate(() => window.inboxReadFailure.saves))
       .toBeGreaterThan(saves);
-    await expect(detail).toBeVisible();
-    // Cancel the still-pending verification with a real scroller mutation. The
-    // rescheduled reveal must not steal Retry's successful handoff to Close.
-    await target.evaluate((element) => {
-      element.style.paddingBottom = "1px";
-    });
-    await page.clock.runFor(32);
-    await expect(
-      detail.getByRole("button", { name: "Close detail", exact: true }),
-    ).toBeFocused();
-    await page.clock.resume();
-    await page.keyboard.press("Escape");
-    await expect(detail).toHaveCount(0);
-    await expect(row.getByRole("button", { name: /^Open / })).toBeFocused();
+    // Retry owned focus when its alert left, so the Show filter receives it.
+    await expect(filters).toBeFocused();
     await expect(row.getByRole("img", { name: "Unread" })).toHaveCount(0);
   } finally {
     await page.clock.resume();
@@ -943,76 +711,9 @@ test("narrow selected detail keeps a rejected read save and its captured Retry v
   }
 });
 
-// Browser-only: the invoking row is display:none at 390px. Native Enter must
-// reach a visible placeholder control so real keyboard Escape can dismiss it.
-test("narrow incomplete preview receives keyboard focus once and Escape returns to its row", async ({
-  page,
-  app,
-}) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  let release;
-  const held = new Promise((resolve) => {
-    release = resolve;
-  });
-  let requested = false;
-  await page.route("**/api/relay/**/query", async (route) => {
-    if (
-      !route
-        .request()
-        .postDataJSON()
-        .some((filter) => filter["#e"] && filter.kinds?.includes(40003))
-    )
-      return route.continue();
-    requested = true;
-    await held;
-    // Malformed evidence fails the reader without a browser HTTP-error log.
-    await route.fulfill({ json: { error: "Synthetic auxiliary failure" } });
-  });
-  try {
-    await open(page, app);
-    await openPage(page, "Inbox");
-    const inbox = page.getByRole("region", { name: "Inbox", exact: true });
-    await expect.poll(() => requested).toBe(true);
-    const list = inbox.getByRole("list", { name: "Inbox conversations" });
-    // Both mentioned groups are pending; either exact mounted row exercises
-    // the same placeholder focus contract, and neither changes order on error.
-    const row = list
-      .getByRole("listitem")
-      .filter({ hasText: "#Alpha" })
-      .first();
-    await expect(row).toContainText("Preview updating…");
-    const invoking = row.getByRole("button", { name: /^Open / });
-    await invoking.focus();
-    await page.keyboard.press("Enter");
-    const detail = inbox.getByRole("region", { name: "Inbox detail" });
-    await expect(detail).toContainText("Preview updating…");
-    await expect(list).not.toBeVisible();
-    await expect(
-      detail.getByRole("button", { name: "Close detail" }),
-    ).toBeFocused();
-    await page.keyboard.press("Escape");
-    await expect(detail).toHaveCount(0);
-    await expect(invoking).toBeFocused();
-    // Reopening a failed placeholder is also a keyboard-accessible visit.
-    release();
-    await expect(row).toContainText("Preview unavailable. Retry inbox.");
-    await page.keyboard.press("Enter");
-    const close = detail.getByRole("button", { name: "Close detail" });
-    await expect(close).toBeFocused();
-    await page.keyboard.press("Shift+Tab");
-    const other = detail.getByRole("button", { name: "Open in channel" });
-    await expect(other).toBeFocused();
-    await page.keyboard.press("Escape");
-    await expect(detail).toHaveCount(0);
-    await expect(invoking).toBeFocused();
-  } finally {
-    release();
-  }
-});
-
-// Browser-only: a selected top-level DM already in the real channel head must
-// focus its exact row, not merely scroll or rely on jsdom's synthetic geometry.
-test("an in-head DM keeps exact focus and Escape returns from an empty narrow list", async ({
+// Browser-only: a DM opens its whole conversation in a tab at narrow width,
+// where real portalled video dismissal must stay with its document-level owner.
+test("a narrow DM tab keeps portalled media dismissal inside the tab", async ({
   page,
   app,
 }) => {
@@ -1021,7 +722,6 @@ test("an in-head DM keeps exact focus and Escape returns from an empty narrow li
   await openPage(page, "Inbox");
   const inbox = page.getByRole("region", { name: "Inbox", exact: true });
   await expect(inbox.getByText("Checking recent activity…")).toHaveCount(0);
-  // Real portalled video dismissal must stay with its document-level owner.
   const videoUrl = "https://primary.example/media/inbox-review.mp4";
   await page.route("**/api/relay/primary/media?**", (route) =>
     route.fulfill({
@@ -1046,12 +746,15 @@ test("an in-head DM keeps exact focus and Escape returns from an empty narrow li
   const row = list.getByRole("listitem").first();
   await expect(list.getByRole("listitem")).toHaveCount(1);
   await row.getByRole("button", { name: /^Open / }).click();
-  const detail = inbox.getByRole("region", { name: "Inbox detail" });
-  const target = detail
-    .locator("[data-message-id]")
-    .filter({ hasText: "Inbox DM fixture reply" });
-  await expect(target).toBeInViewport();
-  await expect(target).toBeFocused();
+  const detail = inbox.getByRole("region", {
+    name: "Conversation in Alice Fixture",
+    exact: true,
+  });
+  await expect(
+    detail
+      .locator("[data-message-id]")
+      .filter({ hasText: "Inbox DM fixture reply" }),
+  ).toBeVisible();
   await expect(detail.getByRole("form")).toHaveCount(1);
   const mediaOpener = detail.getByRole("button", {
     name: "Open video fullscreen",
@@ -1067,51 +770,4 @@ test("an in-head DM keeps exact focus and Escape returns from an empty narrow li
   await expect(detail).toBeVisible();
   await expect(mediaOpener).toBeFocused();
   await expect(row.getByRole("img", { name: "Unread" })).toHaveCount(0);
-  await expect(list).not.toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(detail).toHaveCount(0);
-  await expect(list).toBeVisible();
-  await expect(list.getByRole("listitem")).toHaveCount(0);
-  await expect(
-    inbox.getByRole("button", { name: "Inbox filters", exact: true }),
-  ).toBeFocused();
-});
-
-// Browser-only: native keyboard focus transfer after Escape; jsdom cannot
-// establish document focus or the responsive list/detail transition.
-test("Escape from an unread detail restores its invoking row", async ({
-  page,
-  app,
-}) => {
-  await open(page, app);
-  await openPage(page, "Inbox");
-  const inbox = page.getByRole("region", { name: "Inbox", exact: true });
-  await expect(inbox.getByText("Checking recent activity…")).toHaveCount(0);
-  await inbox.getByRole("button", { name: "Unread only" }).click();
-  const list = inbox.getByRole("list", { name: "Inbox conversations" });
-  const first = list
-    .getByRole("listitem")
-    .filter({ hasText: "Unread reply 1" });
-  const invoking = first.getByRole("button", { name: /^Open / });
-  const invokedElement = await invoking.elementHandle();
-  if (!invokedElement) throw new Error("Missing invoking thread row");
-  await invoking.focus();
-  await page.keyboard.press("Enter");
-  const detail = inbox.getByRole("region", { name: "Inbox detail" });
-  await expect(detail).toBeVisible();
-  await expect(first.getByRole("img", { name: "Unread" })).toHaveCount(0);
-  await detail.getByRole("button", { name: "Close detail" }).focus();
-  await page.keyboard.press("Escape");
-  await expect(detail).toHaveCount(0);
-  await expect(
-    list
-      .getByRole("listitem")
-      .first()
-      .getByRole("button", { name: /^Open / }),
-  ).toBeFocused();
-  // The remaining group can have the identical sender/channel label.
-  expect(await invokedElement.evaluate((element) => element.isConnected)).toBe(
-    false,
-  );
-  await invokedElement.dispose();
 });

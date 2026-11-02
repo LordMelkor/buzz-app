@@ -228,15 +228,23 @@ test("thread preserves bottom and reading position through activity and composer
     await sampling.dispose();
   }
 
-  // The center can reveal a top-layer message toolbar that consumes wheel
-  // input without scrolling the thread. Aim at its left gutter instead.
-  await history.hover({ position: { x: 48, y: 80 } });
+  // Hovering reveals a top-layer message toolbar that consumes wheel input
+  // without scrolling the thread. It can span a short received bubble and the
+  // avatar gutter, so aim at the empty trailing side of these received rows.
+  const probe = await history.evaluate((element) => ({
+    x: element.clientWidth - 48,
+    y: 80,
+  }));
+  await history.hover({ position: probe });
   expect(
-    await history.evaluate((element) => {
+    await history.evaluate((element, probe) => {
       const bounds = element.getBoundingClientRect();
-      const hit = document.elementFromPoint(bounds.left + 48, bounds.top + 80);
+      const hit = document.elementFromPoint(
+        bounds.left + probe.x,
+        bounds.top + probe.y,
+      );
       return !!hit && element.contains(hit) && !hit.closest("[popover]");
-    }),
+    }, probe),
   ).toBe(true);
   await wheel(page, -350, history);
   expect(await gap()).toBeGreaterThan(200);

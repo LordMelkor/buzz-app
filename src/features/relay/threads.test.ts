@@ -2,7 +2,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createRelaySession } from "./session";
 import type { ChannelMessage } from "./contracts";
 import { shareMessageRows } from "./row-identity";
-import { threadReference } from "./threads";
+import { createThreadView, threadReference } from "./threads";
+import { byteSize } from "./budget";
+import { foldMessages } from "./fold";
+import type { RelayReader } from "./reader";
+import type { OutgoingEvent } from "./outbox";
 import type { LiveCallbacks } from "./live";
 import {
   bounds,
@@ -14,6 +18,8 @@ import {
   scriptedTransport,
   signed,
 } from "./testing";
+
+vi.mock("./fold", { spy: true });
 
 const relay = keypair(),
   viewer = keypair(),
@@ -699,6 +705,27 @@ it("explicitly limits oversized evidence rather than evicting aux and resurrecti
   });
 });
 
+it("trips the live byte limit at exactly the whole-thread serialised size", async () => {
+  const h = seeded();
+  const first = reply("first", 10);
+  const loading = h.view.refresh();
+  h.next().respond([root, first]);
+  await loading;
+  const limit = 4 * 1024 * 1024;
+  const sized = (length: number) => reply("x".repeat(length), 11);
+  const fits = sized(limit - byteSize([root, first, sized(0)]));
+  expect(byteSize([root, first, fits])).toBe(limit);
+  h.traffic.receive([fits]);
+  expect(h.view.snapshot()).toMatchObject({ status: "ready", limited: false });
+  expect(h.view.snapshot().replies).toHaveLength(2);
+  h.traffic.receive([reply("y", 12)]);
+  expect(h.view.snapshot()).toMatchObject({
+    status: "error",
+    limited: true,
+    replies: [],
+  });
+});
+
 it("checks live overlays against retained thread targets after shared-cache eviction, without allowing orphan or denied targets", async () => {
   const h = seeded();
   const row = reply("retained", 10);
@@ -864,3 +891,68 @@ it.each([
     );
   },
 );
+
+it("re-folds for local operations and profiles only when the thread's own change", () => {
+  const agent = keypair();
+  const answer = signed(agent, {
+    kind: 9,
+    content: "Whole answer",
+    created_at: 2,
+    tags: reply("", 2).tags,
+  });
+  const edit = signed(alice, {
+    kind: 40003,
+    content: "Spoken",
+    created_at: 3,
+    tags: [
+      ["h", "a"],
+      ["e", answer.id],
+    ],
+  });
+  let owner: string | undefined;
+  const elsewhere: OutgoingEvent = {
+    event: message(viewer, "b", "Elsewhere", 4),
+    delivery: "sending",
+  };
+  let operations = [elsewhere];
+  const thread = createThreadView({
+    channelId: "a",
+    messageId: root.id,
+    relayAuthor: relay.pubkey,
+    agentOwner: () => owner,
+    reader: {} as RelayReader,
+    seed: root,
+    local: { snapshot: () => operations, subscribe: () => () => {} },
+    canAccess: () => true,
+    visible: (events) => events,
+    notify: (listener) => listener(),
+  });
+  thread.receive([answer, edit]);
+  const content = (id: string) =>
+    thread.view.snapshot().replies.find((row) => row.id === id)?.content;
+  expect(content(answer.id)).toBe("Whole answer");
+  const listener = vi.fn();
+  thread.view.subscribe(listener);
+  vi.mocked(foldMessages).mockClear();
+  // Another conversation's send settles, and an unrelated profile arrives.
+  operations = [{ ...elsewhere, delivery: "accepted" }];
+  thread.localChanged();
+  thread.ownersChanged();
+  expect(foldMessages).not.toHaveBeenCalled();
+  expect(listener).not.toHaveBeenCalled();
+  // The agent's owner is verified: their edit now applies.
+  owner = alice.pubkey;
+  thread.ownersChanged();
+  expect(content(answer.id)).toBe("Spoken");
+  // A reply sent in this thread appears with its delivery.
+  const sending = reply("Mine", 5);
+  operations = [...operations, { event: sending, delivery: "sending" }];
+  thread.localChanged();
+  expect(content(sending.id)).toBe("Mine");
+  expect(foldMessages).toHaveBeenCalledTimes(2);
+  expect(listener).toHaveBeenCalledTimes(2);
+  // The same operations in a new snapshot change nothing.
+  operations = [...operations];
+  thread.localChanged();
+  expect(foldMessages).toHaveBeenCalledTimes(2);
+});

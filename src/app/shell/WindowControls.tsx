@@ -43,6 +43,7 @@ export function WindowControls() {
       )}
       {window.__BUZZ_WINDOW_CONTROLS__?.minimize !== false && (
         <IconButton
+          hint="familiar"
           aria-label="Minimize window"
           title="Minimize window"
           size="toolbar"
@@ -52,6 +53,7 @@ export function WindowControls() {
       )}
       {window.__BUZZ_WINDOW_CONTROLS__?.maximize !== false && (
         <IconButton
+          hint="familiar"
           aria-label="Maximize or restore window"
           title="Maximize or restore window"
           size="toolbar"
@@ -60,6 +62,7 @@ export function WindowControls() {
         />
       )}
       <IconButton
+        hint="familiar"
         aria-label="Close window"
         title="Close window"
         size="toolbar"

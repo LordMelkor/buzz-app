@@ -1,0 +1,233 @@
+/* Standalone counterpart of design-system/styles/{tokens,typography,materials}.css.
+   No app runtime or remote assets are available on the loopback callback. */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("data:font/woff2;base64,{{font}}") format("woff2");
+}
+
+:root {
+  color-scheme: light;
+  --bg-app: #eeeeeb;
+  --surface-panel: #fff;
+  --text-standard: #0f0f0f;
+  --text-subtle: #525252;
+  --space-panel-inset: 2rem;
+  --radius-container: 2rem;
+  --duration-settle: 220ms;
+  --easing-enter: cubic-bezier(0.23, 1, 0.32, 1);
+  --shadow-panel: 0 1rem 2.5rem rgb(35 30 30 / 6%);
+  font:
+    400 100% / 1.4285714286 "Inter Variable",
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    sans-serif;
+  background-color: var(--bg-app);
+  /* Exact 32px background swatch from the web sign-in design. */
+  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAMElEQVR4nGM4eerIu3evaYcYaGr6qAWjFoxaMGrBqAWjFoxaMGrBqAWjFoxaQEUEAH0qHDbJ7pQHAAAAAElFTkSuQmCC");
+  background-size: 32px 32px;
+  color: var(--text-standard);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+/* Browser-injected body siblings must not become rows in the centering grid. */
+.page {
+  position: relative;
+  isolation: isolate;
+  min-block-size: 100svh;
+  padding: 7.8125rem 1.5rem;
+  display: grid;
+  place-items: center;
+}
+
+.artwork {
+  position: absolute;
+  z-index: -1;
+  inset-inline: 0;
+  inset-block-end: 0;
+  block-size: max(13.125rem, calc(50svh - 8.125rem));
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.artwork img {
+  position: absolute;
+  inset-inline-end: 0;
+  inline-size: max(40rem, calc(100% + 3.25rem));
+  max-inline-size: none;
+  min-block-size: 100%;
+  object-fit: cover;
+  object-position: right top;
+}
+
+main {
+  inline-size: 100%;
+  max-inline-size: 30.625rem;
+  padding: var(--space-panel-inset);
+  border: 1px solid transparent;
+  border-radius: var(--radius-container);
+  background: var(--surface-panel);
+  box-shadow: var(--shadow-panel);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 40rem) {
+  .page {
+    align-items: start;
+  }
+
+  .page .brand {
+    inset-block-start: 3.5rem;
+    inset-inline-start: 2rem;
+  }
+
+  .artwork {
+    block-size: 13.125rem;
+  }
+
+  .artwork img {
+    inset-inline-end: 50%;
+    transform: translateX(50%);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  body[data-complete="true"] main {
+    animation: arrive var(--duration-settle) var(--easing-enter) both;
+  }
+}
+
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(1.012);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+p {
+  margin: 0.5rem 0 0;
+  color: var(--text-subtle);
+  font-size: 0.875rem;
+  line-height: 1.4285714286;
+  letter-spacing: -0.0025em;
+}
+
+p:empty {
+  display: none;
+}
+
+.brand {
+  position: absolute;
+  inset-block-start: 1.09375rem;
+  inset-inline-start: 3rem;
+}
+
+.brand svg {
+  display: block;
+  inline-size: 1.75rem;
+  block-size: 1.8125rem;
+}
+
+.brand svg > path {
+  fill: currentColor;
+}
+
+h1 {
+  margin: 0;
+  font-size: 2rem;
+  line-height: 1.25;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+
+.hint {
+  margin-block-start: 1.5rem;
+  color: var(--text-subtle);
+  display: grid;
+  grid-template-columns: 1.125rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.hint-copy {
+  display: contents;
+}
+
+/* Both messages reserve their wrapped size, including before script startup. */
+.hint-copy > span {
+  grid-area: 1 / 1 / 2 / -1;
+  min-inline-size: 0;
+}
+
+#closing-hint {
+  grid-column: 2;
+}
+
+#closing-hint,
+body[data-closing="true"] #close-hint {
+  visibility: hidden;
+}
+
+/* Same Tabler loader and motion as the shared Button's CircleNotchIcon. */
+#close-spinner {
+  grid-area: 1 / 1;
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  visibility: hidden;
+  animation: spin 1s linear infinite;
+}
+
+body[data-closing="true"] #closing-hint,
+body[data-closing="true"] #close-spinner {
+  visibility: visible;
+}
+
+body[data-complete="false"] #close-spinner {
+  display: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #close-spinner {
+    animation: none;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  main {
+    border-color: CanvasText;
+  }
+
+  .artwork {
+    display: none;
+  }
+}

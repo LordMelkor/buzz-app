@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises";
-import { DatabaseSync } from "node:sqlite";
+import { pluginAction } from "./plugin-settings.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open, wheel } from "./timeline.mjs";
+import { closeSettings } from "./navigation.mjs";
 import { npubEncode } from "nostr-tools/nip19";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools";
 test.use({
@@ -28,18 +28,23 @@ const openWorkingNow = async (page, scope) => {
   await expect(popup).toBeVisible();
   return popup;
 };
-// Agents without a loaded profile fall back to their key prefix.
+// Agents without a loaded profile fall back to their key prefix. A row whose
+// conversation is already shown opens the agent's activity instead, so match
+// the row itself rather than its separate activity icon.
 const agentRow = (popup, agent) =>
-  popup.getByRole("button", {
-    name: new RegExp(
-      `^Open (?:thread|conversation) for .*${agent.slice(0, 10)}`,
-    ),
-  });
+  popup
+    .getByRole("button", {
+      name: new RegExp(
+        `^(?:Open (?:thread|conversation) for|View) .*${agent.slice(0, 10)}`,
+      ),
+    })
+    .and(popup.locator('[data-variant="row"]'));
 const agentActivityAction = (popup, agent) =>
   popup.getByRole("button", {
     name: new RegExp(`^View .*${agent.slice(0, 10)}.* activity$`),
   });
-// The activity icon is revealed by hovering or focusing its row, like the sidebar.
+// The activity icon is revealed by hovering or focusing its row, like the sidebar;
+// a row that opens activity itself is the action.
 const viewAgentActivity = async (page, scope, agent) => {
   const popup = await openWorkingNow(page, scope);
   await agentRow(popup, agent).hover();
@@ -204,28 +209,29 @@ test("channel activity consumes telemetry, opens each agent's profile, and reset
   await expect(
     popup.getByRole("heading", { name: "Working now", exact: true }),
   ).toBeVisible();
-  // Observer turns carry no thread identity: rows open the channel, not a guess.
+  // Observer turns carry no thread identity, and the channel is already shown:
+  // rows open each agent's activity instead of guessing a thread.
   for (const agent of [first, second]) {
     await expect(agentRow(popup, agent)).toHaveAccessibleName(
-      /^Open conversation for /,
+      /^View .+ activity$/,
     );
     await expect(agentRow(popup, agent)).toContainText("Working");
     await expect(agentRow(popup, agent)).toContainText(
       "Work with unconfirmed thread",
     );
-    await expect(agentActivityAction(popup, agent)).toBeVisible();
+    await expect(agentActivityAction(popup, agent)).toHaveCount(1);
   }
   await page.keyboard.press("Escape");
   await expect(popup).toHaveCount(0);
   await page.mouse.move(0, 0);
-  // Keyboard path: real key input opens the popup and reaches the activity icon.
+  // Keyboard path: real key input opens the popup and reaches the agent's row.
   await trigger.focus();
   await page.keyboard.press("Enter");
   await expect(popup).toBeVisible();
   // Keyboard opening focuses the first row a frame later. Rows can be in either
-  // order, so wait for that focus, then Tab to this agent's icon.
+  // order, so wait for that focus, then Tab to this agent's row.
   await expect(
-    popup.getByRole("button", { name: /^Open conversation for / }).first(),
+    popup.getByRole("button", { name: /^View .+ activity$/ }).first(),
   ).toBeFocused();
   const firstAction = agentActivityAction(popup, first);
   for (let step = 0; step < 3 && !(await isFocused(firstAction)); step++)
@@ -255,11 +261,10 @@ test("channel activity consumes telemetry, opens each agent's profile, and reset
   const sockets = app.relay.sockets.length;
   await page.getByRole("button", { name: "Your profile", exact: true }).click();
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
-  const toggle = page.getByRole("switch", {
-    name: "Enable Agent Activity",
-    exact: true,
-  });
+  await page
+    .getByRole("button", { name: "Manage plugins", exact: true })
+    .click();
+  const toggle = pluginAction(page, "Agent Activity");
   const disabled = page.waitForResponse(
     (response) =>
       response.url().endsWith("/stream-observer") &&
@@ -268,14 +273,13 @@ test("channel activity consumes telemetry, opens each agent's profile, and reset
   );
   await toggle.click();
   await disabled;
-  // Archive capture retains independent demand.
-  // Disabling the activity UI clears only its display evidence.
-  await expect.poll(() => app.relay.hasRoute("primary", "observer")).toBe(true);
+  // Disabling the activity UI withdraws the only observer demand without
+  // replacing the socket or chat globals.
+  await expect
+    .poll(() => app.relay.hasRoute("primary", "observer"))
+    .toBe(false);
   expect(app.relay.sockets).toHaveLength(sockets);
-  await page
-    .getByRole("complementary", { name: "Settings sidebar" })
-    .getByRole("button", { name: "Back", exact: true })
-    .click();
+  await closeSettings(page);
   await page.locator('[data-channel-id="alpha"]').click();
   await expect(
     page.getByRole("textbox", { name: "Message #Alpha", exact: true }),
@@ -284,9 +288,10 @@ test("channel activity consumes telemetry, opens each agent's profile, and reset
 
   await page.getByRole("button", { name: "Your profile", exact: true }).click();
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
-  // Capture keeps this wire alive while the display is disabled. Its existence
-  // no longer proves that the plugin's new display generation reached the host.
+  await page
+    .getByRole("button", { name: "Manage plugins", exact: true })
+    .click();
+  // Wait for the new display generation to reach the host before publishing.
   const enabled = page.waitForResponse(
     (response) =>
       response.url().endsWith("/stream-observer") &&
@@ -297,10 +302,7 @@ test("channel activity consumes telemetry, opens each agent's profile, and reset
   await enabled;
   await expect.poll(() => app.relay.hasRoute("primary", "observer")).toBe(true);
   app.observer(activity("turn_liveness", "alpha", "after-reset"), firstKey);
-  await page
-    .getByRole("complementary", { name: "Settings sidebar" })
-    .getByRole("button", { name: "Back", exact: true })
-    .click();
+  await closeSettings(page);
   await page.locator('[data-channel-id="alpha"]').click();
   // Only the fresh agent returns; the disabled generation's evidence is gone.
   await expect(trigger).toHaveAccessibleName(onlyFirst);
@@ -309,7 +311,7 @@ test("channel activity consumes telemetry, opens each agent's profile, and reset
 
   // One terminal turn must not hide another active turn for the same agent,
   // and stale evidence is not working. The other agent's frames, observed in
-  // order, are the barrier for each transition. Capture survives closing the profile.
+  // order, are the barrier for each transition. The route survives closing the profile.
   await page
     .locator(
       '.buzz-tabs-item:not(:has([data-tab-value^="thread:"])) > button:not([role="tab"])',
@@ -375,7 +377,7 @@ for (const mode of ["light", "dark"]) {
           page.locator("[data-shell-sidebar-toggle]"),
         ).toHaveAttribute(
           "aria-label",
-          width <= 650 ? "Show navigation" : "Hide Channel sidebar",
+          width <= 650 ? "Show navigation" : "Hide sidebar",
         );
         await expect(trigger).toBeVisible();
         // Real scrolling and floating-control geometry cannot be proven in jsdom.
@@ -587,10 +589,11 @@ test.describe("thread activity", () => {
       );
     };
     await expectAboveForm();
-    // The thread control's row names the exact thread; no channel-wide guess.
+    // The thread control's row is already in its thread, so it opens activity;
+    // no channel-wide guess.
     await openWorkingNow(page, thread);
     await expect(agentRow(popup, agent)).toHaveAccessibleName(
-      /^Open thread for /,
+      /^View .+ activity$/,
     );
     await expect(agentRow(popup, agent)).not.toContainText("Thread ·");
     await closePopup();
@@ -633,9 +636,13 @@ test.describe("thread activity", () => {
     await expect(agentRow(popup, agent)).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(popup).toHaveCount(0);
-    await expect(
-      thread.getByRole("region", { name: "Thread messages", exact: true }),
-    ).toContainText(root.content);
+    await expectProfile(page, agent);
+    await page
+      .locator(
+        '.buzz-tabs-item:not(:has([data-tab-value^="thread:"])) > button:not([role="tab"])',
+      )
+      .click();
+    await openThread();
     await page.setViewportSize({ width: 390, height: 844 });
     sendTyping(root.id);
     await expect(threadTrigger).toBeVisible();
@@ -682,10 +689,11 @@ test.describe("thread activity", () => {
     expect(workingBox).toEqual(
       expect.objectContaining({ width: 26, height: 15 }),
     );
-    // Channel-level work opens the channel conversation, never an inferred thread.
+    // Channel-level work is in the conversation already shown, never an
+    // inferred thread, so its row opens the agent's activity.
     await openWorkingNow(page, composer);
     await expect(agentRow(popup, agent)).toHaveAccessibleName(
-      /^Open conversation for /,
+      /^View .+ activity$/,
     );
     await expect(agentRow(popup, agent)).toContainText("Channel conversation");
     const channelStatus = composer.locator("[data-agent-working-status]");
@@ -811,7 +819,7 @@ test.describe("thread activity", () => {
     await openWorkingNow(page, thread);
     for (const name of ["Worker 1", "Worker 2"])
       await expect(
-        popup.getByRole("button", { name: `Open thread for ${name}` }),
+        popup.getByRole("button", { name: `View ${name} activity` }),
       ).toHaveCount(1);
     await closePopup();
     await expect(humanTyping(thread)).toHaveCount(0);
@@ -909,7 +917,7 @@ test.describe("thread activity", () => {
     await openWorkingNow(page, composer);
     for (const name of ["Worker 1", "Worker 2"])
       await expect(
-        popup.getByRole("button", { name: `Open conversation for ${name}` }),
+        popup.getByRole("button", { name: `View ${name} activity` }),
       ).toHaveCount(1);
     await closePopup();
     publish(human);
@@ -935,114 +943,5 @@ test.describe("thread activity", () => {
     await expect(
       page.locator("[data-agent-working-status]:not(:empty)"),
     ).toHaveCount(0);
-  });
-});
-
-// Browser-only: production broker SQLite survives document reload and the real
-// Settings confirmation clears the mounted plugin. Native process restart is tested in Rust.
-test.describe("host archive durability", () => {
-  test.use({ archiveOnDisk: true });
-  test("encrypted host history survives reload without working evidence and can be cleared", async ({
-    page,
-    app,
-  }) => {
-    await open(page, app);
-    await expect
-      .poll(() => app.relay.hasRoute("primary", "observer"))
-      .toBe(true);
-    const key = generateSecretKey();
-    const agent = getPublicKey(key);
-    app.serveProfile(key, { name: "History agent", is_agent: true });
-    const record = app.observer(
-      activity("turn_liveness", "alpha", "saved", {
-        text: "secret-history-marker",
-      }),
-      key,
-    );
-    const composer = channelComposer(page);
-    const popup = await openWorkingNow(page, composer);
-    // The served profile may name this row; there is exactly one agent.
-    await popup
-      .getByRole("button", { name: /^Open conversation for / })
-      .hover();
-    await popup.getByRole("button", { name: /^View .+ activity$/ }).click();
-    await expectProfile(page, agent);
-    const disk = async () =>
-      Buffer.concat(
-        await Promise.all(
-          [app.archiveFile, `${app.archiveFile}-wal`].map(async (path) => {
-            try {
-              return await readFile(path);
-            } catch (error) {
-              if (error.code === "ENOENT") return Buffer.alloc(0);
-              throw error;
-            }
-          }),
-        ),
-      ).toString("utf8");
-    await expect.poll(disk).toContain(record.event.id);
-    expect(await disk()).not.toContain("secret-history-marker");
-    await open(page, app); // new document and session, same device/account/community
-    await expect
-      .poll(() => app.relay.hasRoute("primary", "observer"))
-      .toBe(true);
-    // Open through a profile: restored history must not create a working launcher.
-    const message = finalizeEvent(
-      {
-        kind: 9,
-        tags: [["h", "alpha"]],
-        content: "History profile entry",
-        created_at: Math.floor(Date.now() / 1000),
-      },
-      key,
-    );
-    app.relay.publish("primary", message);
-    await page
-      .locator(`[data-message-id="${message.id}"]`)
-      .getByRole("button", { name: /profile/ })
-      .click();
-    await expectProfile(page, agent);
-    await expect(activityTrigger(composer)).toHaveCount(0);
-    await page
-      .getByRole("button", { name: "Your profile", exact: true })
-      .click();
-    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-    await page.getByRole("button", { name: "Agents", exact: true }).click();
-    const archive = page.getByRole("region", { name: /Saved agent activity/ });
-    await expect(archive.getByText(/not in this browser/)).toBeVisible();
-    await archive
-      .getByRole("button", { name: "Clear activity history", exact: true })
-      .click();
-    const confirmation = page.getByRole("alertdialog", {
-      name: "Clear activity history?",
-    });
-    await expect(confirmation).toBeVisible();
-    await page.screenshot({
-      path: test.info().outputPath("archive-clear-confirmation.png"),
-    });
-    await confirmation
-      .getByRole("button", { name: "Clear saved records" })
-      .click();
-    await expect(confirmation).toHaveCount(0);
-    const count = () => {
-      const database = new DatabaseSync(app.archiveFile, { readOnly: true });
-      try {
-        return database
-          .prepare(
-            "SELECT COUNT(*) AS count FROM archive_events WHERE kind=24200",
-          )
-          .get().count;
-      } finally {
-        database.close();
-      }
-    };
-    expect(count()).toBe(0);
-    await page
-      .getByRole("complementary", { name: "Settings sidebar" })
-      .getByRole("button", { name: "Back", exact: true })
-      .click();
-    await page.screenshot({
-      path: test.info().outputPath("archive-cleared.png"),
-    });
   });
 });

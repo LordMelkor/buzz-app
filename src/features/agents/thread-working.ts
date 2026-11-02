@@ -1,4 +1,4 @@
-import { localActivity } from "../agents/local-activity";
+import { localActivity } from "./local-activity";
 import type { createAgentActivity } from "./activity";
 import { requestWork } from "./request-work";
 

@@ -83,7 +83,12 @@ async function setup({ cachedAssignment = true } = {}) {
       .filter(([, value]) => value.starred)
       .map(([id]) => id);
   });
-  const owner = createSidebarPreferencesStore(read, true, assignment, star);
+  const owner = createSidebarPreferencesStore({
+    read,
+    available: true,
+    write: assignment,
+    writeStar: star,
+  });
   await owner.queries.ensure();
   return {
     owner,

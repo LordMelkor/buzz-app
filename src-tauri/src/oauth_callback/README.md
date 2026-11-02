@@ -5,6 +5,15 @@ protection, and the attempt lifecycle. Plugins supply provider-specific
 authorization parameters and callback paths, handle code exchange and account
 verification, and own credentials. Outbound API requests use the host HTTP feature.
 
+Native FI additionally uses this callback owner internally with NIP-FA `return_to`
+and an S256 handoff challenge, without inventing an echoed OAuth state. Its
+native session owner performs exchange and verification; callback codes and
+handoff secrets never cross IPC. A pending callback cannot be replaced by a new
+consumer. The generic commands below retain their provider OAuth contract. Native
+FI keeps the neutral callback HTML, copy and CSP from main, without branding,
+auto-close or focus return. The presentation below applies to generic OAuth
+callbacks and is selected when each attempt starts.
+
 ## Commands
 
 These Tauri commands are available to the main webview only. Invoke `begin` with
@@ -23,6 +32,7 @@ const { id, callbackUrl } = await invoke("oauth_callback_begin", {
 | `oauth_callback_begin({ authorizationUrl, callbackPath, useState? })` | Validates the request, generates an attempt ID, binds `127.0.0.1` on an ephemeral port, inserts the callback URL as `redirect_uri` and optional state, and launches the external browser through the existing opener. Returns `{ "id": "…", "callbackUrl": "http://127.0.0.1:{port}{path}" }`. Launch failure cleans up before rejecting. |
 | `oauth_callback_wait(id)` | Consumes the matching attempt's result once. Resolves with `{ "parameters": [["name", "value"], …] }`, retaining decoded order and duplicates. Valid provider errors resolve with their parameters; transport failure, timeout, or cancellation rejects with a generic message. |
 | `oauth_callback_cancel(id)` | Closes and removes the matching attempt. Safe to repeat; a stale ID does not cancel another attempt. |
+| `oauth_callback_complete(id)` | After the caller verifies the account, makes a best-effort native focus return for the matching valid callback. Waits for the callback's short reading delay, then consumes its return permission once. When macOS focus return is armed, this call waits until roughly three seconds after the callback; cancellation retires focus permission immediately, but the pending completion call waits out that delay. Unknown, canceled and replaced attempts do nothing. Invoke before final cancellation. |
 
 The authorization URL must use HTTPS, with no embedded credentials or fragment.
 The callback path must be a canonical absolute path without a query or fragment.
@@ -68,6 +78,25 @@ browser-launch failure, or the start of a main-document load. Loads in other
 webviews leave the attempt intact. Listener cleanup does not close the external
 browser or cancel separate host HTTP requests.
 
+### Return focus after verification
+
+Builderlab calls `complete` only after code exchange and `/v1/auth/me` validation.
+It returns the verified credential immediately while focus return runs in the
+background, then cancels the attempt after `complete` settles. Focus failure never
+fails authentication. The attempt's focus permission is separate from its
+already-closed listener and is retired by final cancellation,
+reload, a provider error, or a newer attempt.
+
+On macOS, native startup records the default browser only if Buzz is focused.
+Completion runs on the main thread and activates Buzz only while that browser
+application is foreground, Buzz remains visible and not minimized, and completion
+is within ten seconds after the reading delay. Slow verification never causes a
+late focus jump. This checks
+applications, not browser tabs. Other platforms skip automatic focus return until
+they have a reliable foreground-browser check; no desktop-control permission is
+requested. Native focus return follows the verified-login policy independently
+of whether browser policy permits closing the callback tab.
+
 ## Callback handling and limits
 
 - Accepts GET requests using HTTP/1.0 or HTTP/1.1, with exactly one matching
@@ -79,8 +108,41 @@ browser or cancel separate host HTTP requests.
   listener available.
 - Bounds paths to 1,024 bytes, request reads to 8,192 bytes, each connection to
   five seconds, and the overall attempt to ten minutes.
-- Returns static HTML with `no-store`, a restrictive Content Security Policy,
-  and `no-referrer`.
+- Returns a static, responsive page matching the web sign-in branding: Builderlab's
+  mark outside a rounded white panel, a pale backdrop and decorative cube artwork.
+  It stays light in either browser theme, with the panel near the top on narrow
+  windows. Responses use `no-store` and `no-referrer`. Its Content Security Policy
+  permits only embedded image/font data and the exact stylesheet and close-window script
+  by hash, with no external assets or network
+  requests. A valid callback shows the headline **Signing you in…** and a
+  spinner with muted **Closing this window automatically** text for three seconds
+  before trying to close its page. The hint reserves its wrapped size through
+  script startup and a blocked-close fallback, keeping the panel stationary.
+  Manual-close text aligns with the heading; only automatic-closing text reserves
+  the spinner's space.
+  A page wrapper owns the centering grid so additional body elements, such as
+  browser-extension containers, cannot introduce rows that displace the panel.
+  Its branded panel fades and scales in with a small bounce over the
+  shared 220ms settle duration; reduced motion and error pages stay immediate.
+  The hint changes to **You can close this window.** if closing is blocked or
+  JavaScript is disabled. The spinner respects reduced motion
+  and disappears if closing is blocked, leaving manual-close guidance. The
+  reading delay and native focus-return delay share one native constant. Error
+  pages remain open. Restoring an unclosed tab later can still fail because the
+  loopback listener is temporary.
+  The headline describes sign-in in progress. Buzz still performs code exchange
+  and account validation after receiving the callback, and reports any verification
+  failures in the app.
+  The standalone stylesheet mirrors the shared roles without loading the app;
+  the app's existing Inter Latin font is embedded, with system fallbacks for other
+  characters. It does not inherit
+  the app's Appearance preference. `public/builderlab-mark.svg` is a standalone
+  export of the 16–32px harness artwork, used here at 28px with the same rounded
+  outline, soft-letter mask and inherited color. It needs no React runtime or
+  dependency on the harness-picker feature. The cropped `cubes.webp` is embedded
+  in the response rather than fetched from the short-lived listener. The same
+  branded shell serves key-backup restore; federated identity retains its neutral
+  callback. See `NOTICE.md` for artwork provenance.
 
 ## Standards scope
 

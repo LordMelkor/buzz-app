@@ -1,15 +1,19 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { fileStore } from "./state";
 import {
   STORAGE_KEY,
   TEAMS_KEY,
   readRecords,
+  recordKey,
   readTeams,
   setAttention,
-  writeRecords,
+  removeRecord,
+  splitLegacyRecords,
+  writeRecord,
   writeTeams,
   type AgentRecord,
 } from "./store";
-import { memoryStorage } from "./test-fakes";
+import { memoryStorage, sharedFiles } from "./test-fakes";
 
 const pubkey = "a".repeat(64);
 const record: AgentRecord = {
@@ -18,7 +22,7 @@ const record: AgentRecord = {
   config: { word: "hi" },
 };
 
-it("round-trips records and drops attention objects a reader would ignore", () => {
+it("round-trips records and drops attention objects a reader would ignore", async () => {
   const storage = memoryStorage();
   const saved = setAttention(
     record,
@@ -26,16 +30,16 @@ it("round-trips records and drops attention objects a reader would ignore", () =
     { type: "interest", instructions: "Be brief." },
     7,
   );
-  writeRecords(storage, { [pubkey]: saved });
+  await writeRecord(storage, saved);
   expect(readRecords(storage)).toEqual({ [pubkey]: saved });
-  const stored = JSON.parse(storage.getItem(STORAGE_KEY) as string);
-  stored.agents[pubkey].attention["watch/bad"] = {
+  const stored = JSON.parse(storage.getItem(recordKey(pubkey)) as string);
+  stored.attention["watch/bad"] = {
     slug: "watch/bad",
     value: { type: "event" },
     modifiedAt: 1,
   };
-  stored.agents.nonsense = record;
-  storage.setItem(STORAGE_KEY, JSON.stringify(stored));
+  storage.setItem(recordKey(pubkey), JSON.stringify(stored));
+  storage.setItem(recordKey("nonsense"), JSON.stringify(record));
   const read = readRecords(storage);
   expect(read[pubkey]?.attention).toEqual(saved.attention);
   expect(read).not.toHaveProperty("nonsense");
@@ -44,9 +48,9 @@ it("round-trips records and drops attention objects a reader would ignore", () =
     value: { type: "event" },
     problem: expect.stringMatching(/Missing/),
   });
-  writeRecords(storage, read);
+  await writeRecord(storage, read[pubkey] as AgentRecord);
   expect(
-    JSON.parse(storage.getItem(STORAGE_KEY) as string).agents[pubkey].attention[
+    JSON.parse(storage.getItem(recordKey(pubkey)) as string).attention[
       "watch/bad"
     ],
   ).toEqual({ slug: "watch/bad", value: { type: "event" }, modifiedAt: 1 });
@@ -55,17 +59,54 @@ it("round-trips records and drops attention objects a reader would ignore", () =
   expect(fixed.skipped).toEqual({});
 });
 
-it("saves attention only as on; absent or anything else reads as off", () => {
+it("keeps each agent's record under its own key and moves the old shared value", async () => {
   const storage = memoryStorage();
-  writeRecords(storage, {
-    [pubkey]: { ...record, attentionEnabled: true },
-    ["b".repeat(64)]: { ...record, pubkey: "b".repeat(64) },
-    ["c".repeat(64)]: {
-      ...record,
-      pubkey: "c".repeat(64),
-      attentionEnabled: false,
+  const other = "b".repeat(64);
+  storage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      version: 1,
+      agents: { [pubkey]: record, [other]: { ...record, pubkey: other } },
+    }),
+  );
+  expect(Object.keys(readRecords(storage)).sort()).toEqual([pubkey, other]);
+  expect(readRecords(storage)[other]?.pubkey).toBe(other);
+  // Saved records win over the old shared value.
+  await writeRecord(storage, { ...record, config: { word: "new" } });
+  expect(readRecords(storage)[pubkey]?.config).toEqual({ word: "new" });
+  await splitLegacyRecords(storage, readRecords(storage));
+  expect(storage.getItem(STORAGE_KEY)).toBeNull();
+  expect(readRecords(storage)[other]?.pubkey).toBe(other);
+  // Writing one record leaves another program's record alone.
+  storage.setItem(recordKey(other), "sentinel");
+  await writeRecord(storage, { ...record, config: { word: "newer" } });
+  expect(storage.getItem(recordKey(other))).toBe("sentinel");
+  // A record that did not change is not written again.
+  const writes: string[] = [];
+  const watched = {
+    get: storage.get,
+    keys: storage.keys,
+    add: storage.add,
+    set: (key: string, value: string | null) => {
+      writes.push(key);
+      return storage.set(key, value);
     },
-  });
+  };
+  await writeRecord(watched, { ...record, config: { word: "newer" } });
+  expect(writes).toEqual([]);
+  // A removed record is gone.
+  await removeRecord(storage, other);
+  expect(storage.getItem(recordKey(other))).toBeNull();
+});
+
+it("saves attention only as on; absent or anything else reads as off", async () => {
+  const storage = memoryStorage();
+  for (const saved of [
+    { ...record, attentionEnabled: true },
+    { ...record, pubkey: "b".repeat(64) },
+    { ...record, pubkey: "c".repeat(64), attentionEnabled: false },
+  ] as AgentRecord[])
+    await writeRecord(storage, saved);
   const read = readRecords(storage);
   expect(read[pubkey]?.attentionEnabled).toBe(true);
   expect(read["b".repeat(64)]).not.toHaveProperty("attentionEnabled");
@@ -206,14 +247,15 @@ it("reads nothing from missing or malformed storage", () => {
   const storage = memoryStorage();
   expect(readRecords(storage)).toEqual({});
   storage.setItem(STORAGE_KEY, "{");
+  storage.setItem(recordKey(pubkey), "{");
   expect(readRecords(storage)).toEqual({});
 });
 
-it("round-trips teams and skips any that is not one", () => {
+it("round-trips teams and skips any that is not one", async () => {
   const storage = memoryStorage();
   expect(readTeams(storage)).toEqual([]);
   const team = { id: "t", name: "Crew", instructions: "Hi", members: [pubkey] };
-  writeTeams(storage, [team]);
+  await writeTeams(storage, [team]);
   expect(readTeams(storage)).toEqual([team]);
   storage.setItem(
     TEAMS_KEY,
@@ -225,4 +267,204 @@ it("round-trips teams and skips any that is not one", () => {
   expect(readTeams(storage)).toEqual([team]);
   storage.setItem(TEAMS_KEY, "{");
   expect(readTeams(storage)).toEqual([]);
+});
+
+it("keeps the old shared value until every record from it is saved", async () => {
+  const shared = JSON.stringify({ version: 1, agents: { [pubkey]: record } });
+  const disk = new Map([[STORAGE_KEY, shared]]);
+  const save = vi.fn(async (key: string, value: string | null) => {
+    if (key === recordKey(pubkey)) throw new Error("disk full");
+    if (value === null) disk.delete(key);
+    else disk.set(key, value);
+  });
+  const storage = fileStore(new Map(disk), save);
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  await splitLegacyRecords(storage, readRecords(storage));
+  error.mockRestore();
+  expect(save).not.toHaveBeenCalledWith(STORAGE_KEY, null);
+  // The next start still has the agent.
+  const restarted = fileStore(new Map(disk), save);
+  expect(readRecords(restarted)[pubkey]?.config).toEqual(record.config);
+  // Once its record saves, the split finishes.
+  save.mockImplementation(async (key, value) => {
+    if (value === null) disk.delete(key);
+    else disk.set(key, value);
+  });
+  await splitLegacyRecords(restarted, readRecords(restarted));
+  expect(disk.has(STORAGE_KEY)).toBe(false);
+  expect(readRecords(fileStore(new Map(disk), save))[pubkey]?.config).toEqual(
+    record.config,
+  );
+});
+
+it("keeps a record saved since, when a late move from the old shared value lands", async () => {
+  const { open } = sharedFiles({
+    [STORAGE_KEY]: JSON.stringify({ version: 1, agents: { [pubkey]: record } }),
+  });
+  let release = () => {};
+  const first = open();
+  const second = open(new Promise((resolve) => (release = resolve)));
+  await splitLegacyRecords(first, readRecords(first));
+  const late = splitLegacyRecords(second, readRecords(second));
+  await writeRecord(first, { ...record, config: { word: "newer" } });
+  release();
+  await late;
+  expect(readRecords(open())[pubkey]?.config).toEqual({ word: "newer" });
+  expect(readRecords(second)[pubkey]?.config).toEqual({ word: "newer" });
+});
+
+it("keeps source completion across reload and clears it when a source is edited", async () => {
+  const value = {
+    type: "source" as const,
+    provider: "attention/command",
+    interest_id: "pr",
+    enabled: true,
+    channel: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    config: { command: ["check"] },
+  };
+  let saved = setAttention(record, "watch/pr", value, 7);
+  const signature = JSON.stringify(saved.attention["watch/pr"]);
+  saved = { ...saved, sourceRuns: { "watch/pr": signature } };
+  const storage = memoryStorage();
+  await writeRecord(storage, saved);
+  expect(readRecords(storage)[pubkey]?.sourceRuns).toEqual({
+    "watch/pr": signature,
+  });
+  expect(
+    setAttention(saved, "watch/pr", { ...value, enabled: false }, 8).sourceRuns,
+  ).toEqual({});
+  expect(setAttention(saved, "watch/pr", null, 8).sourceRuns).toEqual({});
+});
+
+it.each(["monitor/command", "buzz.agents/command", "buzz.agents/github-pr"])(
+  "preserves provider %s and its completion without plugin-specific migration",
+  async (provider) => {
+    const storage = memoryStorage();
+    const saved = setAttention(
+      setAttention(
+        record,
+        "interest/check",
+        { type: "interest", instructions: "Watch" },
+        1,
+      ),
+      "watch/check",
+      {
+        type: "source",
+        provider,
+        interest_id: "check",
+        enabled: true,
+        channel: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        config: { pr: "https://github.com/example/repo/pull/1" },
+      },
+      2,
+    );
+    await writeRecord(storage, {
+      ...saved,
+      sourceRuns: {
+        "watch/check": JSON.stringify(saved.attention["watch/check"]),
+      },
+    });
+    const read = readRecords(storage)[pubkey];
+    expect(read?.attention["watch/check"]?.value).toMatchObject({
+      provider,
+    });
+    expect(read?.sourceRuns?.["watch/check"]).toBe(
+      JSON.stringify(read?.attention["watch/check"]),
+    );
+  },
+);
+
+it.each([undefined, null])(
+  "keeps malformed legacy source config %s recoverable",
+  async (config) => {
+    const storage = memoryStorage();
+    await writeRecord(storage, {
+      ...record,
+      attention: {
+        "watch/broken": {
+          slug: "watch/broken",
+          modifiedAt: 1,
+          value: {
+            type: "source",
+            provider: "monitor/command",
+            interest_id: "check",
+            enabled: true,
+            channel: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            config,
+          },
+        },
+      },
+    } as unknown as AgentRecord);
+    const read = readRecords(storage)[pubkey];
+    expect(read?.attention["watch/broken"]).toBeUndefined();
+    expect(read?.skipped?.["watch/broken"]).toBeDefined();
+  },
+);
+
+it("keeps a watch's ten latest valid recent events, each clipped", async () => {
+  const key = (n: number) => n.toString(16).padStart(64, "0");
+  const keys = Array.from({ length: 120 }, (_, n) => key(n));
+  const storage = memoryStorage();
+  const saved = setAttention(
+    setAttention(
+      record,
+      "interest/release",
+      { type: "interest", instructions: "Follow releases." },
+      1,
+    ),
+    "watch/messages",
+    {
+      type: "event",
+      interest_id: "release",
+      enabled: true,
+      channels: "all",
+      kinds: [],
+      since: 1,
+    },
+    1,
+  );
+  await writeRecord(storage, saved);
+  const stored = JSON.parse(storage.getItem(recordKey(pubkey)) as string);
+  stored.attentionHistory = {
+    "watch/messages": {
+      lastWokeAt: 9,
+      events: [
+        ...Array.from({ length: 11 }, (_, at) => ({ at, text: `${at}` })),
+        {
+          id: "e",
+          at: 11,
+          text: "x".repeat(3000),
+          author: pubkey,
+          channel: 7,
+          mentions: ["bad", 7, null, key(0), ...keys],
+          mentionReferences: "nope",
+        },
+        { id: 7, at: 11, text: "id" },
+        { at: "12", text: "late" },
+        { at: 13, text: "" },
+        { id: "gone", at: 14, text: "" },
+        null,
+      ],
+    },
+  };
+  storage.setItem(recordKey(pubkey), JSON.stringify(stored));
+  const history = readRecords(storage)[pubkey]?.attentionHistory;
+  const events = history?.["watch/messages"]?.events ?? [];
+  expect(history?.["watch/messages"]?.lastWokeAt).toBe(9);
+  expect(events.map(({ at }) => at)).toEqual([
+    4, 5, 6, 7, 8, 9, 10, 11, 11, 14,
+  ]);
+  expect(events.slice(-3)).toEqual([
+    {
+      id: "e",
+      at: 11,
+      text: "x".repeat(2000),
+      author: pubkey,
+      // Unique pubkeys only, at most a hundred.
+      mentions: keys.slice(0, 100),
+    },
+    { at: 11, text: "id" },
+    // An event without a body, such as a deletion, still woke the agent.
+    { id: "gone", at: 14, text: "" },
+  ]);
 });

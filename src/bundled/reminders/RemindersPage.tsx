@@ -72,6 +72,7 @@ import {
 import { scopeOf, useReminders } from "./react";
 import styles from "./Reminders.module.css";
 import { avatarMedia } from "../../shared/avatar-source";
+import { channelText } from "../../features/channels/channel-icon";
 
 type Clock = { subscribe(listener: () => void): () => void; read(): number };
 
@@ -307,7 +308,7 @@ function ReminderSections({
       channel?.channelType === "dm"
         ? "Direct message"
         : channel?.name
-          ? `#${channel.name}`
+          ? channelText(channel)
           : undefined;
     return (
       <ReminderRow
@@ -660,6 +661,7 @@ function ReminderRow({
               <MenuTrigger
                 render={
                   <IconButton
+                    hint="familiar"
                     disabled={busy}
                     aria-label={`More actions: ${sender}`}
                     title="More actions"

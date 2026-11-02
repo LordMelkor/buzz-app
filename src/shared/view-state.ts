@@ -87,7 +87,7 @@ export function replaceView(
 /** Snapshot of a viewer's existing composer drafts, never other view coordinates. */
 export function listDraftViews(
   scope: string,
-  meaningful: (value: unknown) => boolean,
+  meaningful: (value: unknown, key: string) => boolean,
   selected?: string,
 ): Readonly<{
   entries: readonly Readonly<{ key: string; value: unknown }>[];
@@ -126,7 +126,7 @@ export function listDraftViews(
       }
       try {
         const value: unknown = JSON.parse(raw);
-        if (!meaningful(value)) continue;
+        if (!meaningful(value, pair[1])) continue;
         if (drafts.length === 500) {
           limited = true;
           break;
@@ -168,6 +168,37 @@ export function clearViewScope(scope: string) {
   }
   for (const key of stale) localStorage.removeItem(key);
   changed(scope);
+}
+
+/** Forgets one key in every scope where it holds `value`, as when the thing it
+ * names is deleted. */
+export function clearViewValue(key: string, value: unknown) {
+  const revision = JSON.stringify(value);
+  const scopes: string[] = [];
+  try {
+    for (let index = 0; index < localStorage.length; index++) {
+      const storageKey = localStorage.key(index);
+      if (!storageKey?.startsWith("buzz-view.v1:")) continue;
+      let pair: unknown;
+      try {
+        pair = JSON.parse(storageKey.slice("buzz-view.v1:".length));
+      } catch {
+        continue;
+      }
+      if (
+        Array.isArray(pair) &&
+        typeof pair[0] === "string" &&
+        pair[1] === key &&
+        localStorage.getItem(storageKey) === revision
+      )
+        scopes.push(pair[0]);
+    }
+    for (const scope of scopes)
+      localStorage.removeItem(`buzz-view.v1:${JSON.stringify([scope, key])}`);
+  } catch {
+    /* Storage unavailable; nothing was saved to forget. */
+  }
+  for (const scope of scopes) changed(scope);
 }
 
 /** Recovery callers must confirm cleanup before retiring their durable operation. */

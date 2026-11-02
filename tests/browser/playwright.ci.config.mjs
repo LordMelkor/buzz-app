@@ -10,7 +10,12 @@ export default defineConfig({
     project.name === "webkit-measurements"
       ? { ...project, grepInvert: /@local-webkit/ }
       : project.name === "webkit"
-        ? { ...project, grepInvert: /@classic-scrollbars|@media-recorder/ }
-        : project,
+        ? {
+            ...project,
+            grepInvert: /@classic-scrollbars|@media-recorder|@local-only/,
+          }
+        : project.name === "chromium"
+          ? { ...project, grepInvert: /@classic-scrollbars|@local-only/ }
+          : project,
   ),
 });

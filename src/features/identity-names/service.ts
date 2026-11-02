@@ -184,7 +184,8 @@ export function bindNames(
           qualifier: label.qualifier,
           source: "agent-directory",
         };
-      const name = source.profiles.snapshot().get(pubkey.toLowerCase())?.name;
+      const profile = source.profiles.snapshot().get(pubkey.toLowerCase());
+      const name = profile?.nameIsFallback ? undefined : profile?.name;
       return name ? { name, source: "public-profile" } : undefined;
     };
     last = { candidates, displayFacts, scoped };

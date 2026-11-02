@@ -5,7 +5,13 @@ import {
 } from "../../features/profiles/target";
 import { ProfilePanel } from "./ProfilePanel";
 
-export const inject = ["panels", "relay", "navigation", "agents"];
+export const inject = [
+  "panels",
+  "relay",
+  "navigation",
+  "agents",
+  "communityReader",
+];
 export const apply: PluginModule["apply"] = (ctx) => {
   ctx.panels.register({
     id: "profile",
@@ -18,6 +24,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
         relay={ctx.relay}
         navigation={ctx.navigation}
         agents={ctx.agents}
+        communities={ctx.communityReader}
       />
     ),
   });

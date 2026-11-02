@@ -535,3 +535,21 @@ it("rejects eager upload errors until explicit Retry, including after Send hando
   h.calls[1]?.result.resolve(uploaded());
   await expect(work).resolves.toEqual([uploaded()]);
 });
+
+it("a new chat's draft uploads before its channel exists", async () => {
+  const h = fixture();
+  const uploadForNewChat = vi.fn(
+    async (_file: globalThis.File, _signal: AbortSignal) => uploaded(),
+  );
+  const session = {
+    attachments: { upload: h.upload, uploadForNewChat },
+  } as unknown as RelaySession;
+  const store = attachmentDraft(session, "new-chat", "draft-id", true);
+  store.add([file()]);
+  await waitFor(() => expect(uploadForNewChat).toHaveBeenCalledOnce());
+  expect(h.upload).not.toHaveBeenCalled();
+  await waitFor(() => expect(store.snapshot()[0]?.status).toBe("ready"));
+  await expect(
+    store.prepareForSend(new AbortController().signal),
+  ).resolves.toEqual([uploaded()]);
+});

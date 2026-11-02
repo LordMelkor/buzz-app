@@ -31,6 +31,7 @@ function capability() {
     run: vi.fn<ChannelLifecycleCapability["run"]>(),
     snapshot: () => ({ status: "ready", hidden: [] }),
     subscribe: () => () => {},
+    observeRemoval: () => () => {},
     refreshVisibility: async () => {},
   } satisfies ChannelLifecycleCapability;
 }

@@ -159,7 +159,7 @@ test("profiles primary actions through production broker and built app", async (
   const start = performance.now();
   await page.goto(app.origin);
   const messages = page
-    .getByRole("button", { name: "Multiplayer", exact: true })
+    .getByRole("tab", { name: "Messages", exact: true })
     .first();
   await messages.waitFor();
   samples.push({

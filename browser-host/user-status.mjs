@@ -1,5 +1,6 @@
 import {
   USER_STATUS_KIND,
+  validStatusEmojiUrl,
   validStatusText,
 } from "../src/features/relay/user-status-policy.ts";
 
@@ -19,7 +20,7 @@ export function validStatusTemplate(
     event.tags.some(
       (tag) =>
         !Array.isArray(tag) ||
-        tag.length !== 2 ||
+        (tag.length !== 2 && (tag.length !== 3 || tag[0] !== "emoji")) ||
         tag.some((value) => typeof value !== "string"),
     )
   )
@@ -32,10 +33,11 @@ export function validStatusTemplate(
     return false;
   if (!event.tags.some(([key, value]) => key === "d" && value === "general"))
     return false;
-  const emoji = event.tags.find(([key]) => key === "emoji")?.[1];
+  const [, emoji, url] = event.tags.find(([key]) => key === "emoji") ?? [];
   if (
     !validStatusText(event.content, emoji ?? "") ||
-    (emoji !== undefined && !emoji.trim())
+    (emoji !== undefined && !emoji.trim()) ||
+    (url !== undefined && !validStatusEmojiUrl(emoji, url))
   )
     return false;
   const expiration = event.tags.find(([key]) => key === "expiration")?.[1];

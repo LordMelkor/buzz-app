@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
+import { parseEnv } from "node:util";
 import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { defineConfig, loadEnv, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
 import { worktreePort } from "./scripts/worktree-port.mjs";
@@ -6,9 +9,56 @@ import {
   parseCommunityAliases,
   relayOrigin,
 } from "./src/features/communities/destination.ts";
+import { parseFirstRunAccountSeed } from "./src/features/identity/first-run-seed.ts";
+
+function sharedBuilderlabUrl() {
+  const key = "BUZZ_BUILDERLAB_URL";
+  if (process.env[key] !== undefined) return process.env[key];
+  let local: string;
+  try {
+    local = readFileSync(resolve(".env.local"), "utf8");
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    )
+      return "https://app.builderlab.xyz";
+    throw new Error("Could not read shared Builderlab build configuration.");
+  }
+  return (
+    parseEnv(local.replace(/^\uFEFF/, ""))[key] ?? "https://app.builderlab.xyz"
+  );
+}
+
+/** An FI build signs in to Builderlab through its NIP-FI identity origin and
+ * API base, in the legacy URL's shape (`<url>/api/goose/`). Native builds
+ * read the descriptor from the process only, and so does this. */
+function federatedBuilderlabUrl() {
+  const raw = process.env.BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG;
+  if (!raw) return undefined;
+  const { identityOrigin, apiBasePath } = JSON.parse(raw) as {
+    identityOrigin?: unknown;
+    apiBasePath?: unknown;
+  };
+  // Another API shape is not Builderlab's: its sign-in stays unconfigured.
+  if (
+    typeof identityOrigin !== "string" ||
+    typeof apiBasePath !== "string" ||
+    !apiBasePath.endsWith("/api/goose/")
+  )
+    return "";
+  return `${new URL(identityOrigin).origin}${apiBasePath.slice(0, -"/api/goose/".length)}`;
+}
 
 export default defineConfig(async ({ command, mode }) => {
   const env = loadEnv(mode, ".", "BUZZ_");
+  // Native builds consume only process values and repository-root .env.local.
+  // Keep this frontend value on the same source so Vite mode files cannot
+  // select a different same-origin deployment path.
+  const federatedUrl = federatedBuilderlabUrl();
+  const builderlabUrl = federatedUrl ?? sharedBuilderlabUrl();
   // The development broker is the dev server's default: it runs whenever the
   // developer has pinned their public key. Production builds (`pnpm build`,
   // `pnpm tauri build`) never load it, regardless of .env.local contents.
@@ -30,6 +80,31 @@ export default defineConfig(async ({ command, mode }) => {
     throw new Error(
       "BUZZ_DEV_OPEN_RELAY=1 requires BUZZ_RELAY_URL to name the community to open.",
     );
+  // Packagers may seed a community for a viewer with no saved client record.
+  // Keep this separate from the live development broker and its opt-in flags.
+  const packagedRelay =
+    command === "build" ? env.BUZZ_DEFAULT_COMMUNITY_URL?.trim() : "";
+  const openOrigin = packagedRelay
+    ? relayOrigin(packagedRelay)
+    : openRelay
+      ? defaultOrigin
+      : "";
+  // Packagers may point the bundled goose's Databricks provider at a workspace.
+  const databricksHost = env.BUZZ_DATABRICKS_HOST?.trim() ?? "";
+  if (databricksHost) {
+    const url = URL.canParse(databricksHost) ? new URL(databricksHost) : null;
+    if (url?.protocol !== "https:" || url.username || url.password)
+      throw new Error(
+        "BUZZ_DATABRICKS_HOST must be an https:// URL without credentials.",
+      );
+  }
+  // Opt-in seed: replaces first run's Builderlab account requests, key backup
+  // and recovery, so the first-run screens can be walked against a real account
+  // whose binding must not change. Builds never see it. The full list is in
+  // docs/configuration.md#first-run-account-seed-development.
+  const firstRunAccount =
+    command === "serve" ? (env.BUZZ_DEV_FIRST_RUN_ACCOUNT ?? "") : "";
+  parseFirstRunAccountSeed(firstRunAccount);
   const plugins: PluginOption[] = [react()];
   if (command === "serve")
     plugins.push(
@@ -67,12 +142,25 @@ export default defineConfig(async ({ command, mode }) => {
         command === "serve" && env.BUZZ_DEV_NOTIFICATIONS === "0" ? "1" : "0",
       ),
       "import.meta.env.VITE_BUZZ_COMMUNITY_ALIASES": JSON.stringify(aliases),
-      "import.meta.env.VITE_BUZZ_BUILDERLAB_URL": JSON.stringify(
-        env.BUZZ_BUILDERLAB_URL ?? "",
+      "import.meta.env.VITE_BUZZ_BUILDERLAB_URL": JSON.stringify(builderlabUrl),
+      "import.meta.env.VITE_BUZZ_FEDERATED_IDENTITY": JSON.stringify(
+        federatedUrl === undefined ? "0" : "1",
       ),
-      "import.meta.env.VITE_BUZZ_OPEN_RELAY": JSON.stringify(
-        openRelay ? defaultOrigin : "",
-      ),
+      "import.meta.env.VITE_BUZZ_BUILDERLAB_APPS_DOMAIN":
+        JSON.stringify(env.BUZZ_BUILDERLAB_APPS_DOMAIN) ?? "undefined",
+      "import.meta.env.VITE_BUZZ_OPEN_RELAY": JSON.stringify(openOrigin),
+      "import.meta.env.VITE_BUZZ_DATABRICKS_HOST":
+        JSON.stringify(databricksHost),
+      "import.meta.env.VITE_BUZZ_FIRST_RUN_ACCOUNT":
+        JSON.stringify(firstRunAccount),
+    },
+    build: {
+      rollupOptions: {
+        input: {
+          main: fileURLToPath(new URL("index.html", import.meta.url)),
+          huddle: fileURLToPath(new URL("huddle.html", import.meta.url)),
+        },
+      },
     },
     clearScreen: false,
     // Keep build artifacts and coverage pages out of dependency discovery.

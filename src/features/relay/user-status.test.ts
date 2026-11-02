@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createUserStatuses } from "./user-status";
+import { createEmojiDirectory } from "./emoji-directory";
+import { createRelaySession } from "./session";
 import { keypair, signed } from "./testing";
 import type { RelayEvent } from "./events";
 import type { RelayReader } from "./reader";
@@ -19,17 +21,37 @@ function status(text: string, emoji = "", time = now, expiresAt?: number) {
     ],
   });
 }
+const beeUrl = "https://emoji.test/bee.png";
+function emojiStatus(tag: string[], time = now) {
+  return signed(alice, {
+    kind: 30315,
+    created_at: time,
+    content: "Buzzin'",
+    tags: [["d", "general"], tag],
+  });
+}
+const emojiSet = signed(bob, {
+  kind: 30030,
+  content: "",
+  tags: [
+    ["d", "buzz:custom-emoji"],
+    ["emoji", "bee", beeUrl],
+  ],
+});
 const owners: ReturnType<typeof createUserStatuses>[] = [];
 function setup(
   reader: RelayReader = { read: async () => [] },
   publish = vi.fn(async (_event: RelayEvent, _signal: AbortSignal) => {}),
+  emojiTags?: (content: string) => string[][],
 ) {
   const sign = vi.fn(async (template) => signed(alice, template));
-  const owner = createUserStatuses(reader, alice.pubkey, {
-    kinds: [30315],
-    sign,
-    publish,
-  });
+  const owner = createUserStatuses(
+    reader,
+    alice.pubkey,
+    { kinds: [30315], sign, publish },
+    undefined,
+    emojiTags,
+  );
   owners.push(owner);
   owner.queries.watch([alice.pubkey]);
   return { owner, queries: owner.queries, sign, publish };
@@ -359,3 +381,115 @@ it.each([
     expect(sign).not.toHaveBeenCalled();
   },
 );
+
+it("keeps a custom code's own image URL and ignores URLs on other values", () => {
+  const { owner, queries } = setup();
+  owner.accept([emojiStatus(["emoji", ":bee:", ` ${beeUrl} `])]);
+  expect(queries.snapshot().get(alice.pubkey)).toMatchObject({
+    emoji: ":bee:",
+    emojiUrl: beeUrl,
+  });
+  for (const [time, tag] of [
+    ["emoji", ":bee:"],
+    ["emoji", "🐝", beeUrl],
+    ["emoji", "bee", beeUrl],
+    ["emoji", ":bee:", "javascript:alert(1)"],
+    ["emoji", ":bee:", `https://emoji.test/${"x".repeat(2048)}`],
+  ].entries()) {
+    owner.accept([emojiStatus(tag, now + time + 1)]);
+    const status = queries.snapshot().get(alice.pubkey);
+    expect(status?.emoji).toBe(tag[1]);
+    expect(status).not.toHaveProperty("emojiUrl");
+  }
+});
+
+it("saves a catalog code with its original image URL and unicode with a two-value tag", async () => {
+  const relay = keypair();
+  const publish = vi.fn(async (_event: RelayEvent) => {});
+  const owner = createRelaySession(
+    {
+      viewer: alice.pubkey,
+      relayAuthor: relay.pubkey,
+      media: (url) => `https://media.test/?url=${encodeURIComponent(url)}`,
+      async query(filters) {
+        return filters[0]?.kinds?.includes(30030) ? [emojiSet] : [];
+      },
+      writer: {
+        kinds: [30315],
+        sign: async (template) => signed(alice, template),
+        publish,
+      },
+    },
+    { outboxStorage: { load: () => [], save() {} } },
+  );
+  try {
+    const { emoji, statuses } = owner.session;
+    await emoji.refresh();
+    await statuses.save({ text: "Buzzin'", emoji: ":bee:" });
+    await statuses.save({ text: "Buzzin'", emoji: "🐝" });
+    expect(publish.mock.calls.map(([event]) => event.tags)).toEqual([
+      [
+        ["d", "general"],
+        ["emoji", ":bee:", beeUrl],
+      ],
+      [
+        ["d", "general"],
+        ["emoji", "🐝"],
+      ],
+    ]);
+  } finally {
+    owner.dispose();
+  }
+});
+
+const memberSet = (content: string, tags: string[][] = []) =>
+  signed(bob, {
+    kind: 30030,
+    content,
+    tags: [["d", "buzz:custom-emoji"], ...tags],
+  });
+it.each([
+  ["no longer lists the code", "ready", memberSet("")],
+  [
+    "lists an unusable URL",
+    "ready",
+    memberSet("", [["emoji", "bee", "data:image/png;base64,AA"]]),
+  ],
+  ["is cold", "idle", emojiSet],
+  ["is over budget", "error", memberSet("x".repeat(2 * 1024 * 1024))],
+])(
+  "carries a code's URL forward on a re-save when the catalog %s",
+  async (_, state, set) => {
+    const catalog = createEmojiDirectory({ read: async () => [set] });
+    if (state !== "idle") await catalog.queries.refresh();
+    expect(catalog.queries.snapshot().status).toBe(state);
+    const { queries, publish } = setup(
+      { read: async () => [emojiStatus(["emoji", ":bee:", beeUrl])] },
+      undefined,
+      catalog.tags,
+    );
+    await queries.save({ text: "Still buzzin'", emoji: ":bee:" });
+    await queries.save({ text: "Still buzzin'", emoji: ":wasp:" });
+    expect(publish.mock.calls.map(([event]) => event.tags[1])).toEqual([
+      ["emoji", ":bee:", beeUrl],
+      ["emoji", ":wasp:"],
+    ]);
+    catalog.dispose();
+  },
+);
+
+it("prefers the catalog's current URL over the one a re-save carries forward", async () => {
+  const newer = "https://emoji.test/bee-v2.png";
+  const catalog = createEmojiDirectory({
+    read: async () => [memberSet("", [["emoji", "bee", newer]])],
+  });
+  await catalog.queries.refresh();
+  const { queries, publish } = setup(
+    { read: async () => [emojiStatus(["emoji", ":bee:", beeUrl])] },
+    undefined,
+    catalog.tags,
+  );
+  await queries.save({ text: "Still buzzin'", emoji: ":bee:" });
+  expect(publish.mock.calls[0]?.[0].tags[1]).toEqual(["emoji", ":bee:", newer]);
+  catalog.dispose();
+});

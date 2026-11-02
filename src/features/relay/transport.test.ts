@@ -231,6 +231,64 @@ it("the broker advertises and supplies writes through the same connection", asyn
   ]);
 });
 
+it("saves the viewer's config artifacts when the broker admits kind 45010", async () => {
+  const artifact = signed(key, { kind: 45010, content: "{}", tags: [] });
+  const other = signed(keypair(), {
+    kind: 45010,
+    content: "{}",
+    tags: [],
+  });
+  let returned = artifact;
+  const fetcher = vi.fn(async (url: string) => {
+    if (url.endsWith("/session"))
+      return Response.json({
+        viewer: key.pubkey,
+        relayAuthor: "relay",
+        writeKinds: [9, 45010],
+      });
+    if (url.endsWith("/sign")) return Response.json(returned);
+    return Response.json({ accepted: true, event_id: artifact.id });
+  });
+  vi.stubGlobal("fetch", fetcher);
+  const transport = await connectBrokerTransport();
+  const writer = transport.configArtifacts;
+  assert.exists(writer);
+  const signal = new AbortController().signal;
+  const saved = await writer.sign(
+    { kind: 45010, content: "{}", tags: [], created_at: 1 },
+    signal,
+  );
+  await writer.publish(saved, signal);
+  expect(fetcher.mock.calls.map((call) => call[0])).toEqual([
+    "/api/relay/session",
+    "/api/relay/sign",
+    "/api/relay/publish",
+  ]);
+  // Only this viewer's artifacts.
+  await expect(
+    writer.sign({ kind: 9, content: "", tags: [], created_at: 1 }, signal),
+  ).rejects.toThrow("Not an artifact");
+  returned = other;
+  await expect(
+    writer.sign(
+      { kind: 45010, content: "{}", tags: [], created_at: 1 },
+      signal,
+    ),
+  ).rejects.toThrow("Invalid artifact signature");
+  await expect(writer.publish(other, signal)).rejects.toThrow(
+    "Not this viewer's artifact",
+  );
+  // A broker that doesn't admit the kind offers no artifact writer.
+  vi.stubGlobal("fetch", async () =>
+    Response.json({
+      viewer: key.pubkey,
+      relayAuthor: "relay",
+      writeKinds: [9],
+    }),
+  );
+  expect((await connectBrokerTransport()).configArtifacts).toBeUndefined();
+});
+
 it("exposes the relay HTTP base for display, preferring the broker's explicit value", async () => {
   const session = (extra: Record<string, unknown>) => async () =>
     Response.json({ viewer: key.pubkey, relayAuthor: "relay", ...extra });

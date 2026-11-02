@@ -223,6 +223,68 @@ it("routes HTTPS requests with plugin identity and rejects browser requests", as
   await expect(plugin.host.request(request)).rejects.toThrow(/desktop plugin/);
 });
 
+it.each(["request", "upload"] as const)(
+  "normalizes native %s string failures and preserves existing Errors",
+  async (operation) => {
+    const { plugin } = pluginContext();
+    const input = { url: "https://api.example.com/" };
+    const call = () =>
+      operation === "request"
+        ? plugin.host.request(input)
+        : plugin.host.upload?.({
+            ...input,
+            file: {
+              field: "artifact",
+              path: "/home/me/artifact.tar.gz",
+              name: "artifact.tar.gz",
+              contentType: "application/gzip",
+            },
+          });
+    const message =
+      operation === "request"
+        ? "Host request timed out"
+        : "Files are not declared";
+    vi.mocked(invoke).mockRejectedValueOnce(message);
+    await expect(call()).rejects.toEqual(new Error(message));
+    const error = new Error("Native failure");
+    vi.mocked(invoke).mockRejectedValueOnce(error);
+    await expect(call()).rejects.toBe(error);
+  },
+);
+
+it("reads files and resolves directories as the calling plugin", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke)
+    .mockResolvedValueOnce(new Uint8Array([0, 255]).buffer)
+    .mockResolvedValueOnce("/home/me/.buzz")
+    .mockRejectedValueOnce("notes.md: No such file");
+  await expect(
+    plugin.host.readFile?.("./a.png", { cwd: "~/.buzz" }),
+  ).resolves.toEqual(new Uint8Array([0, 255]));
+  expect(invoke).toHaveBeenCalledWith("plugin_host_read_file", {
+    id: "example.plugin",
+    revision: "abc",
+    path: "./a.png",
+    cwd: "~/.buzz",
+  });
+  await expect(plugin.host.resolveDirectory?.("~/.buzz")).resolves.toBe(
+    "/home/me/.buzz",
+  );
+  expect(invoke).toHaveBeenLastCalledWith("plugin_host_resolve_directory", {
+    id: "example.plugin",
+    revision: "abc",
+    path: "~/.buzz",
+  });
+  // Callers tell a missing file by its message, so it arrives as an Error.
+  await expect(plugin.host.readFile?.("/notes.md")).rejects.toThrow(
+    /No such file/,
+  );
+  vi.mocked(isTauri).mockReturnValue(false);
+  await expect(plugin.host.readFile?.("/notes.md")).rejects.toThrow(
+    /desktop plugin/,
+  );
+});
+
 it("starts a declared process as the calling plugin and streams it", async () => {
   const { plugin } = pluginContext();
   vi.mocked(invoke).mockResolvedValueOnce(7);
@@ -232,6 +294,10 @@ it("starts a declared process as the calling plugin and streams it", async () =>
     args: ["--print"],
     cwd: "~/.buzz",
     env: { CLAUDECODE: null },
+    mcp: {
+      url: "http://127.0.0.1:1234/mcp",
+      headers: [{ name: "Authorization", value: "Bearer agent" }],
+    },
     onStdout: (data) => stdout.push(data),
     onStderr: (data) => stderr.push(data),
   });
@@ -246,7 +312,12 @@ it("starts a declared process as the calling plugin and streams it", async () =>
     args: ["--print"],
     cwd: "~/.buzz",
     env: { CLAUDECODE: null },
+    protection: null,
     onEvent: spawn.onEvent,
+    mcp: {
+      url: "http://127.0.0.1:1234/mcp",
+      headers: [{ name: "Authorization", value: "Bearer agent" }],
+    },
   });
   spawn.onEvent.onmessage({ type: "stdout", data: "out" });
   spawn.onEvent.onmessage({ type: "stderr", data: "err" });
@@ -380,79 +451,83 @@ it("refuses processes outside the desktop app", async () => {
   expect(invoke).not.toHaveBeenCalled();
 });
 
-it("serves MCP as the calling plugin and answers each message", async () => {
-  const { plugin } = pluginContext();
-  vi.mocked(invoke).mockResolvedValueOnce({
-    handle: 4,
-    url: "http://127.0.0.1:5000/mcp",
-    token: "secret",
-  });
-  const handler = vi.fn(async (message: unknown) => {
-    const { id } = message as { id?: number };
-    return id === undefined ? undefined : { jsonrpc: "2.0", id, result: {} };
-  });
-  const server = await plugin.host.serveMcp?.(handler);
-  const [, serve] = vi.mocked(invoke).mock.calls[0] as [
-    string,
-    { onEvent: { onmessage(event: unknown): void } },
-  ];
-  expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_serve", {
-    id: "example.plugin",
-    revision: "abc",
-    onEvent: serve.onEvent,
-  });
-  expect(server?.url).toBe("http://127.0.0.1:5000/mcp");
-  expect(server?.headers).toEqual([
-    { name: "Authorization", value: "Bearer secret" },
-  ]);
+it.each([false, true])(
+  "serves MCP as the calling plugin with sharedSession=%s",
+  async (sharedSession) => {
+    const { plugin } = pluginContext();
+    vi.mocked(invoke).mockResolvedValueOnce({
+      handle: 4,
+      url: "http://127.0.0.1:5000/mcp",
+      token: "secret",
+    });
+    const handler = vi.fn(async (message: unknown) => {
+      const { id } = message as { id?: number };
+      return id === undefined ? undefined : { jsonrpc: "2.0", id, result: {} };
+    });
+    const server = await plugin.host.serveMcp?.(handler, { sharedSession });
+    const [, serve] = vi.mocked(invoke).mock.calls[0] as [
+      string,
+      { onEvent: { onmessage(event: unknown): void } },
+    ];
+    expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_serve", {
+      id: "example.plugin",
+      revision: "abc",
+      onEvent: serve.onEvent,
+      ...(sharedSession ? { sharedSession: true } : {}),
+    });
+    expect(server?.url).toBe("http://127.0.0.1:5000/mcp");
+    expect(server?.headers).toEqual([
+      { name: "Authorization", value: "Bearer secret" },
+    ]);
 
-  vi.mocked(invoke).mockResolvedValue(undefined);
-  serve.onEvent.onmessage({
-    type: "message",
-    request: 1,
-    body: '{"jsonrpc":"2.0","id":9,"method":"ping"}',
-  });
-  serve.onEvent.onmessage({
-    type: "message",
-    request: 2,
-    body: '{"jsonrpc":"2.0","method":"notifications/initialized"}',
-  });
-  serve.onEvent.onmessage({ type: "message", request: 3, body: "{" });
-  await vi.waitFor(() =>
-    expect(vi.mocked(invoke).mock.calls.length).toBeGreaterThanOrEqual(4),
-  );
-  expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_reply", {
-    id: "example.plugin",
-    handle: 4,
-    request: 1,
-    body: '{"jsonrpc":"2.0","id":9,"result":{}}',
-  });
-  // A notification is accepted without a body.
-  expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_reply", {
-    id: "example.plugin",
-    handle: 4,
-    request: 2,
-    body: null,
-  });
-  expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_reply", {
-    id: "example.plugin",
-    handle: 4,
-    request: 3,
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: null,
-      error: { code: -32700, message: "Parse error" },
-    }),
-  });
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    serve.onEvent.onmessage({
+      type: "message",
+      request: 1,
+      body: '{"jsonrpc":"2.0","id":9,"method":"ping"}',
+    });
+    serve.onEvent.onmessage({
+      type: "message",
+      request: 2,
+      body: '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+    });
+    serve.onEvent.onmessage({ type: "message", request: 3, body: "{" });
+    await vi.waitFor(() =>
+      expect(vi.mocked(invoke).mock.calls.length).toBeGreaterThanOrEqual(4),
+    );
+    expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_reply", {
+      id: "example.plugin",
+      handle: 4,
+      request: 1,
+      body: '{"jsonrpc":"2.0","id":9,"result":{}}',
+    });
+    // A notification is accepted without a body.
+    expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_reply", {
+      id: "example.plugin",
+      handle: 4,
+      request: 2,
+      body: null,
+    });
+    expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_reply", {
+      id: "example.plugin",
+      handle: 4,
+      request: 3,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "Parse error" },
+      }),
+    });
 
-  await server?.close();
-  expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_close", {
-    id: "example.plugin",
-    handle: 4,
-  });
-  serve.onEvent.onmessage({ type: "closed" });
-  await expect(server?.closed).resolves.toBeUndefined();
-});
+    await server?.close();
+    expect(invoke).toHaveBeenCalledWith("plugin_host_mcp_close", {
+      id: "example.plugin",
+      handle: 4,
+    });
+    serve.onEvent.onmessage({ type: "closed" });
+    await expect(server?.closed).resolves.toBeUndefined();
+  },
+);
 
 it("answers a failed MCP request with a JSON-RPC error", async () => {
   const { plugin } = pluginContext();

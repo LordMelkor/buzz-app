@@ -1,15 +1,32 @@
+import { AvatarStack } from "../../shared/design-system/ui/AvatarStack";
+import { canMessageAgent } from "../agents/choices";
+import { avatarMedia } from "../../shared/avatar-source";
+import { useChannelWindow } from "../relay/react";
+import type { ChannelSummary } from "../relay/contracts";
+import {
+  ConversationChannel,
+  ConversationTimeline,
+} from "../conversation/Conversation";
+import type { ConversationHostServices } from "../conversation/ConversationHost";
 import { composerMarkdown } from "../messages/composer-markdown";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
+import { attachmentMessage } from "../relay/attachments";
 import type { OutgoingEvent } from "../relay/outbox";
 import type { RelaySession } from "../relay/session";
 import type { ConversationExtensions } from "../conversation/contracts";
 import { DraftMentionRoster } from "../messages/draft-mention-roster";
+import {
+  clearAttachmentDraft,
+  type AttachmentDraft,
+} from "../messages/attachment-draft";
 import { MessageComposer } from "../messages/MessageComposer";
 import { mentionDraft, type MentionDraft } from "../messages/mention-draft";
 import { clearView, readView, writeView } from "../../shared/view-state";
@@ -26,6 +43,7 @@ type Pending = {
   channelId: string;
   recipients: string;
   draft: MentionDraft;
+  attachments: readonly (readonly string[])[];
 };
 const keyFor = (people: readonly Recipient[]) =>
   people
@@ -84,6 +102,7 @@ function savedLegacy(scope: string, viewer?: string) {
       channelId: value.channelId,
       recipients: value.recipients,
       draft: mentionDraft(value.draft),
+      attachments: [],
       people: savedRecipients(scope, viewer),
     };
 }
@@ -101,6 +120,7 @@ function recovered(operations: readonly OutgoingEvent[], viewer?: string) {
     channelId,
     recipients: keyFor(people),
     draft: mentionDraft(value.draft),
+    attachments: item.event.tags.filter(([name]) => name === "imeta"),
     people,
   };
 }
@@ -110,21 +130,34 @@ export function NewMessage({
   session,
   scope,
   extensions,
+  channels,
   onPreparing,
-  onOpened,
+  host,
+  onOpenThread,
   onStarted,
 }: {
   session: RelaySession;
   scope: string;
   extensions?: ConversationExtensions | undefined;
+  channels: readonly ChannelSummary[];
+  host: ConversationHostServices;
   onPreparing?(pubkeys: readonly string[]): void;
-  onOpened(channelId: string): void;
+  onOpenThread(
+    channelId: string,
+    messageId: string,
+    threadRootId: string,
+    intent?: "reply",
+  ): void;
   onStarted(channelId: string, messageId: string): void;
 }) {
   const [recipients, setRecipients] = useState(() =>
     savedRecipients(scope, session.viewer),
   );
   const recipientNames = recipients.map((person) => person.name).join(", ");
+  const roster = useMemo(() => ({ recipients }), [recipients]);
+  // Text still in the To field may be a recipient not chosen yet, so Send
+  // waits for it to become one or be cleared.
+  const [typed, setTyped] = useState(false);
   const [legacy, setLegacy] = useState(() =>
     savedLegacy(scope, session.viewer),
   );
@@ -132,9 +165,14 @@ export function NewMessage({
   const [ready, setReady] = useState(false);
   const [restoredDraft, setRestoredDraft] = useState<MentionDraft>();
   const [draftRevision, setDraftRevision] = useState(0);
+  const [composerFocus, setComposerFocus] = useState(0);
+  const focusComposer = useCallback(() => {
+    setComposerFocus((request) => request + 1);
+  }, []);
   const retiring = useRef<string | undefined>(undefined);
-  const [busy, setBusy] = useState<"opening" | "sending" | undefined>();
+  const [busy, setBusy] = useState<"uploading" | "sending" | undefined>();
   const [error, setError] = useState("");
+  const [uploadFailed, setUploadFailed] = useState(false);
   const [draftChannel] = useState(() => crypto.randomUUID());
   const attempt = useRef<AbortController | null>(null);
   const prepared = useRef<{ key: string; id: string } | undefined>(undefined);
@@ -153,6 +191,14 @@ export function NewMessage({
   const failed =
     pending && session.directMessages.delivery(pending.id) === "failed";
   const locked = !ready || !!busy || (!!pending && !failed);
+  const retire = useCallback(() => {
+    clearAttachmentDraft(session, `${scope}:${draftKey}`);
+    retiring.current = undefined;
+    prepared.current = undefined;
+    setRecipients([]);
+    setRestoredDraft(mentionDraft(""));
+    setDraftRevision((revision) => revision + 1);
+  }, [session, scope]);
   useLayoutEffect(() => {
     const confirmed = pending && session.directMessages.delivery(pending.id);
     if (pending) {
@@ -163,12 +209,10 @@ export function NewMessage({
     } else if (retiring.current) {
       // A different mount may have completed acknowledgement while this page
       // restored its recovery payload. Never leave that payload as a fresh draft.
-      retiring.current = undefined;
-      setRecipients([]);
-      setRestoredDraft(mentionDraft(""));
-      setDraftRevision((revision) => revision + 1);
+      retire();
     }
-  }, [pending, session.directMessages]);
+  }, [pending, session.directMessages, retire]);
+
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -214,7 +258,7 @@ export function NewMessage({
     const controlled = new Set(
       session.agentChoices
         .snapshot()
-        .identities.filter((agent) => agent.managed)
+        .identities.filter(canMessageAgent)
         .map((agent) => agent.pubkey),
     );
     if (
@@ -226,7 +270,7 @@ export function NewMessage({
       )
     )
       throw new Error(
-        "A selected agent is no longer available. Remove it or wait for agent controls to reconnect.",
+        "A selected agent is no longer available. Remove it or refresh its details and try again.",
       );
   }
   function change(people: Recipient[]) {
@@ -235,62 +279,55 @@ export function NewMessage({
     setRecipients(people);
     writeView(scope, "direct-message:recipients", people.map(recipientView));
     setError("");
+    setUploadFailed(false);
   }
-  async function open() {
-    if (
-      attempt.current ||
-      !ready ||
-      !recipients.length ||
-      !session.directMessages.available
-    )
-      return;
-    const controller = new AbortController();
-    attempt.current = controller;
-    setBusy("opening");
-    setError("");
-    try {
-      validateAgents();
-      const pubkeys = recipients.map((person) => person.pubkey);
-      onPreparing?.(pubkeys);
-      const id = await session.directMessages.open(pubkeys, controller.signal);
-      controller.signal.throwIfAborted();
-      clearView(scope, "direct-message:recipients");
-      onOpened(id);
-    } catch (reason) {
-      if (!controller.signal.aborted)
-        setError(
-          reason instanceof Error
-            ? reason.message
-            : "Could not open the conversation. Try again.",
-        );
-    } finally {
-      if (!controller.signal.aborted) setBusy(undefined);
-      if (attempt.current === controller) attempt.current = null;
-    }
-  }
-  async function send(draft: MentionDraft) {
+  async function send(draft: MentionDraft, files?: AttachmentDraft) {
     const content = composerMarkdown(draft);
     if (
       attempt.current ||
       !ready ||
       !recipients.length ||
-      !content.trim() ||
+      (!content.trim() && !files?.snapshot().length && !pending) ||
       !session.directMessages.available
     )
       return;
     const controller = new AbortController();
     attempt.current = controller;
-    setBusy("sending");
+    setBusy(
+      files?.snapshot().some((file) => !file.uploaded)
+        ? "uploading"
+        : "sending",
+    );
     setError("");
+    setUploadFailed(false);
     const key = keyFor(recipients);
     let current: Pending | undefined = pending;
+    let preparingFiles = !!files;
     try {
+      // Confirmation-only retries must retain the exact durable event.
+      const uploaded = files
+        ? await files.prepareForSend(controller.signal)
+        : [];
+      controller.signal.throwIfAborted();
+      preparingFiles = false;
+      setBusy("sending");
+      // Compare the complete published metadata; messages.send still validates
+      // every upload against the actual community origin.
+      const attachments = attachmentMessage(
+        "",
+        uploaded,
+        uploaded[0]?.url,
+      ).tags;
       if (current && session.directMessages.delivery(current.id) === "failed")
         validateAgents();
       if (
         current &&
         (current.recipients !== key ||
-          JSON.stringify(current.draft) !== JSON.stringify(draft))
+          JSON.stringify(current.draft) !==
+            JSON.stringify(mentionDraft(draft)) ||
+          (files &&
+            JSON.stringify(current.attachments) !==
+              JSON.stringify(attachments)))
       ) {
         if (session.directMessages.delivery(current.id) !== "failed")
           throw new Error(
@@ -320,7 +357,7 @@ export function NewMessage({
           id,
           content,
           draft.recipients.map((person) => person.pubkey),
-          [],
+          uploaded,
           {
             key: recoveryKey,
             value: JSON.stringify({
@@ -329,7 +366,13 @@ export function NewMessage({
             }),
           },
         );
-        current = { id: messageId, channelId: id, recipients: key, draft };
+        current = {
+          id: messageId,
+          channelId: id,
+          recipients: key,
+          draft,
+          attachments,
+        };
       }
       await session.directMessages.delivered(
         current.id,
@@ -348,9 +391,13 @@ export function NewMessage({
       await outbox?.acknowledge(current.id);
       if (controller.signal.aborted) return;
       setLegacy(undefined);
+      // The page can stay mounted (Settings open), so never leave the sent
+      // message as an editable draft that could be published again.
+      retire();
       onStarted(current.channelId, current.id);
     } catch (reason) {
-      if (!controller.signal.aborted)
+      if (!controller.signal.aborted && preparingFiles) setUploadFailed(true);
+      else if (!controller.signal.aborted)
         setError(
           reason instanceof Error
             ? reason.message
@@ -361,29 +408,90 @@ export function NewMessage({
       if (attempt.current === controller) attempt.current = null;
     }
   }
+  const existing = useMemo(() => {
+    if (!recipients.length) return undefined;
+    const members = new Set([
+      session.viewer,
+      ...recipients.map((person) => person.pubkey),
+    ]);
+    let match: ChannelSummary | undefined;
+    for (const channel of channels) {
+      if (
+        channel.channelType !== "dm" ||
+        channel.archived ||
+        channel.cached ||
+        channel.readOnly ||
+        channel.pending ||
+        channel.huddle ||
+        channel.members?.length !== members.size ||
+        !channel.members.every((member) => members.has(member))
+      )
+        continue;
+      const activity = channel.lastActivityAt ?? 0;
+      const latest = match?.lastActivityAt ?? 0;
+      if (
+        !match ||
+        activity > latest ||
+        (activity === latest && channel.id.localeCompare(match.id) < 0)
+      )
+        match = channel;
+    }
+    return match;
+  }, [channels, recipients, session.viewer]);
   return (
-    <section className={styles.page} aria-label="New message">
+    <section
+      className={styles.page}
+      aria-label="New message"
+      data-attachment-drop-zone
+    >
       <RecipientPicker
         session={session}
         scope={scope}
         selected={recipients}
         disabled={locked}
         onChange={change}
+        onComplete={focusComposer}
+        onTyped={setTyped}
       />
-      <div className={styles.blank} data-new-message-body="" />
+      <div className={styles.blank} data-new-message-body="">
+        {existing ? (
+          <ExistingDiscussion
+            key={existing.id}
+            session={session}
+            scope={scope}
+            channel={existing}
+            extensions={extensions}
+            host={host}
+            onRecovered={focusComposer}
+            onOpen={(messageId, threadRootId, intent) =>
+              onOpenThread(existing.id, messageId, threadRootId, intent)
+            }
+          />
+        ) : recipients.length > 0 ? (
+          <div className={styles.introduction}>
+            <AvatarStack
+              animateEntrance
+              size="hero-large"
+              max={5}
+              items={recipients.map((person) => ({
+                id: person.pubkey,
+                name: person.name,
+                src: avatarMedia(person.picture, session.media),
+                shape: person.isAgent ? "squircle" : "circle",
+              }))}
+            />
+          </div>
+        ) : null}
+      </div>
       <div className={styles.feedback}>
-        {recipients.length > 0 && !pending && (
-          <Button
-            type="button"
-            disabled={locked || !session.directMessages.available}
-            onClick={() => void open()}
-          >
-            Open conversation
-          </Button>
-        )}
         {busy && (
           <p role="status">
-            {busy === "opening" ? "Opening conversation…" : "Sending message…"}
+            {busy === "uploading" ? "Uploading files…" : "Sending message…"}
+          </p>
+        )}
+        {uploadFailed && (
+          <p role="status">
+            A file couldn’t upload. Retry or remove it, then send again.
           </p>
         )}
         {!session.directMessages.available && (
@@ -414,27 +522,31 @@ export function NewMessage({
           </div>
         )}
       </div>
-      <DraftMentionRoster.Provider value={recipients}>
+      <DraftMentionRoster.Provider value={roster}>
         <MessageComposer
           key={`${ready ? "ready" : "hydrating"}:${draftRevision}`}
           session={session}
           scope={scope}
           extensions={extensions}
           channelId={draftChannel}
+          focusRequest={composerFocus}
           channelName={recipientNames || "new message"}
           label={recipientNames ? `Message ${recipientNames}` : "New message"}
           placeholder={recipientNames ? undefined : ""}
           disabled={!recipients.length}
           submission={{
             draftKey,
+            attachments: true,
+            allowAttachmentOnly: true,
             recoveredDraft: restoredDraft,
             locked,
             disabled:
               !ready ||
               !!busy ||
               !recipients.length ||
+              typed ||
               !session.directMessages.available,
-            submit: (draft) => void send(draft),
+            submit: (draft, files) => void send(draft, files),
           }}
         />
       </DraftMentionRoster.Provider>
@@ -444,3 +556,72 @@ export function NewMessage({
 const empty: readonly never[] = [];
 const emptySnapshot = () => empty;
 const noSubscribe = () => () => {};
+
+/** History owns paging and loading; the draft and send journal stay mounted above. */
+function ExistingDiscussion({
+  session,
+  scope,
+  channel,
+  extensions,
+  host,
+  onOpen,
+  onRecovered,
+}: {
+  session: RelaySession;
+  scope: string;
+  channel: ChannelSummary;
+  extensions?: ConversationExtensions | undefined;
+  host: ConversationHostServices;
+  onOpen(messageId: string, threadRootId: string, intent?: "reply"): void;
+  onRecovered(): void;
+}) {
+  const window = useChannelWindow(session.channels, channel.id);
+  const retry = useRef<HTMLButtonElement>(null);
+  const [recovering, setRecovering] = useState(false);
+  const waiting = !window.rows.length && window.status !== "ready";
+  useLayoutEffect(() => {
+    if (waiting || !recovering) return;
+    // Hand off before removing Retry, and only while it still owns focus.
+    if (document.activeElement === retry.current) onRecovered();
+    setRecovering(false);
+  }, [waiting, recovering, onRecovered]);
+  if (waiting || recovering)
+    return (
+      <div
+        className={styles.feedback}
+        role={window.status === "error" ? "alert" : "status"}
+      >
+        <p>{window.status === "error" ? window.error : "Loading messages…"}</p>
+        {(window.status === "error" || recovering) && (
+          <Button
+            ref={retry}
+            type="button"
+            loading={window.status !== "error"}
+            onClick={() => {
+              setRecovering(true);
+              session.channels.ensure(channel.id);
+            }}
+          >
+            Retry messages
+          </Button>
+        )}
+      </div>
+    );
+  return (
+    <ConversationChannel
+      session={session}
+      scope={scope}
+      channel={channel}
+      extensions={extensions}
+      active={false}
+      host={host}
+    >
+      <ConversationTimeline
+        window={window}
+        transient
+        marksRead={false}
+        onOpenThread={onOpen}
+      />
+    </ConversationChannel>
+  );
+}

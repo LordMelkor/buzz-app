@@ -10,11 +10,14 @@ import { MembershipRow } from "../../../src/features/messages/MembershipRow";
 import { Button } from "../../../src/shared/design-system/ui/Button";
 import { LinkLabel, linkKind } from "../../../src/bundled/links/InlineLink";
 import { DiffMessage } from "../../../src/bundled/diffs/DiffMessage";
-import { parseBubbleColor } from "../../../src/shared/theme/bubble-color";
+import { MermaidDiagram } from "../../../src/bundled/mermaid/MermaidDiagram";
+import { MermaidExpand } from "../../../src/bundled/mermaid/MermaidExpand";
+import { parseAccent } from "../../../src/shared/theme/accent";
 import referenceStyles from "../../../src/shared/InlineReference.module.css";
 import { CustomEmoji } from "../../../src/bundled/emoji/CustomEmoji";
 import { emojiMatches } from "../../../src/features/relay/emoji";
 import type {
+  CodeBlockRenderer,
   ConversationExtensions,
   InlineRenderer,
   LinkRenderer,
@@ -84,12 +87,25 @@ const messages: readonly Contribution<MessageRenderer>[] = [
     component: DiffMessage,
   },
 ];
+const codeBlocks: readonly Contribution<CodeBlockRenderer>[] = [
+  {
+    id: "mermaid",
+    key: "gallery/mermaid",
+    pluginId: "gallery",
+    revision: "1",
+    title: "Mermaid diagram",
+    matches: (language) => language.toLowerCase() === "mermaid",
+    component: MermaidDiagram,
+    action: MermaidExpand,
+  },
+];
 const emptyTools: ReturnType<ConversationExtensions["tools"]["snapshot"]> = [];
 const subscribe = () => () => {};
 const extensions: ConversationExtensions = {
   inline: { snapshot: () => inline, subscribe },
   links: { snapshot: () => links, subscribe },
   messages: { snapshot: () => messages, subscribe },
+  codeBlocks: { snapshot: () => codeBlocks, subscribe },
   tools: { snapshot: () => emptyTools, subscribe },
 };
 const agentPubkeys = new Set([agent]);
@@ -135,7 +151,14 @@ function Specimen({ example }: { example: Example }) {
               extensions={extensions}
               media={media}
               day={!!example.day && index === 0}
-              onOpenLink={() => {
+              onOpenLink={(url) => {
+                if (
+                  row.attachments.some(
+                    (attachment) =>
+                      attachment.kind === "image" && attachment.url === url,
+                  )
+                )
+                  return false;
                 setAction(
                   "Sample link selected. In the app, this opens its destination.",
                 );
@@ -293,8 +316,9 @@ const theme =
     ? "dark"
     : "light";
 document.documentElement.dataset.colorMode = theme;
-document.documentElement.dataset.bubbleColor = parseBubbleColor(
-  new URLSearchParams(location.search).get("bubble"),
+document.documentElement.dataset.colorLevel = "touch";
+document.documentElement.dataset.accent = parseAccent(
+  new URLSearchParams(location.search).get("accent"),
 );
 const container = document.getElementById("root");
 if (!container) throw new Error("Missing message gallery root");

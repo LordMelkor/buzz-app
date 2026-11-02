@@ -25,14 +25,19 @@
   position: relative;
   z-index: 1;
 }
-.row + div > [data-variant="row"] {
-  margin-bottom: var(--space-half);
-}
-.row:hover:not([data-selected])::before {
+.row:is(:hover, :has([data-context-menu-present])):not(
+  [data-selected]
+)::before {
   background: var(--affordance-panel-hover);
 }
+.row[data-selected] {
+  --text-row: var(--text-sidebar-selected);
+  --text-subtle: var(--text-sidebar-selected);
+  --text-metadata: var(--text-sidebar-selected);
+  color: var(--text-sidebar-selected);
+}
 .row[data-selected]::before {
-  background: var(--interaction-selected);
+  background: var(--surface-sidebar-selected);
 }
 .row .select [data-buzz-ui][data-variant="row"] {
   background: transparent;
@@ -42,16 +47,16 @@
   min-width: 0;
 }
 .row .select [data-variant="row"] {
+  display: flex;
   width: 100%;
   margin-inline: 0;
   padding-inline: var(--space-2)
     calc(var(--channel-row-fill-end, 0%) + var(--space-1) + var(--space-half));
 }
 .row .select [data-variant="row"][data-working] {
-  padding-inline-end: calc(var(--channel-row-fill-end, 0%) + var(--space-1));
+  padding-inline-end: calc(var(--channel-row-fill-end, 0%) + var(--space-2));
 }
-.select [class~="navigation-item-label"],
-.sessions [class~="navigation-item-label"] {
+.select [class~="navigation-item-label"] {
   text-overflow: clip;
 }
 .iconSpace {
@@ -83,7 +88,6 @@
   gap: var(--space-2);
 }
 .badges[data-working] {
-  padding-block: var(--space-1);
   padding-inline-end: 0;
 }
 .nameContent {
@@ -97,8 +101,7 @@
   width: fit-content;
   max-width: 100%;
 }
-.label,
-.childLabel {
+.label {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -116,40 +119,12 @@
   color: var(--text-navigation-unread);
   font-weight: var(--type-weight-semibold);
 }
+/* The selected destination carries its fill's ink, which may be white on a
+   saturated accent; the weight still marks it unread. */
+.row[data-selected][data-ordinary] .label {
+  color: var(--text-row-selected);
+}
 .menu {
   width: max-content;
   max-width: var(--available-width);
-}
-.row .disclosure {
-  position: absolute;
-  left: calc(var(--space-2) - ((var(--space-6) - 0.9375rem) / 2) - 1.5px);
-  z-index: 2;
-}
-.hashIcon {
-  display: flex;
-}
-.row .chevronIcon {
-  display: none;
-}
-/* Keyboard focus swaps in the chevron; pointer focus after a click does not. */
-.row:hover .hashIcon,
-html[data-keyboard-navigation] .row:focus-within .hashIcon {
-  display: none;
-}
-.row:hover .chevronIcon,
-html[data-keyboard-navigation] .row:focus-within .chevronIcon {
-  display: block;
-}
-.childLabel {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: var(--space-2);
-}
-.childLabel > [data-channel-unread-title="true"] {
-  color: var(--text-navigation-unread);
-  font-weight: var(--type-weight-semibold);
-}
-.sessions.sessions [data-buzz-ui][data-variant="row"] {
-  border-radius: var(--radius-row);
 }

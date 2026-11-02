@@ -66,6 +66,7 @@ function fixture() {
     people,
     context,
     close: vi.fn(),
+    onOpenLink: vi.fn(() => true),
     active: () => active,
   };
   return {
@@ -94,6 +95,41 @@ const saved = () =>
   waitFor(() =>
     expect(screen.getByRole("status")).toHaveTextContent("Saved in Canvas"),
   );
+it("nests tasks across statuses without repeating parent titles and saves only the child checkbox", async () => {
+  const f = fixture();
+  const content =
+    "## Todos\n\n- [/] Ship\n    - [ ] Build\n        - [x] Test\n    - [ ] Publish\n\n## Keep\nUntouched.\n";
+  f.canvas.read.mockResolvedValue({ ...head, content });
+  render(<TodosPanel {...f.props} />);
+  const child = await screen.findByRole("checkbox", { name: "Build" });
+  const grandchild = screen.getByRole("checkbox", { name: "Test" });
+  const childRow = child.closest("li"),
+    grandchildRow = grandchild.closest("li");
+  if (!childRow || !grandchildRow) throw new Error("Expected nested todo rows");
+  expect(childRow.contains(grandchildRow)).toBe(true);
+  expect(within(childRow).queryByText("Ship")).not.toBeInTheDocument();
+  const collapse = screen.getByRole("button", { name: "Collapse Ship" });
+  await userEvent.setup().click(collapse);
+  expect(
+    screen.queryByRole("checkbox", { name: "Build" }),
+  ).not.toBeInTheDocument();
+  await userEvent
+    .setup()
+    .click(screen.getByRole("button", { name: "Expand Ship" }));
+  await userEvent
+    .setup()
+    .click(screen.getByRole("checkbox", { name: "Build" }));
+  await saved();
+  expect(f.canvas.save).toHaveBeenCalledWith(
+    context.channelId,
+    content.replace("[ ] Build", "[x] Build"),
+    head.id,
+  );
+  expect(screen.getByRole("checkbox", { name: "Ship" })).toHaveAttribute(
+    "aria-checked",
+    "mixed",
+  );
+});
 it("adds and checks tasks, saves exact base, preserves other Markdown and restores saved content", async () => {
   const f = fixture(),
     user = userEvent.setup();
@@ -184,7 +220,7 @@ it("keeps failed save changes through close/reopen and confirms destructive refr
   expect(
     screen.queryByRole("button", { name: /^Retry$/ }),
   ).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Refresh todos" }));
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
   expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Keep editing" }));
   view.unmount();
@@ -396,9 +432,9 @@ it("keeps exact assignees through rename, failed-save recovery and member remova
     },
   };
   const select = () =>
-    within(screen.getByRole("group", { name: "Assignee for First" })).getByRole(
-      "button",
-    );
+    within(
+      screen.getByRole("group", { name: /^Assignee for First/ }),
+    ).getByRole("button");
   const view = render(<TodosPanel {...f.props} people={users} />);
   await screen.findByRole("checkbox", { name: "First" });
   f.canvas.save.mockRejectedValueOnce(new Error("Offline"));
@@ -520,9 +556,9 @@ it("shows saved identity when profiles fail, disables missing-roster assignments
   f.canvas.read.mockResolvedValue({ ...head, content: saved });
   const view = render(<TodosPanel {...f.props} people={users} />);
   const select = () =>
-    within(screen.getByRole("group", { name: "Assignee for First" })).getByRole(
-      "button",
-    );
+    within(
+      screen.getByRole("group", { name: /^Assignee for First/ }),
+    ).getByRole("button");
   await screen.findByRole("checkbox", { name: "First" });
   expect(select()).toHaveAttribute(
     "aria-description",
@@ -670,7 +706,7 @@ it("scopes live naming to channel members rather than out-of-channel namesakes",
   f.canvas.read.mockResolvedValue({ ...head, content });
   const view = render(<TodosPanel {...f.props} people={users} />);
   await screen.findByRole("checkbox", { name: "First" });
-  const trigger = screen.getByRole("button", { name: "Assignee for First" });
+  const trigger = screen.getByRole("button", { name: /^Assignee for First/ });
   expect(trigger).toHaveAttribute(
     "aria-description",
     expect.stringContaining("Alex"),
@@ -855,7 +891,7 @@ it("updates the assigned avatar from live profiles through the session media own
   });
   const view = render(<TodosPanel {...f.props} people={users} />);
   await screen.findByRole("checkbox", { name: "First" });
-  const trigger = screen.getByRole("button", { name: "Assignee for First" });
+  const trigger = screen.getByRole("button", { name: /^Assignee for First/ });
   expect(trigger.querySelector("img")).toHaveAttribute(
     "src",
     "/media/first.png",
@@ -902,4 +938,149 @@ it("preserves actionable save failure details", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Keep Canvas below 24 KiB",
   );
+});
+
+it("renders task Markdown outside checkbox labels and shows a legacy named assignee", async () => {
+  const f = fixture();
+  f.canvas.read.mockResolvedValue({
+    ...head,
+    content:
+      "## Todos\n\n- [ ] **Ship** [release](https://example.com) · Assignee: John\n",
+  });
+  render(<TodosPanel {...f.props} />);
+  const link = await screen.findByRole("link", { name: "release" });
+  expect(link.closest("label")).toBeNull();
+  expect(screen.getByText("Ship").tagName).toBe("STRONG");
+  expect(screen.queryByText(/Assignee: John/)).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /Assignee for/ }),
+  ).toHaveTextContent("John");
+  expect(screen.getByRole("button", { name: /Assignee for/ })).toHaveAttribute(
+    "aria-description",
+    "John (from Canvas; choose a member to link)",
+  );
+});
+
+it("routes copied Buzz links and filters unsupported task destinations", async () => {
+  const f = fixture();
+  const message = `buzz://channel/general/${"a".repeat(64)}`;
+  f.canvas.read.mockResolvedValue({
+    ...head,
+    content: `## Todos\n\n- [ ] Review [channel](buzz://channel/general) and [message](${message}) and [website](https://example.com) and [relative](/settings) and [credentials](https://user:pass@example.com) and [invalid](buzz://bad/path)\n`,
+  });
+  render(<TodosPanel {...f.props} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("link", { name: "channel" }));
+  expect(f.props.onOpenLink).toHaveBeenLastCalledWith("buzz://channel/general");
+  await user.click(screen.getByRole("link", { name: "message" }));
+  expect(f.props.onOpenLink).toHaveBeenLastCalledWith(message);
+  expect(screen.getByRole("link", { name: "website" })).toHaveAttribute(
+    "href",
+    "https://example.com/",
+  );
+  for (const name of ["relative", "credentials", "invalid"]) {
+    expect(screen.queryByRole("link", { name })).not.toBeInTheDocument();
+    expect(screen.getByText(name)).toBeInTheDocument();
+  }
+});
+it("uses rendered Markdown and the displayed assignee in accessible names", async () => {
+  const f = fixture();
+  f.canvas.read.mockResolvedValue({
+    ...head,
+    content:
+      "## Todos\n\n- [ ] **Build** [release](https://example.com) · Assignee: John\n    - [ ] Child\n",
+  });
+  render(<TodosPanel {...f.props} />);
+  await screen.findByRole("checkbox", { name: "Build release" });
+  expect(
+    screen.getByRole("button", { name: "Collapse Build release" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Status for Build release" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Assignee for Build release: John" }),
+  ).toHaveTextContent("John");
+});
+it("keeps a later subtree collapsed after adding and assigning an earlier task", async () => {
+  const f = fixture(),
+    user = userEvent.setup();
+  const content =
+    "## Todos\n\n- [ ] Earlier · Assignee: John\n- [ ] Parent\n    - [ ] Child\n";
+  f.canvas.read.mockResolvedValue({ ...head, content });
+  render(<TodosPanel {...f.props} />);
+  await user.click(
+    await screen.findByRole("button", { name: "Collapse Parent" }),
+  );
+  await user.type(
+    screen.getByRole("textbox", { name: "New todo" }),
+    "Inserted{Enter}",
+  );
+  await saved();
+  expect(
+    screen.getByRole("button", { name: "Expand Parent" }),
+  ).toBeInTheDocument();
+  await user.click(
+    screen.getByRole("button", { name: /^Assignee for Earlier/ }),
+  );
+  await user.click(
+    await screen.findByRole("menuitemradio", { name: "Unassigned" }),
+  );
+  await saved();
+  expect(
+    screen.getByRole("button", { name: "Expand Parent" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("checkbox", { name: "Child" }),
+  ).not.toBeInTheDocument();
+});
+
+it("keeps a later subtree collapsed when removing an earlier assignment", async () => {
+  const f = fixture(),
+    user = userEvent.setup();
+  f.canvas.read.mockResolvedValue({
+    ...head,
+    content:
+      "## Todos\n\n- [ ] Earlier · Assignee: John\n- [ ] Parent\n    - [ ] Child\n",
+  });
+  render(<TodosPanel {...f.props} />);
+  await user.click(
+    await screen.findByRole("button", { name: "Collapse Parent" }),
+  );
+  await user.click(
+    screen.getByRole("button", { name: /^Assignee for Earlier/ }),
+  );
+  await user.click(
+    await screen.findByRole("menuitemradio", { name: "Unassigned" }),
+  );
+  await saved();
+  expect(
+    screen.getByRole("button", { name: "Expand Parent" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("checkbox", { name: "Child" }),
+  ).not.toBeInTheDocument();
+});
+it("clears collapsed positions when refreshing a changed Canvas", async () => {
+  const f = fixture(),
+    user = userEvent.setup();
+  f.canvas.read.mockResolvedValue({
+    ...head,
+    content: "## Todos\n\n- [ ] Parent\n    - [ ] Child\n",
+  });
+  render(<TodosPanel {...f.props} />);
+  await user.click(
+    await screen.findByRole("button", { name: "Collapse Parent" }),
+  );
+  f.canvas.read.mockResolvedValue({
+    ...head,
+    content: "## Todos\n\n- [ ] Other!\n    - [ ] New child\n",
+  });
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  expect(
+    await screen.findByRole("checkbox", { name: "New child" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Collapse Other!" }),
+  ).toBeInTheDocument();
 });

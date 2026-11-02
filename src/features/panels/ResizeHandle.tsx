@@ -186,7 +186,7 @@ export function ResizeHandle({
         window.addEventListener("blur", finish);
         event.currentTarget.setAttribute("data-resizing", "");
         document.documentElement.dataset.sidebarResizing = "true";
-        document.documentElement.style.cursor = "col-resize";
+        document.documentElement.style.cursor = "ew-resize";
         document.body.style.userSelect = "none";
       }}
     />

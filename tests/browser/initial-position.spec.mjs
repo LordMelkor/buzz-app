@@ -61,7 +61,7 @@ sized(
     await bottom(page, app, "cold Beta");
     await select(page, "Alpha");
     await bottom(page, app, "warm Alpha");
-    await openPage(page, "Projects");
+    await openPage(page, "Workflows");
     await page.reload();
     await openPage(page, "Messages");
     await bottom(page, app, "persisted bottom Alpha");
@@ -115,7 +115,7 @@ readingTest(
     ).toBeGreaterThan(0);
     expect(app.pending).toHaveLength(0);
     const reading = await anchor(page);
-    await openPage(page, "Projects");
+    await openPage(page, "Workflows");
     await page.reload();
     await openPage(page, "Messages");
     await settle(page);

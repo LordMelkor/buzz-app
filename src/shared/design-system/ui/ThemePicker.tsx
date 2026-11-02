@@ -1,23 +1,17 @@
-import type { BubbleColor } from "../../theme/bubble-color";
 import { Radio, RadioGroup } from "./RadioGroup";
 import { Field } from "./Field";
 
 export type ThemeMode = "system" | "light" | "dark";
 
-function Preview({
-  tone,
-  messageColor,
-}: {
-  tone: "light" | "dark";
-  messageColor: BubbleColor;
-}) {
+// The `.light`/`.dark` class rebinds accent roles, so previews follow the
+// selected accent in each mode without carrying their own choice.
+function Preview({ tone }: { tone: "light" | "dark" }) {
   return (
     <svg
       aria-hidden="true"
       viewBox="0 0 80 56"
       className={`buzz-theme-preview ${tone}`}
       data-tone={tone}
-      data-bubble-color={messageColor}
     >
       <rect
         width="80"
@@ -34,8 +28,10 @@ function Preview({
         className="buzz-theme-preview-panel"
       />
       <path d="M23 5v46" className="buzz-theme-preview-divider" />
+      {/* The selected sidebar destination takes its mode's accent color. */}
+      <path d="M10 13h7" className="buzz-theme-preview-selected" />
       <path
-        d="M10 13h7M10 18h5M29 17h30M29 22h24M29 27h32"
+        d="M10 18h5M29 17h30M29 22h24M29 27h32"
         className="buzz-theme-preview-lines"
       />
       <rect
@@ -70,10 +66,8 @@ function Preview({
 export function ThemePicker({
   value,
   onValueChange,
-  messageColor = "neutral",
 }: {
   value: ThemeMode;
-  messageColor?: BubbleColor;
   onValueChange: (value: ThemeMode) => void;
 }) {
   return (
@@ -95,12 +89,8 @@ export function ThemePicker({
                     data-mode={mode}
                     aria-hidden="true"
                   >
-                    {mode !== "dark" && (
-                      <Preview tone="light" messageColor={messageColor} />
-                    )}
-                    {mode !== "light" && (
-                      <Preview tone="dark" messageColor={messageColor} />
-                    )}
+                    {mode !== "dark" && <Preview tone="light" />}
+                    {mode !== "light" && <Preview tone="dark" />}
                   </span>
                   <span className="sr-only">
                     {mode === "system"

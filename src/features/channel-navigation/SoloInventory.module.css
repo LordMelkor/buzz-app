@@ -1,0 +1,21 @@
+.header {
+  margin-inline: var(--space-2) var(--space-1);
+}
+.header > div {
+  align-items: center;
+  min-height: var(--size-control-sm);
+  margin-block-end: 0;
+}
+.actions {
+  display: flex;
+  opacity: 0;
+}
+.header:is(:hover, [data-actions-visible]) .actions,
+html[data-keyboard-navigation] .header:focus-within .actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .actions {
+    opacity: 1;
+  }
+}

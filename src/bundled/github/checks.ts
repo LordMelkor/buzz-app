@@ -119,144 +119,205 @@ export async function loadGitHubChecks(
       readChecks(repository, sha, "check-runs", signal),
       readChecks(repository, sha, "status", signal),
     ]);
-    const counts: CheckCounts = {
-      failing: 0,
-      cancelled: 0,
-      pending: 0,
-      unknown: 0,
-      skipped: 0,
-      neutral: 0,
-      successful: 0,
-    };
-    const checks: CheckDetail[] = [];
-    for (const item of [...runs.items, ...statuses.items]) {
-      if (!item || typeof item !== "object") throw new Error("Invalid check");
-      let category: keyof CheckCounts = "unknown";
-      if ("status" in item) {
-        if (
-          ["queued", "in_progress", "waiting", "pending", "requested"].includes(
-            item.status,
-          )
-        )
-          category = "pending";
-        else if (item.status === "completed") {
-          if (item.conclusion === "success") category = "successful";
-          else if (item.conclusion === "cancelled") category = "cancelled";
-          else if (item.conclusion === "skipped") category = "skipped";
-          else if (item.conclusion === "neutral") category = "neutral";
-          else if (
-            [
-              "failure",
-              "timed_out",
-              "action_required",
-              "stale",
-              "startup_failure",
-            ].includes(item.conclusion ?? "")
-          )
-            category = "failing";
-        }
-      } else if ("state" in item) {
-        if (item.state === "success") category = "successful";
-        else if (item.state === "pending") category = "pending";
-        else if (["failure", "error"].includes(item.state))
-          category = "failing";
-      }
-      counts[category]++;
-      const isRun = "status" in item;
-      const name = isRun
-        ? item.name
-        : "context" in item
-          ? item.context
-          : undefined;
-      const description = isRun
-        ? item.output?.title
-        : "description" in item
-          ? item.description
-          : undefined;
-      const outcome = isRun
-        ? item.status === "completed"
-          ? item.conclusion
-          : item.status
-        : "state" in item
-          ? item.state
-          : undefined;
-      checks.push({
-        key: `check-${checks.length}`,
-        name:
-          typeof name === "string" && name.trim()
-            ? name
-            : isRun
-              ? "Unnamed check"
-              : "Unnamed status",
-        category,
-        label:
-          category !== "unknown" &&
-          typeof outcome === "string" &&
-          Object.hasOwn(resultLabels, outcome)
-            ? (resultLabels[outcome] ?? "Unknown")
-            : "Unknown",
-        description:
-          typeof description === "string" && description.trim()
-            ? description
-            : undefined,
-        url: isRun
-          ? (safeCheckUrl(item.details_url) ?? safeCheckUrl(item.html_url))
-          : "target_url" in item
-            ? safeCheckUrl(item.target_url)
-            : undefined,
-      });
-    }
-    const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
-    const complete = runs.complete && statuses.complete;
-    const description = total
-      ? `${Object.entries(counts)
-          .filter(([, count]) => count)
-          .map(([category, count]) => `${count} ${category}`)
-          .join(", ")} ${total === 1 ? "check" : "checks"}`
-      : "No checks reported";
-    const state = !complete
-      ? "unavailable"
-      : counts.failing || counts.cancelled
-        ? "failure"
-        : counts.pending
-          ? "pending"
-          : counts.unknown
-            ? "unavailable"
-            : counts.successful
-              ? "success"
-              : "neutral";
-    const label = !complete
-      ? "Incomplete"
-      : state === "failure"
-        ? "Some not successful"
-        : state === "pending"
-          ? "Pending"
-          : state === "success"
-            ? "Successful"
-            : state === "unavailable"
-              ? "Unknown"
-              : total
-                ? "No failures"
-                : "No checks";
-    const priority: (keyof CheckCounts)[] = [
-      "failing",
-      "cancelled",
-      "pending",
-      "unknown",
-      "successful",
-      "skipped",
-      "neutral",
-    ];
-    checks.sort(
-      (a, b) => priority.indexOf(a.category) - priority.indexOf(b.category),
+    return summarizeChecks(
+      [...runs.items, ...statuses.items],
+      runs.complete && statuses.complete,
     );
-    return {
-      checks,
-      state,
-      label,
-      description: `${scope}${complete ? "" : "Partial counts (page limit reached): "}${description}.`,
-    };
   } catch {
     return unavailableChecks;
   }
+}
+
+/** A GraphQL `statusCheckRollup` context, as `gh` returns it. */
+export type RollupContext =
+  | {
+      __typename: "CheckRun";
+      name?: string;
+      status?: string;
+      conclusion?: string | null;
+      detailsUrl?: string | null;
+      title?: string | null;
+    }
+  | {
+      __typename: "StatusContext";
+      context?: string;
+      state?: string;
+      description?: string | null;
+      targetUrl?: string | null;
+    };
+
+/** The summary of a head commit's rollup contexts; `complete` is false when
+ * GitHub has more than were read. */
+export function summarizeRollup(
+  contexts: readonly RollupContext[],
+  complete: boolean,
+): CheckSummary {
+  try {
+    return summarizeChecks(
+      contexts.map((item): CheckRun | CommitStatus =>
+        item.__typename === "CheckRun"
+          ? {
+              name: item.name ?? "",
+              status: (item.status ?? "").toLowerCase(),
+              conclusion: item.conclusion?.toLowerCase() ?? null,
+              ...(item.detailsUrl ? { details_url: item.detailsUrl } : {}),
+              output: { title: item.title ?? null },
+            }
+          : {
+              context: item.context ?? "",
+              // A required status that has not reported yet.
+              state:
+                item.state === "EXPECTED"
+                  ? "pending"
+                  : (item.state ?? "").toLowerCase(),
+              description: item.description ?? null,
+              target_url: item.targetUrl ?? null,
+            },
+      ),
+      complete,
+    );
+  } catch {
+    return unavailableChecks;
+  }
+}
+
+function summarizeChecks(
+  items: readonly (CheckRun | CommitStatus)[],
+  complete: boolean,
+): CheckSummary {
+  const counts: CheckCounts = {
+    failing: 0,
+    cancelled: 0,
+    pending: 0,
+    unknown: 0,
+    skipped: 0,
+    neutral: 0,
+    successful: 0,
+  };
+  const checks: CheckDetail[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") throw new Error("Invalid check");
+    let category: keyof CheckCounts = "unknown";
+    if ("status" in item) {
+      if (
+        ["queued", "in_progress", "waiting", "pending", "requested"].includes(
+          item.status,
+        )
+      )
+        category = "pending";
+      else if (item.status === "completed") {
+        if (item.conclusion === "success") category = "successful";
+        else if (item.conclusion === "cancelled") category = "cancelled";
+        else if (item.conclusion === "skipped") category = "skipped";
+        else if (item.conclusion === "neutral") category = "neutral";
+        else if (
+          [
+            "failure",
+            "timed_out",
+            "action_required",
+            "stale",
+            "startup_failure",
+          ].includes(item.conclusion ?? "")
+        )
+          category = "failing";
+      }
+    } else if ("state" in item) {
+      if (item.state === "success") category = "successful";
+      else if (item.state === "pending") category = "pending";
+      else if (["failure", "error"].includes(item.state)) category = "failing";
+    }
+    counts[category]++;
+    const isRun = "status" in item;
+    const name = isRun
+      ? item.name
+      : "context" in item
+        ? item.context
+        : undefined;
+    const description = isRun
+      ? item.output?.title
+      : "description" in item
+        ? item.description
+        : undefined;
+    const outcome = isRun
+      ? item.status === "completed"
+        ? item.conclusion
+        : item.status
+      : "state" in item
+        ? item.state
+        : undefined;
+    checks.push({
+      key: `check-${checks.length}`,
+      name:
+        typeof name === "string" && name.trim()
+          ? name
+          : isRun
+            ? "Unnamed check"
+            : "Unnamed status",
+      category,
+      label:
+        category !== "unknown" &&
+        typeof outcome === "string" &&
+        Object.hasOwn(resultLabels, outcome)
+          ? (resultLabels[outcome] ?? "Unknown")
+          : "Unknown",
+      description:
+        typeof description === "string" && description.trim()
+          ? description
+          : undefined,
+      url: isRun
+        ? (safeCheckUrl(item.details_url) ?? safeCheckUrl(item.html_url))
+        : "target_url" in item
+          ? safeCheckUrl(item.target_url)
+          : undefined,
+    });
+  }
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  const description = total
+    ? `${Object.entries(counts)
+        .filter(([, count]) => count)
+        .map(([category, count]) => `${count} ${category}`)
+        .join(", ")} ${total === 1 ? "check" : "checks"}`
+    : "No checks reported";
+  const state = !complete
+    ? "unavailable"
+    : counts.failing || counts.cancelled
+      ? "failure"
+      : counts.pending
+        ? "pending"
+        : counts.unknown
+          ? "unavailable"
+          : counts.successful
+            ? "success"
+            : "neutral";
+  const label = !complete
+    ? "Incomplete"
+    : state === "failure"
+      ? "Some not successful"
+      : state === "pending"
+        ? "Pending"
+        : state === "success"
+          ? "Successful"
+          : state === "unavailable"
+            ? "Unknown"
+            : total
+              ? "No failures"
+              : "No checks";
+  const priority: (keyof CheckCounts)[] = [
+    "failing",
+    "cancelled",
+    "pending",
+    "unknown",
+    "successful",
+    "skipped",
+    "neutral",
+  ];
+  checks.sort(
+    (a, b) => priority.indexOf(a.category) - priority.indexOf(b.category),
+  );
+  return {
+    checks,
+    state,
+    label,
+    description: `${scope}${complete ? "" : "Partial counts (page limit reached): "}${description}.`,
+  };
 }

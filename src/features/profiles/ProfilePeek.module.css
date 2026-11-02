@@ -1,0 +1,151 @@
+.card {
+  width: 14rem;
+  --floating-radius: var(--radius-panel);
+  --floating-inset: var(--space-half);
+  padding: var(--floating-inset);
+}
+.content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.lockup {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: var(--floating-inner-radius);
+  background: var(--surface-popover);
+}
+.backdrop {
+  --profile-backdrop-blur: 40px;
+  --profile-backdrop-saturation: 4;
+  --profile-backdrop-opacity: 0.64;
+  --profile-backdrop-scale: 2;
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  mask-image: linear-gradient(black, transparent);
+}
+.artwork {
+  display: grid;
+  place-items: center;
+  padding: var(--space-4) var(--space-4) var(--space-1);
+}
+.portrait {
+  width: calc(var(--space-6) * 2);
+  height: calc(var(--space-6) * 2);
+}
+.identity {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-half);
+  min-width: 0;
+  padding: var(--space-1) 0 var(--space-4);
+}
+.actions {
+  /* Include the outer inset in the 16px side and bottom gutters. */
+  padding: var(--space-4) calc(var(--space-4) - var(--floating-inset))
+    calc(var(--space-4) - var(--floating-inset));
+  display: flex;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.actions > button {
+  flex: 1 1 var(--size-control-sm);
+  min-width: 0;
+}
+
+.name {
+  padding-inline: var(--space-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+}
+.name > svg {
+  flex: none;
+}
+
+.lockup[data-no-picture] {
+  background: color-mix(
+    in srgb,
+    var(--surface-panel) 40%,
+    var(--surface-inset)
+  );
+}
+/* biome-ignore lint/correctness/noUnknownPseudoClass: CSS Modules must reference the host theme class. */
+:global(.dark) .lockup[data-no-picture] {
+  background: var(--surface-panel);
+}
+
+.actionContent {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+.actionContent > svg {
+  flex: none;
+}
+.actionText {
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  white-space: nowrap;
+}
+.actions:has(> button:focus-visible) > button:not(:focus-visible) {
+  flex-grow: 0;
+}
+.actions > button:focus-visible {
+  flex-grow: 1;
+}
+.actions > button:focus-visible .actionText {
+  max-width: 6rem;
+  margin-inline-start: var(--space-2);
+  opacity: 1;
+}
+@media (hover: hover) and (pointer: fine) {
+  .actions:not(:has(> button:focus-visible)) > button {
+    transition:
+      flex-grow var(--duration-settle) var(--easing-enter),
+      background-color var(--duration-state) var(--easing-state),
+      color var(--duration-state) var(--easing-state);
+  }
+  .actions:not(:has(> button:focus-visible)) .actionText {
+    transition:
+      max-width var(--duration-settle) var(--easing-enter),
+      margin-inline-start var(--duration-settle) var(--easing-enter),
+      opacity var(--duration-state) var(--easing-state);
+  }
+  /* Hold the action through the gap; moving edges must not clear hover. */
+  .actions:not(:has(> button:focus-visible))[data-hovered-action] > button {
+    flex-grow: 0;
+  }
+  .actions:not(:has(> button:focus-visible))[data-hovered-action="profile"]
+    > [data-profile-action="profile"],
+  .actions:not(:has(> button:focus-visible))[data-hovered-action="message"]
+    > [data-profile-action="message"] {
+    flex-grow: 1;
+  }
+  .actions:not(:has(> button:focus-visible))[data-hovered-action="profile"]
+    [data-profile-action="profile"]
+    .actionText,
+  .actions:not(:has(> button:focus-visible))[data-hovered-action="message"]
+    [data-profile-action="message"]
+    .actionText {
+    max-width: 6rem;
+    margin-inline-start: var(--space-2);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .actions:not(:has(> button:focus-visible)) > button,
+  .actions:not(:has(> button:focus-visible)) .actionText {
+    transition: none;
+  }
+}

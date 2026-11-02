@@ -12,6 +12,7 @@ import { SIDEBAR_HEAD_BYTES } from "./sidebar-preferences.mjs";
 import { relayBrokerPlugin } from "./relay-broker.mjs";
 import { prepareSidebarStar } from "./sidebar-toggle.mjs";
 import { connectBrokerTransport } from "../src/features/relay/transport.ts";
+import { createRelaySession } from "../src/features/relay/session.ts";
 import { fixtureRelayUrl, fixtureAliases } from "../tests/relay-config.ts";
 
 const disposals = [];
@@ -84,11 +85,15 @@ async function harness(chunkBytes) {
       }
       if (queryFailure) return queryFailure;
       // Model an empty stale replica: only strong reads observe the writer head.
-      const head =
-        body[0].consistency === "strong"
-          ? heads.get(body[0]["#d"][0])
-          : undefined;
-      return Response.json(head ? [head] : []);
+      return Response.json(
+        body.flatMap((filter) => {
+          const head =
+            filter.consistency === "strong"
+              ? heads.get(filter["#d"][0])
+              : undefined;
+          return head ? [head] : [];
+        }),
+      );
     },
   }).configureServer({
     httpServer: server,
@@ -146,6 +151,66 @@ async function harness(chunkBytes) {
     },
   };
 }
+it.each([false, true])(
+  "uncertain creation reconciles through the writer despite replica lag (recovery initially fails: %s)",
+  async (fails) => {
+    const h = await harness();
+    const owner = createRelaySession({
+      ...h.transport,
+      writeSidebarAssignment: async (intent, signal) => {
+        await h.transport.writeSidebarAssignment(intent, signal);
+        if (fails)
+          h.failQuery(
+            Response.json({ error: "writer unavailable" }, { status: 503 }),
+          );
+        throw new Error("response lost");
+      },
+    });
+    const preferences = owner.session.sidebarPreferences;
+    const section = {
+      id: "12345678-1234-1234-1234-123456789abc",
+      name: "Launch",
+    };
+    try {
+      await preferences.ensure();
+      await expect(preferences.createSection(section)).rejects.toThrow(
+        "response lost",
+      );
+      if (fails) {
+        expect(preferences.sectionCreationWritable).toBe(false);
+        await expect(
+          preferences.createSection({
+            ...section,
+            id: "22345678-1234-1234-1234-123456789abc",
+          }),
+        ).rejects.toThrow("unavailable");
+        h.failQuery(undefined);
+        await preferences.refresh();
+      }
+      expect(preferences.snapshot().data.sections).toEqual([
+        { ...section, order: 0 },
+      ]);
+      expect(preferences.sectionCreationWritable).toBe(true);
+      const batches = h.calls.filter(
+        ({ body }) => Array.isArray(body) && body.length === 5,
+      );
+      expect(batches).toHaveLength(fails ? 3 : 2);
+      expect(
+        batches[0].body.every((filter) => filter.consistency === undefined),
+      ).toBe(true);
+      for (const { body } of batches.slice(1))
+        expect(body.every((filter) => filter.consistency === "strong")).toBe(
+          true,
+        );
+      expect(h.calls.filter(({ url }) => url.endsWith("/events"))).toHaveLength(
+        1,
+      );
+    } finally {
+      owner.dispose();
+    }
+  },
+);
+
 it("real broker Star roundtrip signs scoped requests and confirms before projecting", async () => {
   const h = await harness(),
     signal = new AbortController().signal;
@@ -566,5 +631,53 @@ it("real broker reorders sections through the signed, confirmed narrow command",
   h.conflict();
   await expect(
     h.transport.writeSidebarSectionOrder([ids[0], ids[1]], signal),
+  ).rejects.toThrow("Relay request failed (502)");
+});
+
+it("real broker renames a section through the signed, confirmed narrow command", async () => {
+  const h = await harness();
+  const signal = new AbortController().signal;
+  const id = "11111111-1111-4111-8111-111111111111";
+  await h.transport.writeSidebarAssignment(
+    { channelId: "alpha", createSection: { id, name: "Work" } },
+    signal,
+  );
+  h.calls.length = 0;
+  for (const intent of [
+    null,
+    [],
+    {},
+    { sectionId: id },
+    { sectionId: id, name: 1 },
+    { sectionId: id, name: "  " },
+    { sectionId: id, name: "Projects", extra: true },
+  ])
+    expect(
+      (await h.post(intent, undefined, "sidebar-section-rename")).status,
+    ).toBe(400);
+  expect(h.calls).toEqual([]);
+  expect(
+    await h.transport.renameSidebarSection(
+      { sectionId: id, name: "Projects" },
+      signal,
+    ),
+  ).toMatchObject({
+    sections: [{ id, name: "Projects", order: 0 }],
+    assignments: { alpha: id },
+  });
+  expect(h.calls.map(({ url }) => new URL(url).pathname)).toEqual([
+    "/query",
+    "/events",
+    "/query",
+  ]);
+  h.calls.length = 0;
+  await h.transport.renameSidebarSection(
+    { sectionId: id, name: "Projects" },
+    signal,
+  );
+  expect(h.calls.map(({ url }) => new URL(url).pathname)).toEqual(["/query"]);
+  h.conflict();
+  await expect(
+    h.transport.renameSidebarSection({ sectionId: id, name: "Other" }, signal),
   ).rejects.toThrow("Relay request failed (502)");
 });

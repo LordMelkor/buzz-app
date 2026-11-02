@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gitHubAnchorUrl, parseGitHubReference } from "./references";
+import { parseGitHubReference } from "./references";
 
 it("recognizes typed GitHub references while refusing lookalike hosts and invalid targets", () => {
   for (const [path, kind] of [
@@ -7,6 +7,7 @@ it("recognizes typed GitHub references while refusing lookalike hosts and invali
     ["block/buzz/pull/23", "pull"],
     ["block/buzz/issues/12", "issue"],
     ["block/buzz/commit/abcdef1234", "commit"],
+    ["block/buzz/pull/2147483647", "pull"],
   ]) {
     expect(parseGitHubReference(`https://github.com/${path}`)?.kind).toBe(kind);
   }
@@ -17,6 +18,8 @@ it("recognizes typed GitHub references while refusing lookalike hosts and invali
     "https://github.com/block/buzz/tree/main",
     "https://github.com/block/buzz/blob/main/README.md",
     "https://github.com/block/buzz/pull/0",
+    "https://github.com/block/buzz/pull/2147483648",
+    "https://github.com/block/buzz/issues/99999999999",
     "https://github.com/block/buzz/commit/nope",
   ])
     expect(parseGitHubReference(url)).toBeUndefined();
@@ -24,19 +27,7 @@ it("recognizes typed GitHub references while refusing lookalike hosts and invali
 
 it("claims only PR and issue links whose target the pane can show", () => {
   const pull = "https://github.com/block/buzz-app/pull/838";
-  // The anchor is structured once; the identity stays hash-less so comment
-  // links to one PR share its object, request and content.
-  for (const [fragment, anchor] of [
-    ["", undefined],
-    ["#issuecomment-123", { kind: "discussion", id: "123" }],
-    ["#pullrequestreview-456", { kind: "review", id: "456" }],
-  ] as const) {
-    const reference = parseGitHubReference(`${pull}?view=all${fragment}`);
-    expect(reference?.url).toBe(pull);
-    expect(reference?.anchor).toEqual(anchor);
-    if (anchor)
-      expect(gitHubAnchorUrl(pull, anchor)).toBe(`${pull}${fragment}`);
-  }
+  expect(parseGitHubReference(`${pull}?view=all`)?.url).toBe(pull);
   expect(
     parseGitHubReference("https://github.com/block/buzz-app/issues/12"),
   ).toEqual({
@@ -46,6 +37,8 @@ it("claims only PR and issue links whose target the pane can show", () => {
     label: "#12",
   });
   for (const url of [
+    `${pull}#issuecomment-123`,
+    `${pull}#pullrequestreview-456`,
     `${pull}#discussion_r4240253516`,
     `${pull}#event-987`,
     `${pull}#partial-timeline`,
@@ -66,4 +59,41 @@ it("claims only PR and issue links whose target the pane can show", () => {
     "https://github.com/block/buzz-app/issues/12#issuecomment-123",
   ])
     expect(parseGitHubReference(url), url).toBeUndefined();
+});
+
+it("identifies the parent pull request for badges without claiming its navigation target", () => {
+  const pull = "https://github.com/block/buzz-app/pull/2043";
+  for (const suffix of [
+    "#top",
+    "#issuecomment-123",
+    "?view=all#discussion_r456",
+    "/commits",
+    "/commits/abcdef1#r456",
+    "/checks?check_run_id=1",
+    "/changes",
+    "/files#diff-0123abcd",
+    "/files/abcdef1..0123456",
+    "/activity/",
+  ]) {
+    expect(parseGitHubReference(`${pull}${suffix}`), suffix).toBeUndefined();
+    expect(
+      parseGitHubReference(`${pull}${suffix}`, { pullSubtargets: true }),
+      suffix,
+    ).toEqual(parseGitHubReference(pull));
+  }
+  for (const url of [
+    "https://github.com.evil.test/block/buzz/pull/23/checks",
+    "https://someone@github.com/block/buzz/pull/23#top",
+    "https://github.com:123/block/buzz/pull/23/checks",
+    "http://github.com/block/buzz/pull/23#top",
+    "https://github.com/block/buzz/pull/0/checks",
+    "https://github.com/block/buzz/pull/2147483648#top",
+    "https://github.com/block/buzz/pull/23oops/checks",
+    "https://github.com/block/buzz/issues/12#issuecomment-123",
+    "https://github.com/block/buzz/issues/12/checks",
+  ])
+    expect(
+      parseGitHubReference(url, { pullSubtargets: true }),
+      url,
+    ).toBeUndefined();
 });

@@ -48,6 +48,7 @@ export function createChannelKit({
   community,
   signal,
   canWrite,
+  canRead = canWrite,
   delivered,
 }: {
   host: ChannelKitHost | undefined;
@@ -59,6 +60,7 @@ export function createChannelKit({
   community: string;
   signal: AbortSignal;
   canWrite(channel: string): boolean;
+  canRead?(channel: string): boolean;
   delivered(id: string): Promise<void>;
 }) {
   let state: Snapshot = { status: host ? "idle" : "unavailable", entries: [] };
@@ -332,7 +334,7 @@ export function createChannelKit({
     available: !!outbox?.supports(40100),
     async read(channel: string, { strong = true }: { strong?: boolean } = {}) {
       signal.throwIfAborted();
-      if (!canWrite(channel))
+      if (!canRead(channel))
         throw new Error("Canvas is unavailable after channel access changed");
       return selectedHead(
         await fresh([
@@ -350,7 +352,7 @@ export function createChannelKit({
       cursor?: CanvasHistoryCursor,
     ): Promise<CanvasHistoryPage> {
       signal.throwIfAborted();
-      if (!canWrite(channel))
+      if (!canRead(channel))
         throw new Error("Canvas is unavailable after channel access changed");
       const rows = await fresh([
         {
@@ -361,7 +363,7 @@ export function createChannelKit({
         },
       ]);
       signal.throwIfAborted();
-      if (!canWrite(channel))
+      if (!canRead(channel))
         throw new Error("Canvas is unavailable after channel access changed");
       if (
         rows.some(

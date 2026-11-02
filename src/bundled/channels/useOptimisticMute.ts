@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RelaySession } from "../../features/relay/session";
 
 type MuteIntent = Readonly<{
@@ -30,7 +30,11 @@ export function useOptimisticMute(
     };
   }, [write]);
 
-  function change(channelId: string, name: string, muted: boolean) {
+  const change = useCallback(function change(
+    channelId: string,
+    name: string,
+    muted: boolean,
+  ) {
     const active = lifetime.current;
     if (!active) return;
     const intent: MuteIntent = { channelId, name, muted, pending: true };
@@ -56,17 +60,17 @@ export function useOptimisticMute(
         finish(error instanceof Error ? error.message : String(error));
       }
     })();
-  }
-  return {
-    intents,
-    change,
-    dismiss(channelId: string) {
-      setIntents((current) => {
-        if (current.get(channelId)?.pending) return current;
-        const next = new Map(current);
-        next.delete(channelId);
-        return next;
-      });
-    },
-  };
+  }, []);
+  const dismiss = useCallback((channelId: string) => {
+    setIntents((current) => {
+      if (current.get(channelId)?.pending) return current;
+      const next = new Map(current);
+      next.delete(channelId);
+      return next;
+    });
+  }, []);
+  return useMemo(
+    () => ({ intents, change, dismiss }),
+    [intents, change, dismiss],
+  );
 }

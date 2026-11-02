@@ -33,7 +33,22 @@ it("keeps missing parents visible and reparents when history arrives", () => {
     [child, row("missing", "parent"), row("parent", "root")],
     "root",
   );
-  expect(tree.ancestors("child")).toEqual(["missing", "parent"]);
+  expect(tree.ancestors("child")).toEqual(["parent"]);
+  expect(tree.children.get("parent")?.map(({ id }) => id)).toEqual([
+    "child",
+    "missing",
+  ]);
+});
+it("keeps branches one level deep, in history order", () => {
+  const branch = row("branch", "root"),
+    first = row("first", "branch"),
+    deep = row("deep", "first"),
+    second = row("second", "branch");
+  const tree = replyTree([branch, first, deep, second], "root");
+  expect(tree.children.get(undefined)).toEqual([branch]);
+  expect(tree.children.get("branch")).toEqual([first, deep, second]);
+  expect(tree.children.get("first")).toBeUndefined();
+  expect(tree.ancestors("deep")).toEqual(["branch"]);
 });
 it("does not lose rows to self references, cycles, or chains entering cycles", () => {
   const rows = [row("a", "b"), row("b", "a"), row("c", "a"), row("d", "d")];

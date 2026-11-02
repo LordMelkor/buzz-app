@@ -23,19 +23,39 @@ export function apply(ctx: Context) {
 }
 ```
 
-`browser.View` is a host-provided React component accepting `{ url: string }`. It owns the controls, website viewport and native session for its mounted lifetime. It needs a flex container with available height, as supplied by Buzz's panel card. Plugins do not import internal host modules or invoke native commands directly. This preview API is not a stable compatibility contract.
+`browser.View` is a host-provided React component accepting `{ url: string; storage?: string }`. It owns the controls, website viewport and native session for its mounted lifetime. It needs a flex container with available height, as supplied by Buzz's panel card. Plugins do not import internal host modules or invoke native commands directly. This preview API is not a stable compatibility contract.
 
 `browser.available` is currently true only in the macOS desktop application. Web, Windows and Linux builds leave existing link handling unchanged. The Windows native positioning path is unverified; Linux needs a different embedding implementation. URLs must use HTTP(S), contain no credentials, and fit the 2,048-byte limit after URL normalization. Native validation also rejects Buzz's own application and development origins. Invalid addresses leave the existing page visible and show an error.
 
 The example only matches links when the capability is available. It declares the catch-all `order: 100`, so a default-band panel such as GitHub handles the links it recognises regardless of which plugin activated first; see [resolution order](plugin-architecture.md#resolution-order). Modifier-key clicks retain the host's existing behavior. This does not replace every external-link call site or the operating system's default browser.
 
-One native website session is supported at a time. Closing or replacing the panel, changing community, or disabling the plugin unmounts the view and discards that session's website storage. Back/Forward retain history while the same panel remains open. There are no tabs, saved history or bookmarks. Temporarily hiding the website for an application dialog does not end its session or stop its network activity.
+Each mounted view has its own native website session, which keeps its page while hidden in a background tab or on a pane still sliding into place. Up to four sessions are open at once; past that, the least recently shown hidden one closes, and its view reopens its last page in a new session when shown. Back/Forward retain history while a session lasts. There are no saved history or bookmarks. Temporarily hiding the website for an application dialog does not end its session or stop its network activity.
+
+Closing or replacing the panel, changing community, or disabling the plugin unmounts the view and discards its session and website storage, unless the view names a `storage`. `storage` names a website storage kept between opens and restarts: 1-64 lowercase letters, digits, `-`, `_` or `.`. Views naming the same storage share cookies and site data, so a website sign-in survives closing the panel. Native code derives a dedicated data store from the name, apart from Buzz's own. It requires macOS 14; earlier macOS and other platforms keep the private session. Plugin JavaScript is trusted, so this separates storages by name, not by plugin.
+
+A view with a `storage` also keeps its session for ten minutes after it unmounts, hidden. A view mounted with the same `url` and `storage` in that time, such as the same tab after visiting another channel, takes that session over as it was, mid-sign-in included.
 
 Reloading Buzz's main document ends the website session. An attachment queued before that reload cannot replace a session opened by the new document.
 
+Builderlab's bundled app panel passes a `builderlab` viewer lifetime instead of a
+shared website sign-in. The browser host uses its credential only for a native
+request to the compile-time Builderlab API origin, then installs the restricted
+HttpOnly/Secure viewer cookie on the tenant's fixed Apps domain with the server's
+absolute expiry. This is the same cookie as browser login, so login/consent repair
+replaces it instead of creating a conflicting second cookie.
+If the native exchange is unconfigured or its endpoint returns 404, the same
+account-isolated guest opens through browser login. Other errors stay closed.
+The guest stays blank until installation or this fallback finishes and its account lifetime is checked. No
+credential or generic cookie/header capability is exposed to the guest. Each
+account selects its own storage, kept across sign-ins and restarts so a browser
+login made through this fallback persists. Each sign-in is a separate lifetime;
+aborting it closes its live and parked guests, including a guest whose attach
+finishes after cancellation.
+Normal website views retain the storage behavior above.
+
 ## Native ownership
 
-The controls are ordinary trusted React UI in Buzz's main webview. Website content is a separate raw Wry child view positioned over the panel's website viewport, created without a Tauri IPC handler, custom protocols or host initialization scripts. It uses a nonpersistent data store. The main window's content-security policy is unchanged.
+The controls are ordinary trusted React UI in Buzz's main webview. Website content is a separate raw Wry child view positioned over the panel's website viewport, created without a Tauri IPC handler, custom protocols or host initialization scripts. It uses a nonpersistent data store, or the named persistent store described above. The main window's content-security policy is unchanged.
 
 The mounted view reports its viewport bounds and visibility to native code. Native code validates and clips bounds to the main webview. Resizing, scrolling, hiding the document and opening application overlays update guest placement or visibility. Session identifiers prevent delayed callbacks or cleanup from controlling a replacement view.
 
@@ -85,6 +105,6 @@ export function apply(ctx) {
 }
 ```
 
-In Settings → Plugins → Load from folder, select that folder and enable **Browser example**. Click `https://example.org/` in a message. The website and navigation controls should appear beside the conversation; a default-band panel that also matches the link, such as GitHub for a GitHub URL, wins instead. Other links keep their existing behavior.
+In Settings → Plugins → Manage plugins → Load from folder, select that folder and enable **Browser example**. Click `https://example.org/` in a message. The website and navigation controls should appear beside the conversation; a default-band panel that also matches the link, such as GitHub for a GitHub URL, wins instead. Other links keep their existing behavior.
 
 Check address entry, Back/Forward/Reload, resizing, opening an account menu, closing/reopening the panel, and disabling the plugin. Web, Windows and Linux keep their existing link handling. The example requires a host that provides `browser`; older hosts cannot activate it.

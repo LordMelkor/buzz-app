@@ -1,12 +1,10 @@
-import { openPage, pageChoices } from "./navigation.mjs";
+import { openPage, pageChoices, pageChoice } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 test.use({ pluginFixtures: true, historyCounts: { alpha: 0, beta: 0 } });
 
 async function expectPageRegistered(page, name) {
-  const choices = await pageChoices(page);
-  await expect(
-    choices.getByRole("option", { name, exact: true }),
-  ).toBeVisible();
+  const choices = await pageChoices(page, name);
+  await expect(pageChoice(choices, name)).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(
     page.getByRole("dialog", { name: "Search Buzz", includeHidden: true }),

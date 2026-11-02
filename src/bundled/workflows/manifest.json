@@ -3,5 +3,5 @@
   "name": "Workflows",
   "apiVersion": 1,
   "description": "Create and manage community workflows.",
-  "discovery": { "category": "productivity" }
+  "discovery": { "category": "productivity", "tags": ["tasks"] }
 }

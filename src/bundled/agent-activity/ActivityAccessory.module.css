@@ -1,13 +1,14 @@
 .root {
-  margin-block-start: var(--space-2);
+  margin-block-start: var(--space-1);
   min-width: 0;
   flex-shrink: 0;
 }
 .previews {
   display: flex;
   flex-direction: column;
+  gap: var(--space-1);
 }
-/* Error dismissal is a sibling action, never a button nested in NavigationItem. */
+/* Dismiss and Stop are sibling actions, never buttons nested in NavigationItem. */
 .row {
   display: flex;
   align-items: center;
@@ -17,8 +18,12 @@
   min-width: 0;
   flex: 1;
 }
+.row > :not(:first-child) {
+  flex-shrink: 0;
+}
 
-/* One glanceable line each; NavigationItem's label truncation applies per line. */
+/* One glanceable line each, ending in an ellipsis; the profile's Activity tab
+ * has the full text. NavigationItem's label truncation applies per line. */
 .preview {
   min-width: 0;
   display: flex;
@@ -31,26 +36,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.preview > :first-child {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-/* Errors explain what to do; keep their reason readable instead of clipped. */
-.preview[data-error] > * {
-  overflow: visible;
-  text-overflow: clip;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
 .detail {
   color: var(--text-subtle);
 }
 
 .summaryActivity {
-  padding: var(--space-half) var(--space-1);
-  padding-inline-end: var(--space-2);
-  border-radius: var(--radius-control);
-  background: var(--affordance-subtle);
   color: var(--text-subtle);
   display: inline-flex;
   align-items: center;
@@ -66,9 +56,25 @@
   flex-wrap: wrap;
 }
 .failure {
-  background: var(--affordance-danger);
   color: var(--text-danger);
 }
 .preview[data-error] {
   color: var(--text-danger);
+}
+
+/* Tabler’s point-up octagon becomes the flat-top stop-sign orientation. */
+.stopIcon {
+  transform: rotate(22.5deg);
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1);
+}
+
+.stopped {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
 }

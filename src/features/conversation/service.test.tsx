@@ -81,6 +81,21 @@ it("registers both surfaces under the injecting plugin scope, removes and replac
   await vi.waitFor(() => expect(h.service.tools.snapshot()).toHaveLength(1));
   expect(h.service.tools.snapshot()[0]).not.toBe(first);
 });
+it("provides ui.Tabs only while a plugin supplies the tab workspace", async () => {
+  const Tabs = () => null;
+  const h = harness({
+    inject: ["conversation"],
+    apply(ctx) {
+      ctx.conversation.registerTabs(Tabs);
+    },
+  });
+  expect(h.service.ui.Tabs).toBeUndefined();
+  h.runtime.reconcile([h.plugin]);
+  await vi.waitFor(() => expect(h.service.ui.Tabs).toBeDefined());
+  expect(h.service.ui.Tabs).toBe(h.service.ui.Tabs);
+  h.runtime.reconcile([]);
+  await vi.waitFor(() => expect(h.service.ui.Tabs).toBeUndefined());
+});
 it("bundled Emoji really registers a picker and a renderer, including reaction metadata", async () => {
   const h = harness(emoji);
   h.runtime.reconcile([h.plugin]);
@@ -351,4 +366,21 @@ it("owns accessories through disable, replacement and failed activation", async 
     ),
   );
   expect(broken.service.accessories.snapshot()).toHaveLength(0);
+});
+
+it("retires plugin chat menu contributions when their plugin is disabled", async () => {
+  const h = harness({
+    inject: ["conversation"],
+    apply(ctx) {
+      ctx.conversation.registerChatMenu(Component);
+    },
+  });
+  h.runtime.reconcile([h.plugin]);
+  await vi.waitFor(() =>
+    expect(h.service.chatMenus.snapshot()).toHaveLength(1),
+  );
+  h.runtime.reconcile([]);
+  await vi.waitFor(() =>
+    expect(h.service.chatMenus.snapshot()).toHaveLength(0),
+  );
 });

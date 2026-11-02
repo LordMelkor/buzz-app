@@ -95,9 +95,11 @@ html[data-keyboard-navigation] .search-field:has(input:focus-visible),
   background: var(--affordance-subtle-pressed);
 }
 
-html[data-keyboard-navigation] .search-field [data-search-clear]:focus-visible,
+html[data-keyboard-navigation]
+  .search-field:not([data-variant="palette"])
+  [data-search-clear]:focus-visible,
 :host([data-keyboard-navigation])
-  .search-field
+  .search-field:not([data-variant="palette"])
   [data-search-clear]:focus-visible {
   outline: none;
 }
@@ -107,4 +109,45 @@ html[data-keyboard-navigation] .search-field [data-search-clear]:focus-visible,
 }
 .search-field:has(input[aria-invalid="true"]) {
   border-color: var(--border-danger);
+}
+
+/* Unframed palette input; reserve the clear control to avoid layout shifts. */
+.search-field[data-variant="palette"] {
+  font-size: var(--text-body-lg);
+  font-weight: var(--text-body-lg--font-weight);
+  line-height: var(--text-body-lg--line-height);
+  letter-spacing: var(--text-body-lg--letter-spacing);
+  padding: var(--space-6) calc(var(--space-3) - 1px);
+  border-color: transparent;
+  border-radius: max(
+    0px,
+    calc(
+      var(--search-palette-radius, calc(var(--radius-panel) + var(--space-1))) -
+      var(--space-3)
+    )
+  );
+  corner-shape: squircle;
+  background: transparent;
+  box-shadow: none;
+}
+html[data-keyboard-navigation]
+  .search-field[data-variant="palette"]:has(input:focus-visible) {
+  border-color: var(--border-focus);
+}
+
+.search-field[data-variant="palette"] [data-search-clear][data-empty] {
+  visibility: hidden;
+}
+.search-field[data-variant="palette"] input::placeholder {
+  color: var(--text-metadata);
+}
+
+.search-field[data-variant="palette"] [data-search-clear] {
+  margin-block: calc(-1 * var(--space-half));
+}
+
+.search-field-actions {
+  display: flex;
+  flex-shrink: 0;
+  order: 2;
 }

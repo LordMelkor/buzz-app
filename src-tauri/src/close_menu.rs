@@ -1,13 +1,14 @@
 //! Cmd+W is a menu action that only ever closes a tab, never the window: with
 //! no tab to close it does nothing. Cmd+Shift+W clears the current channel's tabs.
 //! The red button still closes the window.
+//! Edit → Paste and Match Style (Cmd+Shift+V) pastes the clipboard as plain text.
 //! Ctrl+Tab bypasses macOS menu highlighting latency. Menu commands and the
 //! native key handler both work while a raw guest webview owns keyboard focus.
 use std::{cell::RefCell, ptr::NonNull};
 
 use block2::RcBlock;
-use objc2::{rc::Retained, runtime::AnyObject};
-use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
+use objc2::{rc::Retained, runtime::AnyObject, sel, MainThreadMarker};
+use objc2_app_kit::{NSApplication, NSEvent, NSEventMask, NSEventModifierFlags};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, WINDOW_SUBMENU_ID},
     AppHandle, Manager, Runtime,
@@ -17,6 +18,10 @@ const CLOSE: &str = "buzz-close";
 const CLOSE_ALL: &str = "buzz-close-all";
 const NEXT: &str = "buzz-next-tab";
 const PREVIOUS: &str = "buzz-previous-tab";
+const PASTE_PLAIN: &str = "buzz-paste-plain";
+// The focused composer marks the paste that follows as raw, whether or not a
+// key fired. A focused guest browser takes the paste itself.
+const PASTE_PLAIN_REQUEST: &str = "if (browserSessionId === null) document.activeElement?.dispatchEvent(new Event(\"buzz:paste-plain\"));";
 const REQUEST: &str = include_str!("close-request.js");
 const SWITCH: &str = include_str!("switch-tab-request.js");
 
@@ -38,16 +43,31 @@ pub(crate) fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let close_label = PredefinedMenuItem::close_window(app, None)?
         .text()?
         .replace('&', "");
+    // Tauri has no predefined Paste and Match Style. Cmd+Shift+V is the
+    // chord Slack and Google Docs use for pasting without formatting.
+    let paste_plain = MenuItem::with_id(
+        app,
+        PASTE_PLAIN,
+        "Paste and Match Style",
+        true,
+        Some("CmdOrCtrl+Shift+V"),
+    )?;
+    let paste_label = PredefinedMenuItem::paste(app, None)?
+        .text()?
+        .replace('&', "");
     let mut replaced = 0;
     for item in menu.items()? {
         if let Some(submenu) = item.as_submenu() {
             for (index, item) in submenu.items()?.iter().enumerate() {
                 if let Some(predefined) = item.as_predefined_menuitem() {
-                    if predefined.text()?.replace('&', "") == close_label {
+                    let label = predefined.text()?.replace('&', "");
+                    if label == close_label {
                         submenu.remove(item)?;
                         submenu.insert(&close, index)?;
                         submenu.insert(&close_all, index + 1)?;
                         replaced += 1;
+                    } else if label == paste_label {
+                        submenu.insert(&paste_plain, index + 1)?;
                     }
                 }
             }
@@ -80,9 +100,31 @@ pub(crate) fn handle<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEve
         // A block keeps the binding out of the page's global scope.
         NEXT => format!("{{ const tabEvent = \"buzz:next-tab\";\n{SWITCH}}}"),
         PREVIOUS => format!("{{ const tabEvent = \"buzz:previous-tab\";\n{SWITCH}}}"),
+        PASTE_PLAIN => {
+            // On the UI thread the script is sent to the page at once, so it
+            // runs before the paste command that follows it.
+            send_request(app, PASTE_PLAIN_REQUEST);
+            return paste_plain();
+        }
         _ => return,
     };
     send_request(app, &script);
+}
+
+// As a native Paste and Match Style item does: the focused web view, main or
+// guest, fires a paste event holding only the clipboard's plain text.
+fn paste_plain() {
+    let Some(marker) = MainThreadMarker::new() else {
+        return;
+    };
+    // A nil target walks the key window's responder chain; none may answer.
+    unsafe {
+        NSApplication::sharedApplication(marker).sendAction_to_from(
+            sel!(pasteAsPlainText:),
+            None,
+            None,
+        )
+    };
 }
 
 fn send_request<R: Runtime>(app: &AppHandle<R>, script: &str) -> bool {
@@ -99,6 +141,9 @@ fn send_request<R: Runtime>(app: &AppHandle<R>, script: &str) -> bool {
     }
     // Evaluate only in the trusted main view, even when a raw guest webview
     // owns keyboard focus.
+    let browser = serde_json::to_string(&crate::browser::focused_session())
+        .expect("Browser session IDs are JSON strings");
+    let script = format!("{{ const browserSessionId = {browser};\n{script}\n}}");
     if let Err(error) = window.eval(script) {
         eprintln!("Could not send Buzz tab request: {error}");
         return false;

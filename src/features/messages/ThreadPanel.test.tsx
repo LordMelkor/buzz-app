@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import { StrictMode } from "react";
@@ -18,6 +19,7 @@ import type { MessageComposerProps } from "./MessageComposer";
 import { createAgentLibrary } from "../agents/library";
 import type { RelaySession } from "../relay/session";
 import type { PageNavigation } from "../navigation/service";
+import type { JsonValue } from "../navigation/targets";
 import { createNavigationController } from "../navigation/controller";
 import { createMemoryHistory } from "../navigation/history";
 import type { ThreadSnapshot, ThreadView } from "../relay/threads";
@@ -83,20 +85,24 @@ vi.mock("./MessageComposer", () => ({
     channelId,
     scope,
     onSend,
-    personalConversation,
+    ownSoloConversation,
     activityClickOpensPanel,
     disabled,
     placeholder,
+    focusRequest,
+    threadSeed,
   }: MessageComposerProps) => (
     <section
       aria-label="Composer"
       data-root={threadRootId}
+      data-seed={threadSeed?.mentions.join(",")}
       data-channel={channelId}
       data-scope={scope}
-      data-personal={personalConversation}
+      data-own-solo={ownSoloConversation}
       data-direct-activity={activityClickOpensPanel}
       data-disabled={disabled}
       data-placeholder={placeholder}
+      data-focus-request={focusRequest}
     >
       <button type="button" onClick={() => onSend?.("own-reply")}>
         Send fixture reply
@@ -144,6 +150,8 @@ function ordinaryNavigation() {
     complete: vi.fn<PageNavigation["complete"]>(() => true),
     resolve: vi.fn(() => true),
     forSession: vi.fn<PageNavigation["forSession"]>(),
+    position: vi.fn<PageNavigation["position"]>(),
+    savePosition: vi.fn<PageNavigation["savePosition"]>(),
   } satisfies PageNavigation;
 }
 function messagesHarness(
@@ -348,8 +356,10 @@ it("allocation failure exposes an effective retry rather than leaving a spinner"
     })
     .mockReturnValue(h.view);
   h.render();
-  expect(screen.getByRole("alert")).toHaveTextContent("capacity");
-  fireEvent.click(screen.getByRole("button", { name: "Retry thread" }));
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "This thread didn’t load.",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(screen.getByText("root")).toBeVisible();
   expect(screen.queryByRole("alert")).toBeNull();
   expect(h.thread).toHaveBeenCalledTimes(2);
@@ -362,7 +372,7 @@ it("loads history automatically with error-only retry and no routine history con
     [row.authorId],
     "background",
   );
-  for (const name of ["Refresh thread", "Retry thread", "Load more replies"])
+  for (const name of ["Refresh thread", "Try again", "Load more replies"])
     expect(screen.queryByRole("button", { name })).toBeNull();
   expect(screen.queryByText(/Existing history may be incomplete/)).toBeNull();
   expect(h.view.loadMore).not.toHaveBeenCalled();
@@ -375,14 +385,14 @@ it("loads history automatically with error-only retry and no routine history con
   h.snapshot.status = "error";
   h.snapshot.error = "offline";
   h.render();
-  fireEvent.click(screen.getByRole("button", { name: "Retry thread" }));
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(h.view.loadMore).toHaveBeenCalledOnce();
   expect(h.view.refresh).toHaveBeenCalledTimes(2);
   h.snapshot.status = "ready";
   h.snapshot.error = undefined;
   h.snapshot.canLoadMore = false;
   h.render();
-  expect(screen.queryByRole("button", { name: "Retry thread" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   h.snapshot.limited = true;
   h.render();
   expect(screen.getByText("Thread history limit reached.")).toBeVisible();
@@ -390,7 +400,7 @@ it("loads history automatically with error-only retry and no routine history con
   h.snapshot.error = "Thread view exceeded its memory limit.";
   h.render();
   expect(screen.queryByText(/appear automatically/)).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Retry thread" }));
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(h.view.refresh).toHaveBeenCalledTimes(3);
   expect(h.ensure).toHaveBeenCalledOnce();
 });
@@ -407,7 +417,7 @@ it("keeps initial rows pending until positioned, exposes errors, and lets readin
   h.render();
   expect(h.element).not.toHaveAttribute("data-positioning");
   expect(
-    within(h.element).getByRole("button", { name: "Retry thread" }),
+    within(h.element).getByRole("button", { name: "Try again" }),
   ).toBeVisible();
   h.snapshot.status = "loading";
   h.snapshot.error = undefined;
@@ -457,6 +467,29 @@ it("keeps initial thread loading until available content has been positioned", (
   expect(within(section).getByText("root")).toBeVisible();
   expect(within(section).queryByText("Loading thread…")).toBeNull();
 });
+it.each([
+  ["waits", undefined, "1"],
+  ["clicks elsewhere first", "pointerDown", "0"],
+  ["types elsewhere first", "keyDown", "0"],
+] as const)(
+  "a focus request reaches the reply box once its root loads, unless the user %s",
+  (_, action, delivered) => {
+    const h = messagesHarness();
+    h.snapshot.status = "loading";
+    h.snapshot.root = undefined;
+    Object.assign(h.props, { focusRequest: 1 });
+    h.render();
+    expect(screen.queryByRole("region", { name: "Composer" })).toBeNull();
+    if (action) fireEvent[action](document.body, { key: "a" });
+    h.snapshot.root = row;
+    h.snapshot.status = "ready";
+    h.render();
+    expect(screen.getByRole("region", { name: "Composer" })).toHaveAttribute(
+      "data-focus-request",
+      delivered,
+    );
+  },
+);
 it("holds seeded rows behind the loader until the first page, and unread until the legacy walk settles", async () => {
   vi.useFakeTimers();
   const h = messagesHarness(ordinaryNavigation());
@@ -703,9 +736,7 @@ it("keeps older-page loading quiet and retry between root and replies", () => {
   expect(
     alert.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  fireEvent.click(
-    within(section).getByRole("button", { name: "Retry thread" }),
-  );
+  fireEvent.click(within(section).getByRole("button", { name: "Try again" }));
   expect(h.view.loadMore).toHaveBeenCalledTimes(2);
   expect(h.view.refresh).toHaveBeenCalledOnce();
 
@@ -732,13 +763,11 @@ it("keeps retained-range repair quiet and retry after the replies", () => {
   const reply = screen.getByText("retained reply").closest("article");
   if (!reply) throw new Error("Missing retained reply");
   const alert = within(section).getByRole("alert");
-  expect(alert).toHaveTextContent("repair failed");
+  expect(alert).toHaveTextContent("This thread didn’t load.");
   expect(
     reply.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  fireEvent.click(
-    within(section).getByRole("button", { name: "Retry thread" }),
-  );
+  fireEvent.click(within(section).getByRole("button", { name: "Try again" }));
   expect(h.view.refresh).toHaveBeenCalledTimes(2);
   expect(h.view.loadMore).not.toHaveBeenCalled();
 });
@@ -907,7 +936,13 @@ it("routes media in replies through the resolved root review workspace", () => {
   ];
   h.render();
   fireEvent.click(screen.getByRole("button", { name: "Open media reply" }));
-  expect(open).toHaveBeenCalledExactlyOnceWith("reply", attachment, 0, true);
+  expect(open).toHaveBeenCalledExactlyOnceWith(
+    "reply",
+    attachment,
+    0,
+    true,
+    undefined,
+  );
 });
 
 it("uses the resolved root with the shared composer and reveals an own send even while reading above", () => {
@@ -972,6 +1007,69 @@ it.each([
     );
   },
 );
+const composerSeed = () =>
+  screen.getByRole("region", { name: "Composer" }).getAttribute("data-seed");
+it("passes the viewer's latest message in the thread as the composer seed", () => {
+  const h = messagesHarness();
+  h.snapshot.root = { ...row, authorId: viewer, mentions: ["d".repeat(64)] };
+  h.snapshot.replies = [
+    { ...row, id: "r1", createdAt: 2, mentions: ["e".repeat(64)] },
+    {
+      ...row,
+      id: "r2",
+      createdAt: 3,
+      authorId: viewer,
+      mentions: ["f".repeat(64)],
+    },
+    { ...row, id: "r3", createdAt: 4, mentions: ["g".repeat(64)] },
+  ];
+  h.render();
+  expect(composerSeed()).toBe("f".repeat(64));
+});
+it("seeds from the viewer's reply in someone else's thread", () => {
+  const h = messagesHarness();
+  h.snapshot.root = { ...row, mentions: ["d".repeat(64)] };
+  h.snapshot.replies = [
+    {
+      ...row,
+      id: "r1",
+      createdAt: 2,
+      authorId: viewer,
+      mentions: ["e".repeat(64)],
+    },
+  ];
+  h.render();
+  expect(composerSeed()).toBe("e".repeat(64));
+});
+it.each([
+  {
+    author: "a workflow the viewer owns",
+    root: { ...row, workflowOwnerId: viewer },
+  },
+  { author: "another user", root: row },
+])(
+  "passes no seed for a thread the viewer never wrote in, rooted by $author",
+  ({ root }) => {
+    const h = messagesHarness();
+    h.snapshot.root = { ...root, mentions: ["d".repeat(64)] };
+    h.snapshot.replies = [
+      { ...row, id: "r1", createdAt: 2, mentions: ["e".repeat(64)] },
+    ];
+    h.render();
+    expect(composerSeed()).toBeNull();
+  },
+);
+it("passes no seed until the first page lands", () => {
+  const h = messagesHarness();
+  h.snapshot.status = "loading";
+  h.snapshot.root = { ...row, authorId: viewer, mentions: ["d".repeat(64)] };
+  h.render();
+  expect(screen.getByRole("region", { name: "Composer" })).toBeVisible();
+  expect(composerSeed()).toBeNull();
+  h.snapshot.status = "ready";
+  h.render();
+  expect(composerSeed()).toBe("d".repeat(64));
+});
 it.each([
   { gap: 79, follows: true },
   { gap: 80, follows: false },
@@ -1084,6 +1182,7 @@ it("ordinary routed loading failure completes as unavailable, never as an opened
   expect(navigation.complete).toHaveBeenCalledExactlyOnceWith({
     status: "failed",
     reason: "unavailable",
+    presented: true,
   });
 });
 it.each(["ready", "unavailable", "error"] as const)(
@@ -1106,6 +1205,7 @@ it.each(["ready", "unavailable", "error"] as const)(
             status: "failed",
             reason:
               targetStatus === "unavailable" ? "not-found" : "unavailable",
+            presented: true,
           },
     );
   },
@@ -1113,6 +1213,8 @@ it.each(["ready", "unavailable", "error"] as const)(
 it("a presented ordinary thread survives the real navigation deadline while history is pending", async () => {
   vi.useFakeTimers();
   const controller = createNavigationController(createMemoryHistory());
+  // The visit deadline runs only while a presenter is attached, as the app's is.
+  controller.attach();
   let release = () => {};
   try {
     const navigation = ordinaryNavigation();
@@ -1150,6 +1252,41 @@ it("a presented ordinary thread survives the real navigation deadline while hist
     release();
     controller.dispose();
     vi.useRealTimers();
+  }
+});
+it("a routed thread that fails in place keeps its reader and recovers through its own Try again", () => {
+  const controller = createNavigationController(createMemoryHistory());
+  try {
+    const navigation = ordinaryNavigation();
+    void controller.navigation.open(navigation.target);
+    const { attempt } = controller.navigation.snapshot();
+    navigation.signal = attempt.signal;
+    navigation.complete.mockImplementation((result) =>
+      controller.complete(attempt, result),
+    );
+    const h = messagesHarness(navigation);
+    h.snapshot.status = "error";
+    h.snapshot.error = "offline";
+    h.render();
+    expect(controller.navigation.snapshot()).toMatchObject({
+      status: "failed",
+      presented: true,
+    });
+    expect(attempt.signal.aborted).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(h.view.refresh).toHaveBeenCalled();
+    h.snapshot.status = "ready";
+    h.snapshot.error = undefined;
+    h.render();
+    expect(h.view.dispose).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("region", { name: "Thread messages" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(h.element.scrollTop).toBe(3400);
+    h.unmount();
+  } finally {
+    controller.dispose();
   }
 });
 it("revoked ordinary presentation cannot position or complete after loading", () => {
@@ -1215,7 +1352,9 @@ it("without close, the embedded thread keeps its reader but has no close header 
   expect(
     screen.queryByRole("button", { name: "Close thread" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByRole("alert")).toHaveTextContent("fixture unavailable");
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "This thread didn’t load.",
+  );
   fireEvent.keyDown(screen.getByRole("complementary", { name: "Thread" }), {
     key: "Escape",
   });
@@ -1268,6 +1407,9 @@ it("observes a visible reply before its root resolves, then enables thread catch
   );
   h.render();
   screen.getByRole("button", { name: "Close thread" }).focus();
+  // Focus rerenders the rows, which measure again in the next frame.
+  await act(async () => {});
+  await act(() => vi.advanceTimersToNextFrame());
   await act(() => vi.advanceTimersByTimeAsync(299));
   expect(observe).not.toHaveBeenCalled();
   await act(() => vi.advanceTimersByTimeAsync(1));
@@ -1276,6 +1418,7 @@ it("observes a visible reply before its root resolves, then enables thread catch
 
   h.snapshot.root = row;
   h.render();
+  await act(() => vi.advanceTimersToNextFrame());
   await act(() => vi.advanceTimersByTimeAsync(300));
   expect(catchUp).toHaveBeenCalledExactlyOnceWith(reply.id, row.id);
 });
@@ -1304,43 +1447,63 @@ it("inline Inbox reveal opts into exact reader and composes origin action withou
   ).not.toHaveAttribute("data-positioning");
 });
 
-it("passes the Me recipient, readiness and direct Activity contract through to thread composition", () => {
+it("names the conversation a thread lives in as a link, only when its host can open it there", () => {
+  const h = messagesHarness();
+  const open = vi.fn();
+  const view = render(
+    <ThreadPanel {...h.props} parent={{ label: "#Alpha", open }} />,
+  );
+  const thread = screen.getByRole("complementary", { name: "Thread" });
+  const link = within(thread).getByRole("button", { name: "#Alpha" });
+  expect(link.closest("p")).toHaveTextContent("In #Alpha");
+  fireEvent.click(link);
+  expect(open).toHaveBeenCalledOnce();
+  view.rerender(<ThreadPanel {...h.props} />);
+  expect(within(thread).queryByText("#Alpha")).toBeNull();
+});
+
+it("passes readiness and direct Activity through to thread composition, and gives a Solo thread none", () => {
   const h = messagesHarness();
   const view = render(
-    <ThreadPanel
-      {...h.props}
-      personalConversation
-      activityClickOpensPanel
-      disabled
-    />,
+    <ThreadPanel {...h.props} activityClickOpensPanel disabled />,
   );
   const composer = screen.getByRole("region", { name: "Composer" });
-  expect(composer).toHaveAttribute("data-personal", "true");
   expect(composer).toHaveAttribute("data-direct-activity", "true");
   expect(composer).toHaveAttribute("data-disabled", "true");
   view.rerender(
-    <ThreadPanel
-      {...h.props}
-      personalConversation
-      activityClickOpensPanel
-      disabled={false}
-    />,
+    <ThreadPanel {...h.props} activityClickOpensPanel disabled={false} />,
   );
   expect(composer).toHaveAttribute("data-disabled", "false");
   view.rerender(<ThreadPanel {...h.props} />);
-  expect(composer).not.toHaveAttribute("data-personal");
   expect(composer).not.toHaveAttribute("data-direct-activity");
+  // Solo agents answer at top level: its threads are read-only.
+  view.rerender(<ThreadPanel {...h.props} soloConversation />);
+  expect(
+    screen.queryByRole("region", { name: "Composer" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("region", { name: "Thread messages" }),
+  ).toBeInTheDocument();
 });
 
 it.each([
   { channelType: "stream" as const, joinable: true },
   { channelType: "forum" as const, joinable: true },
+  {
+    channelType: "stream" as const,
+    joinRole: "guest" as const,
+    joinable: false,
+  },
   { channelType: "stream" as const, archived: true as const, joinable: false },
-  { channelType: "session" as const, joinable: false },
+  { channelType: "solo" as const, archived: true as const, joinable: false },
+  { channelType: "solo" as const, joinable: false },
 ])(
   "replaces the reply composer for a $channelType preview (joinable: $joinable)",
   ({ joinable, ...metadata }) => {
     const h = messagesHarness();
+    Object.assign(h.props, {
+      soloConversation: metadata.channelType === "solo",
+    });
     const channel: ChannelSummary = {
       id: "channel",
       name: "General",
@@ -1358,12 +1521,118 @@ it.each([
     });
     h.render();
     expect(
-      screen.getByRole("region", { name: "Channel preview" }),
+      screen.getByRole("region", {
+        name: metadata.archived
+          ? metadata.channelType === "solo"
+            ? "Archived chat"
+            : "Archived channel"
+          : metadata.joinRole === "guest"
+            ? "Read-only channel"
+            : "Channel preview",
+      }),
     ).toBeVisible();
+    if (metadata.archived) {
+      expect(
+        screen.getByText(
+          metadata.channelType === "solo"
+            ? "This chat is archived"
+            : "This channel is archived",
+          { exact: true },
+        ),
+      ).toBeVisible();
+    }
     expect(screen.queryByRole("region", { name: "Composer" })).toBeNull();
     expect(!!screen.queryByRole("button", { name: "Join" })).toBe(joinable);
   },
 );
+
+it("replaces an archived member thread composer and restores it on unarchive", () => {
+  const h = messagesHarness();
+  const channel: ChannelSummary = {
+    id: "channel",
+    name: "General",
+    channelType: "stream",
+  };
+  let list: ChannelList = { status: "ready", channels: [channel] };
+  const listeners = new Set<() => void>();
+  Object.assign(h.session, {
+    channels: {
+      list: () => list,
+      get: () => list.channels[0],
+      subscribeList: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+    channelLifecycle: { available: true, run: vi.fn() },
+  });
+  h.render();
+  expect(screen.getByRole("region", { name: "Composer" })).toBeInTheDocument();
+  act(() => {
+    list = { ...list, channels: [{ ...channel, archived: true }] };
+    for (const listener of listeners) listener();
+  });
+  expect(
+    screen.getByRole("region", { name: "Archived channel" }),
+  ).toHaveTextContent("This channel is archived");
+  expect(screen.queryByRole("region", { name: "Composer" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
+  act(() => {
+    list = { ...list, channels: [channel] };
+    for (const listener of listeners) listener();
+  });
+  expect(screen.getByRole("region", { name: "Composer" })).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Archived channel" })).toBeNull();
+});
+
+it("keeps guest threads readable without a reply composer or Join action across default changes", () => {
+  const h = messagesHarness();
+  const channel: ChannelSummary = {
+    id: "channel",
+    name: "General",
+    channelType: "stream",
+    viewerRole: "guest",
+    readOnly: true,
+    joinRole: "guest",
+  };
+  let list: ChannelList = { status: "ready", channels: [channel] };
+  const listeners = new Set<() => void>();
+  Object.assign(h.session, {
+    channels: {
+      list: () => list,
+      get: () => list.channels[0],
+      subscribeList: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+    channelLifecycle: { available: true, run: vi.fn() },
+  });
+  h.render();
+  expect(
+    screen.getByRole("region", { name: "Read-only channel" }),
+  ).toHaveTextContent("This channel is read-only");
+  expect(
+    screen.getByRole("region", { name: "Thread messages" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Composer" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
+  act(() => {
+    list = { ...list, channels: [{ ...channel, joinRole: "member" }] };
+    for (const listener of listeners) listener();
+  });
+  expect(
+    screen.getByRole("region", { name: "Read-only channel" }),
+  ).toHaveTextContent("Read-only access");
+  expect(screen.queryByRole("region", { name: "Composer" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
+  act(() => {
+    const { readOnly: _, ...promoted } = channel;
+    list = { ...list, channels: [{ ...promoted, viewerRole: "member" }] };
+    for (const listener of listeners) listener();
+  });
+  expect(screen.getByRole("region", { name: "Composer" })).toBeInTheDocument();
+});
 
 it("keeps a thread preview until membership arrives, with failed joins retryable", async () => {
   const h = messagesHarness();
@@ -1488,6 +1757,7 @@ it.each(["unavailable", "error", "cancelled"] as const)(
     expect(next.complete).toHaveBeenCalledWith({
       status: "failed",
       reason: result === "unavailable" ? "not-found" : "unavailable",
+      presented: true,
     });
     if (result === "unavailable") {
       // Retrying can't restore a message that no longer exists.
@@ -1584,6 +1854,409 @@ it("a workspace diverts a wrong-root link without replacing its confirmed reader
   expect(next.complete).not.toHaveBeenCalled();
 });
 
+it("a retained reader reveals its exact selected message, again for each new request", async () => {
+  const h = messagesHarness();
+  const reply = { ...row, id: "d".repeat(64), content: "the reply" };
+  h.snapshot.replies = [reply];
+  h.snapshot.target = reply;
+  h.snapshot.targetStatus = "ready";
+  const props = h.props as ThreadPanelProps;
+  Object.assign(props, {
+    messageId: reply.id,
+    retainThread: true,
+    revealSelected: true,
+    revealRequest: 1,
+  });
+  h.render();
+  expect(h.thread).toHaveBeenCalledWith("channel", reply.id, { exact: true });
+  const revealedReply = () =>
+    vi
+      .mocked(HTMLElement.prototype.scrollIntoView)
+      .mock.contexts.some(
+        (context) => (context as HTMLElement).dataset.messageId === reply.id,
+      );
+  await waitFor(() => expect(revealedReply()).toBe(true));
+  vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+  // The same message again: the retained reader selects it and reveals anew.
+  props.revealRequest = 2;
+  h.rerenderProps();
+  await waitFor(() =>
+    expect(h.view.retarget).toHaveBeenCalledWith(
+      reply.id,
+      expect.any(AbortSignal),
+    ),
+  );
+  await waitFor(() => expect(revealedReply()).toBe(true));
+  expect(h.thread).toHaveBeenCalledOnce();
+  // A rerender without a new request does not reveal again.
+  vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+  h.rerenderProps();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(revealedReply()).toBe(false);
+});
+
+it("a new reveal request reopens a branch the reader collapsed, and live updates leave it closed", async () => {
+  const h = messagesHarness();
+  const reply = (id: string, content: string, replyParentId: string) => ({
+    ...row,
+    id: id.repeat(64),
+    content,
+    replyParentId,
+    createdAt: 2,
+  });
+  const parent = reply("d", "the parent", row.id);
+  const first = reply("e", "first child", parent.id);
+  const second = reply("f", "second child", parent.id);
+  h.snapshot.replies = [parent, first, second];
+  h.snapshot.target = first;
+  h.snapshot.targetStatus = "ready";
+  const props = h.props as ThreadPanelProps;
+  Object.assign(props, {
+    messageId: first.id,
+    retainThread: true,
+    revealSelected: true,
+    revealRequest: 1,
+  });
+  h.render();
+  const shown = (message: ChannelMessage) =>
+    h.element.querySelector(`[data-message-id="${message.id}"]`);
+  const collapse = () => {
+    fireEvent.click(screen.getByRole("button", { name: "Collapse 2 replies" }));
+    expect(shown(first)).toBeNull();
+  };
+  const revealed = async (message: ChannelMessage) => {
+    await waitFor(() => expect(shown(message)).toHaveFocus());
+    expect(
+      vi
+        .mocked(HTMLElement.prototype.scrollIntoView)
+        .mock.contexts.some(
+          (context) =>
+            (context as HTMLElement).dataset.messageId === message.id,
+        ),
+    ).toBe(true);
+    vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+  };
+  await revealed(first);
+  collapse();
+  // An ordinary live update within the same request keeps the branch closed.
+  h.snapshot.replies = [parent, first, second, reply("9", "later", row.id)];
+  h.render();
+  expect(screen.getByText("later")).toBeInTheDocument();
+  expect(shown(first)).toBeNull();
+  // The same message requested again reopens its branch.
+  props.revealRequest = 2;
+  h.rerenderProps();
+  await revealed(first);
+  collapse();
+  // So does a request for another reply in that branch.
+  h.snapshot.target = second;
+  h.render();
+  Object.assign(props, { messageId: second.id, revealRequest: 3 });
+  h.rerenderProps();
+  await revealed(second);
+});
+
+/** Visits as navigation keeps them: a visit's place outlives each presentation. */
+function visitPlaces() {
+  const places = new Map<string, JsonValue>();
+  const visit = (entryId: string, traversal?: true) => ({
+    ...ordinaryNavigation(),
+    entryId,
+    ...(traversal && { traversal }),
+    position: (key: string) => places.get(`${entryId}:${key}`),
+    savePosition(key: string, value: JsonValue) {
+      places.set(`${entryId}:${key}`, value);
+    },
+  });
+  /** A link to the root message: an exact reveal, not an ordinary opening. */
+  const linked = (
+    entryId: string,
+    traversal?: true,
+    messageId = row.id,
+  ): PageNavigation => {
+    const navigation = visit(entryId, traversal);
+    const { threadRootId: _root, ...target } = navigation.target;
+    return { ...navigation, target: { ...target, messageId } };
+  };
+  return { places, visit, linked };
+}
+const threadReply = (id: string, replyParentId: string) => ({
+  ...row,
+  id: id.repeat(64),
+  content: `reply ${id}`,
+  replyParentId,
+  createdAt: 2,
+});
+/** Lays rows out 2,000 px apart, 500 px tall, scrolling with the reader. */
+function layOutRows(ids: readonly string[]) {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      const index = ids.indexOf(this.dataset.messageId ?? "");
+      return index < 0
+        ? new DOMRect(0, 0, 500, 600)
+        : new DOMRect(0, index * 2000 - this.scrollTop, 500, 500);
+    },
+  );
+}
+
+it.each([
+  ["the reply it was left at, reopening its branch", true],
+  ["the nearest ancestor of a reply that is gone", false],
+])("Back to a thread visit anchors on %s", (_, present) => {
+  const { places, visit } = visitPlaces();
+  const parent = threadReply("d", row.id);
+  const child = threadReply("e", parent.id);
+  places.set("thread-visit:thread", {
+    anchor: { id: child.id, top: -100, ancestors: [parent.id] },
+  });
+  const h = messagesHarness(visit("thread-visit", true));
+  h.snapshot.replies = present ? [parent, child] : [parent];
+  h.render();
+  const anchor = present ? child : parent;
+  expect(
+    h.element.querySelector(`[data-message-id="${anchor.id}"]`),
+  ).not.toBeNull();
+  // jsdom rows sit at the scroller top, so the row moves back to 100 px above
+  // it: the place, not the end of the thread.
+  expect(h.element.scrollTop).toBe(100);
+  expect(h.element).not.toHaveAttribute("data-positioning");
+});
+
+it.each([
+  ["reveals its linked message again", true],
+  ["opens an ordinary thread at its end again", false],
+])("Back to a place no longer loaded %s", async (_, exact) => {
+  const { places, visit, linked } = visitPlaces();
+  // An older page the reopened thread has not loaded.
+  places.set("thread-visit:thread", {
+    anchor: { id: "f".repeat(64), top: -100, ancestors: [] },
+  });
+  const h = messagesHarness(
+    exact ? linked("thread-visit", true) : visit("thread-visit", true),
+  );
+  h.snapshot.replies = [threadReply("d", row.id)];
+  h.snapshot.target = row;
+  h.snapshot.targetStatus = "ready";
+  h.render();
+  if (!exact) {
+    expect(h.element.scrollTop).toBe(3400);
+    return;
+  }
+  const root = h.element.querySelector(`[data-message-id="${row.id}"]`);
+  await waitFor(() => expect(root).toHaveFocus());
+  expect(
+    vi
+      .mocked(HTMLElement.prototype.scrollIntoView)
+      .mock.contexts.includes(root),
+  ).toBe(true);
+});
+
+it("records a visit's place only once that visit was presented", async () => {
+  const { places, visit, linked } = visitPlaces();
+  const reply = threadReply("d", row.id);
+  const h = messagesHarness(visit("thread-visit"));
+  h.snapshot.replies = [reply];
+  const mounted = render(<ThreadPanel {...h.props} retainThread />);
+  // The retained reader is already positioned for the ordinary visit; the
+  // linked reply's target is still loading, so its reveal has not run.
+  await act(async () =>
+    mounted.rerender(
+      <ThreadPanel
+        {...h.props}
+        retainThread
+        messageId={reply.id}
+        navigation={linked("linked", undefined, reply.id)}
+      />,
+    ),
+  );
+  expect(h.view.retarget).toHaveBeenCalledOnce();
+  expect(places.get("thread-visit:thread")).toEqual({});
+  mounted.unmount();
+  expect(places.has("linked:thread")).toBe(false);
+});
+
+it("records a visit's place when the reader leaves, not as replies arrive", () => {
+  const { places, visit } = visitPlaces();
+  // A return with no recorded place opens as it first did.
+  const h = messagesHarness(visit("thread-visit", true));
+  h.render();
+  expect(h.element.scrollTop).toBe(3400);
+  h.snapshot.replies = [threadReply("d", row.id)];
+  h.render();
+  expect(places.has("thread-visit:thread")).toBe(false);
+  h.unmount();
+  expect(places.has("thread-visit:thread")).toBe(true);
+});
+
+it("a reader still shown after its route is withdrawn records its place when it leaves", async () => {
+  const { visit } = visitPlaces();
+  // Rows sit below the scroller top, so the reader's first row anchors it.
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 500, 500),
+  );
+  const h = messagesHarness(visit("thread-visit"));
+  h.snapshot.replies = [threadReply("d", row.id)];
+  const props = h.props as ThreadPanelProps;
+  Object.assign(props, { retainThread: true });
+  h.render();
+  expect(h.element.scrollTop).toBe(3400);
+  // A link in the timeline routes elsewhere; the thread stays open beside it
+  // and the reader keeps scrolling.
+  Object.assign(props, { navigation: undefined });
+  h.rerenderProps();
+  h.scroll(1000);
+  Object.assign(props, { navigation: visit("thread-visit", true) });
+  await act(async () => h.rerenderProps());
+  expect(h.view.retarget).toHaveBeenCalledOnce();
+  expect(h.element.scrollTop).toBe(1000);
+});
+
+it.each([
+  ["withdrawn, then hidden", ["navigation", "active"]],
+  ["hidden, then withdrawn", ["active", "navigation"]],
+] as const)(
+  "a reader %s is shown again at its place, which the returning route keeps",
+  async (_, order) => {
+    const { visit } = visitPlaces();
+    const reply = threadReply("d", row.id);
+    layOutRows([row.id, reply.id]);
+    const h = messagesHarness(visit("thread-visit"));
+    h.snapshot.replies = [reply];
+    const props = h.props as ThreadPanelProps;
+    Object.assign(props, { retainThread: true });
+    h.render();
+    h.scroll(1000);
+    // Back to the channel withdraws the route and closes the pane around it.
+    for (const prop of order) {
+      Object.assign(props, { [prop]: prop === "active" ? false : undefined });
+      h.rerenderProps();
+    }
+    // WebKit drops the hidden reader's scroll offset.
+    h.element.scrollTop = 0;
+    // Forward shows it again before the route lands.
+    Object.assign(props, { active: true });
+    h.rerenderProps();
+    expect(h.element.scrollTop).toBe(1000);
+    Object.assign(props, { navigation: visit("thread-visit", true) });
+    await act(async () => h.rerenderProps());
+    expect(h.view.retarget).toHaveBeenCalledOnce();
+    expect(h.element.scrollTop).toBe(1000);
+  },
+);
+
+it("a withdrawn reader shown again records where it then reads", async () => {
+  const { visit } = visitPlaces();
+  const reply = threadReply("d", row.id);
+  layOutRows([row.id, reply.id]);
+  const h = messagesHarness(visit("thread-visit"));
+  h.snapshot.replies = [reply];
+  const props = h.props as ThreadPanelProps;
+  Object.assign(props, { retainThread: true });
+  h.render();
+  h.scroll(1000);
+  // A timeline link withdraws the route. The pane is closed and reopened
+  // around the thread, and the reader scrolls on before going Back.
+  Object.assign(props, { navigation: undefined });
+  h.rerenderProps();
+  Object.assign(props, { active: false });
+  h.rerenderProps();
+  Object.assign(props, { active: true });
+  h.rerenderProps();
+  h.scroll(2000);
+  Object.assign(props, { navigation: visit("thread-visit", true) });
+  await act(async () => h.rerenderProps());
+  expect(h.view.retarget).toHaveBeenCalledOnce();
+  expect(h.element.scrollTop).toBe(2000);
+});
+
+it("a reader first shown while its route retargets stays hidden until the route restores its place", async () => {
+  const { places, visit } = visitPlaces();
+  places.set("thread-visit:thread", {
+    anchor: { id: row.id, top: 100, ancestors: [] },
+  });
+  const h = messagesHarness();
+  h.snapshot.status = "loading";
+  const props = h.props as ThreadPanelProps;
+  Object.assign(props, { retainThread: true });
+  h.render();
+  let release!: (value: "selected") => void;
+  h.view.retarget.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  Object.assign(props, { navigation: visit("thread-visit", true) });
+  h.rerenderProps();
+  try {
+    expect(h.view.retarget).toHaveBeenCalledOnce();
+    // The first page lands: the reader positions at the end, out of sight.
+    h.snapshot.status = "ready";
+    h.render();
+    expect(h.element.scrollTop).toBe(3400);
+    expect(h.element).toHaveAttribute("data-positioning");
+  } finally {
+    await act(async () => release("selected"));
+  }
+  expect(h.element).not.toHaveAttribute("data-positioning");
+  expect(h.element.scrollTop).toBe(3300);
+});
+
+it("a reader hidden while its route retargets reads nothing until the route restores its place", async () => {
+  vi.useFakeTimers();
+  const { places, visit } = visitPlaces();
+  places.set("thread-visit:thread", {
+    anchor: { id: row.id, top: 100, ancestors: [] },
+  });
+  const h = messagesHarness();
+  h.snapshot.status = "loading";
+  h.snapshot.replies = [threadReply("d", row.id)];
+  vi.mocked(document.hasFocus).mockReturnValue(true);
+  vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([
+    new DOMRect(0, 0, 500, 500),
+  ] as unknown as DOMRectList);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 500, 500),
+  );
+  const observe = vi.fn(async () => {});
+  const catchUp = vi.fn(async () => {});
+  Object.assign(h.session.unread, {
+    sync: () => ({ capability: "frontier-sync" }),
+    reading: () => ({ view() {}, observe, catchUp, dispose() {} }),
+  });
+  const props = h.props as ThreadPanelProps;
+  Object.assign(props, { retainThread: true });
+  h.render();
+  let release!: (value: "selected") => void;
+  h.view.retarget.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  Object.assign(props, { navigation: visit("thread-visit", true) });
+  h.rerenderProps();
+  try {
+    // The first page lands at the end behind the loader, with focus inside.
+    h.snapshot.status = "ready";
+    h.render();
+    expect(h.element.scrollTop).toBe(3400);
+    h.element.focus();
+    await act(() => vi.advanceTimersToNextFrame());
+    await act(() => vi.advanceTimersByTimeAsync(300));
+    expect(catchUp).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => release("selected"));
+  }
+  // The restored place is read, not the end the reader never saw.
+  expect(h.element.scrollTop).toBe(3300);
+  await act(() => vi.advanceTimersToNextFrame());
+  await act(() => vi.advanceTimersByTimeAsync(300));
+  expect(observe).toHaveBeenCalled();
+  expect(catchUp).not.toHaveBeenCalled();
+});
+
 it("an unrouted retained opening retries allocation locally", () => {
   const h = messagesHarness();
   const navigationRetry = vi.fn();
@@ -1600,7 +2273,9 @@ it("an unrouted retained opening retries allocation locally", () => {
       onRetryNavigation={navigationRetry}
     />,
   );
-  expect(screen.getByRole("alert")).toHaveTextContent("capacity");
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "This thread didn’t load.",
+  );
   fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(screen.getByRole("region", { name: "Composer" })).toBeVisible();
   expect(navigationRetry).not.toHaveBeenCalled();

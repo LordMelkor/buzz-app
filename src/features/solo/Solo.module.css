@@ -1,0 +1,88 @@
+.work {
+  container: solo-conversation / inline-size;
+  height: 100%;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.composer {
+  padding: var(--space-3) var(--space-6);
+}
+.composer > p {
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  padding: var(--space-2) var(--space-1) 0;
+}
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-8);
+  height: 100%;
+  text-align: center;
+}
+.empty p {
+  color: var(--text-subtle);
+  max-width: 26.25rem;
+}
+.empty h1,
+.empty h2 {
+  font-size: var(--text-heading);
+  font-weight: var(--type-weight-medium);
+}
+@container solo-conversation (max-width: 45rem) {
+  .composer {
+    padding: var(--space-2);
+  }
+}
+
+.availability {
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  line-height: 1.6;
+  margin: var(--space-3) var(--space-4) 0;
+}
+
+.start {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* A new chat keeps its composer where the started chat's composer sits. */
+  padding: var(--space-4) 0 0;
+  overflow-y: auto;
+}
+
+.startContent {
+  width: 100%;
+  margin-top: auto;
+}
+
+.column {
+  width: 55%;
+  flex: 1;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-inline: auto;
+  padding-bottom: var(--space-4);
+}
+
+@container solo-conversation (max-width: 47.5rem) {
+  .column {
+    width: calc(100% - 2 * var(--space-2));
+    padding-bottom: var(--space-2);
+  }
+
+  .start {
+    padding: var(--space-2) var(--space-2) 0;
+  }
+}

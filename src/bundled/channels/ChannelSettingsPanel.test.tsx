@@ -36,6 +36,7 @@ it("shows known channel details with diagnostics collapsed until requested", asy
   ).not.toBeInTheDocument();
   expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   expect(screen.getByText("2")).toBeVisible();
+  expect(screen.queryByText("Who can contribute")).not.toBeInTheDocument();
   expect(screen.getByRole("tab", { name: "Channel settings" })).toHaveFocus();
   expect(screen.getByText("Refresh messages")).not.toBeVisible();
   await user.click(screen.getByText("Diagnostics"));
@@ -82,6 +83,9 @@ it("does not invent unknown metadata and still exposes diagnostics without a cha
   );
   expect(screen.queryByText("Channel type")).not.toBeInTheDocument();
   expect(screen.queryByText("Members")).not.toBeInTheDocument();
+  // The identity icon follows the sidebar: a chat bubble, not a hash.
+  expect(document.querySelector(".tabler-icon-message-circle")).toBeVisible();
+  expect(document.querySelector(".tabler-icon-hash")).toBeNull();
   rerender(
     <ChannelSettingsPanel
       scope="community:viewer"

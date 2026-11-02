@@ -12,6 +12,23 @@ const KEYBOARD_NAVIGATION_KEYS = new Set([
   "PageUp",
 ]);
 
+/** Explicit keyboard focus actions also use this owner after being rebound. */
+function showKeyboardFocus() {
+  document.documentElement.dataset.keyboardNavigation = "";
+}
+
+export function focusWithKeyboard(element: HTMLElement) {
+  showKeyboardFocus();
+  // Chromium ignores focus options when the control is already focused.
+  if (document.activeElement === element && !element.matches(":focus-visible"))
+    element.blur();
+  const options: FocusOptions & { focusVisible: boolean } = {
+    preventScroll: true,
+    focusVisible: true,
+  };
+  element.focus(options);
+}
+
 /**
  * Makes keyboard focus visible without treating a pointer click in a text field
  * as keyboard navigation. Browsers intentionally match :focus-visible for text
@@ -31,7 +48,7 @@ export function useKeyboardFocusVisibility() {
         (!event.ctrlKey || event.key === "Tab") &&
         (!event.altKey || event.key === "Tab")
       ) {
-        root.dataset.keyboardNavigation = "";
+        showKeyboardFocus();
       }
     };
     const usePointerNavigation = () => {

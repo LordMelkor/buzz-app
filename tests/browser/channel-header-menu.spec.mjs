@@ -30,6 +30,19 @@ test("header actions use the full-size menu and retain pane/dialog focus owners"
   await page
     .locator('button[data-channel-id="11111111-1111-4111-8111-111111111111"]')
     .click();
+  // The header's single title tab fills the title slot: a long name truncates
+  // only when the header runs out of room, not at the tab strip's 12rem cap.
+  const heading = page.getByRole("tab", { name: channelName, exact: true });
+  await expect(heading).toBeVisible();
+  await expect
+    .poll(
+      () =>
+        heading
+          .locator(".navigation-item-label")
+          .evaluate((label) => label.scrollWidth <= label.clientWidth),
+      "the header title shows the whole channel name",
+    )
+    .toBe(true);
   const trigger = page.getByRole("button", {
     name: "Channel actions",
     exact: true,
@@ -162,7 +175,7 @@ test("header actions use the full-size menu and retain pane/dialog focus owners"
       path: testInfo.outputPath("metadata-keyboard-focus.png"),
     });
   };
-  for (const label of ["Edit description", "Edit visibility", "View members"]) {
+  for (const label of ["Edit description", "View members"]) {
     const action = settings.getByRole("button", { name: label, exact: true });
     const row = action.locator("xpath=../..");
     await action.scrollIntoViewIfNeeded();
@@ -192,7 +205,7 @@ test("header actions use the full-size menu and retain pane/dialog focus owners"
     await page.mouse.click(box.x + box.width / 2, box.y + box.height - 8);
     const dialog = page.getByRole("dialog", {
       name:
-        label === "View members" ? "Channel members" : "Edit channel details",
+        label === "View members" ? "Manage members" : "Edit channel details",
       exact: true,
     });
     await expect(dialog).toBeVisible();
@@ -275,7 +288,12 @@ test("header actions use the full-size menu and retain pane/dialog focus owners"
   await nameEditor
     .getByRole("radio", { name: "Temporary", exact: true })
     .click();
-  await checkDurationConsumer(page, nameEditor, "edit-duration", testInfo);
+  await checkDurationConsumer(page, nameEditor, "edit-duration", testInfo, {
+    nextControl: nameEditor.getByRole("button", {
+      name: "Cancel",
+      exact: true,
+    }),
+  });
   await nameEditor.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(title).toBeFocused();
   if (browserName === "chromium") {
@@ -347,19 +365,21 @@ test("header actions use the full-size menu and retain pane/dialog focus owners"
   await menu
     .getByRole("menuitem", { name: "View canvas", exact: true })
     .click();
-  const canvas = page.getByRole("dialog", {
+  const canvas = page.getByRole("region", {
     name: "Channel Canvas",
     exact: true,
   });
   await expect(canvas).toBeVisible();
   await expect(
-    canvas.getByRole("button", { name: "Close Canvas", exact: true }),
+    page.getByRole("button", { name: "Close Canvas tab", exact: true }),
   ).toBeEnabled();
   await expect(
     canvas.getByRole("textbox", { name: "Canvas Markdown", exact: true }),
   ).toBeEnabled();
   await expect(menu).toHaveCount(0);
-  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", { name: "Close Canvas tab", exact: true })
+    .click();
   await expect(canvas).toHaveCount(0);
   await expect(trigger).toBeFocused();
   for (const label of ["Archive channel", "Delete channel"]) {
@@ -418,7 +438,10 @@ test.describe("sidebar actions in the header", () => {
       });
       await move.focus();
       await page.keyboard.press("ArrowRight");
-      return page.getByRole("menu", { name: "Move channel", exact: true });
+      return page.getByRole("menu", {
+        name: "Move Beta to section",
+        exact: true,
+      });
     };
     let move = await openMove();
     await expect(move).toHaveAttribute("data-size", "default");
@@ -429,7 +452,7 @@ test.describe("sidebar actions in the header", () => {
       .getByRole("menuitem", { name: "Create new…", exact: true })
       .click();
     const create = page.getByRole("dialog", {
-      name: "Create new section",
+      name: "Move to new section",
       exact: true,
     });
     await expect(
@@ -461,15 +484,12 @@ test.describe("sidebar actions in the header", () => {
       menu.getByRole("menuitem", { name: "Unmute", exact: true }),
     ).toBeVisible();
     await menu
-      .getByRole("menuitem", { name: /^Mark as (Read|Unread)$/ })
+      .getByRole("menuitem", { name: /^Mark as (read|unread)$/ })
       .click();
     await expect(menu).toHaveCount(0);
     await expect(trigger).toBeFocused();
     await trigger.click();
     await expect(menu).toBeFocused();
-    await expect(
-      menu.getByRole("menuitem", { name: "New session", exact: true }),
-    ).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(trigger).toBeFocused();
     expect(app.report.unexpected).toEqual([]);
@@ -511,7 +531,7 @@ test.describe("dialog origin retirement", () => {
     await page
       .getByRole("menuitem", { name: "View canvas", exact: true })
       .click();
-    const canvas = page.getByRole("dialog", {
+    const canvas = page.getByRole("region", {
       name: "Channel Canvas",
       exact: true,
     });
@@ -540,8 +560,9 @@ test.describe("dialog origin retirement", () => {
       .getByRole("menuitem", { name: "View canvas", exact: true })
       .click();
     await expect(editor).toHaveValue("Draft belongs to the original channel");
-    await canvas
-      .getByRole("button", { name: "Close Canvas", exact: true })
+    await expect(editor).toBeFocused();
+    await page
+      .getByRole("button", { name: "Close Canvas tab", exact: true })
       .click();
     expect(app.report.lifecyclePublications ?? []).toHaveLength(0);
   });
@@ -573,7 +594,7 @@ test.describe("dialog origin retirement", () => {
             .getByRole("menuitem", { name: "Delete channel", exact: true })
             .click();
         const dialog = page.getByRole("dialog", {
-          name: action === "create" ? "Create new section" : /^Delete .+\?$/,
+          name: action === "create" ? "Move to new section" : /^Delete .+\?$/,
         });
         await expect(dialog).toBeVisible();
         await back(page);

@@ -4,6 +4,7 @@ import type { Contribution, MatchOrder } from "../../plugins/contributions";
 import type { VoiceRecording } from "../relay/voice-media";
 import type { Attachment, ChannelMessage } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
+import type { ComposerSession } from "../messages/composer-session";
 
 /**
  * Opens a target, such as a plugin panel URL, where the conversation host
@@ -19,13 +20,33 @@ export type TargetOpener = Readonly<{
 /** Editor-independent reference to plugin content. Not an access grant or recipient. */
 export type ComposerResource = Readonly<{ uri: string; label: string }>;
 export type ComposerToolProps = Readonly<{
-  session: RelaySession;
+  session: ComposerSession;
   scope: string;
   channelId: string;
   threadRootId?: string | undefined;
   /** Sessions may offer library agents; the host confirms channel admission before sending. */
   inviteAgents?: boolean | undefined;
   disabled: boolean;
+  /** Read-only: who the draft mentions, in draft order. The tool re-renders when
+   * this changes; the array keeps its identity while only the prose changes. */
+  recipients: readonly Readonly<{ pubkey: string; name: string }>[];
+  /** Solo, alone with agents: who hears the message. Inline mentions decide
+   * when there are any; otherwise the toolbar's agents stand in. `only`
+   * replaces those stand-ins with a non-empty list and `toggle` adds or
+   * removes one, never the last; they also follow each send. While inline
+   * mentions decide, `toggle` adds or removes that mention instead. Absent
+   * elsewhere, where mentions alone decide. */
+  audience?:
+    | Readonly<{
+        recipients: readonly Readonly<{ pubkey: string; name: string }>[];
+        /** True while inline mentions in the text decide, so picks only change the stand-ins. */
+        named: boolean;
+        only(
+          recipients: readonly Readonly<{ pubkey: string; name: string }>[],
+        ): void;
+        toggle(recipient: Readonly<{ pubkey: string; name: string }>): void;
+      }>
+    | undefined;
   /** False after removal, destination change, read-only state or a rejected edit. */
   insertText(text: string): boolean;
   /** Atomically insert display text and explicit notification intent at the caret.
@@ -34,6 +55,16 @@ export type ComposerToolProps = Readonly<{
   insertMention(recipient: Readonly<{ pubkey: string; name: string }>): boolean;
   /** All-or-nothing insertion of a saved selection as individual mentions. */
   insertMentions(
+    recipients: readonly Readonly<{ pubkey: string; name: string }>[],
+  ): boolean;
+  /** Replace all selected mentions in one undoable edit, preserving prose and focus.
+   * An empty selection clears mentions. Rejected while editing a sent message. */
+  replaceRecipients(
+    recipients: readonly Readonly<{ pubkey: string; name: string }>[],
+  ): boolean;
+  /** Automatic targeting only: reject when text outside selected mentions is nonempty.
+   * Older hosts may omit this command. A rejected edit must not trigger unrestricted replacement. */
+  replaceRecipientsIfEmpty?(
     recipients: readonly Readonly<{ pubkey: string; name: string }>[],
   ): boolean;
   /** Atomically insert a host-owned inline resource at the caret. The host validates
@@ -107,6 +138,16 @@ export type LinkRenderer = Readonly<{
   className?: string | undefined;
   component: ComponentType<{ url: string }>;
 }>;
+/** Presentation for a fenced code block, chosen by its info-string language.
+ * The host retains the frame and copy action; failure or removal restores the code. */
+export type CodeBlockRenderer = Readonly<{
+  id: string;
+  title: string;
+  matches(language: string): boolean;
+  component: ComponentType<{ code: string; language: string }>;
+  /** A control the host places before its copy action, such as expanding the block. */
+  action?: ComponentType<{ code: string; language: string }> | undefined;
+}>;
 export type ContributionReader<T> = Readonly<{
   snapshot(): readonly Contribution<T>[];
   subscribe(listener: () => void): () => void;
@@ -155,6 +196,14 @@ export type MessageRenderer = Readonly<{
   id: string;
   title: string;
   matches(message: ChannelMessage): boolean;
+  /** True for each attachment the component draws itself. The host leaves
+   * those out of its attachment list only while it draws the component, and
+   * lists them again if the component fails. A throwing claim is treated as
+   * false. */
+  ownsAttachment?(
+    message: ChannelMessage,
+    attachment: ChannelMessage["attachments"][number],
+  ): boolean;
   component: ComponentType<TargetOpener & { message: ChannelMessage }>;
 }>;
 /** One ⋯ menu entry for a message. The host owns the menu, focus and row lifetime. */
@@ -163,7 +212,9 @@ export type MessageAction = Readonly<{
   title: string;
   icon?: ComponentType;
   matches(message: ChannelMessage, session: RelaySession): boolean;
-  /** Mounted by the row after the menu closes; call close() to dismiss. */
+  /** A menu contribution (such as a submenu) mounts inside the host menu. */
+  placement?: "menu";
+  /** Mounted after the menu closes by default; call close() to dismiss. */
   component: ComponentType<
     TargetOpener & {
       message: ChannelMessage;
@@ -186,6 +237,7 @@ export type ConversationExtensions = Readonly<{
   inline: ContributionReader<InlineRenderer>;
   completions?: ContributionReader<ComposerCompletion>;
   links?: ContributionReader<LinkRenderer>;
+  codeBlocks?: ContributionReader<CodeBlockRenderer>;
 }>;
 
 /** Immutable host-issued evidence, scoped to one live editor observation. */
@@ -204,17 +256,47 @@ export type CompletionQuery = Readonly<{
   end: number;
   query: string;
 }>;
+/** A name the provider cannot decide on yet. The host may hold it as a chip
+ * with no recipient and ask `resolve` for the recipient the terminator would
+ * have selected once the provider's evidence is complete; null returns the
+ * name to prose. `resolve` is headless: the provider has unmounted by then. */
+export type CompletionPending = Readonly<{
+  name: string;
+  resolve(signal: AbortSignal): Promise<CompletionResolution>;
+}>;
+/** The recipient; null for prose; or, when only longer known names kept the
+ * name from selecting over the complete choice set, those names, each
+ * resolvable under the same rule. The host may extend the chip over the words
+ * typed after it when they complete one of them, and ask that one. */
+export type CompletionResolution =
+  | Readonly<{ pubkey: string; name: string }>
+  | Readonly<{ continued: readonly CompletionPending[] }>
+  | null;
 export type CompletionEdit =
-  | Readonly<{ text: string; mention?: never; mentions?: never }>
+  | Readonly<{
+      text: string;
+      mention?: never;
+      mentions?: never;
+      pending?: never;
+    }>
   | Readonly<{
       mention: Readonly<{ pubkey: string; name: string }>;
       text?: never;
       mentions?: never;
+      pending?: never;
     }>
   | Readonly<{
       mentions: readonly Readonly<{ pubkey: string; name: string }>[];
       text?: never;
       mention?: never;
+      pending?: never;
+    }>
+  /** Host-only: the terminator typed over an undecided name. Never a suggestion's edit. */
+  | Readonly<{
+      pending: CompletionPending;
+      text?: never;
+      mention?: never;
+      mentions?: never;
     }>;
 export type CompletionSuggestion = Readonly<{
   id: string;
@@ -232,6 +314,9 @@ export type CompletionResult = Readonly<{
   items: readonly CompletionSuggestion[];
   /** Provider-verified unique exact match across its uncapped candidate set. */
   spaceId?: string | undefined;
+  /** No `spaceId` yet only because evidence is still arriving; the terminator
+   * may hold the query as a pending mention instead of typing a literal. */
+  spacePending?: CompletionPending | undefined;
   status?: string;
   /** Optional explicit recovery. A new query or disposal revokes this action. */
   retry?: () => void;
@@ -255,3 +340,35 @@ export type ComposerCompletion = Readonly<{
   ): CompletionQuery | null;
   component: ComponentType<ComposerCompletionProps>;
 }>;
+
+/** A conversation a page opens in a tab beside its own. `messageId` opens at
+ * that message: in its thread when `threadId` is given, or else in the
+ * conversation, or its thread if it is a reply or too old to find. Without
+ * `messageId`, keyboard focus moves to the tab's composer once it is ready,
+ * unless the user clicks or types first. */
+export type PageTabTarget = {
+  channelId: string;
+  threadId?: string;
+  messageId?: string;
+};
+/** `keep` opens a tab beside the others instead of in place of the last.
+ * `markRead: false` keeps a conversation tab from marking what it shows read,
+ * so the page decides; threads read as in Channels. */
+export type PageTabOptions = { keep?: boolean; markRead?: boolean };
+export type PageTabsProps = {
+  /** Keys the page's tabs, which last as long as its community session. */
+  id: string;
+  session: RelaySession;
+  scope: string;
+  label: string;
+  icon?: ReactNode;
+  /** The page's own first tab. `open` shows a joined conversation in a host tab. */
+  children(
+    open: (target: PageTabTarget, options?: PageTabOptions) => boolean,
+    close: (target: PageTabTarget) => boolean,
+    isOpen: (target: PageTabTarget) => boolean,
+  ): ReactNode;
+  /** `false` keeps showing a tab out of its channel visit, so the page decides
+   * what is read; tabs visit as Channels tabs do by default. */
+  visits?: boolean | undefined;
+};

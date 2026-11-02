@@ -36,10 +36,12 @@ export function createStaff(
   const writes = new Map<string, Writes>();
   let discovery: Discovery | null = null;
   let retained = 0;
+  let disposed = false;
   /** Contexts probed since Settings last opened. */
   const checked = new Set<string>();
   /** Latest probe per access key; an older one's result is dropped. */
   const attempts = new Map<string, number>();
+  const probing = new Set<string>();
   const emit = () => {
     for (const listener of listeners) listener();
   };
@@ -57,6 +59,7 @@ export function createStaff(
    * a changed or newly enabled admin API shows without a restart.
    */
   const discover = (force = false) => {
+    if (disposed) return;
     const relay = target()?.relay ?? null;
     if (!backend.available || !relay) {
       discovering++;
@@ -71,6 +74,7 @@ export function createStaff(
     if (known && (!force || discovery?.origin === "pending")) return;
     const attempt = ++discovering;
     looking = true;
+    if (known) emit();
     if (!known) {
       discovery = { relay, origin: "pending" };
       emit();
@@ -85,14 +89,14 @@ export function createStaff(
     relay: string,
     origin: Discovery["origin"],
   ) => {
-    if (attempt !== discovering) return;
+    if (disposed || attempt !== discovering) return;
     looking = false;
     if (discovery?.relay !== relay) return;
     if (discovery.origin !== origin) {
       discovery = { relay, origin };
-      emit();
     }
     check();
+    emit();
   };
 
   /** The signing context for the selected relay, once discovery has an origin. */
@@ -113,7 +117,8 @@ export function createStaff(
   const check = () => {
     const now = context();
     const id = contextKey();
-    if (looking || !retained || !now || !id || checked.has(id)) return;
+    if (disposed || looking || !retained || !now || !id || checked.has(id))
+      return;
     checked.add(id);
     void probe(now, true);
   };
@@ -135,21 +140,23 @@ export function createStaff(
    * re-probe keeps the current result on screen until the new one lands.
    */
   const probe = async (context: StaffContext, force = false) => {
+    if (disposed) return;
     const id = key(context);
     if (!force && access.has(id)) return;
     if (!access.has(id) || access.get(id)?.state !== "authorized") {
       access.set(id, { state: "probing" });
-      emit();
     }
+    probing.add(id);
     const attempt = (attempts.get(id) ?? 0) + 1;
     attempts.set(id, attempt);
+    emit();
     const outcome = await backend.request(context, { route: "probe" });
-    if (attempts.get(id) !== attempt) return;
+    if (disposed || attempts.get(id) !== attempt) return;
+    probing.delete(id);
     const next = toAccess(outcome);
     // An unchanged role keeps the same session, so its reads do not rerun.
     const previous = access.get(id);
-    if (sameAccess(previous, next)) return;
-    access.set(id, next);
+    if (!sameAccess(previous, next)) access.set(id, next);
     emit();
   };
 
@@ -160,6 +167,35 @@ export function createStaff(
       return () => listeners.delete(listener);
     },
     visible,
+    /** Enable requires a completed, current check, even while navigation retains its last result. */
+    availability():
+      | "allowed"
+      | "checking"
+      | "denied"
+      | "error"
+      | "unavailable" {
+      if (!backend.available) return "unavailable";
+      if (looking || !discovery || discovery.origin === "pending")
+        return "checking";
+      if (discovery.origin === "error") return "error";
+      if (!discovery.origin) return "unavailable";
+      const now = context();
+      const known = now && access.get(key(now));
+      if (!known || (now && probing.has(key(now))) || known.state === "probing")
+        return "checking";
+      if (known.state === "authorized") return "allowed";
+      if (known.state === "unreachable") return "error";
+      return known.state === "denied" ? "denied" : "unavailable";
+    },
+    retry() {
+      checked.clear();
+      discover(true);
+    },
+    dispose() {
+      disposed = true;
+      discovering++;
+      listeners.clear();
+    },
     /** The Staff entry: operators only. */
     operatorVisible(): boolean | "pending" | "error" {
       const shown = visible();
@@ -187,8 +223,8 @@ export function createStaff(
     refresh() {
       if (retained) discover();
       // An identity switch on the same relay changes the context, not discovery.
-      emit();
       check();
+      emit();
     },
     context,
     /** Snapshot that changes whenever the signer, admin host or relay does. */

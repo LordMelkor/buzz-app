@@ -5,7 +5,7 @@ import { readView, writeView } from "../../shared/view-state";
 type Visibility = "private" | "public";
 const preferenceKey = "channel-privacy-confirmation:dismissed";
 
-// View intent only: shared by Create/Edit and both directions, never authorization.
+// View intent only: Create warnings in both directions, never authorization.
 export function skipPrivacyConfirmation(scope: string) {
   // Honor opt-outs saved before the two directions shared one preference.
   return [
@@ -17,6 +17,12 @@ export function skipPrivacyConfirmation(scope: string) {
 
 export function rememberPrivacyConfirmation(scope: string) {
   writeView(scope, preferenceKey, true);
+}
+
+export function privacyConsequence(visibility: Visibility) {
+  return visibility === "private"
+    ? "Only channel members will have access."
+    : "Everyone in this community will be able to view this channel’s full history.";
 }
 
 export function ChannelPrivacyConfirmation({
@@ -33,9 +39,7 @@ export function ChannelPrivacyConfirmation({
   return (
     <div style={{ display: "grid", gap: "var(--space-4)" }}>
       <BaseDialog.Description>
-        {visibility === "private"
-          ? "Only channel members will have access."
-          : "Everyone in this community will be able to view this channel’s full history."}
+        {privacyConsequence(visibility)}
       </BaseDialog.Description>
       {!hidePreference && (
         <Checkbox

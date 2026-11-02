@@ -17,6 +17,29 @@ function compatible(older: MembershipChange, newest: MembershipChange) {
   return older.type === "member_left";
 }
 
+/** A Solo chat implies the agents its owner started it with; omit the owner's
+ * agent additions and removals before the first message once history reaches
+ * the chat's start. Later changes, people and agents added by someone else
+ * still show. */
+export function withoutStartingAgents(
+  rows: readonly ChannelMessage[],
+  owner: string | undefined,
+  agents: ReadonlySet<string>,
+  complete: boolean,
+): readonly ChannelMessage[] {
+  if (!complete || !owner) return rows;
+  const first = rows.findIndex((row) => !row.membership);
+  const start = first === -1 ? rows.length : first;
+  const starting = (row: ChannelMessage) =>
+    (row.membership?.type === "member_joined" ||
+      row.membership?.type === "member_removed") &&
+    row.membership.actor === owner &&
+    agents.has(row.membership.target);
+  return rows.some((row, index) => index < start && starting(row))
+    ? rows.filter((row, index) => index >= start || !starting(row))
+    : rows;
+}
+
 /** Newest-anchored groups keep loaded keys stable when history is prepended.
  * Messages, local days and adjacent gaps over one hour always break a group. */
 export function membershipRows(

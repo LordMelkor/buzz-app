@@ -16,7 +16,9 @@ import { Avatar } from "../../shared/design-system/ui/Avatar";
 import { relativeTimestamp } from "../../shared/relative-timestamp";
 import styles from "./LinkPreview.module.css";
 import { messagePreviewText } from "./message-preview-text";
+import { linkedMessage } from "./linked-message";
 import { avatarMedia } from "../../shared/avatar-source";
+import { sortParticipantNames } from "../identity-names/participant-order";
 
 /** Mounted only while a preview is open. The session owns access, edits and deletion. */
 export function BuzzLinkPreview({
@@ -62,11 +64,7 @@ function PreviewContent({
     view.snapshot,
     view.snapshot,
   );
-  const target =
-    snapshot.target?.id === messageId ? snapshot.target : undefined;
-  const message =
-    target ??
-    [snapshot.root, ...snapshot.replies].find((row) => row?.id === messageId);
+  const { message, ready, stopped } = linkedMessage(snapshot, messageId);
   const resolveName = useChannelIdentityNames(session, message?.channelId);
   const identityName = useIdentityNames(session.names);
   const profiles = useSyncExternalStore(
@@ -84,19 +82,6 @@ function PreviewContent({
     if (authorId)
       void session.profiles.ensure([authorId], "background").catch(() => {});
   }, [session, authorId]);
-  // Only paint reconciled content: a ready exact target is independent of its
-  // thread root, while an idle/loading root seed is still the raw event.
-  // A terminal state (read error, denied/interrupted purge, or an exhausted
-  // read that never found the target) fails honestly instead of loading forever.
-  const stopped =
-    snapshot.status === "error" ||
-    snapshot.targetStatus === "error" ||
-    snapshot.targetStatus === "unavailable" ||
-    (snapshot.status === "idle" && snapshot.error !== undefined) ||
-    (snapshot.status === "ready" && !message && !snapshot.canLoadMore);
-  const ready = target
-    ? snapshot.targetStatus === "ready"
-    : snapshot.status === "ready";
   if (!ready || !message)
     return (
       <span role="status">
@@ -118,15 +103,15 @@ function PreviewContent({
   );
   const channelName =
     channel?.channelType === "dm" && channel.participants
-      ? channel.participants
-          .map((id) =>
+      ? sortParticipantNames(
+          channel.participants.map((id) =>
             identityName(
               id,
               profiles.get(id)?.name ?? id.slice(0, 10),
               channel.participants,
             ),
-          )
-          .join(", ") || "Notes to self"
+          ),
+        ).join(", ") || "Notes to self"
       : (channel?.name ?? "Channel unavailable");
   const ChannelIcon =
     channel?.hidden || channel?.channelType === "dm"

@@ -7,6 +7,7 @@ import { fromJsonSchema, McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { nodeClient } from "./node";
 import { content, errorText } from "./rpc";
+import { BUZZ_HELP_PROMPT } from "./prompt";
 import { callTool, TOOLS } from "./tools";
 
 const env = (name: string) => {
@@ -28,7 +29,7 @@ const context = channel ? { channel } : {};
 serveStdio(() => {
   const server = new McpServer(
     { name: "buzz", version: "1" },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: BUZZ_HELP_PROMPT },
   );
   for (const tool of TOOLS)
     server.registerTool(

@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-test("generated author package in a path with spaces exposes shared message facts, host, identity names, and page navigation metadata", async () => {
+test("generated author package in a path with spaces exposes shared message facts, host, identity names, agent sessions, decisions, and page navigation metadata", async () => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const dir = await mkdtemp(join(tmpdir(), "buzz-author-consumer-"));
   const env = {
@@ -32,7 +32,8 @@ test("generated author package in a path with spaces exposes shared message fact
     await writeFile(
       join(dir, "consumer.ts"),
       `
-import type { Context, Host, PluginManifest, NamingPolicy, UnreadCapability } from "@buzz/author";
+import { createElement } from "react";
+import type { Context, DecisionResult, Host, PluginManifest, NamingPolicy, PageSidebarProps, SidebarSectionContribution, SidebarSections, UnreadCapability } from "@buzz/author";
 export const manifest: PluginManifest = {
   id: "example.plugin", name: "Example", apiVersion: 1,
   host: {
@@ -40,7 +41,11 @@ export const manifest: PluginManifest = {
     networkOrigins: ["https://api.example.com"],
   },
 };
-export const inject = ["host", "identityNames", "pages", "relay"];
+const ExampleSidebar = ({ target, children }: PageSidebarProps) => {
+  void target.kind;
+  return children;
+};
+export const inject = ["agents", "decisions", "host", "identityNames", "pages", "relay"];
 export function apply(ctx: Context) {
   const unread: UnreadCapability = ctx.relay.snapshot().session.unread;
   const conversations: ReturnType<UnreadCapability["inbox"]> = unread.inbox();
@@ -56,6 +61,9 @@ export function apply(ctx: Context) {
     // @ts-expect-error The shared projection does not expose Archive policy.
     item.archived;
   }
+  for (const type of ctx.agents.types())
+    for (const session of type.sessions?.list("") ?? [])
+      void [session.channelId, session.root, session.at, session.status];
   const policy: NamingPolicy = {
     id: "alternative",
     resolve: (identities) => new Map(identities.map(({ pubkey, name }) => [pubkey, { name }])),
@@ -76,7 +84,34 @@ export function apply(ctx: Context) {
     icon: "data:image/png;base64,iVBOR",
     primary: true,
     placement: "toolbar",
+    sidebar: ExampleSidebar,
   });
+  ctx.pages.register({
+    id: "bad-sidebar",
+    title: "Bad sidebar",
+    component: () => null,
+    // @ts-expect-error A page sidebar must be a React component.
+    sidebar: 1,
+  });
+  const section: SidebarSectionContribution = {
+    version: 1,
+    id: "work",
+    title: "Work",
+    icon: "W",
+    rows: {
+      snapshot: () => [{ id: "today", label: "Today" }],
+      subscribe: () => () => {},
+    },
+    select: () => ({ version: 1, kind: "home" }),
+    actions: [{ id: "new", label: "New", icon: createElement("span"), onSelect: () => {} }],
+  };
+  const sidebar: SidebarSections | undefined = ctx.reflect.get("sidebarSections");
+  sidebar?.register(section);
+  // @ts-expect-error Sidebar contribution versions are explicit.
+  sidebar?.register({ ...section, version: 2 });
+  // @ts-expect-error Row counts are numeric, not display text.
+  const badCount: SidebarSectionContribution = { ...section, rows: { snapshot: () => [{ id: "bad", label: "Bad", count: "two" }], subscribe: () => () => {} } };
+  void badCount;
   ctx.pages.register({
     id: "other",
     title: "Other",
@@ -93,6 +128,30 @@ export function apply(ctx: Context) {
   });
   // @ts-expect-error Programs must be declared in the manifest, not supplied at runtime.
   host.runCommand("example-cli", ["status"]);
+  void ctx.decisions
+    .decide({
+      state: "The build is broken on main.",
+      questions: {
+        urgent: { type: "yes_no", instructions: "It needs attention now." },
+        topic: { type: "choice", instructions: "Topic", options: { build: "CI", other: "Other" } },
+        severity: { type: "score", instructions: "Severity", levels: ["low", "high"] },
+      },
+      timeoutMs: 5000,
+    })
+    .then((result: DecisionResult) => {
+      if (result.outcome === "failed") return void result.reason;
+      const answer = result.answers.urgent;
+      if (answer?.type === "yes_no") void answer.probability;
+      void [result.backend, result.model];
+    });
+  void ctx.decisions.decide({
+    state: "x",
+    // @ts-expect-error A question needs a supported type.
+    questions: { bad: { type: "freeform", instructions: "x" } },
+  });
+  void ctx.decisions.backend();
+  // @ts-expect-error Only Settings chooses the backend.
+  ctx.decisions.setBackend("typesafe");
 }
 // @ts-expect-error Host construction is not exported to plugin authors.
 import type { createServices } from "@buzz/author";

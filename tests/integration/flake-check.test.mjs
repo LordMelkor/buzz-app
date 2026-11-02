@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   browserShards,
   classify,
   hunkRanges,
   listBrowser,
+  listVitest,
   repeatableLines,
   selectTests,
   testBodies,
   testCalls,
+  vitestFilters,
 } from "../../scripts/flake-check.mjs";
 
 // A hunk writing new-side lines start..end; by default it removed nothing.
@@ -118,6 +124,15 @@ test("test bodies span the listed test's call; groups, hooks and helpers are out
   assert.deepEqual(select([hunk(7, 7)]), { lines: [6] });
   assert.deepEqual(select([hunk(21, 21)]), { lines: [19] });
   assert.deepEqual(select([hunk(23, 24)]), { lines: [22] });
+  // Filters preserve runtime-listed locations, including parameterized calls.
+  assert.deepEqual(vitestFilters("cases.test.tsx", { lines: [6, 19, 22] }), [
+    "cases.test.tsx:6",
+    "cases.test.tsx:19",
+    "cases.test.tsx:22",
+  ]);
+  assert.deepEqual(vitestFilters("cases.test.tsx", { whole: true }), [
+    "cases.test.tsx",
+  ]);
   // A helper between tests, a hook inside the group, and a hook after the
   // last test are shared code.
   for (const range of [hunk(10, 10), hunk(14, 14), hunk(27, 27), hunk(2, 2)])
@@ -151,6 +166,95 @@ test("test bodies span the listed test's call; groups, hooks and helpers are out
   assert.deepEqual(testBodies(spec, "js", [7]), [
     { start: 7, end: 9, line: 7 },
   ]);
+});
+
+test("the selection executes every case of a multiline Vitest parameterized test", (t) => {
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  // Vitest only collects files its include globs match under the repository,
+  // so the fixture cannot live in a temp dir. vitest.config.ts excludes it
+  // unless this is set; the Vitest processes below inherit it.
+  process.env.BUZZ_FLAKE_CHECK_FIXTURE = "1";
+  t.after(() => delete process.env.BUZZ_FLAKE_CHECK_FIXTURE);
+  const dir = mkdtempSync(
+    join(root, "tests/fixtures/design-system/flake-selection-"),
+  );
+
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "cases.test.tsx");
+  const source = [
+    'import { expect, it } from "vitest";',
+    'const label = "Checking…";',
+    'it.each(["archive", "unarchive", "delete"] as const)(',
+    '  "%s completion preserves focus moved during pending work and retains required navigation",',
+    "  (action) => { expect(action).toBeTruthy(); },",
+    ");",
+    "",
+    "it.for([",
+    '  "mouse", "keyboard",',
+    "] as const)(",
+    '  "supports %s",',
+    "  (input) => { expect(input).toBeTruthy(); },",
+    ");",
+    // Force static collection's transformed source-map path, as in React tests.
+    "const sibling = <div />;",
+    'it("untouched", () => { throw new Error("outside selection"); });',
+    "",
+  ].join("\n");
+  writeFileSync(file, source);
+  const run = (args) =>
+    spawnSync(join(root, "bin/pnpm"), ["--silent", "exec", "vitest", ...args], {
+      cwd: root,
+      encoding: "utf8",
+    });
+  const locations = listVitest([relative(root, file)]).get(
+    relative(root, file),
+  );
+  assert.equal(
+    locations.length,
+    6,
+    "runtime collection must list every parameterized case and the unrelated test",
+  );
+  const bodies = testBodies(source, "tsx", locations);
+  const selection = selectTests([hunk(5, 5), hunk(12, 12)], bodies);
+  assert.equal(
+    selection.whole,
+    undefined,
+    "unrelated tests must not be selected",
+  );
+  const report = join(dir, "result.json");
+  const result = run([
+    "run",
+    ...vitestFilters(file, selection),
+    "--reporter=json",
+    `--outputFile=${report}`,
+  ]);
+  const data = JSON.parse(readFileSync(report, "utf8"));
+  assert.equal(
+    result.status,
+    0,
+    result.stdout + result.stderr + JSON.stringify(data),
+  );
+  const passed = data.testResults
+    .flatMap(({ assertionResults }) => assertionResults)
+    .filter(({ status }) => status === "passed");
+  assert.deepEqual(
+    passed.map(({ title }) => title),
+    [
+      ...["archive", "unarchive", "delete"].map(
+        (action) =>
+          `${action} completion preserves focus moved during pending work and retains required navigation`,
+      ),
+      "supports mouse",
+      "supports keyboard",
+    ],
+  );
+  assert.deepEqual(
+    data.testResults
+      .flatMap(({ assertionResults }) => assertionResults)
+      .filter(({ status }) => status === "skipped")
+      .map(({ title }) => title),
+    ["untouched"],
+  );
 });
 
 test("hunks inside tests select those tests; shared code, new or unlisted files select the whole file", () => {
@@ -333,9 +437,9 @@ test("measurement specs list no engine journeys, alone or beside functional spec
   assert.ok(repeatableLines(journeys).length < journeys.length);
 });
 
-test("browser repetitions get one shard per five journeys, at most eight", () => {
+test("browser repetitions get one shard per five journeys, at most sixteen", () => {
   assert.deepEqual(
-    [0, 1, 5, 6, 18, 40, 41, 200].map(browserShards),
-    [1, 1, 1, 2, 4, 8, 8, 8],
+    [0, 1, 5, 6, 18, 40, 41, 80, 81, 200].map(browserShards),
+    [1, 1, 1, 2, 4, 8, 9, 16, 16, 16],
   );
 });

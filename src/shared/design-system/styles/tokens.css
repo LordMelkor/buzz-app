@@ -32,15 +32,17 @@
  *   - A component never references a palette step or a family step directly.
  *   - Opacity is never applied to a colour token to make a lighter or subtler
  *     shade. Reach for a different step. `scripts/check-color.mjs` enforces this.
- *   - Transparency for genuine see-through — glass — is a separate axis, and
- *     lives baked into its own values.
+ *   - Transparency for genuine see-through — glass, and chip overlays that
+ *     let a bubble's color show through — is a separate axis, and lives baked
+ *     into its own values.
  *   - Roles and semantic selections hold a light and a dark value under the
  *     same name. A named palette treatment is deliberately mode-specific when
  *     its paired dark scene is a different visual idea; `sky-field` does not
  *     pretend it is `night-garden` after dark mode switches on.
  *
- * Palette values are Radix Colors (MIT), transcribed rather than depended on.
+ * The utility hues are Radix Colors (MIT), transcribed rather than depended on.
  * Radix is not on Block's Tech Radar; this is a values-only copy, no package.
+ * The six accent families are Buzz's own values on the same twelve steps.
  * Its twelve-step contract is the one this system already described in comments,
  * step for step — the ramp was modelled on it before the values were.
  *
@@ -53,6 +55,388 @@
    token above this layer holds a literal. Never referenced by a
    component — families name the jobs, roles name the meanings.
    ============================================================ */
+
+/* Existing Appearance values. Explicit mode owners allow a light specimen
+   inside a dark page (and the reverse) without inheriting the wrong resolved
+   ramp. Numeric steps, ink and link colors keep their authored values, except
+   step 10 and pressed: each accent's hover and press, retuned to move clearly
+   off step 9 while staying clean rather than muddy. */
+:root {
+  --magenta-1-light: #fffbfc;
+  --magenta-2-light: #fff7fa;
+  --magenta-3-light: #ffeef3;
+  --magenta-4-light: #fee2ec;
+  --magenta-5-light: #fed8e4;
+  --magenta-6-light: #f9cbdb;
+  --magenta-7-light: #f1bbce;
+  --magenta-8-light: #e7a4bd;
+  --magenta-9-light: #df1e85;
+  --magenta-10-light: #cf0c7a;
+  --magenta-11-light: #6c3149;
+  --magenta-12-light: #42242f;
+  --magenta-contrast-light: #ffffff;
+  --magenta-ink-light: #ffffff;
+  --magenta-pressed-light: #c20272;
+  --magenta-link-light: #84034b;
+  --magenta-link-hover-light: #ffeef3;
+  --magenta-1-dark: #120e10;
+  --magenta-2-dark: #191415;
+  --magenta-3-dark: #2b1f23;
+  --magenta-4-dark: #38252c;
+  --magenta-5-dark: #452d36;
+  --magenta-6-dark: #553843;
+  --magenta-7-dark: #6b4754;
+  --magenta-8-dark: #865a6a;
+  --magenta-9-dark: #df1e85;
+  --magenta-10-dark: #cf0c7a;
+  --magenta-11-dark: #f4bccf;
+  --magenta-12-dark: #feeaf1;
+  --magenta-contrast-dark: #ffffff;
+  --magenta-ink-dark: #ffffff;
+  --magenta-pressed-dark: #c20272;
+  --magenta-link-dark: #fdb6d0;
+  --magenta-link-hover-dark: #2b1f23;
+  --iris-1-light: #fbfcff;
+  --iris-2-light: #f8f9ff;
+  --iris-3-light: #f0f2ff;
+  --iris-4-light: #e6eafe;
+  --iris-5-light: #dde1fe;
+  --iris-6-light: #d2d7fd;
+  --iris-7-light: #c2c8f8;
+  --iris-8-light: #aeb6f0;
+  --iris-9-light: #5f55fa;
+  --iris-10-light: #5949e5;
+  --iris-11-light: #3d407a;
+  --iris-12-light: #282b48;
+  --iris-contrast-light: #ffffff;
+  --iris-ink-light: #ffffff;
+  --iris-pressed-light: #4f3bd7;
+  --iris-link-light: #3c04c3;
+  --iris-link-hover-light: #f0f2ff;
+  --iris-1-dark: #0f0f13;
+  --iris-2-dark: #14151a;
+  --iris-3-dark: #20212e;
+  --iris-4-dark: #272a3c;
+  --iris-5-dark: #31344a;
+  --iris-6-dark: #3c405b;
+  --iris-7-dark: #4c4f72;
+  --iris-8-dark: #60658f;
+  --iris-9-dark: #5f55fa;
+  --iris-10-dark: #5949e5;
+  --iris-11-dark: #c3cafb;
+  --iris-12-dark: #edf0fe;
+  --iris-contrast-dark: #ffffff;
+  --iris-ink-dark: #ffffff;
+  --iris-pressed-dark: #4f3bd7;
+  --iris-link-dark: #c2cafd;
+  --iris-link-hover-dark: #20212e;
+  --cobalt-1-light: #fafcff;
+  --cobalt-2-light: #f6faff;
+  --cobalt-3-light: #ecf4ff;
+  --cobalt-4-light: #dfecfe;
+  --cobalt-5-light: #d3e5fe;
+  --cobalt-6-light: #c3dcfc;
+  --cobalt-7-light: #b0cff8;
+  --cobalt-8-light: #97bdf0;
+  --cobalt-9-light: #1475e1;
+  --cobalt-10-light: #0968d6;
+  --cobalt-11-light: #264975;
+  --cobalt-12-light: #1e2f45;
+  --cobalt-contrast-light: #ffffff;
+  --cobalt-ink-light: #ffffff;
+  --cobalt-pressed-light: #0161cc;
+  --cobalt-link-light: #02468e;
+  --cobalt-link-hover-light: #ecf4ff;
+  --cobalt-1-dark: #0e1012;
+  --cobalt-2-dark: #131519;
+  --cobalt-3-dark: #1c232c;
+  --cobalt-4-dark: #212c3a;
+  --cobalt-5-dark: #293748;
+  --cobalt-6-dark: #334358;
+  --cobalt-7-dark: #40546f;
+  --cobalt-8-dark: #516b8c;
+  --cobalt-9-dark: #1475e1;
+  --cobalt-10-dark: #0968d6;
+  --cobalt-11-dark: #b1d1fa;
+  --cobalt-12-dark: #e8f2fe;
+  --cobalt-contrast-dark: #ffffff;
+  --cobalt-ink-dark: #ffffff;
+  --cobalt-pressed-dark: #0161cc;
+  --cobalt-link-dark: #afd1fe;
+  --cobalt-link-hover-dark: #1c232c;
+  --bee-1-light: #fdfcf8;
+  --bee-2-light: #fcf9f1;
+  --bee-3-light: #faf3df;
+  --bee-4-light: #f5eace;
+  --bee-5-light: #f1e3be;
+  --bee-6-light: #e8d9af;
+  --bee-7-light: #ddcb98;
+  --bee-8-light: #d0b979;
+  --bee-9-light: #f5c518;
+  --bee-10-light: #f0b70c;
+  --bee-11-light: #584504;
+  --bee-12-light: #362d13;
+  --bee-contrast-light: #000000;
+  --bee-ink-light: #000000;
+  --bee-pressed-light: #eba80c;
+  --bee-link-light: #594501;
+  --bee-link-hover-light: #faf3df;
+  --bee-1-dark: #100f0c;
+  --bee-2-dark: #171511;
+  --bee-3-dark: #252118;
+  --bee-4-dark: #312b1c;
+  --bee-5-dark: #3d3521;
+  --bee-6-dark: #4a412a;
+  --bee-7-dark: #5c5234;
+  --bee-8-dark: #766842;
+  --bee-9-dark: #f5c518;
+  --bee-10-dark: #f0b70c;
+  --bee-11-dark: #e0cd97;
+  --bee-12-dark: #f6f0df;
+  --bee-contrast-dark: #000000;
+  --bee-ink-dark: #000000;
+  --bee-pressed-dark: #eba80c;
+  --bee-link-dark: #f2c94e;
+  --bee-link-hover-dark: #252118;
+  --citrus-1-light: #fcfdf7;
+  --citrus-2-light: #f8fbef;
+  --citrus-3-light: #f1f6de;
+  --citrus-4-light: #e8f0cd;
+  --citrus-5-light: #e0e9bc;
+  --citrus-6-light: #d5e1aa;
+  --citrus-7-light: #c8d495;
+  --citrus-8-light: #b6c378;
+  --citrus-9-light: #beda36;
+  --citrus-10-light: #abcc29;
+  --citrus-11-light: #485311;
+  --citrus-12-light: #2b3110;
+  --citrus-contrast-light: #000000;
+  --citrus-ink-light: #000000;
+  --citrus-pressed-light: #97bf13;
+  --citrus-link-light: #485400;
+  --citrus-link-hover-light: #f1f6de;
+  --citrus-1-dark: #0f100c;
+  --citrus-2-dark: #15170f;
+  --citrus-3-dark: #202413;
+  --citrus-4-dark: #292e16;
+  --citrus-5-dark: #333a18;
+  --citrus-6-dark: #3e471f;
+  --citrus-7-dark: #4f5827;
+  --citrus-8-dark: #637033;
+  --citrus-9-dark: #beda36;
+  --citrus-10-dark: #abcc29;
+  --citrus-11-dark: #cee28b;
+  --citrus-12-dark: #edf7d2;
+  --citrus-contrast-dark: #000000;
+  --citrus-ink-dark: #000000;
+  --citrus-pressed-dark: #97bf13;
+  --citrus-link-dark: #cbe648;
+  --citrus-link-hover-dark: #202413;
+  --mono-1-light: #fcfcfc;
+  --mono-2-light: #f9f9f9;
+  --mono-3-light: #f3f3f3;
+  --mono-4-light: #ebebeb;
+  --mono-5-light: #e3e3e3;
+  --mono-6-light: #d9d9d9;
+  --mono-7-light: #cccccc;
+  --mono-8-light: #bababa;
+  --mono-9-light: #1a1a1a;
+  --mono-10-light: #333333;
+  --mono-11-light: #484848;
+  --mono-12-light: #2e2e2e;
+  --mono-contrast-light: #ffffff;
+  --mono-ink-light: #ffffff;
+  --mono-pressed-light: #4d4d4d;
+  --mono-link-light: #484848;
+  --mono-link-hover-light: #f3f3f3;
+  --mono-1-dark: #0f0f0f;
+  --mono-2-dark: #151515;
+  --mono-3-dark: #222222;
+  --mono-4-dark: #2b2b2b;
+  --mono-5-dark: #363636;
+  --mono-6-dark: #424242;
+  --mono-7-dark: #535353;
+  --mono-8-dark: #696969;
+  --mono-9-dark: #e6e6e6;
+  --mono-10-dark: #d6d6d6;
+  --mono-11-dark: #cecece;
+  --mono-12-dark: #f0f0f0;
+  --mono-contrast-dark: #000000;
+  --mono-ink-dark: #000000;
+  --mono-pressed-dark: #c6c6c6;
+  --mono-link-dark: #cecece;
+  --mono-link-hover-dark: #222222;
+  --flame-1-light: #fefcfc;
+  --flame-2-light: #fff8f6;
+  --flame-3-light: #ffeeea;
+  --flame-4-light: #ffe4de;
+  --flame-5-light: #fedad0;
+  --flame-6-light: #ffccbf;
+  --flame-7-light: #feb9a7;
+  --flame-8-light: #fe9d85;
+  --flame-9-light: #d93a0c;
+  --flame-10-light: #c93202;
+  --flame-11-light: #a4351a;
+  --flame-12-light: #4f1b0f;
+  --flame-contrast-light: #ffffff;
+  --flame-ink-light: #ffffff;
+  --flame-pressed-light: #b92d01;
+  --flame-link-light: var(--flame-11-light);
+  --flame-link-hover-light: var(--flame-3-light);
+  --flame-1-dark: #140e0c;
+  --flame-2-dark: #1d1311;
+  --flame-3-dark: #301c16;
+  --flame-4-dark: #40221b;
+  --flame-5-dark: #502920;
+  --flame-6-dark: #633327;
+  --flame-7-dark: #7c3f30;
+  --flame-8-dark: #9f4e3a;
+  --flame-9-dark: #d93a0c;
+  --flame-10-dark: #c93202;
+  --flame-11-dark: #ffaf9a;
+  --flame-12-dark: #ffebe6;
+  --flame-contrast-dark: #ffffff;
+  --flame-ink-dark: #ffffff;
+  --flame-pressed-dark: #b92d01;
+  --flame-link-dark: var(--flame-11-dark);
+  --flame-link-hover-dark: var(--flame-3-dark);
+  --jade-1-light: #f9fefc;
+  --jade-2-light: #f2fcf8;
+  --jade-3-light: #e2f9f0;
+  --jade-4-light: #d3f4e7;
+  --jade-5-light: #c4eede;
+  --jade-6-light: #b4e6d3;
+  --jade-7-light: #9edbc5;
+  --jade-8-light: #81cdb2;
+  --jade-9-light: #0b8467;
+  --jade-10-light: #06795e;
+  --jade-11-light: #226a55;
+  --jade-12-light: #15352a;
+  --jade-contrast-light: #ffffff;
+  --jade-ink-light: #ffffff;
+  --jade-pressed-light: #026d54;
+  --jade-link-light: var(--jade-11-light);
+  --jade-link-hover-light: var(--jade-3-light);
+  --jade-1-dark: #0d100f;
+  --jade-2-dark: #121715;
+  --jade-3-dark: #192520;
+  --jade-4-dark: #1e3029;
+  --jade-5-dark: #243b33;
+  --jade-6-dark: #2d493f;
+  --jade-7-dark: #375b4f;
+  --jade-8-dark: #447464;
+  --jade-9-dark: #0b8467;
+  --jade-10-dark: #06795e;
+  --jade-11-dark: #90d1ba;
+  --jade-12-dark: #e2f6ee;
+  --jade-contrast-dark: #ffffff;
+  --jade-ink-dark: #ffffff;
+  --jade-pressed-dark: #026d54;
+  --jade-link-dark: var(--jade-11-dark);
+  --jade-link-hover-dark: var(--jade-3-dark);
+}
+
+.light,
+[data-color-mode="light"],
+:root {
+  /* Named palettes resolve the current scope mode. */
+  --bee-1: var(--bee-1-light);
+  --bee-2: var(--bee-2-light);
+  --bee-3: var(--bee-3-light);
+  --bee-4: var(--bee-4-light);
+  --bee-5: var(--bee-5-light);
+  --bee-6: var(--bee-6-light);
+  --bee-7: var(--bee-7-light);
+  --bee-8: var(--bee-8-light);
+  --bee-9: var(--bee-9-light);
+  --bee-10: var(--bee-10-light);
+  --bee-11: var(--bee-11-light);
+  --bee-12: var(--bee-12-light);
+  --magenta-1: var(--magenta-1-light);
+  --magenta-2: var(--magenta-2-light);
+  --magenta-3: var(--magenta-3-light);
+  --magenta-4: var(--magenta-4-light);
+  --magenta-5: var(--magenta-5-light);
+  --magenta-6: var(--magenta-6-light);
+  --magenta-7: var(--magenta-7-light);
+  --magenta-8: var(--magenta-8-light);
+  --magenta-9: var(--magenta-9-light);
+  --magenta-10: var(--magenta-10-light);
+  --magenta-11: var(--magenta-11-light);
+  --magenta-12: var(--magenta-12-light);
+  --iris-1: var(--iris-1-light);
+  --iris-2: var(--iris-2-light);
+  --iris-3: var(--iris-3-light);
+  --iris-4: var(--iris-4-light);
+  --iris-5: var(--iris-5-light);
+  --iris-6: var(--iris-6-light);
+  --iris-7: var(--iris-7-light);
+  --iris-8: var(--iris-8-light);
+  --iris-9: var(--iris-9-light);
+  --iris-10: var(--iris-10-light);
+  --iris-11: var(--iris-11-light);
+  --iris-12: var(--iris-12-light);
+  --cobalt-1: var(--cobalt-1-light);
+  --cobalt-2: var(--cobalt-2-light);
+  --cobalt-3: var(--cobalt-3-light);
+  --cobalt-4: var(--cobalt-4-light);
+  --cobalt-5: var(--cobalt-5-light);
+  --cobalt-6: var(--cobalt-6-light);
+  --cobalt-7: var(--cobalt-7-light);
+  --cobalt-8: var(--cobalt-8-light);
+  --cobalt-9: var(--cobalt-9-light);
+  --cobalt-10: var(--cobalt-10-light);
+  --cobalt-11: var(--cobalt-11-light);
+  --cobalt-12: var(--cobalt-12-light);
+  --citrus-1: var(--citrus-1-light);
+  --citrus-2: var(--citrus-2-light);
+  --citrus-3: var(--citrus-3-light);
+  --citrus-4: var(--citrus-4-light);
+  --citrus-5: var(--citrus-5-light);
+  --citrus-6: var(--citrus-6-light);
+  --citrus-7: var(--citrus-7-light);
+  --citrus-8: var(--citrus-8-light);
+  --citrus-9: var(--citrus-9-light);
+  --citrus-10: var(--citrus-10-light);
+  --citrus-11: var(--citrus-11-light);
+  --citrus-12: var(--citrus-12-light);
+  --mono-1: var(--mono-1-light);
+  --mono-2: var(--mono-2-light);
+  --mono-3: var(--mono-3-light);
+  --mono-4: var(--mono-4-light);
+  --mono-5: var(--mono-5-light);
+  --mono-6: var(--mono-6-light);
+  --mono-7: var(--mono-7-light);
+  --mono-8: var(--mono-8-light);
+  --mono-9: var(--mono-9-light);
+  --mono-10: var(--mono-10-light);
+  --mono-11: var(--mono-11-light);
+  --mono-12: var(--mono-12-light);
+  --flame-1: var(--flame-1-light);
+  --flame-2: var(--flame-2-light);
+  --flame-3: var(--flame-3-light);
+  --flame-4: var(--flame-4-light);
+  --flame-5: var(--flame-5-light);
+  --flame-6: var(--flame-6-light);
+  --flame-7: var(--flame-7-light);
+  --flame-8: var(--flame-8-light);
+  --flame-9: var(--flame-9-light);
+  --flame-10: var(--flame-10-light);
+  --flame-11: var(--flame-11-light);
+  --flame-12: var(--flame-12-light);
+  --jade-1: var(--jade-1-light);
+  --jade-2: var(--jade-2-light);
+  --jade-3: var(--jade-3-light);
+  --jade-4: var(--jade-4-light);
+  --jade-5: var(--jade-5-light);
+  --jade-6: var(--jade-6-light);
+  --jade-7: var(--jade-7-light);
+  --jade-8: var(--jade-8-light);
+  --jade-9: var(--jade-9-light);
+  --jade-10: var(--jade-10-light);
+  --jade-11: var(--jade-11-light);
+  --jade-12: var(--jade-12-light);
+}
 
 .light,
 :root {
@@ -155,6 +539,108 @@
   --orange-10: #ef5f00;
   --orange-11: #cc4e00;
   --orange-12: #582d1d;
+}
+
+:root[data-color-mode="dark"],
+[data-color-mode="dark"],
+.dark {
+  /* Named palettes resolve the current scope mode. */
+  --bee-1: var(--bee-1-dark);
+  --bee-2: var(--bee-2-dark);
+  --bee-3: var(--bee-3-dark);
+  --bee-4: var(--bee-4-dark);
+  --bee-5: var(--bee-5-dark);
+  --bee-6: var(--bee-6-dark);
+  --bee-7: var(--bee-7-dark);
+  --bee-8: var(--bee-8-dark);
+  --bee-9: var(--bee-9-dark);
+  --bee-10: var(--bee-10-dark);
+  --bee-11: var(--bee-11-dark);
+  --bee-12: var(--bee-12-dark);
+  --magenta-1: var(--magenta-1-dark);
+  --magenta-2: var(--magenta-2-dark);
+  --magenta-3: var(--magenta-3-dark);
+  --magenta-4: var(--magenta-4-dark);
+  --magenta-5: var(--magenta-5-dark);
+  --magenta-6: var(--magenta-6-dark);
+  --magenta-7: var(--magenta-7-dark);
+  --magenta-8: var(--magenta-8-dark);
+  --magenta-9: var(--magenta-9-dark);
+  --magenta-10: var(--magenta-10-dark);
+  --magenta-11: var(--magenta-11-dark);
+  --magenta-12: var(--magenta-12-dark);
+  --iris-1: var(--iris-1-dark);
+  --iris-2: var(--iris-2-dark);
+  --iris-3: var(--iris-3-dark);
+  --iris-4: var(--iris-4-dark);
+  --iris-5: var(--iris-5-dark);
+  --iris-6: var(--iris-6-dark);
+  --iris-7: var(--iris-7-dark);
+  --iris-8: var(--iris-8-dark);
+  --iris-9: var(--iris-9-dark);
+  --iris-10: var(--iris-10-dark);
+  --iris-11: var(--iris-11-dark);
+  --iris-12: var(--iris-12-dark);
+  --cobalt-1: var(--cobalt-1-dark);
+  --cobalt-2: var(--cobalt-2-dark);
+  --cobalt-3: var(--cobalt-3-dark);
+  --cobalt-4: var(--cobalt-4-dark);
+  --cobalt-5: var(--cobalt-5-dark);
+  --cobalt-6: var(--cobalt-6-dark);
+  --cobalt-7: var(--cobalt-7-dark);
+  --cobalt-8: var(--cobalt-8-dark);
+  --cobalt-9: var(--cobalt-9-dark);
+  --cobalt-10: var(--cobalt-10-dark);
+  --cobalt-11: var(--cobalt-11-dark);
+  --cobalt-12: var(--cobalt-12-dark);
+  --citrus-1: var(--citrus-1-dark);
+  --citrus-2: var(--citrus-2-dark);
+  --citrus-3: var(--citrus-3-dark);
+  --citrus-4: var(--citrus-4-dark);
+  --citrus-5: var(--citrus-5-dark);
+  --citrus-6: var(--citrus-6-dark);
+  --citrus-7: var(--citrus-7-dark);
+  --citrus-8: var(--citrus-8-dark);
+  --citrus-9: var(--citrus-9-dark);
+  --citrus-10: var(--citrus-10-dark);
+  --citrus-11: var(--citrus-11-dark);
+  --citrus-12: var(--citrus-12-dark);
+  --mono-1: var(--mono-1-dark);
+  --mono-2: var(--mono-2-dark);
+  --mono-3: var(--mono-3-dark);
+  --mono-4: var(--mono-4-dark);
+  --mono-5: var(--mono-5-dark);
+  --mono-6: var(--mono-6-dark);
+  --mono-7: var(--mono-7-dark);
+  --mono-8: var(--mono-8-dark);
+  --mono-9: var(--mono-9-dark);
+  --mono-10: var(--mono-10-dark);
+  --mono-11: var(--mono-11-dark);
+  --mono-12: var(--mono-12-dark);
+  --flame-1: var(--flame-1-dark);
+  --flame-2: var(--flame-2-dark);
+  --flame-3: var(--flame-3-dark);
+  --flame-4: var(--flame-4-dark);
+  --flame-5: var(--flame-5-dark);
+  --flame-6: var(--flame-6-dark);
+  --flame-7: var(--flame-7-dark);
+  --flame-8: var(--flame-8-dark);
+  --flame-9: var(--flame-9-dark);
+  --flame-10: var(--flame-10-dark);
+  --flame-11: var(--flame-11-dark);
+  --flame-12: var(--flame-12-dark);
+  --jade-1: var(--jade-1-dark);
+  --jade-2: var(--jade-2-dark);
+  --jade-3: var(--jade-3-dark);
+  --jade-4: var(--jade-4-dark);
+  --jade-5: var(--jade-5-dark);
+  --jade-6: var(--jade-6-dark);
+  --jade-7: var(--jade-7-dark);
+  --jade-8: var(--jade-8-dark);
+  --jade-9: var(--jade-9-dark);
+  --jade-10: var(--jade-10-dark);
+  --jade-11: var(--jade-11-dark);
+  --jade-12: var(--jade-12-dark);
 }
 
 :root[data-color-mode="dark"],
@@ -288,16 +774,8 @@
      use is worse than no comment, because it reads as a decision
      someone made. `pnpm census` lists the real readers. */
   --neutral-standard-text: #0f0f0f; /* Designer-requested light primary text and inherited icons. */
-  /* Reference hues kept in OKLCH, with lightness lowered only to meet 4.5:1
-     for white ink. Chroma is preserved up to the sRGB gamut boundary. */
-  --bubble-ink: #ffffff;
   --bubble-neutral: #e9e9ea;
   --bubble-received: #f3f3f4;
-  --bubble-blue: #0077db;
-  --bubble-green: #008934;
-  --bubble-orange: #c95100;
-  --bubble-pink: #d33785;
-  --bubble-lilac: #a94ad8;
   --neutral-navigation-text: #404040; /* Tailwind neutral-700. */
   --neutral-navigation-unread: #262626; /* Tailwind neutral-800. */
   --neutral-navigation-quiet: #f7f7f7; /* Designer-requested gentle sidenav states. */
@@ -309,7 +787,7 @@
      alpha. */
   --neutral-quiet-hover: #f1f1f2; /* hover between quiet fill and selection */
   --neutral-2: #f5f5f6; /* quiet compact controls, callouts, and grouping */
-  --neutral-3: #e8e8e8; /* available for a future, genuinely recessed region; bg-panel in dark */
+  --neutral-3: #e8e8e8; /* chrome track in light; bg-panel in dark */
   --neutral-4: #dadada; /* border-primary in light mode            */
   --neutral-5: #cccccc; /* unused in light; float + selected, dark */
   --neutral-6: #b3b3b3; /* border-primary in dark mode             */
@@ -325,6 +803,23 @@
   /* Backdrop interaction fills let the shell and its dot texture show through. */
   --backdrop-hover-fill: rgb(0 0 0 / 6%);
   --backdrop-pressed-fill: rgb(0 0 0 / 10%);
+
+  /* Chip overlays let the bubble's own color show through. A shade sits on
+     light and mid-tone fills, a tint on dark ones. Same values in both modes.
+     Light text needs a stronger overlay to show: the tint always sits under
+     it, and a mid-tone fill with light text takes the strong shade. */
+  --shade-fill: rgb(0 0 0 / 10%);
+  --shade-hover-fill: rgb(0 0 0 / 14%);
+  --shade-strong-fill: rgb(0 0 0 / 16%);
+  --shade-strong-hover-fill: rgb(0 0 0 / 22%);
+  --tint-fill: rgb(255 255 255 / 16%);
+  --tint-hover-fill: rgb(255 255 255 / 20%);
+  /* A reaction strip sits between a bubble and its chips, and a whole bubble
+     under the pointer takes the quietest overlay of all. */
+  --shade-soft-fill: rgb(0 0 0 / 6%);
+  --tint-soft-fill: rgb(255 255 255 / 10%);
+  --shade-quiet-fill: rgb(0 0 0 / 4%);
+  --tint-quiet-fill: rgb(255 255 255 / 8%);
 
   /* --- Glass. A translucency ramp of fills. ---------------- */
   --glass-1: #ffffff5c; /* barely there   */
@@ -393,11 +888,11 @@
   --space-8: 2rem;
   --space-16: 4rem;
 
-  /* --- Corner. Containers stop at 20px; pills/circles are separate shapes. */
-  --corner-row: 0.5rem;
-  --corner-control: 0.75rem;
-  --corner-container: 1rem;
-  --corner-panel: 1.25rem;
+  /* --- Corner. Containers stop at 28px; pills/circles are separate shapes. */
+  --corner-row: 1rem;
+  --corner-control: 1.25rem;
+  --corner-container: 1.5rem;
+  --corner-panel: 1.75rem;
   --corner-round: 9999rem;
 
   /* --- Time. State is quick; geometry settles deliberately. - */
@@ -425,11 +920,6 @@
   --neutral-quiet-hover: #2e2e2e;
   --bubble-neutral: #2e2e2e;
   --bubble-received: #292929;
-  --bubble-blue: #0077db;
-  --bubble-green: #008934;
-  --bubble-orange: #c95100;
-  --bubble-pink: #d33785;
-  --bubble-lilac: #a94ad8;
   --neutral-1: #000000;
   --neutral-2: #101010;
   --neutral-3: #1a1a1a;
@@ -512,6 +1002,54 @@
   --texture-dots-color: color-mix(in srgb, var(--bg-app) 92%, white);
 }
 
+/* Plugin artwork aliases: existing palette steps own values in each theme.
+   Distinct solid-color family pairs preserve visible hue variation.
+   No fixed-luminance or 35-degree hue-sweep guarantee remains. */
+:root {
+  --art-plugin-communication-start: var(--cyan-9);
+  --art-plugin-communication-end: var(--jade-9);
+  --art-plugin-communication-gradient: linear-gradient(
+    to bottom in oklch,
+    var(--art-plugin-communication-start),
+    var(--art-plugin-communication-end)
+  );
+  --art-plugin-agents-start: var(--blue-9);
+  --art-plugin-agents-end: var(--iris-9);
+  --art-plugin-agents-gradient: linear-gradient(
+    to bottom in oklch,
+    var(--art-plugin-agents-start),
+    var(--art-plugin-agents-end)
+  );
+  --art-plugin-agent-tools-start: var(--purple-9);
+  --art-plugin-agent-tools-end: var(--magenta-9);
+  --art-plugin-agent-tools-gradient: linear-gradient(
+    to bottom in oklch,
+    var(--art-plugin-agent-tools-start),
+    var(--art-plugin-agent-tools-end)
+  );
+  --art-plugin-developer-tools-and-integrations-start: var(--orange-9);
+  --art-plugin-developer-tools-and-integrations-end: var(--flame-9);
+  --art-plugin-developer-tools-and-integrations-gradient: linear-gradient(
+    to bottom in oklch,
+    var(--art-plugin-developer-tools-and-integrations-start),
+    var(--art-plugin-developer-tools-and-integrations-end)
+  );
+  --art-plugin-people-and-communities-start: var(--red-9);
+  --art-plugin-people-and-communities-end: var(--magenta-9);
+  --art-plugin-people-and-communities-gradient: linear-gradient(
+    to bottom in oklch,
+    var(--art-plugin-people-and-communities-start),
+    var(--art-plugin-people-and-communities-end)
+  );
+  --art-plugin-productivity-start: var(--amber-9);
+  --art-plugin-productivity-end: var(--flame-9);
+  --art-plugin-productivity-gradient: linear-gradient(
+    to bottom in oklch,
+    var(--art-plugin-productivity-start),
+    var(--art-plugin-productivity-end)
+  );
+}
+
 /* ============================================================
    LEGACY BACKDROP SPECIMENS
    Numbered slots remain only for the glass study in the viewer.
@@ -542,41 +1080,79 @@
 :root {
   --surface-base: var(--neutral-2);
   --surface-panel: var(--neutral-1);
+  --surface-composer: var(--surface-panel);
   --surface-popover: var(--neutral-1);
   --surface-elevated-glass: var(--popover-glass-fill);
   --surface-inset: var(--neutral-2);
   --surface-inverse: var(--neutral-11);
+  --surface-text-selection: var(--neutral-12);
+  --text-on-selection: var(--neutral-1);
+  --surface-text-selection-own: var(--neutral-12);
+  --text-on-selection-own: var(--neutral-1);
   --surface-message: var(--bubble-received);
+  --surface-message-own: var(--bubble-neutral);
+  --surface-message-hover: var(--bubble-hover);
+  --surface-message-own-hover: var(--bubble-own-hover);
+  --bubble-hover: color-mix(in srgb, var(--surface-message) 95%, black);
+  --bubble-own-hover: color-mix(in srgb, var(--surface-message-own) 95%, black);
   --text-message-own: var(--text-standard);
   --text-message-link-own: var(--text-link);
-  --surface-message-own: var(--bubble-neutral);
-  --surface-message-action: var(--neutral-12);
-  --surface-message-action-hover: var(--neutral-11);
-  --surface-message-action-pressed: var(--neutral-action-pressed);
-  --text-message-action: var(--neutral-1);
+  --affordance-message-own-hover: var(--shade-quiet-fill);
+  /* Arriving at a message lays the regular step across its bubble, about
+     twice hover, so the cue never reads as the pointer. */
+  --affordance-message-highlight: var(--shade-fill);
+  --affordance-message-own-highlight: var(--affordance-message-highlight);
+  --affordance-reaction: var(--shade-soft-fill);
+  --affordance-reaction-own: var(--affordance-reaction);
+  /* Mentions are people, not links. Ordinary mentions stay neutral; a mention
+     of you joins the strong group, because it asks for your attention. Own
+     bubbles may override the -own trio to stay distinct from their fill. */
+  --affordance-mention: var(--shade-fill);
+  --affordance-mention-hover: var(--shade-hover-fill);
+  --text-mention: var(--text-standard);
+  --affordance-mention-self: var(--affordance-accent-prominent);
+  --affordance-mention-self-hover: var(--affordance-accent-prominent-hover);
+  --text-mention-self: var(--text-on-accent);
+  --affordance-mention-own: var(--affordance-mention);
+  --affordance-mention-own-hover: var(--affordance-mention-hover);
+  --text-mention-own: var(--text-mention);
   --text-navigation: var(--neutral-navigation-text);
   --text-navigation-unread: var(--neutral-navigation-unread);
   --text-standard: var(--neutral-standard-text);
   --text-subtle: var(--neutral-10);
   --text-metadata: var(--neutral-9);
+  --text-quiet-control: var(--neutral-8);
   --text-inverse: var(--neutral-1);
   --text-unavailable: var(--neutral-7);
   --text-danger: var(--red-12);
+  --text-call-leave: var(--red-10);
   --text-warning: var(--amber-12);
   --text-success: var(--green-12);
   --icon-status-progress: var(--amber-10);
   --icon-status-complete: var(--green-10);
+  --icon-subtle: var(--text-subtle);
+  --icon-subtle-own: var(--icon-subtle);
+  --text-metadata-own: var(--text-metadata);
+  --icon-success: var(--green-11);
+  --icon-success-own: var(--icon-success);
   --status-online: var(--green-11);
   --status-availability-online: var(--green-10);
   --status-avatar-online: var(--green-10);
   --status-avatar-online-border: var(--green-11);
   --status-away: var(--amber-10);
   --status-offline: var(--neutral-8);
+  /* Chart series marks, in this order; validated as a set for colour-vision
+   * separation and 3:1 against the panel. Text never uses them. */
+  --chart-series-1: var(--blue-10);
+  --chart-series-2: var(--orange-10);
+  --chart-series-3: var(--green-10);
+  --chart-series-4: var(--purple-9);
   --text-categorical-purple: var(--purple-12);
   --surface-categorical-purple: var(--purple-3);
-  --text-accent: var(--purple-12);
-  --text-link: var(--blue-11);
-  --affordance-link-hover: var(--blue-3);
+  --icon-categorical-purple: var(--purple-11);
+  --icon-categorical-purple-own: var(--icon-categorical-purple);
+  --text-link: var(--text-standard);
+  --affordance-link-hover: var(--affordance-subtle-hover);
   --border-standard: var(--neutral-3);
   --border-message-thread: var(--neutral-4);
   --scrollbar-thumb: var(--neutral-8);
@@ -592,11 +1168,38 @@
   --affordance-prominent: var(--neutral-12);
   --affordance-prominent-hover: var(--neutral-11);
   --affordance-prominent-pressed: var(--neutral-action-pressed);
+  /* Ink on a prominent fill, and a prominent mark standing alone on a
+     surface (dots, insertion lines), which must stay visible by itself. */
+  --text-on-prominent: var(--text-inverse);
+  --affordance-prominent-mark: var(--affordance-prominent);
   --affordance-subtle: var(--neutral-2);
   --affordance-subtle-hover: var(--neutral-quiet-hover);
   --affordance-backdrop-hover: var(--backdrop-hover-fill);
   --affordance-backdrop-pressed: var(--backdrop-pressed-fill);
   --affordance-subtle-pressed: var(--neutral-4);
+  /* Rows: hover and the ink on hovered or selected rows. Distinct from quiet
+     control fills, so rows can take color before controls do. */
+  --affordance-row-hover: var(--affordance-subtle);
+  --text-row-subtle: var(--text-subtle);
+  --text-row-metadata: var(--text-metadata);
+  /* Primary navigation text on a hovered or selected row. */
+  --text-row: var(--text-navigation);
+  --surface-control-selected: var(--surface-panel);
+  --text-control-selected: var(--text-standard);
+  --surface-navigation-selected: var(--affordance-selected);
+  --text-navigation-selected: var(--text-standard);
+  --text-row-selected: var(--text-navigation-selected);
+  --text-row-selected-subtle: var(--text-navigation-selected);
+  --text-row-selected-metadata: var(--text-navigation-selected);
+  --affordance-navigation-selected: var(--surface-navigation-selected);
+  /* Small badges on a selected row stay distinct without another strong fill. */
+  --surface-row-selected-detail: var(--neutral-2);
+  --text-row-selected-detail: var(--neutral-12);
+  /* Chrome on the shell: the grouped Solo/Multiplayer capsule and its labels.
+     They belong to the shell's color group, not to quiet controls. */
+  --affordance-chrome: var(--neutral-3);
+  --affordance-chrome-hover: var(--affordance-subtle-hover);
+  --text-chrome-subtle: var(--text-subtle);
   --affordance-navigation-quiet: var(--neutral-navigation-quiet);
   --affordance-panel-hover: var(--neutral-2);
   --affordance-floating-hover: var(--neutral-2);
@@ -613,54 +1216,91 @@
   --affordance-danger-pressed: var(--red-5);
   --affordance-warning: var(--amber-3);
   --affordance-success: var(--green-3);
-  --affordance-accent: var(--purple-3);
-  --affordance-accent-hover: var(--purple-4);
-  --affordance-accent-prominent: var(--purple-9);
-  --affordance-accent-prominent-hover: var(--purple-10);
-  --border-accent: var(--purple-8);
+  --affordance-success-hover: var(--green-4);
+  --affordance-success-pressed: var(--green-5);
+  /* Incoming call decisions remain opaque over glass, paired with text-inverse. */
+  --affordance-call-join: var(--green-10);
+  --affordance-call-join-hover: var(--green-9);
+  --affordance-call-decline: var(--red-10);
+  --affordance-call-decline-hover: var(--red-9);
+  --border-success-subtle: var(--green-6);
 }
 
 :root[data-color-mode="dark"],
 .dark {
   --surface-message: var(--bubble-received);
+  --surface-message-own: var(--bubble-neutral);
+  --surface-message-hover: var(--bubble-hover);
+  --surface-message-own-hover: var(--bubble-own-hover);
+  --bubble-hover: color-mix(in srgb, var(--surface-message) 95%, white);
+  --bubble-own-hover: color-mix(in srgb, var(--surface-message-own) 95%, white);
   --text-message-own: var(--text-standard);
   --text-message-link-own: var(--text-link);
-  --surface-message-own: var(--bubble-neutral);
-  --surface-message-action: var(--neutral-12);
-  --surface-message-action-hover: var(--neutral-11);
-  --surface-message-action-pressed: var(--neutral-action-pressed);
-  --text-message-action: var(--neutral-1);
+  --affordance-message-own-hover: var(--tint-quiet-fill);
+  --affordance-message-highlight: var(--tint-fill);
+  --affordance-message-own-highlight: var(--affordance-message-highlight);
+  --affordance-reaction: var(--tint-soft-fill);
+  --affordance-reaction-own: var(--affordance-reaction);
+  /* Ordinary mentions tint the dark fill they sit on. A mention of you takes
+     the strong fill in both modes, because it asks for your attention. */
+  --affordance-mention: var(--tint-fill);
+  --affordance-mention-hover: var(--tint-hover-fill);
+  --text-mention: var(--text-standard);
+  --affordance-mention-self: var(--affordance-accent-prominent);
+  --affordance-mention-self-hover: var(--affordance-accent-prominent-hover);
+  --text-mention-self: var(--text-on-accent);
+  --affordance-mention-own: var(--affordance-mention);
+  --affordance-mention-own-hover: var(--affordance-mention-hover);
+  --text-mention-own: var(--text-mention);
   --shadow-panel: 0 0 0 1px rgba(255, 255, 255, 0.08);
   --surface-base: var(--neutral-1);
   --surface-panel: var(--neutral-3);
+  --surface-composer: var(--neutral-4);
   --surface-popover: var(--neutral-raised);
   --surface-elevated-glass: var(--popover-glass-fill);
   --surface-inset: var(--neutral-2);
   --surface-inverse: var(--neutral-11);
+  --surface-text-selection: var(--neutral-12);
+  --text-on-selection: var(--neutral-1);
+  --surface-text-selection-own: var(--neutral-12);
+  --text-on-selection-own: var(--neutral-1);
   --text-navigation: var(--neutral-11);
   --text-navigation-unread: var(--neutral-12);
   --text-standard: var(--neutral-12);
   --text-subtle: var(--neutral-11);
   --text-metadata: var(--neutral-10);
+  --text-quiet-control: var(--neutral-9);
   --text-inverse: var(--neutral-1);
   --text-unavailable: var(--neutral-7);
   --text-danger: var(--red-12);
+  --text-call-leave: var(--red-10);
   --text-warning: var(--amber-12);
   --text-success: var(--green-12);
   --icon-status-progress: var(--amber-10);
   --icon-status-complete: var(--green-10);
+  --icon-subtle: var(--text-subtle);
+  --icon-subtle-own: var(--icon-subtle);
+  --text-metadata-own: var(--text-metadata);
+  --icon-success: var(--green-11);
+  --icon-success-own: var(--icon-success);
   --status-online: var(--green-11);
   --status-availability-online: var(--green-10);
   --status-avatar-online: var(--green-10);
   --status-avatar-online-border: var(--green-11);
   --status-away: var(--amber-10);
   --status-offline: var(--neutral-10);
+  /* Dark steps stay in the band where no series outshines the others. */
+  --chart-series-1: var(--blue-9);
+  --chart-series-2: var(--orange-8);
+  --chart-series-3: var(--green-9);
+  --chart-series-4: var(--purple-10);
   --text-categorical-purple: var(--purple-12);
   --surface-categorical-purple: var(--purple-3);
-  --text-accent: var(--purple-12);
-  --text-link: var(--blue-11);
-  --affordance-link-hover: var(--blue-3);
-  --border-standard: var(--neutral-4);
+  --icon-categorical-purple: var(--purple-11);
+  --icon-categorical-purple-own: var(--icon-categorical-purple);
+  --text-link: var(--text-standard);
+  --affordance-link-hover: var(--affordance-subtle-hover);
+  --border-standard: var(--neutral-5);
   --border-message-thread: var(--neutral-6);
   --scrollbar-thumb: var(--neutral-9);
   --scrollbar-thumb-quiet: color-mix(
@@ -675,11 +1315,35 @@
   --affordance-prominent: var(--neutral-12);
   --affordance-prominent-hover: var(--neutral-11);
   --affordance-prominent-pressed: var(--neutral-action-pressed);
+  /* Ink on a prominent fill, and a prominent mark standing alone on a
+     surface (dots, insertion lines), which must stay visible by itself. */
+  --text-on-prominent: var(--text-inverse);
+  --affordance-prominent-mark: var(--affordance-prominent);
   --affordance-subtle: var(--neutral-4);
   --affordance-subtle-hover: var(--neutral-quiet-hover);
   --affordance-backdrop-hover: var(--backdrop-hover-fill);
   --affordance-backdrop-pressed: var(--backdrop-pressed-fill);
   --affordance-subtle-pressed: var(--neutral-5);
+  --affordance-row-hover: var(--affordance-subtle);
+  --text-row-subtle: var(--text-subtle);
+  --text-row-metadata: var(--text-metadata);
+  /* Primary navigation text on a hovered or selected row. */
+  --text-row: var(--text-navigation);
+  --surface-control-selected: var(--surface-panel);
+  --text-control-selected: var(--text-standard);
+  --surface-navigation-selected: var(--affordance-selected);
+  --text-navigation-selected: var(--text-standard);
+  --text-row-selected: var(--text-navigation-selected);
+  --text-row-selected-subtle: var(--text-navigation-selected);
+  --text-row-selected-metadata: var(--text-navigation-selected);
+  --affordance-navigation-selected: var(--surface-navigation-selected);
+  --surface-row-selected-detail: var(--neutral-6);
+  --text-row-selected-detail: var(--neutral-12);
+  /* Chrome on the shell: the grouped Solo/Multiplayer capsule and its labels.
+     They belong to the shell's color group, not to quiet controls. */
+  --affordance-chrome: var(--affordance-subtle);
+  --affordance-chrome-hover: var(--affordance-subtle-hover);
+  --text-chrome-subtle: var(--text-subtle);
   --affordance-panel-hover: var(--neutral-4);
   --affordance-floating-hover: var(--neutral-5);
   --affordance-popover-selected: var(--neutral-6);
@@ -695,11 +1359,14 @@
   --affordance-danger-pressed: var(--red-5);
   --affordance-warning: var(--amber-3);
   --affordance-success: var(--green-3);
-  --affordance-accent: var(--purple-3);
-  --affordance-accent-hover: var(--purple-4);
-  --affordance-accent-prominent: var(--purple-9);
-  --affordance-accent-prominent-hover: var(--purple-10);
-  --border-accent: var(--purple-8);
+  --affordance-success-hover: var(--green-4);
+  --affordance-success-pressed: var(--green-5);
+  /* Incoming call decisions remain opaque over glass, paired with text-inverse. */
+  --affordance-call-join: var(--green-10);
+  --affordance-call-join-hover: var(--green-9);
+  --affordance-call-decline: var(--red-10);
+  --affordance-call-decline-hover: var(--red-9);
+  --border-success-subtle: var(--green-6);
 }
 
 /* ============================================================
@@ -781,6 +1448,8 @@
   --space-chip-gap: var(--space-1);
   --layer-dialog-backdrop: 1000;
   --layer-dialog: 1001;
+  /* Feedback raised from a dialog must stay visible above it. */
+  --layer-toast: 1050;
   --layer-popover: 1100;
   --layer-tooltip: 1200;
   --size-topbar: 3.5rem;
@@ -800,13 +1469,13 @@
   --radius-container: var(--corner-container);
   --radius-row: var(--corner-row);
   /* Independent icon controls use an even contour on all four corners. */
-  --radius-icon-button: 0.625rem;
-  /* Half the large (52px) action height; smaller controls clamp naturally. */
-  --radius-capsule: 1.625rem;
+  --radius-icon-button: 1.125rem;
+  /* Capsule actions stay rounded through 68px; smaller controls clamp naturally. */
+  --radius-capsule: 2.125rem;
   --radius-pill: var(--corner-round);
   /* A chip reads as a chip in running text, so it takes a tighter corner than
      a control and gets its own role rather than borrowing one. */
-  --radius-chip: 0.25rem;
+  --radius-chip: 0.75rem;
   /* Profile refinements: emphasized availability. */
   --weight-profile-status: 600;
   --text-avatar-fallback: var(--neutral-avatar-on-white);
@@ -821,8 +1490,6 @@
   --easing-state: var(--ease-state);
   --easing-enter: var(--ease-enter);
   --easing-settle: var(--ease-settle);
-
-  --text-on-accent: #ffffff;
 
   /* `text-on-inverse` was `var(--neutral-1)` in both modes and went with
      `bg-inverse`; its two call sites pair `bg-neutral-11` with
@@ -884,32 +1551,480 @@
 }
 
 /* ============================================================
+   ACCENT
+   One device-local choice picks an accent family; a second picks
+   how much of the app it colors. A family is a twelve-step ramp per
+   mode, with the same step contract as the palette above (1-2 app
+   and subtle backgrounds, 3-5 tints, 6-8 lines, 9-10 strong fill,
+   11-12 text), plus the ink for controls on its strong fill (contrast),
+   the ink for reading text on it, a pressed fill and its link color. The same step number works in both modes
+   because each mode's ramp is authored for its own surfaces.
+
+   Mode owners below bind --accent-1...12 to the half matching them,
+   so opposite-mode previews and media portals stay correct. Roles
+   then stack on those steps. Swatches that preview a family carry
+   data-color-mode, never borrow an already-resolved role.
+
+   Citrus is the default accent and uses black ink on its strong fills.
+   ============================================================ */
+
+/* Mode owners bind the ramp, then the accent roles every level uses. */
+[data-accent][data-color-mode="light"],
+.light,
+:root {
+  --accent-1: var(--accent-1-light);
+  --accent-2: var(--accent-2-light);
+  --accent-3: var(--accent-3-light);
+  --accent-4: var(--accent-4-light);
+  --accent-5: var(--accent-5-light);
+  --accent-6: var(--accent-6-light);
+  --accent-7: var(--accent-7-light);
+  --accent-8: var(--accent-8-light);
+  --accent-9: var(--accent-9-light);
+  --accent-10: var(--accent-10-light);
+  --accent-11: var(--accent-11-light);
+  --accent-12: var(--accent-12-light);
+  --accent-contrast: var(--accent-contrast-light);
+  --accent-ink: var(--accent-ink-light);
+  --accent-pressed: var(--accent-pressed-light);
+  --accent-link: var(--accent-link-light);
+  --accent-link-hover: var(--accent-link-hover-light);
+  --accent-overlay: var(--accent-overlay-light);
+  --accent-overlay-hover: var(--accent-overlay-hover-light);
+  --accent-overlay-soft: var(--accent-overlay-soft-light);
+  --accent-overlay-quiet: var(--accent-overlay-quiet-light);
+  --accent-overlay-highlight: var(--accent-overlay-highlight-light);
+  --text-accent: var(--text-standard);
+  --border-accent: var(--border-focus);
+  --affordance-accent: var(--affordance-subtle);
+  --affordance-accent-hover: var(--affordance-subtle-hover);
+  --surface-message-highlight: var(--accent-3);
+  --text-message-link: var(--accent-link);
+  --surface-sidebar-selected: var(--accent-9);
+  --text-sidebar-selected: var(--accent-contrast);
+  --text-sidebar-hover: var(--accent-12);
+  --affordance-sidebar-hover: var(--accent-2);
+  --affordance-accent-prominent: var(--accent-9);
+  --affordance-accent-prominent-hover: var(--accent-10);
+  --affordance-accent-prominent-pressed: var(--accent-pressed);
+  --text-on-accent: var(--accent-contrast);
+}
+:root[data-color-mode="dark"],
+[data-accent][data-color-mode="dark"],
+.dark {
+  --accent-1: var(--accent-1-dark);
+  --accent-2: var(--accent-2-dark);
+  --accent-3: var(--accent-3-dark);
+  --accent-4: var(--accent-4-dark);
+  --accent-5: var(--accent-5-dark);
+  --accent-6: var(--accent-6-dark);
+  --accent-7: var(--accent-7-dark);
+  --accent-8: var(--accent-8-dark);
+  --accent-9: var(--accent-9-dark);
+  --accent-10: var(--accent-10-dark);
+  --accent-11: var(--accent-11-dark);
+  --accent-12: var(--accent-12-dark);
+  --accent-contrast: var(--accent-contrast-dark);
+  --accent-ink: var(--accent-ink-dark);
+  --accent-pressed: var(--accent-pressed-dark);
+  --accent-link: var(--accent-link-dark);
+  --accent-link-hover: var(--accent-link-hover-dark);
+  --accent-overlay: var(--accent-overlay-dark);
+  --accent-overlay-hover: var(--accent-overlay-hover-dark);
+  --accent-overlay-soft: var(--accent-overlay-soft-dark);
+  --accent-overlay-quiet: var(--accent-overlay-quiet-dark);
+  --accent-overlay-highlight: var(--accent-overlay-highlight-dark);
+  --text-accent: var(--text-standard);
+  --border-accent: var(--border-focus);
+  --affordance-accent: var(--affordance-subtle);
+  --affordance-accent-hover: var(--affordance-subtle-hover);
+  --surface-message-highlight: var(--accent-3);
+  --text-message-link: var(--accent-link);
+  --surface-sidebar-selected: var(--accent-9);
+  --text-sidebar-selected: var(--accent-contrast);
+  --text-sidebar-hover: var(--accent-12);
+  --affordance-sidebar-hover: var(--accent-3);
+  --affordance-accent-prominent: var(--accent-9);
+  --affordance-accent-prominent-hover: var(--accent-10);
+  --affordance-accent-prominent-pressed: var(--accent-pressed);
+  --text-on-accent: var(--accent-contrast);
+}
+
+:root[data-accent="magenta"],
+[data-accent="magenta"] {
+  --accent-1-light: var(--magenta-1-light);
+  --accent-2-light: var(--magenta-2-light);
+  --accent-3-light: var(--magenta-3-light);
+  --accent-4-light: var(--magenta-4-light);
+  --accent-5-light: var(--magenta-5-light);
+  --accent-6-light: var(--magenta-6-light);
+  --accent-7-light: var(--magenta-7-light);
+  --accent-8-light: var(--magenta-8-light);
+  --accent-9-light: var(--magenta-9-light);
+  --accent-10-light: var(--magenta-10-light);
+  --accent-11-light: var(--magenta-11-light);
+  --accent-12-light: var(--magenta-12-light);
+  --accent-contrast-light: var(--magenta-contrast-light);
+  --accent-ink-light: var(--magenta-ink-light);
+  --accent-pressed-light: var(--magenta-pressed-light);
+  --accent-link-light: var(--magenta-link-light);
+  --accent-link-hover-light: var(--magenta-link-hover-light);
+  --accent-overlay-light: var(--shade-strong-fill);
+  --accent-overlay-hover-light: var(--shade-strong-hover-fill);
+  --accent-overlay-soft-light: var(--shade-soft-fill);
+  --accent-overlay-quiet-light: var(--shade-quiet-fill);
+  --accent-overlay-highlight-light: var(--shade-fill);
+  --accent-1-dark: var(--magenta-1-dark);
+  --accent-2-dark: var(--magenta-2-dark);
+  --accent-3-dark: var(--magenta-3-dark);
+  --accent-4-dark: var(--magenta-4-dark);
+  --accent-5-dark: var(--magenta-5-dark);
+  --accent-6-dark: var(--magenta-6-dark);
+  --accent-7-dark: var(--magenta-7-dark);
+  --accent-8-dark: var(--magenta-8-dark);
+  --accent-9-dark: var(--magenta-9-dark);
+  --accent-10-dark: var(--magenta-10-dark);
+  --accent-11-dark: var(--magenta-11-dark);
+  --accent-12-dark: var(--magenta-12-dark);
+  --accent-contrast-dark: var(--magenta-contrast-dark);
+  --accent-ink-dark: var(--magenta-ink-dark);
+  --accent-pressed-dark: var(--magenta-pressed-dark);
+  --accent-link-dark: var(--magenta-link-dark);
+  --accent-link-hover-dark: var(--magenta-link-hover-dark);
+  --accent-overlay-dark: var(--shade-strong-fill);
+  --accent-overlay-hover-dark: var(--shade-strong-hover-fill);
+  --accent-overlay-soft-dark: var(--shade-soft-fill);
+  --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
+}
+:root[data-accent="iris"],
+[data-accent="iris"] {
+  --accent-1-light: var(--iris-1-light);
+  --accent-2-light: var(--iris-2-light);
+  --accent-3-light: var(--iris-3-light);
+  --accent-4-light: var(--iris-4-light);
+  --accent-5-light: var(--iris-5-light);
+  --accent-6-light: var(--iris-6-light);
+  --accent-7-light: var(--iris-7-light);
+  --accent-8-light: var(--iris-8-light);
+  --accent-9-light: var(--iris-9-light);
+  --accent-10-light: var(--iris-10-light);
+  --accent-11-light: var(--iris-11-light);
+  --accent-12-light: var(--iris-12-light);
+  --accent-contrast-light: var(--iris-contrast-light);
+  --accent-ink-light: var(--iris-ink-light);
+  --accent-pressed-light: var(--iris-pressed-light);
+  --accent-link-light: var(--iris-link-light);
+  --accent-link-hover-light: var(--iris-link-hover-light);
+  --accent-overlay-light: var(--shade-strong-fill);
+  --accent-overlay-hover-light: var(--shade-strong-hover-fill);
+  --accent-overlay-soft-light: var(--shade-soft-fill);
+  --accent-overlay-quiet-light: var(--shade-quiet-fill);
+  --accent-overlay-highlight-light: var(--shade-fill);
+  --accent-1-dark: var(--iris-1-dark);
+  --accent-2-dark: var(--iris-2-dark);
+  --accent-3-dark: var(--iris-3-dark);
+  --accent-4-dark: var(--iris-4-dark);
+  --accent-5-dark: var(--iris-5-dark);
+  --accent-6-dark: var(--iris-6-dark);
+  --accent-7-dark: var(--iris-7-dark);
+  --accent-8-dark: var(--iris-8-dark);
+  --accent-9-dark: var(--iris-9-dark);
+  --accent-10-dark: var(--iris-10-dark);
+  --accent-11-dark: var(--iris-11-dark);
+  --accent-12-dark: var(--iris-12-dark);
+  --accent-contrast-dark: var(--iris-contrast-dark);
+  --accent-ink-dark: var(--iris-ink-dark);
+  --accent-pressed-dark: var(--iris-pressed-dark);
+  --accent-link-dark: var(--iris-link-dark);
+  --accent-link-hover-dark: var(--iris-link-hover-dark);
+  --accent-overlay-dark: var(--shade-strong-fill);
+  --accent-overlay-hover-dark: var(--shade-strong-hover-fill);
+  --accent-overlay-soft-dark: var(--shade-soft-fill);
+  --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
+}
+:root[data-accent="cobalt"],
+[data-accent="cobalt"] {
+  --accent-1-light: var(--cobalt-1-light);
+  --accent-2-light: var(--cobalt-2-light);
+  --accent-3-light: var(--cobalt-3-light);
+  --accent-4-light: var(--cobalt-4-light);
+  --accent-5-light: var(--cobalt-5-light);
+  --accent-6-light: var(--cobalt-6-light);
+  --accent-7-light: var(--cobalt-7-light);
+  --accent-8-light: var(--cobalt-8-light);
+  --accent-9-light: var(--cobalt-9-light);
+  --accent-10-light: var(--cobalt-10-light);
+  --accent-11-light: var(--cobalt-11-light);
+  --accent-12-light: var(--cobalt-12-light);
+  --accent-contrast-light: var(--cobalt-contrast-light);
+  --accent-ink-light: var(--cobalt-ink-light);
+  --accent-pressed-light: var(--cobalt-pressed-light);
+  --accent-link-light: var(--cobalt-link-light);
+  --accent-link-hover-light: var(--cobalt-link-hover-light);
+  --accent-overlay-light: var(--shade-strong-fill);
+  --accent-overlay-hover-light: var(--shade-strong-hover-fill);
+  --accent-overlay-soft-light: var(--shade-soft-fill);
+  --accent-overlay-quiet-light: var(--shade-quiet-fill);
+  --accent-overlay-highlight-light: var(--shade-fill);
+  --accent-1-dark: var(--cobalt-1-dark);
+  --accent-2-dark: var(--cobalt-2-dark);
+  --accent-3-dark: var(--cobalt-3-dark);
+  --accent-4-dark: var(--cobalt-4-dark);
+  --accent-5-dark: var(--cobalt-5-dark);
+  --accent-6-dark: var(--cobalt-6-dark);
+  --accent-7-dark: var(--cobalt-7-dark);
+  --accent-8-dark: var(--cobalt-8-dark);
+  --accent-9-dark: var(--cobalt-9-dark);
+  --accent-10-dark: var(--cobalt-10-dark);
+  --accent-11-dark: var(--cobalt-11-dark);
+  --accent-12-dark: var(--cobalt-12-dark);
+  --accent-contrast-dark: var(--cobalt-contrast-dark);
+  --accent-ink-dark: var(--cobalt-ink-dark);
+  --accent-pressed-dark: var(--cobalt-pressed-dark);
+  --accent-link-dark: var(--cobalt-link-dark);
+  --accent-link-hover-dark: var(--cobalt-link-hover-dark);
+  --accent-overlay-dark: var(--shade-strong-fill);
+  --accent-overlay-hover-dark: var(--shade-strong-hover-fill);
+  --accent-overlay-soft-dark: var(--shade-soft-fill);
+  --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
+}
+:root[data-accent="bee"],
+[data-accent="bee"] {
+  --accent-1-light: var(--bee-1-light);
+  --accent-2-light: var(--bee-2-light);
+  --accent-3-light: var(--bee-3-light);
+  --accent-4-light: var(--bee-4-light);
+  --accent-5-light: var(--bee-5-light);
+  --accent-6-light: var(--bee-6-light);
+  --accent-7-light: var(--bee-7-light);
+  --accent-8-light: var(--bee-8-light);
+  --accent-9-light: var(--bee-9-light);
+  --accent-10-light: var(--bee-10-light);
+  --accent-11-light: var(--bee-11-light);
+  --accent-12-light: var(--bee-12-light);
+  --accent-contrast-light: var(--bee-contrast-light);
+  --accent-ink-light: var(--bee-ink-light);
+  --accent-pressed-light: var(--bee-pressed-light);
+  --accent-link-light: var(--bee-link-light);
+  --accent-link-hover-light: var(--bee-link-hover-light);
+  --accent-overlay-light: var(--shade-fill);
+  --accent-overlay-hover-light: var(--shade-hover-fill);
+  --accent-overlay-soft-light: var(--shade-soft-fill);
+  --accent-overlay-quiet-light: var(--shade-quiet-fill);
+  --accent-overlay-highlight-light: var(--shade-fill);
+  --accent-1-dark: var(--bee-1-dark);
+  --accent-2-dark: var(--bee-2-dark);
+  --accent-3-dark: var(--bee-3-dark);
+  --accent-4-dark: var(--bee-4-dark);
+  --accent-5-dark: var(--bee-5-dark);
+  --accent-6-dark: var(--bee-6-dark);
+  --accent-7-dark: var(--bee-7-dark);
+  --accent-8-dark: var(--bee-8-dark);
+  --accent-9-dark: var(--bee-9-dark);
+  --accent-10-dark: var(--bee-10-dark);
+  --accent-11-dark: var(--bee-11-dark);
+  --accent-12-dark: var(--bee-12-dark);
+  --accent-contrast-dark: var(--bee-contrast-dark);
+  --accent-ink-dark: var(--bee-ink-dark);
+  --accent-pressed-dark: var(--bee-pressed-dark);
+  --accent-link-dark: var(--bee-link-dark);
+  --accent-link-hover-dark: var(--bee-link-hover-dark);
+  --accent-overlay-dark: var(--shade-fill);
+  --accent-overlay-hover-dark: var(--shade-hover-fill);
+  --accent-overlay-soft-dark: var(--shade-soft-fill);
+  --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
+}
+:root[data-accent="citrus"],
+[data-accent="citrus"],
+:root {
+  --accent-1-light: var(--citrus-1-light);
+  --accent-2-light: var(--citrus-2-light);
+  --accent-3-light: var(--citrus-3-light);
+  --accent-4-light: var(--citrus-4-light);
+  --accent-5-light: var(--citrus-5-light);
+  --accent-6-light: var(--citrus-6-light);
+  --accent-7-light: var(--citrus-7-light);
+  --accent-8-light: var(--citrus-8-light);
+  --accent-9-light: var(--citrus-9-light);
+  --accent-10-light: var(--citrus-10-light);
+  --accent-11-light: var(--citrus-11-light);
+  --accent-12-light: var(--citrus-12-light);
+  --accent-contrast-light: var(--citrus-contrast-light);
+  --accent-ink-light: var(--citrus-ink-light);
+  --accent-pressed-light: var(--citrus-pressed-light);
+  --accent-link-light: var(--citrus-link-light);
+  --accent-link-hover-light: var(--citrus-link-hover-light);
+  --accent-overlay-light: var(--shade-fill);
+  --accent-overlay-hover-light: var(--shade-hover-fill);
+  --accent-overlay-soft-light: var(--shade-soft-fill);
+  --accent-overlay-quiet-light: var(--shade-quiet-fill);
+  --accent-overlay-highlight-light: var(--shade-fill);
+  --accent-1-dark: var(--citrus-1-dark);
+  --accent-2-dark: var(--citrus-2-dark);
+  --accent-3-dark: var(--citrus-3-dark);
+  --accent-4-dark: var(--citrus-4-dark);
+  --accent-5-dark: var(--citrus-5-dark);
+  --accent-6-dark: var(--citrus-6-dark);
+  --accent-7-dark: var(--citrus-7-dark);
+  --accent-8-dark: var(--citrus-8-dark);
+  --accent-9-dark: var(--citrus-9-dark);
+  --accent-10-dark: var(--citrus-10-dark);
+  --accent-11-dark: var(--citrus-11-dark);
+  --accent-12-dark: var(--citrus-12-dark);
+  --accent-contrast-dark: var(--citrus-contrast-dark);
+  --accent-ink-dark: var(--citrus-ink-dark);
+  --accent-pressed-dark: var(--citrus-pressed-dark);
+  --accent-link-dark: var(--citrus-link-dark);
+  --accent-link-hover-dark: var(--citrus-link-hover-dark);
+  --accent-overlay-dark: var(--shade-fill);
+  --accent-overlay-hover-dark: var(--shade-hover-fill);
+  --accent-overlay-soft-dark: var(--shade-soft-fill);
+  --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
+}
+:root[data-accent="mono"],
+[data-accent="mono"] {
+  --accent-1-light: var(--mono-1-light);
+  --accent-2-light: var(--mono-2-light);
+  --accent-3-light: var(--mono-3-light);
+  --accent-4-light: var(--mono-4-light);
+  --accent-5-light: var(--mono-5-light);
+  --accent-6-light: var(--mono-6-light);
+  --accent-7-light: var(--mono-7-light);
+  --accent-8-light: var(--mono-8-light);
+  --accent-9-light: var(--mono-9-light);
+  --accent-10-light: var(--mono-10-light);
+  --accent-11-light: var(--mono-11-light);
+  --accent-12-light: var(--mono-12-light);
+  --accent-contrast-light: var(--mono-contrast-light);
+  --accent-ink-light: var(--mono-ink-light);
+  --accent-pressed-light: var(--mono-pressed-light);
+  --accent-link-light: var(--mono-link-light);
+  --accent-link-hover-light: var(--mono-link-hover-light);
+  --accent-overlay-light: var(--tint-fill);
+  --accent-overlay-hover-light: var(--tint-hover-fill);
+  --accent-overlay-soft-light: var(--tint-soft-fill);
+  --accent-overlay-quiet-light: var(--tint-quiet-fill);
+  --accent-overlay-highlight-light: var(--tint-fill);
+  --accent-1-dark: var(--mono-1-dark);
+  --accent-2-dark: var(--mono-2-dark);
+  --accent-3-dark: var(--mono-3-dark);
+  --accent-4-dark: var(--mono-4-dark);
+  --accent-5-dark: var(--mono-5-dark);
+  --accent-6-dark: var(--mono-6-dark);
+  --accent-7-dark: var(--mono-7-dark);
+  --accent-8-dark: var(--mono-8-dark);
+  --accent-9-dark: var(--mono-9-dark);
+  --accent-10-dark: var(--mono-10-dark);
+  --accent-11-dark: var(--mono-11-dark);
+  --accent-12-dark: var(--mono-12-dark);
+  --accent-contrast-dark: var(--mono-contrast-dark);
+  --accent-ink-dark: var(--mono-ink-dark);
+  --accent-pressed-dark: var(--mono-pressed-dark);
+  --accent-link-dark: var(--mono-link-dark);
+  --accent-link-hover-dark: var(--mono-link-hover-dark);
+  --accent-overlay-dark: var(--shade-fill);
+  --accent-overlay-hover-dark: var(--shade-hover-fill);
+  --accent-overlay-soft-dark: var(--shade-soft-fill);
+  --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
+}
+
+/* Vibe changes bubble contrast only. Shared controls retain their neutral roles. */
+:root[data-color-level="touch"],
+[data-color-level="touch"] .light {
+  --surface-message-own: var(--accent-4);
+  --text-message-own: var(--accent-12);
+  --text-message-link-own: var(--accent-link);
+}
+
+:root[data-color-level="touch"][data-color-mode="dark"],
+[data-color-level="touch"] .dark {
+  --surface-message-own: var(--accent-4);
+  --text-message-own: var(--accent-12);
+  --text-message-link-own: var(--accent-link);
+}
+
+:root[data-color-level="high"],
+[data-color-level="high"] .light {
+  --affordance-mention-own: var(--accent-overlay);
+  --affordance-mention-own-hover: var(--accent-overlay-hover);
+  --affordance-message-own-hover: var(--accent-overlay-quiet);
+  --affordance-message-own-highlight: var(--accent-overlay-highlight);
+  --affordance-reaction-own: var(--accent-overlay-soft);
+  --text-mention-own: var(--text-message-own);
+  --surface-message-own: var(--accent-9);
+  --text-message-own: var(--accent-ink);
+  --surface-text-selection-own: var(--accent-ink);
+  --text-on-selection-own: var(--surface-message-own);
+  --text-message-link-own: var(--accent-ink);
+  --icon-subtle-own: var(--text-message-link-own);
+  --text-metadata-own: var(--text-message-link-own);
+  --icon-success-own: var(--text-message-link-own);
+  --icon-categorical-purple-own: var(--text-message-link-own);
+}
+
+:root[data-color-level="high"][data-color-mode="dark"],
+[data-color-level="high"] .dark {
+  --affordance-mention-own: var(--accent-overlay);
+  --affordance-mention-own-hover: var(--accent-overlay-hover);
+  --affordance-message-own-hover: var(--accent-overlay-quiet);
+  --affordance-message-own-highlight: var(--accent-overlay-highlight);
+  --affordance-reaction-own: var(--accent-overlay-soft);
+  --text-mention-own: var(--text-message-own);
+  --surface-message-own: var(--accent-9);
+  --text-message-own: var(--accent-ink);
+  --surface-text-selection-own: var(--accent-ink);
+  --text-on-selection-own: var(--surface-message-own);
+  --text-message-link-own: var(--accent-ink);
+  --icon-subtle-own: var(--text-message-link-own);
+  --text-metadata-own: var(--text-message-link-own);
+  --icon-success-own: var(--text-message-link-own);
+  --icon-categorical-purple-own: var(--text-message-link-own);
+}
+
+/* Raised dark composers need a distinct nested fill and progressively lighter
+   interaction states. Both composer hosts opt into this shared surface context. */
+.dark [data-composer-surface],
+:root[data-color-mode="dark"] [data-composer-surface] {
+  --affordance-subtle: var(--neutral-5);
+  --affordance-subtle-hover: var(--neutral-6);
+  --affordance-subtle-pressed: var(--neutral-7);
+}
+
+/* ============================================================
    LAYER 3 — TAILWIND REGISTRATION
    `--color-*: initial` deletes Tailwind's default palette, so
    `text-gray-500` does not exist. Only the roles above do.
    ============================================================ */
 
-:root,
-[data-bubble-color] {
-  --surface-message-highlight: color-mix(
-    in srgb,
-    var(--surface-message-own) 20%,
-    var(--surface-panel)
-  );
-}
-
 @theme inline {
   --color-*: initial;
   /* Semantic utilities. Text and border stay in their own namespaces. */
   --text-color-link: var(--text-link);
+  --color-surface-control-selected: var(--surface-control-selected);
+  --text-color-control-selected: var(--text-control-selected);
+  --text-color-navigation-selected: var(--text-navigation-selected);
+  --text-color-message-link: var(--text-message-link);
+  --text-color-sidebar-selected: var(--text-sidebar-selected);
+  --text-color-sidebar-hover: var(--text-sidebar-hover);
+  --color-surface-sidebar-selected: var(--surface-sidebar-selected);
+  --color-affordance-sidebar-hover: var(--affordance-sidebar-hover);
   --text-color-message-own: var(--text-message-own);
   --text-color-message-link-own: var(--text-message-link-own);
-  --text-color-message-action: var(--text-message-action);
+  --text-color-mention: var(--text-mention);
+  --text-color-mention-own: var(--text-mention-own);
+  --text-color-mention-self: var(--text-mention-self);
   --text-color-navigation: var(--text-navigation);
   --text-color-navigation-unread: var(--text-navigation-unread);
   --color-affordance-link-hover: var(--affordance-link-hover);
   --color-surface-base: var(--surface-base);
   --color-surface-panel: var(--surface-panel);
+  --color-surface-composer: var(--surface-composer);
   --color-surface-popover: var(--surface-popover);
   --color-surface-inset: var(--surface-inset);
   --color-surface-inverse: var(--surface-inverse);
@@ -922,6 +2037,7 @@
   --text-color-inverse: var(--text-inverse);
   --text-color-unavailable: var(--text-unavailable);
   --text-color-danger: var(--text-danger);
+  --text-color-call-leave: var(--text-call-leave);
   --text-color-warning: var(--text-warning);
   --text-color-success: var(--text-success);
   --text-color-categorical-purple: var(--text-categorical-purple);
@@ -934,13 +2050,31 @@
   --border-color-focus: var(--border-focus);
   --border-color-danger: var(--border-danger);
   --border-color-warning: var(--border-warning);
+  --color-surface-text-selection: var(--surface-text-selection);
+  --text-color-on-selection: var(--text-on-selection);
+  --color-surface-text-selection-own: var(--surface-text-selection-own);
+  --text-color-on-selection-own: var(--text-on-selection-own);
   --color-affordance-prominent: var(--affordance-prominent);
   --color-affordance-prominent-hover: var(--affordance-prominent-hover);
   --color-affordance-prominent-pressed: var(--affordance-prominent-pressed);
+  --color-affordance-prominent-mark: var(--affordance-prominent-mark);
   --color-affordance-subtle: var(--affordance-subtle);
   --color-affordance-subtle-hover: var(--affordance-subtle-hover);
   --color-affordance-subtle-pressed: var(--affordance-subtle-pressed);
   --color-affordance-navigation-quiet: var(--affordance-navigation-quiet);
+  --color-affordance-row-hover: var(--affordance-row-hover);
+  --color-affordance-navigation-selected: var(--affordance-navigation-selected);
+  --color-surface-row-selected-detail: var(--surface-row-selected-detail);
+  --text-color-row-selected-detail: var(--text-row-selected-detail);
+  --text-color-row-subtle: var(--text-row-subtle);
+  --text-color-row-metadata: var(--text-row-metadata);
+  --text-color-row: var(--text-row);
+  --text-color-row-selected: var(--text-row-selected);
+  --text-color-row-selected-subtle: var(--text-row-selected-subtle);
+  --text-color-row-selected-metadata: var(--text-row-selected-metadata);
+  --color-affordance-chrome: var(--affordance-chrome);
+  --color-affordance-chrome-hover: var(--affordance-chrome-hover);
+  --text-color-chrome-subtle: var(--text-chrome-subtle);
   --color-affordance-panel-hover: var(--affordance-panel-hover);
   --color-affordance-floating-hover: var(--affordance-floating-hover);
   --color-affordance-popover-selected: var(--affordance-popover-selected);
@@ -959,8 +2093,17 @@
   --color-affordance-danger-pressed: var(--affordance-danger-pressed);
   --color-affordance-warning: var(--affordance-warning);
   --color-affordance-success: var(--affordance-success);
+  --color-affordance-success-hover: var(--affordance-success-hover);
+  --color-affordance-success-pressed: var(--affordance-success-pressed);
+  --border-color-success-subtle: var(--border-success-subtle);
   --color-affordance-accent: var(--affordance-accent);
   --color-affordance-accent-hover: var(--affordance-accent-hover);
+  --color-affordance-mention: var(--affordance-mention);
+  --color-affordance-mention-hover: var(--affordance-mention-hover);
+  --color-affordance-mention-own: var(--affordance-mention-own);
+  --color-affordance-mention-own-hover: var(--affordance-mention-own-hover);
+  --color-affordance-mention-self: var(--affordance-mention-self);
+  --color-affordance-mention-self-hover: var(--affordance-mention-self-hover);
   --color-affordance-accent-prominent: var(--affordance-accent-prominent);
   --color-affordance-accent-prominent-hover: var(
     --affordance-accent-prominent-hover
@@ -1107,6 +2250,7 @@
   --text-color-tertiary: var(--text-tertiary);
   --text-color-disabled: var(--text-disabled);
   --text-color-on-accent: var(--text-on-accent);
+  --text-color-on-prominent: var(--text-on-prominent);
 
   /* Borders register in their OWN namespace for the same reason — this is where
      the collision was found first. Text and borders shared the emphasis names,
@@ -1133,107 +2277,4 @@
   --spacing-section-gap: var(--space-section-gap);
   --spacing-chip-inset: var(--space-chip-inset);
   --spacing-chip-gap: var(--space-chip-gap);
-}
-
-/* Device-local message colors; scopes also paint the settings swatches. */
-
-:root[data-bubble-color="neutral"],
-[data-bubble-color="neutral"] {
-  --surface-message-own: var(--bubble-neutral);
-  --text-message-own: var(--text-standard);
-  --text-message-link-own: var(--text-link);
-  --surface-message-action: var(--neutral-12);
-  --surface-message-action-hover: var(--neutral-11);
-  --surface-message-action-pressed: var(--neutral-action-pressed);
-  --text-message-action: var(--neutral-1);
-}
-:root[data-bubble-color="blue"],
-[data-bubble-color="blue"] {
-  --surface-message-own: var(--bubble-blue);
-  --text-message-own: var(--bubble-ink);
-  --text-message-link-own: var(--bubble-ink);
-  --surface-message-action: var(--surface-message-own);
-  --surface-message-action-hover: color-mix(
-    in oklch,
-    var(--surface-message-own),
-    black 10%
-  );
-  --surface-message-action-pressed: color-mix(
-    in oklch,
-    var(--surface-message-own),
-    black 20%
-  );
-  --text-message-action: var(--bubble-ink);
-}
-:root[data-bubble-color="green"],
-[data-bubble-color="green"] {
-  --surface-message-own: var(--bubble-green);
-  --text-message-own: var(--bubble-ink);
-  --text-message-link-own: var(--bubble-ink);
-  --surface-message-action: var(--surface-message-own);
-  --surface-message-action-hover: color-mix(
-    in oklch,
-    var(--surface-message-own),
-    black 10%
-  );
-  --surface-message-action-pressed: color-mix(
-    in oklch,
-    var(--surface-message-own),
-    black 20%
-  );
-  --text-message-action: var(--bubble-ink);
-}
-:root[data-bubble-color="orange"],
-[data-bubble-color="orange"] {
-  --surface-message-own: var(--bubble-orange);
-  --text-message-own: var(--bubble-ink);
-  --text-message-link-own: var(--bubble-ink);
-  --surface-message-action: var(--surface-message-own);
-  --surface-message-action-hover: color-mix(
-    in oklch,
-    var(--surface-message-own),
-    black 10%
-  );
-  --surface-message-action-pressed: color-mix(
-    in oklch,
-    var(--surface-message-own),
-    black 20%
-  );
-  --text-message-action: var(--bubble-ink);
-}
-:root[data-bubble-color="pink"],
-[data-bubble-color="pink"] {
-  --surface-message-own: var(--bubble-pink);
-  --text-message-own: var(--bubble-ink);
-  --text-message-link-own: var(--bubble-ink);
-  --surface-message-action: var(--surface-message-own);
-  --surface-message-action-hover: color-mix(
-    in oklch,
-    var(--surface-message-own),
-    black 10%
-  );
-  --surface-message-action-pressed: color-mix(
-    in oklch,
-    var(--surface-message-own),
-    black 20%
-  );
-  --text-message-action: var(--bubble-ink);
-}
-:root[data-bubble-color="lilac"],
-[data-bubble-color="lilac"] {
-  --surface-message-own: var(--bubble-lilac);
-  --text-message-own: var(--bubble-ink);
-  --text-message-link-own: var(--bubble-ink);
-  --surface-message-action: var(--surface-message-own);
-  --surface-message-action-hover: color-mix(
-    in oklch,
-    var(--surface-message-own),
-    black 10%
-  );
-  --surface-message-action-pressed: color-mix(
-    in oklch,
-    var(--surface-message-own),
-    black 20%
-  );
-  --text-message-action: var(--bubble-ink);
 }

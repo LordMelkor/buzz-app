@@ -1,9 +1,14 @@
+import { SidebarNavigation } from "../../../../src/shared/design-system/ui/SidebarNavigation";
 import { ExamplePreview } from "./ExamplePreview";
 import { SectionHeading } from "./primitives";
 import { useId, useState, type ReactNode } from "react";
 import { Accordion } from "../../../../src/shared/design-system/ui/Accordion";
 import { Button } from "../../../../src/shared/design-system/ui/Button";
+import { Avatar } from "../../../../src/shared/design-system/ui/Avatar";
 import { Checkbox } from "../../../../src/shared/design-system/ui/Checkbox";
+import { NavigationItem } from "../../../../src/shared/design-system/ui/NavigationItem";
+import { NavigationSection } from "../../../../src/shared/design-system/ui/NavigationSection";
+import { Header } from "../../../../src/shared/design-system/ui/Header";
 import { Dialog } from "../../../../src/shared/design-system/ui/Dialog";
 import { Field } from "../../../../src/shared/design-system/ui/Field";
 import { Input } from "../../../../src/shared/design-system/ui/Input";
@@ -19,6 +24,7 @@ function Example({
   code,
   description,
   title,
+  artwork,
   intro,
   action = "Save",
   informational = false,
@@ -32,13 +38,14 @@ function Example({
   code: string;
   description: string;
   title: string;
+  artwork?: ReactNode;
   intro?: string;
   action?: string;
   informational?: boolean;
   height?: "content" | "stable" | "stable-tall";
   chromeSpacing?: "default" | "padded";
   bodyLayout?: "flow" | "flex";
-  size?: "default" | "wide" | "expanded";
+  size?: "compact" | "default" | "wide" | "expanded";
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -62,7 +69,7 @@ const id = useId();
 <Dialog
   open={open}
   onOpenChange={setOpen}
-  title=${JSON.stringify(title)}${size ? `\n  size="${size}"` : ""}${height ? `\n  height="${height}"` : ""}${bodyLayout ? `\n  bodyLayout="${bodyLayout}"` : ""}${chromeSpacing ? `\n  chromeSpacing="${chromeSpacing}"` : ""}${intro ? `\n  description=${JSON.stringify(intro)}` : ""}
+  title=${JSON.stringify(title)}${artwork ? '\n  artwork={<Avatar size="large" alt="" fallback="A" />}' : ""}${size ? `\n  size="${size}"` : ""}${height ? `\n  height="${height}"` : ""}${bodyLayout ? `\n  bodyLayout="${bodyLayout}"` : ""}${chromeSpacing ? `\n  chromeSpacing="${chromeSpacing}"` : ""}${intro ? `\n  description=${JSON.stringify(intro)}` : ""}
   actions={${
     informational
       ? '<Button variant="prominent" onClick={() => setOpen(false)}>Done</Button>'
@@ -83,6 +90,7 @@ ${informational ? "" : `  <form id={id} className="space-y-section-gap" onSubmit
         open={open}
         onOpenChange={setOpen}
         title={title}
+        artwork={artwork}
         {...(size ? { size } : {})}
         {...(height ? { height } : {})}
         {...(bodyLayout ? { bodyLayout } : {})}
@@ -125,10 +133,26 @@ ${informational ? "" : `  <form id={id} className="space-y-section-gap" onSubmit
 function ScrollToEdgeExample() {
   const [open, setOpen] = useState(false);
   return (
-    <>
-      <Button onClick={() => setOpen(true)}>
-        Open footerless scrolling list
-      </Button>
+    <section
+      className="component-specimen-group"
+      aria-label="Footerless scrolling list"
+    >
+      <SectionHeading
+        title="Footerless scrolling list"
+        description="A bounded list with no footer; content scrolls to the bottom inset."
+      />
+      <ExamplePreview
+        label="Footerless scrolling list"
+        code={
+          'const [open, setOpen] = useState(false);\n\n<Button onClick={() => setOpen(true)}>Open footerless scrolling list</Button>\n<Dialog\n  open={open}\n  onOpenChange={setOpen}\n  title="Scrolling list"\n  height="stable"\n  bodyLayout="flex"\n  footerGap="none"\n>\n  <div className="buzz-thin-scrollbar min-h-0 overflow-auto pb-6">\n    {Array.from(\n      { length: 24 },\n      (_, index) => "List item " + (index + 1),\n    ).map((label) => (\n      <p className="py-3 text-body" key={label}>\n        {label}\n      </p>\n    ))}\n  </div>\n</Dialog>'
+        }
+      >
+        <div className="flex w-full justify-center">
+          <Button onClick={() => setOpen(true)}>
+            Open footerless scrolling list
+          </Button>
+        </div>
+      </ExamplePreview>
       <Dialog
         open={open}
         onOpenChange={setOpen}
@@ -148,14 +172,81 @@ function ScrollToEdgeExample() {
           ))}
         </div>
       </Dialog>
-    </>
+    </section>
+  );
+}
+
+function NavigationExample() {
+  const [open, setOpen] = useState(false);
+  const [section, setSection] = useState("General");
+  return (
+    <section
+      className="component-specimen-group"
+      aria-label="Integrated navigation"
+    >
+      <SectionHeading
+        title="Integrated navigation"
+        description="One expanded modal surface with a compact header, flush sidebar and independently scrolling content. Host-contained sectioned modals center within a 72rem × 48rem frame with a 1rem gutter. Narrow navigation stacks above the content."
+      />
+      <ExamplePreview
+        label="Integrated navigation"
+        code={
+          'const [open, setOpen] = useState(false);\nconst [section, setSection] = useState("General");\n\n<Button onClick={() => setOpen(true)}>Open navigated modal</Button>\n<Dialog\n  open={open}\n  onOpenChange={setOpen}\n  title="Preferences"\n  navigation={{\n    label: "Preference sections",\n    content: (\n      <SidebarNavigation wrapSections>\n        <NavigationSection label="Preferences">\n          {["General", "Notifications"].map((label) => (\n            <NavigationItem\n              key={label}\n              label={label}\n              selected={section === label}\n              onClick={() => setSection(label)}\n            />\n          ))}\n        </NavigationSection>\n      </SidebarNavigation>\n    ),\n  }}\n>\n  <Header title={section} />\n  <p className="text-body text-secondary">\n    Existing controls keep their own save behavior. Closing returns to the\n    work underneath.\n  </p>\n</Dialog>'
+        }
+      >
+        <div className="flex w-full justify-center">
+          <Button onClick={() => setOpen(true)}>Open navigated modal</Button>
+        </div>
+      </ExamplePreview>
+      <Dialog
+        open={open}
+        onOpenChange={setOpen}
+        title="Preferences"
+        navigation={{
+          label: "Preference sections",
+          content: (
+            <SidebarNavigation wrapSections>
+              <NavigationSection label="Preferences">
+                {["General", "Notifications"].map((label) => (
+                  <NavigationItem
+                    key={label}
+                    label={label}
+                    selected={section === label}
+                    onClick={() => setSection(label)}
+                  />
+                ))}
+              </NavigationSection>
+            </SidebarNavigation>
+          ),
+        }}
+      >
+        <Header title={section} />
+        <p className="text-body text-secondary">
+          Existing controls keep their own save behavior. Closing returns to the
+          work underneath.
+        </p>
+      </Dialog>
+    </section>
   );
 }
 
 export function DialogSpecimens() {
   return (
     <div className="component-specimen-stack">
+      <Example
+        label="Illustrated introduction"
+        description="Artwork above a centered title and description; shared Close stays at the top right."
+        title="Add an agent to another community"
+        artwork={<Avatar size="large" alt="" fallback="A" />}
+        size="compact"
+        informational
+        intro="The agent stays in its other communities too."
+        code=""
+      >
+        {null}
+      </Example>
       <ScrollToEdgeExample />
+      <NavigationExample />
       <Example
         label="Wide catalog"
         description="A bounded wide surface for a sidebar and setup details."
@@ -189,18 +280,14 @@ export function DialogSpecimens() {
       </Example>
       <Example
         label="Simple message"
+        size="compact"
         description="A short message and a single action when no input is needed."
         title="A place for your team"
         informational
-        code={`<p className="text-body">
-  Keep project notes, conversations, and shared decisions together in
-  one workspace.
-</p>`}
+        intro="Keep project notes, conversations, and shared decisions together in one workspace."
+        code=""
       >
-        <p className="text-body">
-          Keep project notes, conversations, and shared decisions together in
-          one workspace.
-        </p>
+        {null}
       </Example>
       <Example
         label="Stable height"
@@ -277,6 +364,7 @@ export function DialogSpecimens() {
       </Example>
       <Example
         label="Single field"
+        size="compact"
         description="A focused edit with one field and a clear save action."
         title="Edit workspace"
         intro="Choose a name your team will recognize."
@@ -290,6 +378,7 @@ export function DialogSpecimens() {
       </Example>
       <Example
         label="Choose an option"
+        size="compact"
         description="A short list of mutually exclusive choices, with room to explain each one."
         title="Who can join?"
         intro="Choose how people join this workspace."

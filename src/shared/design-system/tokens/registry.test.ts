@@ -100,6 +100,19 @@ describe("token registry — colour namespaces do not collide", () => {
       ),
     ].map(([, suffix = "", role = ""]) => ({ suffix, role }));
 
+  it("keeps paint tokens separate from typography tokens", () => {
+    const typography = readFileSync(
+      new URL("../styles/typography.css", import.meta.url),
+      "utf8",
+    );
+    const names = (source: string) =>
+      [...source.matchAll(/(--text-[\w-]+):/g)].map((match) => match[1]);
+    const sizes = new Set(names(typography));
+    expect(
+      [...new Set(names(DECLARATIONS))].filter((name) => sizes.has(name)),
+    ).toEqual([]);
+  });
+
   it("registers no text or border role under the shared --color-* namespace", () => {
     const shared = registrations("color").filter(
       ({ role }) => role.startsWith("--text-") || role.startsWith("--border-"),

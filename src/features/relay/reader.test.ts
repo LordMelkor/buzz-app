@@ -339,3 +339,108 @@ it("admits only the bounded workflow batch exception without relaxing other read
   owners.at(-1)?.dispose();
   await rejected;
 });
+
+it.each(["caller", "deadline", "dispose"] as const)(
+  "%s retires a local inventory read queued during navigation",
+  async (ending) => {
+    vi.useFakeTimers();
+    const page = documentLife();
+    const scripted = scriptedTransport("viewer", "relay");
+    const local = vi.fn(async () => ({ definitions: [], identities: [] }));
+    const owner = createRelayReader(
+      { ...scripted.transport, readAgentLibrary: local },
+      { timeoutMs: 100 },
+    );
+    owners.push(owner);
+    page.emit("beforeunload");
+    const caller = new AbortController();
+    const reading = owner.readAgentLibrary(caller.signal);
+    const rejected =
+      ending === "deadline"
+        ? expect(reading).rejects.toThrow("timed out")
+        : expect(reading).rejects.toMatchObject({ name: "AbortError" });
+    if (ending === "caller") caller.abort();
+    else if (ending === "deadline") await vi.advanceTimersByTimeAsync(100);
+    else owner.dispose();
+    await rejected;
+    page.emit("pageshow");
+    page.render();
+    expect(local).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps local inventory consumers independent and ignores an abandoned read's late result", async () => {
+  type Library = import("../agents/library").AgentLibrary;
+  const wires: { signal: AbortSignal; respond: (library: Library) => void }[] =
+    [];
+  const local = vi.fn(
+    (signal: AbortSignal) =>
+      new Promise<Library>((respond) => {
+        wires.push({ signal, respond });
+      }),
+  );
+  const owner = createRelayReader({
+    ...scriptedTransport("viewer", "relay").transport,
+    readAgentLibrary: local,
+  });
+  owners.push(owner);
+  const caller = new AbortController();
+  const old = owner.readAgentLibrary(caller.signal);
+  const retired = expect(old).rejects.toMatchObject({ name: "AbortError" });
+  caller.abort();
+  await retired;
+  expect(wires[0]?.signal.aborted).toBe(true);
+  const first = new AbortController(),
+    second = new AbortController();
+  const reading = owner.readAgentLibrary(first.signal);
+  const joined = owner.readAgentLibrary(second.signal);
+  const cancelled = expect(reading).rejects.toMatchObject({
+    name: "AbortError",
+  });
+  first.abort();
+  await cancelled;
+  expect(wires[1]?.signal.aborted).toBe(false);
+  wires[0]?.respond({ definitions: [], identities: [] });
+  await Promise.resolve();
+  const current = owner.readAgentLibrary(new AbortController().signal);
+  expect(local).toHaveBeenCalledTimes(2);
+  const library = {
+    definitions: [{ id: "local", name: "Brain" }],
+    identities: [],
+  };
+  wires[1]?.respond(library);
+  await expect(joined).resolves.toEqual(library);
+  await expect(current).resolves.toEqual(library);
+});
+
+it("retains local inventory failure and the existing deadline after dispatch", async () => {
+  vi.useFakeTimers();
+  let signal!: AbortSignal;
+  const failure = new Error("Local library unavailable");
+  const local = vi
+    .fn()
+    .mockRejectedValueOnce(failure)
+    .mockImplementation((owned: AbortSignal) => {
+      signal = owned;
+      return new Promise(() => {});
+    });
+  const owner = createRelayReader(
+    {
+      ...scriptedTransport("viewer", "relay").transport,
+      readAgentLibrary: local,
+    },
+    { timeoutMs: 100 },
+  );
+  owners.push(owner);
+  await expect(
+    owner.readAgentLibrary(new AbortController().signal),
+  ).rejects.toBe(failure);
+  const retry = owner.readAgentLibrary(new AbortController().signal);
+  const expired = expect(retry).rejects.toThrow("timed out");
+  // Recovery admission yields through the existing host boundary, not a new retry policy.
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.waitFor(() => expect(local).toHaveBeenCalledTimes(2));
+  await vi.advanceTimersByTimeAsync(100);
+  await expired;
+  expect(signal.aborted).toBe(true);
+});

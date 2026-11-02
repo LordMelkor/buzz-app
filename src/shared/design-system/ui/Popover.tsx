@@ -1,9 +1,32 @@
 import { Popover as BasePopover } from "@base-ui/react/popover";
 import type { ComponentProps } from "react";
 import { useFinalFocusUnlessMoved } from "./finalFocus";
+import { hoverOpenTiming, type HoverOpen } from "./hoverIntent";
 
 export const PopoverRoot = BasePopover.Root;
-export const PopoverTrigger = BasePopover.Trigger;
+
+type PopoverTriggerProps<Payload> = Omit<
+  BasePopover.Trigger.Props<Payload>,
+  "openOnHover" | "delay" | "closeDelay"
+> & {
+  /** Opening on hover takes its timing from a DESIGN.md "Hover timing" bucket. */
+  openOnHover?: HoverOpen | false | undefined;
+};
+
+export function PopoverTrigger<Payload>({
+  openOnHover,
+  ...props
+}: PopoverTriggerProps<Payload>) {
+  return (
+    <BasePopover.Trigger
+      {...props}
+      {...(openOnHover && {
+        openOnHover: true,
+        ...hoverOpenTiming[openOnHover],
+      })}
+    />
+  );
+}
 export const PopoverClose = BasePopover.Close;
 
 // The feature retains its content and state; this frame owns material, motion,

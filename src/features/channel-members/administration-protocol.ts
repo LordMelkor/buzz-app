@@ -1,5 +1,6 @@
 import type { EventTemplate } from "nostr-tools";
-import { sessionMetadata } from "../sessions/metadata.ts";
+import { soloLabels } from "../solo/labels.ts";
+import { channelIdentity } from "../relay/channel-labels.ts";
 import type { RelayEvent } from "../relay/events.ts";
 import {
   channelTypeTag,
@@ -13,13 +14,17 @@ export type EditableMemberRole = (typeof editableMemberRoles)[number];
 export type MemberRole = EditableMemberRole | "owner" | "bot" | "unknown";
 export type MemberChange = Readonly<{
   pubkey: string;
-  expectedRole: MemberRole;
+  /** `none` is reserved for system setup; `absent` is an explicit role addition. */
+  expectedRole: MemberRole | "none" | "absent";
   role: EditableMemberRole | "remove";
 }>;
 export type MemberAuthority = Readonly<{
   roles: Readonly<Record<string, MemberRole>>;
   canManage: boolean;
+  canRemove: boolean;
   canRemoveOwnedAgent: boolean;
+  /** A NIP-CL system channel, where administration may also add members. */
+  system: boolean;
 }>;
 const PUBKEY = /^[0-9a-f]{64}$/;
 
@@ -88,15 +93,16 @@ export function memberAuthority(
     throw new Error(
       "Member roles are inconsistent. Refresh members and roles.",
     );
-  const activeChannel =
-    type !== "dm" &&
-    archived !== "true" &&
-    !sessionMetadata(exactLifecycleTag(metadata, "about"));
+  const activeChannel = type !== "dm" && archived !== "true";
+  // In Solo chats only owners and admins remove people; nobody changes roles.
+  const solo = !!soloLabels(channelIdentity(metadata).labels);
   return Object.freeze({
     roles: Object.freeze(roles),
-    canManage: activeChannel && elevated.has(viewer),
+    canManage: activeChannel && !solo && elevated.has(viewer),
+    canRemove: activeChannel && elevated.has(viewer),
     canRemoveOwnedAgent:
-      activeChannel && !!roles[viewer] && roles[viewer] !== "unknown",
+      activeChannel && !solo && !!roles[viewer] && roles[viewer] !== "unknown",
+    system: type === "system",
   });
 }
 
@@ -122,14 +128,13 @@ export function canRemoveMember(
   key: string,
   owner?: string,
 ) {
+  const role = state.roles[key];
   return (
-    canManageMember(state, viewer, key) ||
-    (state.canRemoveOwnedAgent &&
-      owner === viewer &&
-      key !== viewer &&
-      !!state.roles[key] &&
-      state.roles[key] !== "owner" &&
-      state.roles[key] !== "unknown")
+    (state.canRemove || (state.canRemoveOwnedAgent && owner === viewer)) &&
+    key !== viewer &&
+    !!role &&
+    role !== "owner" &&
+    role !== "unknown"
   );
 }
 
@@ -139,11 +144,33 @@ export function authorizeMemberChange(
   change: MemberChange,
   owner?: string,
 ) {
+  if (change.expectedRole === "none") {
+    // This sentinel is reserved for the system-channel setup path.
+    if (
+      !state.system ||
+      !state.canManage ||
+      change.pubkey === viewer ||
+      change.pubkey in state.roles ||
+      change.role === "remove" ||
+      !editableMemberRoles.includes(change.role)
+    )
+      throw new Error(
+        "Membership or permissions changed. Refresh members and roles before trying again.",
+      );
+    return;
+  }
   if (
-    !(change.role === "remove"
-      ? canRemoveMember(state, viewer, change.pubkey, owner)
-      : canManageMember(state, viewer, change.pubkey)) ||
-    state.roles[change.pubkey] !== change.expectedRole ||
+    !(change.expectedRole === "absent"
+      ? change.role !== "remove" &&
+        state.canManage &&
+        PUBKEY.test(change.pubkey) &&
+        change.pubkey !== viewer &&
+        !(change.pubkey in state.roles)
+      : change.role === "remove"
+        ? canRemoveMember(state, viewer, change.pubkey, owner)
+        : canManageMember(state, viewer, change.pubkey)) ||
+    (change.expectedRole !== "absent" &&
+      state.roles[change.pubkey] !== change.expectedRole) ||
     (change.role !== "remove" &&
       (change.expectedRole === change.role ||
         !editableMemberRoles.includes(change.role)))
@@ -153,13 +180,21 @@ export function authorizeMemberChange(
     );
 }
 
+/**
+ * The relay stores an ordinary role as `bot` for a key with a recorded agent
+ * owner, even when the request says `member`. Both are the same ordinary
+ * permission level, so either one confirms a requested `member`. Other roles
+ * must match exactly.
+ */
 export function memberChangeConfirmed(
   state: MemberAuthority,
   change: MemberChange,
 ) {
-  return change.role === "remove"
-    ? !(change.pubkey in state.roles)
-    : state.roles[change.pubkey] === change.role;
+  if (change.role === "remove") return !(change.pubkey in state.roles);
+  const stored = state.roles[change.pubkey];
+  return (
+    stored === change.role || (change.role === "member" && stored === "bot")
+  );
 }
 
 export function memberAdministrationTemplate(

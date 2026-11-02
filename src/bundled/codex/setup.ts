@@ -8,7 +8,7 @@ import type {
   HostResponse,
 } from "../../features/host/service";
 import script from "./codex.sh?raw";
-import { AppServer, listModels, type Spawn } from "./rpc";
+import { AppServer, listModels, needsSignIn, type Spawn } from "./rpc";
 
 export type CodexStatus =
   | Readonly<{ state: "missing" }>
@@ -36,8 +36,9 @@ const STEPS: Readonly<Record<string, readonly string[]>> = {
   "app-server": ["run", "app-server"],
   install: ["install"],
   use: ["use"],
+  adopt: ["adopt"],
 };
-/** Starts `codex`, `app-server`, `install` and `use` as steps of `codex.sh`,
+/** Starts `codex`, `app-server`, `install`, `use` and `adopt` as steps of `codex.sh`,
  * which the manifest grants as `bash -c`; other processes start as declared. */
 export const withScript =
   (spawn: Spawn): Spawn =>
@@ -91,7 +92,25 @@ export async function checkCodex(spawn: Spawn): Promise<CodexStatus> {
   }
   try {
     const { code } = await collect(spawn, "codex", ["login", "status"]);
-    return { state: code === 0 ? "ready" : "signed-out", version };
+    if (code === 0) return { state: "ready", version };
+    // `login status` ignores the model provider, which may need no OpenAI sign-in.
+    const rpc = new AppServer();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const signedOut = await Promise.race([
+        rpc.open(spawn).then(() => needsSignIn(rpc)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Codex did not answer")),
+            CHECK_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      return { state: signedOut ? "signed-out" : "ready", version };
+    } finally {
+      clearTimeout(timer);
+      await rpc.close();
+    }
   } catch {
     return { state: "signed-out", version };
   }

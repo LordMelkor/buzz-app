@@ -1,11 +1,9 @@
-import { motion } from "motion/react";
 import {
   useEffect,
   useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
-  type FocusEvent,
 } from "react";
 import type { RelaySession } from "../../features/relay/session";
 import {
@@ -23,24 +21,23 @@ import {
   MenuTrigger,
   MenuPopup,
   MenuSeparator,
+  MenuRadioGroup,
+  MenuRadioItem,
 } from "../../shared/design-system/ui/Menu";
 import { DotsThreeIcon } from "../../shared/design-system/icons";
 import styles from "./ChannelMembersDialog.module.css";
 
-/** Row-wide hover includes the separate action; focus includes both profile links. */
-function useMemberReveal() {
-  const [focused, setFocused] = useState(false);
+export function memberAccessLabel(role: MemberChange["expectedRole"]) {
   return {
-    initial: false as const,
-    animate: focused ? "focused" : "rest",
-    whileHover: focused ? "focused" : "revealed",
-    // React focus bubbles through portals; only physical row controls reveal it.
-    onFocusCapture: (event: FocusEvent<HTMLElement>) =>
-      setFocused(event.currentTarget.contains(event.target)),
-    onBlurCapture: (event: FocusEvent<HTMLElement>) => {
-      if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
-    },
-  };
+    owner: "Owner",
+    admin: "Admin",
+    member: "Participating",
+    bot: "Participating",
+    guest: "Viewing only",
+    unknown: "Unconfirmed access",
+    none: "No access",
+    absent: "No access",
+  }[role];
 }
 
 export function useMemberAdministration(
@@ -83,6 +80,7 @@ export function MemberRow({
   onViewOwnerProfile,
   onSendMessage,
   messagePending,
+  place,
   invitationAction,
   highlight,
   children,
@@ -99,6 +97,8 @@ export function MemberRow({
   onViewOwnerProfile?: (() => boolean) | undefined;
   onSendMessage?: (() => void) | undefined;
   messagePending?: boolean | undefined;
+  /** Names the conversation in actions: Remove from chat or channel. */
+  place: "chat" | "channel";
   invitationAction?: ReactNode;
   /** The search highlight, for rows a picker can choose with Enter. */
   highlight?:
@@ -110,7 +110,6 @@ export function MemberRow({
     | undefined;
   children: ReactNode;
 }) {
-  const reveal = useMemberReveal();
   const capability = session.memberAdministration;
   const state = useSyncExternalStore(
     capability.subscribe,
@@ -123,7 +122,14 @@ export function MemberRow({
   useEffect(() => {
     const viewport = scrollport.current;
     if (!menuOpen || !viewport) return;
-    const dismiss = () => setMenuOpen(undefined);
+    // Revealing the trigger can queue a scroll event before this listener mounts.
+    // Only subsequent movement should dismiss the newly opened menu.
+    const top = viewport.scrollTop;
+    const left = viewport.scrollLeft;
+    const dismiss = () => {
+      if (viewport.scrollTop !== top || viewport.scrollLeft !== left)
+        setMenuOpen(undefined);
+    };
     viewport.addEventListener("scroll", dismiss, { passive: true });
     return () => viewport.removeEventListener("scroll", dismiss);
   }, [menuOpen, scrollport]);
@@ -142,6 +148,10 @@ export function MemberRow({
       pubkey,
       verifiedOwner,
     );
+  const roleCaption =
+    role === "unknown" || role === "member" || role === "bot"
+      ? undefined
+      : memberAccessLabel(role);
   const locked =
     state.operation?.status === "pending" ||
     state.operation?.status === "uncertain";
@@ -182,19 +192,27 @@ export function MemberRow({
       {(canEdit || canRemove) && !locked && (
         <>
           <MenuSeparator />
-          {canEdit &&
-            editableMemberRoles
-              // Guest assignment is hidden until its permission contract is settled.
-              .filter((next) => next !== role && next !== "guest")
-              .map((next) => (
-                <MenuItem key={next} onClick={() => choose(next)}>
-                  Make {next}
-                </MenuItem>
+          {canEdit && (
+            <MenuRadioGroup
+              value={role === "bot" ? "member" : role}
+              onValueChange={(next) => {
+                const target = editableMemberRoles.find(
+                  (value) => value === next,
+                );
+                if (target && target !== role) choose(target);
+              }}
+            >
+              {editableMemberRoles.map((next) => (
+                <MenuRadioItem key={next} value={next}>
+                  {memberAccessLabel(next)}
+                </MenuRadioItem>
               ))}
+            </MenuRadioGroup>
+          )}
           {canEdit && <MenuSeparator />}
           {canRemove && (
             <MenuItem tone="danger" onClick={() => choose("remove")}>
-              Remove from channel
+              Remove from {place}
             </MenuItem>
           )}
         </>
@@ -215,13 +233,7 @@ export function MemberRow({
       }}
     >
       <ContextMenuTrigger
-        render={
-          invitationAction ? (
-            <motion.div {...reveal} />
-          ) : (
-            <motion.li {...reveal} />
-          )
-        }
+        render={invitationAction ? <div /> : <li />}
         className={styles.member}
         id={highlight?.id}
         data-highlighted={highlight?.active || undefined}
@@ -253,6 +265,11 @@ export function MemberRow({
         {invitationAction}
         {!invitationAction && (
           <span className={styles.memberActions}>
+            {roleCaption && (
+              <span className="self-center px-2 text-body-sm text-subtle">
+                {roleCaption}
+              </span>
+            )}
             {/* A regular trigger needs its own root: registering it on the
                   context root replaces Base UI's context-menu interaction owner. */}
             <MenuRoot
@@ -274,7 +291,7 @@ export function MemberRow({
               <MenuTrigger
                 render={
                   <IconButton
-                    variant="ghost"
+                    variant="bare"
                     size="sm"
                     shape="row-end"
                     aria-label={`Actions for ${name}`}

@@ -40,6 +40,9 @@ export type OutgoingEvent = Readonly<{
   guarded?: boolean;
   delivery: Delivery;
   error?: string | undefined;
+  /** The relay refused the last attempt, rather than it failing on this
+   * device, being asked to wait, or going unanswered. */
+  refused?: true | undefined;
 }>;
 export interface Outbox {
   /** Outstanding operations only. Confirmed events live in the session's retained data. */
@@ -63,6 +66,8 @@ export interface Outbox {
   acknowledge(id: string): Promise<void>;
   retry(id: string, active?: () => boolean): void;
   dismiss(id: string): Promise<void>;
+  /** Durable explicit dismissal, with delivery evidence at removal. */
+  observeDismiss(listener: (item: OutgoingEvent) => void): () => void;
 }
 type SendObserver = (
   event: EventData,
@@ -85,6 +90,10 @@ export class PublishRejected extends Error {
   }
 }
 
+/** Proven not delivered, but not refused: the request never left this
+ * device, or the relay asked it to wait. Retrying may succeed. */
+export class PublishNotSent extends PublishRejected {}
+
 export { browserOutboxStorage } from "./outbox-storage";
 const abortError = () => new DOMException("Relay session closed", "AbortError");
 const MAX_PENDING = 256;
@@ -97,10 +106,11 @@ export function createOutbox(
   storage: OutboxStorage,
   {
     timeoutMs = 10_000,
-    onAccepted = (_event: RelayEvent) => {},
+    onAccepted = (_event: RelayEvent, _acknowledged: boolean) => {},
     profiling = createRelayProfiler(),
     notifyListener = (listener: () => void) => listener(),
     preparePublish,
+    holdPublish,
     needsReceipt = () => false,
     onReceipt = (_event: EventData, _message: string | undefined) => {},
     clock = new MessageClock(),
@@ -111,7 +121,8 @@ export function createOutbox(
     /** Commands await their receipt even after a verified echo. Never persisted. */
     needsReceipt?: (event: EventData) => boolean;
     onReceipt?: (event: EventData, message: string | undefined) => void;
-    onAccepted?: (event: RelayEvent) => void;
+    /** `acknowledged` is false when the publisher was entered but delivery is `unknown`. */
+    onAccepted?: (event: RelayEvent, acknowledged: boolean) => void;
     profiling?: RelayProfiler;
     notifyListener?: (listener: () => void) => void;
     /** Read-only pre-dispatch work under the attempt deadline. The returned
@@ -120,6 +131,10 @@ export function createOutbox(
       event: RelayEvent,
       signal: AbortSignal,
     ) => Promise<(() => void) | undefined>;
+    /** Work a signed event waits for before it publishes, such as its
+     * channel's creation. A held event takes no delivery slot, and its
+     * deadline starts when the hold ends; a rejected hold fails it. */
+    holdPublish?: (event: RelayEvent) => Promise<void> | undefined;
   } = {},
 ) {
   const awaitsReceipt = needsReceipt;
@@ -138,6 +153,7 @@ export function createOutbox(
   let pendingBytes = 0;
   const listeners = new Set<() => void>();
   const localListeners = new Set<() => void>();
+  const dismissListeners = new Set<(item: OutgoingEvent) => void>();
   /** One record per queued or active delivery. Its deadline starts at enqueue; a
    * controller exists only while the attempt is signing or publishing. */
   type Attempt = {
@@ -147,6 +163,8 @@ export function createOutbox(
     timer: ReturnType<typeof setTimeout>;
     intent?: Promise<void>;
     controller?: AbortController;
+    /** Waiting on `holdPublish`, or for a slot after it, without using one. */
+    held?: true;
   };
   const attempts = new Map<string, Attempt>();
   const dismissing = new Map<string, Promise<void>>();
@@ -185,7 +203,28 @@ export function createOutbox(
     }
   };
   const inflight = () =>
-    [...attempts.values()].filter((attempt) => attempt.controller).length;
+    [...attempts.values()].filter(
+      (attempt) => attempt.controller && !attempt.held,
+    ).length;
+  /** Attempts whose hold ended, waiting for a free slot. */
+  const slotWaiters = new Set<() => void>();
+  function nextSlot() {
+    return new Promise<void>((resolve) => slotWaiters.add(resolve));
+  }
+  /** Offers free slots to released holds before queued deliveries; each
+   * released hold pumps again when it ends. */
+  function pumpDeliveries() {
+    if (closed) return;
+    if (slotWaiters.size) {
+      for (const resolve of [...slotWaiters]) {
+        slotWaiters.delete(resolve);
+        resolve();
+      }
+      return;
+    }
+    for (const queued of snapshot)
+      if (queued.delivery === "sending") void deliver(queued.event.id);
+  }
   let closed = false;
   let confirmedInvalidated = false;
   let confirmedKeep: ((event: EventData) => boolean) | undefined;
@@ -249,12 +288,16 @@ export function createOutbox(
           if (action === "dismiss") {
             // Commit removal inside the serialized write, before a later save
             // can capture state. Failed storage never exposes a temporary absence.
+            const dismissed = snapshot.find((item) => item.event.id === id);
             deliveryWork.delete(id);
             completed.delete(id);
             snapshot = Object.freeze(
               snapshot.filter((item) => item.event.id !== id),
             );
             notify();
+            if (dismissed)
+              for (const listener of dismissListeners)
+                notifyListener(() => listener(dismissed));
           }
           // Release recovery only after its removal is durable, before the next
           // queued save can run. Preserve delivery evidence received during I/O.
@@ -476,6 +519,18 @@ export function createOutbox(
       replace({ ...current, signed });
       await Promise.race([persist(id), aborted]);
       if (closed || signal.aborted || !find(id)) return;
+      const hold = holdPublish?.(signed);
+      if (hold) {
+        attempt.held = true;
+        clearTimeout(attempt.timer);
+        pumpDeliveries();
+        await Promise.race([hold, aborted]);
+        attempt.expiresAt = Date.now() + timeoutMs;
+        attempt.timer = setTimeout(() => expire(id), timeoutMs);
+        while (inflight() >= 3) await Promise.race([nextSlot(), aborted]);
+        delete attempt.held;
+        if (closed || signal.aborted || !find(id)) return;
+      }
       const check = preparePublish
         ? await profiling.measureAsync("send.prepare", id, () =>
             Promise.race([preparePublish(signed, signal), aborted]),
@@ -505,7 +560,7 @@ export function createOutbox(
           error: undefined,
         });
       delivered(signed);
-      onAccepted(signed);
+      onAccepted(signed, true);
     } catch (error) {
       const latest = find(id);
       // A verified observation ends the attempt even if its HTTP ACK never arrives.
@@ -513,17 +568,25 @@ export function createOutbox(
       if (closed) return;
       if (latest && awaitsReceipt(latest.event))
         onReceipt(latest.signed ?? latest.event, undefined);
-      if (latest)
+      const delivery: Delivery | undefined =
+        latest &&
+        (latest.delivery === "seen" || attempt.previousDelivery === "seen"
+          ? "seen"
+          : attempt.previousDelivery === "accepted"
+            ? "accepted"
+            : publishing && !(error instanceof PublishRejected)
+              ? "unknown"
+              : failedDelivery(attempt));
+      if (latest && delivery)
         saveStatus({
           ...latest,
-          delivery:
-            latest.delivery === "seen" || attempt.previousDelivery === "seen"
-              ? "seen"
-              : attempt.previousDelivery === "accepted"
-                ? "accepted"
-                : publishing && !(error instanceof PublishRejected)
-                  ? "unknown"
-                  : failedDelivery(attempt),
+          delivery,
+          refused:
+            delivery === "failed" &&
+            error instanceof PublishRejected &&
+            !(error instanceof PublishNotSent)
+              ? true
+              : undefined,
           error: awaitsReceipt(latest.event)
             ? publishing && !(error instanceof PublishRejected)
               ? "Workflow delivery could not be confirmed; inspect recent activity before submitting another command."
@@ -538,7 +601,7 @@ export function createOutbox(
               }${error instanceof Error ? error.message : String(error)}`,
         });
       if (publishing && latest?.signed && !(error instanceof PublishRejected))
-        onAccepted(latest.signed);
+        onAccepted(latest.signed, delivery !== "unknown");
     } finally {
       // Keep a failed invitation fenced for an explicit retry in this session.
       if (
@@ -566,9 +629,7 @@ export function createOutbox(
         notify();
         void persist(id).catch(() => {});
       }
-      if (!closed)
-        for (const queued of snapshot)
-          if (queued.delivery === "sending") void deliver(queued.event.id);
+      pumpDeliveries();
     }
   }
   const subscribe = (set: Set<() => void>, listener: () => void) => {
@@ -797,9 +858,16 @@ export function createOutbox(
           ...(active ? { guarded: true } : {}),
           delivery: "sending",
           error: undefined,
+          refused: undefined,
         });
         schedule(id, undefined, item.delivery);
       }
+    },
+    observeDismiss(listener: (item: OutgoingEvent) => void) {
+      dismissListeners.add(listener);
+      return () => {
+        dismissListeners.delete(listener);
+      };
     },
     dismiss(id: string) {
       const pending = dismissing.get(id);
@@ -914,6 +982,7 @@ export function createOutbox(
       listeners.clear();
       localListeners.clear();
       sendListeners.clear();
+      dismissListeners.clear();
       deliveryWork.clear();
       void ready
         .then(() => durable)

@@ -1,0 +1,17 @@
+{
+  "id": "buzz.agent-command-example",
+  "name": "Agent command example",
+  "apiVersion": 1,
+  "description": "Run a saved command with its scheduling agent's Buzz identity.",
+  "host": {
+    "processes": [
+      {
+        "id": "command",
+        "program": "bash",
+        "args": ["-c", "exec \"$@\"", "agent-command"]
+      }
+    ],
+    "mcp": true,
+    "files": true
+  }
+}

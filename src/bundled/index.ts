@@ -3,11 +3,15 @@ import * as voiceNotes from "./voice-notes";
 import pairingManifest from "./pairing/manifest.json";
 import * as pairing from "./pairing";
 import todosManifest from "./todos/manifest.json";
+import huddlesManifest from "./huddles/manifest.json";
+import * as huddles from "./huddles";
 import builderlabManifest from "./builderlab/manifest.json";
 import * as builderlab from "./builderlab";
 import * as todos from "./todos";
 import diffsManifest from "./diffs/manifest.json";
 import * as diffs from "./diffs";
+import mermaidManifest from "./mermaid/manifest.json";
+import * as mermaid from "./mermaid";
 import namingManifest from "./identity-naming/manifest.json";
 import * as naming from "./identity-naming";
 import feedbackManifest from "./feedback/manifest.json";
@@ -18,57 +22,61 @@ import terminalManifest from "./terminal/manifest.json";
 import * as terminal from "./terminal";
 import profilesManifest from "./profiles/manifest.json";
 import * as profiles from "./profiles";
-import mentionsManifest from "./mentions/manifest.json";
-import * as mentions from "./mentions";
-import emojiManifest from "./emoji/manifest.json";
-import * as emoji from "./emoji";
 import agentsManifest from "./agents/manifest.json";
 import * as agents from "./agents";
+import watchingManifest from "./watching/manifest.json";
+import * as watching from "./watching";
 import claudeCodeManifest from "./claude-code/manifest.json";
 import * as claudeCode from "./claude-code";
 import codexManifest from "./codex/manifest.json";
 import * as codex from "./codex";
 import gooseManifest from "./goose/manifest.json";
 import * as goose from "./goose";
+import piManifest from "./pi/manifest.json";
+import * as pi from "./pi";
 import channelsManifest from "./channels/manifest.json";
-import usageManifest from "./channel-usage/manifest.json";
-import * as usage from "./channel-usage";
 import githubManifest from "./github/manifest.json";
 import * as channels from "./channels";
 import * as github from "./github";
 import bestieManifest from "./bestie/manifest.json";
 import * as bestie from "./bestie";
-import meManifest from "./me/manifest.json";
-import * as me from "./me";
+import usageManifest from "./usage/manifest.json";
+import * as usage from "./usage";
 import inboxManifest from "./inbox/manifest.json";
 import * as inbox from "./inbox";
 import remindersManifest from "./reminders/manifest.json";
 import * as reminders from "./reminders";
-import projectsManifest from "./projects/manifest.json";
-import * as projects from "./projects";
+import reposManifest from "./repos/manifest.json";
+import * as repos from "./repos";
 import workflowsManifest from "./workflows/manifest.json";
 import * as workflows from "./workflows";
 import type { BundledPlugin } from "../plugins/manager";
 import linksManifest from "./links/manifest.json";
 import * as links from "./links";
-import hostedManifest from "./hosted-communities/manifest.json";
-import * as hosted from "./hosted-communities";
-import sessionsManifest from "./sessions/manifest.json";
-import * as sessions from "./sessions";
 import moderationManifest from "./moderation/manifest.json";
 import * as moderation from "./moderation";
 import relayStaffManifest from "./relay-staff/manifest.json";
 import * as relayStaff from "./relay-staff";
+import typesafeManifest from "./typesafe/manifest.json";
+import * as typesafe from "./typesafe";
+
+import relayNotesManifest from "./relay-notes/manifest.json";
+import * as relayNotes from "./relay-notes";
 
 export const bundledPlugins: readonly BundledPlugin[] = [
   {
-    manifest: { ...voiceNotesManifest, apiVersion: 1 },
-    module: voiceNotes,
+    manifest: { ...relayNotesManifest, apiVersion: 1 },
+    module: relayNotes,
+    enabledByDefault: false,
+  },
+  {
+    manifest: { ...huddlesManifest, apiVersion: 1 },
+    module: huddles,
     enabledByDefault: true,
   },
   {
-    manifest: { ...meManifest, apiVersion: 1 },
-    module: me,
+    manifest: { ...voiceNotesManifest, apiVersion: 1 },
+    module: voiceNotes,
     enabledByDefault: true,
   },
   {
@@ -97,6 +105,11 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     enabledByDefault: true,
   },
   {
+    manifest: { ...mermaidManifest, apiVersion: 1 },
+    module: mermaid,
+    enabledByDefault: true,
+  },
+  {
     manifest: { ...namingManifest, apiVersion: 1 },
     module: naming,
     enabledByDefault: true,
@@ -122,23 +135,8 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     enabledByDefault: true,
   },
   {
-    manifest: { ...mentionsManifest, apiVersion: 1 },
-    module: mentions,
-    enabledByDefault: true,
-  },
-  {
-    manifest: { ...emojiManifest, apiVersion: 1 },
-    module: emoji,
-    enabledByDefault: true,
-  },
-  {
     manifest: { ...channelsManifest, apiVersion: 1 },
     module: channels,
-    enabledByDefault: true,
-  },
-  {
-    manifest: { ...usageManifest, apiVersion: 1 },
-    module: usage,
     enabledByDefault: true,
   },
   {
@@ -152,6 +150,11 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     enabledByDefault: false,
   },
   {
+    manifest: { ...usageManifest, apiVersion: 1 },
+    module: usage,
+    enabledByDefault: false,
+  },
+  {
     manifest: { ...inboxManifest, apiVersion: 1 },
     module: inbox,
     enabledByDefault: true,
@@ -162,13 +165,18 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     enabledByDefault: true,
   },
   {
-    manifest: { ...projectsManifest, apiVersion: 1 },
-    module: projects,
+    manifest: { ...reposManifest, apiVersion: 1 },
+    module: repos,
     enabledByDefault: true,
   },
   {
     manifest: { ...agentsManifest, apiVersion: 1 },
     module: agents,
+    enabledByDefault: true,
+  },
+  {
+    manifest: { ...watchingManifest, apiVersion: 1 },
+    module: watching,
     enabledByDefault: true,
   },
   {
@@ -187,18 +195,13 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     enabledByDefault: true,
   },
   {
+    manifest: { ...piManifest, apiVersion: 1 },
+    module: pi,
+    enabledByDefault: false,
+  },
+  {
     manifest: { ...workflowsManifest, apiVersion: 1 },
     module: workflows,
-    enabledByDefault: true,
-  },
-  {
-    manifest: { ...sessionsManifest, apiVersion: 1 },
-    module: sessions,
-    enabledByDefault: true,
-  },
-  {
-    manifest: { ...hostedManifest, apiVersion: 1 },
-    module: hosted,
     enabledByDefault: true,
   },
   {
@@ -209,6 +212,11 @@ export const bundledPlugins: readonly BundledPlugin[] = [
   {
     manifest: { ...relayStaffManifest, apiVersion: 1 },
     module: relayStaff,
+    enabledByDefault: true,
+  },
+  {
+    manifest: { ...typesafeManifest, apiVersion: 1 },
+    module: typesafe,
     enabledByDefault: true,
   },
 ];

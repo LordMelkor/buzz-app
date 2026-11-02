@@ -12,7 +12,7 @@ See [shared logic and host boundaries](../docs/contributing.md#shared-logic-and-
 for the runtime/identity matrix, ownership rules and cross-host test expectations.
 Keep platform-neutral feature policy under its existing `src/features/*` owner;
 retain host custody and boundary enforcement here. Existing tests are discovered
-by Vitest. [Broker setup](../README.md#relay-channels) requires an explicit public
+by Vitest. [Broker setup](../docs/contributing.md#live-relay-development) requires an explicit public
 identity pin; never put a private key in environment configuration. Preserve
 supported browser capabilities while consolidating duplicate implementations.
 Use the native path for native acceptance and browser workflows to validate

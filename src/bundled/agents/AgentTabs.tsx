@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 import type { ChannelChoice } from "../../features/agents/attention";
 import type {
   Agent,
@@ -6,10 +6,15 @@ import type {
   AgentSettingsHost,
   Agents,
   RegisteredAgentType,
+  TranscriptRequest,
 } from "../../features/agents/service";
 import type { AgentMemories } from "../../features/agents/MemoryPanel";
+import type { CommunityReader } from "../../features/communities/service";
 import { agentSections } from "../../features/agents/tabs";
 import { Tabs } from "../../shared/design-system/ui/Tabs";
+import { AlertDialog } from "../../shared/design-system/ui/AlertDialog";
+import { Button } from "../../shared/design-system/ui/Button";
+import { AgentSaveState } from "../../features/agents/AgentSaveButton";
 
 /** An agent's sections as tabs, opening on the first. */
 export function AgentTabs(props: {
@@ -19,9 +24,13 @@ export function AgentTabs(props: {
   channels: readonly ChannelChoice[];
   settingsHost: AgentSettingsHost;
   memories: AgentMemories | undefined;
+  communities?: CommunityReader | undefined;
   settingsContent: ReactNode;
   conversation?: AgentConversation | undefined;
   initialActivity?: boolean | undefined;
+  initialTranscript?: TranscriptRequest | undefined;
+  close?: (() => void) | undefined;
+  onDiscard?: () => void;
 }) {
   const split = props.type?.tabs?.some(
     (section) => section.role === "settings" && section.splitSettings,
@@ -37,8 +46,9 @@ export function AgentTabs(props: {
     ...(identity ? [{ ...identity, label: "Identity" }] : []),
     ...supplied.filter((section) => section.value.startsWith("agent:type:")),
     ...supplied.filter((section) => section.value === "agent:memory"),
-    ...supplied.filter((section) => section.value === "agent:attention"),
     ...supplied.filter((section) => section.value === "agent:activity"),
+    ...supplied.filter((section) => section.value.startsWith("agent:added:")),
+    ...supplied.filter((section) => section.value === "agent:history"),
     {
       value: "agent:management",
       label: "Settings",
@@ -48,14 +58,28 @@ export function AgentTabs(props: {
   const [tab, setTab] = useState<string>(
     props.initialActivity ? "agent:activity" : (sections[0]?.value ?? ""),
   );
-  const [visited, setVisited] = useState(() => new Set([tab]));
+  const [draft, setDraft] = useState({ dirty: false, saving: false });
+  const drafts = useRef(new Map<string, { dirty: boolean; saving: boolean }>());
+  const reportDraft = useCallback(
+    (state: { dirty: boolean; saving: boolean } | null, id: string) => {
+      if (state) drafts.current.set(id, state);
+      else drafts.current.delete(id);
+      const states = [...drafts.current.values()];
+      setDraft({
+        dirty: states.some((state) => state.dirty),
+        saving: states.some((state) => state.saving),
+      });
+    },
+    [],
+  );
+  const [pendingTab, setPendingTab] = useState<string>();
   const panelPrefix = useId();
   const selected =
     sections.find((section) => section.value === tab) ?? sections[0];
   const settingsSelected =
     selected?.value === "agent:settings" ||
     selected?.value === "agent:management";
-  // One retained provider form owns both halves of the draft and its save action.
+  // Each section owns its draft and save action for its visible lifetime.
   const settings = split
     ? agentSections({
         ...props,
@@ -70,27 +94,30 @@ export function AgentTabs(props: {
       : "agent:settings";
   const panelId = (value: string) => `${panelPrefix}-${value}`;
   return (
-    <>
+    <AgentSaveState value={reportDraft}>
       <Tabs
         value={selected?.value ?? ""}
         onValueChange={(value) => {
-          setVisited((previous) => new Set([...previous, tab, value]));
-          setTab(value);
+          if (value === selected?.value || draft.saving) return;
+          if (draft.dirty || props.settingsHost.pendingSave)
+            setPendingTab(value);
+          else setTab(value);
         }}
         items={sections.map(({ value, label }) => ({
           value,
           label,
           panelId: panelId(value),
+          disabled: draft.saving && value !== selected?.value,
         }))}
         label={`${props.agent.name} sections`}
         variant="panel"
       />
-      {settings && (
+      {settings && settingsSelected && (
         <div
+          key={settingsValue}
           role="tabpanel"
           id={panelId(settingsValue)}
           aria-labelledby={`${panelId(settingsValue)}-tab`}
-          hidden={!settingsSelected}
         >
           <div className="grid gap-6 pt-4">{settings.render()}</div>
         </div>
@@ -101,10 +128,7 @@ export function AgentTabs(props: {
             !(
               settings &&
               (value === "agent:settings" || value === "agent:management")
-            ) &&
-            // Memory owns a one-shot read and a bounded session view, not a draft.
-            (value === selected?.value ||
-              (value !== "agent:memory" && visited.has(value))),
+            ) && value === selected?.value,
         )
         .map((section) => (
           <div
@@ -112,11 +136,35 @@ export function AgentTabs(props: {
             id={panelId(section.value)}
             aria-labelledby={`${panelId(section.value)}-tab`}
             key={section.value}
-            hidden={section.value !== selected?.value}
           >
             <div className="grid gap-6 pt-4">{section.render()}</div>
           </div>
         ))}
-    </>
+      {pendingTab && (
+        <AlertDialog
+          title="Discard changes?"
+          description="Your unsaved changes will be lost if you switch tabs."
+          onClose={() => setPendingTab(undefined)}
+          actions={
+            <>
+              <Button onClick={() => setPendingTab(undefined)}>
+                Keep editing
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  props.onDiscard?.();
+                  setDraft({ dirty: false, saving: false });
+                  setTab(pendingTab);
+                  setPendingTab(undefined);
+                }}
+              >
+                Discard changes
+              </Button>
+            </>
+          }
+        />
+      )}
+    </AgentSaveState>
   );
 }

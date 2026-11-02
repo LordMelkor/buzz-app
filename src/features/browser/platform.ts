@@ -1,3 +1,4 @@
+import type { BuilderlabViewerSession } from "./api";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 const MAX_URL_BYTES = 2048;
 const encoder = new TextEncoder();
@@ -46,7 +47,12 @@ export type BrowserAction = "back" | "forward" | "reload";
 
 export interface BrowserPlatform {
   readonly available: boolean;
-  attach(url: string, bounds: BrowserBounds): Promise<string>;
+  attach(
+    url: string,
+    bounds: BrowserBounds,
+    storage?: string,
+    builderlab?: BuilderlabViewerSession,
+  ): Promise<string>;
   setBounds(
     sessionId: string,
     bounds: BrowserBounds,
@@ -71,8 +77,39 @@ export function createBrowserPlatform(): BrowserPlatform {
     /Mac/i.test(navigator.platform);
   return {
     available,
-    attach: async (url, bounds) =>
-      invoke<string>("browser_attach", { url: normalizedUrl(url), bounds }),
+    attach: async (url, bounds, storage, builderlab) => {
+      const target = normalizedUrl(url);
+      builderlab?.signal.throwIfAborted();
+      // Authenticated attach installs the viewer cookie but leaves the guest blank.
+      // Check the account lifetime before the separate first navigation.
+      const sessionId = await invoke<string>("browser_attach", {
+        url: target,
+        bounds,
+        storage: storage ?? null,
+        builderlab: builderlab
+          ? "federated" in builderlab
+            ? { federated: builderlab.federated }
+            : { credential: builderlab.credential }
+          : null,
+      });
+      if (builderlab) {
+        const close = () => {
+          void invoke("browser_detach", { sessionId });
+        };
+        builderlab.signal.addEventListener("abort", close, { once: true });
+        try {
+          builderlab.signal.throwIfAborted();
+          await invoke("browser_navigate", { sessionId, url: target });
+          builderlab.signal.throwIfAborted();
+        } catch (error) {
+          await invoke("browser_detach", { sessionId });
+          throw error;
+        } finally {
+          builderlab.signal.removeEventListener("abort", close);
+        }
+      }
+      return sessionId;
+    },
     setBounds: (sessionId, bounds, visible) =>
       invoke("browser_set_bounds", { sessionId, bounds, visible }),
     navigate: async (sessionId, url) =>

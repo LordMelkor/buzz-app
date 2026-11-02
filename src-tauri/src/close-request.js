@@ -4,7 +4,14 @@
 (() => {
   if (document.querySelector('dialog[open], [aria-modal="true"]'))
     return "handled";
-  const request = new Event(tabEvent, { cancelable: true });
-  window.dispatchEvent(request);
+  const target =
+    typeof browserSessionId === "string"
+      ? document.querySelector(
+          `[data-browser-session="${CSS.escape(browserSessionId)}"]`,
+        )
+      : window;
+  if (!target) return "unhandled";
+  const request = new Event(tabEvent, { cancelable: true, bubbles: true });
+  target.dispatchEvent(request);
   return request.defaultPrevented ? "handled" : "unhandled";
 })();

@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
@@ -11,6 +11,7 @@ import type {
 import { MAX_MARKDOWN_LENGTH, scanMarkdown } from "../relay/message-content";
 import {
   BulbIcon,
+  CaretRightIcon,
   ChatCircleIcon,
   DotsThreeIcon,
   EyeIcon,
@@ -25,6 +26,11 @@ import {
   WarningCircleIcon,
   WrenchIcon,
 } from "../../shared/design-system/icons/index";
+import {
+  formatFullTimestamp,
+  formatItemTimestamp,
+  formatTime,
+} from "../../shared/datetime";
 import styles from "./ActivityTranscript.module.css";
 
 type TurnState = "working" | "unknown" | "ended";
@@ -43,17 +49,31 @@ const STATUS: Record<string, string> = {
   pending: "Pending",
   in_progress: "Running",
   failed: "Failed",
+  terminated: "Terminated",
+  yielded: "Yielded",
 };
 const line = (text: string) => text.split("\n").find(Boolean)?.trim() ?? "";
-const time = (at: number) =>
-  new Date(at).toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+const time = (at: number) => formatTime(at / 1000);
+/** Zero, non-finite and out-of-range times are unknown: show nothing rather
+ * than 1970 or a formatter throw. */
+const known = (at: number) => !!at && !Number.isNaN(new Date(at).getTime());
+/** An entry's time under it; the turn header already dates the prompt. */
+function Stamp({ item }: { item: TranscriptItem }) {
+  if (item.type === "prompt" || !known(item.at)) return null;
+  return (
+    <time
+      className={`text-body-sm ${styles.at}`}
+      dateTime={new Date(item.at).toISOString()}
+      title={formatFullTimestamp(item.at / 1000)}
+    >
+      {time(item.at)}
+    </time>
+  );
+}
 export function duration(ms: number) {
   if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
   const minutes = Math.floor(ms / 60_000);
-  return `${minutes}m${String(Math.floor((ms % 60_000) / 1000)).padStart(2, "0")}s`;
+  return `${minutes}m ${Math.floor((ms % 60_000) / 1000)}s`;
 }
 const toolName = (item: ToolItem) => line(item.title) || "tool";
 /** The first location, unless the adapter's title already names it. */
@@ -61,26 +81,64 @@ const toolPath = (item: ToolItem) =>
   item.paths[0] && !item.title.includes(item.paths[0]) ? item.paths[0] : "";
 const thread = (turn: TranscriptTurn) =>
   turn.threadRootId === null
-    ? "Channel conversation"
+    ? ""
     : turn.threadRootId
       ? `Thread ${turn.threadRootId.slice(0, 8)}`
       : "Thread unknown";
 
-/** Turn-by-turn transcript of the loaded activity. */
+/** The nearest ancestor that scrolls, which the host supplies. */
+function scroller(element: HTMLElement | null) {
+  for (let node = element?.parentElement; node; node = node.parentElement)
+    if (/auto|scroll/.test(getComputedStyle(node).overflowY)) return node;
+  return undefined;
+}
+/** How near the end still counts as reading the latest. */
+const END_SLACK = 32;
+
+/** Opens at the latest step and keeps it in view as the transcript grows,
+ * unless the reader has scrolled up to read earlier turns. */
+function useFollowLatest(content: unknown, enabled: boolean) {
+  const timeline = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  useLayoutEffect(() => {
+    const view = enabled ? scroller(timeline.current) : undefined;
+    if (!view) return;
+    const read = () => {
+      following.current =
+        view.scrollHeight - view.scrollTop - view.clientHeight <= END_SLACK;
+    };
+    view.addEventListener("scroll", read, { passive: true });
+    return () => view.removeEventListener("scroll", read);
+  }, [enabled]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: content is the change to follow.
+  useLayoutEffect(() => {
+    const view = enabled && following.current && scroller(timeline.current);
+    if (view) view.scrollTop = view.scrollHeight;
+  }, [content, enabled]);
+  return timeline;
+}
+
+/** Turn-by-turn transcript of the loaded activity, oldest first, opened at
+ * the latest. */
 export function ActivityTranscript({
   transcript,
   agentName,
   state,
   before,
+  follow = true,
 }: {
   transcript: Transcript;
   agentName: string;
   state: (turnId: string) => TurnState | undefined;
   /** Paging controls shown above the oldest loaded turn. */
   before?: ReactNode;
+  /** Scroll the host to the latest step; off where the transcript shares
+   * its scroll with other content. */
+  follow?: boolean;
 }) {
+  const timeline = useFollowLatest(transcript, follow);
   return (
-    <div className={styles.timeline}>
+    <div ref={timeline} className={styles.timeline}>
       {before}
       {!transcript.turns.length && (
         <p className="text-body-sm text-secondary">
@@ -118,6 +176,7 @@ function Turn({
   const facts = [
     turn.endedAt ? duration(turn.endedAt - turn.startedAt) : "",
     thread(turn),
+    ...turn.config,
     turn.source === "heartbeat" ? "heartbeat" : "",
     turn.newSession ? "new session" : "",
     turn.stopReason ?? "",
@@ -128,16 +187,22 @@ function Turn({
   return (
     <article
       className={styles.turn}
-      aria-label={`Turn ${time(turn.startedAt)}`}
+      aria-label={
+        known(turn.startedAt) ? `Turn ${time(turn.startedAt)}` : "Turn"
+      }
     >
-      <p className={`text-body-sm ${styles.session}`}>
-        {[
-          "Turn",
-          new Date(turn.startedAt).toLocaleString(),
-          ...turn.config,
-        ].join(" · ")}
-      </p>
       <header className={`text-body-sm ${styles.turnHeader}`}>
+        {known(turn.startedAt) && (
+          <>
+            <time
+              dateTime={new Date(turn.startedAt).toISOString()}
+              title={new Date(turn.startedAt).toLocaleString()}
+            >
+              {formatItemTimestamp(turn.startedAt / 1000, { withTime: true })}
+            </time>
+            {" · "}
+          </>
+        )}
         <span data-state={turn.error ? "error" : state}>{status}</span>
         {facts.map((fact) => (
           <span key={fact}> · {fact}</span>
@@ -151,6 +216,7 @@ function Turn({
       {turn.items.map((item) => (
         <div key={item.id} className={styles.item} data-type={item.type}>
           <Item item={item} agentName={agentName} />
+          <Stamp item={item} />
         </div>
       ))}
       {turn.error && (
@@ -176,14 +242,20 @@ function Sections({
   sections: readonly { tag: string; body: string }[];
 }) {
   return (
-    <details>
-      <summary className="text-body-sm text-secondary">
-        {title} · {sections.length} sections
+    <details className={styles.context}>
+      <summary className="text-body-sm text-subtle">
+        <CaretRightIcon size={14} aria-hidden="true" />
+        <span>
+          {title} · {sections.length} sections
+        </span>
       </summary>
       {sections.map((section, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: sections are a positional, immutable parse of one prompt.
         <details key={index} className={styles.section}>
-          <summary className="text-body-sm">{section.tag}</summary>
+          <summary className="text-body-sm text-subtle">
+            <CaretRightIcon size={14} aria-hidden="true" />
+            <span>{section.tag}</span>
+          </summary>
           <pre className={styles.pre}>{section.body}</pre>
         </details>
       ))}
@@ -238,7 +310,7 @@ function Item({
         </div>
       );
     case "tool":
-      return <Tool item={item} />;
+      return <Tool item={item} agentName={agentName} />;
     case "plan":
       return (
         <div className={styles.row}>
@@ -333,10 +405,30 @@ function Diff({ diff }: { diff: ToolDiff }) {
   );
 }
 
-function Tool({ item }: { item: ToolItem }) {
+function ToolInput({ text }: { text: string }) {
+  const content: ReactNode[] = [];
+  let end = 0;
+  for (const match of text.matchAll(/\btools\.[A-Za-z_$][\w$]*(?=\s*\()/g)) {
+    content.push(
+      text.slice(end, match.index),
+      <span key={match.index} className="text-accent">
+        {match[0]}
+      </span>,
+    );
+    end = match.index + match[0].length;
+  }
+  content.push(text.slice(end));
+  return <pre className={styles.pre}>{content}</pre>;
+}
+
+function Tool({ item, agentName }: { item: ToolItem; agentName: string }) {
   const Icon = ICONS[item.kind] ?? WrenchIcon;
   const status = STATUS[item.status];
   const path = toolPath(item);
+  const failedChildren =
+    item.children?.filter(
+      (child) => child.type === "tool" && child.status === "failed",
+    ).length ?? 0;
   return (
     <details className={styles.tool} data-status={item.status}>
       <summary className={styles.row}>
@@ -344,6 +436,13 @@ function Tool({ item }: { item: ToolItem }) {
         <span className={styles.summary}>
           {status && <span className={styles.status}>{status} </span>}
           <span className={styles.subject}>{toolName(item)}</span>
+          {failedChildren > 0 && (
+            <span className={styles.error}>
+              {" "}
+              · {failedChildren} failed{" "}
+              {failedChildren === 1 ? "call" : "calls"}
+            </span>
+          )}
           {path && <span className={styles.path}> {path}</span>}
         </span>
         {item.permission && (
@@ -364,12 +463,25 @@ function Tool({ item }: { item: ToolItem }) {
       {item.title.includes("\n") && (
         <pre className={styles.pre}>{item.title}</pre>
       )}
-      {item.input && <pre className={styles.pre}>{item.input}</pre>}
+      {item.input && <ToolInput text={item.input} />}
       {item.diffs.map((diff, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: diffs are positional tool content.
         <Diff key={index} diff={diff} />
       ))}
       {item.output && <pre className={styles.pre}>{item.output}</pre>}
+      {item.children?.length ? (
+        <div className={styles.section}>
+          <p className="text-body-sm text-secondary">
+            Calls recorded during this script
+          </p>
+          {item.children.map((child) => (
+            <div key={child.id}>
+              <Item item={child} agentName={agentName} />
+              <Stamp item={child} />
+            </div>
+          ))}
+        </div>
+      ) : null}
       {item.truncated && (
         <p className="text-body-sm text-secondary">
           Part of this tool call was too large and was elided by the agent.

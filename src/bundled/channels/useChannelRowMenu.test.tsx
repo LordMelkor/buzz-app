@@ -17,7 +17,7 @@ const beta: ChannelSummary = {
   name: "Beta",
   channelType: "stream",
 };
-const newSession = ["New session"];
+const rowActions = ["Row action"];
 const groups = [{ id: "work", name: "Work", order: 0 }];
 const sections = (
   placement: "channels" | "group:work" | "starred",
@@ -31,7 +31,7 @@ const sections = (
   });
 const initial = {
   sections: sections("group:work"),
-  actionsFor: () => newSession as readonly ReactNode[],
+  actionsFor: () => rowActions as readonly ReactNode[],
 };
 function mount() {
   return renderHook(
@@ -82,7 +82,7 @@ it.each(["removed", "archived", "hidden", "no actions"])(
               beta,
             ],
       ),
-      actionsFor: () => (reason === "no actions" ? [] : newSession),
+      actionsFor: () => (reason === "no actions" ? [] : rowActions),
     });
     expect(view.result.current.rowMenu).toBeUndefined();
     view.rerender(initial);
@@ -108,7 +108,7 @@ it("retains the same eligible placement and keyboard anchor across harmless upda
   expect(view.result.current.rowMenu).toBeUndefined();
 });
 
-it("keeps menus with independent actions when New session is unavailable, including DMs", () => {
+it("keeps menus with independent actions when the usual row action is unavailable, including DMs", () => {
   const view = mount();
   const dm: ChannelSummary = { id: "dm", name: "DM", channelType: "dm" };
   // Test-only action: no new product action or writer is introduced by this seam.

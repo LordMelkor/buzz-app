@@ -1,32 +1,51 @@
 import { usePanelSplit } from "../../features/panels/usePanelSplit";
 import { AgentDetails } from "./AgentDetails";
+import { communityDestination } from "../../features/communities/destination";
+import { communityIcon } from "../../features/communities/community-icon";
+import { communityName } from "../../features/communities/names";
+import type {
+  CommunityReader,
+  Membership,
+} from "../../features/communities/service";
 import { PanelWorkspace } from "../../features/panels/PanelWorkspace";
 import { AgentMessageButton } from "./AgentMessageButton";
 import { ProviderDialog } from "./ProviderDialog";
-// Agents and teams, with creation, import and marketplace entry from New agent.
+// Agents, teams, and marketplace, with creation and import from their menus.
 import {
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
+import { flushSync } from "react-dom";
 import styles from "./AgentsPage.module.css";
 import cardStyles from "./AgentCard.module.css";
-import { AgentBrowse } from "./AgentBrowse";
+import {
+  AgentBrowse,
+  SharedAgentPanel,
+  type SharedAgentSelection,
+  SharedImportDialog,
+} from "./AgentBrowse";
+import { AgentShareDialog } from "./AgentShareDialog";
+import type { SharedAgent } from "../../features/agents/shared-agents";
 import { AgentCard, AgentPortrait, TeamCard } from "./AgentCard";
 import { AgentCreateDialog, TypeIcon } from "./AgentCreateDialog";
 import { NewAgentTile } from "./NewAgentTile";
 import type { ChannelChoice } from "../../features/agents/attention";
-import { AgentDelete } from "../../features/agents/AgentManage";
+import {
+  AgentDelete,
+  AgentRemoveHere,
+  inSeveral,
+  sharedAgentSettings,
+} from "../../features/agents/AgentManage";
 import { AttentionSummary } from "../../features/agents/AttentionPanel";
 import { useAgents, useChannelChoices } from "../../features/agents/react";
-import type {
-  OldTeam,
-  PortableAgent,
-  PortSource,
-} from "../../features/agents/native";
+import type { OldTeam, PortableAgent } from "../../features/agents/native";
 import type {
   Agent,
   Agents,
@@ -37,57 +56,79 @@ import type {
 } from "../../features/agents/service";
 import { useRelayConnection } from "../../features/relay/react";
 import { useAgentChoices } from "../../features/agents/use-choices";
+import type { AgentChoicesSnapshot } from "../../features/agents/choices";
 import type { RelaySession } from "../../features/relay/session";
 import {
-  setDefaultAgent,
+  readSnapshot,
+  type SharedDefinition,
+} from "../../features/agents/agent-share";
+import {
+  chooseDefaultAgent,
+  restoreDefaultAgent,
   useDefaultAgent,
-} from "../../features/sessions/default-agent";
+  useSavedAgent,
+} from "../../features/solo/default-agent";
 import type { RelayData } from "../../features/relay/service";
 import type { Navigation } from "../../features/navigation/controller";
+import { targetKey } from "../../features/navigation/targets";
 import type { PageNavigation } from "../../features/navigation/service";
 import {
+  BrainIcon,
+  CheckIcon,
   DotsThreeIcon,
   DownloadIcon,
-  StorefrontIcon,
+  GearIcon,
   PlusIcon,
   RobotIcon,
+  WarningCircleIcon,
   XIcon,
 } from "../../shared/design-system/icons";
 import { Button } from "../../shared/design-system/ui/Button";
+import { AlertDialog } from "../../shared/design-system/ui/AlertDialog";
+import { Avatar } from "../../shared/design-system/ui/Avatar";
 import { Checkbox } from "../../shared/design-system/ui/Checkbox";
+import { ChoiceRow } from "../../shared/design-system/ui/ChoiceRow";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
 import { EmptyState } from "../../shared/design-system/ui/EmptyState";
 import { Field } from "../../shared/design-system/ui/Field";
+import { InlineHeader } from "../../shared/design-system/ui/Header";
 import { Panel } from "../../shared/design-system/ui/Panel";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
-import { InlineHeader } from "../../shared/design-system/ui/Header";
 import { Input } from "../../shared/design-system/ui/Input";
 import {
   ContextMenuRoot,
   ContextMenuTrigger,
-  MenuNote,
+  MenuSeparator,
   MenuPopup,
   MenuItem,
+  MenuRadioGroup,
+  MenuRadioItem,
   MenuRoot,
   MenuTrigger,
 } from "../../shared/design-system/ui/Menu";
 import { PanelHeader } from "../../shared/design-system/ui/PanelHeader";
-import { Select } from "../../shared/design-system/ui/Select";
+import { SplitButton } from "../../shared/design-system/ui/SplitButton";
 import { Tabs } from "../../shared/design-system/ui/Tabs";
 import { Textarea } from "../../shared/design-system/ui/Textarea";
 import { Tooltip } from "../../shared/design-system/ui/Tooltip";
-import {
-  canonicalPublicKey,
-  publicKeyLabels,
-} from "../../shared/identity/public-key";
-import { agentProviderRoute, agentProviderTarget } from "./routes";
+import { publicKeyLabels } from "../../shared/identity/public-key";
+import { readView, writeView } from "../../shared/view-state";
+import { agentProviderRoute, agentProviderTarget, agentRoute } from "./routes";
+import { writeClipboardText } from "../../shared/clipboard";
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
+const noSubscribe = () => () => {};
+const names = (agents: readonly Agent[]) =>
+  new Intl.ListFormat(undefined, { type: "conjunction" }).format(
+    agents.map((agent) => agent.name),
+  );
+const importReminderKey = "agent-community-import:dismissed";
 
 /** The type's one-line summary of an agent; its title when it has none. */
 function summaryOf(agent: Agent, type: RegisteredAgentType | undefined) {
-  if (agent.place === "elsewhere") return "On another device";
+  if (agent.place === "elsewhere")
+    return type && !type.remote ? "On another device" : "Harness unavailable";
   if (agent.unfinished) return "Setup unfinished";
   if (!type) return "Type unavailable";
   try {
@@ -97,20 +138,35 @@ function summaryOf(agent: Agent, type: RegisteredAgentType | undefined) {
   }
 }
 
-type Tab = "yours" | "teams";
+/** Pack avatars for the marketplace tile, apart from New agent's. */
+const MARKETPLACE_ART = [
+  "gloopies-7",
+  "fuzzies-10",
+  "pollies-9",
+  "gloopies-14",
+  "fuzzies-6",
+  "pollies-21",
+  "gloopies-11",
+  "fuzzies-15",
+];
+
+type Tab = "yours" | "teams" | "marketplace";
 const TABS = [
   { value: "yours", label: "Your agents", panelId: "agents-yours" },
   { value: "teams", label: "Your teams", panelId: "agents-teams" },
+  { value: "marketplace", label: "Marketplace", panelId: "agents-marketplace" },
 ] as const;
 
 export function AgentsPage({
   agents,
   relay,
+  communities,
   navigation,
   navigator,
 }: {
   agents: Agents;
   relay: RelayData;
+  communities?: CommunityReader | undefined;
   navigation?: PageNavigation;
   navigator?: Navigation;
 }) {
@@ -121,15 +177,59 @@ export function AgentsPage({
     connection.status === "ready" ? connection.session.channels : undefined,
   );
   const [tab, setTab] = useState<Tab>("yours");
+  const [sharedSelection, setSharedSelection] =
+    useState<SharedAgentSelection>();
+  const sharedTrigger = useRef<HTMLButtonElement | null>(null);
+  const shared =
+    connection.status === "ready" &&
+    sharedSelection?.session === connection.session
+      ? sharedSelection
+      : undefined;
+  // Commit first: a narrow layout hides the list, and its tile, while open.
+  const closeShared = () => {
+    flushSync(() => setSharedSelection(undefined));
+    sharedTrigger.current?.focus();
+  };
   const [selectedKey, setSelectedKey] = useState<string>();
   const [creating, setCreating] = useState(false);
   // Which import the dialog shows follows the menu it was opened from.
-  const [flow, setFlow] = useState<"import" | "import-team" | "browse">();
+  const [flow, setFlow] = useState<"import" | "import-team">();
   // A team being edited by its id, or "new" for one being made.
   const [editingTeam, setEditingTeam] = useState<string>();
   const newAgentButton = useRef<HTMLButtonElement>(null);
   const newAgentLabel = useRef<HTMLSpanElement>(null);
   const [importing, setImporting] = useState(false);
+  // What old Buzz has to import, read again as the community's agents and
+  // teams change and as a menu opens. Import's entry points hide only once it
+  // is known there is nothing, and an owner with no agents yet is offered it
+  // first.
+  // Undefined before the first result; null when discovery failed.
+  const [legacy, setLegacy] = useState<FoundAgents | null>();
+  const legacyRead = useRef(0);
+  const readLegacy = useCallback(() => {
+    const read = ++legacyRead.current;
+    agents.portable().then(
+      (found) => read === legacyRead.current && setLegacy(found),
+      () => read === legacyRead.current && setLegacy(null),
+    );
+  }, [agents]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: What old Buzz has to import changes with the community's agents and teams.
+  useEffect(() => {
+    readLegacy();
+    return () => {
+      legacyRead.current++;
+    };
+  }, [readLegacy, snapshot.status, snapshot.agents, snapshot.teams]);
+  const refreshOnOpen = (open: boolean) => {
+    if (open) readLegacy();
+  };
+  const joinable = agents.joinable();
+  const agentImports = [...joinable, ...(legacy?.agents ?? [])];
+  const discoveryIncomplete = !legacy || legacy.warnings.length > 0;
+  const canImportTeam =
+    discoveryIncomplete ||
+    legacy.teams.length + teamsToJoin(snapshot.teams, joinable).length > 0;
+  const firstAgent = snapshot.status === "ready" && !snapshot.agents.length;
   const [localProviderKey, setLocalProviderKey] = useState<string>();
   const routed = !!navigation && !!navigator;
   const providerKey = routed
@@ -139,7 +239,7 @@ export function AgentsPage({
           : undefined,
       )
     : localProviderKey;
-  const setProviderKey = (provider?: string, replace = false) => {
+  const setProviderKey = (provider?: string) => {
     if (!navigation || !navigator) {
       setLocalProviderKey(provider);
       return;
@@ -153,9 +253,18 @@ export function AgentsPage({
     )
       return;
     const target = agentProviderTarget(navigation.target, provider);
-    void (replace
-      ? navigator.open(target, { replace: true })
-      : navigator.open(target));
+    if (provider) void navigator.open(target);
+    else {
+      const closing = providerKey;
+      const pageKey = targetKey(target);
+      navigator.dismiss(
+        (visit) =>
+          visit.kind === "page" &&
+          agentProviderRoute(visit.route?.params) === closing &&
+          targetKey(agentProviderTarget(visit)) === pageKey,
+        target,
+      );
+    }
   };
   const typeOf = (agent: Agent) =>
     types.find((type) => type.key === agent.type);
@@ -166,17 +275,41 @@ export function AgentsPage({
   const build = (pubkey: string) => browse(pubkey);
   // Importing gives an agent a key here, so a hosted type cannot take one.
   const runnable = types.filter((type) => !type.remote);
+  // Teams are shared by every community; this one shows each with a member
+  // here, or with none in any community. A synced team always shows in its
+  // home, and elsewhere only with a member there or while it has none.
+  const members = new Set(snapshot.agents.map((agent) => agent.pubkey));
+  const teams = snapshot.teams.filter(
+    (team) =>
+      team.members.some((pubkey) => members.has(pubkey)) ||
+      (team.revision
+        ? !team.members.length || agents.teamHere({ id: team.id })
+        : !team.members.some((pubkey) => agents.memberships(pubkey).length)),
+  );
   // Only a team still saved, or one being made, keeps its editor open.
   const editing =
-    editingTeam === "new" ||
-    snapshot.teams.some((team) => team.id === editingTeam)
+    editingTeam === "new" || teams.some((team) => team.id === editingTeam)
       ? editingTeam
       : undefined;
   // Leaving Teams drops the editor, whose unsaved draft goes with it.
   const changeTab = (next: Tab) => {
     if (next !== "teams") setEditingTeam(undefined);
+    if (next !== "marketplace") setSharedSelection(undefined);
     setTab(next);
   };
+  // Opened for one of your agents, such as from a card sent in chat.
+  const routedAgent =
+    routed && navigation.target.kind === "page"
+      ? agentRoute(navigation.target.route?.params)
+      : undefined;
+  const routedEntry = navigation?.entryId;
+  useEffect(() => {
+    if (!routedAgent || !routedEntry) return;
+    setEditingTeam(undefined);
+    setSharedSelection(undefined);
+    setTab("yours");
+    setSelectedKey(routedAgent);
+  }, [routedAgent, routedEntry]);
   const returnTo = (next: Tab) => () => {
     setFlow(undefined);
     changeTab(next);
@@ -184,58 +317,87 @@ export function AgentsPage({
   const returnToAgents = returnTo("yours");
 
   const toolbarAction =
-    (tab === "teams"
-      ? snapshot.teams.length > 0
-      : snapshot.agents.length > 0) ||
+    (tab === "teams" ? teams.length > 0 : snapshot.agents.length > 0) ||
     snapshot.status === "error" ||
     snapshot.status === "unavailable";
+  const openImport = () => {
+    browse();
+    setFlow("import");
+  };
+  const openMarketplace = () => {
+    browse();
+    changeTab("marketplace");
+  };
+  // Shown only beside the tabs; with no agents yet, the tiles stand in for it.
   const newAgentMenu = (
-    <MenuRoot>
+    <MenuRoot onOpenChange={refreshOnOpen}>
       <MenuTrigger
-        render={
-          toolbarAction ? (
-            <NewAgentTile ref={newAgentButton} variant="button" />
-          ) : (
-            <NewAgentTile
-              ref={newAgentButton}
-              labelRef={newAgentLabel}
-              fullWidth
-            />
-          )
-        }
+        render={<NewAgentTile ref={newAgentButton} variant="button" />}
       />
-      <MenuPopup
-        anchor={toolbarAction ? newAgentButton : newAgentLabel}
-        align={toolbarAction ? "end" : "center"}
-      >
+      <MenuPopup anchor={newAgentButton} align="end">
         <MenuItem
           disabled={snapshot.status !== "ready" || !types.length}
           onClick={() => setCreating(true)}
         >
           <PlusIcon size={16} aria-hidden="true" /> Create a new agent
         </MenuItem>
-        <MenuItem
-          onClick={() => {
-            browse();
-            setFlow("import");
-          }}
-        >
+        {/* Even when discovery finds nothing, a file can be imported. */}
+        <MenuItem onClick={openImport}>
           <DownloadIcon size={16} aria-hidden="true" /> Import an agent
-        </MenuItem>
-        <MenuItem
-          onClick={() => {
-            browse();
-            setFlow("browse");
-          }}
-        >
-          <StorefrontIcon size={16} aria-hidden="true" /> Browse the marketplace
         </MenuItem>
       </MenuPopup>
     </MenuRoot>
   );
+  // With no agents yet, each way to get one is its own tile; bringing the
+  // owner's own agents leads when there are any.
+  const canImport =
+    firstAgent &&
+    (agentImports.length > 0 || legacy === null || !!legacy?.warnings.length);
+  const starts = (
+    <div className={cardStyles.starts}>
+      {canImport && (
+        <NewAgentTile
+          fullWidth
+          crew={agentImports}
+          description={
+            joinable.length
+              ? "You have agents in your other communities."
+              : agentImports.length
+                ? "You have agents in Buzz (Legacy)."
+                : "Check other communities and Buzz (Legacy) for agents."
+          }
+          label={
+            agentImports.length
+              ? "Import them now"
+              : "Check for agents to import"
+          }
+          onClick={openImport}
+        />
+      )}
+      <NewAgentTile
+        label="Create your first agent"
+        secondary={canImport}
+        disabled={snapshot.status !== "ready" || !types.length}
+        onClick={() => setCreating(true)}
+      />
+      <NewAgentTile
+        label="Explore the marketplace"
+        art={MARKETPLACE_ART}
+        secondary={canImport}
+        onClick={openMarketplace}
+      />
+      {firstAgent && !canImport && (
+        <NewAgentTile
+          label="Import from a file"
+          secondary
+          onClick={openImport}
+        />
+      )}
+    </div>
+  );
   // Teams have no marketplace, so New team offers only making and importing.
   const newTeamMenu = (
-    <MenuRoot>
+    <MenuRoot onOpenChange={refreshOnOpen}>
       <MenuTrigger
         render={
           toolbarAction ? (
@@ -264,9 +426,11 @@ export function AgentsPage({
         >
           <PlusIcon size={16} aria-hidden="true" /> Create a new team
         </MenuItem>
-        <MenuItem onClick={() => setFlow("import-team")}>
-          <DownloadIcon size={16} aria-hidden="true" /> Import a team
-        </MenuItem>
+        {canImportTeam && (
+          <MenuItem onClick={() => setFlow("import-team")}>
+            <DownloadIcon size={16} aria-hidden="true" /> Import a team
+          </MenuItem>
+        )}
       </MenuPopup>
     </MenuRoot>
   );
@@ -295,7 +459,18 @@ export function AgentsPage({
       typeOf,
       onSelect: browse,
       onBuild: build,
-      newAgent: !toolbarAction && newAgentMenu,
+      newAgent: !toolbarAction && starts,
+      // A published agent's toast opens it where everyone else finds it.
+      onViewListing: (agent: SharedAgent) => {
+        if (connection.status !== "ready") return;
+        sharedTrigger.current = null;
+        changeTab("marketplace");
+        setSharedSelection({
+          agent,
+          session: connection.session,
+          community: connection.origin,
+        });
+      },
     };
     return connection.status === "ready" ? (
       <DefaultAgentInventory
@@ -320,14 +495,16 @@ export function AgentsPage({
       />
     ) : (
       <AgentDetails
-        messageAction={
+        communities={communities}
+        messageAction={(variant) => (
           <AgentMessageButton
+            variant={variant}
             pubkey={selected.pubkey}
             relay={relay}
             navigator={navigator}
             navigation={navigation}
           />
-        }
+        )}
         key={selected.pubkey}
         agents={agents}
         agent={selected}
@@ -354,7 +531,8 @@ export function AgentsPage({
             onValueChange={changeTab}
             items={TABS}
           />
-          {toolbarAction &&
+          {tab !== "marketplace" &&
+            toolbarAction &&
             !(tab === "teams" && editing) &&
             (tab === "teams" ? newTeamMenu : newAgentMenu)}
         </div>
@@ -365,11 +543,22 @@ export function AgentsPage({
         >
           {tab === "yours" ? (
             yours
+          ) : tab === "marketplace" ? (
+            <AgentBrowse
+              relay={relay}
+              selectedId={shared?.agent.id}
+              onSelect={(selection, trigger) => {
+                sharedTrigger.current = trigger;
+                setSharedSelection(selection);
+              }}
+            />
           ) : (
             <Teams
               agents={agents}
-              saved={snapshot.agents.filter((agent) => agent.place === "here")}
-              teams={snapshot.teams}
+              saved={snapshot.agents.filter(
+                (agent) => agent.place !== "elsewhere" && !agent.unfinished,
+              )}
+              teams={teams}
               editing={editing}
               onEdit={setEditingTeam}
               newTeam={!toolbarAction && newTeamMenu}
@@ -386,7 +575,11 @@ export function AgentsPage({
         ref={split.ref}
         style={split.style}
         className={styles.browse}
-        data-side={panel && tab === "yours" ? "" : undefined}
+        data-side={
+          (panel && tab === "yours") || (shared && tab === "marketplace")
+            ? ""
+            : undefined
+        }
       >
         <div className={styles.main}>
           <Panel aria-label="Agents">
@@ -413,6 +606,46 @@ export function AgentsPage({
             </div>
           </Panel>
         </div>
+        {shared && tab === "marketplace" && (
+          <aside className={styles.side}>
+            {split.handle}
+            <Panel aria-label="Shared agent profile">
+              <PanelWorkspace
+                value={shared.agent.id}
+                select={() => {}}
+                items={[
+                  {
+                    id: shared.agent.id,
+                    label: shared.agent.name,
+                    close: closeShared,
+                    content: (
+                      <SharedAgentPanel
+                        key={shared.agent.id}
+                        selection={shared}
+                        agents={agents}
+                        types={runnable}
+                        // The panel and its trigger go with it, so focus
+                        // follows to the tab now shown.
+                        onImported={() => {
+                          flushSync(() => {
+                            setSharedSelection(undefined);
+                            returnToAgents();
+                          });
+                          document.getElementById("agents-yours-tab")?.focus();
+                        }}
+                        onOpen={(agent) => {
+                          setSharedSelection(undefined);
+                          returnToAgents();
+                          browse(agent.pubkey);
+                        }}
+                      />
+                    ),
+                  },
+                ]}
+              />
+            </Panel>
+          </aside>
+        )}
         {panel && selected && (
           <aside className={styles.side} hidden={tab !== "yours"}>
             {split.handle}
@@ -438,37 +671,28 @@ export function AgentsPage({
       {flow && (
         <Dialog
           open
-          title={
-            flow === "import"
-              ? "Import an agent"
-              : flow === "import-team"
-                ? "Import a team"
-                : "Marketplace"
-          }
+          title={flow === "import" ? "Import an agent" : "Import a team"}
           size="wide"
-          height="stable"
+          height="stable-tall"
           preventClose={importing}
           finalFocus={newAgentButton}
           onOpenChange={(open) => {
             if (!open) setFlow(undefined);
           }}
         >
-          {flow === "browse" ? (
-            <AgentBrowse
-              relay={relay}
-              agents={agents}
-              types={runnable}
-              onImported={returnToAgents}
-            />
-          ) : (
-            <ImportAgents
-              agents={agents}
-              types={runnable}
-              only={flow === "import" ? "agents" : "teams"}
-              onImported={returnTo(flow === "import" ? "yours" : "teams")}
-              onPendingChange={setImporting}
-            />
-          )}
+          <ImportAgents
+            key={connection.scope ?? "disconnected"}
+            agents={agents}
+            community={connection.origin}
+            viewer={connection.viewer}
+            communities={communities}
+            types={runnable}
+            only={flow === "import" ? "agents" : "teams"}
+            onImported={
+              flow === "import" ? () => changeTab("yours") : returnTo("teams")
+            }
+            onPendingChange={setImporting}
+          />
         </Dialog>
       )}
       {creating && (
@@ -490,7 +714,7 @@ export function AgentsPage({
         <ProviderDialog
           type={types.find((type) => type.key === providerKey)}
           finalFocus={newAgentButton}
-          onClose={() => setProviderKey(undefined, true)}
+          onClose={() => setProviderKey(undefined)}
         />
       )}
     </div>
@@ -505,56 +729,156 @@ type InventoryProps = {
   onSelect(pubkey?: string): void;
   onBuild(pubkey: string): void;
   newAgent: ReactNode;
-  /** The agent new Berd messages are tagged for, in this community. */
-  defaultAgent?: string | undefined;
-  onMakeDefault?: ((pubkey: string) => void) | undefined;
+  /** The agent explicitly saved as this community's Bestie. */
+  bestie?: string | undefined;
+  onMakeBestie?: ((pubkey: string) => void) | undefined;
   defaultChoices?: ReadonlySet<string>;
+  /** The community connection Share publishes through, while it is ready. */
+  session?: RelaySession;
+  onViewListing?: ((agent: SharedAgent) => void) | undefined;
 };
 
-/** The inventory with this community's default agent marked and settable. */
+type BestieAgent = AgentChoicesSnapshot["selectable"][number];
+
+/** Agents keeps Morgan's account-synced selection owner; this surface only
+ * names an explicitly saved selection Bestie and asks before replacing it. */
 function DefaultAgentInventory({
   session,
   scope,
   ...props
 }: InventoryProps & { session: RelaySession; scope: string }) {
-  const current = useDefaultAgent(session, scope);
+  // Keep Morgan's automatic fallback/adoption behavior active even though the
+  // Bestie pill names only the explicit account-saved choice.
+  useDefaultAgent(session, scope);
+  const saved = useSavedAgent(session, scope);
   const choices = useAgentChoices(session, true, true);
   const [error, setError] = useState("");
+  const [savingBestie, setSavingBestie] = useState(false);
+  const [replacement, setReplacement] = useState<{
+    current: BestieAgent;
+    replacing: BestieAgent;
+  }>();
+  // Only the latest choice reports its failure.
+  const latest = useRef(0);
+  const eligible = (pubkey: string) =>
+    session.agentChoices
+      .snapshot()
+      .selectable.find((agent) => agent.pubkey === pubkey);
+  const save = (pubkey: string) => {
+    if (!eligible(pubkey)) return;
+    const choice = ++latest.current;
+    setError("");
+    setSavingBestie(true);
+    chooseDefaultAgent(session, scope, pubkey)
+      .then(() => {
+        if (choice === latest.current) setReplacement(undefined);
+      })
+      .catch((failure: Error) => {
+        if (choice === latest.current) setError(failure.message);
+      })
+      .finally(() => {
+        if (choice === latest.current) setSavingBestie(false);
+      });
+  };
   return (
     <>
       <Inventory
         {...props}
-        defaultAgent={current?.pubkey}
+        session={session}
+        bestie={saved}
         defaultChoices={
           new Set(choices.selectable.map((agent) => agent.pubkey))
         }
-        onMakeDefault={(pubkey) => {
-          setError(
-            setDefaultAgent(scope, pubkey)
-              ? ""
-              : "The default agent couldn't be saved on this device.",
+        onMakeBestie={(pubkey) => {
+          const replacing = eligible(pubkey);
+          if (!replacing || pubkey === saved) return;
+          const previous = choices.identities.find(
+            (agent) => agent.pubkey === saved,
           );
+          if (previous) setReplacement({ current: previous, replacing });
+          else save(pubkey);
         }}
       />
-      {error && <p role="alert">{error}</p>}
+      {replacement && (
+        <BestieReplacement
+          {...replacement}
+          pending={savingBestie}
+          error={error}
+          onClose={() => {
+            if (error) {
+              restoreDefaultAgent(
+                scope,
+                replacement.replacing.pubkey,
+                replacement.current.pubkey,
+              );
+              setError("");
+            }
+            setReplacement(undefined);
+          }}
+          onChoose={() => {
+            // A choice changed elsewhere while this dialog was open wins.
+            if (saved === replacement.current.pubkey)
+              save(replacement.replacing.pubkey);
+            else setReplacement(undefined);
+          }}
+        />
+      )}
+      {error && !replacement && <p role="alert">{error}</p>}
     </>
   );
 }
 
-/** An agent card's right-click quick actions; the context-menu key and
- * Shift+F10 open them from the keyboard. */
-function AgentQuickActions({
+const bestieName = (agent: BestieAgent) =>
+  agent.managedName ?? agent.name ?? "Agent";
+
+function BestieReplacement({
+  current,
+  replacing,
+  pending,
+  error,
+  onChoose,
+  onClose,
+}: {
+  current: BestieAgent;
+  replacing: BestieAgent;
+  pending: boolean;
+  error: string;
+  onChoose(): void;
+  onClose(): void;
+}) {
+  const keep = useRef<HTMLButtonElement>(null);
+  return (
+    <AlertDialog
+      title={`Make ${bestieName(replacing)} your bestie?`}
+      description={`Your existing chats with ${bestieName(current)} will still be available in your DMs.`}
+      initialFocus={keep}
+      pending={pending}
+      onClose={onClose}
+      {...(error && { children: <p role="alert">{error}</p> })}
+      actions={
+        <>
+          <Button ref={keep} disabled={pending} onClick={onClose}>
+            Keep {bestieName(current)}
+          </Button>
+          <Button variant="prominent" loading={pending} onClick={onChoose}>
+            Switch to {bestieName(replacing)}
+          </Button>
+        </>
+      }
+    />
+  );
+}
+
+/** Right-clicking an agent card opens its actions menu; the context-menu key
+ * and Shift+F10 open it from the keyboard. */
+function CardContextMenu({
   name,
   card,
-  isDefault,
-  available,
-  onMakeDefault,
+  children,
 }: {
-  available: boolean;
   name: string;
   card: ReactElement;
-  isDefault: boolean;
-  onMakeDefault(): void;
+  children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<HTMLElement>();
@@ -568,7 +892,18 @@ function AgentQuickActions({
     >
       <ContextMenuTrigger
         render={card}
+        // Right-clicks and long-presses in the card's open menus bubble
+        // through their portals; only the card itself opens this menu.
+        onContextMenu={(event) => {
+          if (!event.currentTarget.contains(event.target as Node))
+            event.preventBaseUIHandler();
+        }}
+        onTouchStart={(event) => {
+          if (!event.currentTarget.contains(event.target as Node))
+            event.preventBaseUIHandler();
+        }}
         onKeyDown={(event) => {
+          if (!event.currentTarget.contains(event.target as Node)) return;
           if (
             event.key === "ContextMenu" ||
             (event.shiftKey && event.key === "F10")
@@ -581,13 +916,7 @@ function AgentQuickActions({
         }}
       />
       <MenuPopup aria-label={`Actions for ${name}`} anchor={anchor}>
-        {isDefault ? (
-          <MenuNote>Default agent</MenuNote>
-        ) : (
-          <MenuItem disabled={!available} onClick={onMakeDefault}>
-            Make default agent
-          </MenuItem>
-        )}
+        {children}
       </MenuPopup>
     </ContextMenuRoot>
   );
@@ -603,9 +932,11 @@ function Inventory({
   onSelect,
   onBuild,
   newAgent,
-  defaultAgent,
+  bestie,
   defaultChoices,
-  onMakeDefault,
+  onMakeBestie,
+  session,
+  onViewListing,
 }: InventoryProps) {
   const grid = useRef<HTMLDivElement>(null);
   const index = agents.findIndex((agent) => agent.pubkey === selected);
@@ -665,64 +996,57 @@ function Inventory({
           {agents.map((agent, position) => {
             const type = typeOf(agent);
             const active = agent.pubkey === selected;
-            const card = (
-              <InventoryCard
-                tag={
-                  agent.pubkey === defaultAgent ? "Default agent" : undefined
-                }
-                service={service}
-                type={type}
-                onBuild={() => onBuild(agent.pubkey)}
-                onRemoved={() => onSelect()}
-                role="gridcell"
-                aria-label={
-                  agent.pubkey === defaultAgent
-                    ? `${agent.name}, Default agent`
-                    : agent.name
-                }
-                data-selected={active}
-                aria-selected={active}
-                tabIndex={active || (index < 0 && position === 0) ? 0 : -1}
-                data-unavailable={type ? undefined : ""}
-                onClick={(event) => {
-                  if (
-                    event.currentTarget.contains(event.target as Node) &&
-                    !(event.target as Element).closest(
-                      "[data-card-control], button, input",
-                    )
-                  )
-                    onSelect(active ? undefined : agent.pubkey);
-                }}
-                onDoubleClick={(event) => {
-                  if (
-                    event.currentTarget.contains(event.target as Node) &&
-                    !(event.target as Element).closest(
-                      "[data-card-control], button, input",
-                    )
-                  )
-                    onBuild(agent.pubkey);
-                }}
-                agent={agent}
-                community={agent.relay || undefined}
-                icon={<TypeIcon type={type} />}
-                detail={summaryOf(agent, type)}
-              />
-            );
+            const isBestie = agent.pubkey === bestie;
             return (
               // biome-ignore lint/a11y/useSemanticElements: Layout grid rows group cards without table layout.
               // biome-ignore lint/a11y/useFocusableInteractive: Roving focus belongs to the gridcell, not its row wrapper.
               <div role="row" className="contents" key={agent.pubkey}>
-                {onMakeDefault ? (
-                  <AgentQuickActions
-                    name={agent.name}
-                    card={card}
-                    isDefault={agent.pubkey === defaultAgent}
-                    available={!!defaultChoices?.has(agent.pubkey)}
-                    onMakeDefault={() => onMakeDefault(agent.pubkey)}
-                  />
-                ) : (
-                  card
-                )}
+                <InventoryCard
+                  tag={isBestie ? "Bestie" : undefined}
+                  bestie={
+                    onMakeBestie
+                      ? {
+                          selected: isBestie,
+                          available: !!defaultChoices?.has(agent.pubkey),
+                          onMake: () => onMakeBestie(agent.pubkey),
+                        }
+                      : undefined
+                  }
+                  service={service}
+                  session={session}
+                  type={type}
+                  onViewListing={onViewListing}
+                  onBuild={() => onBuild(agent.pubkey)}
+                  onRemoved={() => onSelect()}
+                  role="gridcell"
+                  aria-label={isBestie ? `${agent.name}, Bestie` : agent.name}
+                  data-selected={active}
+                  aria-selected={active}
+                  tabIndex={active || (index < 0 && position === 0) ? 0 : -1}
+                  data-unavailable={type ? undefined : ""}
+                  onClick={(event) => {
+                    if (
+                      event.currentTarget.contains(event.target as Node) &&
+                      !(event.target as Element).closest(
+                        "[data-card-control], button, input",
+                      )
+                    )
+                      onSelect(active ? undefined : agent.pubkey);
+                  }}
+                  onDoubleClick={(event) => {
+                    if (
+                      event.currentTarget.contains(event.target as Node) &&
+                      !(event.target as Element).closest(
+                        "[data-card-control], button, input",
+                      )
+                    )
+                      onBuild(agent.pubkey);
+                  }}
+                  agent={agent}
+                  community={agent.relay || undefined}
+                  icon={<TypeIcon type={type} />}
+                  detail={summaryOf(agent, type)}
+                />
               </div>
             );
           })}
@@ -735,100 +1059,165 @@ function Inventory({
 /** Card edits use the same type-owned field and service as creation/settings. */
 function InventoryCard({
   service,
+  session,
   type,
   onBuild,
   onRemoved,
+  bestie,
+  onViewListing,
   ...props
 }: Omit<React.ComponentProps<typeof AgentCard>, "agent"> & {
   agent: Agent;
   service: Agents;
+  session: RelaySession | undefined;
   type: RegisteredAgentType | undefined;
   onBuild(): void;
   onRemoved(): void;
+  onViewListing?: ((agent: SharedAgent) => void) | undefined;
+  /** Whether it is the community's Bestie or can be made it. */
+  bestie?:
+    | { selected: boolean; available: boolean; onMake(): void }
+    | undefined;
 }) {
   const agent = props.agent;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [sharing, setSharing] = useState(false);
   const editable = agent.place !== "elsewhere" && !agent.unfinished;
   const Model = editable ? type?.CreateModel : undefined;
   const save = async (config: unknown) => {
     setSaving(true);
     setError("");
     try {
-      await service.save(agent.pubkey, { config });
+      await service.save(agent.key, {
+        config,
+        ...(agent.configBase && { base: agent.configBase }),
+      });
     } catch (reason) {
       setError(message(reason));
     } finally {
       setSaving(false);
     }
   };
-  const menu = (remove?: () => void) => (
-    <MenuRoot>
-      <MenuTrigger
-        render={
-          <IconButton
-            aria-label={`Actions for ${agent.name}`}
-            size="sm"
-            icon={<DotsThreeIcon size={16} />}
-          />
-        }
-      />
-      <MenuPopup align="end">
-        {editable && <MenuItem onClick={onBuild}>Open settings</MenuItem>}
-        <MenuItem
-          onClick={() => {
-            void navigator.clipboard
-              .writeText(agent.pubkey)
-              .catch((reason) => setError(message(reason)));
-          }}
-        >
-          Copy public key
-        </MenuItem>
-        {remove && (
-          <MenuItem tone="danger" onClick={remove}>
-            Delete agent
+  // The "..." button and right-click share one set of actions.
+  const actions = (remove?: () => void, leave?: () => void) => (
+    <>
+      {bestie && !bestie.selected && (
+        <>
+          <MenuItem disabled={!bestie.available} onClick={bestie.onMake}>
+            Make my bestie
           </MenuItem>
-        )}
-      </MenuPopup>
-    </MenuRoot>
+          <MenuSeparator />
+        </>
+      )}
+      {editable && <MenuItem onClick={onBuild}>Open settings</MenuItem>}
+      {editable && session && type?.exportShared && (
+        <MenuItem onClick={() => setSharing(true)}>Share</MenuItem>
+      )}
+      <MenuItem
+        onClick={() => {
+          void writeClipboardText(agent.pubkey).catch((reason) =>
+            setError(message(reason)),
+          );
+        }}
+      >
+        Copy public key
+      </MenuItem>
+      {leave && (
+        <MenuItem tone="danger" onClick={leave}>
+          Remove from this community
+        </MenuItem>
+      )}
+      {remove && (
+        <MenuItem tone="danger" onClick={remove}>
+          Delete agent
+        </MenuItem>
+      )}
+    </>
   );
-  return (
-    <AgentCard
-      {...props}
-      icon={Model ? undefined : props.icon}
-      detail={Model ? undefined : props.detail}
-      menu={
-        agent.place === "elsewhere" ? (
-          menu()
-        ) : (
-          <AgentDelete
-            agents={service}
-            agent={agent}
-            onRemoved={onRemoved}
-            trigger={menu}
-          />
-        )
+  const card = (remove?: () => void, leave?: () => void) => (
+    <CardContextMenu
+      name={agent.name}
+      card={
+        <AgentCard
+          {...props}
+          icon={Model ? undefined : props.icon}
+          detail={Model ? undefined : props.detail}
+          menu={
+            <MenuRoot>
+              <MenuTrigger
+                render={
+                  <IconButton
+                    aria-label={`Actions for ${agent.name}`}
+                    variant="glass-ghost"
+                    size="sm"
+                    icon={<DotsThreeIcon size={16} />}
+                  />
+                }
+              />
+              <MenuPopup align="end">{actions(remove, leave)}</MenuPopup>
+            </MenuRoot>
+          }
+        >
+          {(Model || error) && (
+            <div
+              data-card-control=""
+              className="flex min-w-0 max-w-full flex-col items-center gap-2"
+            >
+              {Model && (
+                <Model
+                  config={agent.config}
+                  modelAppearance="glass-ghost"
+                  disabled={saving}
+                  onChange={(config) => void save(config)}
+                />
+              )}
+              {error && (
+                <span role="alert" className="text-body-sm text-danger">
+                  {error}
+                </span>
+              )}
+            </div>
+          )}
+        </AgentCard>
       }
     >
-      <div
-        data-card-control=""
-        className="flex min-w-0 max-w-full flex-col items-center gap-2"
-      >
-        {Model && (
-          <Model
-            config={agent.config}
-            modelAppearance="subtle"
-            disabled={saving}
-            onChange={(config) => void save(config)}
-          />
-        )}
-        {error && (
-          <span role="alert" className="text-body-sm text-danger">
-            {error}
-          </span>
-        )}
-      </div>
-    </AgentCard>
+      {actions(remove, leave)}
+    </CardContextMenu>
+  );
+  return (
+    <>
+      {agent.place === "elsewhere" ? (
+        card()
+      ) : (
+        <AgentDelete
+          agents={service}
+          agent={agent}
+          onRemoved={onRemoved}
+          trigger={(remove) =>
+            inSeveral(service, agent) ? (
+              <AgentRemoveHere
+                agents={service}
+                agent={agent}
+                onRemoved={onRemoved}
+                trigger={(leave) => card(remove, leave)}
+              />
+            ) : (
+              card(remove)
+            )
+          }
+        />
+      )}
+      {sharing && session && (
+        <AgentShareDialog
+          agent={agent}
+          type={type}
+          session={session}
+          onViewListing={onViewListing}
+          onClose={() => setSharing(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -889,8 +1278,17 @@ function AgentPeek({
       />
       {agent.place === "elsewhere" ? (
         <p className="m-0 text-body-sm text-secondary">
-          Its key is on another of your devices, which runs it. Open Agents
-          there to change or delete it.
+          {type && !type.remote ? (
+            <>
+              Its key is on another of your devices, which runs it. Open Agents
+              there to change or delete it.
+            </>
+          ) : (
+            <>
+              This agent’s harness is unavailable in this client. Check Settings
+              → Plugins or use a build with this harness configured.
+            </>
+          )}
         </p>
       ) : (
         <>
@@ -949,13 +1347,22 @@ function PeekIdentity({
   );
 }
 
-const SOURCES: Record<PortSource, string> = {
-  harness: "Buzz 1.0 harness agent",
-  installed: "Buzz 0.X",
-  development: "Buzz 0.X dev",
-};
 const host = (relay: string) => relay.replace(/^wss:\/\//, "");
 const sentence = (text: string) => text.replace(/\.?$/, ".");
+const LEGACY = "Buzz (Legacy)";
+
+/** The owner's teams with members `joinable` can add here: adding them gives
+ * the team, which every community shares, its members here too. */
+function teamsToJoin(teams: readonly Team[], joinable: readonly Agent[]) {
+  const byPubkey = new Map(joinable.map((agent) => [agent.pubkey, agent]));
+  return teams.flatMap((team) => {
+    const members = team.members.flatMap((pubkey) => {
+      const agent = byPubkey.get(pubkey);
+      return agent ? [agent] : [];
+    });
+    return members.length ? [{ team, members }] : [];
+  });
+}
 
 /** What a team import left undone, or "" if nothing. */
 function teamPortNote({
@@ -984,7 +1391,7 @@ function teamPortNote({
       sentence(`Couldn't import ${member.name}: ${member.error}`),
     ),
     elsewhere.length &&
-      `Kept out: ${elsewhere.join(", ")}, in another community.`,
+      `Not added: ${elsewhere.join(", ")}, in your other communities. Use Import an agent to add them here, then import the team again.`,
     foreign.length &&
       `Kept out: ${foreign.join(", ")}, which another account on this device has.`,
     ...notes,
@@ -993,16 +1400,27 @@ function teamPortNote({
     .join(" ");
 }
 
-/** Identities earlier agent systems saved on this machine, each imported
- * with its key, name and picture as an agent of the chosen type. */
+type SharedImport =
+  | { agent: Agent }
+  | { team: Team; members: readonly Agent[] };
+
+/** One list of what Import can bring here: the owner's agents from their
+ * other communities, which come as they are, and old Buzz's, which come as
+ * the type chosen on each. */
 function ImportAgents({
   agents,
+  community,
+  viewer,
+  communities,
   types,
   only,
   onImported,
   onPendingChange,
 }: {
   agents: Agents;
+  community: string | undefined;
+  viewer: string | undefined;
+  communities: CommunityReader | undefined;
   types: readonly RegisteredAgentType[];
   /** The section its entry point imports. */
   only: "agents" | "teams";
@@ -1010,9 +1428,40 @@ function ImportAgents({
   onPendingChange(pending: boolean): void;
 }) {
   const [found, setFound] = useState<FoundAgents>();
-  const [type, setType] = useState(types[0]?.key ?? "");
+  const [confirming, setConfirming] = useState<SharedImport>();
+  const importTrigger = useRef<HTMLButtonElement | null>(null);
+  // The type each old Buzz agent or team comes in as, by pubkey or team id;
+  // unchosen, the first.
+  const [chosenTypes, setChosenTypes] = useState<ReadonlyMap<string, string>>(
+    new Map(),
+  );
   const [pending, setPending] = useState<string>();
   const [error, setError] = useState("");
+  // What did not come over with a team that did.
+  const [notice, setNotice] = useState("");
+  // Each agent the owner chose, in the order chosen: imports run one at a
+  // time and the dialog stays open, so several can be picked in a row.
+  const [ports, setPorts] = useState<ReadonlyMap<string, "queued" | "done">>(
+    new Map(),
+  );
+  // What did not come over, or why an import failed, by agent; choosing the
+  // agent again replaces it.
+  const [said, setSaid] = useState<
+    ReadonlyMap<string, Readonly<{ text: string; failed: boolean }>>
+  >(new Map());
+  const chosenPorts = useRef(new Set<string>());
+  const portLine = useRef(Promise.resolve());
+  // An import still waiting its turn when the dialog goes away is dropped:
+  // it would otherwise land in whatever community is selected by then.
+  const open = useRef(true);
+  useEffect(() => {
+    open.current = true;
+    return () => {
+      open.current = false;
+    };
+  }, []);
+  const queued = [...ports.values()].includes("queued");
+  useEffect(() => onPendingChange(queued), [queued, onPendingChange]);
   useEffect(() => {
     let live = true;
     agents.portable().then(
@@ -1023,46 +1472,117 @@ function ImportAgents({
       live = false;
     };
   }, [agents]);
-  const chosen = types.find((item) => item.key === type) ?? types[0];
+  const typeFor = (id: string) =>
+    types.find((item) => item.key === chosenTypes.get(id)) ?? types[0];
+  const chooseType = (id: string, key: string) =>
+    setChosenTypes((last) => new Map(last).set(id, key));
   const labels = publicKeyLabels(found?.agents.map((a) => a.pubkey) ?? []);
   const named = new Map<string, number>();
   for (const agent of found?.agents ?? [])
     named.set(agent.name, (named.get(agent.name) ?? 0) + 1);
-  const port = async (agent: PortableAgent) => {
-    if (!chosen || pending) return;
-    setPending(agent.pubkey);
-    onPendingChange(true);
-    setError("");
-    try {
-      const { notes } = await agents.port({
-        source: agent.source,
-        pubkey: agent.pubkey,
-        type: chosen.key,
-      });
-      setFound(
-        (last) =>
-          last && {
-            ...last,
-            agents: last.agents.filter((item) => item.pubkey !== agent.pubkey),
-          },
-      );
-      // Leaving would hide what did not come over.
-      if (notes.length) setError(notes.join(" "));
-      else onImported();
-    } catch (reason) {
-      setError(message(reason));
-    } finally {
-      setPending(undefined);
-      onPendingChange(false);
-    }
+  const setPort = (pubkey: string, state?: "queued" | "done") =>
+    setPorts((last) => {
+      const next = new Map(last);
+      if (state) next.set(pubkey, state);
+      else next.delete(pubkey);
+      return next;
+    });
+  const say = (pubkey: string, text?: string, failed = false) =>
+    setSaid((last) => {
+      const next = new Map(last);
+      if (text) next.set(pubkey, { text, failed });
+      else next.delete(pubkey);
+      return next;
+    });
+  /** Runs `bring` for the agent after the ones chosen before it. */
+  const queue = (
+    pubkey: string,
+    failed: string,
+    bring: () => Promise<Readonly<{ notes: readonly string[] }>>,
+  ) => {
+    if (chosenPorts.current.has(pubkey)) return;
+    chosenPorts.current.add(pubkey);
+    setPort(pubkey, "queued");
+    say(pubkey);
+    portLine.current = portLine.current.then(async () => {
+      if (!open.current) return;
+      try {
+        const { notes } = await bring();
+        setPort(pubkey, "done");
+        if (notes.length) say(pubkey, notes.join(" "));
+        onImported();
+      } catch (reason) {
+        chosenPorts.current.delete(pubkey);
+        setPort(pubkey);
+        say(pubkey, `${failed} ${sentence(message(reason))}`, true);
+      }
+    });
   };
-  const portTeam = async (team: OldTeam) => {
-    if (!chosen || pending) return;
+  const port = (agent: PortableAgent) => {
+    const type = typeFor(agent.pubkey)?.key;
+    if (!type) return;
+    queue(agent.pubkey, `${agent.name} wasn't imported.`, () =>
+      agents.port({ source: agent.source, pubkey: agent.pubkey, type }),
+    );
+  };
+  const join = (agent: Agent) =>
+    queue(agent.pubkey, `${agent.name} wasn't imported.`, () =>
+      agents.join(agent.key),
+    );
+  /** Adds each of the team's members from the owner's other communities. */
+  const joinTeam = async (team: Team, members: readonly Agent[]) => {
+    if (pending) return;
     setPending(team.id);
     onPendingChange(true);
     setError("");
+    setNotice("");
+    const notes: string[] = [];
+    const failures: string[] = [];
+    for (const member of members) {
+      if (!open.current) return;
+      try {
+        notes.push(...(await agents.join(member.key)).notes);
+      } catch (reason) {
+        failures.push(
+          `${member.name} wasn't imported. ${sentence(message(reason))}`,
+        );
+      }
+    }
+    if (!open.current) return;
+    setPending(undefined);
+    onPendingChange(false);
+    // Leaving would hide the one place that names what still needs a hand.
+    if (failures.length) setError(failures.join(" "));
+    if (notes.length) setNotice(notes.join(" "));
+    if (!failures.length && !notes.length) onImported();
+  };
+  const importShared = (selection: SharedImport) => {
+    if ("agent" in selection) join(selection.agent);
+    else void joinTeam(selection.team, selection.members);
+  };
+  const requestShared = (
+    trigger: HTMLButtonElement,
+    selection: SharedImport,
+  ) => {
+    if (
+      viewer &&
+      readView<unknown>(viewer, importReminderKey, false) === true
+    ) {
+      importShared(selection);
+      return;
+    }
+    importTrigger.current = trigger;
+    setConfirming(selection);
+  };
+  const portTeam = async (team: OldTeam) => {
+    const type = typeFor(team.id)?.key;
+    if (!type || pending) return;
+    setPending(team.id);
+    onPendingChange(true);
+    setError("");
+    setNotice("");
     try {
-      const result = await agents.portTeam({ id: team.id, type: chosen.key });
+      const result = await agents.portTeam({ id: team.id, type });
       const came = new Set(result.imported.map((agent) => agent.pubkey));
       setFound(
         (last) =>
@@ -1083,44 +1603,63 @@ function ImportAgents({
       onPendingChange(false);
     }
   };
-  const yours = new Set(found?.here);
+  // The owner's agents in their other communities, as offered since the
+  // dialog opened, so one added here stays listed as added, and those its
+  // community lists only once it connects still come.
+  const { snapshot } = useAgents(agents);
+  const [offered, setOffered] = useState(() => agents.joinable());
+  // biome-ignore lint/correctness/useExhaustiveDependencies: What it can join changes with the snapshot.
+  useEffect(() => {
+    setOffered((shown) => {
+      const more = agents
+        .joinable()
+        .filter((agent) => !shown.some((item) => item.key === agent.key));
+      return more.length ? [...shown, ...more] : shown;
+    });
+  }, [agents, snapshot]);
   if (!types.length)
     return (
       <p className="m-0 text-body-sm text-secondary">
         Enable an agent type plugin to import agents.
       </p>
     );
+  const elsewhere = only === "agents" ? offered : [];
+  const teamsElsewhere =
+    only === "teams" ? teamsToJoin(snapshot.teams, agents.joinable()) : [];
+  const old = found?.[only] ?? [];
+  const yours = new Set(found?.here);
+  const failures = [...said.values()].filter((item) => item.failed);
+  const notes = [...said.values()].filter((item) => !item.failed);
+  const members = (count: number) =>
+    `${count} ${count === 1 ? "member" : "members"}`;
+  /** The type menu that comes with old Buzz's import for `id`. */
+  const typeMenu = (id: string) => (
+    <MenuRadioGroup
+      value={typeFor(id)?.key ?? ""}
+      onValueChange={(key: string) => chooseType(id, key)}
+    >
+      {types.map((item) => (
+        <MenuRadioItem key={item.key} value={item.key} closeOnClick>
+          <ChoiceRow label={item.title} leading={<TypeIcon type={item} />} />
+        </MenuRadioItem>
+      ))}
+    </MenuRadioGroup>
+  );
+  const empty = !!found && !elsewhere.length && !teamsElsewhere.length;
   return (
     <div className="flex flex-col gap-4">
-      <p className="m-0 text-body-sm text-secondary">
-        {chosen?.adopt
-          ? "Keeps each agent's key, name, picture and instructions in this community. Its other settings stay behind."
-          : "Keeps each agent's key, name and picture in this community. Its instructions and settings stay behind."}{" "}
-        An archived agent is unarchived here. Stop it where it runs now first,
-        or both will answer.
-      </p>
-      {types.length > 1 && (
-        <div className="flex">
-          <Select
-            label="Import as"
-            value={chosen?.key ?? ""}
-            disabled={!!pending}
-            groups={[
-              {
-                label: "Agent types",
-                options: types.map((item) => ({
-                  value: item.key,
-                  label: item.title,
-                })),
-              },
-            ]}
-            onValueChange={setType}
-          />
-        </div>
-      )}
-      {error && (
+      {(error || failures.length > 0) && (
         <p role="alert" className="m-0 text-body-sm text-danger">
-          {error}
+          {[error, ...failures.map((item) => item.text)]
+            .filter(Boolean)
+            .join(" ")}
+        </p>
+      )}
+      {(notice || notes.length > 0) && (
+        <p role="status" className="m-0 text-body-sm text-secondary">
+          {[notice, ...notes.map((item) => item.text)]
+            .filter(Boolean)
+            .join(" ")}
         </p>
       )}
       {found?.warnings.map((warning) => (
@@ -1128,109 +1667,484 @@ function ImportAgents({
           {warning}
         </p>
       ))}
-      {!found ? (
-        !error && (
-          <p role="status" className="m-0 text-body-sm text-secondary">
-            Looking for agents…
-          </p>
-        )
-      ) : found[only].length ? (
-        <>
-          {only === "teams" && (
-            <section aria-label="Teams to import">
-              <InlineHeader title="Teams" />
-              <ul className={styles.portList}>
-                {found.teams.map((team) => {
-                  const here = team.members.filter((member) =>
-                    yours.has(member.pubkey),
-                  ).length;
-                  return (
-                    <li key={team.id} className={styles.portRow}>
-                      <span className="grid min-w-0 flex-1">
-                        <span className="truncate text-body">{team.name}</span>
-                        <span className="truncate text-caption text-secondary">
-                          {[
-                            `${team.members.length} ${team.members.length === 1 ? "member" : "members"}`,
-                            here > 0 && `${here} already here`,
-                          ]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </span>
-                      </span>
-                      <Button
-                        size="compact"
-                        variant="outline"
-                        aria-label={`Import team ${team.name}`}
-                        loading={pending === team.id}
-                        disabled={!chosen || (!!pending && pending !== team.id)}
-                        onClick={() => void portTeam(team)}
-                      >
-                        Import team
-                      </Button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          )}
-          {only === "agents" && (
-            <section aria-label="Agents to import" className={cardStyles.grid}>
-              {found.agents.map((agent) => (
-                <AgentCard
-                  key={agent.pubkey}
-                  agent={agent}
-                  community={agent.relay || undefined}
-                  detail={
-                    <Tooltip
-                      content={[
-                        canonicalPublicKey(agent.pubkey),
-                        agent.relay && host(agent.relay),
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                      delay={300}
-                    >
-                      <span
-                        // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard users need access to its key and community in the tooltip.
-                        tabIndex={0}
-                      >
-                        {[
-                          SOURCES[agent.source],
-                          // Its key tells it apart only from one of the same name.
-                          named.get(agent.name) !== 1 &&
-                            labels.get(agent.pubkey),
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </span>
-                    </Tooltip>
-                  }
-                >
-                  <Button
-                    size="compact"
-                    variant="outline"
-                    aria-label={`Import ${agent.name}`}
-                    loading={pending === agent.pubkey}
-                    disabled={
-                      !chosen || (!!pending && pending !== agent.pubkey)
-                    }
-                    onClick={() => void port(agent)}
-                  >
-                    Import
-                  </Button>
-                </AgentCard>
-              ))}
-            </section>
-          )}
-        </>
-      ) : (
+      {old.length > 0 && (
         <p className="m-0 text-body-sm text-secondary">
-          {only === "teams"
-            ? "No old teams found to import."
-            : "No other agents found to import."}
+          <strong>Buzz (Legacy):</strong> Stop the old runtime before importing,
+          or both may answer. Imports keep each agent’s key, name and picture.
+          Instructions and workspace come over only if the chosen type supports
+          them; choose provider, model and other settings afterward. An archived
+          agent is unarchived here when possible.
         </p>
       )}
+      {empty && !old.length ? (
+        <p className="m-0 text-body-sm text-secondary">
+          {found.warnings.length
+            ? `No ${only} found in the sources we could read.`
+            : only === "teams"
+              ? "No teams to import."
+              : "No agents to import."}
+        </p>
+      ) : only === "teams" ? (
+        <section aria-label="Teams to import">
+          <ul className={styles.portList}>
+            {teamsElsewhere.map(({ team, members: joining }) => (
+              <ImportRow
+                key={team.id}
+                name={team.name}
+                detail={joining.map((member) => member.name).join(", ")}
+              >
+                <Button
+                  size="compact"
+                  variant="prominent"
+                  aria-label={`Import team ${team.name}`}
+                  loading={pending === team.id}
+                  disabled={!!pending && pending !== team.id}
+                  onClick={(event) =>
+                    requestShared(event.currentTarget, {
+                      team,
+                      members: joining,
+                    })
+                  }
+                >
+                  Import
+                </Button>
+              </ImportRow>
+            ))}
+            {found?.teams.map((team) => {
+              const here = team.members.filter((member) =>
+                yours.has(member.pubkey),
+              ).length;
+              return (
+                <ImportRow
+                  key={team.id}
+                  name={team.name}
+                  detail={[
+                    members(team.members.length),
+                    here > 0 && `${here} already here`,
+                    LEGACY,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                >
+                  <SplitButton
+                    size="sm"
+                    variant="prominent"
+                    aria-label={`Import as ${typeFor(team.id)?.title}, team ${team.name}`}
+                    menuLabel={`Choose a type for team ${team.name}`}
+                    menu={typeMenu(team.id)}
+                    loading={pending === team.id}
+                    disabled={!!pending && pending !== team.id}
+                    onClick={() => void portTeam(team)}
+                  >
+                    <ImportType type={typeFor(team.id)} />
+                  </SplitButton>
+                </ImportRow>
+              );
+            })}
+          </ul>
+        </section>
+      ) : (
+        <section
+          aria-label="Agents to import"
+          className={cardStyles.grid}
+          data-import=""
+        >
+          {elsewhere.map((agent) => (
+            <AgentCard
+              key={agent.pubkey}
+              agent={agent}
+              community={agent.relay}
+              icon={
+                <TypeIcon
+                  type={types.find((item) => item.key === agent.type)}
+                />
+              }
+              detail={host(agent.relay)}
+            >
+              {ports.get(agent.pubkey) === "done" ? (
+                <Imported name={agent.name} />
+              ) : (
+                <Button
+                  size="compact"
+                  variant="prominent"
+                  aria-label={`Import, ${agent.name} from ${host(agent.relay)}`}
+                  loading={ports.get(agent.pubkey) === "queued"}
+                  onClick={(event) => {
+                    requestShared(event.currentTarget, { agent });
+                  }}
+                >
+                  Import
+                </Button>
+              )}
+            </AgentCard>
+          ))}
+          {found?.agents.map((agent) => (
+            <AgentCard
+              key={agent.pubkey}
+              agent={agent}
+              community={agent.relay || undefined}
+              detail={[
+                LEGACY,
+                // Its key tells it apart only from one of the same name.
+                named.get(agent.name) !== 1 && labels.get(agent.pubkey),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            >
+              {ports.get(agent.pubkey) === "done" ? (
+                <Imported name={agent.name} />
+              ) : (
+                <SplitButton
+                  size="sm"
+                  variant="prominent"
+                  aria-label={`Import as ${typeFor(agent.pubkey)?.title}, ${agent.name}`}
+                  menuLabel={`Choose a type for ${agent.name}`}
+                  menu={typeMenu(agent.pubkey)}
+                  loading={ports.get(agent.pubkey) === "queued"}
+                  onClick={() => port(agent)}
+                >
+                  <ImportType type={typeFor(agent.pubkey)} />
+                </SplitButton>
+              )}
+            </AgentCard>
+          ))}
+        </section>
+      )}
+      {!found && !error && (
+        <p role="status" className="m-0 text-body-sm text-secondary">
+          Looking for agents…
+        </p>
+      )}
+      {confirming && (
+        <CommunityImportDialog
+          selection={confirming}
+          community={community}
+          communities={communities}
+          canRemember={!!viewer}
+          finalFocus={importTrigger}
+          onClose={() => setConfirming(undefined)}
+          onImport={(remember) => {
+            if (remember && viewer) writeView(viewer, importReminderKey, true);
+            setConfirming(undefined);
+            importShared(confirming);
+          }}
+        />
+      )}
+      {only === "agents" && (
+        <FileImport agents={agents} types={types} onImported={onImported} />
+      )}
     </div>
+  );
+}
+
+/** Registered artwork can stand for a known type; the robot fallback cannot. */
+function ImportType({ type }: { type: RegisteredAgentType | undefined }) {
+  return (
+    <>
+      Import as{" "}
+      {type?.icon && type.icon !== RobotIcon ? (
+        <TypeIcon type={type} />
+      ) : (
+        type?.title
+      )}
+    </>
+  );
+}
+
+/** Explain the shared identity before adding it to another community. */
+function CommunityImportDialog({
+  selection,
+  community,
+  communities,
+  canRemember,
+  finalFocus,
+  onClose,
+  onImport,
+}: {
+  selection: SharedImport;
+  community: string | undefined;
+  communities: CommunityReader | undefined;
+  canRemember: boolean;
+  finalFocus: React.RefObject<HTMLButtonElement | null>;
+  onClose(): void;
+  onImport(remember: boolean): void;
+}) {
+  const cancel = useRef<HTMLButtonElement>(null);
+  const [remember, setRemember] = useState(false);
+  const known = useSyncExternalStore(
+    communities?.subscribe ?? noSubscribe,
+    () => communities?.snapshot(),
+  );
+  const members = "agent" in selection ? [selection.agent] : selection.members;
+  const name =
+    "agent" in selection ? selection.agent.name : selection.team.name;
+  const sources = [...new Set(members.map((member) => member.relay))];
+  const first = members[0];
+  const portrait =
+    members.length === 1 && first ? (
+      <div className={styles.importPortrait} aria-hidden="true">
+        <AgentPortrait agent={first} community={first.relay} />
+      </div>
+    ) : (
+      <div className={cardStyles.crew} aria-hidden="true">
+        {members.slice(0, 3).map((member) => (
+          <span className={cardStyles.crewPortrait} key={member.key}>
+            <AgentPortrait agent={member} community={member.relay} />
+          </span>
+        ))}
+      </div>
+    );
+  return (
+    <Dialog
+      open
+      size="compact"
+      headerGap="compact"
+      footerGap="compact"
+      title={`Import ${name}`}
+      artwork={
+        <div className="grid gap-3">
+          {members.length > 1 && portrait}
+          <div className={styles.importIdentity}>
+            {sources.map((source) => (
+              <ImportCommunity
+                key={source}
+                origin={source}
+                memberships={known?.memberships}
+                direction="From"
+              />
+            ))}
+            {members.length === 1 && portrait}
+            <ImportCommunity
+              origin={community}
+              memberships={known?.memberships}
+              direction="To"
+            />
+          </div>
+        </div>
+      }
+      initialFocus={cancel}
+      finalFocus={finalFocus}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      actions={
+        <>
+          <Button ref={cancel} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="prominent" onClick={() => onImport(remember)}>
+            Import
+          </Button>
+        </>
+      }
+    >
+      <dl className="m-0 grid min-w-0 gap-6">
+        <div className="flex items-start gap-3">
+          <GearIcon
+            size={20}
+            className="shrink-0 text-secondary"
+            aria-hidden="true"
+          />
+          <div className="min-w-0">
+            <dt className="text-label-sm">One setup, everywhere</dt>
+            <dd className="m-0 mt-1 text-body-sm text-secondary">
+              {sharedAgentSettings}
+            </dd>
+          </div>
+        </div>
+        <div className="flex items-start gap-3">
+          <BrainIcon
+            size={20}
+            className="shrink-0 text-secondary"
+            aria-hidden="true"
+          />
+          <div className="min-w-0">
+            <dt className="text-label-sm">Memories stay in each community</dt>
+            <dd className="m-0 mt-1 text-body-sm text-secondary">
+              Pictures, attention, saved memories and conversations stay
+              separate in each community.
+            </dd>
+          </div>
+        </div>
+      </dl>
+      {canRemember && (
+        <div className="mt-3">
+          <Checkbox
+            label="Don’t remind me again"
+            checked={remember}
+            onCheckedChange={setRemember}
+          />
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+function ImportCommunity({
+  origin,
+  memberships,
+  direction,
+}: {
+  origin: string | undefined;
+  memberships: readonly Membership[] | undefined;
+  direction: "From" | "To";
+}) {
+  const destination = origin ? communityDestination(origin) : undefined;
+  const membership =
+    destination &&
+    memberships?.find(
+      (item) => communityDestination(item.id).url === destination.url,
+    );
+  const name = membership
+    ? communityName(membership)
+    : (destination?.name ?? "this community");
+  return (
+    <Tooltip
+      content={`${direction}: ${name}${destination && name !== destination.name ? ` · ${destination.name}` : ""}`}
+    >
+      <figure
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard users need access to the community name and address in the tooltip.
+        tabIndex={0}
+        aria-label={`${direction} ${name}`}
+        className={styles.importCommunity}
+      >
+        <div
+          className={styles.importCommunityImage}
+          data-avatar-shape="squircle"
+        >
+          <Avatar
+            size="fill"
+            shape="squircle"
+            alt=""
+            fallback={name}
+            src={
+              membership
+                ? communityIcon(membership.publishedIcon ?? membership.icon)
+                : undefined
+            }
+          />
+        </div>
+        <figcaption className="sr-only">
+          {name} {destination?.name}
+        </figcaption>
+      </figure>
+    </Tooltip>
+  );
+}
+
+/** An import that finished, keeping the owner's place for the next one. */
+function Imported({ name }: { name: string }) {
+  // It replaces the import's control, taking keyboard focus with it.
+  const ref = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (!document.activeElement || document.activeElement === document.body)
+      ref.current?.focus();
+  }, []);
+  return (
+    <Button
+      ref={ref}
+      size="compact"
+      variant="outline"
+      aria-label={`${name} imported`}
+      disabled
+      focusableWhenDisabled
+    >
+      <CheckIcon size={16} aria-hidden="true" /> Imported
+    </Button>
+  );
+}
+
+/** A team Import can bring here, with its action. */
+function ImportRow({
+  name,
+  detail,
+  children,
+}: {
+  name: string;
+  detail: string;
+  children: ReactNode;
+}) {
+  return (
+    <li className={styles.portRow}>
+      <span className="grid min-w-0 flex-1">
+        <span className="truncate text-body">{name}</span>
+        <span className="truncate text-caption text-secondary">{detail}</span>
+      </span>
+      {children}
+    </li>
+  );
+}
+
+/** An exported `.agent.json` or `.agent.png`, imported as a new agent. */
+function FileImport({
+  agents,
+  types,
+  onImported,
+}: {
+  agents: Agents;
+  types: readonly RegisteredAgentType[];
+  onImported(): void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [shared, setShared] = useState<SharedDefinition>();
+  const [error, setError] = useState("");
+  const read = async (file: File) => {
+    setError("");
+    try {
+      setShared(await readSnapshot(file));
+    } catch (reason) {
+      setError(`Failed to read agent snapshot file. ${message(reason)}`);
+    }
+  };
+  return (
+    <section
+      aria-label="Import snapshot"
+      className="flex flex-col items-start gap-2"
+    >
+      <InlineHeader
+        title="Import snapshot"
+        subtitle="A new agent will be created with a fresh keypair. The imported agent is independent of the source — identity never travels."
+      />
+      <Button
+        ref={trigger}
+        size="compact"
+        variant="outline"
+        onClick={() => input.current?.click()}
+      >
+        Choose file
+      </Button>
+      <input
+        ref={input}
+        type="file"
+        accept=".json,.png"
+        aria-label="Choose file"
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (file) void read(file);
+        }}
+      />
+      {error && (
+        <p role="alert" className="m-0 text-body-sm text-danger">
+          {error}
+        </p>
+      )}
+      {shared && (
+        <SharedImportDialog
+          shared={shared}
+          agents={agents}
+          types={types}
+          onImported={() => {
+            setShared(undefined);
+            onImported();
+          }}
+          onClose={() => setShared(undefined)}
+          finalFocus={trigger}
+        />
+      )}
+    </section>
   );
 }
 
@@ -1266,10 +2180,6 @@ function Teams({
   const byKey = new Map(saved.map((agent) => [agent.pubkey, agent]));
   return (
     <div className="grid gap-4">
-      <p className="m-0 text-body-sm text-secondary">
-        Each member is told who its teammates are, and follows the team's
-        instructions after its own.
-      </p>
       <div className={cardStyles.grid}>
         {newTeam}
         {teams.length > 0 && (
@@ -1314,6 +2224,48 @@ function TeamEditor({
   );
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  // What a synced Save revises, and a new team's id for every retry.
+  const [opened] = useState(team);
+  const [draft] = useState(() => crypto.randomUUID());
+  const which = opened ? { id: opened.id } : { draft };
+  // Each hosted agent picked, as listed then in the only community with it.
+  const [picked, setPicked] = useState<ReadonlyMap<string, Agent>>(
+    () => new Map(),
+  );
+  // Only a team Save puts in this community can have its hosted agents.
+  const listed = agents.teamHere(which)
+    ? saved
+    : saved.filter((agent) => agent.place === "here");
+  // Hosted agents picked where Save puts the team stay choices while not
+  // listed, as while its agent list is read again or once one is deleted, so
+  // each can be unchecked. Not one picked in another community, as before
+  // selecting this one, which can't have it.
+  const choices = [
+    ...listed,
+    ...[...picked.values()].filter(
+      (agent) =>
+        agents.teamHere(which, agent.relay) &&
+        !listed.some((item) => item.pubkey === agent.pubkey),
+    ),
+  ];
+  // What Save gets: members among these choices, ones the team already has,
+  // and agents here in other communities.
+  const kept = members.filter(
+    (pubkey) =>
+      choices.some((agent) => agent.pubkey === pubkey) ||
+      opened?.members.includes(pubkey) ||
+      agents.memberships(pubkey).length > 0,
+  );
+  // Members not in this community, which it doesn't list but keeps.
+  const away = members.filter(
+    (pubkey) =>
+      !choices.some((agent) => agent.pubkey === pubkey) &&
+      agents.memberships(pubkey).length > 0,
+  ).length;
+  // Their provider runs them, so they may not get the team's instructions.
+  const remote = choices.filter(
+    (agent) => agent.place === "hosted" && members.includes(agent.pubkey),
+  );
   const act = async (work: () => Promise<unknown>) => {
     if (pending) return;
     setPending(true);
@@ -1329,10 +2281,10 @@ function TeamEditor({
   const save = () =>
     act(() =>
       agents.saveTeam({
-        ...(team ? { id: team.id } : {}),
+        ...(opened ? { id: opened.id, opened } : { draft }),
         name: name.trim(),
         instructions,
-        members,
+        members: kept,
       }),
     );
   return (
@@ -1365,7 +2317,22 @@ function TeamEditor({
       </Field>
       <Field
         label="Instructions"
-        description="Every member follows these after its own instructions."
+        description={
+          <>
+            {remote.length > 0
+              ? "Agents on your devices follow these after their own instructions."
+              : "Every member follows these after its own instructions."}
+            {remote.length > 0 && (
+              <>
+                {" "}
+                <span className="mt-1 flex items-start gap-1 text-warning">
+                  <WarningCircleIcon className="mt-0.5 shrink-0" aria-hidden />
+                  {`Agents run by their provider (${names(remote)}) will not get these team instructions.`}
+                </span>
+              </>
+            )}
+          </>
+        }
       >
         <Textarea
           rows={5}
@@ -1375,26 +2342,33 @@ function TeamEditor({
         />
       </Field>
       <Section title="Members">
-        {saved.length ? (
+        {choices.length ? (
           <div className="grid gap-2">
-            {saved.map((agent) => (
+            {choices.map((agent) => (
               <Checkbox
                 key={agent.pubkey}
                 label={agent.name}
                 checked={members.includes(agent.pubkey)}
                 disabled={pending}
-                onCheckedChange={(checked) =>
+                onCheckedChange={(checked) => {
+                  if (agent.place === "hosted")
+                    setPicked((last) => new Map(last).set(agent.pubkey, agent));
                   setMembers((last) =>
                     checked
                       ? [...last, agent.pubkey]
                       : last.filter((pubkey) => pubkey !== agent.pubkey),
-                  )
-                }
+                  );
+                }}
               />
             ))}
           </div>
         ) : (
           <p className="m-0 text-body-sm text-secondary">No agents yet.</p>
+        )}
+        {away > 0 && (
+          <p className="m-0 text-body-sm text-secondary">
+            {`+${away} in your other communities, who stay on the team.`}
+          </p>
         )}
       </Section>
       {error && (

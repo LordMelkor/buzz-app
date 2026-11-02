@@ -3,7 +3,7 @@ import { migrateAgentStorage } from "./migrate-storage";
 import { readRecords, readTeams, STORAGE_KEY, TEAMS_KEY } from "./store";
 import { memoryStorage } from "./test-fakes";
 
-it("moves settings and teams byte for byte, then restarts without resurrecting old data", () => {
+it("moves settings and teams byte for byte, then restarts without resurrecting old data", async () => {
   const storage = memoryStorage();
   const pubkey = "a".repeat(64);
   const record = { pubkey, attention: {}, config: { draft: "kept" } };
@@ -17,7 +17,7 @@ it("moves settings and teams byte for byte, then restarts without resurrecting o
   const teams = JSON.stringify({ version: 1, teams: [team] });
   storage.setItem("buzz.agents2.v1", records);
   storage.setItem("buzz.agents2.teams.v1", teams);
-  migrateAgentStorage(storage);
+  await migrateAgentStorage(storage);
   expect(storage.getItem(STORAGE_KEY)).toBe(records);
   expect(storage.getItem(TEAMS_KEY)).toBe(teams);
   expect(readRecords(storage)[pubkey]).toMatchObject(record);
@@ -25,17 +25,20 @@ it("moves settings and teams byte for byte, then restarts without resurrecting o
   expect(storage.getItem("buzz.agents2.v1")).toBeNull();
   expect(storage.getItem("buzz.agents2.teams.v1")).toBeNull();
   storage.setItem(STORAGE_KEY, "{}");
-  migrateAgentStorage(storage);
+  await migrateAgentStorage(storage);
   expect(storage.getItem(STORAGE_KEY)).toBe("{}");
 });
 
-it("preserves the source on write failure and resumes an interrupted copy", () => {
+it("preserves the source on write failure and resumes an interrupted copy", async () => {
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
   const storage = memoryStorage();
   storage.setItem("buzz.agents2.v1", "exact bytes");
-  migrateAgentStorage({
+  await migrateAgentStorage({
     ...storage,
-    setItem: () => {
+    keys: storage.keys,
+    get: storage.get,
+    add: storage.add,
+    set: async () => {
       throw new Error("full");
     },
   });
@@ -47,18 +50,18 @@ it("preserves the source on write failure and resumes an interrupted copy", () =
   expect(storage.getItem(STORAGE_KEY)).toBeNull();
   error.mockRestore();
   storage.setItem(STORAGE_KEY, "exact bytes");
-  migrateAgentStorage(storage);
+  await migrateAgentStorage(storage);
   expect(storage.getItem("buzz.agents2.v1")).toBeNull();
   expect(storage.getItem(STORAGE_KEY)).toBe("exact bytes");
 });
 
-it("refuses to overwrite conflicting settings without stopping startup", () => {
+it("refuses to overwrite conflicting settings without stopping startup", async () => {
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
   const storage = memoryStorage();
   storage.setItem("buzz.agents2.v1", "old");
   storage.setItem(STORAGE_KEY, "new");
   storage.setItem("buzz.agents2.teams.v1", "teams");
-  migrateAgentStorage(storage);
+  await migrateAgentStorage(storage);
   expect(error).toHaveBeenCalledWith(
     expect.stringContaining("already contains different data"),
   );

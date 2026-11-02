@@ -1,3 +1,4 @@
+import { repositoriesContext } from "../../features/communities/repositories";
 // goose agents: an agent type whose agents are goose on this computer, all in
 // one `goose-acp` process. Each conversation an agent is in is one ACP session
 // in it; goose answers with the in-process Buzz tools, served to it over
@@ -10,28 +11,44 @@ import { gooseRun } from "./run";
 import { GooseSetup } from "./setup";
 import { createTabs } from "./tabs";
 import { GooseHistory } from "./transcript";
+import { readUsage } from "./usage";
 
 export const TYPE_ID = "goose";
 
 export const inject = ["agents", "host"];
 export const apply: PluginModule["apply"] = (ctx) => {
-  // Only the desktop app can start `goose-acp`, and file uploads run `base64`,
-  // which stock Windows lacks; no unusable type elsewhere.
-  if (!isTauri() || !/Mac|Linux/i.test(navigator.platform)) return;
+  // Only the desktop app can start `goose-acp`; no unusable type elsewhere.
+  if (!isTauri()) return;
   const { agents, host } = ctx;
   const typeKey = `${ctx.pluginOwner?.id ?? "buzz.goose"}/${TYPE_ID}`;
   const runtime = new GooseRuntime(
     host,
     agents.relay,
-    (pubkey, signal) => agents.core(pubkey, signal),
+    (key, signal) => agents.core(key, signal),
+    localStorage,
     () => agents.tools(),
+    repositoriesContext,
   );
-  const spawn = host.spawn?.bind(host);
-  const setup = new GooseSetup(spawn);
-  const { Create, CreateModel, SettingsTab, ActivityTab } = createTabs({
+  const desktop =
+    host.spawn && host.resolveDirectory
+      ? {
+          spawn: host.spawn.bind(host),
+          resolveDirectory: host.resolveDirectory.bind(host),
+        }
+      : undefined;
+  const setup = new GooseSetup(desktop, () => runtime.defaultsChanged());
+  const history = new GooseHistory(desktop);
+  const {
+    Create,
+    CreateModel,
+    SettingsTab,
+    ActivityTab,
+    DefaultControl,
+    ProviderDialogBody,
+  } = createTabs({
     setup,
     runtime,
-    history: new GooseHistory(spawn),
+    history,
   });
   const sync = () => {
     const snapshot = agents.snapshot();
@@ -54,8 +71,27 @@ export const apply: PluginModule["apply"] = (ctx) => {
     description:
       "goose on this computer, with any provider goose supports. Each thread it is mentioned in is one continuing session.",
     defaults: () => ({ config: DEFAULT_CONFIG }),
+    importShared: (source) =>
+      source.runtime === "goose" || source.runtime === "goose-ai"
+        ? {
+            ...DEFAULT_CONFIG,
+            model: source.model,
+            provider: source.provider ?? "",
+          }
+        : undefined,
+    exportShared: (saved) => {
+      const { provider, model } = config(saved);
+      return { runtime: "goose", ...(provider && { provider }), model };
+    },
     Create,
     CreateModel,
+    provider: {
+      snapshot: setup.snapshot,
+      subscribe: setup.subscribe,
+      check: setup.check,
+      DialogBody: ProviderDialogBody,
+      DefaultControl,
+    },
     adopt: (carry, saved) => ({
       ...saved,
       instructions: carry.instructions ?? saved.instructions,
@@ -72,6 +108,43 @@ export const apply: PluginModule["apply"] = (ctx) => {
       const { model, provider } = config(agent.config);
       return [provider, model].filter(Boolean).join(" · ") || "Goose";
     },
+    sessions: {
+      list: (key) => {
+        const live = runtime.sessions(key);
+        const busy = new Map(live.map((view) => [view.key, view.busy]));
+        const used = new Map(
+          runtime.conversations(key).map(({ key, at }) => [key, at]),
+        );
+        // Open ones are listed even when saving them failed. A one-off turn
+        // joins no conversation.
+        for (const { key, at } of live) if (at !== undefined) used.set(key, at);
+        return [...used]
+          .sort(([, a], [, b]) => b - a)
+          .map(([key, at]) => {
+            const [channelId = key, root] = key.split("/");
+            const working = busy.get(key);
+            return {
+              channelId,
+              ...(root && { root }),
+              at,
+              ...(working !== undefined && {
+                status: working ? "Working" : "Idle",
+              }),
+            };
+          });
+      },
+      subscribe: (listener) => runtime.subscribe(listener),
+    },
+    ...(desktop && {
+      usage: (agent, { since, signal }) =>
+        readUsage(
+          history,
+          agent.key,
+          config(agent.config).workspace,
+          since,
+          signal,
+        ),
+    }),
     tabs: [
       {
         id: "settings",

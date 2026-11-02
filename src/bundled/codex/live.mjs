@@ -39,6 +39,14 @@ let servers = 0;
 const sent = [];
 let acceptedSteers = 0;
 const nativeSpawn = async (_id, options = {}) => {
+  // This harness runs Codex in the user's own home: no thread to copy there.
+  if (_id === "adopt")
+    return {
+      write: async () => {},
+      end: async () => {},
+      kill: async () => {},
+      exited: Promise.resolve(0),
+    };
   if (_id === "read") {
     const child = spawn("base64", ["-i", ...(options.args ?? [])], {
       cwd: options.cwd,
@@ -143,9 +151,21 @@ const events = [];
 const memories = [];
 const uploads = [];
 const storage = new Map();
+// Agent storage (features/agents/store.ts `AgentStore`): each write settles
+// once saved, as the app's file-backed store does.
 const store = {
-  getItem: (key) => storage.get(key) ?? null,
-  setItem: (key, value) => storage.set(key, value),
+  keys: () => [...storage.keys()],
+  get: (key) => storage.get(key) ?? null,
+  set: async (key, value) => {
+    if (value === null) storage.delete(key);
+    else storage.set(key, value);
+  },
+  add: async (key, value) => {
+    const held = storage.get(key);
+    if (held !== undefined) return held;
+    storage.set(key, value);
+    return value;
+  },
 };
 const scope = "local-acceptance";
 const relay = {
@@ -198,7 +218,7 @@ const runtime = new CodexRuntime(
   (key, signal) => coreMemory.core(key, signal),
   store,
 );
-runtime.sync([{ pubkey }], scope);
+runtime.sync([{ key: pubkey, pubkey }], scope);
 let id = 0;
 const delivery = (content) => {
   const result = {
@@ -218,6 +238,7 @@ const delivery = (content) => {
     },
     channelId: "test-channel",
     agent: {
+      key: pubkey,
       pubkey,
       owner,
       name: "Codex",
@@ -333,9 +354,10 @@ try {
     threadId: saved.threadId,
     includeTurns: true,
   });
-  assert.equal(
+  // The title, then the conversation's tag (prompt.ts `sessionTag`).
+  assert.match(
     result.thread.name,
-    "Buzz #codex-test · thread cccccccc · Codex",
+    /^Buzz #codex-test · thread cccccccc · Codex · buzz:[0-9a-f]{16}$/,
   );
   const rollout = (await readFile(result.thread.path, "utf8"))
     .split("\n")
@@ -502,7 +524,10 @@ try {
   const other = "9".repeat(64);
   const otherWorkspace = await mkdtemp(join(tmpdir(), "buzz-codex-other-"));
   const otherPublished = [];
-  runtime.sync([{ pubkey }, { pubkey: other }]);
+  runtime.sync([
+    { key: pubkey, pubkey },
+    { key: other, pubkey: other },
+  ]);
   const before = servers;
   const first = delivery(
     "Reply exactly FIRST_AGENT_OK. No coding tools. Send the reply with buzz.send.",
@@ -515,6 +540,7 @@ try {
     ...second,
     agent: {
       ...second.agent,
+      key: other,
       pubkey: other,
       name: "Other",
       publish: async (event) => {
@@ -544,6 +570,40 @@ try {
   assert(otherPublished[0].content.includes(otherWorkspace.split("/").at(-1)));
   console.log(
     "PASS two agents share one server with their own workspace, instructions and replies",
+  );
+  const stops = [];
+  const stopping = delivery(
+    "Run exactly: touch stop-started; while [ ! -f stop-release ]; do sleep 0.1; done; touch must-not-finish . This wait is an explicit fixture. Then reply DONE.",
+  );
+  stopping.interruptible = (stop) => stops.push(stop);
+  const beforeStop = published.length;
+  await runtime.run(stopping);
+  assert.equal(stops.length, 1);
+  await condition(() => exists("stop-started"), "stop shell started");
+  await stops[0]();
+  await condition(
+    () => runtime.sessions(pubkey)[0]?.status === "Stopped",
+    "stopped turn",
+  );
+  await writeFile(join(workspace, "stop-release"), "go");
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  // The shell it waited on is gone, and nothing was posted for it.
+  assert.equal(await exists("must-not-finish"), false);
+  assert.equal(published.length, beforeStop);
+  await runtime.run(
+    delivery(
+      "Reply exactly AFTER_STOP_OK. No coding tools. Send the reply with buzz.send.",
+    ),
+  );
+  await condition(
+    () =>
+      published.length === beforeStop + 1 &&
+      runtime.sessions(pubkey)[0]?.status === "Idle",
+    "reply after stop",
+  );
+  assert.match(published.at(-1).content, /AFTER_STOP_OK/);
+  console.log(
+    "PASS stop interrupts the running turn and its shell quietly, and the thread continues",
   );
 } finally {
   await inspect?.close();

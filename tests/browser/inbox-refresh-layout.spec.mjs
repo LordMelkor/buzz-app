@@ -13,7 +13,7 @@ test.use({
   historyCounts: { alpha: 2, beta: 1 },
 });
 
-for (const width of [1280, 390, 320]) {
+for (const width of [1280, 280]) {
   test(`Inbox refresh status preserves layout at ${width}px`, async ({
     page,
     app,
@@ -48,8 +48,16 @@ for (const width of [1280, 390, 320]) {
       await pending.promise;
       await route.continue();
     });
+    // The list's toolbar, not the page's tab strip above it.
+    const toolbar = inbox.locator("header").filter({
+      has: page.getByRole("button", { name: "Inbox filters", exact: true }),
+    });
+    await expect(toolbar).toHaveCount(1);
     const geometry = () =>
       inbox.evaluate((element) => {
+        const header = element
+          .querySelector('[aria-label="Inbox filters"]')
+          .closest("header");
         const box = (node) => {
           const { x, y, width, height } = node.getBoundingClientRect();
           return { x, y, width, height };
@@ -60,7 +68,7 @@ for (const width of [1280, 390, 320]) {
               '[aria-label="Inbox conversations"] > li',
             ),
           ].map((row) => ({ ...box(row), text: row.textContent })),
-          header: box(element.querySelector("header")),
+          header: box(header),
           filters: box(element.querySelector('[aria-label="Inbox filters"]')),
           unread: box(element.querySelector('[aria-label="Unread only"]')),
         };
@@ -77,9 +85,9 @@ for (const width of [1280, 390, 320]) {
         0,
       );
       await expect.poll(geometry).toEqual(before);
-      expect(
-        await status.evaluate((element) => element.closest("header") !== null),
-      ).toBe(true);
+      await expect(
+        toolbar.getByText("Checking recent activity…"),
+      ).toBeVisible();
       const textStyle = await status.evaluate((element) => ({
         whiteSpace: getComputedStyle(element).whiteSpace,
         overflow: getComputedStyle(element).overflow,
@@ -92,7 +100,8 @@ for (const width of [1280, 390, 320]) {
         overflow: "hidden",
         textOverflow: "ellipsis",
       });
-      if (width === 320)
+      // The pane width that truncated beside the former 48px community rail.
+      if (width === 280)
         expect(textStyle.scrollWidth).toBeGreaterThan(textStyle.width);
       const during = await geometry();
       measurements.push({ width, before, during, textStyle });
@@ -188,9 +197,10 @@ test("narrow enlarged-text rows overlay Archive without erasing their labels", a
   await rows.getByRole("button", { name: /^Open / }).focus();
   await rows.getByRole("button", { name: /^Restore / }).click();
   await expect(rows).toHaveCount(0);
-  await expect(inbox.getByRole("region", { name: "Inbox detail" })).toHaveCount(
-    0,
-  );
+  // Row actions never open a conversation tab.
+  await expect(
+    inbox.getByRole("region", { name: /^Conversation in / }),
+  ).toHaveCount(0);
   const filters = inbox.getByRole("button", {
     name: "Inbox filters",
     exact: true,

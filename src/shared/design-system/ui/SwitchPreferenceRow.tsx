@@ -3,6 +3,7 @@ import { PreferenceRow } from "./PreferenceRow";
 import { Switch } from "./Switch";
 
 export function SwitchPreferenceRow({
+  variant = "default",
   icon,
   label,
   description,
@@ -10,6 +11,7 @@ export function SwitchPreferenceRow({
   "aria-label": ariaLabel,
   ...props
 }: {
+  variant?: "default" | "search";
   icon?: ReactNode;
   label: string;
   description?: string;
@@ -19,6 +21,7 @@ export function SwitchPreferenceRow({
   const controlId = id ?? generatedId;
   return (
     <PreferenceRow
+      variant={variant}
       icon={icon}
       title={label}
       subtitle={description}

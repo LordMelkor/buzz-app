@@ -21,22 +21,13 @@ use zeroize::Zeroizing;
 #[serde(tag = "phase", rename_all = "camelCase")]
 pub enum Status {
     Connecting,
-    Qr {
-        svg: String,
-        uri: String,
-    },
-    Code {
-        code: String,
-        #[serde(rename = "codeEntry")]
-        code_entry: bool,
-    },
+    Qr { svg: String, uri: String },
+    Code { code: String },
     Transferring,
     Complete,
     Expired,
     Uncertain,
-    Error {
-        message: String,
-    },
+    Error { message: String },
     Cancelled,
 }
 #[derive(Clone, Copy)]
@@ -201,16 +192,7 @@ fn decide(pairing: &Pairing, id: &str, decision: Decision) -> Result<(), String>
         .map_err(|_| "Pairing is unavailable. Restart Buzz.")?;
     let active = active
         .as_mut()
-        .filter(|a| {
-            a.id == id
-                && matches!(
-                    a.status,
-                    Status::Code {
-                        code_entry: false,
-                        ..
-                    }
-                )
-        })
+        .filter(|a| a.id == id && matches!(a.status, Status::Code { .. }))
         .ok_or("This comparison is no longer available.")?;
     active
         .confirm
@@ -332,7 +314,6 @@ async fn run(
             Exchange {
                 session,
                 payload: Some(payload),
-                code_entry: false,
             },
             socket,
             relay_url,
@@ -443,7 +424,7 @@ async fn exchange_loop(
                     Some(decision) = confirm.recv() => match decision {
                         Decision::Confirm => exchange.confirm().map_err(Failure::Rejected)?,
                         Decision::Deny => {
-                            if exchange.code_entry || exchange.session.state() != SessionState::Confirming {
+                            if exchange.session.state() != SessionState::Confirming {
                                 return Err(Failure::Rejected("This comparison is no longer available.".into()));
                             }
                             abort(exchange, socket).await;
@@ -489,7 +470,6 @@ async fn exchange_loop(
 struct Exchange {
     session: PairingSession,
     payload: Option<Zeroizing<String>>,
-    code_entry: bool,
 }
 #[derive(Default)]
 struct Output {
@@ -512,9 +492,6 @@ impl Exchange {
         })
     }
     fn confirm(&mut self) -> Result<Output, String> {
-        if self.code_entry {
-            return Err("Enter the code on your phone to continue.".into());
-        }
         let proof = self
             .session
             .confirm_sas()
@@ -525,36 +502,11 @@ impl Exchange {
         if self.session.handle_abort(event).is_ok() {
             return Err("Pairing was cancelled on your phone. Try again when you’re ready.".into());
         }
-        if let Ok((code, code_entry)) = self.session.handle_offer_with_confirmation(event) {
-            self.code_entry = code_entry;
-            let (code, events) = if code_entry {
-                let (code, challenge) = self
-                    .session
-                    .start_desktop_code()
-                    .map_err(|_| "Couldn’t create the desktop verification code.")?;
-                (code, vec![challenge])
-            } else {
-                (code, vec![])
-            };
+        if let Ok(code) = self.session.handle_offer(event) {
             return Ok(Output {
-                events,
-                status: Some(Status::Code { code, code_entry }),
+                events: vec![],
+                status: Some(Status::Code { code }),
             });
-        }
-        if self.code_entry && self.session.state() == SessionState::Confirming {
-            if let Ok((reply, accepted)) = self.session.handle_target_code(event) {
-                if accepted {
-                    return self.transfer(reply);
-                }
-                let status =
-                    (self.session.state() == SessionState::Aborted).then(|| Status::Error {
-                        message: "Too many incorrect codes. Try pairing again.".into(),
-                    });
-                return Ok(Output {
-                    events: vec![reply],
-                    status,
-                });
-            }
         }
 
         match self.session.handle_complete(event) {

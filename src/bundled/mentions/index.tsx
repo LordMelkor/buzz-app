@@ -24,6 +24,8 @@ export const apply: PluginModule["apply"] = (ctx) => {
       insertMention,
       insertMentions,
       inviteAgents,
+      audience,
+      focus,
     }) => (
       <MentionPicker
         session={session}
@@ -31,8 +33,10 @@ export const apply: PluginModule["apply"] = (ctx) => {
         channelId={channelId}
         disabled={disabled}
         inviteAgents={inviteAgents}
+        audience={audience}
         select={insertMention}
         selectTeam={insertMentions}
+        focusDraft={focus}
       />
     ),
   });

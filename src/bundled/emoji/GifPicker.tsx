@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { SearchField } from "../../shared/design-system/ui/SearchField";
 import { Button } from "../../shared/design-system/ui/Button";
 import { fetchKlipyGifs, type KlipyGif } from "../../features/relay/gifs";
@@ -18,11 +18,19 @@ const LOADING_TILES = [
 
 export function GifPicker({
   community,
+  enabled = true,
+  unavailable,
+  retryDiscovery,
   initialQuery,
   onQueryChange,
   select,
+  search = fetchKlipyGifs,
 }: {
   community: string;
+  enabled?: boolean;
+  unavailable?: string | undefined;
+  retryDiscovery?: (() => void) | undefined;
+  search?: typeof fetchKlipyGifs;
   initialQuery: string;
   onQueryChange(query: string): void;
   select(gif: KlipyGif): void;
@@ -32,6 +40,7 @@ export function GifPicker({
   const [gifs, setGifs] = useState<KlipyGif[]>();
   const [error, setError] = useState<string>();
   const [attempt, retry] = useState(0);
+  const unavailableId = useId();
   const input = useRef<HTMLInputElement>(null);
   useLayoutEffect(() => {
     input.current?.focus();
@@ -45,10 +54,11 @@ export function GifPicker({
   }, [query]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: attempt explicitly retries the same request.
   useEffect(() => {
+    if (!enabled) return;
     const controller = new AbortController();
     setError(undefined);
     setGifs(undefined);
-    void fetchKlipyGifs(community, debouncedQuery, controller.signal).then(
+    void search(community, debouncedQuery, controller.signal).then(
       setGifs,
       (reason: unknown) => {
         if (!controller.signal.aborted)
@@ -56,7 +66,7 @@ export function GifPicker({
       },
     );
     return () => controller.abort();
-  }, [community, debouncedQuery, attempt]);
+  }, [community, debouncedQuery, attempt, search, enabled]);
 
   return (
     <div className={styles.gifPicker}>
@@ -64,6 +74,7 @@ export function GifPicker({
         <SearchField
           variant="capsule"
           inputRef={input}
+          aria-describedby={unavailable ? unavailableId : undefined}
           label="Search GIFs"
           placeholder="Search GIFs"
           spellCheck={false}
@@ -80,7 +91,25 @@ export function GifPicker({
         />
       </div>
       <div className={`${styles.gifResults} buzz-thin-scrollbar`}>
-        {!gifs && !error ? (
+        {unavailable ? (
+          <div
+            className={styles.gifEmpty}
+            role={retryDiscovery ? "alert" : "status"}
+          >
+            <p id={unavailableId}>{unavailable}</p>
+            {retryDiscovery && (
+              <Button
+                type="button"
+                onClick={() => {
+                  input.current?.focus();
+                  retryDiscovery();
+                }}
+              >
+                Retry GIF availability
+              </Button>
+            )}
+          </div>
+        ) : !gifs && !error ? (
           <div
             className={styles.gifLoading}
             role="status"
@@ -93,7 +122,13 @@ export function GifPicker({
         ) : error ? (
           <div className={styles.gifEmpty} role="alert">
             <p>{error}</p>
-            <Button type="button" onClick={() => retry(attempt + 1)}>
+            <Button
+              type="button"
+              onClick={() => {
+                input.current?.focus();
+                retry(attempt + 1);
+              }}
+            >
               Try again
             </Button>
           </div>

@@ -35,9 +35,8 @@ export type Groups = {
   type: "groups";
   id: "me";
   groups: Group[];
+  /** Project filing only; the channel's Solo label decides what is Solo. */
   assignments: Record<string, string>;
-  /** Me placement is independent of group membership. */
-  channels?: string[];
 };
 export type KitValue = Team | Template | Groups;
 export type PayloadRecord = {
@@ -129,8 +128,8 @@ export function kitRecordFits(record: KitRecord) {
     new TextEncoder().encode(JSON.stringify(record)).length <= KIT_RECORD_BYTES
   );
 }
-export const meCapacityMessage =
-  "Solo storage is full. Move a conversation from Solo to Multiplayer, then try again.";
+export const soloCapacityMessage =
+  "Solo workspace storage is full. Remove a chat from a workspace, then try again.";
 
 export function parseKitRecord(raw: unknown, community: string): KitRecord {
   const r = object(raw),
@@ -186,12 +185,9 @@ export function parseKitRecord(raw: unknown, community: string): KitRecord {
       type: "groups",
       id: v.id,
       groups,
+      // Records from before the Solo label also list `channels`. Dropping
+      // it here frees that space on the next write.
       assignments: Object.fromEntries(assignments) as Record<string, string>,
-      channels: keys(
-        v.channels ?? [],
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-        1000,
-      ),
     };
   } else throw new Error("Unsupported channel recipe type");
   if (
@@ -210,7 +206,7 @@ export function parseKitRecord(raw: unknown, community: string): KitRecord {
   if (!kitRecordFits(result))
     throw new Error(
       value.type === "groups"
-        ? meCapacityMessage
+        ? soloCapacityMessage
         : "This saved recipe exceeds 16 KiB; shorten its Canvas or selections",
     );
   return result;

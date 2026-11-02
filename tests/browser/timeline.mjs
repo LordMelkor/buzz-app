@@ -83,28 +83,45 @@ export async function keyScroll(page, key, scroller = history(page)) {
   await gesture(page, scroller, "keydown", () => page.keyboard.press(key));
 }
 
-export async function anchor(page) {
-  return history(page).evaluate((element) => {
-    const bounds = element.getBoundingClientRect();
-    const rows = Array.from(element.querySelectorAll("[data-message-id]"));
-    // Prefer a whole paragraph, but tall messages can leave only clipped rows.
-    // Track the first intersecting row in that case, as the reader does. The
-    // same-ID/Y assertion below still detects displacement after a resize.
-    const row =
-      rows.find((row) => {
-        const rect = row.querySelector("p").getBoundingClientRect();
-        return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
-      }) ??
-      rows.find((row) => {
-        const rect = row.getBoundingClientRect();
-        return rect.bottom > bounds.top && rect.top < bounds.bottom;
-      });
-    if (!row) throw new Error("No visible message anchor");
-    return {
-      id: row.dataset.messageId,
-      y: row.querySelector("p").getBoundingClientRect().top - bounds.top,
-    };
-  });
+// With `scrollBy`, scroll by that many px and read at the resulting scroll
+// event, before rows measure: the timeline's held reader re-reads its row then.
+export async function anchor(page, held, scrollBy = 0) {
+  return history(page).evaluate(
+    (element, [held, scrollBy]) => {
+      const read = () => {
+        const bounds = element.getBoundingClientRect();
+        const rows = Array.from(element.querySelectorAll("[data-message-id]"));
+        const inView = (row) => {
+          const rect = row.getBoundingClientRect();
+          return rect.bottom > bounds.top && rect.top < bounds.bottom;
+        };
+        // A held reader keeps its row while any part of it is in view, as the
+        // timeline does across a drag. Otherwise prefer a whole paragraph, but
+        // tall messages can leave only clipped rows. Track the first
+        // intersecting row in that case, as the reader does. The same-ID/Y
+        // assertion below still detects displacement after a resize.
+        const row =
+          rows.find((row) => row.dataset.messageId === held && inView(row)) ??
+          rows.find((row) => {
+            const rect = row.querySelector("p").getBoundingClientRect();
+            return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+          }) ??
+          rows.find(inView);
+        if (!row) throw new Error("No visible message anchor");
+        return {
+          id: row.dataset.messageId,
+          y: row.querySelector("p").getBoundingClientRect().top - bounds.top,
+        };
+      };
+      if (!scrollBy) return read();
+      const scrolled = new Promise((resolve) =>
+        element.addEventListener("scroll", resolve, { once: true }),
+      );
+      element.scrollTop += scrollBy;
+      return scrolled.then(read);
+    },
+    [held, scrollBy],
+  );
 }
 export async function expectAnchor(page, expected) {
   await expect
@@ -200,12 +217,30 @@ export async function virtuaIdle(page, scroller = history(page)) {
   await expect(scroller.locator("ol")).toHaveCSS("pointer-events", "auto");
   await settle(page, scroller);
 }
-// Activate a timeline control by keyboard when the test is about the action,
-// not pointer hit testing. Opening a thread narrows the timeline, and its
-// re-pin can scroll after any idle check. A click released inside Virtua's
-// pointer hold reaches the scroller instead of the control.
-export async function activate(control) {
-  await control.focus();
-  await expect(control).toBeFocused();
-  await control.press("Enter");
+// Wait `count` rendering updates. An imperative scroll moves the DOM before
+// its scroll event, which reaches Virtua in the next rendering update (the one
+// after, if issued from a frame callback); until then its pointer events and
+// range are still at rest.
+export async function frames(page, count = 2) {
+  await page.evaluate(
+    (count) =>
+      new Promise((resolve) => {
+        const next = (left) =>
+          left ? requestAnimationFrame(() => next(left - 1)) : resolve();
+        next(count);
+      }),
+    count,
+  );
 }
+// Hover a row's element with one raw pointer move. Locator.hover retries by
+// scrolling the timeline, and each scroll restarts Virtua's pointer-event
+// hold; a hover rest (Base UI's PreviewCard) starts only on a move over the
+// element, so arrive once the list hit-tests again. A late re-measure can
+// still scroll between the measurement and the move.
+export async function hoverRow(page, locator, scroller = history(page)) {
+  await expect(scroller.locator("ol")).toHaveCSS("pointer-events", "auto");
+  await expect(locator).toBeInViewport();
+  const box = await locator.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+}
+export { activate } from "./navigation.mjs";

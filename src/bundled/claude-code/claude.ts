@@ -1,9 +1,11 @@
+import { CLAUDE_HOOK_EVENTS, type ClaudeHook } from "./hooks";
 // One `claude` process driven over its stream-json protocol: the protocol the
 // Claude Agent SDK speaks to the same binary, so no Node runtime is needed. The
 // process stays alive between turns; messages sent while it works are folded
 // into the running turn at its next tool call. Buzz tools are served over the
 // same pipe, as the SDK serves an in-process MCP server, so the process holds
 // no Buzz key.
+import { MESSAGE_TOOLS } from "../../buzz-mcp/session-tools";
 import type {
   HostProcess,
   HostProcessOptions,
@@ -24,6 +26,8 @@ export type Spawn = (
 
 export type ClaudeLaunch = Readonly<{
   cwd: string;
+  /** Folders besides `cwd` that the session may work in and stay in. */
+  directories?: readonly string[];
   /** Read-only catalog probe, without workspace customizations or tools. */
   discovery?: boolean;
   /** Appended to Claude's own system prompt. */
@@ -37,17 +41,20 @@ export type ClaudeLaunch = Readonly<{
   sessionId?: string;
   /** The in-process MCP server's tools. */
   tools?: ToolServer;
+  hook?: ClaudeHook;
 }>;
 
 /** Answers the in-process server's JSON-RPC for the conversation a process
- * serves. A call of `send` with `final: true` ends the turn when it succeeds. */
+ * serves. A `send` or `reply_in_subthread` with `final: true` ends the turn when it succeeds. */
 export type ToolServer = (
   conversation: string | undefined,
   message: unknown,
 ) => Promise<unknown>;
 /** Its tools are `mcp__buzz__<name>`. */
 export const TOOL_SERVER = "buzz";
-const FINAL_TOOL = `mcp__${TOOL_SERVER}__send`;
+/** The tools that take `final`, as a hook matcher pattern. */
+const FINAL_TOOL = `mcp__${TOOL_SERVER}__(${MESSAGE_TOOLS.join("|")})`;
+const FINAL_NAME = new RegExp(`^${FINAL_TOOL}$`);
 
 type Message = Record<string, unknown> & { type?: string; subtype?: string };
 
@@ -70,6 +77,10 @@ export type Settled = Readonly<{
   ok: boolean;
   /** Why it failed, for the person waiting. */
   error?: string;
+  /** The message failed before any turn took it in. */
+  undelivered?: true;
+  /** The owner's interrupt ended the turn. */
+  stopped?: true;
 }>;
 
 const STDERR_LIMIT = 4_000;
@@ -109,9 +120,23 @@ export class ClaudeProcess {
   private buffer = "";
   private stderr = "";
   private lastError: string | undefined;
+  /** A `/compact` was sent: its failure fails the turn, unlike an automatic
+   * compaction's mid-turn. */
+  private compacting = false;
   private alive = true;
+  /** The owner stopped the running turn, so how it ends is not a failure. */
+  private stopping = false;
+  /** Claude ended a turn aborted while the owner was stopping it. */
+  private stopped = false;
   /** It reports idle; an older `claude` that does not is settled per result. */
   private reportsState = false;
+  /** It runs a turn of its own, such as one a finished background task starts. */
+  private working = false;
+  /** Its live background tasks that are activity, as Claude last listed them. */
+  private tasks = 0;
+  /** Called when it was active and is no longer. */
+  onActivity: (() => void) | undefined;
+  onQuiet?: () => void;
   private requests = 0;
   /** Control requests awaiting Claude's answer, by request id. */
   private calls = new Map<string, (response: Message) => void>();
@@ -132,6 +157,7 @@ export class ClaudeProcess {
     private tools: ToolServer | undefined,
     /** The session's own model, as launched; undefined is Claude's default. */
     private readonly ownModel: string | undefined,
+    private hook?: ClaudeHook,
   ) {
     this.sessionId = resume;
     this.exited = process.exited.then((code) => {
@@ -169,6 +195,9 @@ export class ClaudeProcess {
         "stream-json",
         "--verbose",
         "--replay-user-messages",
+        // Recent models return empty thinking unless asked for summaries.
+        "--thinking-display",
+        "summarized",
         ...(launch.discovery
           ? [
               "--safe-mode",
@@ -178,6 +207,10 @@ export class ClaudeProcess {
               "--no-session-persistence",
             ]
           : ["--permission-mode", "bypassPermissions"]),
+        ...(launch.directories ?? []).flatMap((folder) => [
+          "--add-dir",
+          folder,
+        ]),
         ...(launch.model ? ["--model", launch.model] : []),
         ...(launch.effort ? ["--effort", launch.effort] : []),
         ...(launch.resume ? ["--resume", launch.resume] : []),
@@ -189,12 +222,9 @@ export class ClaudeProcess {
               "--mcp-config",
               JSON.stringify({
                 mcpServers: {
-                  // Listed up front, so Claude need not search for them first.
-                  [TOOL_SERVER]: {
-                    type: "sdk",
-                    name: TOOL_SERVER,
-                    alwaysLoad: true,
-                  },
+                  // Its tools load on search, but for those it marks with
+                  // `_meta["anthropic/alwaysLoad"]`.
+                  [TOOL_SERVER]: { type: "sdk", name: TOOL_SERVER },
                 },
               }),
             ]
@@ -211,6 +241,7 @@ export class ClaudeProcess {
       launch.resume ?? launch.sessionId,
       launch.tools,
       launch.model,
+      launch.hook,
     );
     for (const data of earlyErrors) claude.readError(data);
     for (const data of early) claude.read(data);
@@ -219,8 +250,11 @@ export class ClaudeProcess {
 
   /** Gives a started process its prompt, and its tools to whoever it now
    * works for. Loads settings and tools now rather than on the first message. */
-  async initialize(launch: Pick<ClaudeLaunch, "systemPrompt" | "tools">) {
+  async initialize(
+    launch: Pick<ClaudeLaunch, "systemPrompt" | "tools" | "hook">,
+  ) {
     if (launch.tools) this.tools = launch.tools;
+    this.hook = launch.hook;
     const { written, answer } = this.request({
       subtype: "initialize",
       appendSystemPrompt: launch.systemPrompt,
@@ -228,7 +262,14 @@ export class ClaudeProcess {
         ? {
             sdkMcpServers: [TOOL_SERVER],
             hooks: {
+              ...Object.fromEntries(
+                CLAUDE_HOOK_EVENTS.map((event) => [
+                  event,
+                  [{ hookCallbackIds: [`buzz:${event}`] }],
+                ]),
+              ),
               PostToolUse: [
+                { hookCallbackIds: ["buzz:PostToolUse"] },
                 { matcher: FINAL_TOOL, hookCallbackIds: ["final"] },
               ],
             },
@@ -251,6 +292,10 @@ export class ClaudeProcess {
   }
   get busy() {
     return this.pending > 0;
+  }
+  /** Busy, in a turn of its own, or running background work that may call back. */
+  get active() {
+    return this.busy || this.working || this.tasks > 0;
   }
   get started() {
     return this.began;
@@ -298,6 +343,7 @@ export class ClaudeProcess {
     const uuid = crypto.randomUUID();
     this.receipts.set(uuid, activity);
     this.pending++;
+    if (text === "/compact") this.compacting = true;
     const settled = new Promise<Settled>((resolve) =>
       this.waiters.push(resolve),
     );
@@ -314,6 +360,18 @@ export class ClaudeProcess {
       }),
     );
     return settled;
+  }
+
+  /** Stops the running turn, as the SDK's `interrupt` does; messages folded
+   * into it end with it. The turn then settles as Claude ends it. */
+  async interrupt() {
+    if (!this.alive || !this.active) return;
+    this.stopping = true;
+    const answer = await this.call({ subtype: "interrupt" });
+    if (answer.subtype === "error" && this.alive) {
+      this.stopping = false;
+      throw new Error(`Claude did not stop: ${String(answer.error)}`);
+    }
   }
 
   kill() {
@@ -397,6 +455,9 @@ export class ClaudeProcess {
     this.receipts.clear();
     this.activeReceipts.clear();
     this.lastError = undefined;
+    this.stopping = false;
+    this.stopped = false;
+    this.compacting = false;
     for (const resolve of this.waiters.splice(0)) resolve(settled);
   }
 
@@ -450,7 +511,40 @@ export class ClaudeProcess {
       message.subtype === "session_state_changed"
     ) {
       this.reportsState = true;
-      if (message.state === "idle" && this.pending) this.done();
+      const active = this.active;
+      this.working = message.state !== "idle";
+      if (!this.working && this.pending) this.done();
+      if (!this.active) this.stopping = false;
+      if (active !== this.active) this.onActivity?.();
+      if (active && !this.active) this.onQuiet?.();
+      return;
+    }
+    // The whole set each time; ambient tasks, such as watchers, are not activity.
+    if (
+      message.type === "system" &&
+      message.subtype === "background_tasks_changed" &&
+      Array.isArray(message.tasks)
+    ) {
+      const active = this.active;
+      this.tasks = message.tasks.filter(
+        (task) => !(task as Message | null)?.ambient,
+      ).length;
+      if (!this.active) this.stopping = false;
+      if (active !== this.active) this.onActivity?.();
+      if (active && !this.active) this.onQuiet?.();
+      return;
+    }
+    // `/compact` ends in a successful result even when compacting failed.
+    if (
+      this.compacting &&
+      message.type === "system" &&
+      message.subtype === "status" &&
+      message.compact_result === "failed"
+    ) {
+      this.lastError =
+        typeof message.compact_error === "string" && message.compact_error
+          ? message.compact_error
+          : "Claude could not compact the session";
       return;
     }
     if (
@@ -479,8 +573,21 @@ export class ClaudeProcess {
       return;
     }
     if (message.type !== "result") return;
-    // An interrupt is not a failure to report.
-    if (message.is_error && message.terminal_reason !== "aborted_streaming")
+    // A turn that finished before the interrupt took effect is not stopped,
+    // and a stopped turn of its own has no message to settle.
+    if (
+      this.pending &&
+      this.stopping &&
+      (message.is_error || message.terminal_reason === "aborted_streaming")
+    )
+      this.stopped = true;
+    // An interrupt is not a failure to report: Claude ends a turn stopped
+    // mid-tool as `error_during_execution`.
+    if (
+      message.is_error &&
+      !this.stopping &&
+      message.terminal_reason !== "aborted_streaming"
+    )
       this.lastError =
         typeof message.result === "string" && message.result
           ? message.result
@@ -489,7 +596,13 @@ export class ClaudeProcess {
   }
   private done() {
     const error = this.lastError;
-    this.settle(error ? { ok: false, error } : { ok: true });
+    this.settle(
+      error
+        ? { ok: false, error }
+        : this.stopped
+          ? { ok: true, stopped: true }
+          : { ok: true },
+    );
   }
   /** Answers what Claude asks its host: calls to the Buzz tools, the
    * hook after `send`, and, since permissions are bypassed, anything else only
@@ -519,9 +632,28 @@ export class ClaudeProcess {
         behavior: "allow",
         updatedInput: request.input ?? {},
       });
-    else if (request.subtype === "hook_callback")
-      response = success(this.final(request.input) ? { continue: false } : {});
-    else
+    else if (request.subtype === "hook_callback") {
+      const event =
+        typeof request.callback_id === "string" &&
+        request.callback_id.startsWith("buzz:")
+          ? request.callback_id.slice(5)
+          : undefined;
+      try {
+        response = success(
+          event && CLAUDE_HOOK_EVENTS.includes(event as never)
+            ? ((await this.hook?.(
+                this.sessionId ?? "",
+                event,
+                request.input,
+              )) ?? {})
+            : request.callback_id === "final" && this.final(request.input)
+              ? { continue: false }
+              : {},
+        );
+      } catch (error) {
+        response = { subtype: "error", request_id: id, error: String(error) };
+      }
+    } else
       response = {
         subtype: "error",
         request_id: id,
@@ -531,13 +663,13 @@ export class ClaudeProcess {
       () => undefined,
     );
   }
-  /** A `send` marked final succeeded (a failed call runs no PostToolUse
+  /** A message marked final succeeded (a failed call runs no PostToolUse
    * hook), so the turn can end without a closing model call. Not when another
    * message came in meanwhile: that one still needs an answer. */
   private final(input: unknown) {
     const { tool_name, tool_input } = (input ?? {}) as Message;
     return (
-      tool_name === FINAL_TOOL &&
+      FINAL_NAME.test(String(tool_name)) &&
       (tool_input as Message | undefined)?.final === true &&
       this.pending === 1
     );

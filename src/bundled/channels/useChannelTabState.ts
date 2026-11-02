@@ -1,3 +1,5 @@
+import type { Navigation } from "../../features/navigation/controller";
+import { retainTabVisits } from "../../features/messages/tab-visit-lifetime";
 import { threadPlacementPreference } from "../../features/messages/thread-preferences";
 import {
   useCallback,
@@ -9,13 +11,28 @@ import type { RelaySession } from "../../features/relay/session";
 import type { PanelOpening } from "../../features/panels/service";
 
 export type ConversationTab =
-  | { id: string; kind: "conversation"; channelId: string }
+  | {
+      id: string;
+      kind: "conversation";
+      channelId: string;
+      /** The message the tab opens at, revealed once per `revealRequest`. */
+      messageId?: string | undefined;
+      revealRequest?: number | undefined;
+      /** False: seeing messages here marks none read; the opener decides. */
+      markRead?: false | undefined;
+      /** Each new value focuses the composer. */
+      focusRequest?: number | undefined;
+    }
   | {
       id: string;
       kind: "thread";
       channelId: string;
       messageId: string;
       replyRequest?: number | undefined;
+      /** Each new value focuses the reply box, keeping its target. */
+      focusRequest?: number | undefined;
+      /** Each new value reveals `messageId` again; set only by openings at it. */
+      revealRequest?: number | undefined;
       /** Transient visual cue when an opening reuses this tab. */
       attentionRequest?: number | undefined;
       /** Threads live in the side pane unless moved or opened into main. */
@@ -35,14 +52,24 @@ type VisitSelection = {
 };
 type State = {
   entries: PanelOpening[];
+  /** Panel tabs moved to the main pane, by tab id; the rest are in the side. */
+  mainEntries?: string[] | undefined;
   tabs: ConversationTab[];
   selected: string;
   /** Selected main-pane tab; undefined is the channel conversation. */
   mainSelected?: string | undefined;
+  /** Addressed thread visits, separate from the bounded layout snapshots. */
+  routedVisits?:
+    | Record<string, { channelId: string; messageId: string; rootId: string }>
+    | undefined;
   /** The last history visit applied, so remounting never reapplies it. */
   visit?: string | undefined;
   /** Selection each recent visit had when it was left. */
   visits?: Record<string, VisitSelection> | undefined;
+  /** Content visits remain identifiable after old layout snapshots are evicted. */
+  detailVisits?:
+    | Record<string, { channelId: string; target: string }>
+    | undefined;
   /** The current visit's selection was already captured as it was left. */
   left?: boolean;
   paneOpen: boolean;
@@ -62,7 +89,7 @@ const snapshotOf = (state: State): VisitSelection => ({
     state.paneOpen &&
     !!(
       state.tabs.some((tab) => tabPane(tab) === "side") ||
-      state.entries.length ||
+      sideEntries(state).length ||
       state.settings ||
       state.thread
     ),
@@ -86,26 +113,32 @@ const empty: State = {
 };
 export const panelTabId = (entry: PanelOpening) =>
   `${entry.panel.key}:${entry.target}`;
+/** Which pane a panel tab is in, given its state's main-pane ids. */
+export const entryPane = (
+  mainEntries: readonly string[] | undefined,
+  entry: PanelOpening,
+): TabPane => (mainEntries?.includes(panelTabId(entry)) ? "main" : "side");
+const sideEntries = (state: State) =>
+  state.entries.filter(
+    (entry) => entryPane(state.mainEntries, entry) === "side",
+  );
 export const selectedTabId = (selected: string, ids: readonly string[]) =>
   ids.includes(selected) ? selected : (ids[0] ?? "");
 const sideSelection = (state: State) =>
   selectedTabId(state.selected, [
     ...(state.settings ? ["settings"] : []),
     ...state.tabs.filter((tab) => tabPane(tab) === "side").map((tab) => tab.id),
-    ...state.entries.map(panelTabId),
+    ...sideEntries(state).map(panelTabId),
   ]);
 
-/** Opening a thread selects its existing tab or adds one in `pane`. */
-function withThread(
-  state: State,
+/** A channel's open tab for a thread: by its verified root, or until then by
+ * the id it was opened with. */
+export const threadTab = (
+  tabs: readonly ConversationTab[],
   channelId: string,
-  messageId: string,
   rootId: string,
-  intent: "reply" | "select" | undefined,
-  pane: TabPane,
-  attention = false,
-): State {
-  const existing = state.tabs.find(
+) =>
+  tabs.find(
     (tab) =>
       tab.kind === "thread" &&
       tab.channelId === channelId &&
@@ -113,6 +146,22 @@ function withThread(
         ? tab.rootId === rootId
         : tab.id === `thread:${channelId}:${rootId}`),
   );
+
+/** Reply asks for the composer; select keeps the tab's requests; reveal asks
+ * the reader to show `messageId` again. */
+export type ThreadIntent = "reply" | "select" | "reveal" | "focus";
+
+/** Opening a thread selects its existing tab or adds one in `pane`. */
+function withThread(
+  state: State,
+  channelId: string,
+  messageId: string,
+  rootId: string,
+  intent: ThreadIntent | undefined,
+  pane: TabPane,
+  attention = false,
+): State {
+  const existing = threadTab(state.tabs, channelId, rootId);
   const baseId = `thread:${channelId}:${rootId}`;
   const id =
     existing?.id ??
@@ -132,9 +181,19 @@ function withThread(
     replyRequest:
       intent === "reply"
         ? (prior?.replyRequest ?? 0) + 1
-        : intent === "select"
+        : intent === "select" || intent === "reveal" || intent === "focus"
           ? prior?.replyRequest
           : undefined,
+    // Ordinary user openings resume typing too. Passive restoration and tabs
+    // opened by an agent do not claim focus.
+    focusRequest:
+      intent === "focus" || (attention && intent === undefined)
+        ? (prior?.focusRequest ?? 0) + 1
+        : prior?.focusRequest,
+    revealRequest:
+      intent === "reveal"
+        ? (prior?.revealRequest ?? 0) + 1
+        : prior?.revealRequest,
     // An already-open thread stays wherever it was placed.
     pane: prior ? tabPane(prior) : pane,
     rootId: prior?.rootId,
@@ -151,8 +210,25 @@ function withThread(
 // Pages mount and unmount during navigation; their tab descriptors belong to
 // the community session. Weak ownership retires them with that session.
 const sessions = new WeakMap<RelaySession, ReturnType<typeof createTabStore>>();
-function createTabStore() {
-  let channels: Record<string, State> = {};
+// History outlives a relay session. Retain only dismissal identities per
+// account/community, never layout, panel objects, editors or callbacks.
+type Retirement = Pick<State, "routedVisits" | "detailVisits">;
+const visitOwners = new Map<string, { channels: Record<string, Retirement> }>();
+const forgetVisits = (scope: string) => {
+  visitOwners.delete(scope);
+};
+function createTabStore(scope?: string) {
+  const owner = { channels: (scope && visitOwners.get(scope)?.channels) || {} };
+  let channels: Record<string, State> = Object.fromEntries(
+    Object.entries(owner.channels).map(([key, visits]) => [
+      key,
+      { ...empty, ...visits },
+    ]),
+  );
+  if (scope) {
+    visitOwners.set(scope, owner);
+    retainTabVisits(scope, forgetVisits);
+  }
   const listeners = new Set<() => void>();
   const mounts = new Map<string, number>();
   return {
@@ -164,6 +240,36 @@ function createTabStore() {
         if (remaining) mounts.set(key, remaining);
         else mounts.delete(key);
       };
+    },
+    prune(ids: ReadonlySet<string>) {
+      for (const [key, state] of Object.entries(channels)) {
+        const filter = <T>(
+          records: Record<string, T> | undefined,
+          layout = false,
+        ) => {
+          if (!records) return records;
+          const kept = Object.entries(records).filter(([id]) =>
+            ids.has(layout ? id.slice(0, id.lastIndexOf(":")) : id),
+          );
+          return kept.length === Object.keys(records).length
+            ? records
+            : Object.fromEntries(kept);
+        };
+        const routedVisits = filter(state.routedVisits);
+        const detailVisits = filter(state.detailVisits);
+        const visits = filter(state.visits, true);
+        if (
+          routedVisits !== state.routedVisits ||
+          detailVisits !== state.detailVisits ||
+          visits !== state.visits
+        )
+          this.update(key, (current) => ({
+            ...current,
+            routedVisits,
+            detailVisits,
+            visits,
+          }));
+      }
     },
     snapshot: () => channels,
     subscribe(listener: () => void) {
@@ -178,6 +284,16 @@ function createTabStore() {
       const next = change(previous);
       if (next === previous) return;
       channels = { ...channels, [key]: next };
+      // A stale session may still update its own store, but cannot overwrite
+      // the successor's retirement metadata. Records are copy-on-write.
+      if (scope && visitOwners.get(scope) === owner)
+        owner.channels = {
+          ...owner.channels,
+          [key]: {
+            routedVisits: next.routedVisits,
+            detailVisits: next.detailVisits,
+          },
+        };
       for (const listener of listeners) listener();
     },
   };
@@ -187,7 +303,7 @@ const keyOf = (page: string, channelId: string) =>
 function storeOf(session: RelaySession) {
   let store = sessions.get(session);
   if (!store) {
-    store = createTabStore();
+    store = createTabStore(session.viewer ? session.scope : undefined);
     sessions.set(session, store);
   }
   return store;
@@ -198,14 +314,14 @@ const named = (tab: ConversationTab, name: string): ConversationTab =>
   tab.kind === "thread" ? { ...tab, name: name.trim() || undefined } : tab;
 // Until its reader verifies the root, a tab's id holds the root it was opened
 // with, before any disambiguating suffix.
-const rootOfTab = (tab: Extract<ConversationTab, { kind: "thread" }>) =>
+export const rootOfTab = (tab: Extract<ConversationTab, { kind: "thread" }>) =>
   tab.rootId ??
   (tab.id.slice(`thread:${tab.channelId}:`.length).split(":")[0] as string);
 /** A channel's own thread tabs in its workspace, changed from outside the
  * page. Tabs the viewer opened for other channels' threads are left alone.
  * Opening never moves the viewer's selection or focus, and closing refuses
  * the tab the viewer sees, so no selection needs repair. */
-export function channelTabs(session: RelaySession) {
+export function channelTabs(session: RelaySession, navigation?: Navigation) {
   const store = storeOf(session);
   const stateOf = (channelId: string) =>
     store.snapshot()[keyOf("messages", channelId)] ?? empty;
@@ -240,12 +356,19 @@ export function channelTabs(session: RelaySession) {
       const channel = session.channels
         .list()
         .channels.find((item) => item.id === channelId);
-      if (!channel || channel.readOnly || channel.archived || channel.cached)
+      if (
+        !channel ||
+        (channel.readOnly && channel.viewerRole !== "guest") ||
+        channel.archived ||
+        channel.cached
+      )
         throw new Error("Your owner cannot open threads in this channel.");
       if (threads(channelId).some((thread) => thread.root === rootId))
         return false;
       store.update(keyOf("messages", channelId), (state) => {
-        const pane = threadPlacementPreference();
+        // Solo chats have no main tab workspace.
+        const pane =
+          channel.channelType === "solo" ? "side" : threadPlacementPreference();
         const opened = withThread(
           state,
           channelId,
@@ -258,7 +381,7 @@ export function channelTabs(session: RelaySession) {
         const sideEmpty =
           !state.sidePanel &&
           !state.settings &&
-          !state.entries.length &&
+          !sideEntries(state).length &&
           !state.tabs.some((tab) => tabPane(tab) === "side");
         return {
           ...opened,
@@ -273,10 +396,22 @@ export function channelTabs(session: RelaySession) {
       const thread = threads(channelId).find((item) => item.root === rootId);
       if (!thread) return "missing";
       if (thread.shown) return "shown";
+      const visits = Object.entries(
+        stateOf(channelId).routedVisits ?? {},
+      ).flatMap(([id, visit]) =>
+        visit.channelId === channelId && visit.rootId === rootId ? [id] : [],
+      );
       store.update(keyOf("messages", channelId), (state) => ({
         ...state,
         tabs: state.tabs.filter((tab) => tab !== thread.tab),
       }));
+      // Exact session-owned visit IDs cannot retire a different scope. Inactive
+      // close preserves the current destination and its presentation authority.
+      if (navigation) {
+        navigation.dismiss(visits, navigation.snapshot().entry.target);
+        const retained = navigation.snapshot().retainedVisits;
+        if (retained) store.prune(new Set(retained));
+      }
       return "closed";
     },
     /** Names thread `rootId`'s tab; an empty name restores its automatic
@@ -300,9 +435,19 @@ export function useChannelTabState(
   session: RelaySession,
   channelId: string | undefined,
   page = "messages",
+  navigation?: Navigation,
 ) {
   const store = storeOf(session);
   const channels = useSyncExternalStore(store.subscribe, store.snapshot);
+  useLayoutEffect(() => {
+    if (!navigation?.snapshot().retainedVisits) return;
+    const prune = () => {
+      const retained = navigation.snapshot().retainedVisits;
+      if (retained) store.prune(new Set(retained));
+    };
+    prune();
+    return navigation.subscribe(prune);
+  }, [navigation, store]);
   const snapshot = store.snapshot;
   const key = keyOf(page, channelId ?? "");
   // Retain descriptors across navigation, but protect only a mounted workspace.
@@ -313,7 +458,17 @@ export function useChannelTabState(
     [key, store],
   );
   const setEntries = useCallback(
-    (entries: PanelOpening[]) => update((s) => ({ ...s, entries })),
+    (entries: PanelOpening[]) =>
+      update((s) => {
+        // A closed panel tab forgets its pane.
+        const ids = new Set(entries.map(panelTabId));
+        const mainEntries = s.mainEntries?.filter((id) => ids.has(id));
+        return {
+          ...s,
+          entries,
+          mainEntries: mainEntries?.length ? mainEntries : undefined,
+        };
+      }),
     [update],
   );
   const retireMenuEntries = useCallback(
@@ -346,7 +501,7 @@ export function useChannelTabState(
       channelId: string,
       messageId: string,
       rootId: string,
-      intent?: "reply" | "select",
+      intent?: ThreadIntent,
       pane: TabPane = threadPlacementPreference(),
     ) =>
       update((state) =>
@@ -401,22 +556,60 @@ export function useChannelTabState(
   const enterVisit = useCallback(
     (
       visit: string,
-      routed?: { channelId: string; messageId: string; rootId: string },
+      routed?: {
+        channelId: string;
+        messageId: string;
+        rootId: string;
+        pane?: TabPane | undefined;
+      },
       /** A new visit keeps the current selection instead of the conversation. */
       keep = false,
+      detail?: { channelId: string; target: string },
     ) =>
       update((state) => {
         if (state.visit === visit) return state;
+        const retained =
+          state.routedVisits?.[visit.slice(0, -":thread".length)];
+        // Reconstruct the same address without downgrading its verified root
+        // to the route hint while the successor reader is still resolving.
+        const thread =
+          routed &&
+          retained?.channelId === routed.channelId &&
+          retained.messageId === routed.messageId
+            ? { ...routed, rootId: retained.rootId }
+            : routed;
         const visits = state.left ? state.visits : remember(state);
-        const next: State = { ...state, visit, visits, left: false };
-        if (routed)
+        const next: State = {
+          ...state,
+          visit,
+          visits,
+          left: false,
+          detailVisits: detail
+            ? {
+                ...state.detailVisits,
+                [visit.slice(0, -":detail".length)]: detail,
+              }
+            : state.detailVisits,
+          routedVisits:
+            thread && visit.endsWith(":thread")
+              ? {
+                  ...state.routedVisits,
+                  [visit.slice(0, -":thread".length)]: {
+                    channelId: thread.channelId,
+                    messageId: thread.messageId,
+                    rootId: thread.rootId,
+                  },
+                }
+              : state.routedVisits,
+        };
+        if (thread)
           return withThread(
             next,
-            routed.channelId,
-            routed.messageId,
-            routed.rootId,
+            thread.channelId,
+            thread.messageId,
+            thread.rootId,
             "select",
-            threadPlacementPreference(),
+            thread.pane ?? threadPlacementPreference(),
           );
         const saved = visits?.[visit];
         return saved
@@ -460,13 +653,70 @@ export function useChannelTabState(
       }),
     [update],
   );
+  // A panel tab keeps its place in the entry list; only its pane changes.
+  const moveEntry = useCallback(
+    (id: string, pane: TabPane) =>
+      update((state) => {
+        const entry = state.entries.find((item) => panelTabId(item) === id);
+        if (!entry) return state;
+        const left = entryPane(state.mainEntries, entry) !== pane;
+        const others = (state.mainEntries ?? []).filter((item) => item !== id);
+        const placed = pane === "main" ? [...others, id] : others;
+        const mainEntries = placed.length ? placed : undefined;
+        return {
+          ...state,
+          mainEntries,
+          ...(pane === "main"
+            ? {
+                mainSelected: id,
+                // The side pane shows its next tab instead.
+                ...(left && state.selected === id
+                  ? { selected: sideSelection({ ...state, mainEntries }) }
+                  : {}),
+              }
+            : {
+                selected: id,
+                paneOpen: true,
+                ...(left && state.mainSelected === id
+                  ? { mainSelected: undefined }
+                  : {}),
+              }),
+        };
+      }),
+    [update],
+  );
   // Once a reader verifies its root, a tab opened from a wrong hint merges
   // into the tab already holding that thread instead of duplicating it.
   const resolveThreadRoot = useCallback(
     (id: string, rootId: string) =>
-      update((state) => {
+      update((previous) => {
+        let state = previous;
         const tab = state.tabs.find((item) => item.id === id);
-        if (tab?.kind !== "thread" || tab.rootId === rootId) return state;
+        if (tab?.kind !== "thread") return state;
+        // A link's root is a hint. Retire visits under the verified thread,
+        // without also retiring visits to a different thread named by that hint.
+        if (
+          Object.values(state.routedVisits ?? {}).some(
+            (visit) =>
+              visit.channelId === tab.channelId &&
+              visit.messageId === tab.messageId &&
+              visit.rootId !== rootId,
+          )
+        ) {
+          state = {
+            ...state,
+            routedVisits: Object.fromEntries(
+              Object.entries(state.routedVisits ?? {}).map(([id, visit]) => [
+                id,
+                visit.channelId === tab.channelId &&
+                visit.messageId === tab.messageId
+                  ? { ...visit, rootId }
+                  : visit,
+              ]),
+            ),
+          };
+        }
+        if (tab.rootId === rootId) return state;
         const owner = state.tabs.find(
           (item) =>
             item.kind === "thread" &&
@@ -573,12 +823,15 @@ export function useChannelTabState(
         const tab = s.tabs.find((item) => item.id === keep);
         const entry = s.entries.find((item) => panelTabId(item) === keep);
         const settings = keep === "settings" ? s.settings : undefined;
-        const main = !!tab && tabPane(tab) === "main";
+        const main =
+          (!!tab && tabPane(tab) === "main") ||
+          (!!entry && entryPane(s.mainEntries, entry) === "main");
         // The channel conversation is not stored: keeping it closes them all.
         const side = !main && !!(tab || entry || settings);
         return {
           ...s,
           entries: entry ? [entry] : [],
+          mainEntries: entry && main ? [panelTabId(entry)] : undefined,
           tabs: tab ? [tab] : [],
           selected: (side && keep) || "",
           mainSelected: main ? keep : undefined,
@@ -593,6 +846,30 @@ export function useChannelTabState(
     (paneOpen: boolean) => update((s) => ({ ...s, paneOpen })),
     [update],
   );
+  // Only visits whose address selected this thread are retired. A channel
+  // visit that happened to keep its tab visible remains a real destination.
+  const threadVisits = useCallback(
+    (channelId: string, rootId: string) => {
+      const state = snapshot()[key] ?? empty;
+      return Object.entries(state.routedVisits ?? {}).flatMap(
+        ([visit, thread]) =>
+          thread.channelId === channelId && thread.rootId === rootId
+            ? [visit]
+            : [],
+      );
+    },
+    [key, snapshot],
+  );
+  const detailVisits = useCallback(
+    (channelId: string, target: string) =>
+      Object.entries(snapshot()[key]?.detailVisits ?? {}).flatMap(
+        ([id, detail]) =>
+          detail.channelId === channelId && detail.target === target
+            ? [id]
+            : [],
+      ),
+    [key, snapshot],
+  );
   const renameTab = useCallback(
     (id: string, name: string) =>
       update((s) => ({
@@ -606,18 +883,31 @@ export function useChannelTabState(
       update((s) => (!!s.sidePanel === sidePanel ? s : { ...s, sidePanel })),
     [update],
   );
+  // Selection reads stay synchronous and stable for navigation handoff effects.
+  const getSelected = useCallback(
+    () => snapshot()[key]?.selected ?? empty.selected,
+    [key, snapshot],
+  );
+  const getMainSelected = useCallback(
+    () => snapshot()[key]?.mainSelected,
+    [key, snapshot],
+  );
   // Workspace callbacks list this object as a dependency; a fresh object per
   // render would recreate them and re-render every memoized message row.
   return useMemo(
     () => ({
       ...state,
       // Synchronous actions need the selection before React rerenders.
-      getSelected: () => snapshot()[key]?.selected ?? empty.selected,
+      getSelected,
+      getMainSelected,
+      threadVisits,
+      detailVisits,
       setEntries,
       retireMenuEntries,
       setTabs,
       openThreadTab,
       moveTab,
+      moveEntry,
       resolveThreadRoot,
       divertThread,
       enterVisit,
@@ -633,13 +923,16 @@ export function useChannelTabState(
     }),
     [
       state,
-      snapshot,
-      key,
+      getSelected,
+      getMainSelected,
+      threadVisits,
+      detailVisits,
       setEntries,
       retireMenuEntries,
       setTabs,
       openThreadTab,
       moveTab,
+      moveEntry,
       resolveThreadRoot,
       divertThread,
       enterVisit,

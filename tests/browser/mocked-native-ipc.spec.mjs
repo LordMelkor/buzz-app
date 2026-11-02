@@ -99,14 +99,14 @@ test("mocked native IPC admission and uncertain delivery survive page reload wit
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/mocked-native-ipc.html`,
     );
     await page.getByRole("button", { name: "Add a community" }).click();
-    await page.getByLabel("Relay URL").fill(community);
+    await page.getByLabel("Community URL").fill(community);
     await page.getByRole("button", { name: "Continue", exact: true }).click();
     await page.getByLabel("Invite code (if required)").fill("v2.fixture");
     await page.getByRole("button", { name: "Continue", exact: true }).click();
     await expect(page.getByRole("alert")).toHaveText("Claim receipt lost");
     await page.reload();
     await page.getByRole("button", { name: "Add a community" }).click();
-    await expect(page.getByLabel("Relay URL")).toHaveValue(community);
+    await expect(page.getByLabel("Community URL")).toHaveValue(community);
     await page.getByRole("button", { name: "Continue", exact: true }).click();
     await page
       .getByLabel("Display name", { exact: true })

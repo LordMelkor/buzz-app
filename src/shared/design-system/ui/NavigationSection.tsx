@@ -5,18 +5,22 @@ export function NavigationSection({
   action,
   children,
 }: {
-  label: string;
+  label?: string;
   action?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <section data-buzz-ui="" className="navigation-section">
-      <div className="navigation-section-heading">
-        <h2 className="navigation-section-label text-body text-secondary">
-          {label}
-        </h2>
-        {action}
-      </div>
+    <section
+      data-buzz-ui=""
+      className="navigation-section"
+      data-headingless={!label || undefined}
+    >
+      {(label || action) && (
+        <div className="navigation-section-heading">
+          {label && <h2 className="navigation-section-label">{label}</h2>}
+          {action}
+        </div>
+      )}
       <div className="navigation-section-rows">{children}</div>
     </section>
   );

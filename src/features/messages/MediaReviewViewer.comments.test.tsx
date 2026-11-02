@@ -5,6 +5,7 @@ import { composerDOMFixture } from "./composer-testing";
 composerDOMFixture();
 import {
   cleanup,
+  act,
   fireEvent,
   render,
   screen,
@@ -15,6 +16,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import type { EventTemplate } from "nostr-tools";
 import { afterEach, assert, expect, it, vi } from "vitest";
+import type { LiveCallbacks } from "../relay/live";
 import type { RelayEvent } from "../relay/events";
 import { createRelaySession } from "../relay/session";
 import { keypair, message, metadata, roster, signed } from "../relay/testing";
@@ -44,6 +46,7 @@ type ReviewFixtureOptions = {
   fromThread?: boolean;
   attachmentInReply?: boolean;
   openThreadTab?: () => boolean;
+  media?: (url: string) => string | undefined;
 };
 
 function mime(kind: MediaKind) {
@@ -58,6 +61,7 @@ async function setupReview({
   fromThread = false,
   attachmentInReply = false,
   openThreadTab,
+  media = (url) => url,
 }: ReviewFixtureOptions) {
   // The DOM emulator has no playback engine; keep native playback calls observable.
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
@@ -103,7 +107,7 @@ async function setupReview({
     {
       viewer: viewer.pubkey,
       relayAuthor: relay.pubkey,
-      media: (url) => url,
+      media,
       writer: { sign, publish },
       async query(filters) {
         return filters.flatMap((filter) => {
@@ -176,6 +180,221 @@ async function setupReview({
     fireEvent.click(screen.getByRole("button", { name: "Show comments" }));
   return { owner, root, sign, user, attachmentOwner, openReview };
 }
+
+function deferredRead() {
+  let resolve!: (events: RelayEvent[]) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<RelayEvent[]>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+it.each([
+  { firstKind: "image", outcome: "ready" },
+  { firstKind: "video", outcome: "ready" },
+  { firstKind: "image", outcome: "missing" },
+  { firstKind: "image", outcome: "removed" },
+] as const)(
+  "preserves six-item $firstKind gallery through thread failure (outcome=$outcome)",
+  async ({ firstKind, outcome }) => {
+    const viewer = keypair();
+    const relay = keypair();
+    let traffic!: LiveCallbacks;
+    const attachments = Array.from({ length: 6 }, (_, index) => ({
+      kind: index === 0 || index === 5 ? firstKind : ("image" as const),
+      url: `https://fixture.test/item-${index}.${(index === 0 || index === 5) && firstKind === "video" ? "mp4" : "png"}`,
+    }));
+    const root = message(
+      viewer,
+      "one",
+      "Six attachments",
+      1,
+      attachments.map((item) => [
+        "imeta",
+        `url ${item.url}`,
+        `m ${mime(item.kind)}`,
+      ]),
+    );
+    let gate: ReturnType<typeof deferredRead> | undefined;
+    let events = [root];
+    const query = vi.fn(async () => (gate ? gate.promise : events));
+    const owner = createRelaySession({
+      viewer: viewer.pubkey,
+      relayAuthor: relay.pubkey,
+      media: (url) => url,
+      query,
+      subscribe(callbacks) {
+        traffic = callbacks;
+        return { update() {}, retry() {}, dispose() {} };
+      },
+    });
+    owners.push(owner);
+    traffic.receive([roster(relay, "one", [viewer.pubkey], 10)]);
+    gate = deferredRead();
+    const opener = attachments[3];
+    const last = attachments[5];
+    assert.exists(opener);
+    assert.exists(last);
+    render(
+      <MediaReviewViewer
+        attachment={opener}
+        initialAttachments={attachments}
+        session={owner.session}
+        scope="failed-gallery"
+        channelId="one"
+        channelName="One"
+        messageId={root.id}
+        initialTime={0}
+        onOpenLink={() => false}
+        close={() => {}}
+      />,
+    );
+    const nextLabel = firstKind === "video" ? "Next media" : "Next image";
+    const selectedMedia = () =>
+      firstKind === "video"
+        ? screen.getByRole("dialog").querySelector("video")
+        : screen.getByRole("img", { name: "Attachment preview" });
+    // The opener's known attachments remain usable while the exact read is still pending.
+    expect(
+      await screen.findByRole("button", { name: nextLabel }),
+    ).toBeEnabled();
+    await waitFor(() => expect(query).toHaveBeenCalled());
+    await act(async () => gate?.reject(new Error("thread offline")));
+    await screen.findByText("Error: thread offline");
+    fireEvent.click(screen.getByRole("button", { name: nextLabel }));
+    fireEvent.click(screen.getByRole("button", { name: nextLabel }));
+    expect(selectedMedia()).toHaveAttribute("src", last.url);
+    gate = deferredRead();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(selectedMedia()).toHaveAttribute("src", last.url);
+    const edit = (items: typeof attachments, time: number) =>
+      signed(viewer, {
+        kind: 40003,
+        content: root.content,
+        created_at: time,
+        tags: [
+          ["h", "one"],
+          ["e", root.id],
+          ...items.map((item) => [
+            "imeta",
+            `url ${item.url}`,
+            `m ${mime(item.kind)}`,
+          ]),
+        ],
+      });
+    const removed = edit(
+      attachments.filter((item) => item.url !== opener.url),
+      2,
+    );
+    const retryGate = gate;
+    events =
+      outcome === "ready"
+        ? [root]
+        : outcome === "removed"
+          ? [root, removed]
+          : [];
+    gate = undefined;
+    await act(async () => retryGate.resolve(events));
+    if (outcome !== "ready") {
+      await screen.findAllByText(
+        outcome === "removed"
+          ? "Attachment unavailable."
+          : "Original message unavailable.",
+      );
+      expect(
+        screen.queryByRole("img", { name: "Attachment preview" }),
+      ).toBeNull();
+      expect(screen.queryByRole("button", { name: nextLabel })).toBeNull();
+      gate = deferredRead();
+      const readsBeforeRetry = query.mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      await waitFor(() =>
+        expect(query.mock.calls.length).toBeGreaterThan(readsBeforeRetry),
+      );
+      expect(
+        screen.queryByRole("img", { name: "Attachment preview" }),
+      ).toBeNull();
+      expect(screen.queryByRole("button", { name: nextLabel })).toBeNull();
+      const readmission = gate;
+      events =
+        outcome === "removed" ? [root, removed, edit(attachments, 3)] : [root];
+      gate = undefined;
+      await act(async () => readmission.resolve(events));
+      await screen.findByRole("button", { name: nextLabel });
+      return;
+    }
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Error: thread offline"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(selectedMedia()).toHaveAttribute("src", last.url);
+    await act(async () => traffic.receive([roster(relay, "one", [], 11)]));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("img", { name: "Attachment preview" }),
+      ).toBeNull(),
+    );
+    expect(screen.getByRole("dialog").querySelector("video")).toBeNull();
+    expect(screen.queryByRole("button", { name: nextLabel })).toBeNull();
+    expect(
+      screen.queryByRole("textbox", { name: "Reply to thread" }),
+    ).toBeNull();
+  },
+);
+
+it("keeps the image gallery reachable when the opened thumbnail is unavailable", async () => {
+  await setupReview({
+    kind: "image",
+    openComments: false,
+    media: (url) => (url.endsWith("image.png") ? undefined : url),
+    extraRootTags: [
+      ["imeta", "url https://fixture.test/next.png", "m image/png"],
+    ],
+  });
+  const next = await screen.findByRole("button", { name: "Next image" });
+  fireEvent.click(next);
+  expect(
+    screen.getByRole("img", { name: "Attachment preview" }),
+  ).toHaveAttribute("src", "https://fixture.test/next.png");
+});
+
+it("navigates every mixed attachment even after a video fails", async () => {
+  await setupReview({
+    kind: "video",
+    openComments: false,
+    extraRootTags: [
+      ["imeta", "url https://fixture.test/one.png", "m image/png"],
+      ["imeta", "url https://fixture.test/two.png", "m image/png"],
+      ["imeta", "url https://fixture.test/three.png", "m image/png"],
+      ["imeta", "url https://fixture.test/last.mp4", "m video/mp4"],
+    ],
+  });
+  await screen.findByText("1 / 5");
+  const firstVideo = screen.getByRole("dialog").querySelector("video");
+  assert.exists(firstVideo);
+  fireEvent.error(firstVideo);
+  for (let index = 2; index <= 5; index++) {
+    fireEvent.click(screen.getByRole("button", { name: "Next media" }));
+    await screen.findByText(`${index} / 5`);
+    if (index < 5)
+      expect(
+        screen.getByRole("img", { name: "Attachment preview" }),
+      ).toHaveAttribute(
+        "src",
+        `https://fixture.test/${["one", "two", "three"][index - 2]}.png`,
+      );
+  }
+  expect(screen.getByRole("dialog").querySelector("video")).toHaveAttribute(
+    "src",
+    "https://fixture.test/last.mp4",
+  );
+  expect(screen.getByRole("button", { name: "Next media" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Previous media" }));
+  await screen.findByText("4 / 5");
+});
 
 async function signedTemplate(sign: ReturnType<typeof vi.fn>) {
   await waitFor(() => expect(sign).toHaveBeenCalled());
@@ -302,32 +521,44 @@ it("seeks the review video from a timecode reply when the thread has one video",
   expect(pause).not.toHaveBeenCalled();
 });
 
-it("opens the sole reply video from a timestamp in the thread at the requested frame", async () => {
-  const { user, attachmentOwner, openReview } = await setupReview({
-    kind: "video",
-    fromThread: true,
-    attachmentInReply: true,
-    replies: (viewer, root) => [
-      message(viewer, "one", "[00:42.5] Seek the reply video", 3, [
-        ["e", root.id, "", "reply"],
-      ]),
-    ],
-  });
-  expect(await screen.findByText("Seek the reply video")).toBeVisible();
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "00:42.5" }));
-  expect(openReview).toHaveBeenCalledExactlyOnceWith(
-    attachmentOwner.id,
-    expect.objectContaining({ kind: "video" }),
-    42.5,
-    true,
-  );
-  const dialog = await screen.findByRole("dialog", { name: "Video review" });
-  const video = dialog.querySelector("video");
-  assert.exists(video);
-  fireEvent.loadedMetadata(video);
-  expect(video.currentTime).toBe(42.5);
-});
+it.each([
+  ["00:00", 2, 0],
+  ["00:01", 2, 0],
+  ["00:03", 10, 0],
+  ["00:42.5", 60, 39.5],
+])(
+  "opens a thread timestamp %s with three seconds of context (duration %s)",
+  async (timestamp, duration, expectedTime) => {
+    const { user, attachmentOwner, openReview } = await setupReview({
+      kind: "video",
+      fromThread: true,
+      attachmentInReply: true,
+      replies: (viewer, root) => [
+        message(viewer, "one", `[${timestamp}] Seek the reply video`, 3, [
+          ["e", root.id, "", "reply"],
+        ]),
+      ],
+    });
+    expect(await screen.findByText("Seek the reply video")).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: timestamp }));
+    expect(openReview).toHaveBeenCalledExactlyOnceWith(
+      attachmentOwner.id,
+      expect.objectContaining({ kind: "video" }),
+      expectedTime,
+      true,
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Video review" });
+    const video = dialog.querySelector("video");
+    assert.exists(video);
+    Object.defineProperty(video, "duration", {
+      configurable: true,
+      value: duration,
+    });
+    fireEvent.loadedMetadata(video);
+    expect(video.currentTime).toBe(expectedTime);
+  },
+);
 
 it("keeps thread timestamps noninteractive when a reply video conflicts with a root video", async () => {
   const { openReview } = await setupReview({

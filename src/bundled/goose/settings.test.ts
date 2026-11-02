@@ -40,6 +40,7 @@ it("syncs every agent setting except instructions and the device-local folder", 
     {
       model: "",
       provider: "p",
+      effort: "",
       scope: "thread",
     },
   );

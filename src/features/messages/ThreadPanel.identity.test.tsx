@@ -49,106 +49,126 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it("retains mounted rows through a deferred real-session page and profile noise", async () => {
-  const relay = keypair();
-  const viewer = keypair();
-  const aliceKey = keypair();
-  const bobKey = keypair();
-  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
-  let traffic!: LiveCallbacks;
-  const owner = createRelaySession({
-    ...wire.transport,
-    query(filters, signal) {
-      if (filters[0]?.kinds?.includes(30315)) return Promise.resolve([]);
-      return wire.transport.query(filters, signal);
-    },
-    subscribe(callbacks) {
-      traffic = callbacks;
-      return { update() {}, retry() {}, dispose() {} };
-    },
-  });
-  const root = message(aliceKey, "a", "Root body", 1, [
-    ["imeta", "url https://example.com/video.mp4", "m video/mp4"],
-  ]);
-  const reply = message(bobKey, "a", "⏱ 0:42 — Reply body", 2, [
-    ["e", root.id, "", "root"],
-    ["e", root.id, "", "reply"],
-  ]);
-  traffic.receive([
-    root,
-    reply,
-    profile(aliceKey, { name: "Alice" }),
-    profile(bobKey, { name: "Bob" }),
-  ]);
-  const session = owner.session;
+it.each([false, true])(
+  "retains rows and seeks timestamps with media viewer available=%s",
+  async (viewerAvailable) => {
+    const openMediaReview = vi.fn();
+    const relay = keypair();
+    const viewer = keypair();
+    const aliceKey = keypair();
+    const bobKey = keypair();
+    const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+    let traffic!: LiveCallbacks;
+    const owner = createRelaySession({
+      ...wire.transport,
+      query(filters, signal) {
+        if (filters[0]?.kinds?.includes(30315)) return Promise.resolve([]);
+        return wire.transport.query(filters, signal);
+      },
+      subscribe(callbacks) {
+        traffic = callbacks;
+        return { update() {}, retry() {}, dispose() {} };
+      },
+    });
+    const root = message(aliceKey, "a", "Root body", 1, [
+      ["imeta", "url https://example.com/video.mp4", "m video/mp4"],
+    ]);
+    const reply = message(bobKey, "a", "⏱ 0:42 — Reply body", 2, [
+      ["e", root.id, "", "root"],
+      ["e", root.id, "", "reply"],
+    ]);
+    traffic.receive([
+      root,
+      reply,
+      profile(aliceKey, { name: "Alice" }),
+      profile(bobKey, { name: "Bob" }),
+    ]);
+    const session = owner.session;
 
-  render(
-    <StrictMode>
-      <ThreadPanel
-        session={session}
-        scope="identity-test"
-        channelName="A"
-        channelId="a"
-        messageId={root.id}
-        close={() => {}}
-        onOpenLink={() => false}
-      />
-    </StrictMode>,
-  );
+    render(
+      <StrictMode>
+        <ThreadPanel
+          session={session}
+          scope="identity-test"
+          channelName="A"
+          channelId="a"
+          messageId={root.id}
+          {...(viewerAvailable ? { onOpenMediaReview: openMediaReview } : {})}
+          close={() => {}}
+          onOpenLink={() => false}
+        />
+      </StrictMode>,
+    );
 
-  await waitFor(() =>
-    expect(wire.pending.some((request) => !request.signal?.aborted)).toBe(true),
-  );
-  const initial = wire.pending.find((request) => !request.signal?.aborted);
-  if (!initial) throw new Error("Initial thread page was not requested");
-  initial.respond([root, reply]);
-  expect(await screen.findByText("Alice")).toBeInTheDocument();
-  expect(screen.getByText("Bob")).toBeInTheDocument();
-  await waitFor(() =>
-    expect(
-      wire.pending.filter(
-        (request) => request !== initial && !request.signal?.aborted,
+    await waitFor(() =>
+      expect(wire.pending.some((request) => !request.signal?.aborted)).toBe(
+        true,
       ),
-    ).toHaveLength(1),
-  );
-  const page = wire.pending.find(
-    (request) => request !== initial && !request.signal?.aborted,
-  );
-  if (!page) throw new Error("Deferred thread page was not requested");
-  expect(screen.queryByText("Loading thread…")).not.toBeInTheDocument();
+    );
+    const initial = wire.pending.find((request) => !request.signal?.aborted);
+    if (!initial) throw new Error("Initial thread page was not requested");
+    initial.respond([root, reply]);
+    expect(await screen.findByText("Alice")).toBeInTheDocument();
+    expect(screen.getByText("Bob")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        wire.pending.filter(
+          (request) => request !== initial && !request.signal?.aborted,
+        ),
+      ).toHaveLength(1),
+    );
+    const page = wire.pending.find(
+      (request) => request !== initial && !request.signal?.aborted,
+    );
+    if (!page) throw new Error("Deferred thread page was not requested");
+    expect(screen.queryByText("Loading thread…")).not.toBeInTheDocument();
 
-  await act(async () => {
-    traffic.receive([profile(keypair(), { name: "Other" })]);
-  });
+    await act(async () => {
+      traffic.receive([profile(keypair(), { name: "Other" })]);
+    });
 
-  const retainedReply = screen.getByText("Reply body");
-  const retainedRow = retainedReply.closest("[data-message-id]");
-  const appended = message(bobKey, "a", "Appended reply body", 3, [
-    ["e", root.id, "", "root"],
-    ["e", root.id, "", "reply"],
-  ]);
-  await act(async () => page.respond([root, appended]));
-  expect(await screen.findByText("Appended reply body")).toBeInTheDocument();
-  // The previous last bubble joins the new same-author reply while its
-  // mounted content stays intact.
-  expect(screen.getByText("Reply body")).toBe(retainedReply);
-  expect(retainedRow?.querySelector("[data-stack-next]")).not.toBeNull();
+    const retainedReply = screen.getByText("Reply body");
+    const retainedRow = retainedReply.closest("[data-message-id]");
+    const appended = message(bobKey, "a", "Appended reply body", 3, [
+      ["e", root.id, "", "root"],
+      ["e", root.id, "", "reply"],
+    ]);
+    await act(async () => page.respond([root, appended]));
+    expect(await screen.findByText("Appended reply body")).toBeInTheDocument();
+    // The previous last bubble joins the new same-author reply while its
+    // mounted content stays intact.
+    expect(screen.getByText("Reply body")).toBe(retainedReply);
+    expect(retainedRow?.querySelector("[data-stack-next]")).not.toBeNull();
 
-  fireEvent.click(screen.getByRole("button", { name: "0:42" }));
-  expect(screen.getByTestId("video-seek")).toHaveTextContent("42");
+    fireEvent.click(screen.getByRole("button", { name: "0:42" }));
+    if (viewerAvailable) {
+      expect(openMediaReview).toHaveBeenCalledExactlyOnceWith(
+        root.id,
+        expect.objectContaining({
+          url: "https://example.com/video.mp4",
+          kind: "video",
+        }),
+        39,
+        true,
+        undefined,
+      );
+    } else {
+      expect(screen.getByTestId("video-seek")).toHaveTextContent("42");
+    }
 
-  const edited = signed(bobKey, {
-    kind: 40003,
-    content: "Edited reply body",
-    created_at: 4,
-    tags: [["e", reply.id]],
-  });
-  traffic.receive([edited]);
-  expect(await screen.findByText("Edited reply body")).toBeInTheDocument();
+    const edited = signed(bobKey, {
+      kind: 40003,
+      content: "Edited reply body",
+      created_at: 4,
+      tags: [["e", reply.id]],
+    });
+    traffic.receive([edited]);
+    expect(await screen.findByText("Edited reply body")).toBeInTheDocument();
 
-  await act(async () => {
-    traffic.receive([profile(bobKey, { name: "Robert" }, 1_700_000_001)]);
-  });
-  expect(await screen.findAllByText("Robert")).toHaveLength(2);
-  owner.dispose();
-});
+    await act(async () => {
+      traffic.receive([profile(bobKey, { name: "Robert" }, 1_700_000_001)]);
+    });
+    expect(await screen.findAllByText("Robert")).toHaveLength(2);
+    owner.dispose();
+  },
+);

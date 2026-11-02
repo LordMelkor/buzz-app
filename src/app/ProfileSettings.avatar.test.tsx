@@ -53,6 +53,7 @@ function setup(
     status: "ready",
     relayAvailable: true,
     viewer: "a".repeat(64),
+    sync: { known: [], outbox: [] },
     selected,
     memberships: [
       { id: a, name: "Alpha" },
@@ -268,7 +269,8 @@ it("late initial reads cannot replace another community's profile", async () => 
   const late = deferred<ReturnType<typeof original>>();
   vi.mocked(api.inspectProfile).mockReturnValueOnce(late.promise);
   fixture.select(b);
-  expect(screen.getByRole("status")).toHaveTextContent("Loading");
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.getByLabelText("Display name")).toBeDisabled();
   fixture.select(a);
   await screen.findByDisplayValue("Alpha human");
   await act(async () => {
@@ -302,7 +304,8 @@ it("failed initial reads expose Retry and never publish defaults over an unknown
   );
   fixture.select(b);
   await screen.findByText(/Read refused/);
-  expect(screen.queryByLabelText("Display name")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Display name")).toBeDisabled();
+  expect(screen.queryByRole("textbox", { name: "Display name" })).toBeNull();
   expect(api.publishProfile).not.toHaveBeenCalled();
   fireEvent.click(
     screen.getByRole("button", { name: "Retry loading profile" }),

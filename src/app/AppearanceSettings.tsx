@@ -1,17 +1,16 @@
-import {
-  BUBBLE_COLORS,
-  messageButtonStyle,
-} from "../shared/theme/bubble-color";
+import { Select } from "../shared/design-system/ui/Select";
+import { ACCENTS, accentButtonStyle } from "../shared/theme/accent";
+
 import { IconButton } from "../shared/design-system/ui/IconButton";
 import {
   ArrowCounterClockwiseIcon,
-  CheckIcon,
+  CircleIcon,
 } from "../shared/design-system/icons";
 import { SettingsGroup } from "../shared/design-system/ui/SettingsGroup";
-import { Header } from "../shared/design-system/ui/Header";
+import { Header, InlineHeader } from "../shared/design-system/ui/Header";
 import { ToastNotice } from "../shared/design-system/ui/Toast";
 import { PreferenceRow } from "../shared/design-system/ui/PreferenceRow";
-import { ThemePicker } from "../shared/design-system/ui/ThemePicker";
+import { AppearancePreview } from "./AppearancePreview";
 import { Button } from "../shared/design-system/ui/Button";
 import {
   useCallback,
@@ -21,6 +20,16 @@ import {
 } from "react";
 import type { Appearance } from "../shared/theme/service";
 
+import {
+  setThreadPlacementPreference,
+  useThreadPlacementPreference,
+} from "../features/messages/thread-preferences";
+
+import {
+  useFollowUpBehaviorPreference,
+  setFollowUpBehaviorPreference,
+} from "../features/messages/follow-up-preference";
+
 export function AppearanceSettings({
   appearance,
   active = true,
@@ -28,6 +37,8 @@ export function AppearanceSettings({
   appearance: Appearance;
   active?: boolean;
 }) {
+  const followUp = useFollowUpBehaviorPreference();
+  const { placement, unsaved } = useThreadPlacementPreference();
   const increaseButton = useRef<HTMLButtonElement>(null);
   const pendingFocus = useRef<HTMLButtonElement | null>(null);
   const resetRef = useCallback((node: HTMLButtonElement | null) => {
@@ -43,20 +54,50 @@ export function AppearanceSettings({
     pendingFocus.current = null;
     if (target?.isConnected) target.focus();
   });
-  const { preference, error, fontScale, fontError, bubbleColor, bubbleError } =
-    useSyncExternalStore(appearance.subscribe, appearance.snapshot);
+  const {
+    preference,
+    mode,
+    error,
+    fontScale,
+    fontError,
+    accent,
+    accentError,
+    contrast,
+    contrastError,
+  } = useSyncExternalStore(appearance.subscribe, appearance.snapshot);
   return (
     <section aria-labelledby="appearance-settings-title">
       <Header id="appearance-settings-title" title="Appearance" />
+      <AppearancePreview />
       <div>
+        <InlineHeader title="Interface" />
         <SettingsGroup>
           <PreferenceRow
-            title="Color mode"
+            id="setting-mode"
+            title="Mode"
             trailing={
-              <ThemePicker
+              <Select
+                variant="compact"
+                label="Mode"
                 value={preference}
-                messageColor={bubbleColor}
-                onValueChange={appearance.setMode}
+                groups={[
+                  {
+                    label: "Mode",
+                    options: [
+                      { value: "system", label: "System" },
+                      { value: "light", label: "Light" },
+                      { value: "dark", label: "Dark" },
+                    ],
+                  },
+                ]}
+                onValueChange={(value) => {
+                  if (
+                    value === "system" ||
+                    value === "light" ||
+                    value === "dark"
+                  )
+                    appearance.setMode(value);
+                }}
               />
             }
           />
@@ -107,46 +148,48 @@ export function AppearanceSettings({
             }
           />
           <PreferenceRow
-            title="Message bubbles"
+            title="Accent color"
             trailing={(label) => (
               <fieldset
                 {...label}
                 className="m-0 min-w-0 max-w-full border-0 p-0"
               >
                 <div
-                  data-message-colors
+                  data-accent-colors
                   className="grid auto-cols-max grid-flow-col gap-2 overflow-x-auto p-1 scroll-p-1 [&>button]:scroll-m-1"
                 >
-                  {BUBBLE_COLORS.map((color) => {
+                  {ACCENTS.map((color) => {
                     const colorLabel =
-                      color === "neutral"
-                        ? "Default"
+                      color === "bee"
+                        ? "Honey"
                         : `${color.charAt(0).toUpperCase()}${color.slice(1)}`;
                     return (
                       <IconButton
                         key={color}
-                        data-bubble-color={color}
-                        style={messageButtonStyle}
+                        data-color-swatch=""
+                        data-accent={color}
+                        data-color-mode={mode}
+                        style={accentButtonStyle}
                         variant="primary"
                         size="sm"
                         shape="round"
-                        aria-label={`${colorLabel} message color`}
+                        aria-label={`${colorLabel} accent color`}
                         title={colorLabel}
-                        aria-pressed={bubbleColor === color}
+                        aria-pressed={accent === color}
                         onFocus={(event) =>
                           event.currentTarget.scrollIntoView({
                             block: "nearest",
                             inline: "nearest",
                           })
                         }
-                        onClick={() => appearance.setBubbleColor(color)}
+                        onClick={() => appearance.setAccent(color)}
                         icon={
-                          <CheckIcon
+                          <CircleIcon
+                            size={24}
+                            strokeWidth={3}
                             aria-hidden="true"
                             className={
-                              bubbleColor === color
-                                ? "opacity-100"
-                                : "opacity-0"
+                              accent === color ? "opacity-100" : "opacity-0"
                             }
                           />
                         }
@@ -157,20 +200,132 @@ export function AppearanceSettings({
               </fieldset>
             )}
           />
+          <PreferenceRow
+            title="Vibe level"
+            trailing={
+              <Select
+                variant="compact"
+                label="Vibe level"
+                value={contrast}
+                groups={[
+                  {
+                    label: "Vibe level",
+                    options: [
+                      { value: "low", label: "Chillin’" },
+                      { value: "high", label: "Buzzin’" },
+                    ],
+                  },
+                ]}
+                onValueChange={(value) => {
+                  if (value === "low" || value === "high")
+                    appearance.setContrast(value);
+                }}
+              />
+            }
+          />
         </SettingsGroup>
-        {active && bubbleError && (
+      </div>
+      <div className="mt-section-gap">
+        <InlineHeader title="Conversations" />
+        <SettingsGroup>
+          <PreferenceRow
+            title="Follow-up behavior"
+            subtitle="In Solo, send follow-ups immediately or queue them until the agent finishes its previous response."
+            trailing={
+              <Select
+                variant="compact"
+                label="Follow-up behavior"
+                value={followUp.behavior}
+                groups={[
+                  {
+                    label: "Behavior",
+                    options: [
+                      { value: "immediate", label: "Send immediately" },
+                      { value: "queue", label: "Queue" },
+                    ],
+                  },
+                ]}
+                onValueChange={(value) => {
+                  if (value === "immediate" || value === "queue")
+                    setFollowUpBehaviorPreference(value);
+                }}
+              />
+            }
+          />
+
+          <PreferenceRow
+            title="Open threads in"
+            subtitle="New threads open here. Already-open threads stay where you placed them."
+            trailing={
+              <Select
+                variant="compact"
+                label="Open threads in"
+                value={placement}
+                groups={[
+                  {
+                    label: "Pane",
+                    options: [
+                      { value: "side", label: "Side pane" },
+                      { value: "main", label: "Main pane" },
+                    ],
+                  },
+                ]}
+                onValueChange={(value) => {
+                  if (value === "main" || value === "side")
+                    setThreadPlacementPreference(value);
+                }}
+              />
+            }
+          />
+        </SettingsGroup>
+        {active && followUp.unsaved && (
           <ToastNotice
-            title="Message color wasn’t saved"
-            description={bubbleError}
+            title="Follow-up preference wasn’t saved"
+            description="This choice is active, but could not be saved on this device."
           >
             <Button
               size="sm"
-              onClick={() => appearance.setBubbleColor(bubbleColor)}
+              onClick={() => setFollowUpBehaviorPreference(followUp.behavior)}
             >
-              Retry saving message color
+              Retry saving follow-up behavior
             </Button>
           </ToastNotice>
         )}
+        {active && unsaved && (
+          <ToastNotice
+            title="Thread preference wasn’t saved"
+            description="This choice is active, but could not be saved on this device. Try again."
+          >
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => setThreadPlacementPreference(placement)}
+            >
+              Retry saving thread placement
+            </Button>
+          </ToastNotice>
+        )}
+        {active && contrastError && (
+          <ToastNotice
+            title="Vibe level wasn’t saved"
+            description={contrastError}
+          >
+            <Button size="sm" onClick={() => appearance.setContrast(contrast)}>
+              Retry saving vibe level
+            </Button>
+          </ToastNotice>
+        )}
+        {active && accentError && (
+          <ToastNotice
+            title="Accent color wasn’t saved"
+            description={accentError}
+          >
+            <Button size="sm" onClick={() => appearance.setAccent(accent)}>
+              Retry saving accent color
+            </Button>
+          </ToastNotice>
+        )}
+
         {active && fontError && (
           <ToastNotice
             title="Interface size wasn’t saved"

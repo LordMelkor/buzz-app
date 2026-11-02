@@ -1,0 +1,56 @@
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.row,
+.gap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.row {
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-control);
+  background: var(--surface-panel);
+}
+.gap {
+  color: var(--text-secondary);
+}
+.label {
+  flex: 1;
+  min-width: 0;
+}
+.diff {
+  flex-basis: 100%;
+  margin: 0;
+  overflow: auto;
+  max-height: 24rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: var(--text-mono--line-height);
+  white-space: pre-wrap;
+}
+.added {
+  background: var(--affordance-success);
+  color: var(--text-success);
+}
+.removed {
+  background: var(--affordance-danger);
+  color: var(--text-danger);
+}
+.failure {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-danger);
+}

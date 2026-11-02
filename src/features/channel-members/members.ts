@@ -5,29 +5,40 @@ import type { LocalEvents } from "../relay/outbox";
 
 const keyPattern = /^[0-9a-f]{64}$/;
 
+/** Channel types whose members may add people. A system channel's members
+ * are its readers, for example the agents a plugin shares its records with. */
+const expandable = new Set(["stream", "forum", "system"]);
+
 /** The relay remains authoritative; never offer role changes or DM expansion. */
-export function canAddMembers(session: RelaySession, channel?: ChannelSummary) {
+export function canAddMembers(
+  session: {
+    viewer?: string | undefined;
+    outbox?: { supports(kind: number): boolean } | undefined;
+  },
+  channel?: ChannelSummary,
+) {
   return !!(
     session.viewer &&
     session.outbox?.supports(9000) &&
     channel &&
+    channel.viewerRole !== "guest" &&
     !channel.archived &&
-    (channel.channelType === "stream" || channel.channelType === "forum") &&
+    expandable.has(channel.channelType ?? "") &&
     (channel.members?.includes(session.viewer) ||
-      (channel.readOnly && !channel.private))
+      (channel.readOnly && !channel.private && channel.joinRole !== "guest"))
   );
 }
 
 /** A session share adds only to this session. It never opens ordinary Members UI
  * or inherits parent-channel membership. */
-export function canShareSession(
+export function canShareSoloChat(
   session: RelaySession,
   channel?: ChannelSummary,
 ) {
   return !!(
     session.viewer &&
     session.outbox?.supports(9000) &&
-    channel?.channelType === "session" &&
+    channel?.channelType === "solo" &&
     channel.private &&
     !channel.readOnly &&
     !channel.cached &&
@@ -84,19 +95,21 @@ export async function addChannelMember(
   signal: AbortSignal,
   intent: MemberAdditionIntent = {},
   receipts: LocalEvents | undefined = session.outbox,
-  sessionParticipant = false,
-  allowSessionAgents = false,
+  soloParticipant = false,
+  allowSoloAgents = false,
+  /** Runs synchronously just before a new or retried addition is dispatched. */
+  beforeDispatch?: () => void,
 ) {
   if (!keyPattern.test(pubkey))
     throw new Error("Choose a valid person or agent.");
   const channel = () =>
     session.channels.list().channels.find((item) => item.id === channelId) ??
     session.channels.get?.(channelId);
-  const check = () => {
+  const checkAccess = () => {
     signal.throwIfAborted();
     if (
-      !(sessionParticipant
-        ? canShareSession(session, channel())
+      !(soloParticipant
+        ? canShareSoloChat(session, channel())
         : canAddMembers(session, channel()))
     )
       throw new Error(
@@ -106,24 +119,15 @@ export async function addChannelMember(
       throw new Error(
         "Archived identities cannot be added. Choose someone else.",
       );
-    if (
-      sessionParticipant &&
-      !allowSessionAgents &&
-      (session.agentChoices
-        .snapshot()
-        .identities.some((agent) => agent.pubkey === pubkey) ||
-        session.profiles.snapshot().get(pubkey)?.isAgent)
-    )
-      throw new Error("Add agents with the session agent picker instead.");
   };
-  check();
+  checkAccess();
   const outbox = session.outbox;
   if (!outbox) throw new Error("Member additions are unavailable.");
   await outbox.ready();
-  check();
+  checkAccess();
   // This existing session operation verifies the connected relay's signed roster.
-  await session.workSessions.refreshMembership(channelId);
-  check();
+  await session.channelWrites.refreshMembership(channelId);
+  checkAccess();
   const journal = receipts ?? outbox;
   // Only a roster-confirmed prior addition may be superseded by explicit Add.
   const fresh =
@@ -145,14 +149,40 @@ export async function addChannelMember(
                 ([tag, value]) => tag === "p" && value === pubkey,
               ) &&
               !event.tags.some(
-                ([tag, value]) => tag === "role" && value !== "bot",
+                ([tag, value]) =>
+                  tag === "role" && value !== "bot" && value !== "member",
               ),
         );
+  const recovery = { key: `member-add:${channelId}:${pubkey}`, value: "1" };
+  // A saved share may finish its exact Bot grant; it cannot authorize a new one.
+  const recoveringSoloAgent =
+    pending &&
+    !pending.acknowledged &&
+    !pending.guarded &&
+    pending.recovery?.key === recovery.key &&
+    pending.event.tags.some(
+      ([tag, value]) => tag === "role" && value === "bot",
+    );
+  const check = () => {
+    checkAccess();
+    if (
+      soloParticipant &&
+      !allowSoloAgents &&
+      !recoveringSoloAgent &&
+      (session.agentChoices
+        .snapshot()
+        .identities.some((agent) => agent.pubkey === pubkey) ||
+        session.profiles.snapshot().get(pubkey)?.isAgent)
+    )
+      throw new Error(
+        "Add agents by tagging them in the chat composer instead.",
+      );
+  };
+  check();
   if (pending?.guarded && !channel()?.members?.includes(pubkey))
     throw new Error(
       "Retry this invitation from the agent’s profile so its eligibility can be checked.",
     );
-  const recovery = { key: `member-add:${channelId}:${pubkey}`, value: "1" };
   if (pending && !pending.acknowledged)
     await outbox.recover(pending.event.id, recovery);
   check();
@@ -179,6 +209,17 @@ export async function addChannelMember(
       .snapshot()
       .identities.some((agent) => agent.pubkey === pubkey) ||
     session.profiles.snapshot().get(pubkey)?.isAgent;
+  const current = channel();
+  // Private channel additions grant participation explicitly, even if an older
+  // saved admission default is Guest. Solo and system admission stay separate.
+  const role = isAgent
+    ? "bot"
+    : !soloParticipant &&
+        current?.visibility === "private" &&
+        (current.channelType === "stream" || current.channelType === "forum")
+      ? "member"
+      : undefined;
+  beforeDispatch?.();
   const id =
     pending?.event.id ??
     outbox.send(
@@ -188,7 +229,7 @@ export async function addChannelMember(
         tags: [
           ["h", channelId],
           ["p", pubkey],
-          ...(isAgent ? [["role", "bot"]] : []),
+          ...(role ? [["role", role]] : []),
         ],
       },
       recovery,
@@ -200,7 +241,7 @@ export async function addChannelMember(
   intent.confirmed = false;
   await waitForAddition(journal, id, signal);
   check();
-  await session.workSessions.refreshMembership(channelId);
+  await session.channelWrites.refreshMembership(channelId);
   check();
   if (!channel()?.members?.includes(pubkey))
     throw new Error(

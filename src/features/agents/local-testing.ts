@@ -31,6 +31,9 @@ export function localAgentsFixture(
       state = {
         status: next.status ?? state.status,
         agents: next.agents ?? state.agents,
+        ...((next.hosted ?? state.hosted)
+          ? { hosted: next.hosted ?? state.hosted }
+          : {}),
         ...(next.error ? { error: next.error } : {}),
       };
       for (const listener of [...listeners]) listener();

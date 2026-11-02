@@ -28,10 +28,8 @@ test("only current channel-wide work appears, once per agent, and clears on end"
     agent,
     channelId,
     threadRootId,
-    timestamp: 1,
     startedAt: 1,
     working: true,
-    expiresAt: 2,
   });
   const active: Snapshot = {
     status: "listening",
@@ -48,12 +46,6 @@ test("only current channel-wide work appears, once per agent, and clears on end"
       typing("f", "other"),
     ],
     trimmed: 0,
-    history: "unavailable",
-    hasOlder: false,
-    historyOlder: false,
-    historySkipped: 0,
-    historyAgents: [],
-    capture: "unknown",
   };
   expect(workingAgents(active, "design")).toEqual(["a", "b"]);
   expect(workingAgents(active, "other")).toEqual(["c", "f"]);
@@ -72,7 +64,6 @@ test("links only a current turn to its single captured message", () => {
     id: "c".repeat(64),
     agent,
     receivedAt: 1,
-    historical: false,
     kind: "turn_started",
     plaintext: JSON.stringify({
       kind: "turn_started",
@@ -105,12 +96,6 @@ test("links only a current turn to its single captured message", () => {
     ],
     typing: [],
     trimmed: 0,
-    history: "unavailable",
-    hasOlder: false,
-    historyOlder: false,
-    historySkipped: 0,
-    historyAgents: [],
-    capture: "unknown",
   };
   expect(workingAgentMessage(active, "design", agent)).toBe(messageId);
   expect(workingAgentDetails(active, "design", agent)).toEqual({
@@ -145,10 +130,8 @@ test("links only a current turn to its single captured message", () => {
             agent,
             channelId: "design",
             threadRootId: undefined,
-            timestamp: 60000,
             startedAt: 1000,
             working: true,
-            expiresAt: 68000,
           },
         ],
       },

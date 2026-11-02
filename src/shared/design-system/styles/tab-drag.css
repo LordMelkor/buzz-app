@@ -34,7 +34,7 @@
     height: var(--space-6);
     transform: translate(-100%, -50%);
     border-radius: var(--radius-pill);
-    background: var(--affordance-prominent);
+    background: var(--affordance-prominent-mark);
   }
   .buzz-tabs-tab[data-draggable] {
     cursor: grab;

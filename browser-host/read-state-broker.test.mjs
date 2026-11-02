@@ -77,11 +77,6 @@ async function harness(discovered = true) {
           self: viewer,
           ...(discovered
             ? {
-                audience_authority: {
-                  version: 1,
-                  community_id: community,
-                  max_sources: 100,
-                },
                 read_state_snapshot: {
                   version: 1,
                   community_id: community,
@@ -179,7 +174,6 @@ it("real broker discovery -> reader snapshot and scoped encrypted signing/public
   const h = await harness(),
     signal = new AbortController().signal;
   expect(h.transport.readState.communityId).toBe(community);
-  expect(h.transport.audienceAuthorityCommunity).toBe(community);
   expect(await h.reader.readStateSnapshot()).toEqual([]);
   const blob = { v: 1, client_id: "fixture", contexts: { room: 12 } };
   const event = await h.transport.readState.sign(

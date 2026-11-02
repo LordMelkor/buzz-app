@@ -13,26 +13,38 @@ import { tmpdir } from "node:os";
 import {
   installedBuzzDataDir,
   projectAgentLibrary,
+  projectAgentIdentities,
   readAgentLibrary,
 } from "./agent-library.mjs";
+import identityCases from "../tests/fixtures/agent-identity-library.json" with {
+  type: "json",
+};
+
+it.each(identityCases)(
+  "current identity store: $name",
+  ({ rows, expected }) => {
+    if (expected) expect(projectAgentIdentities(rows)).toEqual(expected);
+    else expect(() => projectAgentIdentities(rows)).toThrow("Could not read");
+  },
+);
 
 it("locates the installed Buzz data directory per platform and refuses to guess elsewhere", () => {
   expect(installedBuzzDataDir("darwin", {}, "/Users/t")).toBe(
-    "/Users/t/Library/Application Support/dev.local.buzz.foundation",
+    "/Users/t/Library/Application Support/xyz.block.buzz.desktop",
   );
   expect(installedBuzzDataDir("linux", {}, "/home/t")).toBe(
-    "/home/t/.local/share/dev.local.buzz.foundation",
+    "/home/t/.local/share/xyz.block.buzz.desktop",
   );
   expect(
     installedBuzzDataDir("linux", { XDG_DATA_HOME: "/data" }, "/home/t"),
-  ).toBe("/data/dev.local.buzz.foundation");
+  ).toBe("/data/xyz.block.buzz.desktop");
   // Tauri's dirs crate ignores a relative XDG_DATA_HOME; so must this reader,
   // or it would look where the installed app never writes.
   for (const XDG_DATA_HOME of ["relative", "./data", ""])
     expect(
       installedBuzzDataDir("linux", { XDG_DATA_HOME }, "/home/t"),
       JSON.stringify(XDG_DATA_HOME),
-    ).toBe("/home/t/.local/share/dev.local.buzz.foundation");
+    ).toBe("/home/t/.local/share/xyz.block.buzz.desktop");
   expect(installedBuzzDataDir("win32", {}, "/home/t")).toBeUndefined();
   expect(installedBuzzDataDir("freebsd", {}, "/home/t")).toBeUndefined();
 });
@@ -89,7 +101,7 @@ it("projects only safe optional avatar artwork without broadening the public fie
     ).toEqual([{ id: "brain", name: "Brain" }]);
   }
 });
-it("read is byte-preserving and rejects missing/malformed/nonregular/oversized sources without copying data into errors", async () => {
+it("read is byte-preserving, treats a missing source as empty, and rejects linked/malformed/nonregular/oversized sources without copying data into errors", async () => {
   const root = await mkdtemp(join(tmpdir(), "buzz-library-"));
   const path = join(root, "managed-agents.json");
   try {
@@ -98,7 +110,22 @@ it("read is byte-preserving and rejects missing/malformed/nonregular/oversized s
     expect(await readAgentLibrary(path)).toEqual(projectAgentLibrary(rows));
     expect(await readFile(path, "utf8")).toBe(raw);
     await symlink(path, join(root, "link"));
-    for (const bad of [join(root, "link"), join(root, "missing"), root])
+    for (const missing of [
+      join(root, "missing"),
+      join(root, "missing-dir/agents.json"),
+    ])
+      expect(await readAgentLibrary(missing)).toEqual({
+        definitions: [],
+        identities: [],
+      });
+    // A dangling link is a link, not a missing library.
+    await symlink(join(root, "missing"), join(root, "dangling"));
+    for (const bad of [
+      join(root, "link"),
+      join(root, "dangling"),
+      join(path, "child"),
+      root,
+    ])
       await expect(readAgentLibrary(bad)).rejects.toThrow("Could not read");
     await writeFile(path, "private broken content");
     await expect(readAgentLibrary(path)).rejects.toThrow("Could not read");
@@ -301,45 +328,56 @@ it.skipIf(!["darwin", "linux"].includes(process.platform))(
         : root;
     const current = join(
       appData,
-      "dev.local.buzz.foundation/agent-controller/agents.json",
+      "xyz.block.buzz.desktop/agents/identities.json",
     );
     const legacy = join(
       appData,
       "xyz.block.buzz.app/agents/managed-agents.json",
     );
     try {
-      await mkdir(join(appData, "dev.local.buzz.foundation/agent-controller"), {
+      await mkdir(join(appData, "xyz.block.buzz.desktop/agents"), {
         recursive: true,
       });
       await mkdir(join(appData, "xyz.block.buzz.app/agents"), {
         recursive: true,
       });
       await writeFile(legacy, JSON.stringify(rows));
-      await writeFile(
-        current,
-        JSON.stringify({ version: 1, agents: [{ pubkey: key, name: "Luna" }] }),
-      );
+      await writeFile(current, JSON.stringify([{ pubkey: key, name: "Luna" }]));
       expect(await readAgentLibrary()).toEqual({
         definitions: [],
         identities: [{ pubkey: key, name: "Luna" }],
       });
+      // Missing is empty, never a fallback to the Classic library.
       await rm(current);
-      await expect(readAgentLibrary()).rejects.toThrow("Could not read");
+      expect(await readAgentLibrary()).toEqual({
+        definitions: [],
+        identities: [],
+      });
+      await expect(readFile(current)).rejects.toMatchObject({ code: "ENOENT" });
       await writeFile(current, "private malformed config");
       await expect(readAgentLibrary()).rejects.toThrow("Could not read");
       await writeFile(
         current,
-        JSON.stringify({
-          version: 1,
-          agents: [],
-          parked: { [key]: { pubkey: key, name: "Old Luna" } },
-        }),
+        JSON.stringify([{ pubkey: key, name: "Old Luna", deleted: true }]),
       );
       expect(await readAgentLibrary()).toEqual({
         definitions: [],
         identities: [],
       });
       expect(await readFile(legacy, "utf8")).toBe(JSON.stringify(rows));
+      // Until the updated desktop moves it, the pre-1.0 folder is read.
+      const foundation = join(appData, "dev.local.buzz.foundation/agents");
+      await mkdir(foundation, { recursive: true });
+      await writeFile(
+        join(foundation, "identities.json"),
+        JSON.stringify([{ pubkey: key, name: "Nova" }]),
+      );
+      expect((await readAgentLibrary()).identities).toEqual([]);
+      await rm(join(appData, "xyz.block.buzz.desktop"), { recursive: true });
+      expect(await readAgentLibrary()).toEqual({
+        definitions: [],
+        identities: [{ pubkey: key, name: "Nova" }],
+      });
     } finally {
       vi.unstubAllEnvs();
       await rm(root, { recursive: true, force: true });

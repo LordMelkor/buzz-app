@@ -26,7 +26,7 @@ capitalization, but do not explicitly disable autocorrect.
 | `features/communities/CommunityDialog.tsx` | Relay URL and invite code |
 | `features/browser/BrowserHostView.tsx` | Address bar |
 | `features/profiles/AvatarEditor.tsx` | Picture URL and emoji |
-| `bundled/hosted-communities/HostedCommunities.tsx` | Domain slug, transfer recipient npub |
+| `bundled/builderlab/communities/HostedCommunities.tsx` | Domain slug, transfer recipient npub |
 | `bundled/channels/CreateChannelDialog.tsx` | Channel name |
 | `bundled/channels/ChannelLifecycleDialog.tsx` | Exact channel-name confirmation |
 | `bundled/workflows/WorkflowEditor.tsx` | Workflow identifiers and YAML |

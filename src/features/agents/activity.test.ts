@@ -11,7 +11,7 @@ const connected: LiveSnapshot = {
   status: "connected",
   routes: [{ id: "observer", status: "live", replay: "unknown" }],
 };
-function fixture(findMessage?: Parameters<typeof createAgentActivity>[5]) {
+function fixture(findMessage?: Parameters<typeof createAgentActivity>[4]) {
   vi.useFakeTimers();
   vi.setSystemTime(1800000000000);
   const observe = vi.fn();
@@ -20,7 +20,6 @@ function fixture(findMessage?: Parameters<typeof createAgentActivity>[5]) {
     true,
     observe,
     (channel) => !(denied && channel === "a"),
-    undefined,
     undefined,
     findMessage,
   );
@@ -399,6 +398,29 @@ it("notifies the working-channel subscriber only on set changes, including timer
   await vi.advanceTimersByTimeAsync(31000);
   expect(f.activity.queries.workingSnapshot()).toBe("[]");
   expect(listener).toHaveBeenCalledTimes(4);
+  unsubscribe();
+  f.release();
+});
+it("does not notify snapshot subscribers when typing pulses only refresh an unchanged typer set", async () => {
+  const f = fixture();
+  f.send(f.item("mystery")); // Recognize the agent without working evidence.
+  const channel = (id: string) => ({ tags: [["h", id]] });
+  f.activity.channelEvents([
+    typingEvent(),
+    typingEvent(undefined, channel("b")),
+  ]);
+  const listener = vi.fn();
+  const unsubscribe = f.activity.queries.subscribe(listener);
+  const before = f.snapshot();
+  for (const id of ["a", "b", "a"]) {
+    await vi.advanceTimersByTimeAsync(3000);
+    f.activity.channelEvents([typingEvent(undefined, channel(id))]);
+  }
+  expect(listener).not.toHaveBeenCalled();
+  expect(f.snapshot().typing).toBe(before.typing);
+  await vi.advanceTimersByTimeAsync(8000);
+  expect(f.snapshot().typing).toEqual([]);
+  expect(listener).toHaveBeenCalledTimes(2); // Each scope expires on its own.
   unsubscribe();
   f.release();
 });

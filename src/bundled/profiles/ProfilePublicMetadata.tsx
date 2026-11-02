@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckIcon, CopyIcon } from "../../shared/design-system/icons";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
-import styles from "./Profiles.module.css";
+import { Button } from "../../shared/design-system/ui/Button";
+import { PreferenceRow } from "../../shared/design-system/ui/PreferenceRow";
+import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
+import { writeClipboardText } from "../../shared/clipboard";
 
 export function ProfilePublicMetadata({
   nip05,
@@ -37,45 +40,43 @@ function ProfileCopyField({
     return () => clearTimeout(timer);
   }, [copied]);
   return (
-    <div>
-      <button
-        tabIndex={0}
-        type="button"
-        className={styles.copyField}
-        aria-label={`Copy ${label}: ${display}`}
-        title={`Copy ${label}`}
-        onClick={() => {
-          const current = ++generation.current;
-          setCopied(false);
-          void Promise.resolve()
-            .then(() => navigator.clipboard.writeText(value))
-            .then(
-              () => {
-                if (current !== generation.current) return;
-                setCopied(true);
-                notify(`Copied ${label.toLowerCase()}`, "success");
-              },
-              () => {
-                if (current === generation.current)
-                  notify(`Couldn't copy ${label.toLowerCase()}.`, "error");
-              },
-            );
-        }}
-      >
-        <span className={styles.fieldText}>
-          <span className="text-body">{label}</span>
-          <span className={styles.fieldValue} title={display}>
-            {display}
-          </span>
-        </span>
-        <span
-          className={styles.copyIndicator}
-          data-copied={copied}
-          aria-hidden="true"
-        >
-          {copied ? <CheckIcon size={16} /> : <CopyIcon size={16} />}
-        </span>
-      </button>
-    </div>
+    <SettingsGroup>
+      <PreferenceRow
+        title={label}
+        subtitle={<span className="break-all">{display}</span>}
+        trailing={
+          <Button
+            size="compact"
+            variant="ghost"
+            aria-label={`Copy ${label}: ${display}`}
+            title={`Copy ${label}`}
+            onClick={() => {
+              const current = ++generation.current;
+              setCopied(false);
+              void Promise.resolve()
+                .then(() => writeClipboardText(value))
+                .then(
+                  () => {
+                    if (current !== generation.current) return;
+                    setCopied(true);
+                    notify(`Copied ${label.toLowerCase()}`, "success");
+                  },
+                  () => {
+                    if (current === generation.current)
+                      notify(`Couldn't copy ${label.toLowerCase()}.`, "error");
+                  },
+                );
+            }}
+          >
+            {copied ? (
+              <CheckIcon size={16} aria-hidden="true" />
+            ) : (
+              <CopyIcon size={16} aria-hidden="true" />
+            )}
+            {copied ? "Copied" : "Copy"}
+          </Button>
+        }
+      />
+    </SettingsGroup>
   );
 }

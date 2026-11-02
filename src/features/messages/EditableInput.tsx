@@ -32,7 +32,12 @@ import {
   selectAll,
 } from "prosemirror-commands";
 import { sinkListItem, liftListItem } from "prosemirror-schema-list";
-import { Fragment } from "prosemirror-model";
+import {
+  Fragment,
+  Slice,
+  type Node as EditorNode,
+  type ResolvedPos,
+} from "prosemirror-model";
 import {
   composerSchema,
   readComposerDocument,
@@ -47,6 +52,7 @@ import { scanMarkdown } from "../relay/message-content";
 import type { ComposerResource } from "../conversation/contracts";
 import {
   activeBlockFormats,
+  apply,
   toggleComposerBlock,
   composerBlockLineBreak,
   composerBlockPrefix,
@@ -61,7 +67,7 @@ import {
 } from "./composer-inline-input";
 import { composerMarkdown } from "./composer-markdown";
 import {
-  buzzCopyMarkdown,
+  buzzCopyDocument,
   externalLinkMarkdown,
   composerClipboard,
   identityLink,
@@ -81,10 +87,11 @@ import {
   type ComposerInputElement,
 } from "./composer-dom";
 import { isApplePlatform } from "../shortcuts/format";
-import { macWebKit } from "./mac-webkit";
+import { macWebKit, webKit } from "./mac-webkit";
 import { composerLinkUrl } from "./composer-link";
 import { messageLinkParts } from "./message-link-parts";
 import { updatePlainLinks, type PlainLink } from "./composer-link-edit";
+import { InlineChip } from "../../shared/design-system/ui/InlineChip";
 import "prosemirror-view/style/prosemirror.css";
 import styles from "./EditableInput.module.css";
 
@@ -110,6 +117,7 @@ export type EditorDecoration = {
 const CONTROL_CHARACTERS = /[\p{Cc}\uF700-\uF747]/gu;
 /** The control characters typed text holds: tab, newline and carriage return. */
 const TYPED_CONTROLS = /[\t\n\r]/u;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 /** True when a native text insertion holds only control characters. Text that
  * mixes them with real characters is not control text and passes untouched. */
 function controlCharacterText(text: string | null | undefined) {
@@ -150,6 +158,206 @@ function keyboardKey(
     CARET_KEYS.get(event.code) ?? CARET_KEYS.get(event.keyCode) ?? event.key
   );
 }
+/** Moves the selection head to a document position, keeping the anchor when
+ * extending, and scrolls it into view. */
+function moveHead(editor: EditorView, head: number, extend: boolean) {
+  const { tr, selection, doc } = editor.state;
+  editor.dispatch(
+    tr
+      .setSelection(
+        TextSelection.create(doc, extend ? selection.anchor : head, head),
+      )
+      .scrollIntoView(),
+  );
+}
+/** Moves the head for plain or Shift Up and Down where the browser cannot. A
+ * line that holds nothing but a token, or part of a wrapped one, offers no
+ * caret position besides the token's edge, so native Up and Down stall there
+ * in WebKit and jump to a document edge in Chromium, entering such a line and
+ * leaving it alike. Such a line is entered at the token edge it holds, or
+ * crossed to the far edge when it holds neither, and left for the position on
+ * the neighbouring line nearest the caret's column. The token's client rects
+ * give its lines, so a line scrolled out of the composer still counts.
+ * A caret at a soft wrap is measured on the line it leaves: a move may go one
+ * line too far but never stalls. Every other line move stays native, from a
+ * DOM caret the browser can move. The Mac's emacs-style Ctrl+N and Ctrl+P
+ * line moves stay native too, and can still stall on such a line: they are
+ * rare in a composer and would need a platform key binding here. */
+function crossTokenLine(
+  editor: EditorView,
+  tokens: ReadonlyMap<HTMLElement, { position(): number | undefined }>,
+  key: string,
+  event: Pick<
+    globalThis.KeyboardEvent,
+    "altKey" | "ctrlKey" | "metaKey" | "shiftKey"
+  >,
+) {
+  const up = key === "ArrowUp";
+  const extend = event.shiftKey;
+  const { selection, doc } = editor.state;
+  if (
+    (!up && key !== "ArrowDown") ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    !(selection instanceof TextSelection) ||
+    !tokens.size
+  )
+    return false;
+  const origin = extend ? selection.head : up ? selection.from : selection.to;
+  // A line break, a hard break or a typed newline, directly before `pos`.
+  const broken = (pos: number) =>
+    doc.textBetween(Math.max(pos - 1, 0), pos) === "\n";
+  // Where a caret at `pos` is drawn. Side -1 measures the character before,
+  // which keeps a token's end on the token's line, but past a line break that
+  // is the break itself, drawn at the end of the line above. A textblock start
+  // has nothing before it, and Chromium draws no rect before a leading newline.
+  const at = (pos: number, side: -1 | 1) =>
+    editor.coordsAtPos(
+      pos,
+      broken(pos) || !doc.resolve(pos).parentOffset ? 1 : side,
+    );
+  const caret = at(origin, up ? -1 : 1);
+  const level = (line: { top: number; bottom: number }) =>
+    (line.top + line.bottom) / 2;
+  const holds = (line?: { top: number; bottom: number }, point = caret) =>
+    !!line && line.top <= level(point) && level(point) <= line.bottom;
+  // The position beside a token that is drawn on the neighbouring line when
+  // the token starts or ends its own: past a line break, into the adjacent
+  // textblock, or else the token edge.
+  const outside = (pos: number, dir: -1 | 1) => {
+    const $pos = doc.resolve(pos);
+    if (!(dir < 0 ? $pos.nodeBefore : $pos.nodeAfter))
+      return Selection.findFrom(doc.resolve(pos + dir), dir, true)?.head;
+    const next = pos + dir;
+    return broken(dir < 0 ? pos : next) ? next : pos;
+  };
+  // Stepping off a token keeps the caret's column, as a browser does between
+  // lines: from `edge`, the near end of the neighbouring `line`, the position
+  // on that line drawn nearest the caret. Landing at the near end instead adds
+  // only the line break to a Shift selection, which looks like no move at all.
+  // Positions are measured rather than hit-tested, so a line scrolled out of
+  // the composer still counts. Each is measured where a caret there is drawn,
+  // so a soft wrap belongs to the line after it. Only grapheme boundaries
+  // count: a position inside an emoji is drawn at its glyph, and a Shift
+  // selection ending there splits the character. Each inline leaf reads as a
+  // newline, one character that nothing after it can join, so the text's
+  // offsets are the textblock's positions and the edge after a token counts.
+  const column = (
+    edge: number | undefined,
+    line?: { top: number; bottom: number },
+  ) => {
+    if (edge === undefined) return edge;
+    const $edge = doc.resolve(edge);
+    const { parent } = $edge;
+    const text = parent.textBetween(0, parent.content.size, undefined, "\n");
+    const positions = [...graphemes.segment(text), { index: text.length }]
+      .map(({ index }) => $edge.start() + index)
+      .filter((pos) => (up ? pos <= edge : pos >= edge));
+    let head = edge;
+    let gap = Number.POSITIVE_INFINITY;
+    for (const pos of up ? positions.reverse() : positions) {
+      const point = editor.coordsAtPos(pos, 1);
+      if (!holds(line, point)) break;
+      const distance = Math.abs(point.left - caret.left);
+      if (distance < gap) [head, gap] = [pos, distance];
+    }
+    return head;
+  };
+  // A Shift press then settles the head by the selection it leaves. Toward
+  // the anchor, it may reach the anchor but never pass it, and it collapses
+  // there rather than leave a lone line break selected, which looks collapsed
+  // and which typing would replace, joining two lines. Away from the anchor,
+  // growing by a lone break onto a token's near edge looks like no move at
+  // all, so it takes the token. Collapsing only applies toward the anchor: from
+  // a collapsed caret, a lone break onto an empty line is the whole move, as
+  // that line holds nothing else.
+  const { anchor } = selection;
+  const lone = (start: number, end: number) =>
+    doc.textBetween(Math.min(start, end), Math.max(start, end), "\n") === "\n";
+  const shifted = (head: number) => {
+    if (up ? origin > anchor : origin < anchor)
+      return (up ? head <= anchor : head >= anchor) || lone(anchor, head)
+        ? anchor
+        : head;
+    const from = up ? head - 1 : head;
+    const token = [...tokens.values()].some((host) => host.position() === from);
+    return token && lone(origin, head) ? (up ? from : from + 1) : head;
+  };
+  for (const [element, host] of tokens) {
+    const from = host.position();
+    if (from === undefined) continue;
+    const to = from + 1;
+    // Bidi reordering can split a token into several rects on one line, as
+    // WebKit reports them, so a rect on its predecessor's line is folded in.
+    const rects = [...element.getClientRects()];
+    const lines = rects.filter((rect, index) => !holds(rects[index - 1], rect));
+    const last = lines.length - 1;
+    const before = outside(from, -1);
+    const after = outside(to, 1);
+    const above = before === undefined ? undefined : at(before, -1);
+    const below = after === undefined ? undefined : at(after, 1);
+    for (const [index, line] of lines.entries()) {
+      const alone =
+        (index > 0 || !above || level(above) < line.top) &&
+        (index < last || !below || level(below) > line.bottom);
+      // WebKit's native move onto a line the token is split across can put
+      // the caret inside the token, so such a line is entered here too. It is
+      // left natively, which works from either edge. Text beside the token can
+      // put `previous` on this very line, so a caret already on it is not
+      // entering.
+      const split = rects.filter((rect) => holds(line, rect)).length > 1;
+      if (!alone && !split) continue;
+      const previous = up
+        ? (lines[index + 1] ?? below)
+        : (lines[index - 1] ?? above);
+      let head: number | undefined;
+      // Entering: stop at the edge this line holds, or cross a middle line.
+      if (holds(previous) && !holds(line))
+        head = up ? (index === last ? to : from) : index === 0 ? from : to;
+      // Leaving from the edge: cross the rest of the token, or step off it.
+      else if (
+        alone &&
+        holds(line) &&
+        ((index === 0 && origin === from) || (index === last && origin === to))
+      )
+        head = up
+          ? index > 0
+            ? from
+            : column(before, above)
+          : index < last
+            ? to
+            : column(after, below);
+      if (head === undefined || (up ? head >= origin : head <= origin))
+        continue;
+      moveHead(editor, extend ? shifted(head) : head, extend);
+      return true;
+    }
+  }
+  // After a token, the DOM caret sits between its element and the text that
+  // follows. Once WebKit, on any platform, has drawn the caret there beside a
+  // wrapped token, Down stalls; from the text's start, the same position, it
+  // moves. The step is harmless beside a token that does not wrap, so it is
+  // not limited to wrapped ones. Up and Chromium need no help.
+  const native = editor.dom.ownerDocument.getSelection();
+  const next = native?.focusNode?.childNodes[native.focusOffset];
+  const token = native?.focusNode?.childNodes[native.focusOffset - 1];
+  if (
+    !up &&
+    webKit() &&
+    native &&
+    next?.nodeType === Node.TEXT_NODE &&
+    token instanceof HTMLElement &&
+    tokens.has(token)
+  ) {
+    if (native.isCollapsed) native.collapse(next, 0);
+    else native.extend(next, 0);
+  }
+  return false;
+}
+type PendingChip = { id: string; name: string };
+// Pending chip ids outlive an editor: a host keeps its resolvers across remounts.
+let pendingChips = 0;
 export type EditableInputProps = Omit<
   HTMLAttributes<ComposerInputElement>,
   "onChange" | "onInput"
@@ -219,6 +427,7 @@ export function EditableInput({
       {
         source: string;
         resource: ComposerResource | null;
+        pending: PendingChip | null;
         position(): number | undefined;
       }
     >(),
@@ -226,6 +435,11 @@ export function EditableInput({
   const [, refresh] = useState(0);
   const scrollAfterTokens = useRef(false);
   const composing = useRef(false);
+  /** Pending-chip settles and extensions that landed during an IME
+   * composition, applied when it ends. */
+  const heldSettles = useRef<
+    { apply(): boolean; resolve(applied: boolean): void }[]
+  >([]);
   const pointing = useRef(false);
   const nativeEditing = useRef(false);
   const plain = useRef<PlainLink[]>([]);
@@ -233,6 +447,8 @@ export function EditableInput({
   const emitted = useRef(draft);
   const api = useRef<{
     sync(draft: MentionDraft, reset?: boolean): void;
+    /** Applies the settles held through the composition that has just ended. */
+    settleHeld(): void;
   } | null>(null);
 
   useLayoutEffect(() => {
@@ -260,8 +476,25 @@ export function EditableInput({
     );
     let editor: EditorView;
     let separateHistory = false;
+    // Mod+Shift+V (and Apple's ⌥⇧⌘V) pastes plain text verbatim. The native
+    // command fires the paste event; the held chord, or the desktop menu's
+    // `buzz:paste-plain` sent just before its command, marks it as raw.
+    let plainPaste = false;
     const editable = () => !current.current.disabled && !locked.current;
-    const projection = () => projectComposerDocument(editor.state.doc);
+    // A projection depends only on the immutable document, but selection events
+    // and completion read value/selection several times per keystroke.
+    let projected:
+      | {
+          doc: EditorState["doc"];
+          value: ReturnType<typeof projectComposerDocument>;
+        }
+      | undefined;
+    const projection = () => {
+      const { doc } = editor.state;
+      if (projected?.doc !== doc)
+        projected = { doc, value: projectComposerDocument(doc) };
+      return projected.value;
+    };
     const tokenViews = () => refresh((revision) => revision + 1);
     const selected = () => {
       const { from, to, empty, $from } = editor.state.selection;
@@ -373,14 +606,24 @@ export function EditableInput({
             ),
           );
         }
-        // An edit at a mention boundary can invalidate identity without touching
-        // the atom itself. Remove only that provenance, in the same history event.
+        // Keep semantic recipient/resource/pending-mention atoms, but demote
+        // presentation-only tokens when their renderer disappears so the source
+        // is editable again. Mention-boundary edits also remove invalidated
+        // recipient provenance, and return a pending mention to its typed query.
         for (const token of next.tokens) {
           if (
-            !token.node.attrs.recipient ||
-            safe.recipients.some(
-              (item) => item.start === token.start && item.end === token.end,
-            )
+            token.node.attrs.recipient
+              ? safe.recipients.some(
+                  (item) =>
+                    item.start === token.start && item.end === token.end,
+                )
+              : token.node.attrs.resource ||
+                (token.node.attrs.pending &&
+                  mentionBoundary(next.draft.text, token.end)) ||
+                decorations.some(
+                  // A larger decoration has already adopted any tokens inside it.
+                  (item) => item.start <= token.start && item.end >= token.end,
+                )
           )
             continue;
           const from = tr.mapping.map(token.from),
@@ -582,6 +825,280 @@ export function EditableInput({
       editor.dispatch(focus ? tr.scrollIntoView() : tr);
       if (terminator && editor.state !== unconverted) separateHistory = true;
       if (focus) editor.focus();
+      return true;
+    };
+    /** Paste this app's own copied blocks and marks as the nodes they are. One
+     * paragraph joins the caret's line; anything else lands as sibling blocks,
+     * splitting the caret's paragraph rather than merging into its text. The
+     * caret then ends inside the last pasted block, as ProseMirror leaves it,
+     * so Enter continues a pasted list or quote; that is deliberate. Returns
+     * the range the paste occupies, which can start after the caret's text. */
+    const insertDocument = (doc: EditorNode) => {
+      if (!editable() || composing.current || editor.composing) return null;
+      const { nodes } = composerSchema;
+      const single = doc.childCount === 1 ? doc.firstChild : null;
+      const tr = closeHistory(editor.state.tr);
+      let from = tr.selection.from;
+      if (single?.type === nodes.paragraph)
+        tr.replaceSelection(new Slice(single.content, 0, 0));
+      else {
+        // Delete first so a selection from an item's start is placed like a
+        // caret there, and a fully selected item text like an empty item.
+        tr.deleteSelection();
+        const { $from } = tr.selection;
+        const item = $from.node(-1);
+        const list =
+          item.type === nodes.list_item && single?.type === $from.node(-2).type
+            ? single
+            : null;
+        const blank = $from.parent.content.size === 0;
+        if (
+          $from.parentOffset === 0 &&
+          $from.index(-1) === 0 &&
+          item.type === nodes.list_item &&
+          (list || !blank)
+        ) {
+          // A list item is `paragraph block*`, so no block can precede its
+          // first paragraph; ProseMirror would close that paragraph empty,
+          // which sends as an empty `- ` item. A pasted list of this list's
+          // kind has its items join before the item instead, or take a blank
+          // item's place; any other block, including a list of the other kind,
+          // which keeps its own numbering, follows the item's paragraph.
+          from = list ? $from.before(-1) : $from.after();
+          const to =
+            list && blank && item.childCount === 1 ? $from.after(-1) : from;
+          const content = list ? list.content : doc.content;
+          tr.replaceWith(from, to, content);
+          tr.setSelection(
+            Selection.near(tr.doc.resolve(from + content.size), -1),
+          );
+        } else {
+          // A blank item that no same-kind list replaces leaves its list
+          // first, as Enter there does, until its empty paragraph is no item's
+          // first; a lift can move the following items under it, and they
+          // leave with it. ProseMirror would otherwise keep the empty
+          // paragraph beside the paste, which sends as an empty `- `.
+          const blankItem = ($pos: ResolvedPos) =>
+            $pos.parent.content.size === 0 &&
+            $pos.node(-1).type === nodes.list_item &&
+            $pos.index(-1) === 0;
+          while (blankItem(tr.selection.$from)) {
+            if (!apply(tr, liftListItem(nodes.list_item))) break;
+          }
+          from = tr.selection.from;
+          tr.replaceSelection(new Slice(doc.content, 0, 0));
+        }
+      }
+      if (
+        composerMarkdown(projectComposerDocument(tr.doc).draft).length >
+        current.current.maxLength
+      )
+        return null;
+      editor.dispatch(tr.scrollIntoView());
+      editor.focus();
+      return { from, to: editor.state.selection.to };
+    };
+    const replaceRecipients = (recipients: readonly MentionRecipient[]) => {
+      if (!editable() || composing.current || editor.composing) return false;
+      const source = projection();
+      const existing = new Set(
+        source.draft.recipients.map((person) => person.pubkey),
+      );
+      const requested = new Set(recipients.map((person) => person.pubkey));
+      if (
+        existing.size === requested.size &&
+        [...existing].every((key) => requested.has(key))
+      )
+        return true;
+      const added = recipients.filter((person) => !existing.has(person.pubkey));
+      const tr = closeHistory(editor.state.tr);
+      for (const person of [...source.draft.recipients].reverse()) {
+        if (requested.has(person.pubkey)) continue;
+        const end =
+          person.end + (source.draft.text[person.end] === " " ? 1 : 0);
+        tr.delete(source.position(person.start), source.position(end, -1));
+      }
+      if (added.length) {
+        const at = Selection.atStart(tr.doc).from;
+        const code = tr.doc.resolve(at).parent.type.spec.code;
+        tr.insert(
+          at,
+          Fragment.fromArray(
+            added.flatMap((person) => [
+              code
+                ? composerSchema.text(`@${person.name}`, [
+                    composerSchema.marks.recipient.create(person),
+                  ])
+                : composerSchema.nodes.token.create({
+                    source: `@${person.name}`,
+                    recipient: person,
+                    editAsText: false,
+                  }),
+              composerSchema.text(" "),
+            ]),
+          ),
+        );
+      }
+      const next = projectComposerDocument(tr.doc).draft;
+      if (
+        next.recipients.length > 32 ||
+        composerMarkdown(next).length > current.current.maxLength
+      )
+        return false;
+      tr.setSelection(editor.state.selection.map(tr.doc, tr.mapping));
+      if (editor.state.storedMarks)
+        tr.setStoredMarks(
+          tr.selection.$from.parent.type.allowedMarks(editor.state.storedMarks),
+        );
+      const before = editor.state;
+      editor.dispatch(tr);
+      return editor.state !== before;
+    };
+    /** The typed `@name` becomes one atom the host resolves later: one undo
+     * step, like a selected mention, and the caret moves past its space. */
+    const insertPendingMention = (
+      name: string,
+      range: { start: number; end: number },
+    ): string | false => {
+      if (!editable() || composing.current || editor.composing) return false;
+      const source = projection();
+      const from = source.position(range.start),
+        to = source.position(range.end, -1);
+      const $from = editor.state.doc.resolve(from);
+      if (
+        !editor.state.selection.empty ||
+        source.source(editor.state.selection.from) !== range.end ||
+        source.draft.text.slice(range.start, range.end) !== `@${name}` ||
+        $from.parent.type.spec.code
+      )
+        return false;
+      const marks = $from.parent.type
+        .allowedMarks(editor.state.storedMarks ?? $from.marks())
+        .filter((mark) => mark.type !== composerSchema.marks.recipient);
+      const id = `pending-${++pendingChips}`;
+      const tr = closeHistory(editor.state.tr).replaceWith(
+        from,
+        to,
+        Fragment.fromArray([
+          composerSchema.nodes.token.create(
+            { source: `@${name}`, pending: { id, name }, editAsText: false },
+            null,
+            marks,
+          ),
+          composerSchema.text(" ", marks),
+        ]),
+      );
+      tr.setSelection(
+        Selection.near(tr.doc.resolve(tr.mapping.map(to, 1)), -1),
+      );
+      if (
+        composerMarkdown(projectComposerDocument(tr.doc).draft).length >
+        current.current.maxLength
+      )
+        return false;
+      const before = editor.state;
+      editor.dispatch(tr.scrollIntoView());
+      if (editor.state === before) return false;
+      separateHistory = true;
+      editor.focus();
+      return id;
+    };
+    const pendingToken = (id: string) =>
+      projection().tokens.find((token) => token.node.attrs.pending?.id === id);
+    /** Settling is not an edit: it happens outside history, while sending too,
+     * and a later undo still restores the typed text through it. */
+    const settlePendingMention = (
+      id: string,
+      recipient: MentionRecipient | null,
+    ): boolean | Promise<boolean> => {
+      if (!pendingToken(id)) return false;
+      // A document change under a composition can drop or commit it early,
+      // and this runs from a promise at any time. Hold it until compositionend
+      // and answer with the replay's outcome, so the host does not treat a
+      // chip that is still in the draft as settled. Only React's flag decides:
+      // the event that clears it is the one that replays, while ProseMirror's
+      // `composing` stays set after a composition that ended while the view
+      // was not editable (a Send under the IME), and a settle held on it
+      // would wait for a compositionend that never comes.
+      if (composing.current) return hold(() => applySettle(id, recipient));
+      return applySettle(id, recipient);
+    };
+    const hold = (apply: () => boolean) =>
+      new Promise<boolean>((resolve) => {
+        heldSettles.current.push({ apply, resolve });
+      });
+    const applySettle = (id: string, recipient: MentionRecipient | null) => {
+      const token = pendingToken(id);
+      if (!token) return false;
+      const convert = (person: MentionRecipient | null) =>
+        editor.state.tr
+          .replaceWith(
+            token.from,
+            token.to,
+            person
+              ? composerSchema.nodes.token.create(
+                  { source: `@${person.name}`, recipient: person },
+                  null,
+                  token.node.marks,
+                )
+              : composerSchema.text(token.node.attrs.source, token.node.marks),
+          )
+          .setMeta("composer-normalized", true)
+          .setMeta("addToHistory", false);
+      let tr = convert(recipient);
+      // A longer current name can overrun the limit; the typed text then stands.
+      if (
+        recipient &&
+        composerMarkdown(projectComposerDocument(tr.doc).draft).length >
+          current.current.maxLength
+      )
+        tr = convert(null);
+      editor.dispatch(tr);
+      return true;
+    };
+    /** The words typed after a pending chip that complete a longer known name
+     * join the chip, which the host then resolves under the whole name. Like a
+     * settle: outside history, while sending too, held under a composition. */
+    const extendPendingMention = (
+      id: string,
+      remainder: string,
+    ): boolean | Promise<boolean> => {
+      if (!remainder || !pendingToken(id)) return false;
+      if (composing.current) return hold(() => applyExtend(id, remainder));
+      return applyExtend(id, remainder);
+    };
+    const applyExtend = (id: string, remainder: string) => {
+      const token = pendingToken(id);
+      if (!token) return false;
+      const pending: PendingChip = token.node.attrs.pending;
+      const after = editor.state.doc.resolve(token.to).nodeAfter;
+      // The host read the words at a name boundary; they, or what follows
+      // them, may have changed since (an IME can commit ` Examples`).
+      if (
+        !after?.isText ||
+        !after.text?.startsWith(remainder) ||
+        !mentionBoundary(projection().draft.text, token.end + remainder.length)
+      )
+        return false;
+      const name = pending.name + remainder;
+      // Two steps, so the typed text stays the undo target: the chip changes
+      // in place (one atom for one atom, as a settle does) and the words after
+      // it leave separately.
+      editor.dispatch(
+        editor.state.tr
+          .replaceWith(
+            token.from,
+            token.to,
+            composerSchema.nodes.token.create(
+              { source: `@${name}`, pending: { id, name }, editAsText: false },
+              null,
+              token.node.marks,
+            ),
+          )
+          .delete(token.to, token.to + remainder.length)
+          .setMeta("composer-normalized", true)
+          .setMeta("addToHistory", false),
+      );
       return true;
     };
     /** True, or the reason shown by the host. The link must survive its context. */
@@ -1021,18 +1538,19 @@ export function EditableInput({
     /** Moves the caret for a caret key the host reported as a control character.
      * Left unhandled, such a keydown types the character instead of moving, so
      * the move happens here: in document terms across an inline leaf, where
-     * WebKit offers extra caret positions around uneditable nodes, and otherwise
-     * through the browser's own caret motion with the platform's modifier
-     * meanings (word and line ends sideways, paragraph and document ends
-     * vertically). Page keys scroll without moving the caret, and Home and End
-     * do so too on Apple platforms unless extending the selection. */
+     * WebKit offers extra caret positions around uneditable nodes, or a line
+     * that only a token holds, and otherwise through the browser's own caret
+     * motion with the platform's modifier meanings (word and line ends
+     * sideways, paragraph and document ends vertically). Page keys scroll
+     * without moving the caret, and Home and End do so too on Apple platforms
+     * unless extending the selection. */
     const moveCaret = (key: string, event: globalThis.KeyboardEvent) => {
       const mac = isApplePlatform(navigator.platform);
       const boundary = mac ? event.metaKey : event.ctrlKey;
       const extend = event.shiftKey;
       const sideways = key === "ArrowLeft" || key === "ArrowRight";
       if (sideways && !event.altKey && !boundary) {
-        const { $head, anchor, empty } = editor.state.selection;
+        const { $head, empty } = editor.state.selection;
         const backward = key === "ArrowLeft";
         const leaf = $head.textOffset
           ? null
@@ -1042,23 +1560,15 @@ export function EditableInput({
         // Only an inline leaf is stepped over in document terms. A block beside
         // the head, as after select-all, is left to the browser's caret motion.
         if ((empty || extend) && leaf?.isInline && !leaf.isText) {
-          const head = backward
-            ? $head.pos - leaf.nodeSize
-            : $head.pos + leaf.nodeSize;
-          editor.dispatch(
-            editor.state.tr
-              .setSelection(
-                TextSelection.create(
-                  editor.state.doc,
-                  extend ? anchor : head,
-                  head,
-                ),
-              )
-              .scrollIntoView(),
+          moveHead(
+            editor,
+            backward ? $head.pos - leaf.nodeSize : $head.pos + leaf.nodeSize,
+            extend,
           );
           return true;
         }
       }
+      if (crossTokenLine(editor, hosts.current, key, event)) return true;
       const selection = editor.dom.ownerDocument.getSelection();
       if (!selection || typeof selection.modify !== "function") return true;
       const alter = extend ? "extend" : "move";
@@ -1210,6 +1720,7 @@ export function EditableInput({
             hosts.current.set(dom, {
               source: node.attrs.source,
               resource: node.attrs.resource,
+              pending: node.attrs.pending,
               position: getPos,
             });
             return {
@@ -1307,6 +1818,10 @@ export function EditableInput({
             : event.ctrlKey && !event.metaKey;
           const named = keyboardKey(event);
           const key = named.toLowerCase();
+          plainPaste =
+            primary &&
+            event.shiftKey &&
+            (key === "v" || (event.altKey && event.code === "KeyV"));
           if (primary && !event.altKey && !event.shiftKey && key === "a")
             return selectAll(editor.state, editor.dispatch);
           const format =
@@ -1404,7 +1919,30 @@ export function EditableInput({
           // a later return to the editor resumes where it was left.
           blur() {
             syncNativeSelection();
+            // WebKitGTK can send Home/End back to a blurred editing root if
+            // its native caret remains there, even with a scrollport focused.
+            // Keep the saved editor caret, but release its native ownership.
+            // A selected range stays available to copy or format after blur.
+            const selection = editor.dom.ownerDocument.getSelection();
+            if (
+              webKit() &&
+              selection?.isCollapsed &&
+              editor.dom.contains(selection.anchorNode)
+            )
+              selection.removeAllRanges();
             return false;
+          },
+          keyup() {
+            plainPaste = false;
+            return false;
+          },
+          mousedown() {
+            plainPaste = false;
+            return false;
+          },
+          "buzz:paste-plain"() {
+            plainPaste = true;
+            return true;
           },
           click(_view, event) {
             // Composer links are editable text, never navigation targets.
@@ -1424,8 +1962,11 @@ export function EditableInput({
           beforeinput(_view, event) {
             // Native insertion can restore focus before its input/selectionchange
             // events. That focus must not overwrite the just-advanced caret.
+            // Hold until the task ends: ProseMirror reads the inserted text in
+            // a microtask, and a focus before that read would restore the caret
+            // from before the character ("any" typed as "nya").
             nativeEditing.current = true;
-            queueMicrotask(() => {
+            setTimeout(() => {
               nativeEditing.current = false;
             });
             if (!event.isComposing) syncNativeSelection();
@@ -1487,6 +2028,8 @@ export function EditableInput({
           },
           paste(_view, event) {
             event.preventDefault();
+            const raw = plainPaste;
+            plainPaste = false;
             // File paste belongs to the host attachment capture; never replace text.
             if (
               Array.from(event.clipboardData?.items ?? []).some(
@@ -1494,27 +2037,81 @@ export function EditableInput({
               )
             )
               return true;
+            const plain = event.clipboardData?.getData("text/plain") ?? "";
+            // Raw text replaces the selection with the caret's marks: no copied
+            // structure, links, selection linking, URL spacing or recipients.
+            if (raw) {
+              if (plain) insert(plain);
+              return true;
+            }
             const code = editor.state.selection.$from.parent.type.spec.code;
             // Code takes visible text verbatim; prose preserves copied web links.
             const html = event.clipboardData?.getData("text/html") ?? "";
-            const plain = event.clipboardData?.getData("text/plain") ?? "";
             const hasPlain =
               !!plain || event.clipboardData?.types?.includes("text/plain");
+            const copy = code ? undefined : buzzCopyDocument(html);
+            // Unformatted prose takes the text path: it inherits the caret's
+            // marks and the link spacing below. Structure pastes as nodes.
+            const paragraph = copy?.childCount === 1 ? copy.firstChild : null;
+            const prose =
+              paragraph?.type === composerSchema.nodes.paragraph &&
+              paragraph.childCount <= 1 &&
+              !paragraph.firstChild?.marks.length
+                ? paragraph.textContent
+                : undefined;
+            if (copy && prose === undefined) {
+              // Only the pasted content is offered: an item-start paste lands
+              // after the item's text, whose display-only links stay so.
+              const inserted = insertDocument(copy);
+              if (inserted) {
+                const after = projection();
+                promoteRecipients(
+                  after.source(inserted.from),
+                  after.source(inserted.to),
+                );
+              }
+              return true;
+            }
+            const source = projection(),
+              start = source.source(editor.state.selection.from),
+              end = source.source(editor.state.selection.to);
             let text =
               (!code &&
-                (buzzCopyMarkdown(html) ??
+                (prose ??
                   externalLinkMarkdown(html, hasPlain ? plain : undefined))) ||
               plain ||
               "";
             if (!text) return true;
+            // A bare URL pasted over selected text links the selection, as other
+            // editors do. editLink() owns the guards (code, resources, unsafe
+            // URLs, limits); when it declines, the paste replaces as before.
+            // Like the Link dialog, a selection inside a longer link re-targets
+            // the whole link, while one crossing its edge splits it.
+            const url = text.trim().replace(/^<(.*)>$/, "$1");
+            if (!code && !editor.state.selection.empty) {
+              const bare = (value: string) => {
+                let whole = false;
+                messageLinkParts(value, undefined, (start, end, href) => {
+                  if (start === 0 && end === value.length && href === value)
+                    whole = true;
+                });
+                return whole;
+              };
+              const edit = bare(url) ? editLink() : null;
+              // A whitespace-only label is not a link the timeline recognises,
+              // and pasting over a selected URL swaps it rather than labelling it.
+              if (
+                edit?.text.trim() &&
+                !bare(edit.text.trim()) &&
+                edit.save(edit.text, url)
+              )
+                return true;
+            }
             let link = false;
             if (!code)
               messageLinkParts(text, undefined, (start, end) => {
                 if (start === 0 && end === text.length) link = true;
               });
-            const source = projection(),
-              start = source.source(editor.state.selection.from),
-              end = source.source(editor.state.selection.to);
             const reuse = link && source.draft.text[end] === " ";
             if (
               link &&
@@ -1620,6 +2217,19 @@ export function EditableInput({
       },
       setSelectionRange: { configurable: true, value: setRange },
       insertText: { configurable: true, value: insert },
+      replaceRecipients: { configurable: true, value: replaceRecipients },
+      insertPendingMention: {
+        configurable: true,
+        value: insertPendingMention,
+      },
+      settlePendingMention: {
+        configurable: true,
+        value: settlePendingMention,
+      },
+      extendPendingMention: {
+        configurable: true,
+        value: extendPendingMention,
+      },
       insertResource: { configurable: true, value: insertResource },
       toggleFormat: { configurable: true, value: toggleFormat },
       insertLineBreak: {
@@ -1691,6 +2301,14 @@ export function EditableInput({
       },
     });
     api.current = {
+      settleHeld() {
+        // ProseMirror skips its own compositionend handler while the view is
+        // not editable, as during a send, and leaves its `composing` set until
+        // the next click. The composition has ended all the same, so the
+        // replay, like the hold above, does not consult that flag.
+        for (const held of heldSettles.current.splice(0))
+          held.resolve(held.apply());
+      },
       sync(next, reset = false) {
         if (
           !reset &&
@@ -1727,6 +2345,7 @@ export function EditableInput({
       ref.current = null;
       view.current = null;
       api.current = null;
+      for (const held of heldSettles.current.splice(0)) held.resolve(false);
       editor.destroy();
     };
   }, [ref]);
@@ -1736,8 +2355,10 @@ export function EditableInput({
     if (!editor) return;
     if (draft !== emitted.current && !composing.current)
       api.current?.sync(draft);
+    // setProps recomputes the decorations that read this committed hint.
+    current.current.placeholder = placeholder;
     editor.setProps({ editable: () => !disabled && !locked.current });
-  }, [draft, disabled]);
+  }, [draft, disabled, placeholder]);
 
   const projection =
     view.current && projectComposerDocument(view.current.state.doc);
@@ -1819,6 +2440,13 @@ export function EditableInput({
             event.preventDefault();
             ref.current?.insertLineBreak();
           }
+          // After the host, which claims Up and Down for a completion list.
+          if (
+            !event.defaultPrevented &&
+            view.current &&
+            crossTokenLine(view.current, hosts.current, event.key, event)
+          )
+            event.preventDefault();
         }}
         onCompositionStart={(event) => {
           composing.current = true;
@@ -1826,6 +2454,11 @@ export function EditableInput({
         }}
         onCompositionEnd={(event) => {
           composing.current = false;
+          // ProseMirror reads the composition's final DOM records in a
+          // microtask queued by its own compositionend handler, which ran
+          // first; a settle dispatched before that flush would rewrite the
+          // text node those records point at and lose the committed text.
+          queueMicrotask(() => api.current?.settleHeld());
           events.onCompositionEnd?.(event as never);
         }}
       />
@@ -1839,8 +2472,18 @@ export function EditableInput({
             item.end === (source ?? 0) + host.source.length,
         );
         return createPortal(
-          host.resource ? (
-            // Host-owned artwork: restore never depends on the providing plugin.
+          // Host-owned artwork: restore never depends on the providing plugin.
+          host.pending ? (
+            <InlineChip
+              address={{ kind: "person", id: host.pending.id }}
+              face={{
+                label: host.pending.name,
+                loading: true,
+                resolved: false,
+              }}
+              interactive={false}
+            />
+          ) : host.resource ? (
             <>
               <span className="sr-only">Resource: </span>
               <span className={styles.resource}>{host.resource.label}</span>

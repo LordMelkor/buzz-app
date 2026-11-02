@@ -16,7 +16,10 @@ export type TerminalBridge = {
     cols: number,
     rows: number,
   ): Promise<string>;
-  read(owner: string, id: string): Promise<{ data: number[]; exited: boolean }>;
+  read(
+    owner: string,
+    id: string,
+  ): Promise<{ data: Uint8Array; exited: boolean }>;
   write(owner: string, id: string, data: string): Promise<void>;
   resize(owner: string, id: string, cols: number, rows: number): Promise<void>;
   close(owner: string, id: string): Promise<void>;
@@ -28,7 +31,13 @@ export const nativeBridge: TerminalBridge = {
   createOwner: () => invoke("terminal_create_owner"),
   spawn: (owner, context, cols, rows) =>
     invoke("terminal_spawn", { owner, context, cols, rows }),
-  read: (owner, id) => invoke("terminal_read", { owner, id }),
+  async read(owner, id) {
+    // Raw body: output bytes, then one exit flag byte.
+    const body = new Uint8Array(
+      await invoke<ArrayBuffer>("terminal_read", { owner, id }),
+    );
+    return { data: body.subarray(0, -1), exited: body.at(-1) === 1 };
+  },
   write: (owner, id, data) => invoke("terminal_write", { owner, id, data }),
   resize: (owner, id, cols, rows) =>
     invoke("terminal_resize", { owner, id, cols, rows }),

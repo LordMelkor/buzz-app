@@ -10,7 +10,10 @@ fn paths_for(root: &Path, service: &str) -> Paths {
         key_lock: root.join(key_lock_name(service)),
         ownership: root.join(AGENT_OWNERSHIP),
         app_data: root.join("app"),
+        backups: root.join("nsec-backups").join(service),
         others: vec![root.join("webkit")],
+        moves: Vec::new(),
+        seeds: Vec::new(),
     }
 }
 fn fixture() -> (tempfile::TempDir, Paths) {
@@ -80,7 +83,15 @@ fn walk(root: &Path, dir: &Path) -> Vec<String> {
         .unwrap()
         .flat_map(|entry| {
             let path = entry.unwrap().path();
-            let name = path.strip_prefix(root).unwrap().display().to_string();
+            // Joined with `/` so the expected listings hold on Windows too,
+            // where `display()` would use `\`.
+            let name = path
+                .strip_prefix(root)
+                .unwrap()
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
             if path.is_dir() {
                 let mut nested = walk(root, &path);
                 nested.push(format!("{name}/"));
@@ -122,6 +133,89 @@ fn sign_out_without_wipe_removes_only_the_key_and_marker() {
     );
     assert!(removed.get());
     assert_eq!(listing(dir.path()), before);
+}
+
+#[test]
+fn backup_choice_is_kept_on_plain_signout_and_erased_only_in_its_key_store_scope() {
+    for wipe in [false, true] {
+        let (dir, paths) = fixture();
+        let other = dir.path().join("nsec-backups/identity.debug");
+        for root in [&paths.backups, &other] {
+            fs::create_dir_all(root).unwrap();
+            for name in ["choice.json", "pending.json", "complete.json"] {
+                fs::write(root.join(name), b"synthetic backup metadata").unwrap();
+            }
+        }
+        mark(&paths, wipe, false);
+        assert!(boot(&paths, no_agents, || Ok(())).is_ok());
+        assert!(!paths.marker.exists());
+        for name in ["choice.json", "pending.json", "complete.json"] {
+            assert_eq!(paths.backups.join(name).exists(), !wipe);
+            assert!(other.join(name).exists());
+        }
+    }
+}
+
+#[test]
+fn backup_erase_finishes_before_marker_removal_and_a_failure_remains_retryable() {
+    let (_dir, paths) = fixture();
+    fs::create_dir_all(&paths.backups).unwrap();
+    fs::write(paths.backups.join("pending.json"), b"synthetic ciphertext").unwrap();
+    fs::create_dir(&paths.finished).unwrap();
+    mark(&paths, true, false);
+    assert!(boot(&paths, no_agents, || Ok(())).is_err());
+    assert!(paths.marker.exists());
+    assert!(!paths.backups.exists());
+    fs::remove_dir(&paths.finished).unwrap();
+    assert!(boot(&paths, no_agents, || Ok(())).is_ok());
+    assert!(!paths.marker.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn backup_choice_erase_refuses_a_linked_parent_without_touching_its_destination() {
+    let (dir, paths) = fixture();
+    let outside = tempfile::tempdir().unwrap();
+    fs::create_dir(outside.path().join("identity")).unwrap();
+    let retained = outside.path().join("identity/choice.json");
+    let pending_backup = outside.path().join("identity/pending.json");
+    fs::write(&retained, b"synthetic public consent").unwrap();
+    fs::write(&pending_backup, b"synthetic ciphertext").unwrap();
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("nsec-backups")).unwrap();
+    mark(&paths, true, false);
+    assert!(boot(&paths, no_agents, || panic!("key must not be touched")).is_err());
+    assert!(paths.marker.exists());
+    assert_eq!(fs::read(retained).unwrap(), b"synthetic public consent");
+    assert_eq!(fs::read(pending_backup).unwrap(), b"synthetic ciphertext");
+}
+
+#[test]
+fn wipe_with_kept_agents_preserves_protection_defaults_and_revision() {
+    for remove_agents in [false, true] {
+        let (_dir, paths) = fixture();
+        let identities = paths.app_data.join(AGENTS).join("identities.json");
+        fs::write(&identities, "[]").unwrap();
+        let agents = buzz_agent_controller::AppAgents::open(identities.clone());
+        let owner = "a".repeat(64);
+        agents.upgrade_protection_storage().unwrap();
+        agents
+            .set_protection_defaults(
+                &owner,
+                0,
+                "security.test",
+                Some(serde_json::json!({"injection":true})),
+            )
+            .unwrap();
+        let saved = agents.protection_defaults(&owner).unwrap();
+        mark(&paths, true, remove_agents);
+        finish_pending(&paths, |_| Ok(()), || Ok(())).unwrap();
+        if remove_agents {
+            assert!(!identities.with_file_name("protection.json").exists());
+        } else {
+            let retained = buzz_agent_controller::AppAgents::open(identities);
+            assert_eq!(retained.protection_defaults(&owner).unwrap(), saved);
+        }
+    }
 }
 
 #[test]
@@ -1329,4 +1423,538 @@ fn agents_rename_runs_after_pending_erase_keeps_legacy_identities() {
         b"identities"
     );
     assert!(!paths.app_data.join("archive.sqlite3").exists());
+}
+
+/// Rename the fixture's folders, their trash and marker to how the legacy
+/// identifier left them, and move them back at launch.
+fn legacy(paths: Paths) -> Paths {
+    let old = |path: &Path| {
+        let mut name = std::ffi::OsString::from("old-");
+        name.push(path.file_name().unwrap());
+        path.with_file_name(name)
+    };
+    let mut moves = Vec::new();
+    for path in std::iter::once(&paths.app_data).chain(&paths.others) {
+        moves.push((trash(&old(path)), trash(path)));
+        moves.push((old(path), path.clone()));
+    }
+    moves.push((old(&paths.marker), paths.marker.clone()));
+    for (old, new) in &moves {
+        if new.exists() {
+            fs::rename(new, old).unwrap();
+        }
+    }
+    Paths { moves, ..paths }
+}
+
+#[test]
+fn legacy_storage_moves_once_at_launch() {
+    let (dir, paths) = fixture();
+    let before = data(dir.path());
+    let paths = legacy(paths);
+    assert_ne!(data(dir.path()), before);
+    let instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert_eq!(data(dir.path()), before);
+    drop(instance);
+    fs::write(paths.app_data.join("archive.sqlite3"), "updated").unwrap();
+    let _again = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert_eq!(
+        fs::read(paths.app_data.join("archive.sqlite3")).unwrap(),
+        b"updated"
+    );
+}
+
+#[test]
+fn a_sign_out_the_legacy_build_committed_finishes_after_the_move() {
+    let (dir, paths) = fixture();
+    mark(&paths, true, false);
+    let paths = legacy(paths);
+    // An erase that stopped part-way left trash under the legacy name.
+    fs::create_dir_all(&paths.moves[2].0).unwrap();
+    fs::write(paths.moves[2].0.join("localstorage"), "prefs").unwrap();
+    let removed = Cell::new(false);
+    let _instance = boot(&paths, no_agents, || {
+        removed.set(true);
+        Ok(())
+    })
+    .unwrap();
+    assert!(removed.get());
+    assert_eq!(
+        data(dir.path()),
+        [
+            "app/",
+            "app/agent-controller/",
+            "app/agent-controller/agents.json",
+            "app/agents/",
+            "app/agents/identities.json",
+        ]
+    );
+}
+
+#[test]
+fn legacy_storage_beside_current_storage_moves_nothing_and_signs_nothing_out() {
+    let (dir, paths) = fixture();
+    mark(&paths, true, true);
+    let paths = legacy(paths);
+    // An older build ran again after the move: its storage and a current
+    // plain sign-out sit beside a legacy erase.
+    mark(&paths, false, false);
+    fs::create_dir(&paths.others[0]).unwrap();
+    // A stopping agent doesn't hide the conflict behind a wait.
+    fs::create_dir_all(&paths.ownership).unwrap();
+    let held = File::create(paths.ownership.join("agent-community.lock")).unwrap();
+    #[allow(clippy::incompatible_msrv)]
+    held.lock().unwrap();
+    let before = data(dir.path());
+    let refused = boot(&paths, no_agents, || panic!("the key must stay"))
+        .err()
+        .unwrap();
+    // Every conflicting pair is named at once.
+    for (old, new) in [&paths.moves[3], &paths.moves[4]] {
+        assert!(refused.contains(&format!("{} beside {}", old.display(), new.display())));
+    }
+    assert!(refused.contains("Nothing was moved"));
+    assert_eq!(data(dir.path()), before);
+    drop(held);
+    fs::remove_file(&paths.moves[4].0).unwrap();
+    let before = data(dir.path());
+    assert!(boot(&paths, no_agents, || panic!("the key must stay")).is_err());
+    assert_eq!(data(dir.path()), before);
+}
+
+#[test]
+fn a_move_interrupted_part_way_finishes_with_the_pending_legacy_sign_out() {
+    let len = legacy(fixture().1).moves.len();
+    // Renames run in order with the marker last, so any stop leaves a prefix
+    // moved and the legacy marker pending.
+    for moved in 1..len {
+        let (dir, paths) = fixture();
+        mark(&paths, true, false);
+        let paths = legacy(paths);
+        for (old, new) in paths.moves[..moved].iter().filter(|(old, _)| old.exists()) {
+            fs::rename(old, new).unwrap();
+        }
+        let removed = Cell::new(false);
+        let _instance = boot(&paths, no_agents, || {
+            removed.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(removed.get(), "{moved} moved");
+        assert_eq!(
+            data(dir.path()),
+            [
+                "app/",
+                "app/agent-controller/",
+                "app/agent-controller/agents.json",
+                "app/agents/",
+                "app/agents/identities.json",
+            ],
+            "{moved} moved"
+        );
+    }
+}
+
+#[test]
+fn legacy_storage_waits_for_other_copies_and_stopping_agents() {
+    let (dir, paths) = fixture();
+    let paths = legacy(paths);
+    let running = boot(&paths_for(dir.path(), OTHER_KEY), no_agents, || {
+        panic!("no sign-out")
+    })
+    .unwrap();
+    let before = data(dir.path());
+    assert!(boot(&paths, no_agents, || panic!("no sign-out")).is_err());
+    assert_eq!(data(dir.path()), before);
+    drop(running);
+    fs::create_dir_all(&paths.ownership).unwrap();
+    let held = File::create(paths.ownership.join("agent-community.lock")).unwrap();
+    #[allow(clippy::incompatible_msrv)]
+    held.lock().unwrap();
+    let before = data(dir.path());
+    assert!(boot(&paths, no_agents, || panic!("no sign-out")).is_err());
+    assert_eq!(data(dir.path()), before);
+    drop(held);
+    let _instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert!(paths.app_data.join("archive.sqlite3").exists());
+    assert!(!paths.moves[1].0.exists());
+}
+
+#[test]
+fn a_launch_waiting_on_a_copy_that_finished_the_move_carries_on() {
+    let (dir, paths) = fixture();
+    let before = data(dir.path());
+    let paths = legacy(paths);
+    let running = boot(&paths_for(dir.path(), OTHER_KEY), no_agents, || {
+        panic!("no sign-out")
+    })
+    .unwrap();
+    // The running copy moves everything while this launch waits for its lock.
+    let moves = paths.moves.clone();
+    HANDOFF.set(Some(Box::new(move || {
+        for (old, new) in moves.iter().filter(|(old, _)| old.exists()) {
+            fs::rename(old, new).unwrap();
+        }
+    })));
+    let _instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert_eq!(data(dir.path()), before);
+    drop(running);
+}
+
+#[test]
+fn a_conflict_seen_without_the_lock_is_confirmed_under_it() {
+    let (dir, paths) = fixture();
+    let before = data(dir.path());
+    let paths = legacy(paths);
+    let running = boot(&paths_for(dir.path(), OTHER_KEY), no_agents, || {
+        panic!("no sign-out")
+    })
+    .unwrap();
+    // The running copy has moved everything; a stray legacy folder stands in for
+    // a scan that read it before that rename and its new name after.
+    for (old, new) in &paths.moves {
+        if old.exists() {
+            fs::rename(old, new).unwrap();
+        }
+    }
+    let stray = paths.moves[1].0.clone();
+    fs::create_dir(&stray).unwrap();
+    HANDOFF.set(Some(Box::new(move || {
+        let _ = fs::remove_dir(&stray);
+    })));
+    let _instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert_eq!(data(dir.path()), before);
+    drop(running);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_legacy_folder_moves_as_the_link() {
+    let (dir, paths) = fixture();
+    let paths = legacy(paths);
+    let outside = outside(dir.path(), &["localstorage"]);
+    fs::remove_dir_all(&paths.moves[3].0).unwrap();
+    std::os::unix::fs::symlink(&outside, &paths.moves[3].0).unwrap();
+    let _instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert_eq!(fs::read_link(&paths.others[0]).unwrap(), outside);
+    unchanged(&outside, &["localstorage"]);
+}
+
+#[test]
+fn only_the_current_identifier_takes_every_folder_the_legacy_one_used() {
+    use legacy_identifier::{moves, CURRENT, LEGACY};
+    let config: serde_json::Value =
+        serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
+    assert_eq!(config["identifier"], CURRENT);
+    assert_eq!(
+        moves("dev.local.buzz.foundation.nexus-test-012345abcdef"),
+        Some(Vec::new())
+    );
+    let (legacy, current) = (
+        Paths::resolve(LEGACY).unwrap(),
+        Paths::resolve(CURRENT).unwrap(),
+    );
+    // Older builds take the same all-Buzz lock, so the move waits for them.
+    assert_eq!(legacy.lock, current.lock);
+    let moves = current.moves;
+    assert!(moves.contains(&(legacy.marker, current.marker)));
+    for path in std::iter::once(current.app_data).chain(current.others) {
+        for path in [trash(&path), path] {
+            let old = path.with_file_name(
+                path.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .replace(CURRENT, LEGACY),
+            );
+            assert!(moves.contains(&(old, path)));
+        }
+    }
+}
+
+/// Development seed bases under `root`, app data last, with the installed
+/// app's folders under `source`.
+fn installed(root: &Path, source: &str) -> Vec<PathBuf> {
+    let seeds = vec![root.join("seed-webkit"), root.join("seed-data")];
+    for (base, file) in seeds.iter().zip(["localstorage", "archive.sqlite3"]) {
+        fs::create_dir_all(base.join(source).join("nested")).unwrap();
+        fs::write(base.join(source).join("nested").join(file), source).unwrap();
+    }
+    fs::create_dir_all(seeds[1].join(source).join("archive")).unwrap();
+    seeds
+}
+
+#[test]
+fn a_first_development_launch_copies_the_installed_storage_once() {
+    use legacy_identifier::{CURRENT, DEV, LEGACY};
+    let (dir, paths) = fixture();
+    let seeds = installed(dir.path(), CURRENT);
+    installed(dir.path(), LEGACY);
+    let paths = Paths {
+        seeds: seeds.clone(),
+        ..paths
+    };
+    let instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    drop(instance);
+    for (base, file) in seeds.iter().zip(["localstorage", "archive.sqlite3"]) {
+        // The 1.0 folders win over the legacy ones, and stay in place.
+        for name in [CURRENT, DEV] {
+            assert_eq!(
+                fs::read(base.join(name).join("nested").join(file)).unwrap(),
+                CURRENT.as_bytes()
+            );
+        }
+        assert!(!base.join(format!("{DEV}.seeding")).exists());
+    }
+    // Development builds never read the release archive.
+    assert!(seeds[1].join(CURRENT).join("archive").exists());
+    assert!(!seeds[1].join(DEV).join("archive").exists());
+    let archive = seeds[1].join(DEV).join("nested/archive.sqlite3");
+    fs::write(&archive, "updated").unwrap();
+    fs::remove_dir_all(seeds[0].join(DEV)).unwrap();
+    let _again = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert_eq!(fs::read(&archive).unwrap(), b"updated");
+    assert!(!seeds[0].join(DEV).exists());
+}
+
+#[test]
+fn an_interrupted_development_seed_finishes_at_the_next_launch() {
+    use legacy_identifier::{DEV, LEGACY};
+    let (dir, paths) = fixture();
+    let seeds = installed(dir.path(), LEGACY);
+    // The last launch copied the first folder, then stopped part-way through app data.
+    fs::create_dir_all(seeds[0].join(DEV)).unwrap();
+    fs::create_dir_all(seeds[1].join(format!("{DEV}.seeding"))).unwrap();
+    fs::write(seeds[1].join(format!("{DEV}.seeding/stale")), "").unwrap();
+    let paths = Paths {
+        seeds: seeds.clone(),
+        ..paths
+    };
+    let _instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert_eq!(fs::read_dir(seeds[0].join(DEV)).unwrap().count(), 0);
+    assert_eq!(
+        fs::read(seeds[1].join(DEV).join("nested/archive.sqlite3")).unwrap(),
+        LEGACY.as_bytes()
+    );
+    assert!(!seeds[1].join(DEV).join("stale").exists());
+    assert!(!seeds[1].join(format!("{DEV}.seeding")).exists());
+}
+
+#[test]
+fn development_launches_copy_the_installed_storage_and_take_only_their_sign_out() {
+    use legacy_identifier::{moves, seeds, CURRENT, DEV, LEGACY};
+    assert!(include_str!("../../../scripts/desktop-config.mjs").contains(&format!("\"{DEV}\"")));
+    let (legacy, dev) = (
+        Paths::resolve(LEGACY).unwrap(),
+        Paths::resolve(DEV).unwrap(),
+    );
+    assert_eq!(moves(DEV), Some(vec![(legacy.marker, dev.marker)]));
+    assert_eq!(dev.seeds.last(), dirs::data_dir().as_ref());
+    // Each folder copied is one the release build moves; caches aren't copied.
+    let release = moves(CURRENT).unwrap();
+    for base in &dev.seeds {
+        assert!(release.contains(&(base.join(LEGACY), base.join(CURRENT))));
+    }
+    // Windows keeps caches in local data, which holds WebView2's storage.
+    let cache = dirs::cache_dir().unwrap();
+    assert!(cache == dirs::data_local_dir().unwrap() || !dev.seeds.contains(&cache));
+    assert_eq!(seeds(CURRENT), Some(Vec::new()));
+    assert_eq!(seeds(LEGACY), Some(Vec::new()));
+}
+
+#[test]
+fn development_builds_use_the_installed_agents_unless_legacy_storage_is_due() {
+    use legacy_identifier::{agents, CURRENT, DEV, LEGACY};
+    let dir = tempfile::tempdir().unwrap();
+    let app_data = |identifier: &str| dir.path().join(identifier);
+    // With no installed storage, as after an erase that removed agents, never
+    // the stale copy in `.dev`.
+    assert_eq!(agents(DEV, &app_data(DEV)), app_data(CURRENT).join(AGENTS));
+    fs::create_dir(app_data(LEGACY)).unwrap();
+    // Before the installed app moves its storage, it is never created.
+    assert_eq!(agents(DEV, &app_data(DEV)), app_data(DEV).join(AGENTS));
+    assert!(!app_data(CURRENT).exists());
+    fs::rename(app_data(LEGACY), app_data(CURRENT)).unwrap();
+    assert_eq!(agents(DEV, &app_data(DEV)), app_data(CURRENT).join(AGENTS));
+    assert_eq!(
+        agents(CURRENT, &app_data(CURRENT)),
+        app_data(CURRENT).join(AGENTS)
+    );
+    assert_eq!(
+        agents("test", &app_data("test")),
+        app_data("test").join(AGENTS)
+    );
+}
+
+#[test]
+fn a_split_release_move_seeds_each_folder_from_where_it_is() {
+    use legacy_identifier::{CURRENT, DEV, LEGACY};
+    let (dir, paths) = fixture();
+    // The release move renamed app data, then stopped before WebKit.
+    let seeds = installed(dir.path(), LEGACY);
+    fs::rename(seeds[1].join(LEGACY), seeds[1].join(CURRENT)).unwrap();
+    let paths = Paths {
+        seeds: seeds.clone(),
+        ..paths
+    };
+    let _instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert!(seeds[0].join(DEV).join("nested/localstorage").exists());
+    assert!(seeds[1].join(DEV).join("nested/archive.sqlite3").exists());
+}
+
+#[test]
+fn a_development_seed_waits_for_the_installed_app_to_finish_signing_out() {
+    use legacy_identifier::{DEV, LEGACY};
+    let (dir, paths) = fixture();
+    let seeds = installed(dir.path(), LEGACY);
+    let marker = seeds[1].join(marker_name(
+        LEGACY,
+        buzz_credential_store::human_store(false),
+    ));
+    fs::write(&marker, "").unwrap();
+    let paths = Paths {
+        seeds: seeds.clone(),
+        ..paths
+    };
+    let error = boot(&paths, no_agents, || panic!("no sign-out"))
+        .err()
+        .unwrap();
+    assert!(error.contains("finish signing out"), "{error}");
+    assert!(!seeds[0].join(DEV).exists() && !seeds[1].join(DEV).exists());
+    fs::remove_file(&marker).unwrap();
+    let _instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert!(seeds[1].join(DEV).join("nested/archive.sqlite3").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_development_seed_never_links_into_the_installed_storage() {
+    use legacy_identifier::{DEV, LEGACY};
+    use std::os::unix::fs::symlink;
+    let (dir, paths) = fixture();
+    let seeds = installed(dir.path(), LEGACY);
+    // The installed app data lives elsewhere, and links to a folder inside it.
+    let moved = dir.path().join("moved");
+    fs::rename(seeds[1].join(LEGACY), &moved).unwrap();
+    symlink(&moved, seeds[1].join(LEGACY)).unwrap();
+    symlink(moved.join("nested"), moved.join("link")).unwrap();
+    let paths = Paths {
+        seeds: seeds.clone(),
+        ..paths
+    };
+    let _instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    let copy = seeds[1].join(DEV);
+    assert!(fs::symlink_metadata(&copy).unwrap().is_dir());
+    assert!(copy.join("nested/archive.sqlite3").exists());
+    assert!(fs::symlink_metadata(copy.join("link")).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_development_seed_keeps_folder_access_and_retries_past_read_only_ones() {
+    use legacy_identifier::{DEV, LEGACY};
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let (dir, paths) = fixture();
+    let seeds = installed(dir.path(), LEGACY);
+    let (private, sealed) = (seeds[1].join(LEGACY), seeds[1].join(LEGACY).join("nested"));
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+    let paths = Paths {
+        seeds: seeds.clone(),
+        ..paths
+    };
+    drop(boot(&paths, no_agents, || panic!("no sign-out")).unwrap());
+    let copy = seeds[1].join(DEV);
+    assert_eq!((mode(&copy), mode(&copy.join("nested"))), (0o700, 0o755));
+    // A copy cut short leaves the same tree staged; the retry clears and redoes it.
+    fs::rename(&copy, seeds[1].join(format!("{DEV}.seeding"))).unwrap();
+    let _instance = boot(&paths, no_agents, || panic!("no sign-out")).unwrap();
+    assert!(copy.join("nested/archive.sqlite3").exists());
+    assert!(!seeds[1].join(format!("{DEV}.seeding")).exists());
+    assert_eq!((mode(&private), mode(&sealed)), (0o700, 0o555));
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_sign_out_an_older_build_finished_removes_the_current_key_once() {
+    let (_dir, paths) = fixture();
+    let removed = Cell::new(0);
+    let seen = paths.finished.with_file_name(format!(
+        ".{}.sign-outs-seen",
+        buzz_credential_store::HUMAN_STORE
+    ));
+    let launch = || {
+        let instance = boot(&paths, no_agents, || Ok(())).unwrap();
+        forget_signed_out_key(&instance, || {
+            // Decided and removed holding the record alone: another launch
+            // reads it only once this one has recorded the count.
+            #[allow(clippy::incompatible_msrv)]
+            let held = File::open(seen.with_file_name(format!(
+                "{}.lock",
+                seen.file_name().unwrap().to_str().unwrap()
+            )))
+            .unwrap()
+            .try_lock_shared()
+            .is_err();
+            assert!(held);
+            removed.set(removed.get() + 1);
+            Ok(())
+        })
+    };
+    // The first launch only starts counting.
+    launch().unwrap();
+    launch().unwrap();
+    assert_eq!(removed.get(), 0);
+    // An older build finishes a sign-out, removing only the previous key.
+    fs::write(&paths.finished, ".").unwrap();
+    launch().unwrap();
+    assert_eq!(removed.get(), 1);
+    launch().unwrap();
+    assert_eq!(removed.get(), 1);
+    // A failed removal records nothing, so the next launch retries.
+    fs::write(&paths.finished, "..").unwrap();
+    let instance = boot(&paths, no_agents, || Ok(())).unwrap();
+    assert_eq!(
+        forget_signed_out_key(&instance, || Err("denied".into())),
+        Err(FAILED.into())
+    );
+    drop(instance);
+    launch().unwrap();
+    assert_eq!(removed.get(), 2);
+    // A malformed record starts counting again, replaced whole.
+    fs::write(&seen, b"\xff\xfe not a count").unwrap();
+    launch().unwrap();
+    assert_eq!(removed.get(), 2);
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "2");
+    // A failed folder sync fails every launch until one succeeds, even once
+    // the count reads back as recorded.
+    fs::write(&paths.finished, "...").unwrap();
+    let instance = boot(&paths, no_agents, || Ok(())).unwrap();
+    let unsynced = |_: &Path| Err(std::io::Error::other("sync"));
+    let remove = || {
+        removed.set(removed.get() + 1);
+        Ok(())
+    };
+    assert_eq!(
+        reconcile_sign_outs(&instance, remove, unsynced),
+        Err(FAILED.into())
+    );
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "3");
+    assert_eq!(
+        reconcile_sign_outs(&instance, || panic!("removed"), unsynced),
+        Err(FAILED.into())
+    );
+    let synced = Cell::new(false);
+    reconcile_sign_outs(
+        &instance,
+        || panic!("removed"),
+        |_| {
+            synced.set(true);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(synced.get());
+    assert_eq!(removed.get(), 3);
 }

@@ -10,11 +10,14 @@ non-interactively and read the saved transcript without invoking Codex or tools.
 
 Buzz runs Codex through the [Codex plugin](../src/bundled/codex/README.md),
 which starts one `codex app-server` per agent and one Codex thread per Buzz
-conversation. Codex saves each thread as a JSONL "rollout" file under
-`~/.codex/sessions/YYYY/MM/DD/rollout-<local-time>-<thread-id>.jsonl`. Archived
-threads move to `~/.codex/archived_sessions/`. Codex inherits the Buzz app's
-environment, so if Buzz was launched with `CODEX_HOME` set, use that directory
-instead of `~/.codex`. Run the commands
+conversation. Buzz runs Codex in its own Codex home, so the Codex app neither
+lists nor locks Buzz's threads: `~/Library/Application Support/Buzz/codex-home`
+on macOS, `${XDG_DATA_HOME:-~/.local/share}/buzz/codex-home` on Linux. It shares
+your sign-in and settings with your own Codex home (`$CODEX_HOME`, default
+`~/.codex`), where threads from older Buzz builds remain. Codex saves each thread
+as a JSONL "rollout" file under
+`<codex-home>/sessions/YYYY/MM/DD/rollout-<local-time>-<thread-id>.jsonl`.
+Archived threads move to `<codex-home>/archived_sessions/`. Run the commands
 below on the machine that runs the agent, with `rg` and `jq` installed.
 
 ## Find the session
@@ -26,7 +29,9 @@ the thread root. Every turn Buzz sends to a thread-scoped session records it as
 
 ```sh
 root='<thread-root-id>'
-codex_home="${CODEX_HOME:-$HOME/.codex}"
+# On Linux: "${XDG_DATA_HOME:-$HOME/.local/share}/buzz/codex-home". For a thread
+# from an older Buzz build: "${CODEX_HOME:-$HOME/.codex}".
+codex_home="$HOME/Library/Application Support/Buzz/codex-home"
 rg -l -F "session_thread\\\":\\\"$root" \
   "$codex_home/sessions" "$codex_home/archived_sessions" -g 'rollout-*.jsonl'
 ```

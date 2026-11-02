@@ -1,5 +1,6 @@
 // NIP-ER reminders (kind 30300): the viewer's self-encrypted, replaceable reminder list.
 // Encryption and signing stay in the host; this owner sees only decoded intent.
+import { retryRead } from "./read-retry";
 import type { ReadFilter, RelayEvent } from "./events";
 
 export const REMINDER_KIND = 30300;
@@ -25,7 +26,8 @@ export type Reminder = Readonly<{
 }>;
 export type RemindersState = Readonly<{
   status: "loading" | "ready" | "error";
-  /** True once a history read has succeeded; local saves and live arrivals don't count. */
+  /** True once the first page of a history read has landed; later pages may
+   * still be loading. Local saves and live arrivals don't count. */
   hydrated: boolean;
   reminders: readonly Reminder[];
   error?: string;
@@ -125,6 +127,18 @@ function randomD() {
   ).join("");
 }
 
+// Status is encrypted, so every head must be read to find the pending ones.
+// Handled ones carry a 30-90 day `expiration` the relay does not enforce yet,
+// so the list grows with use: a few reminders a day reaches 2,000 heads in
+// under two years. Past the bound the read is partial: the newest heads show
+// under "Some reminders could not be loaded", older ones stay hidden, the
+// plugin's saved check time stays put (so reminders due since then notify
+// again each launch), and every refresh walks all the pages again. Fifty pages
+// keeps that safety net, which the cursor guard already backs, out of an
+// everyday user's reach.
+const PAGE = 200;
+const MAX_PAGES = 50;
+
 const now = () => Math.floor(Date.now() / 1000);
 /** Completed records expire 30–90 days out, randomized (NIP-ER). */
 const expiration = () => now() + (30 + Math.floor(Math.random() * 60)) * 86_400;
@@ -146,10 +160,12 @@ export function createReminders(options: {
   });
   let loading: Promise<void> | undefined;
   // Until the live connection is established, and again from each drop, no read
-  // can mark the list ready. Recovery bumps the generation, so only a read
-  // started after (re-)establishment can. Offline reads still load the list.
+  // can mark the list ready (a failed one still reports `ready` with `error`,
+  // which never counts as complete). Recovery bumps the generation, so only a
+  // read started after (re-)establishment can. Offline reads still load the list.
   let offline = true;
   let generation = 0;
+  let refreshController: AbortController | undefined;
   let loadingGeneration = -1;
   const publishState = (
     next: Omit<RemindersState, "reminders" | "hydrated">,
@@ -182,8 +198,15 @@ export function createReminders(options: {
     return true;
   };
   async function accept(events: readonly RelayEvent[]) {
+    // An event already held as a head (the one past the previous page, a live
+    // echo of an own write) decodes to the head it is; skip the decrypt.
+    const held = (event: RelayEvent) => {
+      const d = event.tags.find(([name]) => name === "d")?.[1];
+      return d !== undefined && heads.get(d)?.eventId === event.id;
+    };
     const own = events.filter(
-      (event) => event.kind === REMINDER_KIND && event.pubkey === viewer,
+      (event) =>
+        event.kind === REMINDER_KIND && event.pubkey === viewer && !held(event),
     );
     if (!own.length) return false;
     const byId = new Map(own.map((event) => [event.id, event]));
@@ -241,22 +264,63 @@ export function createReminders(options: {
     refresh() {
       if (loading && loadingGeneration === generation) return loading;
       const current = generation;
+      const controller = new AbortController();
+      refreshController = controller;
+      const readSignal = AbortSignal.any([signal, controller.signal]);
       loadingGeneration = current;
       if (state.status !== "loading") publishState({ status: "loading" });
       let read: Promise<void> | undefined;
       read = (async () => {
         try {
-          const events = await options.query(
-            [{ kinds: [REMINDER_KIND], authors: [viewer], limit: 200 }],
-            signal,
-          );
-          // A disposed session's late reply, even an empty one, proves nothing.
-          if (signal.aborted) return;
-          const changed = await accept(events);
-          if (signal.aborted || current !== generation) return;
-          if (!offline) publishState({ status: "ready" }, true);
-          else if (changed || !state.hydrated)
-            publishState({ status: "loading" }, true);
+          let cursor: { until: number; before_id: string } | undefined;
+          for (let pages = 1; ; pages++) {
+            const events = await retryRead(
+              (signal) =>
+                options.query(
+                  [
+                    {
+                      kinds: [REMINDER_KIND],
+                      authors: [viewer],
+                      limit: PAGE + 1,
+                      ...cursor,
+                    },
+                  ],
+                  signal,
+                ),
+              readSignal,
+            );
+            // A disposed session's late reply, even an empty one, proves nothing.
+            if (signal.aborted) return;
+            // Relay query order is time descending, then ID ascending (also at
+            // ties), compared as the relay and `merge` do. One event past the
+            // page tells a full page from the end of the list; it lands now and
+            // heads the next page, where `accept` already holds it.
+            const ordered = [...events].sort(
+              (a, b) =>
+                b.created_at - a.created_at ||
+                (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+            );
+            const more = ordered.length > PAGE;
+            const changed = await accept(events);
+            if (signal.aborted || current !== generation) return;
+            // Earlier pages show while later ones load; only the last can end it.
+            if (!more && !offline) publishState({ status: "ready" }, true);
+            else if (changed || !state.hydrated)
+              publishState({ status: "loading" }, true);
+            if (!more) return;
+            if (pages === MAX_PAGES)
+              throw new Error("Too many reminders to load");
+            const last = ordered[PAGE - 1];
+            if (
+              !last ||
+              (cursor &&
+                (last.created_at > cursor.until ||
+                  (last.created_at === cursor.until &&
+                    last.id <= cursor.before_id)))
+            )
+              throw new Error("Reminder paging did not advance");
+            cursor = { until: last.created_at, before_id: last.id };
+          }
         } catch (error) {
           if (signal.aborted || current !== generation) return;
           publishState({
@@ -265,6 +329,7 @@ export function createReminders(options: {
           });
         } finally {
           if (loading === read) loading = undefined;
+          if (refreshController === controller) refreshController = undefined;
         }
       })();
       loading = read;
@@ -308,6 +373,7 @@ export function createReminders(options: {
     recover() {
       offline = false;
       generation++;
+      refreshController?.abort();
       return capability.refresh();
     },
     /** Live delivery from another device; failures leave the last good list. */

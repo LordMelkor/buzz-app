@@ -11,7 +11,14 @@ const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HEADER_BYTES: usize = 8192;
 const MAX_RESPONSE_HEADER_BYTES: usize = 16 * 1024;
-const DEADLINE: Duration = Duration::from_secs(30);
+pub(crate) const DEADLINE: Duration = Duration::from_secs(30);
+/// An uploaded file, such as an app artifact.
+const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+/// A deploy can wait for its rollout before it answers.
+const UPLOAD_DEADLINE: Duration = Duration::from_secs(180);
+/// What an uploaded file's name must end with: archives only, never a key or
+/// a config file a request could carry off.
+const UPLOAD_EXTENSION: &str = ".tar.gz";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -22,15 +29,48 @@ pub(crate) struct HostRequest {
     #[serde(default)]
     headers: BTreeMap<String, String>,
     body: Option<String>,
+    timeout_ms: Option<u64>,
+}
+
+fn request_deadline(timeout_ms: Option<u64>) -> Result<Duration, String> {
+    match timeout_ms {
+        None => Ok(DEADLINE),
+        Some(value @ 1..=180_000) => Ok(Duration::from_millis(value)),
+        Some(_) => Err("Host request timeout must be between 1 and 180000 milliseconds".into()),
+    }
 }
 
 fn default_method() -> String {
     "GET".into()
 }
 
-#[derive(Serialize)]
+/// A multipart POST of one local file, with text fields beside it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct HostUpload {
+    url: String,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    #[serde(default)]
+    fields: BTreeMap<String, String>,
+    file: UploadFile,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UploadFile {
+    /// The form field it is sent as.
+    field: String,
+    /// An absolute path to a regular `.tar.gz` file under the home directory.
+    path: String,
+    /// The file name the form gives it.
+    name: String,
+    content_type: String,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct HostResponse {
-    status: u16,
+    pub(crate) status: u16,
     headers: BTreeMap<String, String>,
     body: String,
 }
@@ -42,6 +82,7 @@ pub(crate) async fn plugin_host_request(
     revision: String,
     request: HostRequest,
 ) -> Result<HostResponse, String> {
+    let deadline = request_deadline(request.timeout_ms)?;
     let (url, method, headers) = validate_request(&request)?;
     let operation = async {
         let grants = with_manager(manager, move |manager| manager.host_grants(&id, &revision))
@@ -50,11 +91,137 @@ pub(crate) async fn plugin_host_request(
         if !allows_origin(&grants, &url) {
             return Err("Host request origin is not declared".into());
         }
-        send_request(url, method, headers, request.body).await
+        send_request(url, method, headers, request.body, deadline).await
     };
-    tokio::time::timeout(DEADLINE, operation)
+    tokio::time::timeout(deadline, operation)
         .await
         .map_err(|_| "Host request timed out")?
+}
+
+/// Uploads one file to an origin the plugin declares, as `plugin_host_request`
+/// sends JSON. The plugin names the file, so it may only be an archive in the
+/// user's home directory, and never one reached through a link.
+#[tauri::command]
+pub(crate) async fn plugin_host_upload(
+    manager: tauri::State<'_, PluginManager>,
+    id: String,
+    revision: String,
+    upload: HostUpload,
+) -> Result<HostResponse, String> {
+    let (url, _, headers) = validate_request(&HostRequest {
+        url: upload.url.clone(),
+        method: "POST".into(),
+        headers: upload.headers.clone(),
+        body: None,
+        timeout_ms: None,
+    })?;
+    let operation = async {
+        let grants = with_manager(manager, move |manager| manager.host_grants(&id, &revision))
+            .await
+            .map_err(|_| "Host request is unavailable")?;
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let path = upload_path(&grants, &url, &upload.file.path, home.as_deref())?;
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|_| "Could not read the upload file")?;
+        if bytes.len() as u64 > MAX_UPLOAD_BYTES {
+            return Err("The upload file is too large".into());
+        }
+        let (content_type, body) = multipart(&upload.fields, &upload.file, &bytes)?;
+        let mut headers = headers;
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            HeaderValue::from_str(&content_type).map_err(|_| "Invalid upload")?,
+        );
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(UPLOAD_DEADLINE)
+            .build()
+            .map_err(|_| "Host request client is unavailable")?;
+        read_response(client.post(url).headers(headers).body(body)).await
+    };
+    tokio::time::timeout(UPLOAD_DEADLINE, operation)
+        .await
+        .map_err(|_| "Host upload timed out")?
+}
+
+/// `path` when it is an absolute `.tar.gz` regular file, not a link, in
+/// `home`, and small enough to upload.
+fn upload_path(
+    grants: &HostGrants,
+    url: &reqwest::Url,
+    path: &str,
+    home: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, String> {
+    if !grants.files {
+        return Err("Files are not declared".into());
+    }
+    if !allows_origin(grants, url) {
+        return Err("Host request origin is not declared".into());
+    }
+    let invalid = || format!("An upload is a {UPLOAD_EXTENSION} file in your home directory");
+    let path = std::path::Path::new(path);
+    let home = home
+        .and_then(|home| home.canonicalize().ok())
+        .ok_or_else(invalid)?;
+    if !path.is_absolute() || !path.to_string_lossy().ends_with(UPLOAD_EXTENSION) {
+        return Err(invalid());
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| "The upload file does not exist")?;
+    let resolved = path.canonicalize().map_err(|_| invalid())?;
+    if !metadata.is_file() || !resolved.starts_with(&home) || resolved != path {
+        return Err(invalid());
+    }
+    if metadata.len() > MAX_UPLOAD_BYTES {
+        return Err("The upload file is too large".into());
+    }
+    Ok(resolved)
+}
+
+/// A `multipart/form-data` body: the text fields, then the file.
+fn multipart(
+    fields: &BTreeMap<String, String>,
+    file: &UploadFile,
+    bytes: &[u8],
+) -> Result<(String, Vec<u8>), String> {
+    // Names and types go into headers inside the body, so they stay plain.
+    let plain = |text: &str| {
+        !text.is_empty()
+            && text.len() <= 256
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\')
+    };
+    if fields.len() > 16
+        || !plain(&file.field)
+        || !plain(&file.name)
+        || !plain(&file.content_type)
+        || fields
+            .iter()
+            .any(|(name, value)| !plain(name) || value.len() > MAX_HEADER_BYTES)
+    {
+        return Err("Invalid upload form".into());
+    }
+    let boundary = format!("buzz-{}", uuid::Uuid::new_v4().simple());
+    let mut body = Vec::with_capacity(bytes.len() + 1024);
+    for (name, value) in fields {
+        body.extend(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
+            file.field, file.name, file.content_type
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(bytes);
+    body.extend(format!("\r\n--{boundary}--\r\n").as_bytes());
+    Ok((format!("multipart/form-data; boundary={boundary}"), body))
 }
 
 fn allows_origin(grants: &HostGrants, url: &reqwest::Url) -> bool {
@@ -126,21 +293,27 @@ fn validate_request(
     Ok((url, method, headers))
 }
 
-async fn send_request(
+pub(crate) async fn send_request(
     url: reqwest::Url,
     method: reqwest::Method,
     headers: HeaderMap,
     body: Option<String>,
+    deadline: Duration,
 ) -> Result<HostResponse, String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(DEADLINE)
+        .timeout(deadline)
         .build()
         .map_err(|_| "Host request client is unavailable")?;
     let mut request = client.request(method, url).headers(headers);
     if let Some(body) = body {
         request = request.body(body);
     }
+    read_response(request).await
+}
+
+/// Sends `request` and reads its bounded response, without its cookies.
+async fn read_response(request: reqwest::RequestBuilder) -> Result<HostResponse, String> {
     let mut response = request.send().await.map_err(|_| "Host request failed")?;
     let status = response.status().as_u16();
     let mut headers = BTreeMap::new();
@@ -206,7 +379,25 @@ mod tests {
             method: "POST".into(),
             headers: BTreeMap::new(),
             body: Some("{}".into()),
+            timeout_ms: None,
         }
+    }
+
+    #[test]
+    fn bounds_explicit_request_deadlines_and_keeps_the_default() {
+        assert_eq!(request_deadline(None).unwrap(), Duration::from_secs(30));
+        assert_eq!(
+            request_deadline(Some(180_000)).unwrap(),
+            Duration::from_secs(180)
+        );
+        assert!(request_deadline(Some(0)).is_err());
+        assert!(request_deadline(Some(180_001)).is_err());
+        let parsed: HostRequest =
+            serde_json::from_str(r#"{"url":"https://example.test/","timeoutMs":180000}"#).unwrap();
+        assert_eq!(
+            request_deadline(parsed.timeout_ms).unwrap(),
+            Duration::from_secs(180)
+        );
     }
 
     #[test]
@@ -262,6 +453,36 @@ mod tests {
         let manager =
             buzzodz_plugins::Manager::open(Some(temp.path().into()), "test", false).unwrap();
         let grants = manager.host_grants("block.builderlab", "bundled").unwrap();
+        if option_env!("BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG").is_some_and(|c| !c.is_empty()) {
+            // FI builds reach Builderlab only through the native forwarder.
+            assert!(grants
+                .federated_identity
+                .is_some_and(|grant| !grant.operations.is_empty()));
+            assert!(!grants.files && grants.network_origins.is_empty());
+            return;
+        }
+        assert!(grants.federated_identity.is_none());
+        assert_eq!(
+            grants.files,
+            buzzodz_plugins::apps_control_plane(buzzodz_plugins::BUILDERLAB_ORIGIN).is_some()
+        );
+        if let Some(origin) =
+            buzzodz_plugins::apps_control_plane(buzzodz_plugins::BUILDERLAB_ORIGIN)
+        {
+            let home = temp.path().canonicalize().unwrap();
+            let archive = home.join("app.tar.gz");
+            std::fs::write(&archive, b"gz").unwrap();
+            assert_eq!(
+                upload_path(
+                    &grants,
+                    &reqwest::Url::parse(origin).unwrap(),
+                    archive.to_str().unwrap(),
+                    Some(&home)
+                )
+                .unwrap(),
+                archive
+            );
+        }
         let origin = grants
             .network_origins
             .first()
@@ -288,25 +509,73 @@ mod tests {
     }
 
     #[test]
-    fn bundled_hosted_communities_reach_only_the_builderlab_origin() {
-        let temp = tempfile::tempdir().unwrap();
-        let manager =
-            buzzodz_plugins::Manager::open(Some(temp.path().into()), "test", false).unwrap();
-        let grants = manager
-            .host_grants("block.hosted-communities", "bundled")
+    fn uploads_only_an_archive_file_in_home() {
+        let url = reqwest::Url::parse("https://apps.example.test/deploy").unwrap();
+        let mut grants = HostGrants {
+            network_origins: vec!["https://apps.example.test".into()],
+            ..HostGrants::default()
+        };
+        // Declared access is checked before any filesystem lookup, including
+        // whether the home directory or supplied archive exists.
+        assert_eq!(
+            upload_path(&grants, &url, "/missing.tar.gz", None).unwrap_err(),
+            "Files are not declared"
+        );
+        grants.files = true;
+        let other = reqwest::Url::parse("https://other.example.test/deploy").unwrap();
+        assert_eq!(
+            upload_path(&grants, &other, "/missing.tar.gz", None).unwrap_err(),
+            "Host request origin is not declared"
+        );
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path().canonicalize().unwrap();
+        let archive = home.join("app/artifact.tar.gz");
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        std::fs::write(&archive, b"gz").unwrap();
+        std::fs::write(home.join("app/secret.txt"), b"key").unwrap();
+        let at = |path: &std::path::Path| {
+            upload_path(&grants, &url, path.to_str().unwrap(), Some(&home))
+        };
+        assert_eq!(at(&archive).unwrap(), archive);
+        assert!(at(&home.join("app/secret.txt")).is_err());
+        assert!(at(&home.join("app/missing.tar.gz")).is_err());
+        assert!(at(&home.join("app")).is_err());
+        assert!(upload_path(&grants, &url, "app/artifact.tar.gz", Some(&home)).is_err());
+        assert!(at(&home.join("app/../app/artifact.tar.gz")).is_err());
+        let outside = tempfile::tempdir().unwrap();
+        let elsewhere = outside.path().join("artifact.tar.gz");
+        std::fs::write(&elsewhere, b"gz").unwrap();
+        assert!(at(&elsewhere).is_err());
+        #[cfg(unix)]
+        {
+            let link = home.join("app/link.tar.gz");
+            std::os::unix::fs::symlink(home.join("app/secret.txt"), &link).unwrap();
+            assert!(at(&link).is_err());
+        }
+    }
+
+    #[test]
+    fn builds_a_multipart_form_of_fields_then_the_file() {
+        let file = UploadFile {
+            field: "artifact".into(),
+            path: String::new(),
+            name: "artifact.tar.gz".into(),
+            content_type: "application/gzip".into(),
+        };
+        let fields = BTreeMap::from([("version_id".to_string(), "v1".to_string())]);
+        let (content_type, body) = multipart(&fields, &file, b"GZ").unwrap();
+        let boundary = content_type
+            .strip_prefix("multipart/form-data; boundary=")
             .unwrap();
-        assert_eq!(grants.network_origins, ["https://app.builderlab.xyz"]);
-        assert!(grants.commands.is_empty());
-        for (url, allowed) in [
-            ("https://app.builderlab.xyz/api/goose/v1/auth/me", true),
-            ("https://builderlab.xyz/api/goose/v1/auth/me", false),
-            (
-                "https://app.builderlab.xyz:8443/api/goose/v1/auth/me",
-                false,
-            ),
-        ] {
-            let (url, _, _) = validate_request(&request(url)).unwrap();
-            assert_eq!(allows_origin(&grants, &url), allowed, "{url}");
+        assert_eq!(
+            String::from_utf8(body).unwrap(),
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"version_id\"\r\n\r\nv1\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"artifact\"; filename=\"artifact.tar.gz\"\r\nContent-Type: application/gzip\r\n\r\nGZ\r\n--{boundary}--\r\n"
+            )
+        );
+        for bad in ["a\"b", "a b", "", "a\r\nb"] {
+            let fields = BTreeMap::from([(bad.to_string(), "v".to_string())]);
+            assert!(multipart(&fields, &file, b"").is_err(), "{bad:?}");
         }
     }
 
@@ -321,6 +590,7 @@ mod tests {
             reqwest::Method::POST,
             HeaderMap::new(),
             Some("{}".into()),
+            DEADLINE,
         )
         .await
         .unwrap();
@@ -344,7 +614,8 @@ mod tests {
         .into_bytes();
         response.extend(body);
         let (url, server) = local_response(response);
-        let result = send_request(url, reqwest::Method::POST, HeaderMap::new(), None).await;
+        let result =
+            send_request(url, reqwest::Method::POST, HeaderMap::new(), None, DEADLINE).await;
         server.join().unwrap();
         assert_eq!(result.err().as_deref(), Some("Host response is too large"));
     }
@@ -357,7 +628,8 @@ mod tests {
         }
         response.extend(b"\r\n");
         let (url, server) = local_response(response);
-        let result = send_request(url, reqwest::Method::POST, HeaderMap::new(), None).await;
+        let result =
+            send_request(url, reqwest::Method::POST, HeaderMap::new(), None, DEADLINE).await;
         server.join().unwrap();
         assert_eq!(
             result.err().as_deref(),

@@ -19,9 +19,18 @@ import {
 } from "../../features/shortcuts/preferences";
 import { ShortcutsService } from "../../features/shortcuts/service";
 import { isApplePlatform } from "../../features/shortcuts/format";
+import { createRelaySession } from "../../features/relay/session";
+import { keypair, scriptedTransport } from "../../features/relay/testing";
 
 // jsdom lacks scrollIntoView; the palette reveals its typed-text selection.
 beforeEach(() => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
     configurable: true,
     value: vi.fn(),
@@ -29,6 +38,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   cleanup();
   Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
 });
@@ -59,7 +69,7 @@ it("keeps typing focus while arrows select results and Enter opens the selection
   await user.click(screen.getByRole("button", { name: "Search Buzz" }));
   const dialog = await screen.findByRole("dialog", { name: "Search Buzz" });
   const input = within(dialog).getByRole("combobox", { name: "Search Buzz" });
-  const messages = within(dialog).getByRole("option", { name: "Multiplayer" });
+  const messages = within(dialog).getByRole("option", { name: "Messages" });
   expect(
     within(dialog).queryByRole("option", { name: "Home" }),
   ).not.toBeInTheDocument();
@@ -170,7 +180,7 @@ it("keeps result shortcuts without badges and follows the hovered row", async ()
   await user.click(screen.getByRole("button", { name: "Search Buzz" }));
   const dialog = await screen.findByRole("dialog", { name: "Search Buzz" });
   const input = within(dialog).getByRole("combobox", { name: "Search Buzz" });
-  const messages = within(dialog).getByRole("option", { name: "Multiplayer" });
+  const messages = within(dialog).getByRole("option", { name: "Messages" });
   const settings = within(dialog).getByRole("option", { name: "Settings" });
   const apple = isApplePlatform(navigator.platform);
   expect(messages).toHaveAttribute(
@@ -201,6 +211,14 @@ it("keeps result shortcuts without badges and follows the hovered row", async ()
   expect(settings).toHaveAttribute("aria-selected", "true");
   expect(messages).toHaveAttribute("aria-selected", "false");
   expect(input).toHaveAttribute("aria-activedescendant", settings.id);
+  // Leaving the list hands the highlight back to the keyboard's row.
+  const palette = dialog.querySelector("[data-search-palette]");
+  if (!palette) throw new Error("Missing search palette");
+  fireEvent.pointerLeave(palette, { pointerType: "mouse" });
+  expect(messages).toHaveAttribute("aria-selected", "true");
+  expect(settings).toHaveAttribute("aria-selected", "false");
+  at(14);
+  expect(settings).toHaveAttribute("aria-selected", "true");
   fireEvent.keyDown(input, {
     key: "@",
     code: "Digit2",
@@ -248,6 +266,26 @@ it("selects the first typed result and keeps it as results change", async () => 
     "aria-activedescendant",
     screen.getByRole("option", { name: "Target ahead" }).id,
   );
+  // A pointer passing over the results returns Enter to the first one.
+  const other = screen.getByRole("option", { name: /^Target$/ });
+  for (const clientX of [10, 12])
+    fireEvent.pointerMove(other, {
+      pointerType: "mouse",
+      clientX,
+      clientY: 10,
+    });
+  expect(other).toHaveAttribute("aria-selected", "true");
+  const palette = document.querySelector("[data-search-palette]");
+  if (!palette) throw new Error("Missing search palette");
+  const scroll = vi.mocked(HTMLElement.prototype.scrollIntoView);
+  scroll.mockClear();
+  fireEvent.pointerLeave(palette, { pointerType: "mouse" });
+  expect(input).toHaveAttribute(
+    "aria-activedescendant",
+    screen.getByRole("option", { name: "Target ahead" }).id,
+  );
+  // The list stays where the pointer left it.
+  expect(scroll).not.toHaveBeenCalled();
   await user.keyboard("{Enter}");
   expect(select).toHaveBeenCalledExactlyOnceWith("test/second");
 });
@@ -350,6 +388,123 @@ it("opens conversation-scoped search with Command F and returns to overall searc
     expect(screen.getByRole("dialog", { name: "Search Buzz" })).toBeVisible();
   } finally {
     cleanup();
+    bindings.dispose();
+    await root.fiber.dispose();
+  }
+});
+
+it("does not open a DM that finishes starting after search closed and reopened", async () => {
+  const root = new Context();
+  root.provide("pluginStatus", {
+    isActive: () => true,
+    subscribe: () => () => {},
+  });
+  const bindings = createShortcutBindings(window);
+  const shortcuts = new ShortcutsService(root, window, bindings);
+  const relay = keypair(),
+    viewer = keypair(),
+    bob = keypair();
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query: async () => [],
+  });
+  let started!: (channelId: string) => void;
+  let attempt!: AbortSignal;
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      // The started DM is known, so only the closed palette stops it.
+      get: (id: string) =>
+        id === "bob-dm"
+          ? { id, name: "", channelType: "dm" }
+          : owner.session.channels.get?.(id),
+    },
+    directMessages: {
+      ...owner.session.directMessages,
+      available: true,
+      people: async () => ({
+        people: [{ pubkey: bob.pubkey, name: "Bob" }],
+        hasMore: false,
+      }),
+      open: (_pubkeys: readonly string[], signal: AbortSignal) => {
+        attempt = signal;
+        return new Promise<string>((resolve) => (started = resolve));
+      },
+    },
+  } as unknown as typeof owner.session;
+  const connection = { status: "ready", generation: 0, session, scope: "s" };
+  const community = {
+    selected: "wss://relay.example",
+    viewer: viewer.pubkey,
+  };
+  const open = vi.fn(async () => {});
+  const services = {
+    shortcuts,
+    shortcutBindings: bindings,
+    navigation: {
+      subscribe: () => () => {},
+      snapshot: () => ({ entry: { target: null } }),
+      open,
+    },
+    communities: {
+      subscribe: () => () => {},
+      snapshot: () => community,
+      relay: { subscribe: () => () => {}, snapshot: () => connection },
+    },
+  } as unknown as SearchServices;
+  const user = userEvent.setup();
+  try {
+    render(
+      <PageSearch
+        pages={[
+          {
+            key: "buzz.channels/channels",
+            pluginId: "buzz.channels",
+            id: "channels",
+            title: "Channels",
+            revision: "bundled",
+            component: () => null,
+          },
+        ]}
+        onSelect={vi.fn()}
+        services={services}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Search Buzz" }));
+    const input = await screen.findByRole("combobox", { name: "Search Buzz" });
+    await user.type(input, "bob");
+    await user.click(await screen.findByRole("option", { name: /Bob/ }));
+    expect(
+      await screen.findByText("Opening your conversation with Bob…"),
+    ).toBeVisible();
+    // Hold the dialog's close animation, so search reopens with the same
+    // results still mounted before the DM resolves.
+    let release!: () => void;
+    const finished = new Promise<void>((resolve) => (release = resolve));
+    const animations = vi.fn(() => [{ finished }]);
+    const dialog = screen.getByRole("dialog", { name: "Search Buzz" });
+    Object.defineProperty(dialog, "getAnimations", { value: animations });
+    try {
+      fireEvent.keyDown(input, { key: "Escape" });
+      await vi.waitFor(() => expect(animations).toHaveBeenCalled());
+      expect(attempt.aborted).toBe(true);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Search Buzz", hidden: true }),
+      );
+      expect(input).toBeInTheDocument();
+      expect(input).toHaveValue("");
+      await act(async () => started("bob-dm"));
+      expect(open).not.toHaveBeenCalled();
+      expect(
+        screen.queryByText("Opening your conversation with Bob…"),
+      ).toBeNull();
+    } finally {
+      await act(async () => release());
+    }
+  } finally {
+    cleanup();
+    owner.dispose();
     bindings.dispose();
     await root.fiber.dispose();
   }

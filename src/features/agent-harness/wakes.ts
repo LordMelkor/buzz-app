@@ -1,17 +1,19 @@
-// Watch and timer wakes, the same for every harness, as in Janet: each runs as
-// a standalone turn in its Interest's lane, joins no conversation, and saves
-// nothing. The agent runner owns the lanes; an agent type supplies only how to
-// run one standalone turn (`AgentType.runOnce`). This owns the checks that the
-// wake is still wanted, and its prompt.
+// Subscription wakes share prompt framing and cancellation checks across
+// harnesses. The runner owns Interest lanes and conversation delivery; this
+// module also runs subscriptions without an address through AgentType.runOnce.
 import {
   ATTENTION_REVIEW,
   catchUpPrompt,
   timerPrompt,
+  sourcePrompt,
   watchPrompt,
 } from "./attention-prompt";
 import type { AgentHandle, Trigger, TurnResult } from "../agents/service";
 
-export type WakeTrigger = Exclude<Trigger, { type: "mention" }>;
+export type WakeTrigger = Exclude<
+  Trigger,
+  { type: "mention" | "plugin" | "attention" }
+>;
 /** Runs one standalone turn, `key` naming it (`watch/ID`, `catch-up/ID` or
  * `timer/ID`). It calls `prompt` once it is ready to start the turn, and
  * starts none when it gives undefined: the wake is no longer wanted. */
@@ -53,7 +55,7 @@ export async function wake(
 
 /** The prompt for a wake as its watch or timer now is, with the end-of-turn
  * review, or undefined when it should no longer run. */
-async function wakePrompt(
+export async function wakePrompt(
   agent: AgentHandle,
   trigger: WakeTrigger,
   id: string,
@@ -62,7 +64,12 @@ async function wakePrompt(
   const { attention } = agent;
   if (!stillCurrent()) return undefined;
   const current = (await attention.show(trigger.slug)).object;
-  const type = trigger.type === "timer" ? "timer" : "event";
+  const type =
+    trigger.type === "timer"
+      ? "timer"
+      : trigger.type === "source"
+        ? "source"
+        : "event";
   if (!current || current.type !== type) return undefined;
   const interest = (await attention.show(`interest/${current.interest_id}`))
     .object;
@@ -71,29 +78,42 @@ async function wakePrompt(
       ? { instructions: interest.instructions }
       : {};
   const text =
-    trigger.type === "watch"
-      ? watchPrompt({
+    trigger.type === "source"
+      ? sourcePrompt({
           id,
+          provider: trigger.watch.provider,
+          text: trigger.text,
+          ...(trigger.classifier ? { classifier: trigger.classifier } : {}),
           interest: current.interest_id,
           ...instructions,
-          event: trigger.event,
-          ...(trigger.classifier ? { classifier: trigger.classifier } : {}),
+          conversation: !!current.channel,
         })
-      : trigger.type === "catch-up"
-        ? catchUpPrompt({
+      : trigger.type === "watch"
+        ? watchPrompt({
             id,
             interest: current.interest_id,
             ...instructions,
-            events: trigger.events,
-            skipped: !!trigger.skipped,
+            conversation: !!current.channel,
+            event: trigger.event,
+            ...(trigger.classifier ? { classifier: trigger.classifier } : {}),
           })
-        : timerPrompt({
-            id,
-            interest: current.interest_id,
-            prompt: current.type === "timer" ? current.prompt : "",
-            ...instructions,
-            spent: trigger.spent,
-          });
+        : trigger.type === "catch-up"
+          ? catchUpPrompt({
+              id,
+              interest: current.interest_id,
+              ...instructions,
+              conversation: !!current.channel,
+              events: trigger.events,
+              skipped: !!trigger.skipped,
+            })
+          : timerPrompt({
+              id,
+              interest: current.interest_id,
+              prompt: current.type === "timer" ? current.prompt : "",
+              ...instructions,
+              spent: trigger.spent,
+              conversation: current.type === "timer" && !!current.channel,
+            });
   // Asked again: the attention can change while it is read.
   return stillCurrent() ? `${text}\n\n${ATTENTION_REVIEW}` : undefined;
 }

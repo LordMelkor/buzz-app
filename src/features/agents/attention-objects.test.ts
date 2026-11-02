@@ -210,6 +210,27 @@ describe("checked writes", () => {
 });
 
 describe("summaries", () => {
+  it("includes source names in summaries and searches", async () => {
+    const value = await write(record(), "watch/ci", {
+      type: "source",
+      provider: "example/command",
+      interest_id: "triage",
+      enabled: true,
+      name: "Release checks",
+      config: {},
+    });
+    expect(
+      watchSummaries(value, { type: "source", search: "Release checks" }, now),
+    ).toEqual([
+      {
+        id: "ci",
+        interest_id: "triage",
+        name: "Release checks",
+        type: "source",
+        status: "enabled",
+      },
+    ]);
+  });
   it("give each watch's status and filter by type, status and search", async () => {
     let value = record();
     value = await write(value, "watch/once", timer());

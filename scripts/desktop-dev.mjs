@@ -18,15 +18,29 @@ if (
 const port = values.port === undefined ? undefined : Number(values.port);
 
 const help = forwarded.some((arg) => arg === "--help" || arg === "-h");
-// Build the bundled goose-acp before Tauri compiles, so a cold build does not
-// count against its dev-server timeout. Local runs skip the size optimizations.
+// Stage the bundled helpers before Tauri compiles, outside its dev-server timeout.
 if (!help) {
-  // Build for the target Tauri is given, as Tauri tells beforeBuildCommand.
+  // Stage for the target Tauri is given, as Tauri tells beforeBuildCommand.
   const at = forwarded.findIndex((arg) => arg === "--target" || arg === "-t");
   const triple =
     at === -1
       ? forwarded.find((arg) => arg.startsWith("--target="))?.slice(9)
       : forwarded[at + 1];
+  const helper = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL("./build-agent-command.mjs", import.meta.url)),
+      "--dev",
+    ],
+    {
+      stdio: "inherit",
+      env: triple
+        ? { ...process.env, TAURI_ENV_TARGET_TRIPLE: triple }
+        : process.env,
+    },
+  );
+  if (helper.error) throw helper.error;
+  if (helper.status !== 0) process.exit(helper.status ?? 1);
   const goose = spawnSync(
     process.execPath,
     [fileURLToPath(new URL("./build-goose-acp.mjs", import.meta.url)), "--dev"],
@@ -42,7 +56,21 @@ if (!help) {
   // Work that never touches Goose should still start; Goose then says
   // goose-acp is missing.
   if (goose.status !== 0)
-    console.warn("goose-acp did not build; Goose agents will not start.");
+    console.warn("goose-acp did not stage; Goose agents will not start.");
+  const cli = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("./build-buzz-cli.mjs", import.meta.url)), "--dev"],
+    {
+      stdio: "inherit",
+      env: triple
+        ? { ...process.env, TAURI_ENV_TARGET_TRIPLE: triple }
+        : process.env,
+    },
+  );
+  if (cli.error) console.error(cli.error.message);
+  if (cli.signal) process.kill(process.pid, cli.signal);
+  if (cli.status !== 0)
+    console.warn("buzz did not stage; the bundled buzz CLI will be missing.");
 }
 const root = fileURLToPath(new URL("../", import.meta.url));
 const config = desktopOverlay(root);

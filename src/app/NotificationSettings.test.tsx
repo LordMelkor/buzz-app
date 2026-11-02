@@ -321,6 +321,57 @@ it("cleans up the preview when playback rejects", async () => {
   await act(async () => reject(new Error("blocked")));
   expect(pause).toHaveBeenCalledOnce();
 });
+it("keeps an explicit permission check focused and busy until the native read finishes", async () => {
+  const ctx = new Context();
+  contexts.push(ctx);
+  const runtime = new PluginRuntime(ctx, async () => ({ apply() {} }));
+  ctx.effect(() => () => runtime.dispose());
+  const permission = vi.fn(
+    async (): Promise<NotificationPermission> => "default",
+  );
+  const service = new NotificationsService(
+    ctx,
+    provideNavigation(ctx).navigation,
+    {
+      label: "Browser",
+      permission,
+      requestPermission: async () => "default",
+      show: async () => {},
+      dispose() {},
+    },
+  );
+  await service.refreshPermission();
+  vi.useFakeTimers();
+  render(<NotificationSettings notifications={service} />, {
+    wrapper: ToastProvider,
+  });
+  let resolve!: (value: NotificationPermission) => void;
+  permission.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  const calls = permission.mock.calls.length;
+  const button = screen.getByRole("button", { name: "Check permission" });
+  button.focus();
+  fireEvent.click(button);
+  fireEvent.click(button);
+  expect(permission).toHaveBeenCalledTimes(calls + 1);
+  expect(screen.getByRole("button", { name: "Check permission" })).toBe(button);
+  expect(button).toHaveAttribute("aria-busy", "true");
+  expect(button).not.toHaveAttribute("disabled");
+  expect(button).toHaveFocus();
+  await act(() => vi.advanceTimersByTimeAsync(1000));
+  expect(button).toHaveAttribute("aria-busy", "true");
+  await act(async () => resolve("granted"));
+  expect(button).not.toHaveAttribute("aria-busy", "true");
+  expect(button).toHaveFocus();
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Allow notifications" }),
+  ).not.toBeInTheDocument();
+});
 it("repeated identical permission failures retain feedback without leaving Settings", async () => {
   const ctx = new Context();
   contexts.push(ctx);

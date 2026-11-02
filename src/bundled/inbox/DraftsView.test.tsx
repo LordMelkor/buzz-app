@@ -1,8 +1,12 @@
 const emptyPanels: never[] = [];
 import type { ConversationHostServices } from "../../features/conversation/ConversationHost";
 // @vitest-environment jsdom
+import { huddleDescription } from "../../features/huddle/lifecycle";
 import { readView, writeView } from "../../shared/view-state";
-import { useAttachmentDraft } from "../../features/messages/attachment-draft";
+import {
+  attachmentDraft,
+  useAttachmentDraft,
+} from "../../features/messages/attachment-draft";
 import "@testing-library/jest-dom/vitest";
 import { StrictMode } from "react";
 import {
@@ -17,11 +21,16 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
+import { PageTabs } from "../channels/PageTabs";
 import { InboxPage } from "./InboxPage";
 import { ChannelPreview } from "./ChannelPreview";
 import { ThreadPanel } from "../../features/messages/ThreadPanel";
 
-import { composerDOMFixture } from "../../features/messages/composer-testing";
+import {
+  composerDOMFixture,
+  typedDraft,
+} from "../../features/messages/composer-testing";
+import { followupDraft } from "../../features/messages/mention-draft";
 import { createRelaySession } from "../../features/relay/session";
 import type { RelaySnapshot, RelayData } from "../../features/relay/service";
 import type { Navigation } from "../../features/navigation/controller";
@@ -285,6 +294,15 @@ function fixture(
     clearCache: owner.clearCache,
   };
   const open = vi.fn<Navigation["open"]>(async () => ({ status: "opened" }));
+  const host = {
+    relay,
+    navigation: { open },
+    panels: {
+      subscribe: () => () => {},
+      snapshot: () => emptyPanels,
+      resolve: () => undefined,
+    },
+  } as unknown as ConversationHostServices;
   return {
     owner,
     relay,
@@ -361,6 +379,7 @@ function fixture(
       };
     },
     releaseProfiles,
+    relayKey,
     alice,
     viewer,
     emit,
@@ -373,17 +392,8 @@ function fixture(
     view: (
       <StrictMode>
         <InboxPage
-          host={
-            {
-              relay,
-              navigation: { open },
-              panels: {
-                subscribe: () => () => {},
-                snapshot: () => emptyPanels,
-                resolve: () => undefined,
-              },
-            } as unknown as ConversationHostServices
-          }
+          host={host}
+          tabs={(props) => <PageTabs {...props} host={host} />}
           relay={relay}
           navigator={{ open } as unknown as Navigation}
         />
@@ -949,7 +959,7 @@ it("retries thread history failure without another composer and never rebinds a 
   fireEvent.click(
     screen.getByRole("button", { name: "Open draft for #Design" }),
   );
-  const retry = await screen.findByRole("button", { name: "Retry thread" });
+  const retry = await screen.findByRole("button", { name: "Try again" });
   expect(
     screen.queryByRole("textbox", { name: "Reply to thread" }),
   ).not.toBeInTheDocument();
@@ -1036,6 +1046,98 @@ it("meaningful Drafts survive 500 empty records and keep an emptied selected edi
   ).not.toBeInTheDocument();
   expect(screen.getByText("No drafts")).toBeInTheDocument();
 });
+it("a typed tag with nothing after it is listed like any other draft; the follow-up an earlier release saved is not", async () => {
+  const h = fixture({ withDm: true, withWriter: true });
+  // Releases through preview.177.1 saved the remembered-agent follow-up as
+  // the draft, without a snapshot; relay history seeds it now. The composer
+  // saves no tags of its own, so a tag saved with the editor snapshot every
+  // typed draft carries is the person's.
+  const legacy = followupDraft([{ pubkey: h.alice.pubkey, name: "Alice" }]);
+  const tagOnly = typedDraft(legacy);
+  writeView(h.owner.session.scope, "draft:dm-room", tagOnly);
+  writeView(h.owner.session.scope, "draft:room", legacy);
+  render(h.view);
+  await screen.findByText("Please review this");
+  await chooseFilter("Drafts");
+  expect(
+    screen.getByRole("button", { name: "Open draft for Alice" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Open draft for #Design" }),
+  ).toBeNull();
+  expect(readView(h.owner.session.scope, "draft:dm-room", "")).toEqual(tagOnly);
+  expect(readView(h.owner.session.scope, "draft:room", "")).toEqual(legacy);
+});
+it("lists a tagged draft that holds attached files", async () => {
+  const h = fixture({
+    withDm: true,
+    withWriter: true,
+    upload: async () => ({
+      name: "note.txt",
+      url: "https://relay.test/media/note.txt",
+      type: "text/plain",
+      size: 4,
+      sha256: "a".repeat(64),
+    }),
+  });
+  writeView(h.owner.session.scope, "draft:dm-room", {
+    text: "@Alice ",
+    recipients: [{ pubkey: h.alice.pubkey, name: "Alice", start: 0, end: 6 }],
+  });
+  const files = renderHook(() =>
+    useAttachmentDraft(
+      h.observedSession,
+      `${h.owner.session.scope}:draft:dm-room`,
+      "dm-room",
+    ),
+  );
+  act(() => {
+    files.result.current.store.add([
+      new File(["note"], "note.txt", { type: "text/plain" }),
+    ]);
+  });
+  render(h.view);
+  await screen.findByText("Please review this");
+  await chooseFilter("Drafts");
+  expect(
+    screen.getByRole("button", { name: "Open draft for Alice" }),
+  ).toBeInTheDocument();
+});
+it("lists an emptied draft as soon as files return to it, with no text change", async () => {
+  const h = fixture({
+    withDm: true,
+    withWriter: true,
+    upload: async () => ({
+      name: "note.txt",
+      url: "https://relay.test/media/note.txt",
+      type: "text/plain",
+      size: 4,
+      sha256: "a".repeat(64),
+    }),
+  });
+  // The empty stub a send leaves behind.
+  writeView(h.owner.session.scope, "draft:dm-room", {
+    text: "",
+    recipients: [],
+  });
+  render(h.view);
+  await screen.findByText("Please review this");
+  await chooseFilter("Drafts");
+  expect(
+    screen.queryByRole("button", { name: "Open draft for Alice" }),
+  ).not.toBeInTheDocument();
+  // As when a failed background send hands its files back to the draft.
+  act(() => {
+    attachmentDraft(
+      h.observedSession,
+      `${h.owner.session.scope}:draft:dm-room`,
+      "dm-room",
+    ).add([new File(["note"], "note.txt", { type: "text/plain" })]);
+  });
+  expect(
+    await screen.findByRole("button", { name: "Open draft for Alice" }),
+  ).toBeInTheDocument();
+});
 it("hands keyboard focus into draft deletion and back on cancel without changing the saved draft", async () => {
   const h = fixture({ withWriter: true });
   writeView(h.owner.session.scope, "draft:room", "Keep this draft");
@@ -1058,11 +1160,9 @@ it("hands keyboard focus into draft deletion and back on cancel without changing
   );
   await waitFor(() =>
     expect(
-      within(dialog).getByRole("button", { name: "Delete draft" }),
+      within(dialog).getByRole("button", { name: "Cancel" }),
     ).toHaveFocus(),
   );
-  await user.tab();
-  expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
   await user.keyboard("{Enter}");
   await waitFor(() => expect(trigger).toHaveFocus());
   expect(screen.getByRole("region", { name: "Draft detail" })).toBeVisible();
@@ -1075,7 +1175,7 @@ it("hands keyboard focus into draft deletion and back on cancel without changing
   });
   await waitFor(() =>
     expect(
-      within(reopened).getByRole("button", { name: "Delete draft" }),
+      within(reopened).getByRole("button", { name: "Cancel" }),
     ).toHaveFocus(),
   );
   await user.keyboard("{Escape}");
@@ -1167,7 +1267,7 @@ it("a failed saved-text cleanup keeps its exact attachment draft for retry", asy
   );
   fireEvent.click(screen.getByRole("button", { name: "Delete draft…" }));
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Delete draft" })).toHaveFocus(),
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus(),
   );
   const denied = vi
     .spyOn(Storage.prototype, "removeItem")
@@ -1175,7 +1275,9 @@ it("a failed saved-text cleanup keeps its exact attachment draft for retry", asy
       throw Error("disk full");
     });
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Delete draft" }));
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "Delete draft" }));
     expect(
       screen.getByRole("alertdialog", { name: "Delete draft?" }),
     ).toHaveTextContent("disk full");
@@ -1494,7 +1596,7 @@ it.each([false, true])(
   },
 );
 
-it("returns to the invoking row when Send saves a remembered-agent follow-up", async () => {
+it("sending a remembered-agent draft leaves no follow-up row, and focus moves to the remaining row", async () => {
   const h = fixture({ withWriter: true, withDm: true, connected: true });
   writeView(h.owner.session.scope, "draft:room", "First row, not the invoker");
   writeView(h.owner.session.scope, "draft:dm-room", {
@@ -1525,11 +1627,150 @@ it("returns to the invoking row when Send saves a remembered-agent follow-up", a
   expect(
     screen.queryByRole("region", { name: "Draft detail" }),
   ).not.toBeInTheDocument();
-  expect(row).toHaveFocus();
-  expect(row).toHaveTextContent("@Alice");
+  // Remembered agents live in memory and relay history, not in a draft: the
+  // sent draft's row is gone and focus moves to the remaining row.
+  expect(row).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Open draft for #Design" }),
+  ).toHaveFocus();
   expect(readView(h.owner.session.scope, "draft:dm-room", "")).toMatchObject({
-    text: "@Alice ",
+    text: "",
   });
+});
+
+it("a thread-starting send leaves no thread draft in storage or the Drafts list", async () => {
+  const h = fixture({ withWriter: true, connected: true });
+  writeView(h.owner.session.scope, "draft:room", {
+    text: "@Alice Hello",
+    recipients: [{ pubkey: h.alice.pubkey, name: "Alice", start: 0, end: 6 }],
+  });
+  const agent = profile(
+    h.alice,
+    { name: "Alice", isAgent: true },
+    1_700_000_001,
+  );
+  h.addEvent(agent);
+  h.emit([agent]);
+  await h.observedSession.profiles.ensure([h.alice.pubkey], "background");
+  expect(
+    h.observedSession.profiles.snapshot().get(h.alice.pubkey)?.isAgent,
+  ).toBe(true);
+  render(h.view);
+  await screen.findByText("Please review this");
+  await chooseFilter("Drafts");
+  fireEvent.click(
+    screen.getByRole("button", { name: "Open draft for #Design" }),
+  );
+  await screen.findByRole("textbox");
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(h.published).toHaveLength(1));
+  expect(h.published[0]?.tags).toContainEqual(["p", h.alice.pubkey]);
+  expect(
+    Object.keys(localStorage).filter((key) =>
+      key.includes("draft:room:thread:"),
+    ),
+  ).toEqual([]);
+  expect(readView(h.owner.session.scope, "draft:room", "")).toMatchObject({
+    text: "",
+  });
+  expect(
+    screen.queryByRole("button", { name: /^Open draft for/ }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByText("No drafts")).toBeVisible();
+});
+
+it.each([true, false])(
+  "retires an excluded draft with focus owned=%s and preserves storage",
+  async (ownedFocus) => {
+    const h = fixture({ withWriter: true });
+    writeView(h.owner.session.scope, "draft:room", "Private draft text");
+    render(
+      <>
+        <button type="button">Outside draft</button>
+        {h.view}
+      </>,
+    );
+    await screen.findByText("Please review this");
+    await chooseFilter("Drafts");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open draft for #Design" }),
+    );
+    await screen.findByRole("region", { name: "Draft detail" });
+    const outside = screen.getByRole("button", { name: "Outside draft" });
+    (ownedFocus
+      ? screen.getByRole("button", { name: "Close detail" })
+      : outside
+    ).focus();
+    await act(async () =>
+      h.emit([
+        metadata(h.relayKey, "room", "Huddle", 100, [
+          ["private"],
+          ["P", h.viewer.pubkey],
+          ["about", huddleDescription("00000000-0000-4000-8000-000000000001")],
+        ]),
+        signed(h.viewer, {
+          kind: 9007,
+          created_at: 1,
+          content: "",
+          tags: [
+            ["h", "room"],
+            ["visibility", "private"],
+            ["channel_type", "stream"],
+            [
+              "about",
+              huddleDescription("00000000-0000-4000-8000-000000000001"),
+            ],
+          ],
+        }),
+      ]),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: "Draft detail" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Private draft text")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^Open draft for/ }),
+    ).not.toBeInTheDocument();
+    expect(readView(h.owner.session.scope, "draft:room", "")).toBe(
+      "Private draft text",
+    );
+    await waitFor(() =>
+      expect(
+        ownedFocus
+          ? screen.getByRole("button", { name: "Inbox filters" })
+          : outside,
+      ).toHaveFocus(),
+    );
+    await act(async () =>
+      h.emit([metadata(h.relayKey, "room", "Restored", 101)]),
+    );
+    expect(
+      screen.queryByRole("region", { name: "Draft detail" }),
+    ).not.toBeInTheDocument();
+  },
+);
+
+it("withholds drafts with pending metadata and restores ordinary destinations after discovery", async () => {
+  const h = fixture();
+  writeView(h.owner.session.scope, "draft:pending", "Unclassified draft");
+  render(h.view);
+  await screen.findByText("Please review this");
+  await act(async () =>
+    h.emit([roster(h.relayKey, "pending", [h.viewer.pubkey], 100)]),
+  );
+  await chooseFilter("Drafts");
+  expect(screen.queryByText("Unclassified draft")).not.toBeInTheDocument();
+  await act(async () =>
+    h.emit([metadata(h.relayKey, "pending", "Resolved", 101)]),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Open draft for #Resolved" }),
+  ).toBeInTheDocument();
+  expect(readView(h.owner.session.scope, "draft:pending", "")).toBe(
+    "Unclassified draft",
+  );
 });
 
 it.each([false, true])(
@@ -1541,13 +1782,13 @@ it.each([false, true])(
     writeView(h.owner.session.scope, key, {
       text: "",
       recipients: [],
-      sessionCards: [link],
+      chatCards: [link],
     });
     render(h.view);
     await screen.findByText("Please review this");
     await chooseFilter("Drafts");
     const list = screen.getByRole("list", { name: "Drafts" });
-    expect(list).toHaveTextContent("Session attachment");
+    expect(list).toHaveTextContent("Chat attachment");
     await userEvent
       .setup()
       .click(
@@ -1557,13 +1798,13 @@ it.each([false, true])(
     await waitFor(() =>
       expect(
         within(detail).getByRole("button", {
-          name: "Remove session attachment 1",
+          name: "Remove chat attachment 1",
         }),
       ).toBeVisible(),
     );
     expect(within(detail).getByRole("textbox")).toHaveValue("");
     expect(readView(h.owner.session.scope, key, null)).toMatchObject({
-      sessionCards: [link],
+      chatCards: [link],
     });
   },
 );

@@ -7,6 +7,16 @@ import {
   watchPrompt,
 } from "./attention-prompt";
 
+it("describes automatic cleanup after a spent timer's final turn", () => {
+  const prompt = timerPrompt({
+    id: "once",
+    interest: "task",
+    prompt: "Check",
+    spent: true,
+  });
+  expect(prompt).toContain("removed after this turn succeeds");
+  expect(prompt).not.toContain("stays for your disposition");
+});
 it("frames a timer's turn with its Interest, or says the Interest is gone", () => {
   const timer = timerPrompt({
     id: "daily",
@@ -152,4 +162,22 @@ it("shortens one catch-up message's long text and says where the full text is", 
   expect(prompt.length).toBeLessThan(CATCH_UP_TEXT_LIMIT + 4_000);
   // A short message is shown whole, as its original signed event.
   expect(prompt).toContain("Message 2 of 2: original signed event as JSON.");
+});
+
+it("gives the address execution ownership and the Interest reporting precedence", () => {
+  const text = timerPrompt({
+    id: "daily",
+    interest: "ops",
+    prompt: "Summarize",
+    instructions: "Report in another authorized channel",
+    spent: false,
+    conversation: true,
+  });
+  expect(text).toContain(
+    "execution conversation and default posting destination",
+  );
+  expect(text).toContain(
+    "explicit reporting instructions in the Interest take precedence",
+  );
+  expect(text).toContain("does not grant permission");
 });

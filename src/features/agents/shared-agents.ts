@@ -13,6 +13,8 @@ export type SharedAgent = {
   owner: string;
   picture?: string;
   model: string;
+  runtime?: string;
+  provider?: string;
   instructions: string;
 };
 
@@ -47,6 +49,12 @@ export function sharedAgents(events: readonly EventData[]): SharedAgent[] {
           owner: event.pubkey,
           ...(picture?.startsWith("https:") ? { picture } : {}),
           model: typeof body.model === "string" ? body.model.trim() : "",
+          ...(typeof body.runtime === "string" && body.runtime.trim()
+            ? { runtime: body.runtime.trim() }
+            : {}),
+          ...(typeof body.provider === "string" && body.provider.trim()
+            ? { provider: body.provider.trim() }
+            : {}),
           instructions:
             typeof body.system_prompt === "string" ? body.system_prompt : "",
         },

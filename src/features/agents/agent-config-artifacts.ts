@@ -1,7 +1,7 @@
 // NIP-AP config artifacts (NIP-AR kind 45010) in an agent's or team's config
 // channel: identity, validation, the reads that decide state, and one save that
-// tells "accepted" apart from "current". Dormant until config channels ship; the
-// caller supplies a relay-only snapshot reader and a narrow artifact writer.
+// tells "accepted" apart from "current". The caller supplies a relay-only
+// snapshot reader and a narrow artifact writer.
 import { PublishRejected } from "../relay/outbox";
 import type { RelayWriter } from "../relay/transport";
 import type { EventData, ReadFilter, RelayEvent } from "../relay/events";
@@ -143,6 +143,16 @@ export function artifactProblem(event: EventData, expected: Expected) {
   return undefined;
 }
 
+/** A returned revision checked against the selected channel, `d` and type
+ * before anything installs it: one that fails is the invalid head. Every path
+ * that installs a head (sync, save, migration, recovery) goes through this. */
+export const checkedHead = (event: RelayEvent, expected: Expected) => {
+  const problem = artifactProblem(event, expected);
+  return problem
+    ? ({ kind: "head", event, problem } as const)
+    : ({ kind: "head", event } as const);
+};
+
 /** One revision to sign. `content` is the complete snapshot; `extra` carries
  * preserved client tags (e.g. `team`). */
 export function artifactTemplate(
@@ -199,14 +209,18 @@ export const currentFilter = (channel: string): ReadFilter => ({
 
 /** Current heads in a channel, by `d`. Omits deletions and redacted heads; a
  * returned head is authoritative even when its history is unreadable. Two
- * heads for one `d` decide nothing: undefined. */
+ * heads for one `d`, or a full page, decide nothing: undefined. */
 export async function readCurrent(
   read: SnapshotRead,
   channel: string,
   signal?: AbortSignal,
 ) {
+  const filter = currentFilter(channel);
+  const events = await read([filter], { signal });
+  // A full page may be truncated, and a partial read decides nothing.
+  if (events.length >= filter.limit) return undefined;
   const heads = new Map<string, RelayEvent>();
-  for (const event of await read([currentFilter(channel)], { signal })) {
+  for (const event of events) {
     const d = tag(event, "d");
     if (!d || heads.has(d)) return undefined;
     heads.set(d, event);
@@ -284,13 +298,15 @@ export type Delivery =
 
 /** Sends one signed revision. Only an OK or duplicate-OK proves acceptance; a
  * failure without a typed refusal leaves it uncertain, never rejected. An
- * event over the relay's size limit is refused before dispatch. */
+ * event over the relay's size limit (`maxEventBytes`, from its NIP-11
+ * document) is refused before dispatch. */
 export async function deliver(
   writer: RelayWriter,
   event: RelayEvent,
   signal: AbortSignal,
+  maxEventBytes = ARTIFACT_MAX_EVENT_BYTES,
 ): Promise<Delivery> {
-  if (signedEventBytes(event) > ARTIFACT_MAX_EVENT_BYTES)
+  if (signedEventBytes(event) > maxEventBytes)
     return {
       status: "refused",
       event,

@@ -25,7 +25,7 @@ test("selected author remains a removable chip through typing and date completio
   await expect(input).toHaveValue("");
   await expect(input).toBeFocused();
   await expect(
-    chip.locator("xpath=ancestor::*[contains(@class,'buzz-input-group')]"),
+    chip.locator("xpath=ancestor::*[contains(@class,'search-field')]"),
   ).toContainText("from:@Fixture Reader");
   const verifyLayout = async () => {
     const bounds = await Promise.all(

@@ -1,5 +1,17 @@
 # Desktop test releases
 
+## Agent protection compatibility notice
+
+Builds with agent protection require explicit native owner confirmation before
+upgrading local agents to the one-way protected storage format. **Every local
+agent becomes inaccessible to older Buzz builds**, including an installed app
+sharing the development build's store. Clearing protection does not undo this.
+Close other Buzz builds before confirming and retain a compatible build. Cancel
+leaves files unchanged; earlier protected previews prompt at startup. See the
+[upgrade and recovery contract](agent-protection.md#local-storage-upgrade).
+
+## Preview artifacts
+
 The **Desktop previews** workflow builds all supported desktop platforms from
 `main` and publishes one GitHub prerelease, tagged
 `v<app-version>-preview.<run-number>.<attempt>` at the built commit:
@@ -69,7 +81,7 @@ an existing version from `main`:
 
 ```sh
 gh workflow run release.yml --repo block/buzz-app --ref main \
-  -f promote_version=0.0.0-preview.<run>.<attempt>
+  -f promote_version=0.7.0-preview.<run>.<attempt>
 ```
 
 After the first eligible build publishes, exercise discovery, signature
@@ -142,7 +154,47 @@ again. The age window is measured from publication, not promotion. Actions build
 artifacts have a separate seven-day retention policy and do not control GitHub
 release retention.
 
+## Release tags
+
+Release builds outside this repository's preview workflow consume immutable
+`desktop-vX.Y.Z` or `desktop-vX.Y.Z-beta.N` tags, never a branch or commit.
+Run **Desktop release tag** from `main` with the version and a full commit SHA
+in `main` history. It publishes an annotated tag through the release GitHub App
+and fails before writing unless an active tag ruleset includes
+`refs/tags/desktop-v*`, has no exclusions, restricts creation, update, deletion
+and non-fast-forward, and lets the App bypass it. A published tag is never
+moved or reused; cut a new version instead.
+
+Until the App exists, that ruleset's only bypass actor is the repository admin
+role, and an admin creates each tag by hand on a commit in `main` history:
+
+```sh
+git fetch origin main
+git tag -a desktop-v0.7.0-beta.1 -m 'Buzz desktop 0.7.0-beta.1' <commit-sha>
+git push origin refs/tags/desktop-v0.7.0-beta.1
+```
+
+Setup, by a repository admin:
+
+- Install the release App and create a `desktop-release-tag` environment that
+  deploys only from `main`. Put the `BUZZ_RELEASE_TAGGER_CLIENT_ID` variable and
+  `BUZZ_RELEASE_TAGGER_PRIVATE_KEY` secret in that environment, not the repository.
+- Make the App the ruleset's only bypass actor, in `always` mode. The
+  workflow cannot see the bypass list, so confirm it before the first tag and
+  after any ruleset change.
+
 ## Prerequisites
+
+### Builderlab URL
+
+The **Desktop previews** workflow sets `BUZZ_BUILDERLAB_URL` for all platform
+builds, including candidate-only runs. It defaults to `https://app.builderlab.xyz`.
+To override it, set the repository's non-secret Actions variable
+`BUZZ_BUILDERLAB_URL`; an unset or empty variable uses the production default.
+When `BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG` is set, the workflow supplies an
+empty `BUZZ_BUILDERLAB_URL` instead, because FI builds reject the legacy origin.
+
+### Signing
 
 Deploy [the signing infrastructure](https://github.com/squareup/tf-mobuild-workers/pull/1398)
 and set these repository Actions secrets:
@@ -165,14 +217,90 @@ the first eligible auto-promotion, before wider preview distribution.
 ## Bundled goose-acp
 
 Every package ships `goose-acp` in its `bin` resources, so Goose agents need no
-install. `scripts/build-goose-acp.mjs` builds it from the goose commit pinned in
-`runtime/goose-acp.json`, with only the features the Goose plugin uses, in the
-small `lean` profile (about 15 MB on macOS). `tauri build` runs the script
-through `beforeBuildCommand`; `just desktop` runs it with `--dev`, Cargo's faster
-dev profile. It skips the build when the staged binary already matches the pin.
-To move to a newer goose, change `revision` in the pin. The app's own signature
-covers the binary; nothing else checks it at launch. Each release job checks that
-its package contains it.
+install. `scripts/build-goose-acp.mjs` downloads the upstream standalone release
+pinned in `runtime/goose-acp.json`. These use Goose's `lean` profile and
+`rustls-tls,system-keyring,online-model-meta` features (about 15 MB on macOS).
+`tauri build` runs the script through `beforeBuildCommand`; `just desktop` uses
+the same release bytes (`--dev` remains accepted). The script selects
+`TAURI_ENV_TARGET_TRIPLE` or the host reported by `rustc -vV` (matching Cargo,
+including under Rosetta) and rejects unsupported targets.
+The pin covers macOS and Linux ARM64/x64 and Windows x64 MSVC.
+The upstream macOS executable requires macOS 12.0; Buzz's packaged minimum is
+12.0 too, raised from the previous source build's 11.0 deployment target.
+
+Downloads are cached under `target/goose-acp-download`. Every run checks the
+archive SHA-256 before reading its sole expected executable member, then repairs
+missing or changed staged bytes by atomic replacement. No source checkout or
+Goose Rust compilation is needed. Native hosts need `tar` (Windows explicitly uses
+`%SystemRoot%\System32\tar.exe`, avoiding Git Bash's GNU tar on PATH);
+cross-staging Windows on Unix also needs `unzip`. macOS staging retains the
+system-library check. The app's own signature covers the executable; nothing
+else checks it at launch. Each release job checks package presence.
+
+To update Goose, verify every target archive against the exact release identity:
+
+```sh
+gh attestation verify <archive> --repo aaif-goose/goose \
+  --signer-workflow aaif-goose/goose/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.57.0 \
+  --source-digest 30bba95105e59bc3e7df624cf6b4d433690cfe12 \
+  --cert-oidc-issuer https://token.actions.githubusercontent.com \
+  --deny-self-hosted-runners
+```
+
+Then update version, source revision, versioned asset URLs and SHA-256 values
+together, and review upstream license/notice changes. This release is mutable;
+committed hashes bind the downloaded bytes. Never resolve `latest` at build time.
+The obsolete `target/goose-acp-src` and `target/goose-acp-build` caches are unused
+and can be removed locally when no old source build is running.
+Version 1.57.0 also advances Goose 26 commits from the previous source pin;
+distribution parity alone does not establish runtime compatibility. Before
+shipping, exercise provider sessions, HTTP MCP, steering/cancellation, secret
+non-persistence and session history, plus native Windows/Linux startup and
+packaged signing/installers.
+The candidate is known to fail the MCP credential non-persistence check: the
+client HTTP URL and bearer header are stored in session data and export.
+An isolated canary probe reproduced this in both the old source-built 1.56.0
+executable and v1.57.0; upstream #12908 is not included in either version. This
+remains a separate existing acceptance failure, not a distribution regression.
+
+## Bundled buzz CLI
+
+Every package ships the `buzz` command line client (about 12 MB on macOS) in its
+`bin` resources, so nobody builds it from source. On macOS the path is
+`Buzz.app/Contents/Resources/bin/buzz`; Windows ships `bin\buzz.exe`. It cannot
+live in `Contents/MacOS`: on a case-insensitive volume that name is this app's
+own `Buzz` executable (see `legacy_cli_shortcut.rs`).
+
+`scripts/build-buzz-cli.mjs` runs `cargo install --git ... --rev ... --locked
+buzz-cli` for the revision in the `buzz-audio-client` dependency of
+`src-tauri/Cargo.toml`, so one pin selects both the audio client and the CLI;
+bumping that revision updates both. The build uses block/buzz's own
+`Cargo.lock`, not this repository's, with stripped release symbols. `tauri
+build` runs it through `beforeBuildCommand`; `just desktop` runs it with `--dev`
+(a debug build, and a failure only warns). It selects `TAURI_ENV_TARGET_TRIPLE`
+or the host, installs under `target/buzz-cli/<rev>/<target>/<profile>`, which
+lets Cargo skip an install that is already current, and replaces the staged file
+atomically. A first release build takes about two minutes.
+
+The macOS release signing service signs the executable with the Developer ID
+certificate and the hardened runtime, as it does `goose-acp` and
+`buzz-agent-command`; `buzz` links only system libraries and needs no
+entitlement. The release job verifies the signature and runs the signed
+`buzz --help`; the Windows and Linux jobs run the installed executable too.
+`scripts/test-buzz-cli.mjs` (CI) stages a debug build and runs `buzz --help`.
+
+The app does not put `buzz` on `PATH`. Users and agents call it by absolute path
+or link it themselves:
+
+```sh
+mkdir -p ~/.local/bin
+ln -sf /Applications/Buzz.app/Contents/Resources/bin/buzz ~/.local/bin/buzz
+```
+
+The CLI ships with the app and updates only with it. It is built from the pinned
+revision, not from the relay's current version, so a relay newer than that
+revision can accept protocol changes that the bundled CLI does not know.
 
 ## Windows and Linux installers and candidate-only runs
 
@@ -202,6 +330,12 @@ because Hermit does not run there. NSIS retains Tauri's current-user install and
 WebView2 download-bootstrapper defaults (network needed if WebView2 is absent).
 The job silently installs into a disposable runner directory and verifies the
 installed app executable, without launching the app.
+
+The Windows config pins `bundle.publisher` to `local`, the publisher Tauri derived
+from the identifier before 1.0, so an update still finds the install folder Tauri
+records under `Software\local\Buzz Foundation`. An update keeps existing shortcuts,
+so `src-tauri/installer-hooks.nsh` gives the Start menu and desktop shortcuts the
+current identifier as their AppUserModelID, which Windows shows notifications under.
 
 Linux reuses old Buzz's Ubuntu 24.04 recipe and guarded Wayland/GStreamer AppImage
 repair from `block/buzz` tag `desktop-v0.5.25`. Repacking tools and the type2 runtime

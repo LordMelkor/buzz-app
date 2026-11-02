@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
+import { SOLO_LABEL } from "../../features/solo/labels";
 import type { Agents } from "../../features/agents/service";
+import type { CommunityReader } from "../../features/communities/service";
+import { emptySync } from "../../features/communities/known-communities";
 import "@testing-library/jest-dom/vitest";
 import {
   act,
@@ -17,7 +20,20 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import { createRelaySession } from "../../features/relay/session";
-import { keypair, profile, roster, signed } from "../../features/relay/testing";
+import {
+  keypair,
+  metadata,
+  profile,
+  roster,
+  signed,
+} from "../../features/relay/testing";
+import { personKey } from "../../features/search/people-rank";
+import {
+  pickerText,
+  readSearchUsage,
+  recordChoice,
+  recordVisit,
+} from "../../features/search/usage";
 import { matchesEvent } from "../../features/relay/projection";
 import type { RelayEvent } from "../../features/relay/events";
 import { PublishRejected } from "../../features/relay/outbox";
@@ -27,6 +43,7 @@ import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { profileTarget } from "../../features/profiles/target";
 import { ChannelMembersButton } from "./ChannelMembersDialog";
 const stops: (() => void)[] = [];
+const memberData = () => screen.getByRole("region", { name: "Member list" });
 // Vitest globals are disabled; join owned tasks before this file's explicit cleanup.
 const tasks: {
   controller: AbortController;
@@ -50,6 +67,7 @@ function ownedTask(
 }
 // jsdom lacks scrollIntoView; the search highlight keeps its row in view.
 beforeEach(() => {
+  localStorage.clear();
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
     configurable: true,
     value: vi.fn(),
@@ -77,6 +95,11 @@ async function setup(
     onOpenLink(target: string, returnFocus?: HTMLElement): boolean;
   },
   agents?: Agents,
+  options: {
+    archivedAgent?: boolean;
+    channelCreation?: boolean;
+    communities?: CommunityReader;
+  } = {},
 ) {
   const viewer = keypair(),
     relay = keypair(),
@@ -108,10 +131,36 @@ async function setup(
       members.push(_event.tags.find((tag) => tag[0] === "p")?.[1] ?? target);
     clock++;
   });
+  const personProfile = profile(person, { name: "Morgan" });
+  const stableEvents = [
+    signed(relay, {
+      kind: 39000,
+      content: "",
+      tags: [
+        ["d", id],
+        ["t", type.includes("solo") ? "stream" : type],
+        ["private"],
+        ["name", "Design"],
+        ...(type.includes("solo")
+          ? [
+              ["t", SOLO_LABEL],
+              ["P", type === "solo" ? viewer.pubkey : person.pubkey],
+            ]
+          : []),
+      ],
+    }),
+    signed(relay, {
+      kind: 13535,
+      content: "",
+      tags: [["-"], ...(options.archivedAgent ? [["p", agent.pubkey]] : [])],
+    }),
+    profile(viewer, { name: "Carl" }),
+    personProfile,
+  ];
   const query = vi.fn(async (filters: Parameters<typeof matchesEvent>[1][]) => {
     if (filters.some((filter) => filter.search)) {
       if (searchFailure) throw new Error("Search offline");
-      return [profile(person, { name: "Morgan" })];
+      return [personProfile];
     }
     if (
       missingNames &&
@@ -125,17 +174,9 @@ async function setup(
     }
     if (filters.some((filter) => filter.kinds?.includes(39002)))
       await rosterRead;
-    return [
-      roster(relay, id, members, clock),
-      signed(relay, {
-        kind: 39000,
-        content: "",
-        tags: [["d", id], ["t", type], ["private"], ["name", "Design"]],
-      }),
-      signed(relay, { kind: 13535, content: "", tags: [["-"]] }),
-      profile(viewer, { name: "Carl" }),
-      profile(person, { name: "Morgan" }),
-    ].filter((event) => filters.some((filter) => matchesEvent(event, filter)));
+    return [roster(relay, id, members, clock), ...stableEvents].filter(
+      (event) => filters.some((filter) => matchesEvent(event, filter)),
+    );
   });
   const readAgentLibrary = vi.fn(
     async (): Promise<AgentLibrary> => ({
@@ -153,7 +194,7 @@ async function setup(
       query,
       readAgentLibrary,
       writer: {
-        kinds: [9, 9000, 9007],
+        kinds: [9, 9000, ...(options.channelCreation === false ? [] : [9007])],
         sign: async (template) => signed(viewer, template),
         publish,
       },
@@ -165,21 +206,23 @@ async function setup(
   );
   stops.push(owner.dispose);
   owner.session.channels.ensureList();
-  await vi.waitFor(() =>
-    expect(owner.session.channels.list().status).toBe("ready"),
+  await vi.waitFor(
+    () => expect(owner.session.channels.list().status).toBe("ready"),
+    { interval: vi.isFakeTimers() ? 50 : 1 },
   );
   render(
     <ToastProvider>
       <ChannelMembersButton
         session={owner.session}
         channelId={id}
+        communities={options.communities}
         {...navigation}
         {...(agents ? { agents } : {})}
       />
     </ToastProvider>,
   );
   const user = userEvent.setup();
-  const trigger = screen.getByRole("button", { name: "Channel members" });
+  const trigger = screen.getByRole("button", { name: "Access" });
   await user.click(trigger);
   if (missingNames) await screen.findByText(/Some names could not load/);
   else await screen.findByText("Carl (you)");
@@ -193,6 +236,7 @@ async function setup(
     query,
     readAgentLibrary,
     session: owner.session,
+    relay,
     person,
     viewer,
     delayRoster: () => {
@@ -236,6 +280,906 @@ async function setup(
     },
   };
 }
+it.each(["Saving access…", "Searching…"])(
+  "keeps %s outside busy member data during a refresh",
+  async (announcement) => {
+    const h = await setup("stream", true);
+    cleanup();
+    const id = "11111111-1111-4111-8111-111111111111";
+    let finishRefresh!: () => void;
+    let finishOperation!: () => void;
+    const refresh = new Promise<void>((resolve) => {
+      finishRefresh = resolve;
+    });
+    const operation = new Promise<void>((resolve) => {
+      finishOperation = resolve;
+    });
+    const save = vi.fn(async () => operation);
+    const query = h.query.getMockImplementation();
+    if (!query) throw new Error("Missing query fixture");
+    h.query.mockImplementation(async (filters) => {
+      if (filters.some((filter) => filter.search)) await operation;
+      return query(filters);
+    });
+    render(
+      <ToastProvider>
+        <ChannelMembersButton
+          session={{
+            ...h.session,
+            channelDetails: {
+              available: true,
+              load: async () => ({
+                channelId: id,
+                version: "v1",
+                name: "Design",
+                description: "",
+                visibility: "private",
+                joinRole: "member",
+                canEdit: true,
+              }),
+              save,
+              check: async () => {},
+              snapshot: () => undefined,
+              subscribe: () => () => {},
+            },
+          }}
+          channelId={id}
+        />
+      </ToastProvider>,
+    );
+    await h.user.click(screen.getByRole("button", { name: "Access" }));
+    await screen.findByText(/Some names could not load/);
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    const nameReads = () =>
+      h.query.mock.calls.filter(([filters]) =>
+        filters.some(
+          (filter) =>
+            filter.kinds?.includes(0) &&
+            filter.authors?.includes(h.viewer.pubkey),
+        ),
+      ).length;
+    const beforeRefresh = nameReads();
+    h.holdNames(refresh);
+    try {
+      await h.user.click(
+        screen.getByRole("button", { name: "Retry member data" }),
+      );
+      await vi.waitFor(() => expect(nameReads()).toBe(beforeRefresh + 1));
+      expect(memberData()).toHaveAttribute("data-refreshing", "true");
+      expect(
+        within(screen.getByRole("region", { name: "People" })).getByRole(
+          "list",
+        ),
+      ).toHaveAttribute("aria-busy", "true");
+      if (announcement === "Saving access…") {
+        const access = screen.getByRole("combobox", { name: "General access" });
+        await vi.waitFor(() => expect(access).toBeEnabled());
+        await h.user.click(access);
+        await h.user.click(
+          await screen.findByRole("option", { name: "Public" }),
+        );
+        await h.user.click(
+          screen.getByRole("button", { name: "Change access" }),
+        );
+        await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+      } else {
+        await h.user.type(screen.getByRole("searchbox"), "Morgan");
+        await vi.waitFor(() =>
+          expect(
+            h.query.mock.calls.some(([filters]) =>
+              filters.some((filter) => filter.search === "Morgan"),
+            ),
+          ).toBe(true),
+        );
+      }
+      const status = await screen.findByText(announcement);
+      expect(status).toHaveAttribute("role", "status");
+      expect(status.closest("[aria-busy]")).toBeNull();
+    } finally {
+      await act(async () => {
+        finishRefresh();
+        finishOperation();
+      });
+    }
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    expect(h.publish).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps the same focused search input when a cached roster is confirmed", async () => {
+  const viewer = keypair(),
+    relay = keypair();
+  const id = "11111111-1111-4111-8111-111111111111";
+  const events = [
+    roster(relay, id, [viewer.pubkey]),
+    metadata(relay, id, "Cached channel", 1700000000, [
+      ["private"],
+      ["t", "stream"],
+    ]),
+    signed(relay, {
+      kind: 39001,
+      tags: [
+        ["d", id],
+        ["p", viewer.pubkey, "owner"],
+      ],
+      content: "",
+    }),
+    profile(viewer, { name: "Carl" }),
+  ];
+  let confirm!: () => void;
+  const confirmation = new Promise<void>((resolve) => {
+    confirm = resolve;
+  });
+  const publish = vi.fn(async () => {});
+  const owner = createRelaySession(
+    {
+      viewer: viewer.pubkey,
+      relayAuthor: relay.pubkey,
+      scope: "https://relay.example.test",
+      media: () => undefined,
+      query: async (filters) => {
+        if (filters.some((filter) => filter.kinds?.includes(39002)))
+          await confirmation;
+        return events.filter((event) =>
+          filters.some((filter) => matchesEvent(event, filter)),
+        );
+      },
+      channelDetails: {
+        sign: async (template) => signed(viewer, template),
+        publish,
+      },
+    },
+    {
+      prepared: true,
+      persistence: {
+        readStartup: async () => ({
+          discovery: {
+            savedAt: Date.now(),
+            relayAuthor: relay.pubkey,
+            events: events.slice(0, 2),
+          },
+        }),
+        writeStartup: async () => {},
+        read: async () => [],
+        write: async () => {},
+        retain: async () => {},
+        remove: async () => {},
+        clear: async () => {},
+        close() {},
+      },
+    },
+  );
+  stops.push(owner.dispose);
+  try {
+    await owner.restore();
+    owner.session.channels.ensureList();
+    await vi.waitFor(() =>
+      expect(owner.session.channels.get?.(id)?.cached).toBe(true),
+    );
+    render(
+      <ToastProvider>
+        <ChannelMembersButton session={owner.session} channelId={id} />
+      </ToastProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Access" }));
+    const input = screen.getByRole("searchbox");
+    await user.type(input, "Mor");
+    expect(input).toHaveFocus();
+    expect(
+      screen.queryByRole("combobox", { name: "General access" }),
+    ).toBeNull();
+    await act(async () => {
+      confirm();
+      await confirmation;
+    });
+    await screen.findByRole("combobox", { name: "General access" });
+    expect(owner.session.channels.get?.(id)?.cached).toBeUndefined();
+    expect(screen.getByRole("searchbox")).toBe(input);
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue("Mor");
+    expect(
+      screen.getByRole("region", { name: "General access" }),
+    ).not.toContainElement(input);
+    await user.keyboard("gan");
+    expect(input).toHaveValue("Morgan");
+    expect(publish).not.toHaveBeenCalled();
+  } finally {
+    confirm();
+  }
+});
+
+it("offers your agents when you are the only member and adds one without a directory search", async () => {
+  const t = await setup();
+  const yours = await screen.findByRole("region", {
+    name: "Your agents",
+  });
+  const add = within(yours).getByRole("button", { name: /^Add Fixture agent/ });
+  expect(screen.getByRole("searchbox")).toHaveValue("");
+  await t.user.click(add);
+  await screen.findByText("Fixture agent is in the channel.");
+  expect(
+    screen.queryByRole("button", { name: /^Add Fixture agent/ }),
+  ).toBeNull();
+  expect(
+    t.query.mock.calls
+      .flatMap(([filters]) => filters)
+      .filter((filter) => filter.search),
+  ).toEqual([]);
+});
+
+it.each([false, true])(
+  "shows idle suggestions only while the viewer is alone (second member is an agent: %s)",
+  async (localAgent) => {
+    const t = await setup("stream", false, localAgent);
+    await act(async () =>
+      t.control.set({
+        agents: [
+          t.agent,
+          { ...t.agent, pubkey: keypair().pubkey, name: "Fixture helper" },
+          {
+            ...t.agent,
+            pubkey: keypair().pubkey,
+            name: localAgent ? t.agent.name : "Morgan",
+          },
+        ],
+      }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Retry member data" }),
+    ).toBeVisible();
+    const settled = () =>
+      vi.waitFor(() =>
+        expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+      );
+    const suggestions = () =>
+      screen.queryByRole("region", { name: "Not in this channel" });
+    const search = screen.getByRole("searchbox");
+    await settled();
+    expect(suggestions()).toBeVisible();
+
+    t.confirmRoster();
+    await t.user.click(
+      screen.getByRole("button", { name: "Retry member data" }),
+    );
+    await settled();
+    const roster = () =>
+      screen.getByRole("region", {
+        name: localAgent ? "Agents" : "People",
+      });
+    expect(
+      within(roster()).getByText(localAgent ? "Fixture agent" : "Morgan"),
+    ).toBeVisible();
+    expect(suggestions()).toBeNull();
+    expect(within(roster()).queryByText(/^npub…/)).toBeNull();
+
+    await t.user.type(search, "Fixture");
+    await screen.findByRole("button", { name: /^Add Fixture helper/ });
+    expect(suggestions()).toBeVisible();
+    if (localAgent) expect(within(roster()).getByText(/^npub…/)).toBeVisible();
+    await t.user.clear(search);
+    await settled();
+    expect(suggestions()).toBeNull();
+    expect(within(roster()).queryByText(/^npub…/)).toBeNull();
+    await t.user.type(search, "   ");
+    expect(suggestions()).toBeNull();
+    await t.user.clear(search);
+
+    t.removeTarget();
+    await t.user.click(
+      screen.getByRole("button", { name: "Retry member data" }),
+    );
+    await settled();
+    expect(suggestions()).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /^Add Fixture helper/ }),
+    ).toBeVisible();
+    expect(search).toHaveValue("");
+    expect(t.publish).not.toHaveBeenCalled();
+  },
+);
+
+it("explains imported agents with the current community's badge and nested popover", async () => {
+  const snapshot: ReturnType<CommunityReader["snapshot"]> = {
+    status: "ready",
+    relayAvailable: true,
+    profile: { name: "Carl", picture: "" },
+    memberships: [
+      {
+        id: "https://relay.example.test",
+        name: "Fixture community",
+        publishedIcon: "https://images.example/community.png",
+      },
+    ],
+    selected: "https://other.example.test",
+    sync: emptySync(),
+  };
+  const t = await setup("stream", false, false, undefined, undefined, {
+    communities: { snapshot: () => snapshot, subscribe: () => () => {} },
+  });
+  const group = await screen.findByRole("region", { name: "Your agents" });
+  const badge = within(group).getByRole("button", {
+    name: "Agents scope: Fixture community",
+  });
+  expect(badge.querySelector("img")).toHaveAttribute(
+    "src",
+    "https://images.example/community.png",
+  );
+  expect(screen.queryByRole("dialog", { name: "Agents scope" })).toBeNull();
+  await t.user.click(badge);
+  expect(
+    await screen.findByRole("dialog", { name: "Agents scope" }),
+  ).toHaveTextContent(
+    "These are your agents imported into this community on this device.",
+  );
+  await t.user.keyboard("{Escape}");
+  await vi.waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Agents scope" })).toBeNull(),
+  );
+  expect(screen.getByRole("dialog", { name: "Manage members" })).toBeVisible();
+  await vi.waitFor(() => expect(badge).toHaveFocus());
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("keeps setup guidance behind its information popover", async () => {
+  const t = await setup();
+  t.readAgentLibrary.mockResolvedValue({
+    definitions: [],
+    identities: [{ pubkey: keypair().pubkey, name: "Fixture old agent" }],
+  });
+  await act(async () => {
+    await t.session.agentChoices.refresh();
+  });
+  await t.user.type(screen.getByRole("searchbox"), "Fixture");
+  const group = await screen.findByRole("region", {
+    name: "Your other agents",
+  });
+  const hint = "Your agents from other devices or earlier setups.";
+  expect(within(group).queryByText(hint)).toBeNull();
+  const info = within(group).getByRole("button", {
+    name: "About your other agents",
+  });
+  await t.user.click(info);
+  expect(
+    await screen.findByRole("dialog", { name: "About your other agents" }),
+  ).toHaveTextContent(hint);
+  await t.user.keyboard("{Escape}");
+  await vi.waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "About your other agents" }),
+    ).toBeNull(),
+  );
+  expect(screen.getByRole("dialog", { name: "Manage members" })).toBeVisible();
+  await vi.waitFor(() => expect(info).toHaveFocus());
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("distinguishes invitation and roster People regions while retaining the caption", async () => {
+  const t = await setup();
+  expect(
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
+  t.confirmRoster();
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
+  await screen.findByText("Morgan");
+  const guest = profile(keypair(), { name: "Morgan Guest" });
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) =>
+    filters.some((filter) => filter.search) ? [guest] : query(filters),
+  );
+  await t.user.type(screen.getByRole("searchbox"), "Morgan");
+  const invitations = await screen.findByRole("region", {
+    name: "People not in this channel",
+  });
+  const roster = screen.getByRole("region", { name: "People" });
+  expect(within(roster).getByText(nameText("Morgan"))).toBeVisible();
+  expect(
+    within(invitations).getByRole("heading", { name: "People" }),
+  ).toBeVisible();
+  expect(
+    within(invitations).getByRole("button", { name: /^Add Morgan Guest/ }),
+  ).toBeVisible();
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("orders matches by client agents, people, other agents, then your non-client agents", async () => {
+  const t = await setup();
+  const other = profile(keypair(), { name: "Fixture", is_agent: true });
+  const person = profile(t.person, { name: "Fixture person" });
+  const saved = { pubkey: keypair().pubkey, name: "Fixture saved" };
+  t.readAgentLibrary.mockResolvedValue({
+    definitions: [],
+    identities: [saved],
+  });
+  await act(async () => {
+    await t.session.agentChoices.refresh();
+  });
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) =>
+    filters.some((filter) => filter.search) ? [other, person] : query(filters),
+  );
+  recordChoice(
+    t.session.scope,
+    pickerText("channel-members", "fixture"),
+    personKey(saved.pubkey),
+  );
+  await t.user.type(screen.getByRole("searchbox"), "Fixture");
+  await screen.findByRole("button", { name: /^Add Fixture person/ });
+  const results = screen.getByRole("region", { name: "Not in this channel" });
+  const rows = within(results).getAllByRole("button", { name: /^Add / });
+  const sections = [
+    "Your agents",
+    "People not in this channel",
+    "Other agents",
+    "Your other agents",
+  ];
+  expect(rows).toHaveLength(4);
+  expect(
+    sections.map((name) =>
+      within(within(results).getByRole("region", { name })).getByRole(
+        "button",
+        { name: /^Add / },
+      ),
+    ),
+  ).toEqual(rows);
+  expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+    expect.stringMatching(/^Add Fixture agent/),
+    expect.stringMatching(/^Add Fixture person/),
+    expect.stringMatching(/^Add Fixture \(/),
+    expect.stringMatching(/^Add Fixture saved/),
+  ]);
+  expect(
+    screen.queryByRole("checkbox", { name: "Include other agents" }),
+  ).toBeNull();
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+async function relationshipInvitations() {
+  const t = await setup();
+  const people = [
+    { ...keypair(), name: "Sam A stranger" },
+    { ...keypair(), name: "Sam B shared" },
+    { ...keypair(), name: "Sam C group" },
+    { ...keypair(), name: "Sam D direct" },
+    { ...keypair(), name: "Sam E direct" },
+    { ...keypair(), name: "Sam" },
+  ];
+  const key = (index: number) => people[index]?.pubkey ?? "";
+  const directId = "22222222-2222-4222-8222-222222222222";
+  const otherDirectId = "33333333-3333-4333-8333-333333333333";
+  const groupId = "44444444-4444-4444-8444-444444444444";
+  const sharedId = "55555555-5555-4555-8555-555555555555";
+  const events = [
+    metadata(t.relay, directId, "Direct", undefined, [["t", "dm"]]),
+    roster(t.relay, directId, [t.viewer.pubkey, key(3)]),
+    metadata(t.relay, otherDirectId, "Other direct", undefined, [["t", "dm"]]),
+    roster(t.relay, otherDirectId, [t.viewer.pubkey, key(4)]),
+    metadata(t.relay, groupId, "Group", undefined, [["t", "dm"]]),
+    roster(t.relay, groupId, [t.viewer.pubkey, key(2), t.person.pubkey]),
+    metadata(t.relay, sharedId, "Shared"),
+    roster(t.relay, sharedId, [t.viewer.pubkey, key(1)]),
+  ];
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) =>
+    filters.some((filter) => filter.search)
+      ? people.map((person) => profile(person, { name: person.name }))
+      : [
+          ...(await query(filters)),
+          ...events.filter((event) =>
+            filters.some((filter) => matchesEvent(event, filter)),
+          ),
+        ],
+  );
+  await act(async () => t.session.channels.refreshList?.());
+  await vi.waitFor(() =>
+    expect(
+      t.session.channels
+        .list()
+        .channels.find((channel) => channel.id === directId)?.participants,
+    ).toEqual([key(3)]),
+  );
+  const rows = () =>
+    within(
+      within(
+        screen.getByRole("region", { name: "Not in this channel" }),
+      ).getByRole("region", { name: "People not in this channel" }),
+    )
+      .getAllByRole("button", { name: /^Add / })
+      .map((row) => row.getAttribute("aria-label"));
+  return { ...t, people, key, directId, otherDirectId, rows };
+}
+
+it("orders empty-channel invitations by shared relationships and usage before the four-row limit", async () => {
+  const t = await setup();
+  await t.user.click(screen.getByRole("button", { name: "Done" }));
+  const agents = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"].map(
+    (name) => ({ ...t.agent, pubkey: keypair().pubkey, name }),
+  );
+  const directId = "22222222-2222-4222-8222-222222222222";
+  const direct = agents[5]?.pubkey ?? "";
+  const used = agents[4]?.pubkey ?? "";
+  const events = [
+    metadata(t.relay, directId, "Direct", undefined, [["t", "dm"]]),
+    roster(t.relay, directId, [t.viewer.pubkey, direct]),
+  ];
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) => [
+    ...(await query(filters)),
+    ...events.filter((event) =>
+      filters.some((filter) => matchesEvent(event, filter)),
+    ),
+  ]);
+  await act(async () => {
+    t.control.set({ agents });
+    await t.session.channels.refreshList?.();
+  });
+  await vi.waitFor(() =>
+    expect(
+      t.session.channels
+        .list()
+        .channels.find((channel) => channel.id === directId)?.participants,
+    ).toEqual([direct]),
+  );
+  recordChoice(t.session.scope, "", personKey(used));
+  await t.user.click(t.trigger);
+  const group = await screen.findByRole("region", { name: "Your agents" });
+  await vi.waitFor(() =>
+    expect(
+      within(group)
+        .getAllByRole("button", { name: /^Add / })
+        .map((row) => row.getAttribute("aria-label")),
+    ).toEqual([
+      expect.stringMatching(/^Add Foxtrot/),
+      expect.stringMatching(/^Add Echo/),
+      expect.stringMatching(/^Add Alpha/),
+      expect.stringMatching(/^Add Bravo/),
+    ]),
+  );
+  expect(screen.getByRole("searchbox")).toHaveValue("");
+  expect(
+    within(group).getByRole("button", { name: "Show more" }),
+  ).toBeVisible();
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("uses shared relationship bands inside People while exact names stay first", async () => {
+  const t = await relationshipInvitations();
+  await t.user.type(screen.getByRole("searchbox"), "Sa");
+  await screen.findByRole("button", { name: /^Add Sam D direct/ });
+  expect(t.rows()).toEqual([
+    expect.stringMatching(/^Add Sam D direct/),
+    expect.stringMatching(/^Add Sam E direct/),
+    expect.stringMatching(/^Add Sam C group/),
+    expect.stringMatching(/^Add Sam B shared/),
+  ]);
+  await t.user.type(screen.getByRole("searchbox"), "m");
+  await screen.findByRole("button", { name: /^Add Sam \(/ });
+  expect(t.rows()).toEqual([
+    expect.stringMatching(/^Add Sam \(/),
+    expect.stringMatching(/^Add Sam D direct/),
+    expect.stringMatching(/^Add Sam E direct/),
+    expect.stringMatching(/^Add Sam C group/),
+  ]);
+});
+
+it("uses shared DM visit usage and picker-specific earlier choices", async () => {
+  const t = await relationshipInvitations();
+  recordVisit(t.session.scope, `channel:${t.otherDirectId}`);
+  recordChoice(t.session.scope, pickerText("dm", "sa"), personKey(t.key(0)));
+  await t.user.type(screen.getByRole("searchbox"), "Sa");
+  await screen.findByRole("button", { name: /^Add Sam E direct/ });
+  expect(t.rows()[0]).toMatch(/^Add Sam E direct/);
+  recordChoice(
+    t.session.scope,
+    pickerText("channel-members", "sam"),
+    personKey(t.key(0)),
+  );
+  await t.user.type(screen.getByRole("searchbox"), "m ");
+  await screen.findByRole("button", { name: /^Add Sam \(/ });
+  // Exact still leads; the earlier Add choice precedes the relationship bands.
+  expect(t.rows()).toEqual([
+    expect.stringMatching(/^Add Sam \(/),
+    expect.stringMatching(/^Add Sam A stranger/),
+    expect.stringMatching(/^Add Sam E direct/),
+    expect.stringMatching(/^Add Sam D direct/),
+  ]);
+});
+
+it("remembers successful channel additions without learning from failed writes", async () => {
+  const t = await setup();
+  t.fail("Only the owner can add this agent");
+  const add = await t.search();
+  await t.user.click(add);
+  await screen.findByText(/Only the owner can add this agent/);
+  const typed = pickerText("channel-members", "morgan");
+  const key = personKey(t.person.pubkey);
+  expect(
+    readSearchUsage(t.session.scope).pick(typed, new Set([key])),
+  ).toBeUndefined();
+  t.fail("");
+  await t.user.click(screen.getByRole("button", { name: "Retry" }));
+  await screen.findByText("Morgan is in the channel.");
+  expect(readSearchUsage(t.session.scope).pick(typed, new Set([key]))).toBe(
+    key,
+  );
+});
+
+it("keeps public-key lookup results whose names do not match the key text", async () => {
+  const t = await setup();
+  for (const value of [t.person.pubkey, npubEncode(t.person.pubkey)]) {
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value } });
+    const add = await screen.findByRole("button", { name: /^Add Morgan/ });
+    expect(add).toBeEnabled();
+    expect(
+      within(
+        screen.getByRole("region", { name: "Not in this channel" }),
+      ).getAllByRole("button", { name: /^Add / }),
+    ).toEqual([add]);
+  }
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("ranks a matching username with the shared people matcher", async () => {
+  const t = await setup();
+  const handle = profile(keypair(), { display_name: "Alpha", name: "robin" });
+  const named = profile(t.person, { name: "Robin Person" });
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) =>
+    filters.some((filter) => filter.search) ? [named, handle] : query(filters),
+  );
+  await t.user.type(screen.getByRole("searchbox"), "robin");
+  await screen.findByRole("button", { name: /^Add Alpha/ });
+  const rows = within(
+    screen.getByRole("region", { name: "Not in this channel" }),
+  ).getAllByRole("button", { name: /^Add / });
+  expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+    expect.stringMatching(/^Add Alpha/),
+    expect.stringMatching(/^Add Robin Person/),
+  ]);
+});
+
+it("ranks local usernames and hidden agent names through the shared matcher", async () => {
+  const t = await setup();
+  const exact = keypair(),
+    word = keypair(),
+    shown = keypair(),
+    handle = keypair();
+  const profiles = [
+    profile(word, { name: "Helper Alpha", is_agent: true }),
+    profile(exact, { name: "Helper Zed", is_agent: true }),
+    profile(shown, { name: "Robin Visible", is_agent: true }),
+    profile(handle, {
+      display_name: "Handle Agent",
+      name: "robin",
+      is_agent: true,
+    }),
+  ];
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) =>
+    filters.some((filter) => filter.search)
+      ? []
+      : [
+          ...(await query(filters)),
+          ...profiles.filter((event) =>
+            filters.some((filter) => matchesEvent(event, filter)),
+          ),
+        ],
+  );
+  await act(async () => {
+    t.control.set({
+      agents: [
+        { ...t.agent, pubkey: word.pubkey, name: "Red Robin" },
+        { ...t.agent, pubkey: exact.pubkey, name: "Robin" },
+        { ...t.agent, pubkey: shown.pubkey, name: "Robin Visible" },
+        { ...t.agent, pubkey: handle.pubkey, name: "Local Handle" },
+      ],
+    });
+    await t.session.profiles.ensure(
+      [word.pubkey, exact.pubkey, shown.pubkey, handle.pubkey],
+      "foreground",
+    );
+  });
+  await t.user.type(screen.getByRole("searchbox"), "robin");
+  const yours = await screen.findByRole("region", { name: "Your agents" });
+  const rows = within(yours).getAllByRole("button", { name: /^Add / });
+  expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+    expect.stringMatching(/^Add Handle Agent/),
+    expect.stringMatching(/^Add Robin Visible/),
+    expect.stringMatching(/^Add Helper Zed/),
+    expect.stringMatching(/^Add Helper Alpha/),
+  ]);
+});
+
+it("keeps relay-only matches after shared-ranked names without duplicating rows", async () => {
+  const t = await setup();
+  const relayOnly = profile(keypair(), { name: "A different name" });
+  const named = profile(t.person, { name: "Robin" });
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) =>
+    filters.some((filter) => filter.search)
+      ? [relayOnly, named]
+      : query(filters),
+  );
+  await t.user.type(screen.getByRole("searchbox"), "robin");
+  await screen.findByRole("button", { name: /^Add Robin/ });
+  const rows = within(
+    screen.getByRole("region", { name: "Not in this channel" }),
+  ).getAllByRole("button", { name: /^Add / });
+  expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+    expect.stringMatching(/^Add Robin/),
+    expect.stringMatching(/^Add A different name/),
+  ]);
+});
+
+it("starts every invitation group at four and expands only the selected group", async () => {
+  const t = await setup();
+  const client = Array.from({ length: 5 }, (_, index) => ({
+    ...t.agent,
+    pubkey: keypair().pubkey,
+    name: `Helper client ${index}`,
+  }));
+  const saved = Array.from({ length: 5 }, (_, index) => ({
+    pubkey: keypair().pubkey,
+    name: `Helper saved ${index}`,
+  }));
+  const people = Array.from({ length: 5 }, (_, index) =>
+    profile(keypair(), { name: `Helper person ${index}` }),
+  );
+  const other = Array.from({ length: 5 }, (_, index) =>
+    profile(keypair(), { name: `Helper other ${index}`, is_agent: true }),
+  );
+  t.readAgentLibrary.mockResolvedValue({ definitions: [], identities: saved });
+  await act(async () => {
+    t.control.set({ agents: client });
+    await t.session.agentChoices.refresh();
+  });
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) =>
+    filters.some((filter) => filter.search)
+      ? [...other, ...people]
+      : query(filters),
+  );
+  const groups = [
+    "Your agents",
+    "People not in this channel",
+    "Other agents",
+    "Your other agents",
+  ];
+  const rows = (name: string) =>
+    within(screen.getByRole("region", { name })).getAllByRole("button", {
+      name: /^Add /,
+    });
+  expect(rows(groups[0] ?? "")).toHaveLength(4);
+  await t.user.type(screen.getByRole("searchbox"), "Helper");
+  await screen.findByRole("button", { name: /^Add Helper person 0/ });
+  for (const name of groups) {
+    expect(rows(name)).toHaveLength(4);
+    expect(
+      within(screen.getByRole("region", { name })).getByRole("button", {
+        name: "Show more",
+      }),
+    ).toBeVisible();
+  }
+  await t.user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}");
+  expect(
+    screen
+      .getByRole("region", { name: "Not in this channel" })
+      .querySelector("[data-highlighted]"),
+  ).toContainElement(rows("People not in this channel")[0] ?? null);
+  await t.user.click(
+    within(
+      screen.getByRole("region", { name: "People not in this channel" }),
+    ).getByRole("button", {
+      name: "Show more",
+    }),
+  );
+  expect(rows("People not in this channel")).toHaveLength(5);
+  expect(
+    within(
+      screen.getByRole("region", { name: "People not in this channel" }),
+    ).queryByRole("button", { name: "Show more" }),
+  ).toBeNull();
+  for (const name of groups.filter(
+    (name) => name !== "People not in this channel",
+  ))
+    expect(rows(name)).toHaveLength(4);
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("keeps library-only agents out of the default list and the client group", async () => {
+  const t = await setup();
+  const old = profile(keypair(), { name: "Fixture old agent", is_agent: true });
+  t.readAgentLibrary.mockResolvedValue({
+    definitions: [],
+    identities: [t.agent, { pubkey: old.pubkey, name: "Fixture old agent" }],
+  });
+  await act(async () => {
+    await t.session.agentChoices.refresh();
+  });
+  const yours = screen.getByRole("region", {
+    name: "Your agents",
+  });
+  expect(within(yours).getAllByRole("button", { name: /^Add / })).toHaveLength(
+    1,
+  );
+  expect(
+    screen.queryByRole("button", { name: /^Add Fixture old agent/ }),
+  ).toBeNull();
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) =>
+    filters.some((filter) => filter.search) ? [old] : query(filters),
+  );
+  await t.user.type(screen.getByRole("searchbox"), "Fixture");
+  await within(
+    await screen.findByRole("region", { name: "Your other agents" }),
+  ).findByRole("button", { name: /^Add Fixture old agent/ });
+  expect(within(yours).getAllByRole("button", { name: /^Add / })).toHaveLength(
+    1,
+  );
+  await t.user.clear(screen.getByRole("searchbox"));
+  await act(async () => t.control.set({ agents: [] }));
+  expect(screen.queryByRole("region", { name: "Your agents" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /^Add Fixture/ })).toBeNull();
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("does not promote saved agents after a client inventory failure and recovers", async () => {
+  const t = await setup();
+  t.readAgentLibrary.mockResolvedValue({
+    definitions: [],
+    identities: [t.agent],
+  });
+  await act(async () => {
+    await t.session.agentChoices.refresh();
+    t.control.set({ status: "error", error: "Client inventory offline" });
+  });
+  await screen.findByText("Some agents could not load.");
+  expect(screen.queryByRole("region", { name: "Your agents" })).toBeNull();
+  await act(async () => t.control.set({ status: "ready" }));
+  expect(
+    within(screen.getByRole("region", { name: "Your agents" })).getByRole(
+      "button",
+      { name: /^Add Fixture agent/ },
+    ),
+  ).toBeVisible();
+  expect(screen.queryByText("Some agents could not load.")).toBeNull();
+});
+
+it("keeps archived agents out of the default invitations", async () => {
+  const t = await setup("stream", false, true, undefined, undefined, {
+    archivedAgent: true,
+  });
+  await vi.waitFor(() =>
+    expect(t.session.archives.snapshot().status).toBe("ready"),
+  );
+  expect(screen.queryByRole("region", { name: "Your agents" })).toBeNull();
+  await t.user.type(screen.getByRole("searchbox"), "Fixture");
+  await vi.waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Retry member data" }),
+    ).toHaveAttribute("aria-busy", "false"),
+  );
+  expect(
+    screen.queryByRole("button", { name: /^Add Fixture agent/ }),
+  ).toBeNull();
+});
+
 it("searches outside the roster, prevents double submission, and moves confirmed additions into Members", async () => {
   const t = await setup();
   const add = await t.search();
@@ -260,7 +1204,7 @@ it("highlights the first person not in the channel so Enter adds them once", asy
   const input = screen.getByRole("searchbox");
   const row = add.closest("[data-highlighted]");
   expect(row).not.toBeNull();
-  expect(row?.querySelector("mark")).toHaveTextContent("Morgan");
+  expect(row?.querySelector("mark")).toBeNull();
   expect(screen.getByText("Morgan. Press Enter to add.")).toHaveAttribute(
     "role",
     "status",
@@ -284,12 +1228,8 @@ it("ranks a matching agent of yours by name and keeps the highlight on its row a
       .getByRole("region", { name: "Not in this channel" })
       .querySelector("[data-highlighted]");
   expect(highlighted()).toContainElement(morgan);
-  t.readAgentLibrary.mockResolvedValue({
-    definitions: [],
-    identities: [agent],
-  });
   await act(async () => {
-    await t.session.agentChoices.refresh();
+    t.control.set({ agents: [{ ...t.agent, ...agent }] });
   });
   const rows = within(
     screen.getByRole("region", { name: "Not in this channel" }),
@@ -322,10 +1262,16 @@ it("DMs are view-only and never search outside their members", async () => {
   expect(
     screen.queryByRole("region", { name: "Not in this channel" }),
   ).not.toBeInTheDocument();
-  const refresh = screen.getByRole("button", { name: "Refresh member data" });
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
-  await t.user.click(refresh);
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  expect(
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   expect(
     t.query.mock.calls.some(([filters]) =>
       filters.some((filter) => filter.search),
@@ -334,12 +1280,13 @@ it("DMs are view-only and never search outside their members", async () => {
 });
 it("Escape closes the dialog and restores focus to its header button", async () => {
   const t = await setup();
-  expect(screen.getByRole("searchbox")).toHaveFocus();
+  // Visible content can precede Base UI's queued initial-focus handoff.
+  await vi.waitFor(() => expect(screen.getByRole("searchbox")).toHaveFocus());
   await t.user.keyboard("{Escape}");
   await vi.waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
-  expect(screen.getByRole("button", { name: "Channel members" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Access" })).toHaveFocus();
 });
 it("failed directory searches recover through the shared refresh, not a false empty result", async () => {
   const t = await setup();
@@ -351,14 +1298,19 @@ it("failed directory searches recover through the shared refresh, not a false em
     within(section).queryByText("No other matching people or agents."),
   ).not.toBeInTheDocument();
   expect(
-    screen.queryByRole("button", { name: /^Retry/ }),
-  ).not.toBeInTheDocument();
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
   t.failSearch(false);
-  const refresh = screen.getByRole("button", { name: "Refresh member data" });
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
-  await t.user.click(refresh);
+  expect(
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
   await within(section).findByRole("button", { name: /Add Morgan/ });
   expect(screen.getByRole("searchbox")).toHaveValue("Morgan");
+  expect(screen.getByRole("searchbox")).toHaveFocus();
   expect(within(section).queryByText("Search offline")).not.toBeInTheDocument();
 });
 
@@ -382,9 +1334,11 @@ it.each(["pending", "failed"])(
   async (state) => {
     const t = await setup("stream", true);
     await t.search();
-    const refresh = screen.getByRole("button", { name: "Refresh member data" });
+    expect(
+      screen.getByRole("button", { name: "Retry member data" }),
+    ).toBeVisible();
     await vi.waitFor(() =>
-      expect(refresh).toHaveAttribute("aria-busy", "false"),
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
     );
     const nameReads = () =>
       t.query.mock.calls.filter(([filters]) =>
@@ -402,17 +1356,21 @@ it.each(["pending", "failed"])(
       }),
     );
     try {
-      await t.user.click(refresh);
+      await t.user.click(
+        screen.getByRole("button", { name: "Retry member data" }),
+      );
       await vi.waitFor(() => expect(nameReads()).toBe(beforeNames + 1));
       const add = await screen.findByRole("button", { name: /Add Morgan/ });
       await vi.waitFor(() => expect(add).toBeEnabled());
-      expect(refresh).toHaveAttribute("aria-busy", "true");
-      expect(refresh).toHaveAttribute("aria-disabled", "true");
+      expect(memberData()).toHaveAttribute("data-refreshing", "true");
+      expect(
+        screen.queryByRole("button", { name: "Retry member data" }),
+      ).not.toBeEnabled();
       if (state === "failed") {
         await act(async () => release());
         await screen.findByText(/Some names could not load/);
         await vi.waitFor(() =>
-          expect(refresh).toHaveAttribute("aria-busy", "false"),
+          expect(memberData()).toHaveAttribute("data-refreshing", "false"),
         );
         expect(add).toBeEnabled();
       }
@@ -430,13 +1388,17 @@ it("one refresh retries every failed data source and never replays a failed invi
   t.fail("Invitation denied");
   await t.user.click(await t.search());
   await screen.findByText(/Invitation denied/);
-  const refresh = screen.getByRole("button", { name: "Refresh member data" });
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  expect(
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   const query = t.query.getMockImplementation();
   if (!query) throw new Error("Missing query fixture");
   t.query.mockRejectedValue(new Error("Reads offline"));
   t.readAgentLibrary.mockRejectedValueOnce(new Error("Agents offline"));
-  await t.user.click(refresh);
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
   await screen.findByText(/The member list could not load/);
   await screen.findByText(/Some agents could not load/);
   await screen.findByText(/Archived identities could not be checked/);
@@ -444,15 +1406,19 @@ it("one refresh retries every failed data source and never replays a failed invi
     screen.getByRole("region", { name: "Not in this channel" }),
   ).findByText("Reads offline");
   await screen.findByText(/Some names could not load/);
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
-  // The sole remaining Retry is the explicit invitation intent, not a fetch.
-  expect(screen.getAllByRole("button", { name: /^Retry/ })).toHaveLength(1);
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
+  // Read recovery and invitation replay remain separate deliberate actions.
+  expect(screen.getAllByRole("button", { name: /^Retry/ })).toHaveLength(2);
   t.query.mockImplementation(query);
   t.query.mockClear();
   t.readAgentLibrary.mockClear();
   t.recoverNames();
-  await t.user.click(refresh);
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   const filters = t.query.mock.calls.flatMap(([filters]) => filters);
   expect(filters.some((filter) => filter.kinds?.includes(39002))).toBe(true);
   expect(filters.some((filter) => filter.kinds?.includes(39001))).toBe(true);
@@ -479,9 +1445,11 @@ it.each(["search", "archives", "agents"])(
   async (source) => {
     const t = await setup();
     await t.search();
-    const refresh = screen.getByRole("button", { name: "Refresh member data" });
+    expect(
+      screen.getByRole("button", { name: "Retry member data" }),
+    ).toBeVisible();
     await vi.waitFor(() =>
-      expect(refresh).toHaveAttribute("aria-busy", "false"),
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
     );
     const query = t.query.getMockImplementation();
     if (!query) throw new Error("Missing query fixture");
@@ -509,7 +1477,9 @@ it.each(["search", "archives", "agents"])(
         return query(filters);
       });
     try {
-      await t.user.click(refresh);
+      await t.user.click(
+        screen.getByRole("button", { name: "Retry member data" }),
+      );
       await vi.waitFor(() => expect(started).toBe(1));
       await vi.waitFor(() =>
         expect(
@@ -518,14 +1488,18 @@ it.each(["search", "archives", "agents"])(
           ).status,
         ).toBe("error"),
       );
-      expect(refresh).toHaveAttribute("aria-busy", "true");
-      expect(refresh).toHaveAttribute("aria-disabled", "true");
-      await t.user.click(refresh);
+      expect(memberData()).toHaveAttribute("data-refreshing", "true");
+      expect(
+        screen.queryByRole("button", { name: "Retry member data" }),
+      ).not.toBeEnabled();
+      await t.user.click(
+        screen.getByRole("button", { name: "Retry member data" }),
+      );
     } finally {
       await act(async () => release());
     }
     await vi.waitFor(() =>
-      expect(refresh).toHaveAttribute("aria-busy", "false"),
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
     );
     expect(started).toBe(1);
     expect(t.publish).not.toHaveBeenCalled();
@@ -552,18 +1526,30 @@ it("refresh restarts the current directory query from page one instead of mixing
       : query(filters);
   });
   await t.user.type(screen.getByRole("searchbox"), "Morgan");
-  const more = await screen.findByRole("button", { name: "Show more results" });
+  const more = await screen.findByRole("button", { name: "Find more matches" });
   expect(more).toHaveAttribute("data-size", "sm");
   expect(more.parentElement).toHaveClass("flex", "justify-center");
   await t.user.click(more);
+  const people = within(
+    screen.getByRole("region", { name: "Not in this channel" }),
+  ).getByRole("region", { name: "People not in this channel" });
   await screen.findByText(nameText("Morgan stale"));
-  const refresh = screen.getByRole("button", { name: "Refresh member data" });
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  expect(within(people).getAllByRole("button", { name: /^Add / })).toHaveLength(
+    31,
+  );
+  expect(
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   fresh = true;
   t.query.mockClear();
-  await t.user.click(refresh);
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
   await screen.findByText(nameText("Morgan 0"));
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   expect(screen.queryByText(nameText("Morgan stale"))).not.toBeInTheDocument();
   expect(
     t.query.mock.calls
@@ -603,7 +1589,7 @@ it("keeps known members quiet while rechecking membership without enabling unver
     }),
   );
   try {
-    await t.user.click(screen.getByRole("button", { name: "Channel members" }));
+    await t.user.click(screen.getByRole("button", { name: "Access" }));
     await vi.waitFor(() => expect(rosterReads()).toBe(before + 1));
     expect(authorityReads()).toBe(beforeAuthority + 1);
     expect(screen.getByText("Carl (you)")).toBeVisible();
@@ -614,7 +1600,7 @@ it("keeps known members quiet while rechecking membership without enabling unver
     expect(screen.queryByText("Loading members…")).not.toBeInTheDocument();
     await act(async () => release());
     const retry = await screen.findByRole("button", {
-      name: "Refresh member data",
+      name: "Retry member data",
     });
     expect(add).toBeDisabled();
     await vi.waitFor(() => expect(retry).toHaveAttribute("aria-busy", "false"));
@@ -662,7 +1648,7 @@ it.each(["avatar", "row", "keyboard"])(
     } else await t.user.click(row);
     expect(onOpenLink).toHaveBeenCalledExactlyOnceWith(
       profileTarget(t.viewer.pubkey),
-      screen.getByRole("button", { name: "Channel members" }),
+      screen.getByRole("button", { name: "Access" }),
     );
     await vi.waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
@@ -681,7 +1667,7 @@ it("keeps Members open when the profile dispatcher declines the target", async (
     screen.getByRole("button", { name: /Open profile for Carl/ }),
   );
   expect(onOpenLink).toHaveBeenCalledOnce();
-  expect(screen.getByRole("dialog", { name: "Channel members" })).toBeVisible();
+  expect(screen.getByRole("dialog", { name: "Manage members" })).toBeVisible();
   expect(
     screen.queryByRole("dialog", { name: /identity$/ }),
   ).not.toBeInTheDocument();
@@ -692,7 +1678,7 @@ it("keeps Members open when the profile dispatcher declines the target", async (
   await vi.waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
-  expect(screen.getByRole("button", { name: "Channel members" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Access" })).toHaveFocus();
   expect(t.publish).not.toHaveBeenCalled();
 });
 
@@ -712,20 +1698,22 @@ it("does not offer profile controls without an available Profiles contribution",
 
 it("refreshes membership even when verified role metadata is unavailable", async () => {
   const t = await setup();
-  const refresh = screen.getByRole("button", {
-    name: "Refresh member data",
-  });
+  expect(
+    screen.getByRole("button", {
+      name: "Retry member data",
+    }),
+  ).toBeVisible();
   await vi.waitFor(() =>
-    expect(refresh).not.toHaveAttribute("aria-disabled", "true"),
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
   );
   t.confirmRoster();
-  await t.user.click(refresh);
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
   await screen.findByText("Morgan");
   await vi.waitFor(() =>
-    expect(refresh).not.toHaveAttribute("aria-disabled", "true"),
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
   );
-  expect(screen.getByRole("region", { name: "Members" })).toHaveTextContent(
-    "Members · 2",
+  expect(screen.getByRole("region", { name: "People" })).toHaveTextContent(
+    "People · 2",
   );
   expect(
     t.session.memberAdministration.snapshot(
@@ -743,14 +1731,12 @@ it("shares the identity presentation with invitation rows without assigning a ch
   expect(
     within(row).queryByText("Agent", { exact: true }),
   ).not.toBeInTheDocument();
-  expect(within(row).queryByText("managed by")).not.toBeInTheDocument();
+  expect(within(row).queryByText(/Managed by/)).not.toBeInTheDocument();
   expect(
     row.querySelector('[data-avatar-shape="squircle"]'),
   ).toBeInTheDocument();
-  const key = row.querySelector('[aria-hidden="true"].text-mono');
-  expect(key).toHaveTextContent(/^npub/);
-  const npub = npubEncode(t.agent.pubkey);
-  expect(key).toHaveTextContent(`${npub.slice(0, 11)}…${npub.slice(-6)}`);
+  // Rows never reveal public keys on hover.
+  expect(row).not.toHaveTextContent(/npub/);
   expect(
     within(row).queryByRole("button", { name: /Copy/ }),
   ).not.toBeInTheDocument();
@@ -801,7 +1787,7 @@ it.each(["row"])(
     } else await t.user.click(row);
     expect(onOpenLink).toHaveBeenCalledExactlyOnceWith(
       profileTarget(t.person.pubkey),
-      screen.getByRole("button", { name: "Channel members" }),
+      screen.getByRole("button", { name: "Access" }),
     );
     await vi.waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
@@ -832,7 +1818,7 @@ it("invites only through the separate prominent Add button and leaves profile na
     );
     expect(onOpenLink).toHaveBeenCalledExactlyOnceWith(
       profileTarget(t.person.pubkey),
-      screen.getByRole("button", { name: "Channel members" }),
+      screen.getByRole("button", { name: "Access" }),
     );
   } finally {
     await act(async () => t.release());
@@ -850,7 +1836,7 @@ it("keeps Add separate and usable when non-member profile navigation is declined
   await t.user.click(
     screen.getByRole("button", { name: /Open profile for Morgan/ }),
   );
-  expect(screen.getByRole("dialog", { name: "Channel members" })).toBeVisible();
+  expect(screen.getByRole("dialog", { name: "Manage members" })).toBeVisible();
   expect(t.publish).not.toHaveBeenCalled();
   supported = false;
   await t.user.clear(screen.getByRole("searchbox"));
@@ -913,11 +1899,11 @@ it.each([
       t.confirmRoster();
       await vi.waitFor(() =>
         expect(
-          screen.getByRole("button", { name: "Refresh member data" }),
+          screen.getByRole("button", { name: "Retry member data" }),
         ).toHaveAttribute("aria-busy", "false"),
       );
       await t.user.click(
-        screen.getByRole("button", { name: "Refresh member data" }),
+        screen.getByRole("button", { name: "Retry member data" }),
       );
     } else await t.search();
     const owner = await screen.findByRole("button", {
@@ -931,7 +1917,7 @@ it.each([
     expect(
       screen.queryByText("Agent", { exact: true }),
     ).not.toBeInTheDocument();
-    expect(owner.parentElement).toHaveTextContent("managed by Carl (you)");
+    expect(owner.parentElement).toHaveTextContent("Managed by Carl (you)");
     if (source === "hint") {
       owner.focus();
       await t.user.keyboard("{Enter}");
@@ -958,7 +1944,7 @@ it.each([
     }
     expect(onOpenLink).toHaveBeenCalledExactlyOnceWith(
       profileTarget(t.viewer.pubkey),
-      screen.getByRole("button", { name: "Channel members" }),
+      screen.getByRole("button", { name: "Access" }),
     );
     await vi.waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
@@ -984,7 +1970,7 @@ it.each(["unavailable", "declined"] as const)(
       ),
     );
     await t.search();
-    await screen.findByText(/managed by/);
+    await screen.findByText(/Managed by/);
     const actions = screen.getByRole("button", { name: /Add Morgan/ });
     expect(
       screen.queryByRole("button", { name: "Actions for Morgan" }),
@@ -1012,7 +1998,7 @@ it.each(["unavailable", "declined"] as const)(
       await vi.waitFor(() => expect(actions).toHaveFocus());
     }
     expect(
-      screen.getByRole("dialog", { name: "Channel members" }),
+      screen.getByRole("dialog", { name: "Manage members" }),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: /Add Morgan/ })).toBeEnabled();
     expect(t.publish).not.toHaveBeenCalled();
@@ -1035,17 +2021,25 @@ it("removes ownership on a newer invalid signed head and never restores it from 
   );
   await t.search();
   await screen.findByRole("button", { name: "Open owner profile: Carl (you)" });
-  const refresh = screen.getByRole("button", { name: "Refresh member data" });
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  expect(
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   head = managedProfile(t.person, t.viewer, 1800000001, false);
-  await t.user.click(refresh);
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   expect(
     screen.queryByText("managed by", { exact: false }),
   ).not.toBeInTheDocument();
   head = first;
-  await t.user.click(refresh);
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   expect(
     screen.queryByRole("button", { name: /Open owner profile/ }),
   ).not.toBeInTheDocument();
@@ -1064,6 +2058,8 @@ it("retries ownership admission and failed owner names through the shared refres
     canOpenLink: () => true,
     onOpenLink: () => true,
   });
+  // Leave no default invitation view to release a slot during this budget test.
+  await act(async () => t.control.set({ agents: [] }));
   const manager = keypair();
   const agent = managedProfile(t.person, manager, 1800000000);
   const original = t.query.getMockImplementation();
@@ -1097,19 +2093,27 @@ it("retries ownership admission and failed owner names through the shared refres
   expect(
     screen.queryByRole("button", { name: /Open owner profile/ }),
   ).not.toBeInTheDocument();
-  const refresh = screen.getByRole("button", { name: "Refresh member data" });
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  expect(
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   for (const view of held) view.dispose();
-  await t.user.click(refresh);
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
   await screen.findByRole("button", { name: /Open owner profile: npub/ });
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   expect(
     screen.getByText(/Some agent managers or their names could not load/),
   ).toBeVisible();
   failName = false;
-  await t.user.click(refresh);
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
   await screen.findByRole("button", { name: "Open owner profile: Manager" });
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   expect(
     screen.queryByText(/Some agent managers or their names could not load/),
   ).not.toBeInTheDocument();
@@ -1129,6 +2133,8 @@ async function pagedInvitations(
   const local = Array.from({ length: localCount }, (_, index) => ({
     pubkey: keypair().pubkey,
     name: `Helper local ${index}`,
+    owner: t.viewer.pubkey,
+    relayUrl: t.agent.relayUrl,
   }));
   const firstRemote = remote[0];
   if (!firstRemote) throw new Error("Missing first remote fixture");
@@ -1141,6 +2147,12 @@ async function pagedInvitations(
   });
   await step(() =>
     act(async () => {
+      t.control.set({
+        agents: [
+          ...local,
+          { ...t.agent, pubkey: firstRemote.pubkey, name: "Helper remote 0" },
+        ],
+      });
       await t.session.agentChoices.refresh();
     }),
   );
@@ -1158,12 +2170,12 @@ async function pagedInvitations(
   // real setTimeout(0) after every action, so these steps drive fireEvent.
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const input = screen.getByRole("searchbox");
-  const refresh = screen.getByRole("button", { name: "Refresh member data" });
+  const refresh = screen.getByRole("button", { name: "Retry member data" });
   const idle = () =>
     step(async () => {
       await act(() => vi.advanceTimersByTimeAsync(200));
       await vi.waitFor(() =>
-        expect(refresh).toHaveAttribute("aria-busy", "false"),
+        expect(memberData()).toHaveAttribute("data-refreshing", "false"),
       );
     });
   const search = (value: string) =>
@@ -1175,7 +2187,27 @@ async function pagedInvitations(
       fireEvent.click(button);
     });
   const more = () =>
-    click(screen.getByRole("button", { name: "Show more results" }));
+    click(screen.getByRole("button", { name: "Find more matches" }));
+  const groupRows = (name: string) =>
+    within(screen.getByRole("region", { name })).getAllByRole("button", {
+      name: /^Add /,
+    });
+  // React retains the group's control while it expands. Resolve it once rather
+  // than recomputing every growing row's accessible name before each click.
+  const moreButtons = new Map<string, HTMLElement>();
+  const moreIn = (name: string) => {
+    let button = moreButtons.get(name);
+    if (!button?.isConnected) {
+      button = within(screen.getByRole("region", { name })).getByRole(
+        "button",
+        {
+          name: "Show more",
+        },
+      );
+      moreButtons.set(name, button);
+    }
+    return click(button);
+  };
   const rows = () =>
     within(
       screen.getByRole("region", { name: "Not in this channel" }),
@@ -1187,27 +2219,38 @@ async function pagedInvitations(
       .map((filter) => filter.page);
   await search("Helper");
   await idle();
-  return { t, refresh, idle, search, click, more, rows, pages };
+  return {
+    t,
+    local,
+    remote,
+    refresh,
+    idle,
+    search,
+    click,
+    more,
+    moreIn,
+    groupRows,
+    rows,
+    pages,
+  };
 }
 
-it("pages combined local and relay invitations without losing matches", async ({
+it("expands local and relay groups independently without losing paged matches", async ({
   signal,
 }) => {
   return ownedTask(signal, async (step) => {
-    const { t, idle, more, rows, pages } = await pagedInvitations(step, 65);
-    const firstPage = rows();
-    expect(firstPage).toHaveLength(30);
-    expect(
-      firstPage.every((row) =>
-        row.getAttribute("aria-label")?.startsWith("Add Helper remote"),
-      ),
-    ).toBe(true);
+    const { t, idle, more, moreIn, groupRows, rows, pages } =
+      await pagedInvitations(step, 65);
+    expect(rows()).toHaveLength(8);
+    expect(groupRows("Your agents")).toHaveLength(4);
+    expect(groupRows("People not in this channel")).toHaveLength(4);
+    for (let index = 0; index < 16; index++) await moreIn("Your agents");
+    expect(groupRows("Your agents")).toHaveLength(66);
+    expect(groupRows("People not in this channel")).toHaveLength(4);
+    for (let index = 0; index < 7; index++)
+      await moreIn("People not in this channel");
+    expect(rows()).toHaveLength(95);
     expect(pages()).toEqual([1]);
-    for (const count of [60, 90, 95]) {
-      await more();
-      expect(rows()).toHaveLength(count);
-      expect(pages()).toEqual([1]);
-    }
     await more();
     await idle();
     expect(
@@ -1216,20 +2259,87 @@ it("pages combined local and relay invitations without losing matches", async ({
     expect(rows()).toHaveLength(96);
     expect(pages()).toEqual([1, 2]);
     expect(
-      screen.queryByRole("button", { name: "Show more results" }),
+      screen.queryByRole("button", { name: "Find more matches" }),
     ).toBeNull();
     expect(t.publish).not.toHaveBeenCalled();
   });
 });
 
-it("resets combined invitation paging on refresh or query change", async ({
+it("reveals fetched relay pages while local-only rows keep their own limit", async ({
   signal,
 }) => {
   return ownedTask(signal, async (step) => {
-    // 31 local agents: past one page locally, so a reset is observable.
-    const { t, refresh, idle, search, click, more, rows, pages } =
-      await pagedInvitations(step, 31);
-    for (let i = 0; i < 3; i++) await more();
+    const { t, idle, more, moreIn, groupRows, rows, pages } =
+      await pagedInvitations(step, 65);
+    expect(rows()).toHaveLength(8);
+    await more();
+    await idle();
+    expect(
+      screen.getByRole("button", { name: /^Add Helper final/ }),
+    ).toBeVisible();
+    expect(groupRows("People not in this channel")).toHaveLength(30);
+    expect(groupRows("Your agents")).toHaveLength(4);
+    await moreIn("Your agents");
+    expect(groupRows("Your agents")).toHaveLength(8);
+    expect(groupRows("People not in this channel")).toHaveLength(30);
+    expect(pages()).toEqual([1, 2]);
+    expect(t.publish).not.toHaveBeenCalled();
+  });
+});
+
+it("expands a mixed group from its revealed relay boundary", async ({
+  signal,
+}) => {
+  return ownedTask(signal, async (step) => {
+    const { t, local, remote, idle, more, moreIn, groupRows } =
+      await pagedInvitations(step, 5);
+    t.readAgentLibrary.mockResolvedValue({
+      definitions: [],
+      identities: [
+        ...local,
+        ...remote.map((event, index) => ({
+          pubkey: event.pubkey,
+          name: `Helper remote ${index}`,
+        })),
+      ],
+    });
+    await step(() =>
+      act(async () => {
+        t.control.set({ agents: [] });
+        await t.session.agentChoices.refresh();
+      }),
+    );
+    await idle();
+    expect(groupRows("Your other agents")).toHaveLength(4);
+    await more();
+    await idle();
+    expect(groupRows("Your other agents")).toHaveLength(30);
+    await moreIn("Your other agents");
+    expect(groupRows("Your other agents")).toHaveLength(34);
+    expect(t.publish).not.toHaveBeenCalled();
+  });
+});
+
+it("resets every invitation group's expansion on refresh or query change", async ({
+  signal,
+}) => {
+  return ownedTask(signal, async (step) => {
+    const {
+      t,
+      refresh,
+      idle,
+      search,
+      click,
+      more,
+      moreIn,
+      groupRows,
+      rows,
+      pages,
+    } = await pagedInvitations(step, 31);
+    for (let index = 0; index < 7; index++) await moreIn("Your agents");
+    for (let index = 0; index < 7; index++)
+      await moreIn("People not in this channel");
+    await more();
     await idle();
     expect(
       screen.getByRole("button", { name: /^Add Helper final/ }),
@@ -1238,17 +2348,18 @@ it("resets combined invitation paging on refresh or query change", async ({
     expect(pages()).toEqual([1, 2]);
     await click(refresh);
     await idle();
-    expect(rows()).toHaveLength(30);
+    expect(rows()).toHaveLength(8);
     expect(pages()).toEqual([1, 2, 1]);
-    await more();
-    expect(rows()).toHaveLength(60);
+    await moreIn("Your agents");
+    expect(groupRows("Your agents")).toHaveLength(8);
+    expect(groupRows("People not in this channel")).toHaveLength(4);
     await search("Helper local");
     await idle();
-    expect(rows()).toHaveLength(30);
+    expect(rows()).toHaveLength(8);
     await search("");
-    expect(
-      screen.queryByRole("region", { name: "Not in this channel" }),
-    ).toBeNull();
+    expect(groupRows("Your agents")).toHaveLength(4);
+    expect(rows()).toHaveLength(4);
+    expect(pages()).toEqual([1, 2, 1, 1]);
     expect(t.publish).not.toHaveBeenCalled();
   });
 });
@@ -1278,6 +2389,8 @@ it("adds a team's members not in the channel with one button", async () => {
     snapshot: () => snapshot,
   } as unknown as Agents;
   const t = await setup("stream", false, false, undefined, agents);
+  await screen.findByRole("region", { name: "Your agents" });
+  expect(screen.queryByRole("list", { name: "Teams" })).toBeNull();
   await t.user.type(screen.getByRole("searchbox"), "Cr");
   const teams = await screen.findByRole("list", { name: "Teams" });
   expect(within(teams).getByText("Ada, Cy")).toBeInTheDocument();
@@ -1304,15 +2417,13 @@ it("adds a team's members not in the channel with one button", async () => {
 });
 it("offers local agents to add by the shared name rule", async () => {
   const t = await setup();
-  t.readAgentLibrary.mockResolvedValue({
-    definitions: [],
-    identities: [
-      { pubkey: keypair().pubkey, name: "José" },
-      { pubkey: keypair().pubkey, name: "Honey" },
-    ],
-  });
   await act(async () => {
-    await t.session.agentChoices.refresh();
+    t.control.set({
+      agents: [
+        { ...t.agent, pubkey: keypair().pubkey, name: "José" },
+        { ...t.agent, pubkey: keypair().pubkey, name: "Honey" },
+      ],
+    });
   });
   const query = t.query.getMockImplementation();
   if (!query) throw new Error("Missing query fixture");
@@ -1320,19 +2431,25 @@ it("offers local agents to add by the shared name rule", async () => {
     filters.some((filter) => filter.search) ? [] : query(filters),
   );
   const input = screen.getByRole("searchbox");
-  const refresh = screen.getByRole("button", { name: "Refresh member data" });
+  expect(
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
   const offered = () =>
     screen
       .queryAllByRole("button", { name: /^Add / })
       .map((row) => row.getAttribute("aria-label"));
   // Accents fold, so `jose` finds the agent José.
   await t.user.type(input, "jose");
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   expect(offered()).toEqual([expect.stringMatching(/^Add José/)]);
   // Text inside a word does not match: `oney` does not find Honey.
   await t.user.clear(input);
   await t.user.type(input, "oney");
-  await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
   expect(offered()).toEqual([]);
 });
 
@@ -1350,7 +2467,7 @@ it("controlled presentation restores the dialog without retaining its search or 
     </ToastProvider>
   );
   const view = render(button(false));
-  await t.user.click(screen.getByRole("button", { name: "Channel members" }));
+  await t.user.click(screen.getByRole("button", { name: "Access" }));
   expect(onOpenChange).toHaveBeenLastCalledWith(true);
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   view.rerender(button(true));
@@ -1455,3 +2572,706 @@ for (const mode of ["cancellation", "early assertion failure"] as const) {
     expect(events).not.toContain("task:settled");
   });
 }
+
+it("lets the Solo owner add an agent without sending a message", async () => {
+  const t = await setup("solo", false, true);
+  const input = screen.getByRole("searchbox", {
+    name: "Search people, agents and channels",
+  });
+  expect(input).toHaveAttribute(
+    "placeholder",
+    "Add people, agents or a channel",
+  );
+  expect(screen.queryByText(/Join this channel/)).not.toBeInTheDocument();
+  expect(screen.getByText(/Adding an agent won’t start a run/)).toBeVisible();
+  expect(screen.getByRole("dialog")).not.toHaveAccessibleDescription();
+  expect(
+    screen.queryByRole("region", { name: "Not in this chat" }),
+  ).toBeVisible();
+  expect(screen.getByRole("region", { name: "Your agents" })).toBeVisible();
+  await t.user.type(input, "Fixture");
+  await screen.findByRole("button", { name: /Add Fixture agent/ });
+  await t.user.clear(input);
+  expect(
+    screen.queryByRole("region", { name: "Not in this chat" }),
+  ).toBeVisible();
+  const add = await t.search();
+  t.hold();
+  await t.user.click(add);
+  await vi.waitFor(() => expect(t.publish).toHaveBeenCalledOnce());
+  expect(add).toHaveAttribute("aria-disabled", "true");
+  await t.user.click(add);
+  expect(t.publish).toHaveBeenCalledOnce();
+  await act(async () => t.release());
+  const notice = await screen.findByText("Fixture agent added.");
+  expect(notice).toHaveClass("sr-only");
+  expect(input).toHaveValue("");
+  expect(input).toHaveFocus();
+  expect(screen.getByRole("heading", { name: "People · 1" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Agents · 1" })).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: /Add Fixture agent/ }),
+  ).not.toBeInTheDocument();
+  expect(t.session.channels.list().channels[0]?.members).toContain(
+    t.agent.pubkey,
+  );
+  expect(t.publish.mock.calls.map(([event]) => event.kind)).toEqual([9000]);
+  expect(
+    t.publish.mock.calls[0]?.[0].tags.filter(([tag]) => tag !== "client-id"),
+  ).toEqual([
+    ["h", "11111111-1111-4111-8111-111111111111"],
+    ["p", t.agent.pubkey],
+  ]);
+  await t.user.click(screen.getByRole("button", { name: "Close" }));
+  await t.user.click(t.trigger);
+  await screen.findByRole("heading", { name: "Agents · 1" });
+  expect(t.publish).toHaveBeenCalledOnce();
+});
+
+it("keeps Solo channel sharing search-only while suggesting your agents when alone", async () => {
+  const t = await setup("solo", false, true);
+  const destination = "22222222-2222-4222-8222-222222222222";
+  const events = [
+    metadata(t.relay, destination, "Planning", 1700000000, [
+      ["t", "stream"],
+      ["public"],
+    ]),
+    roster(t.relay, destination, [t.viewer.pubkey], 1700000000),
+  ];
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) => [
+    ...(await query(filters)),
+    ...events.filter((event) =>
+      filters.some((filter) => matchesEvent(event, filter)),
+    ),
+  ]);
+  await act(async () => t.session.channels.refreshList?.());
+  await vi.waitFor(() =>
+    expect(
+      t.session.channels.list().channels.find((item) => item.id === destination)
+        ?.members,
+    ).toContain(t.viewer.pubkey),
+  );
+  expect(screen.getByRole("region", { name: "Your agents" })).toBeVisible();
+  expect(screen.queryByRole("region", { name: "Channels" })).toBeNull();
+  const input = screen.getByRole("searchbox");
+  await t.user.type(input, "Plan");
+  const channels = await screen.findByRole("region", { name: "Channels" });
+  expect(
+    within(channels).getByRole("button", { name: "Select #Planning" }),
+  ).toBeVisible();
+  await t.user.clear(input);
+  expect(screen.queryByRole("region", { name: "Channels" })).toBeNull();
+  expect(screen.getByRole("region", { name: "Your agents" })).toBeVisible();
+  await t.user.type(input, " ");
+  expect(screen.queryByRole("region", { name: "Channels" })).toBeNull();
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("gives Solo the channel invitation groups, ranking and independent four-row expansion", async () => {
+  const t = await setup("solo", false, true);
+  const client = Array.from({ length: 5 }, (_, index) => ({
+    ...t.agent,
+    pubkey: keypair().pubkey,
+    name: `Helper client ${index}`,
+  }));
+  const saved = Array.from({ length: 5 }, (_, index) => ({
+    pubkey: keypair().pubkey,
+    name: `Helper saved ${index}`,
+  }));
+  const chosen = saved[4];
+  const admitted = saved[0];
+  if (!chosen || !admitted) throw new Error("Missing saved agent fixture");
+  const outsider = profile(keypair(), {
+    name: "Helper outsider",
+    is_agent: true,
+  });
+  const person = profile(t.person, { name: "Helper person" });
+  t.readAgentLibrary.mockResolvedValue({ definitions: [], identities: saved });
+  recordChoice(
+    t.session.scope,
+    pickerText("channel-members", "helper"),
+    personKey(chosen.pubkey),
+  );
+  await act(async () => {
+    t.control.set({ agents: client });
+    await t.session.agentChoices.refresh();
+  });
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) =>
+    filters.some((filter) => filter.search)
+      ? [outsider, person]
+      : query(filters),
+  );
+  const rows = (name: string) =>
+    within(screen.getByRole("region", { name })).getAllByRole("button", {
+      name: /^Add /,
+    });
+  expect(rows("Your agents")).toHaveLength(4);
+  expect(
+    screen.queryByRole("region", { name: "Your other agents" }),
+  ).toBeNull();
+  expect(
+    t.query.mock.calls
+      .flatMap(([filters]) => filters)
+      .some((filter) => filter.search),
+  ).toBe(false);
+  const input = screen.getByRole("searchbox");
+  await t.user.type(input, "Helper");
+  await screen.findByRole("region", { name: "People not in this chat" });
+  const invitations = screen.getByRole("region", { name: "Not in this chat" });
+  expect(
+    within(invitations)
+      .getAllByRole("region")
+      .map((region) => region.getAttribute("aria-label")),
+  ).toEqual(["Your agents", "People not in this chat", "Your other agents"]);
+  expect(rows("Your agents")).toHaveLength(4);
+  expect(rows("Your other agents")).toHaveLength(4);
+  expect(rows("Your other agents")[0]).toHaveAccessibleName(
+    /^Add Helper saved 4/,
+  );
+  expect(
+    within(invitations).queryByRole("button", { name: /outsider/ }),
+  ).toBeNull();
+  await t.user.click(
+    within(screen.getByRole("region", { name: "Your agents" })).getByRole(
+      "button",
+      { name: "Show more" },
+    ),
+  );
+  expect(rows("Your agents")).toHaveLength(5);
+  expect(rows("Your other agents")).toHaveLength(4);
+  await t.user.click(
+    within(screen.getByRole("region", { name: "Your other agents" })).getByRole(
+      "button",
+      { name: "Show more" },
+    ),
+  );
+  expect(rows("Your other agents")).toHaveLength(5);
+  await t.user.clear(input);
+  expect(rows("Your agents")).toHaveLength(4);
+  expect(
+    screen.queryByRole("region", { name: "Your other agents" }),
+  ).toBeNull();
+  await t.user.type(input, "Helper saved");
+  await t.user.click(
+    await screen.findByRole("button", { name: /^Add Helper saved 0/ }),
+  );
+  await screen.findByText("Helper saved 0 added.");
+  expect(
+    readSearchUsage(t.session.scope).pick(
+      pickerText("channel-members", "helper saved"),
+      new Set(saved.map((agent) => personKey(agent.pubkey))),
+    ),
+  ).toBe(personKey(admitted.pubkey));
+  expect(input).toHaveValue("");
+  expect(screen.queryByRole("region", { name: "Not in this chat" })).toBeNull();
+  expect(t.publish.mock.calls.map(([event]) => event.kind)).toEqual([9000]);
+});
+
+it("reveals Solo directory continuations in their group and resets expansion on refresh", async () => {
+  const t = await setup("solo", false, true);
+  const people = Array.from({ length: 31 }, (_, index) =>
+    profile(keypair(), { name: `Helper person ${index}` }),
+  );
+  const query = t.query.getMockImplementation();
+  if (!query) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) => {
+    const search = filters.find((filter) => filter.search);
+    return search
+      ? search.page === 2
+        ? people.slice(30)
+        : people.slice(0, 30)
+      : query(filters);
+  });
+  await t.user.type(screen.getByRole("searchbox"), "Helper");
+  const peopleGroup = await screen.findByRole("region", {
+    name: "People not in this chat",
+  });
+  const rows = () =>
+    within(peopleGroup).getAllByRole("button", { name: /^Add / });
+  expect(rows()).toHaveLength(4);
+  await t.user.click(
+    within(peopleGroup).getByRole("button", { name: "Show more" }),
+  );
+  expect(rows()).toHaveLength(8);
+  await t.user.click(screen.getByRole("button", { name: "Find more matches" }));
+  await vi.waitFor(() => expect(rows()).toHaveLength(31));
+  expect(
+    screen.queryByRole("button", { name: "Find more matches" }),
+  ).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
+  expect(rows()).toHaveLength(4);
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it.each([false, true])(
+  "hides Solo idle invitations with a second member (agent: %s), while search still offers them",
+  async (agent) => {
+    const t = await setup("solo", false, agent);
+    t.confirmRoster();
+    await act(async () => {
+      await t.session.channels.refreshRoster?.(
+        "11111111-1111-4111-8111-111111111111",
+      );
+    });
+    expect(
+      screen.queryByRole("region", { name: "Not in this chat" }),
+    ).toBeNull();
+    await act(async () =>
+      t.control.set({
+        agents: [
+          { ...t.agent, pubkey: keypair().pubkey, name: "Fixture helper" },
+        ],
+      }),
+    );
+    const input = screen.getByRole("searchbox");
+    await t.user.type(input, "Fixture");
+    await screen.findByRole("region", { name: "Your agents" });
+    await t.user.clear(input);
+    expect(
+      screen.queryByRole("region", { name: "Not in this chat" }),
+    ).toBeNull();
+    await t.user.type(input, " ");
+    expect(
+      screen.queryByRole("region", { name: "Not in this chat" }),
+    ).toBeNull();
+    expect(t.publish).not.toHaveBeenCalled();
+  },
+);
+
+it("routes a Solo owner's person and agent additions through their own paths", async () => {
+  const t = await setup("solo", false, true);
+  const input = screen.getByRole("searchbox", {
+    name: "Search people, agents and channels",
+  });
+  await t.user.type(input, "Morgan");
+  await t.user.click(
+    await screen.findByRole("button", { name: /^Add Morgan/ }),
+  );
+  await screen.findByText(/Morgan is in the chat\./);
+  await t.user.clear(input);
+  await t.user.type(input, "Fixture agent");
+  await t.user.click(
+    await screen.findByRole("button", { name: /Add Fixture agent/ }),
+  );
+  await screen.findByText("Fixture agent added.");
+  expect(
+    t.publish.mock.calls.map(([event]) => [
+      event.kind,
+      event.tags.find(([tag]) => tag === "p")?.[1],
+    ]),
+  ).toEqual([
+    [9000, t.person.pubkey],
+    [9000, t.agent.pubkey],
+  ]);
+});
+
+it("Solo agent search keeps the query after a rejected addition, then retries the same event", async () => {
+  const t = await setup("solo", false, true);
+  const input = screen.getByRole("searchbox");
+  await t.user.type(input, "Fixture");
+  t.fail("Permission denied");
+  await t.user.click(
+    await screen.findByRole("button", { name: /Add Fixture agent/ }),
+  );
+  await screen.findByText(/Fixture agent: Permission denied/);
+  expect(input).toHaveValue("Fixture");
+  expect(screen.queryByText("Fixture agent added.")).not.toBeInTheDocument();
+  const original = t.publish.mock.calls[0]?.[0].id;
+  t.fail("");
+  await t.user.click(screen.getByRole("button", { name: "Retry" }));
+  await screen.findByText("Fixture agent added.");
+  expect(t.publish.mock.calls.map(([event]) => event.kind)).toEqual([
+    9000, 9000,
+  ]);
+  expect(t.publish.mock.calls[1]?.[0].id).toBe(original);
+});
+
+it("withholds Solo agent additions from a shared viewer", async () => {
+  const t = await setup("shared-solo", false, true);
+  expect(
+    screen.queryByText(/Adding an agent won’t start a run/),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("region", { name: "Not in this chat" }),
+  ).not.toBeInTheDocument();
+  await t.user.type(screen.getByRole("searchbox"), "Fixture");
+  expect(
+    screen.queryByRole("button", { name: /Add Fixture agent/ }),
+  ).not.toBeInTheDocument();
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("closing Solo members during an addition keeps the confirmed roster discoverable on reopen without a message", async () => {
+  const t = await setup("solo", false, true);
+  await t.search();
+  t.hold();
+  await t.user.click(
+    await screen.findByRole("button", { name: /Add Fixture agent/ }),
+  );
+  await vi.waitFor(() => expect(t.publish).toHaveBeenCalledOnce());
+  await t.user.click(screen.getByRole("button", { name: "Close" }));
+  await act(async () => t.release());
+  await t.user.click(t.trigger);
+  // The add's receipt can settle after close; Refresh reads the authoritative roster.
+  expect(
+    screen.getByRole("button", { name: "Retry member data" }),
+  ).toBeVisible();
+  await vi.waitFor(() =>
+    expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+  );
+  await t.user.click(screen.getByRole("button", { name: "Retry member data" }));
+  await screen.findByRole("heading", { name: "Agents · 1" });
+  expect(t.publish.mock.calls.map(([event]) => event.kind)).toEqual([9000]);
+});
+
+it("does not offer archived agents for Solo admission", async () => {
+  const t = await setup("solo", false, true, undefined, undefined, {
+    archivedAgent: true,
+  });
+  await vi.waitFor(() =>
+    expect(t.session.archives.snapshot().status).toBe("ready"),
+  );
+  expect(
+    screen.queryByRole("button", { name: /Add Fixture agent/ }),
+  ).not.toBeInTheDocument();
+  await t.user.type(screen.getByRole("searchbox"), "Fixture");
+  expect(
+    screen.queryByRole("button", { name: /Add Fixture agent/ }),
+  ).not.toBeInTheDocument();
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it("does not offer Solo agent additions when the existing admission API is unavailable", async () => {
+  const t = await setup("solo", false, true, undefined, undefined, {
+    channelCreation: false,
+  });
+  expect(
+    screen.queryByText(/Adding an agent won’t start a run/),
+  ).not.toBeInTheDocument();
+  await t.user.type(screen.getByRole("searchbox"), "Fixture");
+  expect(
+    screen.queryByRole("button", { name: /Add Fixture agent/ }),
+  ).not.toBeInTheDocument();
+  expect(t.publish).not.toHaveBeenCalled();
+});
+
+it.each([false, true])(
+  "reads roster and general access after sign-in without replaying writes (sign-in before access refusal: %s)",
+  async (signInBeforeRefusal) => {
+    const t = await setup("stream", true);
+    t.fail("Invitation denied");
+    await t.user.click(await t.search());
+    await screen.findByText(/Invitation denied/);
+    const publishes = t.publish.mock.calls.length;
+    const query = t.query.getMockImplementation();
+    if (!query) throw new Error("Missing query fixture");
+    t.query.mockImplementation(async (filters, ...rest) => {
+      if (filters.some((filter) => filter.kinds?.includes(39002)))
+        throw new Error("Federated sign-in is required");
+      return query(filters, ...rest);
+    });
+    const id = "11111111-1111-4111-8111-111111111111";
+    const details = {
+      channelId: id,
+      version: "v1",
+      name: "Design",
+      description: "",
+      visibility: "private" as const,
+      joinRole: "guest" as const,
+      canEdit: true,
+    };
+    let refuse!: (reason: Error) => void;
+    const initial = new Promise<typeof details>((_, reject) => {
+      refuse = reject;
+    });
+    const load = vi
+      .fn(async () => details)
+      .mockImplementationOnce(() => initial);
+    const save = vi.fn(async () => {});
+    const check = vi.fn(async () => {});
+    cleanup();
+    try {
+      render(
+        <ToastProvider>
+          <ChannelMembersButton
+            session={{
+              ...t.session,
+              channelDetails: {
+                available: true,
+                load,
+                save,
+                check,
+                snapshot: () => undefined,
+                subscribe: () => () => {},
+              },
+            }}
+            channelId={id}
+          />
+        </ToastProvider>,
+      );
+      await t.user.click(screen.getByRole("button", { name: "Access" }));
+      await screen.findByText(/The member list could not load/);
+      await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+      const control = screen.getByRole("combobox", { name: "General access" });
+      expect(control).toBeDisabled();
+      t.query.mockImplementation(query);
+      if (signInBeforeRefusal) act(() => t.session.recovery?.retryAll());
+      act(() => refuse(new Error("Federated sign-in is required")));
+      if (!signInBeforeRefusal) {
+        await screen.findByText("Federated sign-in is required");
+        act(() => t.session.recovery?.retryAll());
+      }
+      await vi.waitFor(() => expect(control).toBeEnabled());
+      expect(control).toHaveTextContent("Private");
+      expect(load).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() =>
+        expect(
+          screen.queryByText(/The member list could not load/),
+        ).not.toBeInTheDocument(),
+      );
+      expect(
+        screen.queryByRole("group", { name: "General access recovery" }),
+      ).not.toBeInTheDocument();
+      expect(t.publish.mock.calls.length).toBe(publishes);
+      expect(save).not.toHaveBeenCalled();
+      expect(check).not.toHaveBeenCalled();
+    } finally {
+      refuse(new Error("Fixture released"));
+    }
+  },
+);
+
+it.each(["public", "private"] as const)(
+  "shows personal contribution roles and %s General access in the members dialog",
+  async (visibility) => {
+    const h = await setup();
+    cleanup();
+    const id = "11111111-1111-4111-8111-111111111111";
+    let role = "member";
+    const query = h.query.getMockImplementation();
+    if (!query) throw new Error("Missing query");
+    h.query.mockImplementation(async (filters) => [
+      ...(await query(filters)).map((event) =>
+        event.kind === 39002
+          ? signed(h.relay, {
+              ...event,
+              created_at: event.created_at + (role === "member" ? 1 : 2),
+              tags: [
+                ["d", id],
+                ["p", h.viewer.pubkey, "", role],
+              ],
+            })
+          : event,
+      ),
+      signed(h.relay, { kind: 39001, content: "", tags: [["d", id]] }),
+    ]);
+    const details = {
+      channelId: id,
+      version: "v1",
+      name: "Channel",
+      description: "",
+      visibility,
+      joinRole: "guest" as const,
+      canEdit: true,
+    };
+    const save = vi.fn(async () => {});
+    render(
+      <ToastProvider>
+        <ChannelMembersButton
+          session={{
+            ...h.session,
+            channelDetails: {
+              available: true,
+              load: async () => details,
+              save,
+              check: async () => {},
+              snapshot: () => undefined,
+              subscribe: () => () => {},
+            },
+          }}
+          channelId={id}
+        />
+      </ToastProvider>,
+    );
+    await h.user.click(screen.getByRole("button", { name: "Access" }));
+    expect(
+      await screen.findByRole("region", { name: "General access" }),
+    ).toBeVisible();
+    await vi.waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "General access" }),
+      ).toBeEnabled(),
+    );
+    expect(screen.getAllByRole("combobox")).toHaveLength(1);
+    expect(
+      screen.getByRole("combobox", { name: "General access" }),
+    ).toHaveTextContent(visibility === "public" ? "View only" : "Private");
+    const access = screen.getByRole("combobox", { name: "General access" });
+    const done = screen.getByRole("button", { name: "Done" });
+    const copy = screen.getByRole("button", { name: "Copy link" });
+    expect(copy.closest("footer")).toContainElement(done);
+    expect(access.closest("footer")).toBeNull();
+    const search = screen.getByRole("searchbox");
+    expect(
+      screen.getByRole("region", { name: "General access" }).parentElement,
+    ).toBe(screen.getByRole("region", { name: "Member list" }));
+    expect(
+      search.compareDocumentPosition(access) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(access).toHaveAttribute("data-size", "sm");
+    expect(
+      access.compareDocumentPosition(done) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    if (visibility === "private") {
+      expect(
+        screen.queryByText("Only people you add can read this channel."),
+      ).not.toBeInTheDocument();
+    }
+    await vi.waitFor(() => {
+      const members = h.session.memberAdministration.snapshot(id);
+      expect(members.status).toBe("ready");
+      expect(members.authority.roles[h.viewer.pubkey]).toBe("member");
+      expect(memberData()).toHaveAttribute("data-refreshing", "false");
+      expect(within(memberData()).getByText("Carl (you)")).toBeVisible();
+    });
+    expect(within(memberData()).queryAllByText("Participating")).toHaveLength(
+      0,
+    );
+    role = "guest";
+    await h.user.click(screen.getByRole("button", { name: "Close" }));
+    await h.user.click(screen.getByRole("button", { name: "Access" }));
+    expect(
+      await within(
+        screen.getByRole("region", { name: "Member list" }),
+      ).findByText("Viewing only"),
+    ).toBeVisible();
+    expect(save).not.toHaveBeenCalled();
+  },
+);
+
+it.each([false, true])(
+  "explains reading and contribution access without joining or editing as a Guest %s",
+  async (guest) => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const viewer = keypair(),
+      relay = keypair(),
+      owner = keypair();
+    const events = [
+      signed(relay, {
+        kind: 39000,
+        content: "",
+        tags: [
+          ["d", id],
+          ["t", "stream"],
+          ["public"],
+          ["name", "Reading room"],
+          ["join_role", "guest"],
+        ],
+      }),
+      signed(relay, {
+        kind: 39001,
+        content: "",
+        tags: [
+          ["d", id],
+          ["p", owner.pubkey, "owner"],
+        ],
+      }),
+      signed(relay, {
+        kind: 39002,
+        content: "",
+        tags: [
+          ["d", id],
+          ["p", owner.pubkey, "", "owner"],
+          ...(guest ? [["p", viewer.pubkey, "", "guest"]] : []),
+        ],
+      }),
+      profile(owner, { name: "Channel owner" }),
+    ];
+    const publish = vi.fn(async () => {});
+    const sign = async (template: Parameters<typeof signed>[1]) =>
+      signed(viewer, template);
+    const connection = createRelaySession(
+      {
+        viewer: viewer.pubkey,
+        relayAuthor: relay.pubkey,
+        media: () => undefined,
+        query: async (filters) =>
+          events.filter((event) =>
+            filters.some((filter) => matchesEvent(event, filter)),
+          ),
+        writer: { kinds: [9, 9000], sign, publish },
+        channelDetails: { sign, publish },
+        readAgentLibrary: async () => ({ definitions: [], identities: [] }),
+      },
+      {
+        outboxStorage: { load: () => [], save: () => {} },
+        agentChoices: localAgentsFixture([]),
+      },
+    );
+    stops.push(connection.dispose);
+    const session = connection.session;
+    session.channels.ensureList();
+    await vi.waitFor(() =>
+      expect(session.channels.list().status).toBe("ready"),
+    );
+    await session.channels.resolve?.([id]);
+    expect(session.channels.get?.(id)?.readOnly).toBe(true);
+    const load = vi.fn(session.channelDetails.load);
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <ChannelMembersButton
+          session={{
+            ...session,
+            channelDetails: { ...session.channelDetails, load },
+          }}
+          channelId={id}
+        />
+      </ToastProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "Access" }));
+    expect(
+      await screen.findByText(
+        "Viewing only. Ask an owner or admin to participate.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("You have read-only access to this channel."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Join this channel/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Reload access" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "General access" }),
+    ).toHaveTextContent("Anyone in the community can read.");
+    expect(
+      screen.getByRole("region", { name: "General access" }),
+    ).toHaveTextContent("Viewing only. Ask an owner or admin to participate.");
+    // Finish the roster read before checking that the dialog cannot invite or mutate.
+    await vi.waitFor(() =>
+      expect(
+        screen.getByRole("region", { name: "Member list" }),
+      ).toHaveAttribute("data-refreshing", "false"),
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("searchbox", { name: "Search people and agents" }),
+    ).toHaveAttribute("placeholder", "Search members");
+    expect(load).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  },
+);

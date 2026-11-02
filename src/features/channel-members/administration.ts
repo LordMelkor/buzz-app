@@ -1,5 +1,6 @@
 import { getEventHash } from "nostr-tools";
 import type { RelayReader } from "../relay/reader";
+import { retryRead } from "../relay/read-retry";
 import type { RelayWriter } from "../relay/transport";
 import { newer, type RelayEvent } from "../relay/events";
 import { attestedOwner } from "../agents/owner-attestation";
@@ -7,7 +8,6 @@ import { PublishRejected } from "../relay/outbox";
 import { lifecycleChannelId } from "../relay/channel-lifecycle-protocol";
 import {
   authorizeMemberChange,
-  canManageMember,
   canRemoveMember,
   memberAdministrationTemplate,
   memberAuthority,
@@ -31,7 +31,9 @@ const empty: MemberAdministrationState = Object.freeze({
   authority: Object.freeze({
     roles: Object.freeze({}),
     canManage: false,
+    canRemove: false,
     canRemoveOwnedAgent: false,
+    system: false,
   }),
 });
 const uncertain =
@@ -127,7 +129,7 @@ export function createMemberAdministration({
         const previous = snapshot(id);
         emit(id, { ...previous, status: "loading" });
         try {
-          const result = await read(id, signal);
+          const result = await retryRead(() => read(id, signal), signal);
           const operation = previous.operation;
           const unresolved = operation?.status === "uncertain";
           const confirmed =
@@ -167,7 +169,13 @@ export function createMemberAdministration({
           });
       });
     },
-    async run(id: string, intent: MemberChange) {
+    /** `active` is checked synchronously right before publishing; false publishes nothing. */
+    async run(
+      id: string,
+      intent: MemberChange,
+      caller?: AbortSignal,
+      active?: () => boolean,
+    ) {
       if (!reader || !writer)
         throw new Error(
           "Member administration is unavailable on this connection.",
@@ -175,7 +183,8 @@ export function createMemberAdministration({
       if (snapshot(id).operation?.status === "uncertain")
         throw new Error(uncertain);
       const change = Object.freeze({ ...intent });
-      await perform(id, async (signal, current) => {
+      await perform(id, async (owned, current) => {
+        const signal = caller ? AbortSignal.any([owned, caller]) : owned;
         const previous = snapshot(id);
         let publicationStarted = false;
         emit(id, {
@@ -190,7 +199,7 @@ export function createMemberAdministration({
             if (
               change.role === "remove" &&
               owner === undefined &&
-              !canManageMember(authority, viewer, change.pubkey) &&
+              !canRemoveMember(authority, viewer, change.pubkey) &&
               canRemoveMember(authority, viewer, change.pubkey, viewer)
             ) {
               // Verify provenance once per attempt, never from display/inventory hints.
@@ -240,6 +249,8 @@ export function createMemberAdministration({
             throw new Error("Signer changed the member administration command");
           await authorize();
           signal.throwIfAborted();
+          if (active?.() === false)
+            throw new DOMException("Member change cancelled", "AbortError");
           publicationStarted = true;
           publishing.add(id);
           await writer.publish(signed, signal);

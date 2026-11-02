@@ -1,4 +1,4 @@
-import { useMediaCorners } from "../../features/messages/use-media-corners";
+import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { useReducedMotion } from "motion/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { XIcon as X } from "../../shared/design-system/icons";
@@ -22,7 +22,6 @@ export function VoiceNoteRecorder({
   onCancel(): void;
   status: "requesting" | "recording" | "processing";
 }) {
-  const discardCorners = useMediaCorners();
   const discard = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
     discard.current?.focus();
@@ -68,20 +67,18 @@ export function VoiceNoteRecorder({
   return (
     <fieldset className={styles.recorder}>
       <legend className="sr-only">{label ?? "Recording voice note"}</legend>
-      <span ref={discardCorners} className={styles.discard}>
-        <button
-          ref={discard}
-          className={styles.iconButton}
-          type="button"
-          aria-label="Discard voice note"
-          title="Discard voice note"
-          onClick={onCancel}
-        >
-          <X size={18} aria-hidden="true" />
-        </button>
-      </span>
-      <span className={styles.divider} />
-      <span className={styles.timer} role="status">
+      <IconButton
+        hint="familiar"
+        ref={discard}
+        type="button"
+        variant="subtle"
+        size="sm"
+        aria-label="Discard voice note"
+        title="Discard voice note"
+        onClick={onCancel}
+        icon={<X size={16} aria-hidden="true" />}
+      />
+      <span className={label ? styles.timer : "sr-only"} role="status">
         {label ?? (
           <>
             {formatVoiceNoteDuration(

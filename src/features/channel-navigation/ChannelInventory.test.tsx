@@ -1,0 +1,1875 @@
+// @vitest-environment jsdom
+import "@testing-library/jest-dom/vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi, assert } from "vitest";
+import { ToastProvider } from "../../shared/design-system/ui/Toast";
+import { DiscoveryState } from "../relay/discovery";
+import { keypair, metadata, roster, signed } from "../relay/testing";
+import { huddleDescription } from "../huddle/lifecycle";
+import { createRelaySession } from "../relay/session";
+import { createChannelLifecycle } from "../relay/channel-lifecycle";
+import { ReadError } from "../relay/errors";
+import { createRecovery, RECOVERY_NOTICE_DELAY_MS } from "../relay/recovery";
+import { createSidebarPreferencesStore } from "../relay/sidebar-preferences-store";
+import type {
+  SidebarGroups,
+  SidebarPreferences,
+  SidebarFilterMode,
+} from "../relay/sidebar-preferences";
+import type { RelayData, RelaySnapshot } from "../relay/service";
+import type { ChannelList } from "../relay/contracts";
+import type { Navigation } from "../navigation/controller";
+import type {
+  RegisteredSidebarSection,
+  SidebarSectionRow,
+  SidebarSections,
+} from "./sidebar-sections-service";
+import { createRef, type ReactNode } from "react";
+import userEvent from "@testing-library/user-event";
+import { ChannelHeaderMenu } from "../../bundled/channels/ChannelHeaderMenu";
+import { PrimarySidebar } from "../../app/shell/PrimarySidebar";
+import { buzzLinkTarget } from "../navigation/buzz-links";
+import {
+  ChannelNavigationProvider,
+  useChannelNavigation,
+} from "./ChannelNavigationState";
+import { readView, writeView } from "../../shared/view-state";
+import styles from "../../app/shell/PrimarySidebar.module.css";
+
+const { rowRender, menuRender } = vi.hoisted(() => ({
+  rowRender: vi.fn(),
+  menuRender: vi.fn(),
+}));
+// Observe the real row below ChannelSidebarItem's production memo boundary.
+// React hooks, the parent, the item and the row implementation remain real.
+vi.mock("../../bundled/channels/ChannelSidebarRow", async (original) => {
+  const actual =
+    await original<typeof import("../../bundled/channels/ChannelSidebarRow")>();
+  return {
+    ...actual,
+    ChannelSidebarRow: (
+      props: Parameters<typeof actual.ChannelSidebarRow>[0],
+    ) => {
+      rowRender(props);
+      return <actual.ChannelSidebarRow {...props} />;
+    },
+  };
+});
+// Observe the real row menu provider and popup the same way.
+vi.mock("../../shared/design-system/ui/Menu", async (original) => {
+  const actual =
+    await original<typeof import("../../shared/design-system/ui/Menu")>();
+  return {
+    ...actual,
+    ContextMenuRoot: (props: Parameters<typeof actual.ContextMenuRoot>[0]) => {
+      menuRender("root", props);
+      return <actual.ContextMenuRoot {...props} />;
+    },
+    MenuPopup: (props: Parameters<typeof actual.MenuPopup>[0]) => {
+      menuRender("popup", props);
+      return <actual.MenuPopup {...props} />;
+    },
+  };
+});
+beforeEach(() => {
+  // jsdom has no layout; browser journeys own geometry. Only supply the API.
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+});
+const owners: ReturnType<typeof createRelaySession>[] = [];
+afterEach(() => {
+  cleanup();
+  for (const owner of owners.splice(0)) owner.dispose();
+  localStorage.clear();
+  vi.clearAllMocks();
+  vi.unstubAllGlobals();
+});
+
+function fixture(
+  sidebarPreferences?: ReturnType<
+    typeof createSidebarPreferencesStore
+  >["queries"],
+  status: RelaySnapshot["status"] = "ready",
+  initialChannels: ChannelList["channels"] = [
+    { id: "alpha", name: "alpha", channelType: "stream" },
+    { id: "beta", name: "beta", channelType: "stream" },
+    { id: "gamma", name: "gamma", channelType: "stream" },
+  ],
+  sidebarSections?: SidebarSections,
+) {
+  const owner = createRelaySession(null);
+  owners.push(owner);
+  let list: ChannelList = {
+    status: "ready",
+    channels: initialChannels.map((channel) => ({
+      space: "collaborative",
+      ...channel,
+    })),
+  };
+  const listeners = new Set<() => void>();
+  const live = {
+    ...owner.session.live.snapshot(),
+    roster: { state: "verified" as const },
+  };
+  const session = {
+    ...owner.session,
+    scope: `https://relay.test:${"a".repeat(64)}`,
+    viewer: "a".repeat(64),
+    ...(sidebarPreferences ? { sidebarPreferences } : {}),
+    live: { ...owner.session.live, snapshot: () => live },
+    channels: {
+      ...owner.session.channels,
+      list: () => list,
+      ensureList() {},
+      subscribeList(listener: () => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+  };
+  // Like the store: changed summaries are replaced, the rest keep identity.
+  const publish = (
+    id: string,
+    change: Partial<ChannelList["channels"][number]>,
+  ) =>
+    act(() => {
+      list = {
+        ...list,
+        channels: list.channels.map((channel) =>
+          channel.id === id ? { ...channel, ...change } : channel,
+        ),
+      };
+      for (const listener of listeners) listener();
+    });
+  // A discovery commit, as live roster events produce.
+  const commit = () =>
+    act(() => {
+      list = { ...list, asOf: (list.asOf ?? 0) + 1 };
+      for (const listener of listeners) listener();
+    });
+  const drop = (id: string) =>
+    act(() => {
+      list = {
+        ...list,
+        channels: list.channels.filter((channel) => channel.id !== id),
+      };
+      for (const listener of listeners) listener();
+    });
+  let snapshot: RelaySnapshot = {
+    status,
+    ...(status === "ready"
+      ? { scope: session.scope, viewer: "a".repeat(64) }
+      : {}),
+    generation: 1,
+    session,
+  };
+  const connectionListeners = new Set<() => void>();
+  const relay = {
+    snapshot: () => snapshot,
+    subscribe: (listener: () => void) => {
+      connectionListeners.add(listener);
+      return () => connectionListeners.delete(listener);
+    },
+    retry() {},
+    disconnect() {},
+    async clearCache() {},
+  } satisfies RelayData;
+  const navigator = {
+    open: vi.fn().mockResolvedValue({ status: "opened" }),
+    subscribe: () => () => {},
+    snapshot: () => ({ attempt: { id: "visit" } }),
+  } as unknown as Navigation;
+  const view = (
+    id: string,
+    pages: ReactNode = (
+      <nav aria-label="Pages">
+        <button type="button">Projects</button>
+      </nav>
+    ),
+    sidebarVisible = true,
+  ) => (
+    <ToastProvider>
+      <ChannelNavigationProvider relay={relay}>
+        {sidebarVisible && (
+          <PrimarySidebar
+            relay={relay}
+            navigator={navigator}
+            target={{
+              version: 1,
+              kind: "conversation",
+              channelId: id,
+              scope: {
+                viewer: "a".repeat(64),
+                communityOrigin: "https://relay.test",
+              },
+            }}
+            sidebarSections={sidebarSections}
+          >
+            {pages}
+          </PrimarySidebar>
+        )}
+      </ChannelNavigationProvider>
+    </ToastProvider>
+  );
+  return {
+    view,
+    navigator,
+    snapshot,
+    list,
+    session,
+    publish,
+    commit,
+    drop,
+    connection(next: RelaySnapshot) {
+      act(() => {
+        snapshot = next;
+        for (const listener of connectionListeners) listener();
+      });
+    },
+  };
+}
+
+function visibilityFixture() {
+  const f = fixture();
+  const read = vi
+    .fn()
+    .mockRejectedValue(new ReadError("unavailable", "offline", 503));
+  const lifecycle = createChannelLifecycle({
+    reader: { read },
+    viewer: f.session.viewer,
+    relayAuthor: "b".repeat(64),
+    canAccess: () => true,
+    acceptDiscovery() {},
+    removed() {},
+  });
+  f.session.channelLifecycle = lifecycle.capability;
+  return { f, read, lifecycle };
+}
+
+it("keeps visibility recovery quiet, then offers the existing retry after exhaustion", async () => {
+  vi.useFakeTimers();
+  const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+  const { f, read, lifecycle } = visibilityFixture();
+  try {
+    render(f.view("alpha"));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(read).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByText("Hidden conversations could not be refreshed."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry hidden conversations" }),
+    ).not.toBeInTheDocument();
+    f.commit();
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    f.commit();
+    await act(() => vi.advanceTimersByTimeAsync(4250));
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(
+      screen.getByText("Hidden conversations could not be refreshed."),
+    ).toBeVisible();
+    read.mockResolvedValue([]);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry hidden conversations" }),
+    );
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(read).toHaveBeenCalledTimes(5);
+    expect(
+      screen.queryByRole("button", { name: "Retry hidden conversations" }),
+    ).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    lifecycle.dispose();
+    random.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
+it("keeps a roster failure quiet while recovery retries it, but not a denial while another read recovers", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  // Another background read (sidebar preferences) keeps recovery running.
+  const recovery = createRecovery([
+    { status: () => "failed", subscribe: () => () => {}, retry() {} },
+  ]);
+  const live = f.session.live;
+  // A stable snapshot, as the session's live view keeps between changes.
+  let view = {
+    ...live.snapshot(),
+    roster: { state: "error", transient: true } as {
+      state: string;
+      transient?: true;
+    },
+  };
+  const liveListeners = new Set<() => void>();
+  f.session.live = {
+    ...live,
+    snapshot: () => view,
+    subscribe(listener) {
+      liveListeners.add(listener);
+      return () => liveListeners.delete(listener);
+    },
+  } as typeof live;
+  const failed: ChannelList = {
+    status: "error",
+    error: "Channels could not be loaded.",
+    channels: [],
+  };
+  f.session.recovery = recovery;
+  f.session.channels = { ...f.session.channels, list: () => failed };
+  try {
+    render(f.view("alpha"));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(recovery.snapshot()).toMatchObject({
+      recovering: true,
+      shown: false,
+    });
+    expect(
+      screen.queryByText("Channels could not be loaded."),
+    ).not.toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(RECOVERY_NOTICE_DELAY_MS - 1));
+    expect(
+      screen.queryByText("Channels could not be loaded."),
+    ).not.toBeInTheDocument();
+    // A denial is not recovery's to retry: the channel and Solo inventories
+    // each report it at once, though recovery still runs for the other read.
+    view = { ...view, roster: { state: "error" } };
+    act(() => {
+      for (const listener of liveListeners) listener();
+    });
+    expect(recovery.snapshot()).toMatchObject({
+      recovering: true,
+      shown: false,
+    });
+    const alerts = screen.getAllByText("Channels could not be loaded.");
+    expect(alerts).toHaveLength(2);
+    for (const alert of alerts) expect(alert).toHaveAttribute("role", "alert");
+  } finally {
+    cleanup();
+    recovery.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("cancels visibility retries on sidebar unmount and session changes", async () => {
+  vi.useFakeTimers();
+  const { f, read, lifecycle } = visibilityFixture();
+  try {
+    const mounted = render(f.view("alpha"));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(read).toHaveBeenCalledOnce();
+    const next = fixture();
+    mounted.rerender(next.view("beta"));
+    await act(() => vi.advanceTimersByTimeAsync(120_000));
+    expect(read).toHaveBeenCalledOnce();
+    mounted.rerender(f.view("alpha"));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(read).toHaveBeenCalledTimes(2);
+    mounted.unmount();
+    await act(() => vi.advanceTimersByTimeAsync(120_000));
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally {
+    cleanup();
+    lifecycle.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it.each(["Retry", "Dismiss"] as const)(
+  "%s restores mute recovery focus after cached-to-live session handoff without remounting",
+  async (action) => {
+    const data: SidebarPreferences = {
+      sections: [],
+      assignments: {},
+      starred: [],
+      muted: [],
+    };
+    let finish: (error?: Error) => void = () => {};
+    const write = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<readonly string[]>((resolve, reject) => {
+            finish = (error) => (error ? reject(error) : resolve(["alpha"]));
+          }),
+      )
+      .mockResolvedValue(["alpha"]);
+    const cached = createSidebarPreferencesStore({
+      read: async () => data,
+      available: true,
+    });
+    const live = createSidebarPreferencesStore({
+      read: async () => data,
+      available: true,
+      writeMute: write,
+    });
+    const user = userEvent.setup();
+    try {
+      await cached.queries.ensure();
+      await live.queries.ensure();
+      const h = fixture(cached.queries);
+      h.connection({ ...h.snapshot, status: "connecting", cached: true });
+      render(h.view("alpha"));
+      const row = await screen.findByRole("button", { name: "alpha" });
+      h.connection({
+        ...h.snapshot,
+        status: "ready",
+        session: { ...h.session, sidebarPreferences: live.queries },
+      });
+      expect(screen.getByRole("button", { name: "alpha" })).toBe(row);
+
+      fireEvent.keyDown(row, { key: "ContextMenu" });
+      await user.click(await screen.findByRole("menuitem", { name: "Mute" }));
+      await waitFor(() =>
+        expect(write).toHaveBeenCalledExactlyOnceWith(
+          { channelId: "alpha", muted: true },
+          expect.any(AbortSignal),
+        ),
+      );
+      await act(async () => finish(new Error("offline")));
+      const notice = await screen.findByRole("dialog", {
+        name: "Couldn’t mute alpha",
+      });
+      expect(notice).toHaveTextContent("offline");
+      if (action === "Retry") {
+        fireEvent.keyDown(screen.getByRole("button", { name: "beta" }), {
+          key: "ContextMenu",
+        });
+        await screen.findByRole("menuitem", { name: "Mute" });
+      }
+      await user.click(within(notice).getByRole("button", { name: action }));
+      expect(row).toHaveFocus();
+      if (action === "Retry") {
+        await waitFor(() =>
+          expect(live.queries.snapshot().data?.muted).toEqual(["alpha"]),
+        );
+        expect(write).toHaveBeenCalledTimes(2);
+        expect(screen.queryByRole("menuitem", { name: "Mute" })).toBeNull();
+      } else {
+        expect(write).toHaveBeenCalledOnce();
+      }
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Couldn’t mute alpha" }),
+        ).toBeNull(),
+      );
+    } finally {
+      finish();
+      cached.dispose();
+      live.dispose();
+    }
+  },
+);
+
+it("uses relay section filters across navigation and remount, and offers only hidden channels", async () => {
+  const user = userEvent.setup();
+  let filters: Record<string, SidebarFilterMode> = {};
+  const preferences = createSidebarPreferencesStore({
+    read: async () => ({
+      sections: [],
+      assignments: {},
+      starred: [],
+      muted: [],
+      filters,
+    }),
+    available: true,
+    writeFilter: async (group, mode) => {
+      filters = mode === "all" ? {} : { [group]: mode };
+      return { filters, activeWindowSeconds: {} };
+    },
+  });
+  const h = fixture(preferences.queries);
+  const mounted = render(h.view("alpha"));
+  await screen.findByRole("button", { name: "gamma" });
+  await user.click(
+    screen.getByRole("button", { name: "More actions for Channels" }),
+  );
+  expect(screen.queryByRole("menuitem", { name: "View All" })).toBeNull();
+  await user.click(await screen.findByRole("menuitem", { name: "Filter" }));
+  fireEvent.click(
+    await screen.findByRole("menuitemradio", { name: "Unreads" }),
+  );
+  expect(screen.getByRole("button", { name: "alpha" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "beta" })).toBeNull();
+  await user.click(
+    screen.getByRole("button", { name: "More actions for Channels" }),
+  );
+  await user.click(await screen.findByRole("menuitem", { name: "Filter" }));
+  const betaChoice = await screen.findByRole("menuitem", { name: "beta" });
+  const choices = betaChoice.closest('[role="menu"]');
+  assert(choices instanceof HTMLElement);
+  expect(within(choices).queryByRole("menuitem", { name: "alpha" })).toBeNull();
+  expect(
+    within(choices).getByRole("menuitem", { name: "gamma" }),
+  ).toBeVisible();
+  fireEvent.click(betaChoice);
+  expect(h.navigator.open).toHaveBeenCalledWith(
+    expect.objectContaining({ kind: "conversation", channelId: "beta" }),
+  );
+  mounted.rerender(h.view("beta"));
+  expect(screen.getByRole("button", { name: "beta" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "alpha" })).toBeNull();
+  mounted.rerender(h.view("not-in-this-section"));
+  expect(screen.queryByText("0 matches")).toBeNull();
+  expect(
+    screen
+      .getByLabelText("Channels", { selector: "summary" })
+      .closest("details"),
+  ).toHaveAttribute("open");
+  expect(screen.queryByText("No channels match this filter.")).toBeNull();
+  mounted.unmount();
+  expect(filters).toEqual({ channels: "unreads" });
+  expect(
+    readView("https://relay.test:viewer", "channel-sidebar", {}),
+  ).not.toHaveProperty("sectionFilters");
+  const restored = render(h.view("gamma"));
+  expect(await screen.findByRole("button", { name: "gamma" })).toBeVisible();
+  expect(screen.queryByText("0 matches")).toBeNull();
+  expect(screen.queryByRole("button", { name: "beta" })).toBeNull();
+  restored.rerender(h.view("alpha"));
+  expect(screen.getByRole("button", { name: "alpha" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "gamma" })).toBeNull();
+  await user.click(
+    screen.getByRole("button", { name: "More actions for Channels" }),
+  );
+  await user.click(await screen.findByRole("menuitem", { name: "Filter" }));
+  fireEvent.click(await screen.findByRole("menuitemradio", { name: "All" }));
+  expect(screen.getByRole("button", { name: "beta" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "gamma" })).toBeVisible();
+  await user.click(
+    screen.getByRole("button", { name: "More actions for Channels" }),
+  );
+  expect(screen.queryByRole("menuitem", { name: "View All" })).toBeNull();
+  restored.unmount();
+  expect(
+    readView("https://relay.test:viewer", "channel-sidebar", {}),
+  ).not.toHaveProperty("sectionFilters");
+  expect(filters).toEqual({});
+  preferences.dispose();
+});
+
+it("ignores local and legacy filter state", async () => {
+  writeView("https://relay.test:viewer", "channel-sidebar", {
+    filter: "unreads",
+    sectionFilters: { channels: "bogus", dms: null },
+  });
+  const h = fixture();
+  render(h.view("alpha"));
+  expect(await screen.findByRole("button", { name: "beta" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "gamma" })).toBeVisible();
+});
+
+it("preserves disabled contribution positions when active sections reorder", async () => {
+  const makeSection = (id: string): RegisteredSidebarSection => {
+    const rows = [{ id: `${id}-row`, label: `${id.toUpperCase()} item` }];
+    return {
+      version: 1,
+      id,
+      title: id.toUpperCase(),
+      icon: "★",
+      rows: { snapshot: () => rows, subscribe: () => () => {} },
+      select: () => ({ version: 1, kind: "home" }),
+      key: `example.plugin/${id}`,
+      pluginId: "example.plugin",
+      revision: "one",
+    };
+  };
+  const [a, b, c] = ["a", "b", "c"].map(makeSection);
+  assert(a && b && c);
+  let active: readonly RegisteredSidebarSection[] = [a, c];
+  const listeners = new Set<() => void>();
+  const registry: SidebarSections = {
+    version: 1,
+    snapshot: () => active,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    register: () => {},
+  };
+  const h = fixture(undefined, "ready", [], registry);
+  const scope = h.snapshot.scope;
+  assert.exists(scope);
+  // A raw key saved before canonical section keys keeps its position, and
+  // another owner's section key keeps its slot.
+  const solo = "solo-region:buzz.region:example:work";
+  writeView(scope, "channel-sidebar", {
+    collapsed: [],
+    contributionOrder: [a.key, solo, `plugin:${b.key}`, c.key],
+    scrollTop: 0,
+  });
+  const visibleOrder = () =>
+    [
+      ...document.querySelectorAll<HTMLElement>(
+        '[data-sidebar-section^="plugin:example.plugin/"]',
+      ),
+    ].map((section) => section.dataset.sidebarSection);
+  const user = userEvent.setup();
+
+  render(h.view("alpha"));
+  await waitFor(() =>
+    expect(visibleOrder()).toEqual([
+      "plugin:example.plugin/a",
+      "plugin:example.plugin/c",
+    ]),
+  );
+  await user.click(screen.getByRole("button", { name: "More actions for C" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Move up" }));
+
+  expect(readView(scope, "channel-sidebar", {})).toMatchObject({
+    contributionOrder: [
+      `plugin:${c.key}`,
+      solo,
+      `plugin:${b.key}`,
+      `plugin:${a.key}`,
+    ],
+  });
+  act(() => {
+    active = [a, b, c];
+    for (const listener of listeners) listener();
+  });
+  await waitFor(() =>
+    expect(visibleOrder()).toEqual([
+      "plugin:example.plugin/c",
+      "plugin:example.plugin/b",
+      "plugin:example.plugin/a",
+    ]),
+  );
+});
+
+it("retries a contributed section after invalid rows recover", async () => {
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    let rows: readonly SidebarSectionRow[] = [{ id: "queue", label: "" }];
+    const section = (
+      id: string,
+      title: string,
+      snapshot: () => readonly SidebarSectionRow[],
+    ): RegisteredSidebarSection => ({
+      version: 1,
+      id,
+      title,
+      icon: "★",
+      rows: { snapshot, subscribe: () => () => {} },
+      select: () => ({ version: 1, kind: "home" }),
+      key: `example.plugin/${id}`,
+      pluginId: "example.plugin",
+      revision: "one",
+    });
+    const sibling = [{ id: "review", label: "Review item" }];
+    const sections = [
+      section("work", "Workspace", () => rows),
+      section("review", "Review", () => sibling),
+    ];
+    const registry: SidebarSections = {
+      version: 1,
+      snapshot: () => sections,
+      subscribe: () => () => {},
+      register: () => {},
+    };
+    const h = fixture(undefined, "ready", [], registry);
+    const work = () => {
+      const element = document.querySelector<HTMLElement>(
+        '[data-sidebar-section="plugin:example.plugin/work"]',
+      );
+      if (!element) throw new Error("The Workspace section is not mounted");
+      return element;
+    };
+    const user = userEvent.setup();
+    render(h.view("alpha"));
+
+    expect(
+      await screen.findByText(/Workspace is unavailable/),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Review item" }));
+    expect(h.navigator.open).toHaveBeenCalledWith({ version: 1, kind: "home" });
+
+    // Retrying unchanged invalid rows keeps the recovery control in reach.
+    const retry = within(work()).getByRole("button", { name: "Retry" });
+    await user.click(retry);
+    expect(within(work()).getByRole("alert")).toHaveTextContent(
+      "Workspace is unavailable.",
+    );
+    expect(within(work()).getByRole("button", { name: "Retry" })).toHaveFocus();
+
+    // A later valid snapshot is not observed by the failed section until Retry.
+    rows = [{ id: "queue", label: "Queue" }];
+    expect(screen.queryByRole("button", { name: "Queue" })).toBeNull();
+    await user.click(within(work()).getByRole("button", { name: "Retry" }));
+    expect(
+      await screen.findByRole("button", { name: "Queue" }),
+    ).toBeInTheDocument();
+    expect(within(work()).queryByRole("alert")).toBeNull();
+    expect(work().querySelector("summary")).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Review item" })).toBeVisible();
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
+it("does not rebuild unchanged rows on channel switches", async () => {
+  const h = fixture();
+  const mounted = render(h.view("alpha"));
+  await screen.findByRole("button", { name: "gamma" });
+  rowRender.mockClear();
+  menuRender.mockClear();
+  mounted.rerender(h.view("beta"));
+  expect(rowRender.mock.calls.map(([props]) => props.channel.id)).not.toContain(
+    "gamma",
+  );
+  // Unchanged rows keep their menu provider and popup behind the memo too.
+  expect(
+    menuRender.mock.calls.filter(([, props]) =>
+      String(props["aria-label"] ?? "").includes("gamma"),
+    ),
+  ).toEqual([]);
+  expect(
+    menuRender.mock.calls.filter(([kind]) => kind === "root"),
+  ).toHaveLength(rowRender.mock.calls.length);
+  expect(screen.getByRole("button", { name: "beta" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  expect(screen.getByRole("button", { name: "alpha" })).not.toHaveAttribute(
+    "aria-current",
+  );
+  // Ordinary selection still uses the current session and navigator.
+  fireEvent.click(screen.getByRole("button", { name: "gamma" }));
+  expect(h.navigator.open).toHaveBeenCalledWith(
+    expect.objectContaining({ kind: "conversation", channelId: "gamma" }),
+  );
+});
+
+it("rebuilds only the changed row on a list publish", async () => {
+  const h = fixture();
+  render(h.view("alpha"));
+  await screen.findByRole("button", { name: "gamma" });
+  rowRender.mockClear();
+  h.publish("beta", { preview: "hello" });
+  expect(rowRender.mock.calls.map(([props]) => props.channel.id)).toEqual([
+    "beta",
+  ]);
+});
+
+it("copies a channel link that opens the same channel", async () => {
+  const writeText = vi
+    .fn()
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error("denied"));
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  const h = fixture();
+  render(h.view("alpha"));
+  const copy = async () => {
+    fireEvent.keyDown(await screen.findByRole("button", { name: "beta" }), {
+      key: "ContextMenu",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy link" }));
+  };
+  await copy();
+  expect(await screen.findByText("Link copied.")).toBeInTheDocument();
+  const [link] = writeText.mock.calls[0] ?? [];
+  expect(link).toBe("buzz://channel/beta");
+  expect(
+    buzzLinkTarget(link, {
+      viewer: "a".repeat(64),
+      communityOrigin: "https://relay.test",
+    }),
+  ).toMatchObject({ kind: "conversation", channelId: "beta" });
+  await copy();
+  expect(
+    await screen.findByText("Couldn’t copy the link."),
+  ).toBeInTheDocument();
+});
+
+it("offers DMs a Move conversation menu and relocates them into a saved group", async () => {
+  const saved: SidebarPreferences = {
+    sections: [{ id: "work", name: "Work", order: 0 }],
+    assignments: {},
+    starred: [],
+    muted: [],
+  };
+  let assignments: Record<string, string> = {};
+  const read = vi.fn(async () => ({ ...saved, assignments }));
+  const write = vi.fn(
+    async (intent: { channelId?: string; sectionId?: string }) => {
+      if (intent.channelId === undefined)
+        throw new Error("Expected channel move");
+      const changedAssignments = intent.sectionId
+        ? { ...assignments, [intent.channelId]: intent.sectionId }
+        : Object.fromEntries(
+            Object.entries(assignments).filter(
+              ([id]) => id !== intent.channelId,
+            ),
+          );
+      assignments = changedAssignments;
+      return { sections: saved.sections, assignments };
+    },
+  );
+  const star = vi.fn(async () => []);
+  const preferences = createSidebarPreferencesStore({
+    read,
+    available: true,
+    write,
+    writeStar: star,
+  });
+  await preferences.queries.ensure();
+  const h = fixture(preferences.queries, "ready", [
+    { id: "alpha", name: "alpha", channelType: "stream" },
+    { id: "dm", name: "Alice", channelType: "dm" },
+  ]);
+  const user = userEvent.setup();
+  try {
+    render(h.view("alpha"));
+    await screen.findByRole("button", { name: "Alice" });
+    const row = screen.getByRole("button", { name: "Alice" });
+    fireEvent.keyDown(row, { key: "ContextMenu" });
+    await user.hover(
+      await screen.findByRole("menuitem", { name: "Move conversation" }),
+    );
+    expect(
+      await screen.findByRole("menuitemradio", { name: "Direct messages" }),
+    ).toBeChecked();
+    await screen.findByRole("menuitemradio", { name: "Work" });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Work" }));
+    await waitFor(() =>
+      expect(write).toHaveBeenCalledWith(
+        { channelId: "dm", sectionId: "work" },
+        expect.any(AbortSignal),
+      ),
+    );
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-sidebar-section="group:work"]'),
+      ).toContainElement(screen.getByRole("button", { name: "Alice" }));
+      expect(
+        document.querySelector('[data-sidebar-section="dms"]'),
+      ).not.toContainElement(screen.queryByRole("button", { name: "Alice" }));
+    });
+    fireEvent.keyDown(screen.getByRole("button", { name: "Alice" }), {
+      key: "ContextMenu",
+    });
+    await user.hover(
+      await screen.findByRole("menuitem", { name: "Move conversation" }),
+    );
+    expect(
+      await screen.findByRole("menuitemradio", { name: "Work" }),
+    ).toBeChecked();
+    fireEvent.click(
+      screen.getByRole("menuitemradio", { name: "Direct messages" }),
+    );
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-sidebar-section="dms"]'),
+      ).toContainElement(screen.getByRole("button", { name: "Alice" }));
+      expect(
+        document.querySelector('[data-sidebar-section="group:work"]'),
+      ).not.toContainElement(screen.queryByRole("button", { name: "Alice" }));
+    });
+    expect(write).toHaveBeenLastCalledWith(
+      { channelId: "dm" },
+      expect.any(AbortSignal),
+    );
+    expect(star).toHaveBeenLastCalledWith(
+      { channelId: "dm", starred: false },
+      expect.any(AbortSignal),
+    );
+  } finally {
+    preferences.dispose();
+  }
+});
+
+async function failedMoveFixture() {
+  const data: SidebarPreferences = {
+    sections: [{ id: "work", name: "Work", order: 0 }],
+    assignments: { beta: "work" },
+    starred: [],
+    muted: [],
+  };
+  const read = vi.fn(async () => data);
+  const write = vi.fn(async () => {
+    throw new Error("offline");
+  });
+  const star = vi.fn(async () => []);
+  const owner = createSidebarPreferencesStore({
+    read,
+    available: true,
+    write,
+    writeStar: star,
+  });
+  const prefs = owner.queries;
+  await prefs.ensure();
+  await expect(prefs.assign("beta")).rejects.toThrow("offline");
+  const h = fixture(prefs);
+  const mounted = render(h.view("alpha"));
+  const notice = await screen.findByRole("alert");
+  expect(notice).toHaveTextContent("Couldn’t save the move for beta. offline");
+  return { ...h, owner, prefs, read, write, star, data, notice, mounted };
+}
+
+it("explains and disables unavailable move retries, then enables them after preference recovery", async () => {
+  const h = await failedMoveFixture();
+  try {
+    h.read.mockRejectedValueOnce(new Error("refresh failed"));
+    await act(() => h.prefs.refresh());
+    const retry = within(h.notice).getByRole("button", { name: "Retry move" });
+    expect(retry).toBeDisabled();
+    expect(h.notice).toHaveTextContent(
+      "Refresh saved sidebar preferences before retrying this move.",
+    );
+    // Direct/stale callers also publish their rejection, not just a rejected promise.
+    await act(async () => {
+      await expect(h.prefs.retryMove("beta")).rejects.toThrow(
+        "refresh saved sidebar preferences before retrying",
+      );
+    });
+    expect(h.notice).not.toHaveTextContent("offline");
+    expect(h.notice).toHaveTextContent("Sidebar group moves are unavailable");
+    expect(h.write).toHaveBeenCalledOnce();
+    expect(h.star).not.toHaveBeenCalled();
+    await act(() => h.prefs.refresh());
+    expect(retry).toBeEnabled();
+    expect(h.notice).not.toHaveTextContent(
+      "Refresh saved sidebar preferences before retrying this move.",
+    );
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it.each(["ready", "error"] as const)(
+  "keeps the supplied page navigation while the relay is %s",
+  (status) => {
+    const h = fixture(undefined, status);
+    render(h.view("alpha"));
+    const pages = screen.getByRole("navigation", { name: "Pages" });
+    expect(
+      within(pages).getByRole("button", { name: "Projects" }),
+    ).toBeVisible();
+    expect(pages.closest(`.${styles.destinations}`)).not.toBeNull();
+  },
+);
+
+it.each(["Laptop", "Channels", "Starred"])(
+  "uses only the invoking section for placement (%s)",
+  async (section) => {
+    const fromGroup = section === "Laptop";
+    const fromStarred = section === "Starred";
+    const preferences = createSidebarPreferencesStore({
+      read: async () => ({
+        sections: [{ id: "laptop", name: "Laptop", icon: "💻", order: 0 }],
+        assignments: { beta: "laptop" },
+        starred: ["alpha"],
+        muted: [],
+      }),
+      available: true,
+      write: async () => ({
+        sections: [{ id: "laptop", name: "Laptop", icon: "💻", order: 0 }],
+        assignments: {},
+      }),
+      writeStar: async () => [],
+    });
+    await preferences.queries.ensure();
+    const h = fixture(preferences.queries);
+    const create = vi.fn(async () => "new-channel");
+    h.session.channelKit = {
+      ...h.session.channelKit,
+      available: true,
+      ensure() {},
+    };
+    h.session.channelCreation = {
+      ...h.session.channelCreation,
+      available: true,
+      create,
+    };
+    try {
+      render(h.view("beta"));
+      await screen.findByRole("button", { name: /Laptop/ });
+      // An active grouped channel must not make the general Channels + inherit it.
+      const header = screen.getByRole("button", {
+        name: `More actions for ${section}`,
+      }).parentElement;
+      assert.exists(header);
+      if (section === "Starred") {
+        const icon = screen
+          .getByLabelText("Starred")
+          .querySelector("[data-sidebar-group-icon]");
+        const emoji = screen
+          .getByLabelText("Laptop")
+          .querySelector("[data-sidebar-group-icon]");
+        assert.exists(icon);
+        assert.exists(emoji);
+        expect(icon).toHaveAttribute("class", emoji.className);
+        expect(icon).toHaveAttribute("aria-hidden", "true");
+        expect(icon.querySelector("svg")).toBeInTheDocument();
+        expect(icon).not.toHaveTextContent("★");
+      }
+      fireEvent.click(
+        within(header).getByRole("button", { name: "Create channel" }),
+      );
+      expect(
+        screen.queryByRole("combobox", { name: "Destination group" }),
+      ).not.toBeInTheDocument();
+      const title = fromGroup
+        ? "Create a channel in Laptop"
+        : fromStarred
+          ? "Create a channel in Starred"
+          : "Create a channel";
+      expect(screen.getByRole("dialog")).toHaveAccessibleName(title);
+      if (fromGroup)
+        expect(
+          screen
+            .getByRole("dialog")
+            .querySelector(".buzz-dialog-step [data-sidebar-group-icon]"),
+        ).toHaveTextContent("💻");
+      fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
+        target: { value: "New laptop channel" },
+      });
+      fireEvent.click(
+        within(screen.getByRole("dialog", { name: title })).getByRole(
+          "button",
+          {
+            name: "Create channel",
+          },
+        ),
+      );
+      await waitFor(() =>
+        expect(create).toHaveBeenCalledWith({
+          name: "New laptop channel",
+          visibility: "open",
+          ...(fromGroup || fromStarred
+            ? {
+                setup: {
+                  agents: [],
+                  canvas: "",
+                  templateId: "",
+                  groupId: fromGroup ? "laptop" : "",
+                  ...(fromStarred ? { starred: true } : {}),
+                },
+              }
+            : {}),
+        }),
+      );
+    } finally {
+      preferences.dispose();
+    }
+  },
+);
+
+it("keeps Huddle rooms out of the sidebar before and after metadata arrives", async () => {
+  const h = fixture();
+  const relay = keypair(),
+    viewer = keypair();
+  const room = "11111111-1111-4111-8111-111111111111";
+  const parent = "22222222-2222-4222-8222-222222222222";
+  const discovery = new DiscoveryState(viewer.pubkey, relay.pubkey);
+  discovery.accept(roster(relay, room, [viewer.pubkey]));
+  discovery.accept(roster(relay, "legacy", [viewer.pubkey]));
+  discovery.accept(metadata(relay, "legacy", "Legacy channel"));
+  let list: ChannelList = {
+    ...h.list,
+    channels: [
+      ...h.list.channels,
+      ...discovery
+        .channels()
+        .map((channel) =>
+          channel.id === room ? { ...channel, metadataPending: true } : channel,
+        ),
+      {
+        id: "private",
+        name: "Private project",
+        channelType: "stream",
+        visibility: "private",
+      },
+    ],
+  };
+  h.session.channels.list = () => list;
+  const mounted = render(h.view("alpha"));
+  expect(
+    await screen.findByRole("button", { name: "Private project" }),
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: room.slice(0, 8) })).toBeNull();
+  discovery.accept(
+    metadata(relay, room, "Call room", 30, [
+      ["private"],
+      ["about", huddleDescription(parent)],
+      ["P", viewer.pubkey],
+    ]),
+  );
+  discovery.accept(
+    signed(viewer, {
+      kind: 9007,
+      created_at: 10,
+      content: "",
+      tags: [
+        ["h", room],
+        ["visibility", "private"],
+        ["channel_type", "stream"],
+        ["about", huddleDescription(parent)],
+      ],
+    }),
+  );
+  list = {
+    ...list,
+    channels: [
+      ...list.channels.filter((c) => c.id !== room && c.id !== "legacy"),
+      ...discovery.channels(),
+    ],
+  };
+  mounted.rerender(h.view("alpha"));
+  expect(screen.getByRole("button", { name: "alpha" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Legacy channel" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Private project" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Call room" })).toBeNull();
+});
+
+it("hides generated legacy rooms while keeping ordinary expiring channels visible", async () => {
+  const h = fixture();
+  const relay = keypair(),
+    viewer = keypair();
+  const discovery = new DiscoveryState(viewer.pubkey, relay.pubkey);
+  const legacy = "33333333-3333-4333-8333-333333333333";
+  const cases = [
+    {
+      id: "trial",
+      name: "Huddle",
+      tags: [["private"], ["ttl", "3600"]],
+      hidden: false,
+    },
+    {
+      id: legacy,
+      name: `huddle-${legacy.slice(0, 8)}`,
+      tags: [["private"], ["ttl", "60"]],
+      hidden: true,
+    },
+    { id: "ordinary", name: "Huddle", tags: [["private"]], hidden: false },
+    {
+      id: "expiring",
+      name: "Private project",
+      tags: [["private"], ["ttl", "3600"]],
+      hidden: false,
+    },
+    {
+      id: "public",
+      name: "Huddle",
+      tags: [["public"], ["ttl", "3600"]],
+      hidden: false,
+    },
+    {
+      id: "invalid",
+      name: "Huddle",
+      tags: [["private"], ["ttl", "broken"]],
+      hidden: false,
+    },
+  ];
+  for (const item of cases) {
+    discovery.accept(roster(relay, item.id, [viewer.pubkey]));
+    discovery.accept(
+      metadata(relay, item.id, item.name, 30, [["t", "stream"], ...item.tags]),
+    );
+    expect(discovery.get(item.id)?.huddle === true).toBe(item.hidden);
+    // Presentation classification neither removes membership nor invents parent access.
+    expect(discovery.authorized(item.id)).toBe(true);
+    expect(discovery.get(item.id)?.parentChannelId).toBeUndefined();
+  }
+  const list = {
+    ...h.list,
+    channels: [...h.list.channels, ...discovery.channels()],
+  };
+  h.session.channels.list = () => list;
+  render(h.view("alpha"));
+  expect(
+    await screen.findByRole("button", {
+      name: "Private projectTemporary channel. Cleans up after 1 hour without activity.",
+    }),
+  ).toBeVisible();
+  expect(
+    screen.getAllByRole("button", {
+      name: /^Huddle(?:Temporary channel\. Cleans up after 1 hour without activity\.)?$/,
+    }),
+  ).toHaveLength(4);
+  expect(screen.queryByRole("button", { name: /^huddle-33333333/ })).toBeNull();
+});
+
+it("rejects a deferred header Create section after its navigation origin retires", async () => {
+  const preferences = createSidebarPreferencesStore({
+    read: async () => ({
+      sections: [],
+      assignments: {},
+      starred: [],
+      muted: [],
+    }),
+    available: true,
+    write: vi.fn(async () => ({ sections: [], assignments: {} })),
+    writeStar: vi.fn(async () => []),
+  });
+  await preferences.queries.ensure();
+  const h = fixture(preferences.queries);
+  const origin = new AbortController();
+  const user = userEvent.setup();
+  render(
+    h.view(
+      "alpha",
+      <ChannelHeaderMenu
+        channel={h.list.channels[0]}
+        session={h.session}
+        origin={origin.signal}
+        trigger={createRef<HTMLButtonElement>()}
+        openDetails={() => {}}
+      />,
+    ),
+  );
+  await user.click(screen.getByRole("button", { name: "Channel actions" }));
+  await user.hover(
+    await screen.findByRole("menuitem", { name: "Move channel" }),
+  );
+  const create = await screen.findByRole("menuitem", { name: "Create new…" });
+  // Hold only the deferred handoff after the menu is ready, not a timing delay.
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  fireEvent.click(create);
+  expect(frames.length).toBeGreaterThan(0);
+  act(() => {
+    origin.abort();
+    for (const frame of frames.splice(0)) frame(0);
+  });
+  expect(
+    screen.queryByRole("dialog", { name: "Move to new section" }),
+  ).not.toBeInTheDocument();
+  expect(preferences.queries.snapshot().data?.sections).toEqual([]);
+  preferences.dispose();
+});
+
+it("gates all creation entry points while uncertain creation reconciles, preserving ordinary moves", async () => {
+  const data = { sections: [], assignments: {}, starred: [], muted: [] };
+  let finish!: (value: SidebarPreferences) => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const read = new Promise<SidebarPreferences>((resolve) => {
+    finish = resolve;
+  });
+  const preferences = createSidebarPreferencesStore({
+    read: async () => data,
+    readAfterWrite: () => {
+      entered();
+      return read;
+    },
+    available: true,
+    write: vi.fn().mockRejectedValue(new Error("response lost")),
+    writeStar: vi.fn(async () => []),
+  });
+  await preferences.queries.ensure();
+  const creating = expect(
+    preferences.queries.createSection({ id: "saved", name: "Saved" }),
+  ).rejects.toThrow("response lost");
+  try {
+    await started;
+    const h = fixture(preferences.queries);
+    const user = userEvent.setup();
+    render(h.view("alpha"));
+    const row = await screen.findByRole("button", { name: "beta" });
+    expect(document.querySelector("[data-create-section-trigger]")).toBeNull();
+    fireEvent.keyDown(row, { key: "ContextMenu" });
+    await user.hover(
+      await screen.findByRole("menuitem", { name: "Move channel" }),
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Create new…" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.getByRole("menuitemradio", { name: "Starred" }),
+    ).not.toHaveAttribute("aria-disabled", "true");
+    await act(async () => {
+      finish(data);
+      await creating;
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-create-section-trigger]"),
+      ).not.toBeNull(),
+    );
+  } finally {
+    finish(data);
+    await creating;
+    preferences.dispose();
+  }
+});
+
+it("clears only the removed section's collapsed intent after confirmation, never on cancel or failure", async () => {
+  const user = userEvent.setup();
+  const current: SidebarPreferences = {
+    sections: [{ id: "work", name: "Work", order: 0 }],
+    assignments: { beta: "work" },
+    starred: [],
+    muted: [],
+  };
+  let resolve!: (value: SidebarGroups) => void;
+  const pending = new Promise<SidebarGroups>((yes) => {
+    resolve = yes;
+  });
+  const remove = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockReturnValueOnce(pending);
+  const preferences = createSidebarPreferencesStore({
+    read: async () => current,
+    available: true,
+    write: async () => current,
+    writeStar: async () => [],
+    writeSort: async () => ({}),
+    removeSection: remove,
+  });
+  try {
+    await preferences.queries.ensure();
+    const h = fixture(preferences.queries);
+    const scope = h.snapshot.scope;
+    assert.exists(scope);
+    writeView(scope, "channel-sidebar", {
+      collapsed: ["group:work", "dms"],
+      scrollTop: 0,
+      width: 287,
+    });
+    const mounted = render(h.view("alpha"));
+    const open = async () => {
+      await user.click(
+        await screen.findByRole("button", { name: "More actions for Work" }),
+      );
+      await user.click(
+        await screen.findByRole("menuitem", { name: "Remove section" }),
+      );
+      return screen.getByRole("dialog", { name: "Remove Work?" });
+    };
+    let dialog = await open();
+    expect(dialog).toHaveAccessibleDescription(
+      "1 channel will move back to Channels. This does not delete any channels.",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(remove).not.toHaveBeenCalled();
+    expect(
+      screen.getByLabelText("Work").closest("details"),
+    ).not.toHaveAttribute("open");
+    dialog = await open();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Remove section" }),
+    );
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "offline",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    mounted.unmount();
+    expect(readView(scope, "channel-sidebar", {})).toMatchObject({
+      collapsed: ["group:work", "dms"],
+      width: 287,
+    });
+    const retry = render(h.view("alpha"));
+    dialog = await open();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Remove section" }),
+    );
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
+    expect(dialog).toBeVisible();
+    expect(readView(scope, "channel-sidebar", {})).toMatchObject({
+      collapsed: ["group:work", "dms"],
+    });
+    await act(async () => {
+      resolve({ sections: [], assignments: {} });
+      await pending;
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    retry.unmount();
+    expect(readView(scope, "channel-sidebar", {})).toMatchObject({
+      collapsed: ["dms"],
+      width: 287,
+    });
+  } finally {
+    resolve?.({ sections: [], assignments: {} });
+    preferences.dispose();
+  }
+});
+it.each(["archive", "unarchive", "delete"] as const)(
+  "%s completion preserves focus moved during pending work and retains required navigation",
+  async (action) => {
+    const h = fixture();
+    const channel = h.list.channels[1];
+    assert(channel);
+    const origin = new AbortController();
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const run = vi.fn(
+      (_action: unknown, _id: string, _signal?: AbortSignal) => pending,
+    );
+    h.session.channelLifecycle = {
+      ...h.session.channelLifecycle,
+      available: true,
+      run,
+    };
+    function StartAction() {
+      const navigation = useChannelNavigation();
+      return (
+        <button
+          type="button"
+          onClick={(event) => {
+            assert(channel);
+            navigation?.openLifecycle(
+              channel,
+              action,
+              event.currentTarget,
+              origin.signal,
+            );
+          }}
+        >
+          Start action
+        </button>
+      );
+    }
+    render(
+      h.view(
+        "beta",
+        <>
+          <StartAction />
+          <button type="button">Other control</button>
+        </>,
+      ),
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Start action" }));
+    await user.click(
+      await screen.findByRole("button", {
+        name:
+          action === "delete"
+            ? "Delete channel"
+            : action === "archive"
+              ? "Archive channel"
+              : "Unarchive channel",
+      }),
+    );
+    try {
+      await screen.findByRole("dialog", {
+        name:
+          action === "delete"
+            ? "Deleting channel…"
+            : action === "archive"
+              ? "Archiving channel…"
+              : "Unarchiving channel…",
+      });
+      act(() => origin.abort());
+      expect(run.mock.calls[0]?.[2]?.aborted).toBe(false);
+      await user.click(screen.getByRole("button", { name: "Other control" }));
+      expect(
+        screen.getByRole("button", { name: "Other control" }),
+      ).toHaveFocus();
+    } finally {
+      await act(async () => finish());
+    }
+    await screen.findByRole("dialog", {
+      name:
+        action === "delete"
+          ? "Channel deleted: beta"
+          : action === "archive"
+            ? "Channel archived: beta"
+            : "Channel unarchived: beta",
+    });
+    expect(screen.getByRole("button", { name: "Other control" })).toHaveFocus();
+    if (action === "delete")
+      expect(h.navigator.open).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "conversation", channelId: "gamma" }),
+      );
+    else expect(h.navigator.open).not.toHaveBeenCalled();
+  },
+);
+
+function pendingLifecycle(
+  action: "archive" | "delete" | "leave" | "hide",
+  preferences?: Parameters<typeof fixture>[0],
+) {
+  const h = fixture(preferences);
+  const channel = h.list.channels[1];
+  assert(channel);
+  let finish!: () => void;
+  let reject!: (error: Error) => void;
+  const pending = new Promise<void>((resolve, fail) => {
+    finish = resolve;
+    reject = fail;
+  });
+  const run = vi.fn(
+    (_action: unknown, _id: string, _signal?: AbortSignal) => pending,
+  );
+  h.session.channelLifecycle = {
+    ...h.session.channelLifecycle,
+    available: true,
+    run,
+  };
+  function Start() {
+    const navigation = useChannelNavigation();
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          assert(channel);
+          navigation?.openLifecycle(channel, action);
+        }}
+      >
+        Start action
+      </button>
+    );
+  }
+  const view = (target = "beta", visible = true) =>
+    h.view(target, <Start />, visible);
+  const mounted = render(view());
+  return {
+    ...h,
+    run,
+    finish,
+    reject,
+    mounted,
+    view,
+    async start() {
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Start action" }));
+      await user.click(
+        screen.getByRole("button", {
+          name: {
+            archive: "Archive channel",
+            delete: "Delete channel",
+            leave: "Leave channel",
+            hide: "Hide conversation",
+          }[action],
+        }),
+      );
+      await waitFor(() => expect(run).toHaveBeenCalledOnce());
+    },
+  };
+}
+
+it.each(["archive", "delete"] as const)(
+  "submitted %s survives sidebar swaps without reopening confirmation",
+  async (action) => {
+    const h = pendingLifecycle(action);
+    await h.start();
+    try {
+      h.mounted.rerender(h.view("beta", false));
+      expect(h.run.mock.calls[0]?.[2]?.aborted).toBe(false);
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+      expect(
+        screen.getByRole("dialog", {
+          name:
+            action === "archive" ? "Archiving channel…" : "Deleting channel…",
+        }),
+      ).toBeVisible();
+    } finally {
+      await act(async () => h.finish());
+    }
+    await screen.findByRole("dialog", {
+      name:
+        action === "archive"
+          ? "Channel archived: beta"
+          : "Channel deleted: beta",
+    });
+    h.mounted.rerender(h.view("alpha"));
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(h.navigator.open).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["delete", "leave", "hide"] as const)(
+  "pending %s does not redirect a newer conversation",
+  async (action) => {
+    const h = pendingLifecycle(action);
+    await h.start();
+    try {
+      h.mounted.rerender(h.view("gamma"));
+    } finally {
+      await act(async () => h.finish());
+    }
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull(),
+    );
+    expect(h.navigator.open).not.toHaveBeenCalled();
+  },
+);
+
+it("a failed lifecycle action releases its gate while keeping recovery visible", async () => {
+  const h = pendingLifecycle("delete");
+  await h.start();
+  await act(async () =>
+    h.reject(new Error("Refresh channels before trying again.")),
+  );
+  await screen.findByRole("dialog", { name: "Delete channel failed" });
+  await userEvent
+    .setup()
+    .click(screen.getByRole("button", { name: "Start action" }));
+  expect(screen.getByRole("dialog", { name: "Delete beta?" })).toBeVisible();
+  expect(
+    screen.getByText("Refresh channels before trying again."),
+  ).toBeVisible();
+  expect(h.run).toHaveBeenCalledOnce();
+});
+
+// Opening the sidebar's first row would scroll a long sidebar away from where
+// the channel was; its neighbor is already in view.
+it("deleting the open channel opens its neighbor after the roster drops it", async () => {
+  const h = pendingLifecycle("delete");
+  await h.start();
+  h.drop("beta");
+  await act(async () => h.finish());
+  await waitFor(() =>
+    expect(h.navigator.open).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "conversation", channelId: "gamma" }),
+    ),
+  );
+  expect(h.navigator.open).toHaveBeenCalledOnce();
+});
+
+it("deleting the only row in its section opens the nearest row below it", async () => {
+  const preferences = createSidebarPreferencesStore({
+    read: async () => ({
+      sections: [{ id: "laptop", name: "Laptop", order: 0 }],
+      assignments: { beta: "laptop" },
+      starred: ["alpha"],
+      muted: [],
+    }),
+    available: true,
+    write: async () => ({ sections: [], assignments: {} }),
+    writeStar: async () => [],
+  });
+  await preferences.queries.ensure();
+  // Starred: alpha; Laptop: beta; Channels: gamma.
+  const h = pendingLifecycle("delete", preferences.queries);
+  await h.start();
+  await act(async () => h.finish());
+  await waitFor(() =>
+    expect(h.navigator.open).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "conversation", channelId: "gamma" }),
+    ),
+  );
+});
+
+it("session teardown still aborts submitted lifecycle work", async () => {
+  const h = pendingLifecycle("delete");
+  await h.start();
+  h.mounted.unmount();
+  expect(h.run.mock.calls[0]?.[2]?.aborted).toBe(true);
+  await act(async () => h.finish());
+  expect(h.navigator.open).not.toHaveBeenCalled();
+});
+
+it("a replacement relay session cancels the previous submitted action", async () => {
+  const h = pendingLifecycle("delete");
+  await h.start();
+  const replacement = fixture();
+  h.mounted.rerender(replacement.view("alpha"));
+  expect(h.run.mock.calls[0]?.[2]?.aborted).toBe(true);
+  await act(async () => h.finish());
+  expect(h.navigator.open).not.toHaveBeenCalled();
+  expect(replacement.navigator.open).not.toHaveBeenCalled();
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("a sidebar remount does not resubmit or redirect pending work", async () => {
+  const h = pendingLifecycle("delete");
+  await h.start();
+  try {
+    h.mounted.rerender(h.view("beta", false));
+    h.mounted.rerender(h.view("gamma"));
+    expect(h.run.mock.calls[0]?.[2]?.aborted).toBe(false);
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  } finally {
+    await act(async () => h.finish());
+  }
+  await screen.findByRole("dialog", { name: "Channel deleted: beta" });
+  expect(h.run).toHaveBeenCalledOnce();
+  expect(h.navigator.open).not.toHaveBeenCalled();
+});
+
+// The actual mounted caller owns the Solo/Team visibility boundary.
+it("keeps owned and unfiled shared Solo chats out of Team without removing access", async () => {
+  const h = fixture();
+  h.publish("beta", {
+    channelType: "solo",
+    private: true,
+    creator: "a".repeat(64),
+  });
+  render(h.view("alpha", undefined, true));
+  await userEvent.click(screen.getByRole("tab", { name: "Team" }));
+  await screen.findByRole("button", { name: "gamma" });
+  expect(screen.queryByRole("button", { name: "beta" })).toBeNull();
+  h.publish("beta", { creator: "b".repeat(64) });
+  expect(screen.queryByRole("button", { name: "beta" })).toBeNull();
+  expect(
+    h.session.channels.list().channels.find((channel) => channel.id === "beta"),
+  ).toMatchObject({ channelType: "solo", creator: "b".repeat(64) });
+  expect(h.navigator.open).not.toHaveBeenCalled();
+});
+
+it("moves a saved group from its menu, rolls back a failed save, and retries it", async () => {
+  const data: SidebarPreferences = {
+    sections: [
+      { id: "work", name: "Work", order: 0 },
+      { id: "later", name: "Later", order: 1 },
+    ],
+    assignments: { beta: "work" },
+    starred: [],
+    muted: [],
+  };
+  const order = vi
+    .fn(async (ids: readonly string[]) => ({
+      sections: ids.map((id, index) => ({
+        id,
+        name: id === "work" ? "Work" : "Later",
+        order: index,
+      })),
+      assignments: data.assignments,
+    }))
+    .mockRejectedValueOnce(new Error("offline"));
+  const read = vi.fn(async () => data);
+  const preferences = createSidebarPreferencesStore({
+    read,
+    available: true,
+    write: async () => data,
+    writeStar: async () => [],
+    writeOrder: order,
+  });
+  await preferences.queries.ensure();
+  const h = fixture(preferences.queries, "ready", [
+    { id: "beta", name: "beta", channelType: "stream" },
+  ]);
+  const user = userEvent.setup();
+  const groups = () =>
+    [
+      ...document.querySelectorAll<HTMLElement>(
+        '[data-sidebar-section^="group:"]',
+      ),
+    ].map((section) => section.dataset.sidebarSection);
+  try {
+    render(h.view("beta"));
+    await waitFor(() =>
+      expect(groups()).toEqual(["group:work", "group:later"]),
+    );
+    expect(
+      document.querySelector(
+        "[data-create-section-slot] + [data-sidebar-section]",
+      ),
+    ).toHaveAttribute("data-sidebar-section", "group:work");
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Work" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Move down" }),
+    );
+    expect(
+      await screen.findByText("Couldn’t save the move for Work. offline"),
+    ).toBeVisible();
+    expect(groups()).toEqual(["group:work", "group:later"]);
+    read.mockRejectedValueOnce(new Error("refresh failed"));
+    await act(() => preferences.queries.refresh());
+    const retry = screen.getByRole("button", { name: "Retry move" });
+    expect(retry).toBeDisabled();
+    expect(
+      screen.getByText(
+        "Refresh saved sidebar preferences before retrying this move.",
+      ),
+    ).toBeVisible();
+    await act(() => preferences.queries.refresh());
+    expect(retry).toBeEnabled();
+    expect(
+      screen.queryByText(
+        "Refresh saved sidebar preferences before retrying this move.",
+      ),
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Retry move" }));
+    await waitFor(() =>
+      expect(groups()).toEqual(["group:later", "group:work"]),
+    );
+    expect(
+      document.querySelector(
+        "[data-create-section-slot] + [data-sidebar-section]",
+      ),
+    ).toHaveAttribute("data-sidebar-section", "group:later");
+    expect(order).toHaveBeenLastCalledWith(
+      ["later", "work"],
+      expect.any(AbortSignal),
+    );
+    expect(screen.queryByRole("button", { name: "Retry move" })).toBeNull();
+    expect(
+      document.querySelector('[data-sidebar-section="group:work"]'),
+    ).toContainElement(screen.getByRole("button", { name: "beta" }));
+  } finally {
+    preferences.dispose();
+  }
+});
+
+it.each(["star", "section", "unfiled"])(
+  "lists a shared chat with the viewer's chats, never under Team (%s)",
+  async (placement) => {
+    const data = {
+      sections: [{ id: "work", name: "Work", order: 0 }],
+      assignments: placement === "section" ? { beta: "work" } : {},
+      starred: placement === "star" ? ["beta"] : [],
+      muted: [],
+    };
+    const store = createSidebarPreferencesStore({
+      available: true,
+      read: async () => data,
+      write: async () => data,
+    });
+    await store.queries.ensure();
+    const h = fixture(store.queries, "ready", [
+      {
+        id: "beta",
+        name: "Shared work",
+        channelType: "solo",
+        private: true,
+        creator: "b".repeat(64),
+      },
+      { id: "alpha", name: "Team channel", channelType: "stream" },
+    ]);
+    render(h.view("alpha"));
+    await screen.findByRole("button", { name: "Team channel" });
+    // One row, in the Solo list (which the sidebar navigation contains).
+    const rows = screen.getAllByRole("button", { name: "Shared work" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.closest("nav")).toHaveAccessibleName("Solo conversations");
+  },
+);
+
+it("opening a shared chat lists it once, with the viewer's chats", async () => {
+  const h = fixture();
+  h.publish("beta", {
+    channelType: "solo",
+    private: true,
+    creator: "b".repeat(64),
+  });
+  const view = render(h.view("alpha"));
+  await screen.findByRole("button", { name: "gamma" });
+  await userEvent.click(screen.getByRole("tab", { name: "Solo" }));
+  view.rerender(h.view("beta"));
+  expect(screen.getByRole("tab", { name: "Solo" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  const rows = await screen.findAllByRole("button", { name: "beta" });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.closest("nav")).toHaveAccessibleName("Solo conversations");
+});

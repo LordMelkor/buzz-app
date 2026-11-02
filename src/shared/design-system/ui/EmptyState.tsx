@@ -10,7 +10,7 @@ export function EmptyState({
 }: {
   icon: ReactNode;
   title: string;
-  description: ReactNode;
+  description?: ReactNode;
   action?: ReactNode;
   level?: 3 | 4;
 }) {
@@ -23,7 +23,9 @@ export function EmptyState({
         </span>
         <div className="buzz-empty-state-copy">
           <Heading className="buzz-empty-state-title">{title}</Heading>
-          <p className="buzz-empty-state-description">{description}</p>
+          {description != null && (
+            <p className="buzz-empty-state-description">{description}</p>
+          )}
         </div>
         {action && <div className="buzz-empty-state-action">{action}</div>}
       </div>

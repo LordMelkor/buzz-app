@@ -14,6 +14,7 @@ export function LoadingWindowHeader() {
   if (!hasIntegratedWindowControls()) return null;
   return (
     <header
+      data-buzz-window-drag=""
       data-tauri-drag-region
       className="fixed inset-x-0 top-0 z-[10001] flex h-12 items-center justify-end px-4"
     >

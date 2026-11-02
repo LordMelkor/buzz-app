@@ -3,9 +3,16 @@
 // call runs a short-lived `goose-acp`; keys go to goose's secret store, never
 // into Buzz.
 import type { ModelChoice } from "../../features/agents/ModelPicker";
-import type { Models } from "../../features/agents/service";
-import { GooseProcess, type Choice, type Spawn } from "./goose";
-import { absolute } from "./sessions";
+import type {
+  AgentProviderSnapshot,
+  Models,
+} from "../../features/agents/service";
+import {
+  GooseProcess,
+  REQUEST_TIMEOUT_MS,
+  type Choice,
+  type GooseHost,
+} from "./goose";
 
 export type ConfigKey = Readonly<{
   name: string;
@@ -26,6 +33,8 @@ export type Provider = Readonly<{
   signsIn: boolean;
   steps: readonly string[];
   models: readonly ModelChoice[];
+  /** Why it isn't set up to run, or "" when it is. */
+  needs: string;
 }>;
 
 export type Providers = Readonly<{
@@ -78,6 +87,28 @@ const PREFIXES: Readonly<Record<string, readonly string[]>> = {
   databricks: ["databricks-", "goose-"],
 };
 
+const MODEL_FILTER = "DATABRICKS_MODEL_FILTER";
+
+/** Which Databricks models are listed, from goose's `DATABRICKS_MODEL_FILTER`
+ * (its environment, else its config): comma-separated patterns, each matched
+ * against a whole model ID, case-sensitively, with `*` for any characters and
+ * `?` for one. A model matching any pattern is listed; without patterns every
+ * model is. It only hides models: Databricks still decides access. */
+export function modelFilter(value: unknown): (id: string) => boolean {
+  const patterns = String(value ?? "")
+    .split(",")
+    .map((pattern) => pattern.trim())
+    .filter(Boolean);
+  if (!patterns.length) return () => true;
+  const glob = (pattern: string) =>
+    pattern
+      .replace(/[\\^$.+()[\]{}|/]/g, "\\$&")
+      .replace(/\*/g, ".*")
+      .replace(/\?/g, ".");
+  const matcher = new RegExp(`^(?:${patterns.map(glob).join("|")})$`, "s");
+  return (id) => matcher.test(id);
+}
+
 const TEST_PROMPT = "Reply with exactly: OK";
 const TEST_TIMEOUT_MS = 60_000;
 
@@ -86,40 +117,176 @@ export class GooseSetup {
   private readonly live = new Map<string, Promise<readonly ModelChoice[]>>();
   private readonly thinking = new Map<string, Promise<Efforts>>();
 
-  constructor(private readonly spawn: Spawn | undefined) {}
+  private state: AgentProviderSnapshot = { readiness: "checking" };
+  private readonly listeners = new Set<() => void>();
+  private checkedDefaults: string | undefined;
+  private checking: Promise<void> | undefined;
+
+  constructor(
+    private readonly host: GooseHost | undefined,
+    private readonly defaultsChanged: () => void = () => {},
+  ) {}
+
+  snapshot = () => this.state;
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+  private update(state: AgentProviderSnapshot) {
+    this.state = {
+      ...state,
+      blocking: state.blocking ?? this.state.blocking ?? false,
+    };
+    for (const listener of this.listeners) listener();
+  }
+
+  /** A fresh read also notices changes made by `goose configure`. */
+  check = (): Promise<void> => {
+    if (this.checking) return this.checking;
+    this.listing = undefined;
+    this.live.clear();
+    this.thinking.clear();
+    this.update({ readiness: "checking" });
+    this.checking = this.providers()
+      .then(
+        ({ defaults, providers }) => {
+          const key = JSON.stringify(defaults);
+          if (
+            this.checkedDefaults !== undefined &&
+            this.checkedDefaults !== key
+          )
+            this.defaultsChanged();
+          this.checkedDefaults = key;
+          const ready = providers.some(
+            (provider) =>
+              provider.id === defaults.provider &&
+              provider.configured &&
+              Boolean(defaults.model?.trim()),
+          );
+          this.update(
+            ready
+              ? { readiness: "ready" }
+              : { readiness: "attention", attentionLabel: "Set up Goose" },
+          );
+        },
+        () =>
+          this.update({
+            readiness: "attention",
+            attentionLabel: "Check Goose setup",
+          }),
+      )
+      .finally(() => {
+        this.checking = undefined;
+      });
+    return this.checking;
+  };
+
+  /** Writes Goose's own defaults, never a parallel Buzz preference. */
+  async saveDefaults(
+    choice: Choice,
+    fields: Readonly<Record<string, string>> = {},
+  ) {
+    await this.checking;
+    this.update({ ...this.state, blocking: true });
+    try {
+      if (Object.keys(fields).length) await this.save(choice.provider, fields);
+      const providerId = choice.provider.trim();
+      const { defaults, providers } = await this.providers();
+      await this.with(async (goose) => {
+        let modelId =
+          choice.model.trim() ||
+          (providerId === defaults.provider ? defaults.model?.trim() : "");
+        if (!modelId) {
+          // Goose stores per-provider choices separately from catalog metadata.
+          const { value } = (await goose.request(
+            "_goose/unstable/config/read",
+            {
+              key: "providers",
+              isSecret: false,
+            },
+          )) as { value?: Record<string, { model?: unknown }> | null };
+          const stored = value?.[providerId]?.model;
+          modelId =
+            (typeof stored === "string" ? stored.trim() : "") ||
+            providers
+              .find((provider) => provider.id === providerId)
+              ?.defaultModel.trim();
+        }
+        if (!modelId)
+          throw new Error(
+            "Choose a default model with goose configure, then try again.",
+          );
+        await goose.request("_goose/unstable/defaults/save", {
+          providerId,
+          modelId,
+        });
+      });
+      this.defaultsChanged();
+      this.checkedDefaults = undefined;
+      await this.check();
+    } finally {
+      this.update({ ...this.state, blocking: false });
+    }
+  }
 
   /** The models an agent on `choice` can be asked to run a turn on: those of
-   * its provider, or goose's config's, and the one it runs on without. */
+   * its provider, or goose's config's, and the one it runs on without. Each
+   * has the thinking levels goose offers on it, resting on the agent's own
+   * level, or else goose's. */
   async picks(choice: Choice): Promise<Models> {
     const provider = choice.provider.trim();
     const { providers, defaults } = await this.providers();
     const id = provider || defaults.provider;
+    const listed = providers.find((item) => item.id === id);
     const current =
       choice.model.trim() ||
-      (provider
-        ? providers.find((item) => item.id === id)?.defaultModel
-        : defaults.model) ||
+      (provider ? listed?.defaultModel : defaults.model) ||
       "";
-    const models = (id ? await this.models(id) : []).map(({ id, label }) => ({
-      id,
-      label,
-      efforts: [],
-    }));
+    // A provider not set up offers only the model the agent names.
+    const ready = Boolean(id && !listed?.needs);
+    const offered = ready ? await this.models(id ?? "") : [];
     // A model its provider does not list is still the one it runs on.
-    return !current || models.some((model) => model.id === current)
-      ? { current, models }
-      : {
-          current,
-          models: [{ id: current, label: current, efforts: [] }, ...models],
-        };
+    const named =
+      !current || offered.some((model) => model.id === current)
+        ? offered
+        : [{ id: current, label: current }, ...offered];
+    // Without levels a model offers no slider, so a failed read costs only it.
+    const levels = ready
+      ? await Promise.all(
+          this.levels(
+            provider,
+            named.map((model) => model.id),
+          ).map((read) => read.catch(() => undefined)),
+        )
+      : [];
+    const models = named.map(({ id, label }, index) => {
+      const offers = levels[index] ?? { current: "", levels: [] };
+      const resting = [choice.effort ?? "", offers.current].find(
+        (level) => level && offers.levels.includes(level),
+      );
+      return {
+        id,
+        label,
+        efforts: offers.levels.map((level) => ({
+          id: level,
+          label: level.charAt(0).toUpperCase() + level.slice(1),
+        })),
+        ...(resting ? { effort: resting } : {}),
+      };
+    });
+    return { current, models };
   }
 
   /** goose's providers, read once until something is saved. */
   providers(): Promise<Providers> {
     this.listing ??= this.with(async (goose) => {
       const [{ entries }, defaults] = (await Promise.all([
-        goose.request("_goose/unstable/providers/list", { providerIds: [] }),
-        goose.request("_goose/unstable/defaults/read", {}),
+        goose.request(
+          "_goose/unstable/providers/list",
+          { providerIds: [] },
+          REQUEST_TIMEOUT_MS,
+        ),
+        goose.request("_goose/unstable/defaults/read", {}, REQUEST_TIMEOUT_MS),
       ])) as [
         { entries: Entry[] },
         { providerId?: string | null; modelId?: string | null },
@@ -144,14 +311,18 @@ export class GooseSetup {
     return this.listing;
   }
 
-  /** A provider's models: goose's catalog, or else what its API lists. */
+  /** Databricks catalogs can lag its endpoints and AI Gateway services;
+   * configured providers use live discovery for both Databricks versions.
+   * A provider not set up offers none: its catalog's would not run. */
   async models(id: string): Promise<readonly ModelChoice[]> {
     const listed = (await this.providers()).providers.find(
       (item) => item.id === id,
     );
+    if (listed?.needs) throw new Error(listed.needs);
     const prefixes = PREFIXES[id];
     const models =
-      listed?.configured && (prefixes || !listed.models.length)
+      listed?.configured &&
+      (prefixes || id === "databricks_v2" || !listed.models.length)
         ? await this.supported(id)
         : (listed?.models ?? []);
     return prefixes
@@ -165,11 +336,27 @@ export class GooseSetup {
     let models = this.live.get(id);
     if (!models) {
       models = this.with(async (goose) => {
-        const { models } = (await goose.request(
-          "_goose/unstable/providers/supported-models/list",
-          { providerId: id },
-        )) as { models: string[] };
-        return models.map((model) => ({ id: model, label: model }));
+        const [{ models }, filter] = (await Promise.all([
+          goose.request(
+            "_goose/unstable/providers/supported-models/list",
+            { providerId: id },
+            REQUEST_TIMEOUT_MS,
+          ),
+          id.startsWith("databricks")
+            ? goose.request(
+                "_goose/unstable/config/read",
+                {
+                  key: MODEL_FILTER,
+                  isSecret: false,
+                },
+                REQUEST_TIMEOUT_MS,
+              )
+            : undefined,
+        ])) as [{ models: string[] }, { value?: unknown } | undefined];
+        const listed = modelFilter(filter?.value);
+        return models
+          .filter(listed)
+          .map((model) => ({ id: model, label: model }));
       });
       models.catch(() => this.live.delete(id));
       this.live.set(id, models);
@@ -184,43 +371,96 @@ export class GooseSetup {
    * session is on, so this opens a throwaway session and moves it to the
    * model to read them. */
   efforts(choice: Choice): Promise<Efforts> {
-    const provider = choice.provider.trim();
-    const model = choice.model.trim();
-    const key = `${provider}\u0000${model}`;
-    let efforts = this.thinking.get(key);
-    if (!efforts) {
-      efforts = this.with(async (goose, cwd) => {
-        const opened = (await goose.request("session/new", {
-          cwd,
-          mcpServers: [],
-          _meta: { enabledExtensions: [], ...(provider ? { provider } : {}) },
-        })) as ConfigOptions & { sessionId: string };
+    const [efforts] = this.levels(choice.provider, [choice.model]);
+    return efforts as Promise<Efforts>;
+  }
+
+  /** `efforts` for each of `models` on `provider`. Those not read yet are
+   * read together, in one throwaway session moved from model to model.
+   * goose carries a level across models only once one is set, and this
+   * session sets none, so each model reports its own default: a session per
+   * model read the same levels and defaults, six times slower. */
+  private levels(
+    provider: string,
+    models: readonly string[],
+  ): Promise<Efforts>[] {
+    provider = provider.trim();
+    const key = (model: string) => `${provider}\u0000${model}`;
+    const wanted = [...new Set(models.map((model) => model.trim()))]
+      .filter((model) => !this.thinking.has(key(model)))
+      // The session opens on goose's model for "", so it is read first.
+      .sort((a, b) => Number(Boolean(a)) - Number(Boolean(b)));
+    if (wanted.length) {
+      const read = this.with(async (goose, cwd) => {
+        const opened = (await goose.request(
+          "session/new",
+          {
+            cwd,
+            mcpServers: [],
+            _meta: { enabledExtensions: [], ...(provider ? { provider } : {}) },
+          },
+          REQUEST_TIMEOUT_MS,
+        )) as ConfigOptions & { sessionId: string };
         try {
-          const { configOptions = [] } = model
-            ? ((await goose.request("session/set_config_option", {
-                sessionId: opened.sessionId,
-                configId: "model",
-                value: model,
-              })) as ConfigOptions)
-            : opened;
-          const option = configOptions.find(
-            (item) => item.category === "thought_level",
-          );
-          return {
-            current: option?.currentValue ?? "",
-            levels: (option?.options ?? []).map(({ value }) => value),
-          };
+          const found = new Map<string, Efforts | Error>();
+          for (const model of wanted) {
+            try {
+              const { configOptions = [] } = model
+                ? ((await goose.request(
+                    "session/set_config_option",
+                    {
+                      sessionId: opened.sessionId,
+                      configId: "model",
+                      value: model,
+                    },
+                    REQUEST_TIMEOUT_MS,
+                  )) as ConfigOptions)
+                : opened;
+              const option = configOptions.find(
+                (item) => item.category === "thought_level",
+              );
+              found.set(model, {
+                current: option?.currentValue ?? "",
+                levels: (option?.options ?? []).map(({ value }) => value),
+              });
+            } catch (error) {
+              // One model goose cannot move to does not cost the others.
+              found.set(
+                model,
+                error instanceof Error ? error : new Error(String(error)),
+              );
+            }
+          }
+          return found;
         } finally {
           // goose keeps every session; this one is not worth keeping.
           await goose
-            .request("session/delete", { sessionId: opened.sessionId })
+            .request(
+              "session/delete",
+              { sessionId: opened.sessionId },
+              REQUEST_TIMEOUT_MS,
+            )
             .catch(() => undefined);
         }
       });
-      efforts.catch(() => this.thinking.delete(key));
-      this.thinking.set(key, efforts);
+      for (const model of wanted) {
+        const one = read.then((found) => {
+          const efforts = found.get(model);
+          if (!efforts || efforts instanceof Error)
+            throw efforts ?? new Error(`goose listed no levels for ${model}`);
+          return efforts;
+        });
+        // A failed read is tried again; a recheck may have replaced it.
+        one.catch(() => {
+          if (this.thinking.get(key(model)) === one)
+            this.thinking.delete(key(model));
+        });
+        this.thinking.set(key(model), one);
+      }
     }
-    return efforts;
+    return models.map(
+      (model) => this.thinking.get(key(model.trim())) as Promise<Efforts>,
+    );
   }
 
   /** Which of a provider's fields goose already holds. */
@@ -256,6 +496,8 @@ export class GooseSetup {
     return this.with(async (goose, cwd) => {
       const session = await goose.open({
         cwd,
+        // A titled session spares the provider a naming call.
+        title: "Buzz connection test",
         systemPrompt: "",
         choice: () => choice,
       });
@@ -293,20 +535,20 @@ export class GooseSetup {
     run: (goose: GooseProcess, cwd: string) => Promise<T>,
     env: Readonly<Record<string, string>> = {},
   ): Promise<T> {
-    return briefly(this.spawn, run, env);
+    return briefly(this.host, run, env);
   }
 }
 
 /** Runs `run` against a `goose-acp` started for it in the home folder, and
  * stops it after. It serves no Buzz tools. */
 export async function briefly<T>(
-  spawn: Spawn | undefined,
+  host: GooseHost | undefined,
   run: (goose: GooseProcess, cwd: string) => Promise<T>,
   env: Readonly<Record<string, string>> = {},
 ): Promise<T> {
-  if (!spawn) throw new Error("goose runs only in the desktop app");
-  const cwd = await absolute(spawn, "~");
-  const goose = await GooseProcess.start(spawn, {
+  if (!host) throw new Error("goose runs only in the desktop app");
+  const cwd = await host.resolveDirectory("~");
+  const goose = await GooseProcess.start(host.spawn, {
     cwd,
     env,
   });
@@ -322,7 +564,7 @@ function provider(entry: Entry): Provider {
   const models = [...(entry.models ?? [])].sort(
     (a, b) => Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)),
   );
-  return {
+  const listed = {
     id: entry.providerId,
     name: entry.providerName,
     description: entry.description ?? "",
@@ -341,6 +583,23 @@ function provider(entry: Entry): Provider {
     // The exact ID: a catalog name can stand for several models.
     models: models.map((model) => ({ id: model.id, label: model.id })),
   };
+  return { ...listed, needs: needs(listed) };
+}
+
+/** What `provider` still needs before it runs, or "" for nothing: a required
+ * field without a default, or signing in. goose lists Ollama as not configured
+ * without `OLLAMA_HOST`, though it runs on the host's default. */
+function needs(provider: Omit<Provider, "needs">) {
+  if (provider.configured) return "";
+  const fields = provider.keys
+    .filter((key) => key.required && !key.default)
+    .map((key) => `${keyLabel(key.name)} (${key.name})`);
+  const step = fields.length
+    ? `Add ${fields.join(", ")} in Edit configuration, or run goose configure.`
+    : provider.signsIn
+      ? "Run goose configure to sign in."
+      : "";
+  return step && `${provider.name} isn't set up in goose. ${step}`;
 }
 
 /** `ANTHROPIC_API_KEY` reads as `API key`, `OPENAI_HOST` as `Host`. */

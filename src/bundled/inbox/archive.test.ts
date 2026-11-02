@@ -50,6 +50,24 @@ function fixture() {
   return { viewer, alice, events, item, scope, archived };
 }
 
+it("cuts off an archive at its evidence, not at a later displayed message", () => {
+  const h = fixture();
+  // A Solo chat row can show a newer, even future-dated, message that is not
+  // evidence.
+  const shown = { ...h.item, createdAt: 90 };
+  updateArchive(h.scope, shown, true);
+  expect(h.archived(shown)).toBe(true);
+  const mention = {
+    ...shown,
+    messageIds: [...shown.messageIds, "b".repeat(64)],
+    messages: [
+      ...shown.messages,
+      { id: "b".repeat(64), createdAt: 40, mentioned: true },
+    ],
+  };
+  expect(h.archived(mention)).toBe(false);
+});
+
 it("keeps non-participating replies and older mentions archived, but reopens for a same-second new tag", () => {
   const h = fixture();
   updateArchive(h.scope, h.item, true);
@@ -245,17 +263,17 @@ it("preserves archive intent when exact conversation evidence regroups and resto
   expect(h.archived(regrouped)).toBe(false);
 });
 
-it("keeps a session mention visible when an earlier archive covers only part of its merged row", () => {
+it("keeps a Solo chat mention visible when an earlier archive covers only part of its merged row", () => {
   const h = fixture();
   const row = (created: number): InboxItem => {
-    const event = message(h.alice, "session", `Mention ${created}`, created, [
+    const event = message(h.alice, "chat", `Mention ${created}`, created, [
       ["p", h.viewer.pubkey],
     ]);
     return {
       ...h.item,
-      id: `session:${event.id}`,
-      channelId: "session",
-      target: { kind: "message", channelId: "session", messageId: event.id },
+      id: `chat:${event.id}`,
+      channelId: "chat",
+      target: { kind: "message", channelId: "chat", messageId: event.id },
       messageId: event.id,
       latestMessageId: event.id,
       messageIds: [event.id],
@@ -268,7 +286,7 @@ it("keeps a session mention visible when an earlier archive covers only part of 
   expect(h.archived(kept)).toBe(false);
   const merged: InboxItem = {
     ...archived,
-    id: "session:session",
+    id: "chat:chat",
     messageIds: [...kept.messageIds, ...archived.messageIds],
     messages: [...kept.messages, ...archived.messages],
   };

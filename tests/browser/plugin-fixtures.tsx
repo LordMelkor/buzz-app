@@ -1,4 +1,5 @@
 // Installed fixture code only; app composition, manager, contributions and UI remain production.
+import { soloRegionFixture } from "./solo-region-fixture";
 import { companionPlugins } from "./companion-fixture";
 import * as shortcutCounter from "../../examples/plugins/shortcut-counter/plugin.js";
 import shortcutManifest from "../../examples/plugins/shortcut-counter/manifest.json";
@@ -9,6 +10,7 @@ import type { PageProps } from "../../src/features/pages/service";
 import type { PageNavigation } from "../../src/features/navigation/service";
 import type { RelayData } from "../../src/features/relay/service";
 import { PanelSubview } from "../../src/features/panels/PanelSubview";
+import { FolderOpenIcon } from "../../src/shared/design-system/icons";
 import type { PanelProps } from "../../src/features/panels/service";
 import type { NotificationInput } from "../../src/features/notifications/service";
 
@@ -55,6 +57,8 @@ declare global {
     fixtureNavigation?: Navigation;
     fixtureNotify?: (input: NotificationInput) => Promise<boolean>;
     fixturePageBroken?: boolean;
+    fixtureSidebarWorkIconThrows?: boolean;
+    fixtureSidebarRecovery?: boolean;
     delayFixture?: { started: boolean; release?: () => void };
     stopFixtureDependency?: () => Promise<void>;
     startFixtureDependency?: () => void;
@@ -120,7 +124,101 @@ function RetryPage() {
     </button>
   );
 }
+
+function SidebarWorkIcon() {
+  if (window.fixtureSidebarWorkIconThrows)
+    throw new Error("Fixture sidebar icon failure");
+  return <FolderOpenIcon aria-hidden="true" />;
+}
+
 export const fixturePlugins: readonly BundledPlugin[] = [
+  soloRegionFixture,
+  {
+    manifest: {
+      id: "fixture.provider",
+      name: "Provider fixture",
+      apiVersion: 1,
+    },
+    enabledByDefault: false,
+    module: {
+      inject: ["agents"],
+      apply(ctx) {
+        const state = { readiness: "ready" as const };
+        ctx.agents.register({
+          id: "sample",
+          title: "Fixture provider",
+          defaults: () => ({ config: {} }),
+          provider: {
+            snapshot: () => state,
+            subscribe: () => () => {},
+            check() {},
+            DialogBody: ({ onClose }) => (
+              <button type="button" onClick={onClose}>
+                Done
+              </button>
+            ),
+          },
+        });
+      },
+    },
+  },
+  {
+    manifest: {
+      id: "fixture.sidebar-sections",
+      name: "Sidebar section fixture",
+      apiVersion: 1,
+    },
+    module: {
+      apply(ctx) {
+        const rows = [
+          {
+            id: "work",
+            label: "Queue",
+            badge: "New",
+            count: 2,
+            status: "Active",
+          },
+        ];
+        const listeners = new Set<() => void>();
+        ctx.reflect.get("sidebarSections")?.register({
+          version: 1,
+          id: "work",
+          title: "Workspace",
+          icon: <SidebarWorkIcon />,
+          rows: {
+            snapshot: () => rows,
+            subscribe(listener) {
+              listeners.add(listener);
+              return () => listeners.delete(listener);
+            },
+          },
+          select: () => ({
+            version: 1,
+            kind: "page",
+            pluginId: "buzz.channels",
+            pageId: "channels",
+          }),
+        });
+        const reviewRows = [{ id: "review", label: "Review queue item" }];
+        ctx.reflect.get("sidebarSections")?.register({
+          version: 1,
+          id: "review",
+          title: "Review queue",
+          icon: <FolderOpenIcon aria-hidden="true" />,
+          rows: {
+            snapshot: () => reviewRows,
+            subscribe: () => () => {},
+          },
+          select: () => ({
+            version: 1,
+            kind: "page",
+            pluginId: "buzz.channels",
+            pageId: "channels",
+          }),
+        });
+      },
+    },
+  },
   {
     manifest: {
       id: "fixture.page-placement",
@@ -142,6 +240,39 @@ export const fixturePlugins: readonly BundledPlugin[] = [
             primary: true,
             component: () => <h1>{title}</h1>,
           });
+        ctx.pages.register({
+          id: "sidebar",
+          title: "Sidebar playground",
+          primary: true,
+          component: () => <h1>Sidebar playground</h1>,
+          sidebar: ({ target, children }) => {
+            if (window.fixtureSidebarRecovery)
+              throw new Error("Fixture page render failure");
+            return (
+              <div className="shell-sidebar-default">
+                <aside
+                  aria-label="Fixture sidebar"
+                  className="flex h-full min-h-0 flex-col gap-3 bg-surface-panel p-3 text-standard"
+                >
+                  <p>
+                    Target:{" "}
+                    {target.kind === "page" ? target.pageId : target.kind}
+                  </p>
+                  <button type="button">Fixture sidebar action</button>
+                  {children}
+                </aside>
+              </div>
+            );
+          },
+        });
+        if (window.fixtureSidebarRecovery)
+          for (let index = 1; index <= 12; index += 1)
+            ctx.pages.register({
+              id: `recovery-${index}`,
+              title: `Recovery entry ${String(index).padStart(2, "0")}`,
+              primary: true,
+              component: () => <h1>Recovery destination</h1>,
+            });
       },
     },
   },
@@ -203,7 +334,7 @@ export const fixturePlugins: readonly BundledPlugin[] = [
   {
     manifest: { id: "fixture.session", name: "Session fixture", apiVersion: 1 },
     module: {
-      inject: ["pages", "relay"],
+      inject: ["pages", "relay", "conversation"],
       apply(ctx) {
         const relay = ctx.relay;
         window.fixtureRelay = relay;
@@ -222,6 +353,56 @@ export const fixturePlugins: readonly BundledPlugin[] = [
             <p>Session pending reconnect</p>
           );
         }
+        function ThreadFocusPage({ navigation }: PageProps) {
+          const connection = useSyncExternalStore(
+            relay.subscribe,
+            relay.snapshot,
+          );
+          const Tabs = ctx.conversation.ui.Tabs;
+          const target = navigation?.target;
+          const threadId =
+            target?.kind === "page" ? target.route?.params : undefined;
+          useEffect(() => {
+            navigation?.complete({ status: "opened" });
+          }, [navigation]);
+          if (
+            connection.status !== "ready" ||
+            !Tabs ||
+            typeof threadId !== "string"
+          )
+            return null;
+          return (
+            <Tabs
+              id="focus-fixture"
+              session={connection.session}
+              scope={connection.scope}
+              label="Focus fixture"
+            >
+              {(open) => (
+                <>
+                  <input aria-label="Page draft" />
+                  <button
+                    type="button"
+                    onClick={() => open({ channelId: "beta", threadId })}
+                  >
+                    Open cold thread
+                  </button>
+                </>
+              )}
+            </Tabs>
+          );
+        }
+        ctx.pages.register({
+          id: "thread-focus",
+          title: "Thread focus fixture",
+          primary: true,
+          handlesNavigation: true,
+          route: {
+            version: 1,
+            validate: (params) => typeof params === "string",
+          },
+          component: ThreadFocusPage,
+        });
         ctx.pages.register({
           id: "session",
           title: "Session fixture",
@@ -235,7 +416,7 @@ export const fixturePlugins: readonly BundledPlugin[] = [
   {
     manifest: { id: "fixture.delayed", name: "Delayed fixture", apiVersion: 1 },
     module: {
-      inject: ["pages"],
+      inject: ["pages", "agents"],
       async apply(ctx) {
         const gate = window.delayFixture;
         if (gate)
@@ -243,6 +424,18 @@ export const fixturePlugins: readonly BundledPlugin[] = [
             gate.started = true;
             gate.release = resolve;
           });
+        const state = { readiness: "ready" as const };
+        ctx.agents.register({
+          id: "provider",
+          title: "Delayed provider",
+          defaults: () => ({ config: {} }),
+          provider: {
+            snapshot: () => state,
+            subscribe: () => () => {},
+            check() {},
+            DialogBody: () => <p>Delayed provider controls</p>,
+          },
+        });
         ctx.pages.register({
           id: "slow",
           title: "Delayed fixture",

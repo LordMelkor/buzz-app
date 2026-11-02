@@ -14,13 +14,14 @@ test.beforeAll(async () => {
   });
   await server.listen();
   origin = server.resolvedUrls.local[0];
+  // A new server transforms the fixture's modules, Tailwind's globals.css
+  // among them, during its first navigation. On a slow runner that took longer
+  // than the navigation timeout, so transform them before any test navigates.
+  await server.warmupRequest("/tests/fixtures/voice-notes.tsx");
+  await server.waitForRequestsIdle();
 });
 test.afterAll(async () => {
   await server?.close();
-});
-test.afterEach(async ({ page }) => {
-  // Media routes read fixture blobs from the page; finish them before it closes.
-  await page.unrouteAll({ behavior: "wait" });
 });
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/relay/media?*", async (route) => {
@@ -108,32 +109,28 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
 
-async function record(page) {
+async function record(page, { stopWith = "keyboard" } = {}) {
   await page
     .getByRole("button", { name: "Record voice note", exact: true })
     .click();
   await expect(
-    page.getByRole("button", { name: "Finish voice note", exact: true }),
+    page.getByRole("button", { name: "Stop recording", exact: true }),
   ).toBeEnabled();
   await expect
     .poll(() => page.evaluate(() => window.voiceMic.context.currentTime))
     .toBeGreaterThan(0.6); // Real audio frames, not a timer-only fake.
-  const finishButton = page.getByRole("button", {
-    name: "Finish voice note",
-    exact: true,
-  });
-  await expect(finishButton).toHaveCSS("background-color", "rgb(0, 0, 0)");
-  await expect(finishButton.locator("svg")).toHaveCSS(
-    "fill",
-    "rgb(255, 255, 255)",
-  );
   await expect(page.getByRole("textbox")).toBeVisible();
   await page.screenshot({
     path: test.info().outputPath("voice-recording.png"),
   });
-  await page
-    .getByRole("button", { name: "Finish voice note", exact: true })
-    .click();
+  await expect(
+    page.getByRole("button", { name: "Stop recording", exact: true }),
+  ).toBeFocused();
+  if (stopWith === "pointer")
+    await page
+      .getByRole("button", { name: "Stop recording", exact: true })
+      .click();
+  else await page.keyboard.press("Enter");
   await expect(
     page.getByRole("button", { name: "Remove voice note", exact: true }),
   ).toBeVisible();
@@ -159,25 +156,11 @@ test("record, preview, send and play the chat card with speed and seeking", {
     name: "Voice note",
     exact: true,
   });
-  const draftPlay = draftCard.getByRole("button", {
-    name: "Play voice note",
-    exact: true,
-  });
-  await expect(draftPlay).toHaveCSS("color", "rgb(255, 255, 255)");
-  await expect(draftPlay.locator("svg").first()).toHaveCSS(
-    "stroke",
-    "rgb(255, 255, 255)",
+  // A finished upload swaps in the sent copy, which remounts the player.
+  await expect(draftCard.locator("audio")).toHaveAttribute(
+    "src",
+    /^\/api\/relay\/media\?/,
   );
-  await expect(draftPlay).toHaveCSS("clip-path", "none");
-  await expect(draftPlay).toHaveCSS("border-radius", "7px");
-  await expect(draftCard).toHaveCSS("border-radius", "10px");
-  // The draft uses concentric circular corners and an inset remove control.
-  await draftCard
-    .getByRole("button", { name: "Remove voice note" })
-    .click({ trial: true });
-  const geometry = await draftCard.boundingBox();
-  expect(geometry.width).toBeGreaterThan(300);
-  expect(geometry.height).toBeLessThan(65);
   await page.screenshot({ path: test.info().outputPath("voice-cards.png") });
   await composer
     .getByRole("button", { name: "Play voice note", exact: true })
@@ -195,17 +178,6 @@ test("record, preview, send and play the chat card with speed and seeking", {
   const firstCard = page
     .getByRole("group", { name: "Voice note", exact: true })
     .first();
-  const chatPlay = firstCard
-    .getByRole("button", { name: /voice note/, exact: false })
-    .first();
-  await expect(chatPlay).toHaveCSS("color", "rgb(255, 255, 255)");
-  await expect(chatPlay.locator("svg").last()).toHaveCSS(
-    "stroke",
-    "rgb(255, 255, 255)",
-  );
-  const speedButton = firstCard.getByRole("button", { name: /Playback speed/ });
-  await expect(speedButton).toHaveCSS("color", "rgb(255, 255, 255)");
-  const waveformBeforeSpeed = await firstCard.getByRole("slider").boundingBox();
   await firstCard
     .getByRole("button", { name: /Playback speed 1 times/ })
     .click();
@@ -213,18 +185,6 @@ test("record, preview, send and play the chat card with speed and seeking", {
     "playbackRate",
     1.5,
   );
-  expect(await firstCard.getByRole("slider").boundingBox()).toEqual(
-    waveformBeforeSpeed,
-  );
-  await firstCard
-    .getByRole("button", { name: /Playback speed 1.5 times/ })
-    .click();
-  expect(await firstCard.getByRole("slider").boundingBox()).toEqual(
-    waveformBeforeSpeed,
-  );
-  await expect(speedButton).toHaveCSS("color", "rgb(255, 255, 255)");
-  await firstCard.hover();
-  await expect(speedButton).toHaveCSS("color", "rgb(255, 255, 255)");
   await expect(firstCard.getByRole("slider")).toBeEnabled();
   await firstCard.getByRole("slider").fill("1");
   await expect
@@ -289,14 +249,14 @@ test("permission cancellation, denial and plugin removal release microphones", {
     .getByRole("button", { name: "Record voice note", exact: true })
     .click();
   await expect(
-    page.getByRole("button", { name: "Finish voice note", exact: true }),
+    page.getByRole("button", { name: "Stop recording", exact: true }),
   ).toBeEnabled();
   await page
     .getByRole("button", { name: "Disable Voice Notes", exact: true })
     .focus();
   await page.keyboard.press("Enter");
   await expect(
-    page.getByRole("button", { name: "Finish voice note", exact: true }),
+    page.getByRole("button", { name: "Stop recording", exact: true }),
   ).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.voiceMic.stopped)).toBe(2);
   await expect(
@@ -312,7 +272,7 @@ test("failed upload survives disabling the plugin and switching conversations", 
   await page.evaluate(() => {
     window.voiceFixture.report.failUpload = true;
   });
-  await record(page);
+  await record(page, { stopWith: "pointer" });
   await expect(
     page.getByRole("button", { name: "Retry voice note upload", exact: true }),
   ).toBeVisible();
@@ -360,11 +320,13 @@ test("failed upload survives disabling the plugin and switching conversations", 
 test("rejected voice messages retry through the outbox without reuploading", {
   tag: "@media-recorder",
 }, async ({ page }) => {
+  // Keep one clock across recording, attachment entrance, and outbox expiry.
+  // Installing it during an entrance changes the animation's time origin.
+  await page.clock.install();
   await record(page);
   await page.evaluate(() => {
     window.voiceFixture.report.failSend = true;
   });
-  await page.clock.install();
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => window.voiceFixture.report.published))

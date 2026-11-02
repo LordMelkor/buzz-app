@@ -1,0 +1,5 @@
+.identityValue {
+  display: block;
+  overflow-wrap: anywhere;
+  user-select: all;
+}

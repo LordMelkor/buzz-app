@@ -1,7 +1,0 @@
-{
-  "id": "buzz.sessions",
-  "name": "Sessions",
-  "apiVersion": 1,
-  "description": "Keep legacy Sessions links working through the Me workspace.",
-  "discovery": { "category": "productivity", "tags": ["Essentials"] }
-}

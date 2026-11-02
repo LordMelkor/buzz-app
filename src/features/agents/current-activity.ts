@@ -1,4 +1,4 @@
-import { localActivity, localWorkLabel } from "../agents/local-activity";
+import { localActivity, localWorkLabel } from "./local-activity";
 import type { RelaySession } from "../relay/session";
 import type { TypingEntry } from "../relay/typing";
 import { activityTranscript, type ToolItem } from "./activity-transcript";
@@ -107,9 +107,9 @@ export function currentActivity(
     )
       add(entry.pubkey, entry.threadRootId ?? null);
   }
-  const live = snapshot?.records.filter((record) => !record.historical) ?? [];
+  const records = snapshot?.records ?? [];
   for (const agent of new Set(working.map((turn) => turn.agent))) {
-    const transcript = activityTranscript(live, { agent, channelId }).turns;
+    const transcript = activityTranscript(records, { agent, channelId }).turns;
     const tools: ToolItem[] = [];
     for (const evidence of working.filter((turn) => turn.agent === agent)) {
       const turn = transcript.find((turn) => turn.turnId === evidence.turnId);

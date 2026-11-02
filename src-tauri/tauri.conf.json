@@ -1,39 +1,45 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Buzz Foundation",
-  "version": "0.0.0",
-  "identifier": "dev.local.buzz.foundation",
+  "productName": "Buzz",
+  "version": "0.7.0",
+  "identifier": "xyz.block.buzz.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev:desktop --port 1430",
     "devUrl": "http://localhost:1430",
-    "beforeBuildCommand": "node scripts/build-goose-acp.mjs && pnpm build",
+    "beforeBuildCommand": "node scripts/build-goose-acp.mjs && node scripts/build-agent-command.mjs && node scripts/build-buzz-cli.mjs && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "Buzz Foundation",
+        "title": "Buzz",
         "dragDropEnabled": false,
         "width": 1200,
         "height": 800,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": {
-          "x": 20,
-          "y": 26
+          "x": 24,
+          "y": 30
         },
         "minWidth": 480,
-        "minHeight": 400
+        "minHeight": 400,
+        "backgroundThrottling": "disabled"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost https://api.github.com wss:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: buzz-media: http://buzz-media.localhost; media-src 'self' blob: https://dwwgwmfqqjotj.cloudfront.net buzz-media: http://buzz-media.localhost http://127.0.0.1:* https://github.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://github-production-user-asset-6210df.s3.amazonaws.com https://objects.githubusercontent.com"
+      "csp": "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost https://api.github.com wss: buzz-media: http://buzz-media.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: buzz-media: http://buzz-media.localhost; media-src 'self' blob: https://dwwgwmfqqjotj.cloudfront.net buzz-media: http://buzz-media.localhost http://127.0.0.1:* https://github.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://github-production-user-asset-6210df.s3.amazonaws.com https://objects.githubusercontent.com"
     }
   },
   "bundle": {
     "active": true,
-    "macOS": { "entitlements": "entitlements.plist" },
-    "resources": { "resources/bin/": "bin/" },
+    "macOS": {
+      "entitlements": "entitlements.plist",
+      "minimumSystemVersion": "12.0"
+    },
+    "resources": {
+      "resources/bin/": "bin/"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

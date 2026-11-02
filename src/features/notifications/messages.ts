@@ -38,6 +38,8 @@ export function notificationAuthorized(
       .channels.some(
         (channel) =>
           channel.id === target.channelId &&
+          !channel.huddle &&
+          !channel.metadataPending &&
           channel.members?.includes(scope.viewer),
       )
   );

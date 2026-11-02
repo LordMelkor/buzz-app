@@ -289,6 +289,8 @@ it("presents actual host registrations in navigation, interface sizing, search/s
       "Search Buzz",
       "Search this conversation",
       "Open Settings",
+      "Focus message box",
+      "Focus next pane",
       "Reload Buzz",
     ]);
   } finally {
@@ -410,6 +412,10 @@ it("captures a chord, refuses conflicts and bare keys, applies overrides to the 
         `Ctrl+${key.toUpperCase()} is reserved for copy, cut, paste and select all. Try another.`,
       );
     }
+    fireEvent.keyDown(input, { key: "V", ctrlKey: true, shiftKey: true });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Ctrl+Shift+V is reserved for copy, cut, paste and select all. Try another.",
+    );
     // Conflicts are reported by title and owner; nothing is saved or fired.
     fireEvent.keyDown(input, { key: "k", ctrlKey: true });
     expect(screen.getByRole("alert")).toHaveTextContent(
@@ -636,6 +642,18 @@ it("records Control beside Command on Apple platforms, saves it and dispatches i
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Include Command or Option so ordinary typing keeps working.",
     );
+    // ⌥⇧⌘V is the browser plain paste; Option makes the key ◊ on Apple layouts.
+    fireEvent.keyDown(capture(title), {
+      key: "◊",
+      code: "KeyV",
+      metaKey: true,
+      altKey: true,
+      shiftKey: true,
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "is reserved for copy, cut, paste and select all. Try another.",
+    );
+    expect(h.bindings.resolve("settings")).toBeUndefined();
     const chord = { key: "u", ctrlKey: true, metaKey: true };
     fireEvent.keyDown(capture(title), chord);
     expect(h.bindings.resolve("settings")).toEqual([

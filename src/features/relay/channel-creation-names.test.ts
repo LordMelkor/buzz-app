@@ -81,20 +81,18 @@ it.each(
     },
   ]),
 )(
-  "$path creation keeps the relay-canonical name through frozen intent, signing and admission: $name",
+  "$path creation keeps the relay-canonical name through signing and admission: $name",
   async ({ path, name, expected }) => {
     const f = fixture(path);
     const creating = f.owner.session.channelCreation.create(f.input(name));
     try {
       await vi.waitFor(() => expect(f.publish).toHaveBeenCalledOnce());
-      expect(f.owner.session.channelCreation.snapshot()?.name).toBe(expected);
       const command = f.sign.mock.calls[0]?.[0];
       expect(command?.tags).toContainEqual(["name", expected]);
       f.release();
       const id = await creating;
       expect(f.owner.session.channels.get?.(id)?.name).toBe(expected);
       expect(f.sign).toHaveBeenCalledOnce();
-      expect(f.owner.session.channelCreation.snapshot()).toBeUndefined();
       // Let template completion retire its existing receipt before disposing.
       if (path !== "ordinary")
         await vi.waitFor(() =>
@@ -128,7 +126,6 @@ it.each(
       ).rejects.toThrow(/name/);
       expect(f.sign).not.toHaveBeenCalled();
       expect(f.publish).not.toHaveBeenCalled();
-      expect(f.owner.session.channelCreation.snapshot()).toBeUndefined();
     } finally {
       f.release();
       f.owner.dispose();

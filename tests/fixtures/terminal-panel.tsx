@@ -48,6 +48,7 @@ Object.assign(window, {
   terminalPanel: {
     written: () => written,
     toggles: () => toggles,
+    spawns: () => serial,
     dispose: () => scope.fiber.dispose(),
     holdClose() {
       closing = new Promise<void>((resolve) => {
@@ -69,9 +70,9 @@ const bridge: TerminalBridge = {
     return String(++serial);
   },
   read: async () => {
-    const data = output
-      ? [...new TextEncoder().encode("FIXTURE_SHELL_READY\r\n")]
-      : [];
+    const data = new TextEncoder().encode(
+      output ? "FIXTURE_SHELL_READY\r\n" : "",
+    );
     output = false;
     return { data, exited: false };
   },

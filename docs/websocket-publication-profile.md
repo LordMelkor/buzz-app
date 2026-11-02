@@ -11,7 +11,7 @@ replay or HTTP fallback for uncertain writes.
 
 **This is development-host integration, not packaged-desktop support.** Both
 `just web` and `just desktop` use the development broker; packaged builds do not
-include it ([README](../README.md#relay-channels)). Frontend and broker must be
+include it ([live relay development](contributing.md#live-relay-development)). Frontend and broker must be
 updated together. Finite reads/history/search, presence semantics, profile setup,
 media and external/local services are not migrated by this PR. See the
 [transport contract](relay-queries.md#websocket-first-publication).

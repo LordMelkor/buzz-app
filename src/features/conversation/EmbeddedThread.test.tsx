@@ -18,8 +18,8 @@ import { ConversationChannel, ConversationComposer } from "./Conversation";
 import type { Context } from "@deepseek-ai/cordis";
 import type { ComponentProps } from "react";
 import { createAgentLibrary } from "../agents/library";
-import type { MessageComposerProps } from "../messages/MessageComposer";
 import { useMessageDeletion } from "../messages/MessageManagement";
+import type { MessageComposerProps } from "../messages/MessageComposer";
 import type { MessageRowProps } from "../messages/MessageRow";
 import type { PanelProps, RegisteredPanel } from "../panels/service";
 import type { ChannelMessage } from "../relay/contracts";
@@ -52,10 +52,10 @@ vi.mock("../messages/MessageRow", () => ({
   ),
 }));
 vi.mock("../messages/MessageComposer", () => ({
-  MessageComposer: ({ sessionConversation }: MessageComposerProps) => (
+  MessageComposer: ({ soloConversation }: MessageComposerProps) => (
     <section
       aria-label="Composer"
-      data-session-conversation={String(!!sessionConversation)}
+      data-solo-conversation={String(!!soloConversation)}
       data-deletion={String(!!useMessageDeletion())}
     />
   ),
@@ -87,8 +87,9 @@ afterEach(() => {
 });
 
 function fixture(
-  channelType: "stream" | "session" = "stream",
+  channelType: "stream" | "solo" = "stream",
   operations: readonly OutgoingEvent[] = [],
+  creator?: string,
 ) {
   vi.stubGlobal(
     "ResizeObserver",
@@ -133,9 +134,10 @@ function fixture(
     limited: false,
   };
   const viewer = "a".repeat(64);
+  const profiles = new Map();
   const channels = {
     channels: [
-      { id: "c", name: "Channel", channelType, members: [viewer] },
+      { id: "c", name: "Channel", channelType, members: [viewer], creator },
       { id: "d", name: "Other", channelType, members: [viewer] },
     ],
   };
@@ -164,9 +166,13 @@ function fixture(
       dispose() {},
     }),
     channels: { subscribeList: () => () => {}, list: () => channels },
-    profiles: { ensure: async () => {} },
+    profiles: {
+      ensure: async () => {},
+      snapshot: () => profiles,
+      subscribe: () => () => {},
+    },
     agentChoices: createAgentLibrary(undefined).queries,
-    messages: { retry() {} },
+    messages: { retry() {}, canRetry: () => true },
     media: () => undefined,
     unread,
     outbox,
@@ -279,21 +285,19 @@ it("a panel opened from media review replaces the viewer, and media review repla
   expect(screen.queryByText("Linked content")).not.toBeInTheDocument();
 });
 
-it.each([
-  ["stream", "false"],
-  ["session", "true"],
-] as const)(
-  "the %s-channel reply composer gets message management and session recipients=%s",
-  (channelType, sessionConversation) => {
-    render(<EmbeddedThread {...fixture(channelType).props} />);
-    const composer = screen.getByLabelText("Composer");
-    expect(composer).toHaveAttribute("data-deletion", "true");
-    expect(composer).toHaveAttribute(
-      "data-session-conversation",
-      sessionConversation,
-    );
-  },
-);
+it("the channel reply composer gets message management", () => {
+  render(<EmbeddedThread {...fixture("stream").props} />);
+  expect(screen.getByLabelText("Composer")).toHaveAttribute(
+    "data-deletion",
+    "true",
+  );
+});
+
+it("a Solo thread opens without a reply composer", () => {
+  render(<EmbeddedThread {...fixture("solo").props} />);
+  expect(screen.getByRole("article")).toBeVisible();
+  expect(screen.queryByLabelText("Composer")).not.toBeInTheDocument();
+});
 
 it("selecting a channel supplies its readers without remounting the page below", () => {
   const { props } = fixture();
@@ -305,7 +309,7 @@ it("selecting a channel supplies its readers without remounting the page below",
   const page = (channel?: {
     id: string;
     name: string;
-    channelType: "session";
+    channelType: "solo";
   }) => (
     <ConversationChannel
       session={props.session}
@@ -321,11 +325,11 @@ it("selecting a channel supplies its readers without remounting the page below",
   const view = render(page());
   const input = screen.getByLabelText("Page state");
   fireEvent.change(input, { target: { value: "kept" } });
-  view.rerender(page({ id: "c", name: "Channel", channelType: "session" }));
+  view.rerender(page({ id: "c", name: "Channel", channelType: "solo" }));
   expect(screen.getByLabelText("Page state")).toBe(input);
   expect(input).toHaveValue("kept");
   const composer = screen.getByLabelText("Composer");
-  expect(composer).toHaveAttribute("data-session-conversation", "true");
+  expect(composer).toHaveAttribute("data-solo-conversation", "true");
   expect(composer).toHaveAttribute("data-deletion", "true");
   view.rerender(page());
   expect(screen.getByLabelText("Page state")).toBe(input);

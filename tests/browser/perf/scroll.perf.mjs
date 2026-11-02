@@ -60,27 +60,7 @@ for (const [name, distance, speed, count] of [
         expect(before.top, "room for the complete gesture").toBeGreaterThan(
           distance,
         );
-        // Gutter avoids hovering message action bars; verify input reaches history.
-        const point = await scroller.evaluate((element) => {
-          const box = element.getBoundingClientRect();
-          const list = element.querySelector("ol").getBoundingClientRect();
-          return {
-            x: Math.round((box.left + list.left) / 2),
-            y: Math.round(box.top + box.height / 2),
-          };
-        });
-        expect(
-          await scroller.evaluate(
-            (element, point) =>
-              element.contains(document.elementFromPoint(point.x, point.y)),
-            point,
-          ),
-          "pointer is inside the timeline",
-        ).toBe(true);
-        await perf.cdp.send("Input.dispatchMouseEvent", {
-          type: "mouseMoved",
-          ...point,
-        });
+        const point = await perf.gutter("alpha", "pointer");
         await perf.settle("alpha");
         const requestsBefore = app.pending.length;
         const sample = await perf.measure("alpha", {
@@ -94,6 +74,7 @@ for (const [name, distance, speed, count] of [
               preventFling: true,
             }),
           work: {
+            modality: "pointer",
             requestedPx: distance,
             speedPxPerSecond: speed,
             historyCount: count,

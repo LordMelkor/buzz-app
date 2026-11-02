@@ -17,10 +17,7 @@ import {
 } from "../../shared/design-system/ui/Menu";
 import type { ChannelSummary, Profile } from "../../features/relay/contracts";
 import type { RelaySession } from "../../features/relay/session";
-import {
-  ChatCircleIcon,
-  ClockIcon,
-} from "../../shared/design-system/icons/index";
+import { ClockIcon } from "../../shared/design-system/icons/index";
 import { channelIcon } from "../../features/channels/channel-icon";
 import { ChannelActivityPopover } from "./ChannelActivityPopover";
 import { channelDurationLabel } from "./ChannelDurationField";
@@ -33,21 +30,13 @@ import { WorkingAgentsBadge } from "./WorkingAgentsBadge";
 import styles from "./Channels.module.css";
 import { avatarMedia } from "../../shared/avatar-source";
 
-const noSessions: readonly ChannelSummary[] = [];
-
 type ItemProps = {
   channel: ChannelSummary;
   profile?: Profile | undefined;
   session: RelaySession;
   working: boolean;
   selected: string | undefined;
-  collapsed: boolean;
-  onToggle: (key: string, open: boolean) => void;
-  draft: boolean;
-  draftSelected: boolean;
-  sessions: readonly ChannelSummary[] | undefined;
   onSelect: (id: string) => void;
-  onNewSession: (id: string) => void;
   onOpenThread: (channelId: string, rootId: string) => void;
   onOpenWorkingAgent?: (
     channelId: string,
@@ -58,7 +47,7 @@ type ItemProps = {
   onHideDm?: (id: string) => void;
   menuEnabled?: boolean;
   sectionKey?: string | undefined;
-  /** Frames the select surface alone, like the context menu; never the child sessions. */
+  /** Frames the select surface alone, like the context menu. */
   selectFrame?:
     | ComponentType<{
         channelId: string;
@@ -132,13 +121,7 @@ function ChannelSidebarItemCore({
   profile,
   session,
   selected,
-  collapsed,
-  onToggle,
-  draft,
-  draftSelected,
-  sessions = noSessions,
   onSelect,
-  onNewSession,
   onOpenThread,
   onOpenWorkingAgent,
   onOpenAgentActivity,
@@ -173,8 +156,7 @@ function ChannelSidebarItemCore({
   useLayoutEffect(() => {
     if (menuContent !== undefined) lastMenuContent.current = menuContent;
   }, [menuContent]);
-  const Icon =
-    channel.channelType === "dm" ? ChatCircleIcon : channelIcon(channel);
+  const Icon = channelIcon(channel);
   const row = (
     <ChannelSidebarRow
       channel={channel}
@@ -265,7 +247,7 @@ function ChannelSidebarItemCore({
           />
         );
         // Keep popup semantics on separate DOM nodes: activity owns the button,
-        // the context menu wraps only its select surface, not the child sessions.
+        // the context menu wraps only its select surface.
         const select = menuEnabled ? (
           <ContextMenuTrigger
             render={<div />}
@@ -297,21 +279,8 @@ function ChannelSidebarItemCore({
       presenceDescription={
         presence === "unknown" ? undefined : `Presence: ${presence}`
       }
-      collapsed={collapsed}
-      onToggle={(open) => onToggle(`session-children:${channel.id}`, open)}
-      draft={draft}
-      draftSelected={draftSelected}
-      sessions={sessions}
-      childContent={(child) => (
-        <UnreadBadge
-          session={session}
-          channelId={child.id}
-          label={child.name}
-        />
-      )}
       onPrepare={(id) => session.channels.prepare?.(id)}
       onSelect={onSelect}
-      onNewSession={onNewSession}
       {...(onHideDm ? { onHideDm } : {})}
     />
   );

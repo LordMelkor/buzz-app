@@ -36,13 +36,13 @@ function createMessagesServer() {
   });
 }
 
-async function withMessagesFixture(page, run) {
+async function withMessagesFixture(page, run, search = "") {
   const server = await createMessagesServer();
   await server.listen();
   try {
     const address = server.httpServer.address();
     await page.goto(
-      `http://127.0.0.1:${address.port}/tests/fixtures/messages.html`,
+      `http://127.0.0.1:${address.port}/tests/fixtures/messages.html${search}`,
     );
     await run();
   } finally {
@@ -204,6 +204,51 @@ test("inline video controls follow playback, hover and keyboard focus", async ({
       "Browser project does not expose a hover-capable fine pointer.",
     );
     await expect(timeline).toBeEnabled();
+    // Diagnostic for an undetermined CI failure (run 41331319960): the Pause
+    // click below left `paused` false for 10 s. Its trace showed the media
+    // clock restarting from 0 twice off the 2 s loop boundary and stalling
+    // after the click. Keep recent media events so a recurrence reports them;
+    // load events and the source mark a reload, isConnected a remount. Remove
+    // this once the CI failure is diagnosed.
+    const instrumented = await video.elementHandle();
+    await instrumented.evaluate((element) => {
+      const events = [];
+      element.mediaEvents = events;
+      for (const type of [
+        "loadstart",
+        "abort",
+        "play",
+        "pause",
+        "playing",
+        "waiting",
+        "stalled",
+        "seeking",
+        "seeked",
+        "ended",
+        "emptied",
+        "error",
+      ])
+        element.addEventListener(type, () => {
+          events.push(`${type}@${element.currentTime.toFixed(3)}`);
+          if (events.length > 24) events.shift();
+        });
+    });
+    // Reads the live video without waiting, so a removal without a successor
+    // still reports the held element (`live: []`).
+    const mediaState = (elements, instrumented) => ({
+      live: elements.map((element) => ({
+        paused: element.paused,
+        currentTime: element.currentTime,
+        readyState: element.readyState,
+        seeking: element.seeking,
+        ended: element.ended,
+        networkState: element.networkState,
+        error: element.error?.code ?? null,
+        currentSrc: element.currentSrc,
+      })),
+      isConnected: instrumented.isConnected,
+      events: instrumented.mediaEvents,
+    });
     await page.mouse.move(1, 1);
     await expect(play).toHaveCSS("opacity", "1");
     await expect(expand).toHaveCSS("opacity", "0");
@@ -252,7 +297,15 @@ test("inline video controls follow playback, hover and keyboard focus", async ({
       await expect(control).toHaveCSS("opacity", "0");
     await preview.hover({ position: { x: 8, y: 8 } });
     await preview.getByRole("button", { name: "Pause video" }).click();
-    await expect(video).toHaveJSProperty("paused", true);
+    await expect
+      .poll(() => video.evaluateAll(mediaState, instrumented), {
+        message: "the video pauses after Pause video",
+      })
+      .toEqual(
+        expect.objectContaining({
+          live: [expect.objectContaining({ paused: true })],
+        }),
+      );
     await page.mouse.move(1, 1);
     await expect(play).toHaveCSS("opacity", "1");
     await expect(controlRow.locator(":scope > span").first()).toHaveCSS(
@@ -833,4 +886,179 @@ test("exact reply media keeps its selected attachment and canonical thread", asy
   } finally {
     await server.close();
   }
+});
+
+// Browser-only: WebKit adds an `overflow-x: auto` scrollbar after flex and grid
+// ancestors take their heights, so a virtual row keeps its old height: the next
+// row overlaps an added scrollbar, and a removed one leaves a gap. Playwright
+// WebKit uses overlay scrollbars on macOS, so these rules emulate scrollbars
+// that take space; WebKit ignores ::-webkit-scrollbar while the standard
+// scrollbar properties are set.
+const spaceTakingScrollbars = `* { scrollbar-width: auto !important; scrollbar-color: auto !important; }
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-thumb { background: gray; }`;
+
+test("message tables keep their scrollbar inside the row across resizes and edits", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(
+    browserName === "chromium",
+    "Headless Chromium hides every scrollbar, and lays out an added one with its ancestors",
+  );
+  await page.addInitScript((css) => {
+    const style = document.createElement("style");
+    style.textContent = css;
+    // Virtua measures a row from its first layout, so record whether each
+    // table's message contains it as soon as React inserts it.
+    const mounts = [];
+    window.tableMounts = mounts;
+    new MutationObserver((records) => {
+      if (!style.isConnected) document.head?.append(style);
+      for (const { addedNodes } of records)
+        for (const node of addedNodes) {
+          if (!(node instanceof Element)) continue;
+          const tables = node.matches("table")
+            ? [node]
+            : node.querySelectorAll("table");
+          for (const table of tables)
+            if (table.closest('[aria-label="Channel message history"]'))
+              mounts.push(
+                Math.abs(
+                  table.parentElement.getBoundingClientRect().bottom -
+                    table.getBoundingClientRect().bottom,
+                ) < 0.5,
+              );
+        }
+    }).observe(document, { childList: true, subtree: true });
+  }, spaceTakingScrollbars);
+  await withMessagesFixture(page, async () => {
+    const feed = page.getByRole("region", { name: "Channel message history" });
+    await expect(feed.getByRole("table")).toHaveCount(2);
+    // Row ids from the fixture: a wide table, a narrower one, then a follow-up.
+    const layout = (id, nextId) =>
+      feed.evaluate(
+        (root, [id, nextId]) => {
+          const table = root.querySelector(`[data-message-id="${id}"] table`);
+          const next = root.querySelector(
+            `[data-message-id="${nextId}"] [data-message-action-anchor]`,
+          );
+          const box = table.getBoundingClientRect();
+          const style = getComputedStyle(table);
+          const borders =
+            Number.parseFloat(style.borderTopWidth) +
+            Number.parseFloat(style.borderBottomWidth);
+          return {
+            scrolls: table.scrollWidth > table.clientWidth,
+            scrollbar: table.offsetHeight - table.clientHeight > borders,
+            // The table is its message's only content, so its box is the row's.
+            contained:
+              Math.abs(
+                table.parentElement.getBoundingClientRect().bottom - box.bottom,
+              ) < 0.5,
+            clear: next.getBoundingClientRect().top >= box.bottom,
+          };
+        },
+        [id.repeat(64), nextId.repeat(64)],
+      );
+    const wide = () => layout("c", "d");
+    const narrower = () => layout("d", "e");
+    const scrolling = {
+      scrolls: true,
+      scrollbar: true,
+      contained: true,
+      clear: true,
+    };
+    const fitting = { ...scrolling, scrolls: false, scrollbar: false };
+    const resize = (width) =>
+      // The fixture's fixed-width flex host stands in for a resized pane.
+      feed.evaluate((element, width) => {
+        element.parentElement.style.width = `${width}px`;
+      }, width);
+
+    await expect.poll(wide).toEqual(scrolling);
+    await expect.poll(narrower).toEqual(fitting);
+    // Both tables have mounted; each was contained in its first layout.
+    expect(await page.evaluate(() => window.tableMounts)).toEqual([true, true]);
+    await resize(400);
+    await expect.poll(narrower).toEqual(scrolling);
+    await resize(900);
+    await expect.poll(narrower).toEqual(fitting);
+    await expect.poll(wide).toEqual(scrolling);
+    expect(
+      await feed.evaluate((root, id) => {
+        const table = root.querySelector(`[data-message-id="${id}"] table`);
+        table.scrollLeft = table.scrollWidth;
+        return table.scrollLeft;
+      }, "c".repeat(64)),
+    ).toBeGreaterThan(0);
+
+    const editor = page.getByRole("textbox", { name: "Table markdown" });
+    const short = "| A |\n| --- |\n| B |";
+    await editor.fill(short);
+    await expect.poll(narrower).toEqual(fitting);
+    const table = feed.getByRole("table").nth(1);
+    // Cap the content box at the fitting table's width. Wider text must change
+    // scrollWidth without growing the table or replacing its React DOM node.
+    const width = await table.evaluate((element) => {
+      window.editedTable = element;
+      const width = element.getBoundingClientRect().width;
+      element.parentElement.style.width = `${width}px`;
+      return width;
+    });
+    const expectSameTable = async () => {
+      expect(
+        await table.evaluate((element) => element === window.editedTable),
+      ).toBe(true);
+      expect((await table.boundingBox()).width).toBeCloseTo(width, 1);
+    };
+    await editor.fill(`| A |\n| --- |\n| ${"wide".repeat(100)} |`);
+    await expect.poll(narrower).toEqual(scrolling);
+    await expectSameTable();
+    expect(
+      await table.evaluate((element) => {
+        element.scrollLeft = element.scrollWidth;
+        return element.scrollLeft;
+      }),
+    ).toBeGreaterThan(0);
+    await editor.fill(short);
+    await expect.poll(narrower).toEqual(fitting);
+    await expectSameTable();
+  });
+});
+
+// Browser-only: the shared Button keeps labels on one line, so only layout
+// shows a long conversation name reflowing inside the pane instead of clipping.
+test("a thread's long conversation name wraps inside its pane and opens from the keyboard", async ({
+  page,
+}) => {
+  await watchPageErrors(page);
+  await withMessagesFixture(
+    page,
+    async () => {
+      // A narrow pane with enlarged text, where the name needs two lines.
+      await page.setViewportSize({ width: 820, height: 900 });
+      await page.evaluate(() => {
+        document.documentElement.style.fontSize = "150%";
+      });
+      const thread = page.getByRole("complementary", { name: "Thread" });
+      const link = thread.getByRole("button", {
+        name: "#release-coordination-for-client-platform-migrations-in-production",
+      });
+      const linkBox = await visibleBox(link);
+      containedWithin(linkBox, await visibleBox(thread));
+      const lineHeight = await link.evaluate((el) =>
+        Number.parseFloat(getComputedStyle(el).lineHeight),
+      );
+      expect(linkBox.height).toBeGreaterThan(lineHeight * 1.5);
+      await link.focus();
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() =>
+          page.evaluate(() => window.messagesFixture.report.parentOpens),
+        )
+        .toBe(1);
+    },
+    "?threadParent=1",
+  );
 });

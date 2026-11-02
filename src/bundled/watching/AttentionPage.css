@@ -1,0 +1,332 @@
+.attention-page {
+  min-width: 0;
+}
+.attention-content,
+.attention-agent,
+.attention-suggestions {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.attention-content {
+  gap: var(--space-6);
+  max-width: 56.25rem;
+}
+.attention-page p,
+.attention-page h3,
+.attention-page h4 {
+  margin: 0;
+}
+.attention-instructions {
+  min-width: 0;
+}
+.attention-instructions summary {
+  cursor: pointer;
+}
+.attention-instructions-preview {
+  min-width: 0;
+  flex: 1;
+}
+.attention-markdown {
+  display: grid;
+  gap: var(--space-2);
+  padding-block: var(--space-2);
+  overflow-wrap: anywhere;
+}
+.attention-markdown pre {
+  overflow: auto;
+  margin: 0;
+}
+.attention-markdown ul,
+.attention-markdown ol {
+  margin: 0;
+  padding-inline-start: var(--space-5);
+}
+.attention-agent-head,
+.attention-head,
+.attention-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.attention-agent-head {
+  justify-content: space-between;
+}
+.attention-agent-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.attention-agent,
+.attention-suggestions {
+  container-type: inline-size;
+  padding: var(--space-4);
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-control);
+  background: var(--surface-panel);
+}
+.attention-agent-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.attention-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.attention-recent {
+  gap: var(--space-3);
+}
+.attention-recent > li {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.attention-recent > li + li {
+  padding-block-start: var(--space-3);
+}
+.attention-list > li + li {
+  border-top: 1px solid var(--border-standard);
+}
+.attention-card {
+  min-width: 0;
+  padding: var(--space-3) 0;
+}
+.attention-card[data-paused] {
+  color: var(--text-subtle);
+}
+
+.attention-heading {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: start;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: var(--space-1) 0;
+  font: inherit;
+  cursor: pointer;
+}
+.attention-type {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  color: var(--text-subtle);
+}
+.attention-type > svg {
+  width: 1rem;
+  height: 1rem;
+}
+.attention-interest-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.attention-interest-head > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-half);
+}
+@media (hover: hover) and (pointer: fine) {
+  .attention-interest-head:not(:hover, :focus-within) .attention-delete,
+  .attention-card:not(:hover, :focus-within)
+    > .attention-head
+    .attention-delete {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+.attention-instructions summary {
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.attention-instructions-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attention-destination-label {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.attention-destination-label > svg {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex-shrink: 0;
+}
+.attention-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.attention-heading svg,
+.attention-actions {
+  flex-shrink: 0;
+}
+@container (max-width: 30rem) {
+  .attention-type {
+    flex-basis: var(--space-8);
+  }
+  .attention-subtitle {
+    display: none;
+  }
+  .attention-title {
+    white-space: nowrap;
+  }
+}
+.attention-head {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr) auto auto;
+}
+.attention-head > .attention-heading {
+  grid-column: 1;
+  grid-row: 1;
+}
+.attention-head > .attention-actions {
+  grid-column: 4;
+  grid-row: 1;
+}
+.attention-head > span {
+  grid-column: 3;
+  grid-row: 1;
+}
+.attention-head > .attention-destination {
+  grid-column: 2;
+  grid-row: 1;
+  white-space: nowrap;
+  min-width: 0;
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.attention-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attention-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding-inline-start: var(--space-2);
+  overflow-wrap: anywhere;
+}
+.attention-details {
+  padding-inline-start: var(--space-4);
+  display: grid;
+  gap: var(--space-3);
+  margin-block-start: var(--space-3);
+  padding-block-start: var(--space-3);
+}
+.attention-details section {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.attention-details p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.attention-details pre {
+  margin: 0;
+  max-height: 14rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+  font-family: var(--font-mono);
+}
+.attention-interest {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-block-start: var(--space-4);
+  border-top: 1px solid var(--border-standard);
+}
+.attention-interest > p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.attention-disclosure {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  list-style: none;
+}
+.attention-disclosure::-webkit-details-marker {
+  display: none;
+}
+.attention-disclosure > svg {
+  flex-shrink: 0;
+}
+details[open] > .attention-disclosure > svg {
+  transform: rotate(90deg);
+}
+@container (max-width: 30rem) {
+  .attention-details {
+    padding-inline-start: var(--space-4);
+  }
+}
+@container (max-width: 30rem) {
+  .attention-agent-head {
+    flex-wrap: wrap;
+  }
+  .attention-agent-name {
+    flex-wrap: wrap;
+  }
+  .attention-agent-toggle {
+    padding-inline-end: 0;
+    margin-inline-start: auto;
+  }
+  .attention-type {
+    flex-basis: auto;
+  }
+  .attention-head {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .attention-head > .attention-actions {
+    grid-column: 3;
+  }
+  .attention-head > span {
+    grid-column: 2;
+  }
+  .attention-head > .attention-destination {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    max-width: 100%;
+    padding-inline-start: var(--space-6);
+  }
+}
+
+.attention-card[data-paused] .attention-head {
+  opacity: 0.65;
+}
+
+.attention-channel-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

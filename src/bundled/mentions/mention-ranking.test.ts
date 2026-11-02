@@ -1,12 +1,15 @@
 import { expect, it } from "vitest";
 import { npubEncode } from "nostr-tools/nip19";
 import {
+  continuedMention,
+  continuingNames,
   exactMention,
+  matchingMentions,
   rankMentions,
   type MentionChoice,
 } from "./mention-ranking";
 import { fixtureChoice, mentionConformance } from "./mention-rules.conformance";
-import { matchPerson } from "../../features/search/person-match";
+import { matchPerson, nameStarts } from "../../features/search/person-match";
 const choice = (
   key: string,
   name: string,
@@ -125,6 +128,38 @@ it("orders mixed people and agents the same way from every input order", () => {
     ]);
 });
 
+it("a known longer name continues the query, except an identity's own beside its exact name", () => {
+  const longer = choice("1", "Mira Example");
+  expect(continuedMention([longer], "mira")).toBe(true);
+  expect(continuedMention([longer], "Mira Example")).toBe(false);
+  // The continuing names, each once, for a pending mention to extend over.
+  expect(
+    continuingNames(
+      [longer, choice("5", "Mira Example"), choice("6", "Mira Example Two")],
+      "mira",
+    ),
+  ).toEqual(["Mira Example", "Mira Example Two"]);
+  expect(continuingNames([longer], "Mira Example")).toEqual([]);
+  // Section 5's exception: `Example Agent` is another name of the `Example`
+  // agent, not a namesake, so it neither continues nor blocks `example`.
+  const self = choice("2", "Example", {
+    agent: true,
+    aliases: ["Example Agent", "Example"],
+    label: "Example Agent",
+  });
+  expect(continuedMention([self], "example")).toBe(false);
+  expect(exactMention([self], "example")).toBe(self.recipient.pubkey);
+  // A key qualifier or generated `(agent)` suffix is not a longer name.
+  expect(
+    continuedMention(
+      [
+        choice("3", "Mira", { label: "Mira · 4prr", qualifier: "4prr" }),
+        choice("4", "Mira", { agent: true, label: "Mira (agent)" }),
+      ],
+      "mira",
+    ),
+  ).toBe(false);
+});
 it("validates the portable mention fixture version and case lists", () => {
   expect(mentionConformance.version).toBe(2);
   expect(mentionConformance.matching.length).toBeGreaterThan(0);
@@ -159,3 +194,71 @@ it.each(mentionConformance.space)(
     ).toBe(fixture.expected);
   },
 );
+
+it("finds every ranked and Space choice through the name index", () => {
+  // The index is a prefilter: every portable fixture must rank, and choose on
+  // Space, exactly as it does when ranking reads the whole choice list.
+  for (const { query, choices } of [
+    ...mentionConformance.ranking,
+    ...mentionConformance.space,
+  ]) {
+    const rows = choices.map(fixtureChoice);
+    const found = matchingMentions(rows, query);
+    expect(rankMentions(found, query)).toEqual(rankMentions(rows, query));
+    expect(exactMention(found, query)).toBe(exactMention(rows, query));
+  }
+  for (const { name, label, query, expected } of mentionConformance.matching) {
+    const row = choice("a", label, { label, aliases: [label] });
+    if (expected !== null)
+      expect(matchingMentions([row], query), name).toEqual([row]);
+  }
+});
+
+it("returns index matches in list order and skips names that cannot match", () => {
+  const rows = [
+    choice("1", "Mary-Jane Watson"),
+    choice("2", "Honey"),
+    choice("3", "Jane Doe"),
+    choice("4", "Agent", { label: "Agent · jane" }),
+  ];
+  expect(matchingMentions(rows, "jane")).toEqual([rows[0], rows[2], rows[3]]);
+  expect(matchingMentions(rows, "oney")).toEqual([]);
+  expect(matchingMentions(rows, "jane d")).toEqual([rows[2]]);
+  expect(matchingMentions(rows, "")).toBe(rows);
+});
+
+it("bounds index work for long profile names and still matches them", () => {
+  // Profile names are member input of any length.
+  const words = Array.from({ length: 4000 }, (_, i) => `w${i}`).join(" ");
+  const long = `${"x".repeat(4000)}-tail`;
+  const starts = nameStarts(words);
+  expect(starts.complete).toBe(false);
+  expect(starts.starts).toHaveLength(16);
+  for (const name of [words, long])
+    for (const start of nameStarts(name).starts)
+      expect([...start].length).toBeLessThanOrEqual(32);
+  const rows = [
+    choice("1", words),
+    choice("2", long),
+    choice("3", "Wanda"),
+    choice("4", "Xavier"),
+  ];
+  // Late words and queries longer than a key still rank as without the index.
+  for (const query of [
+    "w3999",
+    "w39",
+    "tail",
+    "w",
+    "x".repeat(40),
+    `${"x".repeat(4000)}-t`,
+    "wanda",
+  ]) {
+    const found = matchingMentions(rows, query);
+    expect(rankMentions(found, query), query).toEqual(
+      rankMentions(rows, query),
+    );
+    expect(exactMention(found, query), query).toBe(exactMention(rows, query));
+  }
+  expect(matchingMentions(rows, "w3999")).toContain(rows[0]);
+  expect(matchingMentions(rows, "tail")).toContain(rows[1]);
+});

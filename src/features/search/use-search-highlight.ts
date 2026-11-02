@@ -14,7 +14,11 @@ import {
  * arrow key. The highlight follows a row's key, not its position, as late
  * results arrive: a row inserted above cannot redirect Enter. When the
  * highlighted row leaves, the highlight returns to the first row rather than
- * reviving the old one. The hook draws nothing; rows keep their own markup. */
+ * reviving the old one. Enter before any row arrives, while results are
+ * pending, chooses the first row once they are not, unless an edit, moving
+ * the highlight, a choice, Escape or closing comes first. Enter on an action
+ * row waits the same way while no result row has arrived, unless the user
+ * highlighted that row. The hook draws nothing; rows keep their own markup. */
 export function useSearchHighlight({
   query,
   keys,
@@ -23,6 +27,8 @@ export function useSearchHighlight({
   onOpen,
   highlightEmpty = false,
   wrap = false,
+  pending = false,
+  isAction,
 }: {
   query: string;
   /** Row keys, in display order. */
@@ -40,29 +46,65 @@ export function useSearchHighlight({
   /** Up from the first row goes to the last, and Down from the last row
    * goes to the first. */
   wrap?: boolean;
+  /** A row that should lead may still arrive for this text. */
+  pending?: boolean;
+  /** Whether a row acts on the search, such as narrowing it, rather than
+   * being a result. */
+  isAction?: ((key: string) => boolean) | undefined;
 }) {
   const id = useId();
   const [selection, setSelection] = useState({
     query,
     key: "",
     pointer: false,
+    /** The row highlighted before the pointer took over, restored when the
+     * pointer leaves. */
+    resting: "",
+    /** The pointer left with no keyboard row to return to: nothing is
+     * highlighted until the query, keyboard or pointer says otherwise. */
+    cleared: false,
     /** Counts keyboard moves, so each one reveals its row, even the same row
      * after the list was scrolled away from it. */
     moves: 0,
   });
-  const valid = selection.query === query && keys.includes(selection.key);
+  const valid =
+    selection.query === query &&
+    (selection.cleared || keys.includes(selection.key));
   const fallback = highlightEmpty || query.trim() ? (keys[0] ?? "") : "";
   if (!valid && (selection.query !== query || selection.key !== fallback))
-    setSelection({ query, key: fallback, pointer: false, moves: 0 });
-  const active = valid ? selection.key : fallback;
+    setSelection({
+      query,
+      key: fallback,
+      pointer: false,
+      resting: "",
+      cleared: false,
+      moves: 0,
+    });
+  const active = valid ? (selection.cleared ? "" : selection.key) : fallback;
+  /** The text whose Enter waits for its first row. */
+  const [awaiting, setAwaiting] = useState<string>();
+  if (awaiting !== undefined && awaiting !== query) setAwaiting(undefined);
+  const choose = (key: string | undefined) => {
+    setAwaiting(undefined);
+    if (key) onChoose(key);
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: choose calls the latest onChoose.
+  useEffect(() => {
+    if (open && awaiting === query && !pending) choose(keys[0]);
+  }, [open, awaiting, query, keys[0], pending]);
   const rowId = (key: string) => `${id}-${key}`;
-  const select = (key: string) =>
+  /** Highlights a row for the user, which drops a waiting Enter. */
+  const select = (key: string, pointer = false) => {
+    setAwaiting(undefined);
     setSelection((previous) => ({
       query,
       key,
-      pointer: false,
-      moves: previous.moves + 1,
+      pointer,
+      resting: key,
+      cleared: false,
+      moves: pointer ? previous.moves : previous.moves + 1,
     }));
+  };
   /** The row an arrow key moves the highlight to. */
   const step = (down: boolean) => {
     const index = keys.indexOf(active);
@@ -84,12 +126,24 @@ export function useSearchHighlight({
   // Compare viewport coordinates: Linux WebKit reports screen coordinates
   // that do not change as the pointer moves.
   const pointer = useRef<{ x: number; y: number }>(undefined);
+  /** Focus this hook moves to follow the highlight is not the keyboard's. */
+  const following = useRef(false);
+  const follow = (key: string) => {
+    if (!document.activeElement?.id.startsWith(`${id}-`)) return;
+    following.current = true;
+    try {
+      document.getElementById(rowId(key))?.focus({ preventScroll: true });
+    } finally {
+      following.current = false;
+    }
+  };
   const pointerMoved = (event: PointerEvent) => {
     const last = pointer.current;
     pointer.current = { x: event.clientX, y: event.clientY };
     return !!last && (last.x !== event.clientX || last.y !== event.clientY);
   };
-  // The pointer is already on a row it highlights; keep the list still.
+  // The pointer is on a row it highlights, or just left the list; keep the
+  // list still.
   const scroll = open && !(valid && selection.pointer) ? active : "";
   const moves = selection.moves;
   // biome-ignore lint/correctness/useExhaustiveDependencies: each keyboard move reveals its row again.
@@ -108,6 +162,7 @@ export function useSearchHighlight({
     /** The highlighted row's key, or "" for none. */
     active,
     select,
+    choose,
     listId: id,
     rowId,
     /** Spread on the search field. */
@@ -119,6 +174,20 @@ export function useSearchHighlight({
       onPointerMove(event: PointerEvent) {
         pointer.current = { x: event.clientX, y: event.clientY };
       },
+      // A highlight the pointer made does not outlive it: leaving the list
+      // returns to the row highlighted before, else to the list's own first
+      // highlight, else to none. The list stays where the pointer left it.
+      onPointerLeave(event: PointerEvent) {
+        if (event.pointerType === "touch" || !selection.pointer) return;
+        const key = keys.includes(selection.resting)
+          ? selection.resting
+          : fallback;
+        setSelection((previous) =>
+          previous.pointer ? { ...previous, key, cleared: !key } : previous,
+        );
+        // Focus returns with the highlight, so Enter still chooses it.
+        if (key) follow(key);
+      },
     },
     /** Spread on each row. */
     rowProps: (key: string) => ({
@@ -126,13 +195,7 @@ export function useSearchHighlight({
       // Tab can focus a row. Enter then chooses that row, so highlight it
       // and announce it. The row is already in view, so do not scroll.
       onFocus() {
-        if (active !== key)
-          setSelection((previous) => ({
-            ...previous,
-            query,
-            key,
-            pointer: true,
-          }));
+        if (!following.current) select(key, true);
       },
       // Up and Down on a focused row move the highlight, and focus with it,
       // so Enter still chooses the highlighted row.
@@ -160,16 +223,23 @@ export function useSearchHighlight({
           active !== key &&
           keys.includes(key)
         ) {
+          setAwaiting(undefined);
           setSelection((previous) => ({
             ...previous,
             query,
             key,
             pointer: true,
+            // The row highlighted before the pointer took over, to return to.
+            resting: previous.pointer
+              ? previous.resting
+              : previous.cleared
+                ? ""
+                : previous.key,
+            cleared: false,
           }));
           // While a row has focus, Enter activates that row, so focus must
           // follow the highlight. The row is under the pointer; do not scroll.
-          if (document.activeElement?.id.startsWith(`${id}-`))
-            document.getElementById(rowId(key))?.focus({ preventScroll: true });
+          follow(key);
         }
       },
     }),
@@ -195,11 +265,22 @@ export function useSearchHighlight({
         return true;
       }
       const index = keys.indexOf(active);
-      if (event.key === "Enter" && index >= 0) {
+      if (
+        event.key === "Enter" &&
+        pending &&
+        !(valid && (selection.moves || selection.pointer)) &&
+        keys.every((key) => isAction?.(key))
+      ) {
         event.preventDefault();
-        onChoose(active);
+        setAwaiting(query);
         return true;
       }
+      if (event.key === "Enter" && index >= 0) {
+        event.preventDefault();
+        choose(active);
+        return true;
+      }
+      if (event.key === "Escape") setAwaiting(undefined);
       if (arrow && keys.length) {
         event.preventDefault();
         select(step(down));

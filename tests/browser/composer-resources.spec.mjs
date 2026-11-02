@@ -21,20 +21,6 @@ const repo = finalizeEvent(
   },
   key,
 );
-const project = finalizeEvent(
-  {
-    kind: 30621,
-    created_at: 1,
-    content: "",
-    tags: [
-      ["d", "proj"],
-      ["name", "Proj"],
-      ["buzz-channel", "alpha"],
-      ["a", `30617:${owner}:game`],
-    ],
-  },
-  key,
-);
 const issue = finalizeEvent(
   {
     kind: 1621,
@@ -47,7 +33,7 @@ const issue = finalizeEvent(
   },
   key,
 );
-const events = [repo, project, issue];
+const events = [repo, issue];
 const values = (event, name) =>
   event.tags.filter((tag) => tag[0] === name).map((tag) => tag[1]);
 const matches = (filter, event) =>
@@ -68,9 +54,7 @@ async function choose(page, app) {
     const filters = route.request().postDataJSON();
     const ours = filters.some(
       (filter) =>
-        filter.kinds?.some((kind) =>
-          [30617, 30621, 1621, 1618].includes(kind),
-        ) ||
+        filter.kinds?.some((kind) => [30617, 1621, 1618].includes(kind)) ||
         filter["#a"]?.some((address) => address.includes(owner)) ||
         filter.ids?.includes(issue.id) ||
         filter["#e"]?.includes(issue.id),
@@ -101,7 +85,7 @@ async function choose(page, app) {
   // Pending: rows are disabled, focus stays in the popover and the check is announced.
   await expect(row).toBeDisabled();
   await expect(
-    page.getByRole("searchbox", { name: "Search Proj" }),
+    page.getByRole("searchbox", { name: "Search issues and pull requests" }),
   ).toBeFocused();
   await expect(
     page.getByRole("status").filter({ hasText: "Checking the chosen item…" }),
@@ -131,6 +115,6 @@ test("a failed resource check keeps focus in the picker", async ({
   );
   await expect(row).toBeEnabled();
   await expect(
-    page.getByRole("searchbox", { name: "Search Proj" }),
+    page.getByRole("searchbox", { name: "Search issues and pull requests" }),
   ).toBeFocused();
 });

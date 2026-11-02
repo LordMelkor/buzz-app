@@ -13,6 +13,7 @@ import { VideoPlayer } from "./VideoPlayer";
 import { AudioAttachment } from "./AudioAttachment";
 import { FileAttachment } from "./FileAttachment";
 import { AttachmentView } from "../conversation/AttachmentView";
+import { AttachmentDownloadContext } from "./AttachmentDownloadContext";
 import type {
   AttachmentRenderer,
   ContributionReader,
@@ -295,7 +296,12 @@ function DraftMedia({
     );
   const fallback =
     attachment.kind === "audio" ? (
-      <AudioAttachment key={source} attachment={attachment} source={source} />
+      <AudioAttachment
+        key={source}
+        attachment={attachment}
+        source={source}
+        allowDownload={false}
+      />
     ) : item.uploaded ? (
       <FileAttachment
         attachment={attachment}
@@ -310,12 +316,14 @@ function DraftMedia({
       </p>
     );
   return renderers ? (
-    <AttachmentView
-      registry={renderers}
-      attachment={attachment}
-      source={source}
-      fallback={fallback}
-    />
+    <AttachmentDownloadContext value={false}>
+      <AttachmentView
+        registry={renderers}
+        attachment={attachment}
+        source={source}
+        fallback={fallback}
+      />
+    </AttachmentDownloadContext>
   ) : (
     fallback
   );

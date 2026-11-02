@@ -187,8 +187,8 @@ it("wraps a message that arrives mid-turn", () => {
   );
 });
 
-it("always includes the Buzz tools' guidance, attention included", () => {
+it("always includes the Buzz tools' guidance, and leaves attention's to its tools", () => {
   const prompt = systemPrompt({ scope: "thread", cwd: "/w" });
   expect(prompt).toContain(BUZZ_PROMPT);
-  expect(prompt).toContain("## Attention");
+  expect(prompt).not.toContain("## Attention");
 });

@@ -1,7 +1,7 @@
 .timeline {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-6);
   min-width: 0;
 }
 .turn {
@@ -10,14 +10,14 @@
   gap: var(--space-2);
   min-width: 0;
 }
-.session {
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--border-standard);
-  color: var(--text-subtle);
-  text-align: center;
-}
 .turnHeader {
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--border-standard);
   color: var(--text-subtle);
+}
+.turn:first-of-type .turnHeader {
+  padding-block-start: 0;
+  border-block-start: 0;
 }
 .turnHeader [data-state="working"] {
   color: var(--text-accent);
@@ -28,6 +28,15 @@
 }
 .item {
   min-width: 0;
+}
+.at {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--text-subtle);
+}
+.item + .item:is([data-type="prompt"], [data-type="message"]),
+.item[data-type="prompt"] + .item {
+  margin-block-start: var(--space-4);
 }
 .row {
   display: flex;
@@ -45,11 +54,37 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+.context {
+  margin-block-start: var(--space-2);
+  margin-inline-start: calc(var(--space-4) + var(--space-2));
+}
+.context summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  cursor: pointer;
+  list-style: none;
+}
+.context summary::-webkit-details-marker {
+  display: none;
+}
+.context summary > svg {
+  flex-shrink: 0;
+}
+.context[open] > summary > svg,
+.section[open] > summary > svg {
+  transform: rotate(90deg);
+}
+.section {
+  margin-block-start: var(--space-2);
+  margin-inline-start: var(--space-4);
+}
 .tool > summary {
   cursor: pointer;
   list-style: none;
 }
-.tool[data-status="failed"] > summary {
+.tool[data-status="failed"] > summary,
+.tool[data-status="terminated"] > summary {
   color: var(--text-danger);
 }
 .summary {
@@ -70,7 +105,8 @@
 .status {
   color: var(--text-subtle);
 }
-.tool[data-status="failed"] .status {
+.tool[data-status="failed"] .status,
+.tool[data-status="terminated"] .status {
   color: var(--text-danger);
 }
 .reply {
@@ -117,9 +153,6 @@
   align-items: center;
   gap: var(--space-1);
   flex-shrink: 0;
-}
-.section {
-  margin-left: var(--space-4);
 }
 .pre {
   max-height: 24rem;

@@ -75,6 +75,7 @@ function ManagedProviderDialog({
         </span>
       }
       actions={<div ref={setFooter} className="contents" />}
+      height="stable"
       headerGap="compact"
       dismissOnOutsideClick
       preventClose={!!state.blocking}

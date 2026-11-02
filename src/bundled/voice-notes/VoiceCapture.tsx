@@ -17,6 +17,14 @@ export function VoiceCapture({ accept, cancel }: ComposerCaptureProps) {
   useLayoutEffect(() => {
     if (recorder.error || failed) close.current?.focus();
   }, [recorder.error, failed]);
+  const root = useRef<HTMLDivElement>(null);
+  const stop = useRef<HTMLButtonElement>(null);
+  const recording = recorder.status === "recording";
+  // Discard holds focus while the microphone is pending; once recording, Enter keeps the note.
+  useLayoutEffect(() => {
+    if (recording && root.current?.contains(document.activeElement))
+      stop.current?.focus();
+  }, [recording]);
   useEffect(() => {
     // Strict Mode can dispose a mount immediately; do not open two permission requests.
     let active = true;
@@ -31,15 +39,12 @@ export function VoiceCapture({ accept, cancel }: ComposerCaptureProps) {
   async function finish() {
     if (finishing.current) return;
     finishing.current = true;
-    const recording = await recorder.stop();
-    if (!recording || !current.current.accept(recording)) setFailed(true);
+    const note = await recorder.stop();
+    if (!note || !current.current.accept(note)) setFailed(true);
     finishing.current = false;
   }
   useEffect(() => {
-    if (
-      recorder.status === "recording" &&
-      recorder.elapsedSeconds >= VOICE_NOTE_MAX_DURATION_SECONDS
-    )
+    if (recording && recorder.elapsedSeconds >= VOICE_NOTE_MAX_DURATION_SECONDS)
       void finish();
   });
   if (recorder.error || failed)
@@ -55,7 +60,7 @@ export function VoiceCapture({ accept, cancel }: ComposerCaptureProps) {
       </div>
     );
   return (
-    <div className={styles.capture}>
+    <div ref={root} className={styles.capture}>
       <VoiceNoteRecorder
         elapsedSeconds={recorder.elapsedSeconds}
         levels={recorder.levels}
@@ -66,13 +71,14 @@ export function VoiceCapture({ accept, cancel }: ComposerCaptureProps) {
         }}
       />
       <IconButton
+        ref={stop}
+        hint="familiar"
         type="button"
-        variant="solid"
-        shape="round"
-        size="toolbar"
-        disabled={recorder.status !== "recording"}
-        aria-label="Finish voice note"
-        title="Finish voice note"
+        variant="subtle"
+        size="sm"
+        disabled={!recording}
+        aria-label="Stop recording"
+        title="Stop recording"
         onClick={() => void finish()}
         icon={<Square size={16} fill="currentColor" aria-hidden="true" />}
       />

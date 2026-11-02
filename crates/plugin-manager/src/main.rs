@@ -1,4 +1,5 @@
 use buzzodz_plugins::{
+    managed::{Managed, ManagedState},
     release_manifest, sign_release_saved, valid_id, Catalog, Manager, Manifest, Result,
 };
 use serde_json::json;
@@ -16,6 +17,7 @@ Commands:
   install DIRECTORY        Install a built artifact (new plugins start disabled)
   reload ID                Reload a folder plugin, preserving its enabled state
   list                     List installed pages and their enabled state
+  managed                  Show the managed plugin sources policy and its status
   enable ID | disable ID | remove ID | rollback ID
   recover                  Back up settings and reset to bundled defaults
 
@@ -25,6 +27,7 @@ Options:
   --help, -h               Show this help
 
 The desktop and CLI also read BUZZODZ_HOME and BUZZODZ_PROFILE.
+BUZZ_MANAGED_PLUGINS overrides the managed plugin policy file location.
 Launch the desktop with BUZZODZ_SAFE_MODE=1 to skip external pages.";
 
 fn main() {
@@ -120,6 +123,7 @@ fn run() -> Result<()> {
         }
         ("reload", _) => return Err("Usage: buzzodz plugin reload ID".into()),
         ("list", []) => print_catalog(&manager.catalog()?)?,
+        ("managed", []) => print_managed(&manager.managed(&manager.catalog()?)),
         ("recover", []) => {
             let catalog = manager.recover()?;
             println!("Reset profile {profile} to bundled defaults.\nAny previous settings were backed up in {}.\nExternal artifacts remain available for reinstallation.", catalog.location);
@@ -178,6 +182,43 @@ fn print_catalog(catalog: &Catalog) -> Result<()> {
         }
     }
     Ok(())
+}
+fn print_managed(managed: &Managed) {
+    match managed {
+        Managed::Absent => println!("No managed plugin policy found."),
+        Managed::Invalid { path, reason } => {
+            println!("Policy: {path}\nStatus: unusable\nProblem: {reason}")
+        }
+        Managed::Ready {
+            path,
+            source,
+            plugins,
+            problems,
+        } => {
+            println!("Policy: {path}\nManaged by: {source}\n");
+            for entry in plugins {
+                let state = match entry.state {
+                    ManagedState::Missing => "not installed",
+                    ManagedState::Current => "installed, current",
+                    ManagedState::Outdated => "installed, update available",
+                    ManagedState::Other => "installed from another source",
+                };
+                let plugin = &entry.plugin;
+                println!(
+                    "{:<24} {}\n  {} {} {} ({})",
+                    plugin.id,
+                    state,
+                    plugin.repository,
+                    plugin.reference,
+                    plugin.commit,
+                    plugin.path
+                );
+            }
+            for problem in problems {
+                println!("Ignored: {problem}");
+            }
+        }
+    }
 }
 fn read_manifest(directory: &Path) -> Result<Manifest> {
     let manifest: Manifest = serde_json::from_slice(

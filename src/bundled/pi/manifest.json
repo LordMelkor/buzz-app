@@ -1,0 +1,41 @@
+{
+  "id": "buzz.pi",
+  "name": "Pi",
+  "apiVersion": 1,
+  "description": "Run local Pi agents in Buzz.",
+  "discovery": {
+    "category": "agents",
+    "tags": ["code", "coding-agents"]
+  },
+  "host": {
+    "processes": [
+      {
+        "id": "read-protected",
+        "program": "buzz-agent-command",
+        "bundled": true,
+        "args": [
+          "--shell",
+          "case \"$1\" in \"~/\"*) set -- \"$HOME/${1:2}\";; esac; exec /usr/bin/base64 -i \"$1\"",
+          "buzz-read"
+        ]
+      },
+      {
+        "id": "pi-sh",
+        "program": "bash",
+        "args": ["-c"]
+      },
+      {
+        "id": "node",
+        "program": "node",
+        "args": ["--input-type=module", "-e"]
+      },
+      {
+        "id": "pi-protected-sh",
+        "program": "buzz-agent-command",
+        "bundled": true,
+        "args": ["--shell"]
+      }
+    ],
+    "files": true
+  }
+}

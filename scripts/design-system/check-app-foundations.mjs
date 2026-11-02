@@ -47,9 +47,15 @@ function files(dir) {
 }
 
 const failures = [];
-// Color-selection artwork must retain literal hues in both themes. Keep the
-// exceptions limited to these two controls and their exact spectrum stops.
+// Product artwork retains its literal hues. Exceptions name exact files and
+// colors; all other values and foundation rules remain checked.
 const artworkColors = new Map([
+  // Only the mobile onboarding background artwork retains literal hues.
+  // Controls use the shared semantic roles without local overrides.
+  [
+    "features/identity/IdentitySetup.module.css",
+    new Set(["#e7f0ef", "#203d53", "#39304b", "#11181d"]),
+  ],
   [
     "features/profiles/AvatarCustomColor.module.css",
     new Set(["#000", "#fff", "#f00", "#ff0", "#0f0", "#0ff", "#00f", "#f0f"]),

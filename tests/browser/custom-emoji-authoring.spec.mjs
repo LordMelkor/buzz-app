@@ -1,3 +1,4 @@
+import { hoverMessage } from "./message-actions.mjs";
 import { test, expect } from "./playwright-test.mjs";
 import { createServer } from "./vite-server.mjs";
 import react from "@vitejs/plugin-react";
@@ -37,6 +38,7 @@ function matches(event, filter) {
 
 /** Local upstream relay: NIP-01 socket, HTTP query, Blossom upload and media. No network. */
 function localRelay(relayKey, viewer) {
+  const memberKey = generateSecretKey();
   const stores = new Map();
   const blobs = new Map();
   const sockets = new Set();
@@ -51,6 +53,22 @@ function localRelay(relayKey, viewer) {
           relayKey,
         );
       stores.set(community, [
+        finalizeEvent(
+          {
+            kind: 30030,
+            created_at: 1700000000,
+            content: "",
+            tags: [
+              ["d", "buzz:custom-emoji"],
+              ...["community_bee", "community_party"].map((name) => [
+                "emoji",
+                name,
+                `${community}/media/member.png`,
+              ]),
+            ],
+          },
+          memberKey,
+        ),
         relayEvent({
           kind: 39002,
           tags: [
@@ -67,6 +85,7 @@ function localRelay(relayKey, viewer) {
           ],
         }),
       ]);
+      blobs.set(`${community}/media/member.png`, png(true));
     }
     return stores.get(community);
   };
@@ -365,7 +384,7 @@ test("adds custom emoji through the production broker, then uses, replaces, retr
     await draft.fill("");
 
     // Reaction with it.
-    await row.hover();
+    await hoverMessage(row);
     await row
       .getByRole("button", { name: "Add reaction", exact: true })
       .click();
@@ -477,6 +496,101 @@ test("adds custom emoji through the production broker, then uses, replaces, retr
     await page.getByRole("button", { name: "Switch community" }).click();
     await expect(page.getByText("My emojis (1)")).toBeVisible();
     await expect(page.getByText(":wave:")).toHaveCount(0);
+
+    // The settings collection is searchable and read-only for other owners.
+    await page.getByRole("tab", { name: "Community emoji (2)" }).click();
+    const community = page.getByRole("group", {
+      name: "Community emoji",
+      exact: true,
+    });
+    await expect(community.getByRole("listitem")).toHaveCount(2);
+    await expect(community.getByRole("button", { name: /Remove/ })).toHaveCount(
+      0,
+    );
+    const search = community.getByRole("searchbox", { name: "Search" });
+    await search.fill(" :BEE: ");
+    await expect(community.getByRole("listitem")).toHaveCount(1);
+    await expect(
+      community.getByText(":community_bee:", { exact: true }),
+    ).toBeVisible();
+    await search.fill("missing_emoji");
+    await expect(
+      community.getByRole("heading", { name: "No results" }),
+    ).toBeVisible();
+    await community.getByRole("button", { name: "Clear search" }).click();
+    await expect(search).toHaveValue("");
+    await expect(search).toBeFocused();
+    await expect(community.getByRole("listitem")).toHaveCount(2);
+
+    // A rejected removal retains the emoji. Retry publishes an empty own set.
+    await page.getByRole("tab", { name: "My emojis (1)" }).click();
+    const otherSet = relay
+      .stored(primary)
+      .find((event) => event.kind === 30030 && event.pubkey !== viewer);
+    const remove = page.getByRole("button", { name: "Remove :party_parrot:" });
+    // Populated rows and their trailing actions must fit at enlarged text sizes.
+    for (const mode of ["light", "dark"]) {
+      for (const width of [800, 390]) {
+        await page.setViewportSize({ width, height: 950 });
+        await page.evaluate((mode) => {
+          document.documentElement.dataset.colorMode = mode;
+          document.documentElement.style.fontSize = "32px";
+        }, mode);
+        await expect(remove).toBeInViewport();
+        await expect
+          .poll(() =>
+            page
+              .getByRole("group", { name: "My emojis", exact: true })
+              .evaluate((root) => {
+                const bounds = root.getBoundingClientRect();
+                return (
+                  root.scrollWidth <= root.clientWidth &&
+                  bounds.left >= 0 &&
+                  bounds.right <= innerWidth
+                );
+              }),
+          )
+          .toBe(true);
+        await page.screenshot({
+          path: testInfo.outputPath(`emoji-mine-${mode}-${width}-200.png`),
+          fullPage: true,
+        });
+      }
+    }
+    await page.evaluate(() => {
+      document.documentElement.style.fontSize = "";
+    });
+    await page.setViewportSize({ width: 1440, height: 950 });
+    relay.rejectNextPublication();
+    await remove.click();
+    await expect(page.getByRole("alert")).toHaveText("Failed to remove emoji.");
+    expect(ownSet(primary).tags).toEqual(replaced.tags);
+    await expect(remove).toBeEnabled();
+    await remove.focus();
+    await remove.press("Enter");
+    await expect(page.getByText("Removed :party_parrot:")).toBeVisible();
+    await expect(
+      page.getByRole("group", { name: "My emojis", exact: true }),
+    ).toBeFocused();
+    expect(ownSet(primary).tags).toEqual([["d", "buzz:custom-emoji"]]);
+    expect(verifyEvent(ownSet(primary))).toBe(true);
+    expect(relay.stored(primary)).toContainEqual(otherSet);
+    // Historical messages retain their event-local mapping and uploaded media.
+    await expect(
+      row.locator('p[data-single-emoji] img[alt=":party_parrot:"]'),
+    ).toHaveAttribute("src", media(first));
+    await page.reload();
+    await page.getByRole("tab", { name: "My emojis", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "No emojis yet" }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /Remove :/ })).toHaveCount(0);
+    await page.getByRole("tab", { name: "Community emoji (2)" }).click();
+    await expect(
+      page
+        .getByRole("group", { name: "Community emoji", exact: true })
+        .getByRole("listitem"),
+    ).toHaveCount(2);
 
     await testInfo.attach("relay-report.json", {
       body: JSON.stringify(

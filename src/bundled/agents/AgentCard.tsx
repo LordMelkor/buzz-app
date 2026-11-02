@@ -4,15 +4,48 @@ import type { ComponentProps, ReactNode } from "react";
 import { agentAvatars } from "../../features/agents/avatar-packs";
 import { SurfaceButton } from "../../shared/design-system/ui/SurfaceButton";
 import { useAvatarPreview } from "../../features/profiles/use-avatar-preview";
+import { ProfileBackdrop } from "../../features/profiles/ProfileBackdrop";
 import { Avatar } from "../../shared/design-system/ui/Avatar";
 import styles from "./AgentCard.module.css";
 import { PackedAgentAvatar } from "./PackedAgentAvatar";
 
 type Portrayed = Readonly<{ name: string; picture?: string | undefined }>;
 
+/** Static artwork shares the portrait's pack lookup and protected media path. */
+export function useAgentPortraitSource(agent: Portrayed, community?: string) {
+  const pack = agentAvatars.find((avatar) => avatar.url === agent.picture);
+  const src = useAvatarPreview(
+    pack ? "" : (agent.picture ?? ""),
+    community,
+    "small",
+  );
+  return { pack, src: pack?.preview ?? src };
+}
+
 /** An agent's picture: a pack avatar animates, any other shows through its
  * community's media access. */
 export function AgentPortrait({
+  agent,
+  community,
+}: {
+  agent: Portrayed;
+  community?: string | undefined;
+}) {
+  const { pack, src } = useAgentPortraitSource(agent, community);
+  if (pack) return <PackedAgentAvatar avatar={pack} />;
+  return (
+    <Avatar
+      src={src}
+      alt=""
+      fallback={agent.name}
+      size="fill"
+      shape="squircle"
+    />
+  );
+}
+
+/** Cards share the profile header's decorative artwork and media access. */
+export function AgentCardBackdrop({
   agent,
   community,
 }: {
@@ -25,15 +58,13 @@ export function AgentPortrait({
     community,
     "small",
   );
-  if (pack) return <PackedAgentAvatar avatar={pack} />;
+  const backdrop = pack?.preview ?? src;
+  if (!backdrop) return null;
   return (
-    <Avatar
-      src={src}
-      alt=""
-      fallback={agent.name}
-      size="fill"
-      shape="squircle"
-    />
+    <>
+      <ProfileBackdrop src={backdrop} />
+      <span className={styles.grain} aria-hidden="true" />
+    </>
   );
 }
 
@@ -47,7 +78,7 @@ export function AgentCard({
   menu,
   ...props
 }: Omit<ComponentProps<"div">, "className" | "children"> & {
-  /** A short status beside the name, such as "Default agent". */
+  /** A noninteractive accent pill above the name, such as "Bestie". */
   tag?: ReactNode;
   agent: Portrayed;
   community?: string | undefined;
@@ -59,20 +90,23 @@ export function AgentCard({
   menu?: ReactNode;
 }) {
   return (
-    <div {...props} className={styles.card}>
+    <div {...props} className={`${styles.card} ${styles.agentCard}`}>
+      <AgentCardBackdrop agent={agent} community={community} />
       {menu && <div className={styles.menu}>{menu}</div>}
       <span className={styles.portrait} aria-hidden="true">
         <AgentPortrait agent={agent} community={community} />
       </span>
-      <span className={`${styles.name} text-label`}>{agent.name}</span>
-      {tag && <span className={styles.tag}>{tag}</span>}
-      {detail && (
-        <span className={styles.detail}>
-          {icon}
-          <span className={styles.detailText}>{detail}</span>
-        </span>
-      )}
-      {children && <span className={styles.actions}>{children}</span>}
+      <span className={styles.identity}>
+        {tag && <span className={styles.tag}>{tag}</span>}
+        <span className={`${styles.name} text-label`}>{agent.name}</span>
+        {detail && (
+          <span className={styles.detail}>
+            {icon}
+            <span className={styles.detailText}>{detail}</span>
+          </span>
+        )}
+        {children && <span className={styles.actions}>{children}</span>}
+      </span>
     </div>
   );
 }

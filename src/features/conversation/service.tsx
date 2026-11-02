@@ -1,5 +1,5 @@
 // FOUNDATION: Shared conversation UI and plugin-owned tools/renderers; never another data owner.
-import type { ReactNode } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { EmbeddedThread, type EmbeddedThreadProps } from "./EmbeddedThread";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import { createContributions } from "../../plugins/contributions";
@@ -16,6 +16,7 @@ import {
 import { relativeTimestamp } from "../../shared/relative-timestamp";
 import type {
   AttachmentRenderer,
+  CodeBlockRenderer,
   ComposerTool,
   ComposerAccessory,
   ComposerCompletion,
@@ -24,9 +25,34 @@ import type {
   MessageRenderer,
   MessageAction,
   ContributionReader,
+  PageTabsProps,
 } from "./contracts";
+import type { RelaySession } from "../relay/session";
+
+/** A Solo chat's sidebar icon: what the plugin knows about the chat, or
+ * `fallback` when it has nothing to show. */
+export type ChatIconProps = Readonly<{
+  session: RelaySession;
+  channelId: string;
+  fallback: ReactNode;
+}>;
+export type ChatIcon = Readonly<{
+  id: string;
+  component: ComponentType<ChatIconProps>;
+}>;
+
+export type ChatMenuProps = Readonly<{
+  session: RelaySession;
+  channelId: string;
+}>;
+export type ChatMenu = Readonly<{
+  id: string;
+  component: ComponentType<ChatMenuProps>;
+}>;
 
 export type Conversation = {
+  chatMenus: ContributionReader<ChatMenu>;
+  registerChatMenu(component: ComponentType<ChatMenuProps>): void;
   attachments: ContributionReader<AttachmentRenderer>;
   registerAttachment(renderer: AttachmentRenderer): void;
   messages: ContributionReader<MessageRenderer>;
@@ -41,13 +67,25 @@ export type Conversation = {
   registerInline(renderer: InlineRenderer): void;
   links: ContributionReader<LinkRenderer>;
   registerLink(renderer: LinkRenderer): void;
+  codeBlocks: ContributionReader<CodeBlockRenderer>;
+  registerCodeBlock(renderer: CodeBlockRenderer): void;
   actions: ContributionReader<MessageAction>;
   registerMessageAction(action: MessageAction): void;
   ui: {
     Thread: (props: EmbeddedThreadProps) => ReactNode;
     Composer: (props: Omit<MessageComposerProps, "extensions">) => ReactNode;
     Message: (props: Omit<MessageRowProps, "extensions">) => ReactNode;
+    /** The page's content as the first tab, beside conversations it opens;
+     * absent until a plugin provides the tab workspace, as Channels does. */
+    readonly Tabs?: ((props: PageTabsProps) => ReactNode) | undefined;
   };
+  /** Provides `ui.Tabs` while the providing plugin runs; the first one wins. */
+  registerTabs(component: ComponentType<PageTabsProps>): void;
+  /** Solo chat icons; the sidebar shows the first one. */
+  chatIcons: ContributionReader<ChatIcon>;
+  /** Shows `component` as each Solo chat's sidebar icon while the providing
+   * plugin runs. */
+  registerChatIcon(component: ComponentType<ChatIconProps>): void;
   /** The host's date labels, so plugin text reads like the message rows. */
   format: {
     /** "9:05 AM", "Yesterday", "Monday", "Sat, Jun 20", "Jun 20, 2025";
@@ -75,6 +113,7 @@ function validate(
     | ComposerCompletion
     | ComposerAccessory
     | LinkRenderer
+    | CodeBlockRenderer
     | MessageRenderer
     | MessageAction,
 ) {
@@ -104,8 +143,16 @@ export class ConversationService extends Service implements Conversation {
   private readonly inlineEntries;
   readonly links;
   private readonly linkEntries;
+  readonly codeBlocks;
+  private readonly codeBlockEntries;
   readonly actions;
   private readonly actionEntries;
+  private readonly tabEntries;
+  readonly chatMenus;
+  private readonly chatMenuEntries;
+  readonly chatIcons;
+  private readonly chatIconEntries;
+  readonly ui: Conversation["ui"];
   constructor(ctx: Context) {
     super(ctx, "conversation");
     const attachments = createContributions<AttachmentRenderer>(ctx);
@@ -141,9 +188,65 @@ export class ConversationService extends Service implements Conversation {
     const links = createContributions<LinkRenderer>(ctx);
     this.linkEntries = links;
     this.links = { snapshot: links.snapshot, subscribe: links.subscribe };
+    const codeBlocks = createContributions<CodeBlockRenderer>(ctx);
+    this.codeBlockEntries = codeBlocks;
+    this.codeBlocks = {
+      snapshot: codeBlocks.snapshot,
+      subscribe: codeBlocks.subscribe,
+    };
     const actions = createContributions<MessageAction>(ctx);
     this.actionEntries = actions;
     this.actions = { snapshot: actions.snapshot, subscribe: actions.subscribe };
+    const tabs = createContributions<{
+      id: string;
+      component: ComponentType<PageTabsProps>;
+    }>(ctx);
+    this.tabEntries = tabs;
+    const chatMenus = createContributions<ChatMenu>(ctx);
+    this.chatMenuEntries = chatMenus;
+    this.chatMenus = {
+      snapshot: chatMenus.snapshot,
+      subscribe: chatMenus.subscribe,
+    };
+    const chatIcons = createContributions<ChatIcon>(ctx);
+    this.chatIconEntries = chatIcons;
+    this.chatIcons = {
+      snapshot: chatIcons.snapshot,
+      subscribe: chatIcons.subscribe,
+    };
+    const Tabs = (props: PageTabsProps) => {
+      const Provided = tabs.snapshot()[0]?.component;
+      return Provided ? <Provided {...props} /> : null;
+    };
+    this.ui = {
+      Thread: (props: EmbeddedThreadProps) => (
+        <EmbeddedThread {...props} host={this.ctx} extensions={this} />
+      ),
+      Composer: (props: Omit<MessageComposerProps, "extensions">) => (
+        <MessageComposer {...props} extensions={this} />
+      ),
+      Message: (props: Omit<MessageRowProps, "extensions">) => (
+        <MessageRow {...props} extensions={this} />
+      ),
+      get Tabs() {
+        return tabs.snapshot().length ? Tabs : undefined;
+      },
+    };
+  }
+  registerTabs(component: ComponentType<PageTabsProps>) {
+    if (typeof component !== "function")
+      throw new Error("Page tabs need a component");
+    this.tabEntries.register(this.ctx, { id: "tabs", component });
+  }
+  registerChatMenu(component: ComponentType<ChatMenuProps>) {
+    if (typeof component !== "function")
+      throw new Error("A chat menu needs a component");
+    this.chatMenuEntries.register(this.ctx, { id: "chat-menu", component });
+  }
+  registerChatIcon(component: ComponentType<ChatIconProps>) {
+    if (typeof component !== "function")
+      throw new Error("A chat icon needs a component");
+    this.chatIconEntries.register(this.ctx, { id: "chat-icon", component });
   }
   registerMessageAction(value: MessageAction) {
     validate(value);
@@ -165,6 +268,11 @@ export class ConversationService extends Service implements Conversation {
     validate(value);
     if (typeof value.matches !== "function")
       throw new Error("A message renderer needs a matcher");
+    if (
+      value.ownsAttachment !== undefined &&
+      typeof value.ownsAttachment !== "function"
+    )
+      throw new Error("A message renderer's ownsAttachment must be a function");
     this.messageEntries.register(this.ctx, value);
   }
   registerAccessory(value: ComposerAccessory) {
@@ -206,21 +314,18 @@ export class ConversationService extends Service implements Conversation {
       throw new Error("A link renderer class must be a string");
     this.linkEntries.register(this.ctx, value);
   }
+  registerCodeBlock(value: CodeBlockRenderer) {
+    validate(value);
+    if (typeof value.matches !== "function")
+      throw new Error("A code block renderer needs a matcher");
+    if (value.action !== undefined && typeof value.action !== "function")
+      throw new Error("A code block action must be a component");
+    this.codeBlockEntries.register(this.ctx, value);
+  }
   readonly format = Object.freeze({
     itemTimestamp: formatItemTimestamp,
     dayGroupLabel: formatDayGroupLabel,
     fullTimestamp: formatFullTimestamp,
     relativeTimestamp,
   });
-  readonly ui = {
-    Thread: (props: EmbeddedThreadProps) => (
-      <EmbeddedThread {...props} host={this.ctx} extensions={this} />
-    ),
-    Composer: (props: Omit<MessageComposerProps, "extensions">) => (
-      <MessageComposer {...props} extensions={this} />
-    ),
-    Message: (props: Omit<MessageRowProps, "extensions">) => (
-      <MessageRow {...props} extensions={this} />
-    ),
-  };
 }

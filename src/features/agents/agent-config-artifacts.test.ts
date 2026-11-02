@@ -351,6 +351,21 @@ describe("delivery", () => {
     expect(sent).toBe(false);
   });
 
+  it("refuses an event over a smaller advertised limit before dispatch", async () => {
+    const { event } = await instructions("hi");
+    let sent = false;
+    const result = await deliver(
+      writer(async () => {
+        sent = true;
+      }),
+      event,
+      new AbortController().signal,
+      signedEventBytes(event) - 1,
+    );
+    expect(result).toMatchObject({ status: "refused", refusal: "too-large" });
+    expect(sent).toBe(false);
+  });
+
   it("counts only OK or duplicate-OK as accepted, and never settles a lost answer as refused", async () => {
     const { event } = await instructions("hi");
     const signal = new AbortController().signal;

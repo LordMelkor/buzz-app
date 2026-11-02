@@ -14,6 +14,8 @@ export type InboxItem = Readonly<{
   authorId: string;
   workflowOwnerId?: string | undefined;
   preview: string;
+  /** The message the preview shows, which may be outside `messageIds`. */
+  previewMessageId?: string;
   createdAt: number;
   mentioned: boolean;
   /** Verified group members with time and viewer-mention classification. */

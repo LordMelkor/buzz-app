@@ -65,17 +65,17 @@ export function WorkflowForm({
   onChange,
   disabled,
   issue,
-  scope,
   selection,
   onSelect,
+  overview,
 }: {
   state: WorkflowFormState;
   onChange: (next: WorkflowFormState) => void;
   disabled: boolean;
   issue?: WorkflowDraftIssue | null | undefined;
-  scope?: ReactNode;
   selection: WorkflowSelection;
   onSelect: (selection: WorkflowSelection) => void;
+  overview?: ReactNode;
 }) {
   const id = useId();
   const container = useRef<HTMLDivElement>(null);
@@ -104,7 +104,7 @@ export function WorkflowForm({
       if (entry)
         setNarrow(
           entry.contentRect.width <=
-            58 *
+            44 *
               parseFloat(getComputedStyle(document.documentElement).fontSize),
         );
     });
@@ -277,6 +277,7 @@ export function WorkflowForm({
         <div className="workflow-inspector-actions">
           {selectedStep && (
             <IconButton
+              hint="familiar"
               aria-label={`Remove step ${stepIndex + 1}`}
               title="Remove step"
               icon={<TrashIcon size={16} aria-hidden="true" />}
@@ -350,10 +351,9 @@ export function WorkflowForm({
     <div
       ref={container}
       className="workflow-builder"
-      data-inspector={(inspectorOpen && !narrow) || undefined}
+      data-inspector={((inspectorOpen || !!overview) && !narrow) || undefined}
     >
       <div className="workflow-canvas">
-        {scope && <div className="workflow-scope">{scope}</div>}
         <ol className="workflow-flow" aria-label="Workflow sequence">
           <li className="workflow-flow-item">
             <NavigationItem
@@ -445,38 +445,40 @@ export function WorkflowForm({
             </Button>
           )}
       </div>
-      {inspectorOpen &&
-        (narrow ? (
-          <Dialog
-            open
-            onOpenChange={(open) => {
-              if (!open) onSelect(null);
-            }}
-            title={
-              selectedStep
-                ? `Step ${stepIndex + 1} settings`
-                : "Trigger settings"
-            }
-            placement="right"
-            finalFocus={() => inspectorReturnFocus.current}
-            motion="none"
-            dismissOnOutsideClick
-            closeLabel="Close inspector"
-          >
-            {inspector}
-          </Dialog>
-        ) : (
-          <aside
-            className="workflow-inspector"
-            aria-label={
-              selectedStep
-                ? `Step ${stepIndex + 1} settings`
-                : "Trigger settings"
-            }
-          >
-            {inspector}
+      {inspectorOpen && narrow && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) onSelect(null);
+          }}
+          title={
+            selectedStep ? `Step ${stepIndex + 1} settings` : "Trigger settings"
+          }
+          placement="right"
+          finalFocus={() => inspectorReturnFocus.current}
+          motion="none"
+          dismissOnOutsideClick
+          closeLabel="Close inspector"
+        >
+          {inspector}
+        </Dialog>
+      )}
+      {inspectorOpen && !narrow ? (
+        <aside
+          className="workflow-inspector"
+          aria-label={
+            selectedStep ? `Step ${stepIndex + 1} settings` : "Trigger settings"
+          }
+        >
+          {inspector}
+        </aside>
+      ) : (
+        overview && (
+          <aside className="workflow-inspector" aria-label="Workflow settings">
+            {overview}
           </aside>
-        ))}
+        )
+      )}
     </div>
   );
 }

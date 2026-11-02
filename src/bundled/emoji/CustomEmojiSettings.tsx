@@ -17,7 +17,9 @@ import {
 import { prepareAttachment } from "../../features/messages/prepare-attachment";
 import { Button } from "../../shared/design-system/ui/Button";
 import { EmptyState } from "../../shared/design-system/ui/EmptyState";
-import { SmileyIcon } from "../../shared/design-system/icons";
+import { SmileyIcon, TrashIcon } from "../../shared/design-system/icons";
+import { IconButton } from "../../shared/design-system/ui/IconButton";
+import { SearchField } from "../../shared/design-system/ui/SearchField";
 import { Field } from "../../shared/design-system/ui/Field";
 import { Header, InlineHeader } from "../../shared/design-system/ui/Header";
 import { Input } from "../../shared/design-system/ui/Input";
@@ -73,9 +75,17 @@ function Editor({
     session.emoji.subscribe,
     session.emoji.snapshot,
   );
-  const { add, upload } = session.emoji;
+  const { add, upload, remove } = session.emoji;
   const canAuthor = Boolean(add && upload);
-  const [tab, setTab] = useState<"add" | "mine">(canAuthor ? "add" : "mine");
+  const [tab, setTab] = useState<"add" | "mine" | "community">(
+    canAuthor ? "add" : "mine",
+  );
+  const [query, setQuery] = useState("");
+  const [removing, setRemoving] = useState<string>();
+  const [removeError, setRemoveError] = useState("");
+  const [removed, setRemoved] = useState<string>();
+  const browseRef = useRef<HTMLFieldSetElement>(null);
+  const removeFocus = useRef<HTMLButtonElement | null>(null);
   const [name, setName] = useState("");
   const [image, setImage] = useState<{ url: string; filename: string }>();
   const [uploading, setUploading] = useState(false);
@@ -104,6 +114,15 @@ function Editor({
     // Focus Upload after it mounts/enables; ordinary tab switches keep tab focus.
     if (pendingFocus.current) uploadButton.current?.focus();
     pendingFocus.current = false;
+    const trigger = removeFocus.current;
+    if (trigger && !removing) {
+      if (
+        document.activeElement === document.body ||
+        document.activeElement === trigger
+      )
+        (trigger.isConnected ? trigger : browseRef.current)?.focus();
+      removeFocus.current = null;
+    }
   });
   const nameRef = useRef(name);
   nameRef.current = name;
@@ -122,10 +141,11 @@ function Editor({
   const nameInvalid = name.trim().length > 0 && !normalized;
   const replacing =
     !!normalized && catalog.mine.some((e) => e.shortcode === normalized);
-  const canSubmit = !!add && !!image && !!normalized && !uploading && !saving;
+  const canSubmit =
+    !!add && !!image && !!normalized && !uploading && !saving && !removing;
 
   async function choose(file: File) {
-    if (!upload || uploading || saving || !live()) return;
+    if (!upload || uploading || saving || removing || !live()) return;
     const controller = new AbortController();
     uploadController.current = controller;
     setUploading(true);
@@ -169,12 +189,28 @@ function Editor({
     }
   }
 
+  async function removeEmoji(shortcode: string, trigger: HTMLButtonElement) {
+    if (!remove || removing || saving || !live()) return;
+    if (document.activeElement === trigger) removeFocus.current = trigger;
+    setRemoving(shortcode);
+    setRemoveError("");
+    setRemoved(undefined);
+    try {
+      await remove(shortcode);
+      if (live()) setRemoved(shortcode);
+    } catch (reason) {
+      if (live()) setRemoveError(message(reason, "Failed to remove emoji."));
+    } finally {
+      if (live()) setRemoving(undefined);
+    }
+  }
+
   const preview = image && session.media(image.url);
   const uploadAction = (
     <Button
       ref={uploadRef}
       loading={uploading}
-      disabled={saving}
+      disabled={saving || !!removing}
       onClick={() => input.current?.click()}
     >
       {uploading
@@ -281,7 +317,7 @@ function Editor({
                 type="submit"
                 variant="primary"
                 loading={saving}
-                disabled={uploading || !normalized}
+                disabled={uploading || !!removing || !normalized}
               >
                 {saving ? "Saving…" : "Save emoji"}
               </Button>
@@ -303,51 +339,100 @@ function Editor({
       )}
     </form>
   ) : null;
-  const minePanel = (
-    <div className="grid gap-2">
-      {catalog.status === "error" ? (
-        <>
-          <p role="alert">{catalog.error}</p>
-          <Button onClick={() => void session.emoji.refresh()}>
-            Retry emoji
-          </Button>
-        </>
-      ) : catalog.status !== "ready" ? (
-        <p className="text-body-sm text-muted">Loading…</p>
-      ) : !catalog.mine.length ? (
-        <EmptyState
-          icon={<SmileyIcon />}
-          title="No emojis yet"
-          description="Add an image to use in messages and reactions."
-          action={
-            canAuthor && (
-              <Button
-                onClick={() => {
-                  pendingFocus.current = true;
-                  setTab("add");
-                }}
-              >
-                Add emoji
-              </Button>
-            )
-          }
-        />
-      ) : (
-        <SettingsGroup>
-          <ul className="grid gap-2 py-3">
-            {catalog.mine.map((emoji) => (
-              <li key={emoji.shortcode} className="flex items-center gap-3">
-                <CustomEmoji emoji={emoji} media={session.media} />
-                <span className="truncate text-body-sm">
-                  :{emoji.shortcode}:
-                </span>
-              </li>
-            ))}
-          </ul>
-        </SettingsGroup>
-      )}
-    </div>
+  const ownShortcodes = new Set(catalog.mine.map((emoji) => emoji.shortcode));
+  const community = catalog.entries.filter(
+    (emoji) => !ownShortcodes.has(emoji.shortcode),
   );
+  const needle = query
+    .trim()
+    .toLowerCase()
+    .replace(/^:+|:+$/g, "");
+  function browsePanel(view: "mine" | "community") {
+    const showingCommunity = view === "community";
+    const entries = showingCommunity
+      ? community.filter((emoji) => emoji.shortcode.includes(needle))
+      : catalog.mine;
+    return (
+      <fieldset
+        ref={showingCommunity ? undefined : browseRef}
+        tabIndex={-1}
+        aria-label={showingCommunity ? "Community emoji" : "My emojis"}
+        className="grid min-w-0 gap-2"
+      >
+        {showingCommunity && (
+          <div className={styles.emojiBrowseControls}>
+            <SearchField value={query} onValueChange={setQuery} />
+          </div>
+        )}
+        {!showingCommunity && removeError && (
+          <p role="alert" className="error">
+            {removeError}
+          </p>
+        )}
+        {catalog.error && (
+          <>
+            <p role="alert">{catalog.error}</p>
+            <Button onClick={() => void session.emoji.refresh()}>
+              Retry emoji
+            </Button>
+          </>
+        )}
+        {catalog.status === "error" ? null : catalog.status !== "ready" ? (
+          <p className="text-body-sm text-muted">Loading…</p>
+        ) : !entries.length ? (
+          showingCommunity ? (
+            <EmptyState
+              icon={<SmileyIcon />}
+              title="No results"
+              description={null}
+            />
+          ) : (
+            <EmptyState
+              icon={<SmileyIcon />}
+              title="No emojis yet"
+              description="Add an image to use in messages and reactions."
+              action={
+                canAuthor && (
+                  <Button
+                    onClick={() => {
+                      pendingFocus.current = true;
+                      setTab("add");
+                    }}
+                  >
+                    Add emoji
+                  </Button>
+                )
+              }
+            />
+          )
+        ) : (
+          <SettingsGroup>
+            <ul className="grid gap-2 py-3">
+              {entries.map((emoji) => (
+                <li key={emoji.shortcode} className="flex items-center gap-3">
+                  <CustomEmoji emoji={emoji} media={session.media} />
+                  <span className="min-w-0 flex-1 truncate text-body-sm">
+                    :{emoji.shortcode}:
+                  </span>
+                  {!showingCommunity && remove && (
+                    <IconButton
+                      aria-label={`Remove :${emoji.shortcode}:`}
+                      icon={<TrashIcon aria-hidden="true" />}
+                      loading={removing === emoji.shortcode}
+                      disabled={!!removing || saving}
+                      onClick={(event) =>
+                        void removeEmoji(emoji.shortcode, event.currentTarget)
+                      }
+                    />
+                  )}
+                </li>
+              ))}
+            </ul>
+          </SettingsGroup>
+        )}
+      </fieldset>
+    );
+  }
   return (
     <>
       <Tabs
@@ -363,8 +448,14 @@ function Editor({
               ? `My emojis (${catalog.mine.length})`
               : "My emojis",
           },
+          {
+            value: "community",
+            label: `Community emoji (${community.length})`,
+          },
         ]}
-        renderPanel={(value) => (value === "add" ? addPanel : minePanel)}
+        renderPanel={(value) =>
+          value === "add" ? addPanel : browsePanel(value)
+        }
       />
       {added && (
         <ToastNotice
@@ -372,6 +463,14 @@ function Editor({
           tone="success"
           timeout={5000}
           onDismiss={() => setAdded(undefined)}
+        />
+      )}
+      {removed && (
+        <ToastNotice
+          title={`Removed :${removed}:`}
+          tone="success"
+          timeout={5000}
+          onDismiss={() => setRemoved(undefined)}
         />
       )}
     </>

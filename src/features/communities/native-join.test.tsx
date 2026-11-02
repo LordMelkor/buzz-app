@@ -169,8 +169,8 @@ async function open(invite?: { community: string; code: string }) {
   };
 }
 async function start(user: ReturnType<typeof userEvent.setup>) {
-  await user.clear(screen.getByLabelText("Relay URL"));
-  await user.type(screen.getByLabelText("Relay URL"), community);
+  await user.clear(screen.getByLabelText("Community URL"));
+  await user.type(screen.getByLabelText("Community URL"), community);
   await user.click(screen.getByRole("button", { name: "Continue" }));
   await user.type(
     await screen.findByLabelText("Invite code (if required)"),
@@ -199,7 +199,7 @@ it("resumes after an uncertain claim, saves the profile, and restores only the s
   expect(saved).not.toMatch(/v2.fixture|fixture-receipt/);
   await first.stop();
   const second = await open();
-  expect(screen.getByLabelText("Relay URL")).toHaveValue(community);
+  expect(screen.getByLabelText("Community URL")).toHaveValue(community);
   await user.click(screen.getByRole("button", { name: "Continue" }));
   await user.type(
     await screen.findByLabelText("Display name"),
@@ -223,6 +223,11 @@ it("resumes after an uncertain claim, saves the profile, and restores only the s
   const stored = JSON.parse(
     localStorage.getItem(`buzz-client.v1:${viewer.pubkey}`) ?? "null",
   );
+  // The completed join queued its upload in the same device record.
+  expect(stored.sync).toEqual({
+    known: [],
+    outbox: [{ url: "wss://native-join.test", removed: false }],
+  });
   stored.memberships.push({ id: "https://unopened.test", name: "Unopened" });
   localStorage.setItem(
     `buzz-client.v1:${viewer.pubkey}`,
@@ -502,7 +507,7 @@ it("does not dispatch admission when its recovery record cannot be persisted", a
 it("restores a configured alias as a usable relay URL", async () => {
   journal().begin("primary");
   await open();
-  expect(screen.getByLabelText("Relay URL")).toHaveValue(
+  expect(screen.getByLabelText("Community URL")).toHaveValue(
     "https://primary.example",
   );
 });
@@ -562,7 +567,7 @@ it("keeps a new invite bound to its relay despite another unfinished join", asyn
   requestedCommunity = other;
   const user = userEvent.setup();
   await open({ community: other, code: "v2.other" });
-  expect(screen.getByLabelText("Relay URL")).toHaveValue(other);
+  expect(screen.getByLabelText("Community URL")).toHaveValue(other);
   await user.click(screen.getByRole("button", { name: "Continue" }));
   expect(await screen.findByLabelText("Invite code (if required)")).toHaveValue(
     "v2.other",
@@ -587,7 +592,7 @@ it("recovers the invite's own unfinished join without claiming again", async () 
   admitted = true;
   const user = userEvent.setup();
   await open({ community, code: "v2.new" });
-  expect(screen.getByLabelText("Relay URL")).toHaveValue(community);
+  expect(screen.getByLabelText("Community URL")).toHaveValue(community);
   await user.click(screen.getByRole("button", { name: "Continue" }));
   expect(await screen.findByLabelText("Display name")).toHaveValue("Saved");
   expect(calls.some((call) => call.path === "/api/invites/claim")).toBe(false);
@@ -611,9 +616,9 @@ it("clears invite material when the prefilled relay is edited", async () => {
   const user = userEvent.setup();
   const other = "https://other-join.test";
   await open({ community, code: "v2.original" });
-  await user.clear(screen.getByLabelText("Relay URL"));
-  await user.type(screen.getByLabelText("Relay URL"), other);
-  expect(screen.getByLabelText("Relay URL")).toHaveValue(other);
+  await user.clear(screen.getByLabelText("Community URL"));
+  await user.type(screen.getByLabelText("Community URL"), other);
+  expect(screen.getByLabelText("Community URL")).toHaveValue(other);
   requestedCommunity = other;
   await user.click(screen.getByRole("button", { name: "Continue" }));
   expect(await screen.findByLabelText("Invite code (if required)")).toHaveValue(

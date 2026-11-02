@@ -5,6 +5,8 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { Button } from "./Button";
+import { SplitButton } from "./SplitButton";
+import { MenuItem } from "./Menu";
 import { IconButton } from "./IconButton";
 import { PlusIcon } from "../icons";
 import { Field } from "./Field";
@@ -16,6 +18,36 @@ import { SearchField } from "./SearchField";
 import { Composer } from "./Composer";
 
 afterEach(cleanup);
+
+test("split actions keep separate activation, menu focus and pending gates", async () => {
+  const user = userEvent.setup();
+  const primary = vi.fn(),
+    alternative = vi.fn();
+  const props = {
+    menuLabel: "Add with other access",
+    onClick: primary,
+    menu: <MenuItem onClick={alternative}>View only</MenuItem>,
+    children: "Add",
+  };
+  const view = render(<SplitButton {...props} />);
+  const menu = screen.getByRole("button", { name: props.menuLabel });
+  await user.click(menu);
+  await user.click(await screen.findByRole("menuitem", { name: "View only" }));
+  expect(alternative).toHaveBeenCalledOnce();
+  expect(primary).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  expect(primary).toHaveBeenCalledOnce();
+  menu.focus();
+  await user.keyboard("{Enter}{Escape}");
+  await waitFor(() => expect(menu).toHaveFocus());
+  view.rerender(<SplitButton {...props} menuDisabled />);
+  expect(menu).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Add" })).toBeEnabled();
+  view.rerender(<SplitButton {...props} loading />);
+  expect(menu).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  expect(primary).toHaveBeenCalledOnce();
+});
 
 test.each([
   ["sm", "sm"],
@@ -622,3 +654,42 @@ test("search and code fields suppress correction without changing prose or expli
     expect(field).toHaveAttribute("spellcheck", "true");
   }
 });
+
+test.each(["default", "capsule", "palette"] as const)(
+  "search %s keeps trailing actions separate from editing and clear",
+  async (variant) => {
+    const user = userEvent.setup();
+    const action = vi.fn();
+    function Example() {
+      const [value, setValue] = useState("design");
+      return (
+        <SearchField
+          variant={variant}
+          label="Search records"
+          value={value}
+          onValueChange={setValue}
+          trailing={
+            <IconButton
+              aria-label="Filter records"
+              icon={<PlusIcon />}
+              onClick={action}
+            />
+          }
+        />
+      );
+    }
+    render(<Example />);
+    const input = screen.getByRole("searchbox", { name: "Search records" });
+    const filter = screen.getByRole("button", { name: "Filter records" });
+    await user.click(filter);
+    expect(action).toHaveBeenCalledOnce();
+    expect(input).toHaveValue("design");
+    await user.click(
+      screen.getByRole("button", { name: "Clear search records" }),
+    );
+    expect(input).toHaveValue("");
+    expect(input).toHaveFocus();
+    await user.tab();
+    expect(filter).toHaveFocus();
+  },
+);

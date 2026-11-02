@@ -181,6 +181,8 @@
   }
 }
 .blank {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
 }
@@ -282,4 +284,13 @@
   .chip {
     max-width: 11.875rem;
   }
+}
+
+.introduction {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  place-items: center;
+  padding: var(--space-6);
 }

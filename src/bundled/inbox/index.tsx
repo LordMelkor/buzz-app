@@ -16,7 +16,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
   ctx.shortcuts.register({
     id: "archive-conversation",
     title: "Archive or restore conversation",
-    // Me's Archive chat chord: Apple Mail's Archive, and Ctrl+Shift+E elsewhere.
+    // Solo's Archive chat chord: Apple Mail's Archive, and Ctrl+Shift+E elsewhere.
     binding: isApplePlatform(globalThis.navigator?.platform ?? "")
       ? { key: "a", mod: true, ctrl: true }
       : { key: "e", mod: true, shift: true },
@@ -36,6 +36,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
         relay={relay}
         navigator={navigator}
         extensions={ctx.conversation}
+        tabs={ctx.conversation.ui.Tabs}
         archive={archive}
       />
     ),

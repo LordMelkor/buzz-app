@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
-import { chooseColorMode, selectSettingsSection } from "./navigation.mjs";
+import {
+  chooseColorMode,
+  openSettings,
+  selectSettingsSection,
+  settingsSections,
+} from "./navigation.mjs";
 
 test.use({
   developmentReact: true,
@@ -18,9 +23,8 @@ test("Developer opens through App routing and restores from history", async ({
     route.fulfill({ json: { queries: 0, errors: 0, media: 0, connects: 0 } }),
   );
   await open(page, app);
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  const sections = page.getByRole("navigation", { name: "Settings sections" });
+  await openSettings(page);
+  const sections = settingsSections(page);
   const profile = sections.getByRole("button", {
     name: "Profile",
     exact: true,
@@ -36,7 +40,8 @@ test("Developer opens through App routing and restores from history", async ({
   ).toBeVisible();
   await page.reload();
   await expect(developer).toHaveAttribute("aria-current", "page");
-  await button(page, "Go back").click();
+  // The shell's Go back control is inert behind the modal; traverse history directly.
+  await page.goBack();
   await expect(profile).toHaveAttribute("aria-current", "page");
 });
 

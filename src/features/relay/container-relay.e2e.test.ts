@@ -3,6 +3,7 @@
 // BUZZ_E2E_OLD_RELAY_URL names a relay without NIP-CL (for example one built
 // from block/buzz main before NIP-CL) for the compatibility check.
 // For a relay behind a private CA, start vitest with NODE_EXTRA_CA_CERTS.
+// The live system channel check needs a relay with block/buzz#8406.
 //
 //   BUZZ_E2E_RELAY_URL=https://localhost:3443 \
 //   BUZZ_E2E_OLD_RELAY_URL=https://localhost:3444 \
@@ -281,7 +282,6 @@ it.skipIf(!oldRelayUrl)(
       s.channelDetails.save(details, { ...details, labels: ["e2e-old"] }),
     ).rejects.toThrow(unsupported);
     expect(sent()).toBe(queued);
-    expect(s.channelCreation.snapshot()).toBeUndefined();
 
     // The refusals left nothing stuck: the next ordinary create works.
     const after = await s.channelCreation.create({
@@ -293,5 +293,100 @@ it.skipIf(!oldRelayUrl)(
         expect(s.channels.list().channels.map((c) => c.id)).toContain(after),
       { timeout: 15_000 },
     );
+  },
+);
+
+/** A private system channel that holds one record. */
+async function systemChannel(owner: Awaited<ReturnType<typeof viewerSession>>) {
+  const label = `e2e-sys-${Date.now().toString(36)}`;
+  const id = await owner.session.channelCreation.create({
+    name: "records",
+    visibility: "private",
+    system: true,
+    labels: [label],
+  });
+  owner.session.messages.send(id, "shared record");
+  await vi.waitFor(
+    () =>
+      expect(
+        owner.session.outbox
+          ?.snapshot()
+          .filter((item) => item.event.kind === 9)
+          .every((item) => /accepted|seen/.test(item.delivery ?? "")),
+      ).toBe(true),
+    { timeout: 10_000 },
+  );
+  // The member path checks the channel the owner's session knows.
+  await owner.session.channels.findLabeled?.({
+    creator: owner.key.pubkey,
+    label,
+  });
+  expect(owner.session.channels.get?.(id)?.channelType).toBe("system");
+  return { id, label };
+}
+
+/** A running session whose channel list and live roster are ready. */
+async function runningSession(key = keypair()) {
+  const viewer = await viewerSession(key);
+  viewer.session.channels.ensureList();
+  await vi.waitFor(
+    () => {
+      expect(viewer.session.channels.list().status).toBe("ready");
+      expect(viewer.session.live.snapshot().roster.state).toBe("verified");
+    },
+    { timeout: 15_000 },
+  );
+  return viewer;
+}
+
+it.skipIf(!relayUrl)(
+  "a running session learns at once that it joined or left a system channel",
+  { timeout: 60_000 },
+  async () => {
+    const alice = await viewerSession();
+    const bob = await runningSession();
+    const { id } = await systemChannel(alice);
+    expect(bob.session.channels.get?.(id)).toBeUndefined();
+
+    // No refresh or restart: the relay's notice alone admits the channel.
+    const added = Date.now();
+    await alice.session.memberAdditions.add(id, bob.key.pubkey);
+    await vi.waitFor(
+      () =>
+        expect(bob.session.channels.get?.(id)).toMatchObject({
+          id,
+          channelType: "system",
+          members: expect.arrayContaining([bob.key.pubkey]),
+        }),
+      { timeout: 10_000 },
+    );
+    console.info("[e2e] running session admitted after", Date.now() - added);
+    expect(bob.session.channels.list().channels.map((c) => c.id)).not.toContain(
+      id,
+    );
+    bob.session.channels.ensure(id);
+    await vi.waitFor(
+      () =>
+        expect(
+          bob.session.channels.window(id).rows.map((row) => row.content),
+        ).toContain("shared record"),
+      { timeout: 10_000 },
+    );
+
+    // Removal reaches the running session the same way.
+    const removed = Date.now();
+    await alice.session.memberAdministration.run(id, {
+      pubkey: bob.key.pubkey,
+      expectedRole: "member",
+      role: "remove",
+    });
+    await vi.waitFor(
+      () =>
+        expect(bob.session.channels.get?.(id)?.members ?? []).not.toContain(
+          bob.key.pubkey,
+        ),
+      { timeout: 10_000 },
+    );
+    console.info("[e2e] running session dropped after", Date.now() - removed);
   },
 );

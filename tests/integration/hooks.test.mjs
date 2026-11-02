@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
@@ -11,7 +11,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,6 +71,8 @@ function fixture(t, { install = true } = {}) {
     "package.json",
     "lefthook.yml",
     "justfile",
+    // rustup selects the pinned toolchain from the working directory.
+    "rust-toolchain.toml",
     "scripts",
     ...biomePlugins.map((plugin) => path.normalize(plugin)),
   ];
@@ -440,7 +441,7 @@ function pushFixture(t, changes) {
   // a real cargo build, exactly like the fake Vitest below.
   rmSync(path.join(f.dir, "bin"));
   mkdirSync(path.join(f.dir, "bin"));
-  for (const tool of ["node", "pnpm", "lefthook", "lefthook-runner", "go"]) {
+  for (const tool of ["node", "pnpm", "lefthook"]) {
     symlinkSync(
       path.join(root, `bin/${tool}`),
       path.join(f.dir, `bin/${tool}`),
@@ -880,7 +881,7 @@ pre-push:
     isolated,
   );
   assert.equal(selected.status, 0, selected.stdout + selected.stderr);
-  assert.equal(selected.stdout, `${root}bin/lefthook\n2.2.3-buzz.1\n`);
+  assert.equal(selected.stdout, `${root}bin/lefthook\n2.2.2\n`);
   return { ...f, isolated };
 }
 
@@ -929,295 +930,4 @@ test("real lhm composes isolated system commands with the repository jobs", {
   for (const lane of ["unit", "--design", "--clippy"])
     assert.equal(f.read(`${lane}-input`), f.read("real-lhm-input"));
   assert.match(f.read("real-lhm-input"), /refs\/heads\/probe/);
-});
-
-for (const mode of ["standalone", "real lhm"]) {
-  test(`${mode} preserves overlapping worktree edits and recoverable failures`, {
-    skip: mode === "real lhm" && !process.env.BUZZ_REAL_LHM,
-    timeout: 30_000,
-  }, async (t) => {
-    const f = mode === "real lhm" ? lhmFixture(t) : fixture(t);
-    const isolated = f.isolated ?? {};
-    // Retain both a legacy-named user stash and a pre-existing recovery ref.
-    f.write("partial.ts", "export const legacy = 9;\n");
-    const legacy = f.git("stash", "create").trim();
-    f.git("stash", "store", "-m", "lefthook auto backup", legacy);
-    f.git("restore", "partial.ts");
-    f.git("update-ref", `refs/lefthook/backup/${legacy}`, legacy, "");
-    const stashes = f.git("stash", "list", "--format=%H %gs");
-    const sibling = path.join(f.dir, "sibling");
-    f.git("worktree", "add", "-q", "--detach", sibling);
-    for (const link of ["bin", "node_modules"])
-      symlinkSync(path.join(root, link), path.join(sibling, link), "dir");
-
-    // A handshake pauses inside the first production job, after the runner has
-    // hidden unstaged hunks. No sleep or scheduler speed determines overlap.
-    const server = createServer();
-    const sockets = new Set();
-    const waiting = new Map();
-    server.on("connection", (socket) => {
-      sockets.add(socket);
-      socket.once("data", (id) => waiting.get(id.toString())(socket));
-    });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => {
-      for (const socket of sockets) socket.destroy();
-      server.close();
-    });
-    const gate = `
-import { connect } from "node:net";
-import { readdirSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-if (process.env.BUZZ_HOOK_GATE) {
-  await new Promise((resolve, reject) => {
-    const socket = connect(Number(process.env.BUZZ_HOOK_GATE), "127.0.0.1", () => socket.write(process.env.BUZZ_HOOK_ID));
-    socket.on("error", reject);
-    socket.once("data", () => { socket.end(); resolve(); });
-  });
-}
-if (process.env.BUZZ_CORRUPT_RECOVERY) {
-  // Both commits have finished; only this failed run's worktree patches remain.
-  const dir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim() + "/info";
-  for (const name of readdirSync(dir))
-    if (name.startsWith("lefthook-unstaged")) writeFileSync(dir + "/" + name, "invalid patch\\n");
-}
-`;
-    const original = f.read("scripts/check-staged-names.mjs");
-    const staged = "export const first = 3;\nexport const second = 2;\n";
-    for (const [dir, id] of [
-      [f.dir, "main"],
-      [sibling, "linked"],
-    ]) {
-      writeFileSync(
-        path.join(dir, "scripts/check-staged-names.mjs"),
-        gate + original,
-      );
-      writeFileSync(path.join(dir, "probe.ts"), "export const value = 1;\n");
-      writeFileSync(path.join(dir, "partial.ts"), staged);
-      f.git("-C", dir, "add", "partial.ts", "probe.ts");
-      writeFileSync(
-        path.join(dir, "partial.ts"),
-        staged + `// precious-${id}\n`,
-      );
-    }
-    const refs = () =>
-      f
-        .git("for-each-ref", "--format=%(refname)", "refs/lefthook/backup/")
-        .trim()
-        .split("\n");
-    const start = (dir, id) => {
-      const ready = new Promise((resolve) => waiting.set(id, resolve));
-      const child = spawn("git", ["commit", "-qm", id], {
-        cwd: dir,
-        env: {
-          ...env,
-          ...isolated,
-          BUZZ_HOOK_GATE: String(server.address().port),
-          BUZZ_HOOK_ID: id,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let output = "";
-      child.stdout.on("data", (data) => {
-        output += data;
-      });
-      child.stderr.on("data", (data) => {
-        output += data;
-      });
-      t.after(() => {
-        if (child.exitCode === null) child.kill();
-      });
-      const done = new Promise((resolve, reject) => {
-        child.on("error", reject);
-        child.on("close", (code) =>
-          code === 0 ? resolve() : reject(new Error(output)),
-        );
-      });
-      return {
-        ready: Promise.race([
-          ready,
-          done.then(() => {
-            throw new Error("hook exited before gate");
-          }),
-        ]),
-        done,
-      };
-    };
-    const a = start(f.dir, "main");
-    const mainGate = await a.ready;
-    const mainRef = refs().find((ref) => !ref.endsWith(legacy));
-    assert.ok(mainRef);
-    const b = start(sibling, "linked");
-    const linkedGate = await b.ready;
-    const linkedRef = refs().find(
-      (ref) => ref !== mainRef && !ref.endsWith(legacy),
-    );
-    assert.ok(linkedRef);
-    f.git("gc", "--prune=now", "--quiet");
-    f.git("cat-file", "-e", `${linkedRef}^{commit}`);
-    mainGate.write("release");
-    await a.done;
-    assert.ok(refs().includes(linkedRef), "main cleanup removed linked backup");
-    linkedGate.write("release");
-    await b.done;
-    for (const [dir, id] of [
-      [f.dir, "main"],
-      [sibling, "linked"],
-    ]) {
-      assert.equal(f.git("-C", dir, "show", "HEAD:partial.ts"), staged);
-      assert.equal(
-        readFileSync(path.join(dir, "partial.ts"), "utf8"),
-        staged + `// precious-${id}\n`,
-      );
-      if (mode === "real lhm")
-        assert.equal(
-          readFileSync(path.join(dir, "real-lhm-source"), "utf8"),
-          "export const value = 1;\n",
-        );
-    }
-    assert.deepEqual(refs(), [`refs/lefthook/backup/${legacy}`]);
-    assert.equal(f.git("stash", "list", "--format=%H %gs"), stashes);
-
-    // Corrupt only this disposable fixture's recovery patches. The owned ref
-    // must survive failure and main-worktree GC and restore the original index.
-    const next = staged.replace("first = 3", "first = 4");
-    writeFileSync(path.join(sibling, "partial.ts"), next);
-    f.git("-C", sibling, "add", "partial.ts");
-    const index = f.git("-C", sibling, "write-tree");
-    writeFileSync(
-      path.join(sibling, "partial.ts"),
-      next + "// precious-failure\n",
-    );
-    const failed = f.run("git", ["-C", sibling, "commit", "-qm", "must fail"], {
-      ...isolated,
-      BUZZ_CORRUPT_RECOVERY: "1",
-    });
-    assert.notEqual(failed.status, 0, failed.stdout + failed.stderr);
-    const retained = refs().filter((ref) => !ref.endsWith(legacy));
-    assert.equal(retained.length, 1);
-    f.git("gc", "--prune=now", "--quiet");
-    f.git("cat-file", "-e", `${retained[0]}^{commit}`);
-    f.git(
-      "-C",
-      sibling,
-      "restore",
-      "--staged",
-      "--worktree",
-      "partial.ts",
-      "scripts/check-staged-names.mjs",
-    );
-    f.git("-C", sibling, "stash", "apply", "--index", retained[0]);
-    assert.equal(
-      readFileSync(path.join(sibling, "partial.ts"), "utf8"),
-      next + "// precious-failure\n",
-    );
-    assert.equal(f.git("-C", sibling, "write-tree"), index);
-    assert.equal(f.git("stash", "list", "--format=%H %gs"), stashes);
-  });
-}
-
-test("cleanup preserves a sibling stash inserted after the cleanup snapshot", {
-  timeout: 30_000,
-}, (t) => {
-  const f = fixture(t, { install: false });
-  // Permit the vulnerable official binary only in this disposable fixture, to
-  // demonstrate that the regression fails before the ownership fix.
-  f.write(
-    "lefthook.yml",
-    f.read("lefthook.yml").replace(/^min_version: .*$/m, "min_version: 2.2.2"),
-  );
-  const sibling = path.join(f.dir, "sibling");
-  f.git("worktree", "add", "-q", "--detach", sibling);
-  writeFileSync(path.join(sibling, "partial.ts"), "// sibling recovery\n");
-  const backup = f.git("-C", sibling, "stash", "create").trim();
-  assert.ok(backup);
-  const stashes = f.git("stash", "list", "--format=%H %gs");
-  const staged = "export const first = 3;\nexport const second = 2;\n";
-  const content = staged + "// precious unstaged edit\n";
-  f.write("partial.ts", staged);
-  f.git("add", "partial.ts");
-  f.write("partial.ts", content);
-  const realGit = f.run("/bin/sh", ["-c", "command -v git"]).stdout.trim();
-  assert.ok(path.isAbsolute(realGit));
-  const marker = path.join(f.dir, "cleanup-interleaved");
-  const message = "sibling recovery inserted during cleanup";
-  f.write(
-    "wrappers/git",
-    `#!${process.execPath}
-import { spawnSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
-const args = process.argv.slice(2);
-const run = (args) => {
-  const result = spawnSync(${JSON.stringify(realGit)}, args, { encoding: "utf8" });
-  if (result.error) throw result.error;
-  return result;
-};
-const insert = () => {
-  if (existsSync(${JSON.stringify(marker)})) return;
-  const result = run(["-C", ${JSON.stringify(sibling)}, "stash", "store", "--quiet", "--message", ${JSON.stringify(message)}, ${JSON.stringify(backup)}]);
-  if (result.status !== 0) throw new Error(result.stderr);
-  writeFileSync(${JSON.stringify(marker)}, JSON.stringify(args));
-};
-let result;
-if (args[0] === "stash" && args[1] === "list") {
-  // Capture the old positions, insert the sibling's stash, then return the
-  // stale snapshot. The vulnerable runner now drops the sibling's position.
-  result = run(args);
-  insert();
-} else {
-  // The repaired runner never lists stashes. Interleave at its atomic delete.
-  if (args[0] === "update-ref" && args[1] === "-d" && args[2].startsWith("refs/lefthook/backup/")) insert();
-  result = run(args);
-}
-process.stdout.write(result.stdout);
-process.stderr.write(result.stderr);
-process.exit(result.status ?? 1);
-`,
-  );
-  chmodSync(path.join(f.dir, "wrappers/git"), 0o755);
-  const runner =
-    process.env.BUZZ_RECOVERY_RUNNER ?? path.join(root, "bin/lefthook");
-  const result = f.run(runner, ["run", "pre-commit"], {
-    PATH: `${path.join(f.dir, "wrappers")}${path.delimiter}${env.PATH}`,
-  });
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.ok(existsSync(marker), "cleanup must cross the interleaving gate");
-  assert.equal(
-    f.git("stash", "list", "--format=%H %gs"),
-    `${backup} ${message}\n${stashes}`,
-    "cleanup removed the sibling's recovery stash",
-  );
-  assert.equal(f.git("show", ":partial.ts"), staged);
-  assert.equal(f.read("partial.ts"), content);
-  assert.equal(f.git("for-each-ref", "refs/lefthook/backup/"), "");
-});
-
-test("real lhm rejects an unpatched runner before changing staged or unstaged content", {
-  skip: !process.env.BUZZ_REAL_LHM || !process.env.BUZZ_STOCK_LEFTHOOK,
-}, (t) => {
-  const f = lhmFixture(t);
-  mkdirSync(path.join(f.dir, "stock"));
-  symlinkSync(
-    process.env.BUZZ_STOCK_LEFTHOOK,
-    path.join(f.dir, "stock/lefthook"),
-  );
-  f.write("partial.ts", "export const first = 3;\nexport const second = 2;\n");
-  f.git("add", "partial.ts");
-  f.write("partial.ts", "export const first = 3;\nexport const second = 99;\n");
-  const index = f.git("write-tree");
-  const content = f.read("partial.ts");
-  const stashes = f.git("stash", "list", "--format=%H %gs");
-  const result = f.run("git", ["commit", "-qm", "must fail"], {
-    ...f.isolated,
-    PATH: `${path.join(f.dir, "stock")}${path.delimiter}${f.isolated.PATH}`,
-  });
-  assert.notEqual(result.status, 0, result.stdout + result.stderr);
-  assert.match(
-    result.stdout + result.stderr,
-    /required lefthook version.*higher than current/,
-  );
-  assert.equal(f.git("write-tree"), index);
-  assert.equal(f.read("partial.ts"), content);
-  assert.equal(f.git("stash", "list", "--format=%H %gs"), stashes);
-  assert.equal(f.git("for-each-ref", "refs/lefthook/backup/"), "");
 });

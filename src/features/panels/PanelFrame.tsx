@@ -13,7 +13,11 @@ export function PanelFrame({
 }) {
   const split = usePanelSplit(420, 300);
   return (
-    <div ref={split.ref} style={split.style} className={styles.frame}>
+    <div
+      ref={split.ref}
+      style={split.style}
+      className={`${styles.frame} ${styles.splitMotion}`}
+    >
       <div className={styles.page}>{children}</div>
       <PanelDock
         open={!!companion}

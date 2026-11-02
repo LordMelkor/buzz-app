@@ -1,0 +1,118 @@
+@reference "../shared/styles/globals.css";
+
+.disclosure {
+  position: relative;
+  min-width: 0;
+}
+
+.clip {
+  overflow: hidden;
+}
+
+.clip[data-collapsed] {
+  mask-image: linear-gradient(
+    to bottom,
+    black calc(100% - 2 * var(--space-6)),
+    transparent
+  );
+}
+
+.more {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-2);
+}
+
+.more[data-collapsed] {
+  position: absolute;
+  inset: auto 0 0;
+  margin-top: 0;
+}
+
+.readme {
+  display: flow-root;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-standard);
+  @apply text-body-sm;
+}
+
+.readme :is(p, ul, ol, pre, blockquote, table, h3, h4, h5, h6) {
+  margin: var(--space-2) 0;
+}
+
+.readme > :first-child {
+  margin-top: 0;
+}
+
+.readme > :last-child {
+  margin-bottom: 0;
+}
+
+.readme :is(h3, h4) {
+  margin-top: var(--space-4);
+  @apply text-label;
+}
+
+.readme :is(h5, h6) {
+  @apply text-label-sm;
+}
+
+.readme h6 {
+  color: var(--text-secondary);
+}
+
+.readme :is(ul, ol) {
+  padding-left: var(--space-5);
+}
+
+.readme ul {
+  list-style: disc;
+}
+
+.readme ol {
+  list-style: decimal;
+}
+
+.readme code {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-sm);
+  line-height: var(--text-mono-sm--line-height);
+  letter-spacing: var(--text-mono-sm--letter-spacing);
+}
+
+.readme :not(pre) > code {
+  border-radius: var(--radius-chip);
+  background: var(--affordance-subtle);
+  padding: var(--space-half) var(--space-1h);
+  box-decoration-break: clone;
+}
+
+.readme :is(pre, table) {
+  display: block;
+  overflow-x: auto;
+}
+
+.readme :is(th, td) {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-standard);
+  text-align: left;
+  vertical-align: top;
+}
+
+.readme blockquote {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-standard);
+  color: var(--text-secondary);
+}
+
+.readme hr {
+  margin: var(--space-5) 0;
+  border: 0;
+  border-top: 1px solid var(--border-standard);
+}
+
+.readme a {
+  color: var(--text-link);
+  text-decoration: underline;
+}

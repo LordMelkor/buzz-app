@@ -272,6 +272,16 @@ export function createReadState({
     emit();
     return saved;
   }
+  /** A peer's save is already durable, so load it without writing it back.
+   * Only a missing record (first use, or cleared elsewhere) still saves. */
+  async function load() {
+    const current = await storage.read?.();
+    if (!current) return save((current) => current, false);
+    if (closed) return;
+    journal = current;
+    state = localState(current);
+    emit();
+  }
   const ready = queue(async () => {
     try {
       await save((current) => current, false);
@@ -294,7 +304,7 @@ export function createReadState({
     broadcast.onmessage = () => {
       void queue(async () => {
         try {
-          await save((current) => current, false);
+          await load();
           reconcileJournal();
         } catch (error) {
           health({ status: "error", error: errorText(error) });

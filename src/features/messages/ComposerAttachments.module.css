@@ -27,7 +27,7 @@
 .item {
   display: flex;
   align-items: center;
-  gap: calc(var(--space-5) / 2);
+  gap: calc(var(--space-5) / 2 + var(--space-1));
   padding: var(--space-2) calc(var(--space-5) / 2);
   margin-block: 0;
   box-sizing: border-box;
@@ -41,8 +41,7 @@
   position: relative;
   max-width: 100%;
 }
-.preview,
-.fileIcon {
+.preview {
   width: var(--size-control);
   height: var(--size-control);
   flex-shrink: 0;
@@ -59,6 +58,10 @@
 .preview {
   position: relative;
   cursor: pointer;
+}
+/* A staged GIF has no viewer; its thumbnail is not a control. */
+span.preview {
+  cursor: default;
 }
 .preview::after {
   content: "";

@@ -40,7 +40,11 @@ type Overlay =
   | {
       media: Pick<
         MediaReview,
-        "messageId" | "attachment" | "initialTime" | "hasComments"
+        | "messageId"
+        | "attachment"
+        | "initialTime"
+        | "hasComments"
+        | "initialAttachments"
       >;
       panel?: undefined;
     };
@@ -126,11 +130,18 @@ export function ConversationHost({
             attachment,
             initialTime,
             hasComments = false,
+            initialAttachments,
           ) => {
             if (active()) {
               enter();
               setOverlay({
-                media: { messageId, attachment, initialTime, hasComments },
+                media: {
+                  messageId,
+                  attachment,
+                  initialTime,
+                  hasComments,
+                  initialAttachments,
+                },
               });
             }
           },

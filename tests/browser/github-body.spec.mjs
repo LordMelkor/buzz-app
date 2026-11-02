@@ -17,7 +17,7 @@ const picture =
 const redirected =
   "https://objects.githubusercontent.com/github-production-user-asset-6210df/659873452-after.mp4";
 const videoPath = fileURLToPath(
-  new URL("../fixtures/message-gallery/assets/sample.mp4", import.meta.url),
+  new URL("../fixtures/github-body.mp4", import.meta.url),
 );
 const imagePath = fileURLToPath(
   new URL("../fixtures/attachment-media/still.png", import.meta.url),
@@ -114,24 +114,24 @@ test("PR media plays under the packaged media policy in a narrow GitHub panel", 
     name: "GitHub",
     exact: true,
   });
-  await panel
-    .getByRole("button", { name: "Expand Description", exact: true })
-    .click();
   await expect(
     panel.getByRole("heading", { name: "Before", exact: true }),
   ).toBeVisible();
   const videos = panel.locator("video");
   await expect(videos).toHaveCount(2);
   await expect(panel.locator("ol")).toHaveCSS("list-style-type", "decimal");
-  await expect(panel.locator("ul:not(.contains-task-list)")).toHaveCSS(
-    "list-style-type",
-    "disc",
-  );
+  await expect(
+    panel.locator("ul:not(.contains-task-list):not([aria-label])"),
+  ).toHaveCSS("list-style-type", "disc");
   for (let index = 0; index < 2; index++) {
     const video = videos.nth(index);
-    await panel
+    const preview = video.locator("..");
+    // The two-second fixture must not end while a slow runner prepares Pause.
+    await video.evaluate((element) => {
+      element.loop = true;
+    });
+    await preview
       .getByRole("button", { name: "Play video", exact: true })
-      .nth(index)
       .click();
     await expect
       .poll(() => video.evaluate((element) => element.currentTime))
@@ -139,9 +139,15 @@ test("PR media plays under the packaged media policy in a narrow GitHub panel", 
     await expect
       .poll(() => video.evaluate((element) => element.videoWidth))
       .toBeGreaterThan(0);
-    await panel
+    await preview
       .getByRole("button", { name: "Pause video", exact: true })
       .click();
+    await expect
+      .poll(() => video.evaluate((element) => element.paused))
+      .toBe(true);
+    await expect(
+      preview.getByRole("button", { name: "Play video", exact: true }),
+    ).toBeVisible();
   }
   for (const source of [before, after])
     await expect(panel.locator(`a[href="${source}"]`)).toHaveCount(0);
@@ -216,7 +222,6 @@ test("PR media plays under the packaged media policy in a narrow GitHub panel", 
       .scrollIntoViewIfNeeded();
     const overflow = await panel.evaluate((element) =>
       [...element.querySelectorAll("video, table, img")]
-        // Expanded descriptions retain hidden summary thumbnails in the DOM.
         // Only rendered media have bounds to compare with the panel.
         .filter((media) => media.getClientRects().length > 0)
         .map((media) => {

@@ -9,6 +9,8 @@ import {
   type Role,
 } from "../../../../src/shared/design-system/tokens/registry";
 
+import { BrandColors } from "./BrandColors";
+
 import { Note, PageHeader, Section, Swatch } from "./primitives";
 
 /**
@@ -86,7 +88,7 @@ export function ColorPage() {
 
       <Section
         title="Layer 0 — the palette"
-        description="Each hue has twelve steps with separate light and dark values. Define raw color values here, then use semantic roles in components. Choose the appropriate step in a shared mapping instead of changing opacity locally."
+        description="Each base hue and Appearance family has twelve steps, authored for light and dark modes. Define raw color values here, then use semantic roles in components. Choose the appropriate step in a shared mapping instead of changing opacity locally."
       >
         <div className="flex flex-col gap-6">
           {PALETTE.map((hue) => (
@@ -126,6 +128,8 @@ export function ColorPage() {
           ))}
         </div>
       </Section>
+
+      <BrandColors />
 
       <Section
         title="Legacy glass-study backgrounds"

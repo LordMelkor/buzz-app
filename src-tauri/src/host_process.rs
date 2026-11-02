@@ -2,11 +2,17 @@
 //! stdin stays open for the plugin, and stdout and stderr stream back as they
 //! arrive. A process belongs to the plugin that started it and to the page that
 //! asked; it is killed when the plugin asks, when the page reloads, or when the
-//! app exits. It runs with the user's own access: there is no sandbox.
-use crate::host_command::{effective_path, resolve_program};
+//! app exits. A page that reloaded hears nothing of it after. It runs with the
+//! user's own access, with optional native containment for protected workers.
+mod artifact;
+mod protection;
+use artifact::verify_artifact;
+use protection::ProcessProtection;
+
+use crate::host_command::{effective_path, load_login_shell_path, resolve_program};
 use crate::{with_manager, PluginManager};
 use buzzodz_plugins::HostProcess;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 #[cfg(unix)]
@@ -20,6 +26,19 @@ use tauri::Manager as _;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::oneshot;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProcessMcpConnection {
+    url: String,
+    headers: Vec<ProcessMcpHeader>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProcessMcpHeader {
+    name: String,
+    value: String,
+}
 
 /// Processes alive at once across all plugins.
 const MAX_PROCESSES: usize = 64;
@@ -112,7 +131,7 @@ impl HostProcesses {
         #[cfg(windows)]
         let mut child = job
             .spawn_hidden(&mut command)
-            .ok_or_else(|| format!("Could not start {program}"))?;
+            .map_err(|error| format!("Could not start {program}: {error}"))?;
         #[cfg(not(windows))]
         let mut child = command
             .spawn()
@@ -187,10 +206,17 @@ impl HostProcesses {
             for reader in readers.into_iter().flatten() {
                 let _ = reader.await;
             }
-            state.registry().entries.remove(&handle);
-            let _ = on_event.send(ProcessEvent::Exit {
-                code: status.and_then(|status| status.code()),
-            });
+            let mut registry = state.registry();
+            registry.entries.remove(&handle);
+            // A page that reloaded is told nothing: it stopped the process by
+            // going, and may run until it unloads, taking the exit for a failure.
+            let reloaded = registry.page != page;
+            drop(registry);
+            if !reloaded {
+                let _ = on_event.send(ProcessEvent::Exit {
+                    code: status.and_then(|status| status.code()),
+                });
+            }
         });
         Ok(handle)
     }
@@ -230,7 +256,7 @@ impl HostProcesses {
         }
         Ok(())
     }
-    /// Stops every process: the page that owned them is gone.
+    /// Stops every process, without telling the page: it is gone.
     pub(crate) fn stop_all(&self) {
         let mut registry = self.registry();
         registry.page += 1;
@@ -280,31 +306,101 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
     cwd: Option<String>,
     env: Option<HashMap<String, Option<String>>>,
     on_event: Channel<ProcessEvent>,
+    mcp: Option<ProcessMcpConnection>,
+    protection: Option<ProcessProtection>,
 ) -> Result<u64, String> {
     let page = processes.page();
     let plugin = id.clone();
-    let declared = with_manager(manager, move |manager| {
+    let (declared, registry) = with_manager(manager, move |manager| {
+        let registry = manager.storage_root().to_path_buf();
         manager
             .host_grants(&id, &revision)?
             .processes
             .into_iter()
             .find(|process| process.id == process_id)
             .ok_or_else(|| "Process is not declared".into())
+            .map(|declared| (declared, registry))
     })
     .await?;
     if args.len() > 256 || args.iter().any(|arg| arg.contains('\0')) {
         return Err("Invalid process arguments".into());
     }
+    let protected = protection.is_some();
+    if protected {
+        if !cfg!(target_os = "macos") {
+            return Err("Protected workers require macOS".into());
+        }
+        // HMR sources are mutable outside the native-owned application bundle.
+        if tauri::is_dev() {
+            return Err("Use a packaged Buzz build for protected workers; development frontends are mutable".into());
+        }
+    }
+    load_login_shell_path().await;
     let path = effective_path();
-    let program = program_path(&declared, || app.path().resource_dir().ok(), &path)?;
-    let mut command = Command::new(program);
-    command
-        .args(&declared.args)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    let controls = if protected {
+        Some(
+            app.state::<crate::agent_state::AgentState>()
+                .agents_root()?
+                .to_path_buf(),
+        )
+    } else {
+        None
+    };
+    let resources = app.path().resource_dir().ok();
+    let descriptor = declared.clone();
+    let launch_path = path.clone();
+    let store = controls.as_ref().map(|root| root.join("artifacts"));
+    // Native engines can be hundreds of MB; read/hash/copy off the async runtime.
+    let program = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(store) = store {
+            protected_program_path(&descriptor, || resources, &store)
+        } else {
+            program_path(&descriptor, || resources, &launch_path)
+        }
+    })
+    .await
+    .map_err(|_| "Artifact preparation failed")??;
+    let artifact_parent = declared.artifact.as_ref().map(|_| {
+        program
+            .parent()
+            .expect("absolute artifact path has a parent")
+            .to_path_buf()
+    });
+    let helper = if mcp.is_some() {
+        let resources = app.path().resource_dir().map_err(|_| "No app resources")?;
+        Some(resources.join("bin").join(if cfg!(windows) {
+            "buzz-agent-command.exe"
+        } else {
+            "buzz-agent-command"
+        }))
+    } else {
+        None
+    };
+    let mut command = if let Some(protection) = protection {
+        let controls = controls.ok_or("Agent controls are unavailable")?;
+        std::fs::create_dir_all(&controls).map_err(|_| "Agent controls are unavailable")?;
+        let executable =
+            std::env::current_exe().map_err(|_| "Application executable is unavailable")?;
+        let bundle = executable
+            .ancestors()
+            .find(|p| p.extension().is_some_and(|extension| extension == "app"))
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or(executable);
+        let mut protected_roots = vec![controls, bundle, registry];
+        if let Some(parent) = artifact_parent {
+            protected_roots.push(parent);
+        }
+        let profile = protection.profile(&protected_roots)?;
+        process_command(
+            &program,
+            helper.as_deref(),
+            Some(&profile),
+            &declared.args,
+            &args,
+        )
+    } else {
+        process_command(&program, helper.as_deref(), None, &declared.args, &args)
+    };
     // Never pass on an identity the app itself was started with.
     for (name, _) in std::env::vars_os() {
         let text = name.to_string_lossy();
@@ -313,7 +409,8 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
         }
     }
     command.env("PATH", &path);
-    for (name, value) in env.unwrap_or_default() {
+    let environment = env.unwrap_or_default();
+    for (name, value) in &environment {
         if name.is_empty() || name.contains(['=', '\0']) {
             return Err("Invalid environment variable".into());
         }
@@ -321,6 +418,28 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
             Some(value) => command.env(name, value),
             None => command.env_remove(name),
         };
+    }
+    if protected {
+        for name in std::env::vars_os()
+            .map(|(name, _)| name)
+            .chain(environment.keys().map(std::ffi::OsString::from))
+        {
+            let text = name.to_string_lossy();
+            if matches!(
+                text.as_ref(),
+                "BASH_ENV" | "ENV" | "NODE_OPTIONS" | "NODE_PATH"
+            ) || text.starts_with("LD_")
+                || text.starts_with("DYLD_")
+            {
+                command.env_remove(name);
+            }
+        }
+    }
+    if let Some(mcp) = mcp {
+        command.env(
+            "BUZZ_AGENT_CONNECTION",
+            serde_json::to_string(&mcp).map_err(|error| error.to_string())?,
+        );
     }
     if let Some(cwd) = cwd {
         let directory = expand_home(&cwd)?;
@@ -332,6 +451,35 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
     command.as_std_mut().process_group(0);
 
     processes.start(page, plugin, &declared.program, command, on_event)
+}
+
+/// The verified target stays inside the MCP prefix and the same containment.
+fn process_command(
+    program: &std::path::Path,
+    helper: Option<&std::path::Path>,
+    profile: Option<&str>,
+    declared_args: &[String],
+    args: &[String],
+) -> Command {
+    let executable = helper.unwrap_or(program);
+    let mut command = if let Some(profile) = profile {
+        let mut command = Command::new("/usr/bin/sandbox-exec");
+        command.args(["-p", profile]).arg(executable);
+        command
+    } else {
+        Command::new(executable)
+    };
+    if helper.is_some() {
+        command.arg("--launch").arg(program);
+    }
+    command
+        .args(declared_args)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    command
 }
 
 /// Writes `data` to the process's stdin; `close` then ends its input.
@@ -420,6 +568,9 @@ fn program_path(
     resources: impl FnOnce() -> Option<PathBuf>,
     path: &OsStr,
 ) -> Result<PathBuf, String> {
+    if let Some(artifact) = &declared.artifact {
+        return verify_artifact(artifact);
+    }
     if !declared.bundled {
         return Ok(resolve_program(&declared.program, path));
     }
@@ -427,10 +578,31 @@ fn program_path(
     Ok(resources.join("bin").join(&declared.program))
 }
 
-fn expand_home(directory: &str) -> Result<PathBuf, String> {
+/// Contained launches never resolve an executable on a worker-writable PATH.
+fn protected_program_path(
+    declared: &HostProcess,
+    resources: impl FnOnce() -> Option<PathBuf>,
+    store: &std::path::Path,
+) -> Result<PathBuf, String> {
+    if let Some(artifact) = &declared.artifact {
+        return artifact::snapshot(artifact, store);
+    }
+    if !declared.bundled {
+        return Err("Protected processes require a declared artifact or bundled executable".into());
+    }
+    program_path(declared, resources, OsStr::new(""))
+}
+
+/// The rest of a path written `~/…`, or on Windows also `~\…`.
+pub(crate) fn under_home(path: &str) -> Option<&str> {
+    path.strip_prefix("~/")
+        .or_else(|| path.strip_prefix("~\\").filter(|_| cfg!(windows)))
+}
+
+pub(crate) fn expand_home(directory: &str) -> Result<PathBuf, String> {
     let path = if directory == "~" {
         home()?
-    } else if let Some(rest) = directory.strip_prefix("~/") {
+    } else if let Some(rest) = under_home(directory) {
         home()?.join(rest)
     } else {
         PathBuf::from(directory)
@@ -441,8 +613,15 @@ fn expand_home(directory: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 fn home() -> Result<PathBuf, String> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
+    // Windows' own profile folder, never a `HOME` another tool set, such as
+    // Git for Windows' `/c/Users/…`.
+    #[cfg(windows)]
+    let order = ["USERPROFILE", "HOME"];
+    #[cfg(not(windows))]
+    let order = ["HOME", "USERPROFILE"];
+    order
+        .into_iter()
+        .find_map(std::env::var_os)
         .map(PathBuf::from)
         .ok_or_else(|| "No home directory".into())
 }

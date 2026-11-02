@@ -111,7 +111,7 @@ test("a held native registry lock cannot accumulate replacement catalog reads", 
     await settle();
     assert.equal(plugins.startup(), "ready");
     // A separate native writer must remain observable after lock recovery.
-    await result(native("change", "disable", "buzz.emoji"));
+    await result(native("change", "disable", "buzz.links"));
     t.mock.timers.tick(1000);
     assert.equal(reads.length, 3);
     await reads[2];
@@ -120,7 +120,7 @@ test("a held native registry lock cannot accumulate replacement catalog reads", 
       plugins
         .snapshot()
         .configuration.catalog.plugins.find(
-          (plugin) => plugin.manifest.id === "buzz.emoji",
+          (plugin) => plugin.manifest.id === "buzz.links",
         ).enabled,
       false,
     );

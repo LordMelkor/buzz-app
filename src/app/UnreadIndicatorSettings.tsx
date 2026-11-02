@@ -4,6 +4,7 @@ import { ToastNotice } from "../shared/design-system/ui/Toast";
 import { useSyncExternalStore } from "react";
 import type { UnreadIndicator } from "../features/notifications/indicator";
 import { Button } from "../shared/design-system/ui/Button";
+import { usePermissionCheck } from "./usePermissionCheck";
 
 export function UnreadIndicatorSettings({
   indicator,
@@ -13,6 +14,7 @@ export function UnreadIndicatorSettings({
   active?: boolean;
 }) {
   const state = useSyncExternalStore(indicator.subscribe, indicator.snapshot);
+  const [checking, checkPermission] = usePermissionCheck(indicator.refresh);
   if (!indicator.available) return null;
   return (
     <div className="space-y-3">
@@ -56,7 +58,8 @@ export function UnreadIndicatorSettings({
             <Button
               type="button"
               disabled={state.requesting}
-              onClick={() => void indicator.refresh()}
+              loading={checking}
+              onClick={checkPermission}
             >
               Check Dock permission
             </Button>

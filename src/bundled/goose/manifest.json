@@ -3,13 +3,13 @@
   "name": "Goose",
   "apiVersion": 1,
   "description": "Run local Goose agents in Buzz.",
-  "discovery": { "category": "agents" },
+  "discovery": {
+    "category": "agents",
+    "tags": ["Essentials", "code", "coding-agents"]
+  },
   "host": {
-    "processes": [
-      { "id": "goose", "program": "goose-acp", "bundled": true },
-      { "id": "read", "program": "base64", "args": ["-i"] },
-      { "id": "workspace", "program": "pwd" }
-    ],
-    "mcp": true
+    "processes": [{ "id": "goose", "program": "goose-acp", "bundled": true }],
+    "mcp": true,
+    "files": true
   }
 }

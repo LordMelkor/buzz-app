@@ -9,6 +9,13 @@ test("browser command returns successful stdout", () => {
   assert.equal(node('process.stdout.write("ready")'), "ready");
 });
 
+test("browser command preserves discovery output larger than the default buffer", () => {
+  const report = node(
+    'process.stdout.write(JSON.stringify({ tests: "x".repeat(2 * 1024 * 1024) }))',
+  );
+  assert.equal(JSON.parse(report).tests.length, 2 * 1024 * 1024);
+});
+
 test("browser command reports exit status and both output streams", () => {
   assert.throws(
     () =>

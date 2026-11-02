@@ -1,0 +1,62 @@
+[advisories]
+ignore = [
+    # webpki-roots 0.26.11 only re-exports 1.x TLS_SERVER_ROOTS, locked to
+    # patched 1.0.10. The advisory also flags this root-free compatibility
+    # crate. The bans below reject every other affected version; remove this
+    # exception when tokio-tungstenite stops using the compatibility crate.
+    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 re-exports patched 1.0.10; bans reject all other affected versions" },
+    # Match the pinned buzz-audio-client's audit: NetEQ =0.8.3 declares ringbuf
+    # but its published Rust sources never use it. Consumer::skip/clear and
+    # their panic-unsafe Drop path are therefore unreachable. NetEQ 0.9.1 still
+    # declares ringbuf 0.3; ringbuf itself is fixed in 0.5.2. Keep the exact
+    # upstream NetEQ pin and wrapper ban below together; re-audit or remove
+    # this exception when NetEQ changes or removes the unused dependency.
+    { id = "RUSTSEC-2026-0293", reason = "unused dependency of audited, exactly pinned neteq 0.8.3; no Rust references to ringbuf; other consumers forbidden by bans.deny" },
+    # instant 0.1.13 — unmaintained, not vulnerable. nostr 0.44 → instant (via
+    # Buzz and buzz-pairing). Remove when nostr 0.44 is gone.
+    { id = "RUSTSEC-2024-0384", reason = "instant via nostr 0.44; unmaintained, not vulnerable" },
+    # zbus 5 D-Bus crates — unmaintained, not vulnerable. Linux only:
+    # Buzz, tauri-plugin-opener and tauri-plugin-single-instance →
+    # zbus 5. Remove when those move off zbus 5.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant via zbus 5 (Buzz, tauri-plugin-opener, tauri-plugin-single-instance); unmaintained, not vulnerable" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names via zbus 5 (Buzz, tauri-plugin-opener, tauri-plugin-single-instance); unmaintained, not vulnerable" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive via zbus 5 (Buzz, tauri-plugin-opener, tauri-plugin-single-instance); unmaintained, not vulnerable" },
+    # mach 0.1.2/0.3.2 — unmaintained, not vulnerable. macOS only: user-idle 0.6
+    # → mach, and user-idle → IOKit-sys/CoreFoundation-sys → mach.
+    # Remove when user-idle moves to mach2 or buzz-app replaces user-idle.
+    { id = "RUSTSEC-2020-0168", reason = "mach via user-idle (and its IOKit-sys/CoreFoundation-sys); unmaintained, not vulnerable" },
+    # proc-macro-error 1.0.4 — unmaintained, not vulnerable. Linux GTK, build-time
+    # proc macro: tauri → gtk 0.18 → glib-macros/gtk3-macros.
+    # Remove when tauri's Linux stack leaves gtk-rs 0.18.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error via tauri → gtk 0.18 → glib-macros/gtk3-macros; unmaintained, not vulnerable" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+    "BSL-1.0",
+    "Unlicense",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+deny = [
+    { name = "webpki-roots", version = "<0.26.11", reason = "RUSTSEC-2026-0381: vulnerable root bundle" },
+    { name = "webpki-roots", version = ">0.26.11, <1.0.10", reason = "RUSTSEC-2026-0381: only the 0.26.11 re-export shim may use an older version" },
+    { name = "ringbuf", version = "<0.5.2", wrappers = ["neteq"], reason = "only audited NetEQ may declare this unused vulnerable dependency; all other consumers must use a patched release" },
+]

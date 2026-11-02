@@ -144,4 +144,36 @@ export function apply(ctx: Context) {
       );
     },
   });
+  ctx.pages.register({
+    id: "tabs",
+    title: "Test page tabs",
+    component: function TabsConsumer() {
+      const connection = React.useSyncExternalStore(
+        relay.subscribe,
+        relay.snapshot,
+        relay.snapshot,
+      );
+      const Tabs = ui.ui.Tabs;
+      if (!Tabs || connection.status !== "ready")
+        return h("p", null, "No tab workspace.");
+      return h(Tabs, {
+        id: "tabs",
+        session: connection.session,
+        scope: connection.scope ?? "disconnected",
+        label: "Test page tabs",
+        children: (open) =>
+          h(
+            "button",
+            {
+              type: "button",
+              onClick: () => {
+                const channel = connection.session.channels.list().channels[0];
+                if (channel) open({ channelId: channel.id });
+              },
+            },
+            "Open first channel",
+          ),
+      });
+    },
+  });
 }

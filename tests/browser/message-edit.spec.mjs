@@ -107,9 +107,21 @@ test("Up and Cmd+Up edit in the existing composer and restore native focus, draf
     await page.getByRole("button", { name: "Retry edit", exact: true }).click();
     await expect(input).toBeFocused();
     await expect(input).toHaveJSProperty("value", "");
-    await expect(
-      page.getByText("Revised caption reject", { exact: true }),
-    ).toBeVisible();
+    // The applied edit replaces the caption and marks it as edited.
+    const revised = page.getByText("Revised caption reject (edited)", {
+      exact: true,
+    });
+    await expect(revised).toBeVisible();
+    // The marker is metadata, so a selection of the caption leaves it out.
+    expect(
+      await revised.evaluate((caption) => {
+        const selection = getSelection();
+        selection?.selectAllChildren(caption);
+        const text = selection?.toString() ?? "";
+        selection?.removeAllRanges();
+        return text.trim();
+      }),
+    ).toBe("Revised caption reject");
     await expect(
       page.getByRole("link", { name: "Download report.txt", exact: true }),
     ).toBeVisible();

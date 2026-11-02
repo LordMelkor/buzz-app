@@ -68,7 +68,7 @@ function session(scope: string) {
           : `Channel ${index + 1}`,
     ),
     // The second channel exercises the real session's read-only empty state.
-    ...(index
+    ...(index || fixtureParams.has("empty")
       ? []
       : [
           signed(viewer, {
@@ -258,6 +258,13 @@ Object.assign(window, {
         ),
       ]);
     },
+    joinUnrelatedChannel: () => {
+      const id = extraChannels[0] as string;
+      incoming?.([
+        roster(authority, id, [viewer.pubkey], 1_800_002_000),
+        metadata(authority, id, "Unrelated channel", 1_800_002_000),
+      ]);
+    },
     restoreAccess: () =>
       incoming?.([
         roster(authority, fixtureChannel, [viewer.pubkey], 1_800_000_001),
@@ -348,6 +355,7 @@ function Fixture() {
         <OutboxStatus
           outbox={owner.session.outbox}
           profiling={owner.session.profiling}
+          memberAdditions={owner.session.memberAdditions}
         />
       )}
     </main>

@@ -10,6 +10,9 @@ import { PanelDock } from "../../features/panels/PanelDock";
 import { PanelView } from "../../features/panels/PanelView";
 import styles from "./Channels.module.css";
 
+const launcherOrder = (key: string) =>
+  key === "buzz.huddles/huddles" ? 0 : key === "buzz.github/object" ? 1 : 2;
+
 type Opening = {
   panel: RegisteredPanel;
   context: ChannelPanelContext;
@@ -36,6 +39,7 @@ export function useChannelPanels(
     canOpen(target: string): boolean;
     open(target: string): boolean;
   }>,
+  openMembers?: () => void,
 ) {
   const available = useSyncExternalStore(
     panels.subscribe,
@@ -87,6 +91,8 @@ export function useChannelPanels(
       <div className={styles.channelLaunchers}>
         {available
           .filter((panel) => panel.channelLauncher)
+          // Keep the PR shortcut beside the call control after plugin re-enable.
+          .sort((a, b) => launcherOrder(a.key) - launcherOrder(b.key))
           .map((panel) => {
             const Launcher = panel.channelLauncher;
             if (!Launcher) return null;
@@ -100,6 +106,13 @@ export function useChannelPanels(
                   tabbed
                     ? !!tabs?.pressed(panel, context)
                     : selected?.panel === panel
+                }
+                openMembers={
+                  openMembers
+                    ? () => {
+                        if (bound(context, panel)) openMembers();
+                      }
+                    : undefined
                 }
                 available={() => bound(context, panel)}
                 // Presentation can ask during render, before the binding is live.

@@ -758,3 +758,10 @@
 .component-specimen-group > h2 {
   scroll-margin-block-start: var(--space-8);
 }
+
+/* Viewer-only gradient reference layout. */
+.brand-gradient-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: var(--space-4);
+}

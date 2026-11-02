@@ -1,15 +1,21 @@
-import { openPage, selectSettingsSection } from "./navigation.mjs";
+import { pluginAction } from "./plugin-settings.mjs";
+import { openCommunityPicker } from "./navigation.mjs";
+import {
+  closeSettings,
+  openSettings,
+  openPage,
+  selectSettingsSection,
+} from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 
 test.use({ historyCounts: { alpha: 1, beta: 0 } });
 const button = (page, name) => page.getByRole("button", { name, exact: true });
 async function plugins(page) {
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await selectSettingsSection(page, "Plugins");
+  await openSettings(page);
+  await selectSettingsSection(page, "Manage plugins");
 }
 
-// Representative app wiring: real catalogs -> Settings switches -> sidebar page,
+// Representative app wiring: real catalogs -> Settings actions -> sidebar page,
 // across reload. Choice permutations live in storage unit tests.
 test("Bestie opts in without changing the other bundled defaults and survives reload", async ({
   page,
@@ -19,19 +25,21 @@ test("Bestie opts in without changing the other bundled defaults and survives re
   await openPage(page, "Messages");
   await expect(button(page, "Bestie")).toHaveCount(0);
   await plugins(page);
-  const bestie = page.getByRole("switch", {
-    name: "Enable Bestie",
-    exact: true,
-  });
-  await expect(bestie).not.toBeChecked();
-  for (const name of ["GitHub", "Terminal", "Workflows", "Hosted communities"])
-    await expect(
-      page.getByRole("switch", { name: `Enable ${name}`, exact: true }),
-    ).toBeChecked();
+  const bestie = pluginAction(page, "Bestie");
+  await expect(bestie).toHaveAccessibleName(/^Enable /);
+  for (const name of [
+    "GitHub",
+    "Terminal",
+    "Workflows",
+    "Builderlab",
+    "Attention",
+  ])
+    await expect(pluginAction(page, name)).toHaveAccessibleName(/^Disable /);
   await bestie.click();
-  await expect(bestie).toBeChecked();
+  await expect(bestie).toHaveAccessibleName(/^Disable /);
   await page.reload();
-  await expect(bestie).toBeChecked();
+  await expect(bestie).toHaveAccessibleName(/^Disable /);
+  await closeSettings(page);
   await openPage(page, "Messages");
   await expect(
     page
@@ -48,15 +56,17 @@ test("Bestie opts in without changing the other bundled defaults and survives re
   ).toBeVisible();
   await plugins(page);
   await bestie.click();
-  await expect(bestie).not.toBeChecked();
+  await expect(bestie).toHaveAccessibleName(/^Enable /);
   await page.reload();
-  await expect(bestie).not.toBeChecked();
+  await expect(bestie).toHaveAccessibleName(/^Enable /);
+  // The workspace behind Settings is hidden from the accessibility tree.
+  await closeSettings(page);
   await expect(button(page, "Bestie")).toHaveCount(0);
 });
 
 // Real App -> shell -> rail Settings-registry wiring, including the scoped
 // destination. Role and contribution-removal permutations stay in jsdom.
-test("Community admin toggle removes and restores the working Invite destination", async ({
+test("Membership action removes and restores the working Invite destination", async ({
   page,
   app,
 }) => {
@@ -73,29 +83,44 @@ test("Community admin toggle removes and restores the working Invite destination
     exact: true,
   });
   const menu = async () => {
+    await openCommunityPicker(page);
     await button(page, "Switch to Primary").click({ button: "right" });
     await expect(
       page.getByRole("menu", { name: "Actions for Primary" }),
     ).toBeVisible();
   };
+  await plugins(page);
+  const admin = pluginAction(page, "Membership");
+  await expect(admin).toHaveAccessibleName(/^Disable /);
+  const moderation = pluginAction(page, "Moderation");
+  await expect(moderation).toHaveAccessibleName("Disable Moderation");
+  await expect(moderation).toHaveAccessibleDescription(
+    "Access is unavailable in this build or on this relay.",
+  );
+  await expect(moderation).not.toHaveAttribute("aria-disabled", "true");
+  await moderation.click();
+  await expect(moderation).toHaveAccessibleName("Unavailable Moderation");
+  await page.reload();
+  await expect(moderation).toHaveAccessibleName("Unavailable Moderation");
+  await expect(admin).toHaveAccessibleName(/^Disable /);
+  await closeSettings(page);
   await menu();
   await expect(invite).toBeVisible();
   await page.keyboard.press("Escape");
   await plugins(page);
-  const admin = page.getByRole("switch", {
-    name: "Enable Community admin",
-    exact: true,
-  });
   await admin.click();
-  await expect(admin).not.toBeChecked();
+  await expect(admin).toHaveAccessibleName(/^Enable /);
+  await closeSettings(page);
   await menu();
   await expect(invite).toHaveCount(0);
   await expect(
-    page.getByRole("menuitem", { name: "Community settings", exact: true }),
+    page.getByRole("menuitem", { name: "Leave community", exact: true }),
   ).toBeVisible();
   await page.keyboard.press("Escape");
+  await plugins(page);
   await admin.click();
-  await expect(admin).toBeChecked();
+  await expect(admin).toHaveAccessibleName(/^Disable /);
+  await closeSettings(page);
   await menu();
   await invite.click();
   await expect(

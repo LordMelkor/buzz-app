@@ -27,6 +27,7 @@ import {
   ChannelDetailsEditor,
   type ChannelDetailsAction,
 } from "./ChannelDetailsEditor";
+import { writeClipboardText } from "../../shared/clipboard";
 
 export function ChannelSettingsPanel({
   channel,
@@ -145,39 +146,24 @@ export function ChannelSettingsPanel({
                 </h3>
               </div>
               <dl className={styles.settingsDetails}>
-                {channel.channelType !== "session" &&
+                {channel.channelType !== "solo" &&
                   channel.channelType !== "dm" && (
-                    <>
-                      <SettingsDetail
-                        label="Description"
-                        value={
-                          channel.description === undefined
-                            ? "Not available"
-                            : channel.description || "No description"
-                        }
-                        valueClassName={styles.settingsDescription}
-                        actionLabel="Edit"
-                        loading={edit?.pending}
-                        onOpen={
-                          edit
-                            ? (trigger) => edit.open(trigger, "description")
-                            : undefined
-                        }
-                      />
-                      <SettingsDetail
-                        label="Visibility"
-                        value={
-                          channel.visibility === "public"
-                            ? "Public"
-                            : channel.visibility === "private"
-                              ? "Private"
-                              : "Not available"
-                        }
-                        actionLabel="Edit"
-                        loading={edit?.pending}
-                        onOpen={edit?.open}
-                      />
-                    </>
+                    <SettingsDetail
+                      label="Description"
+                      value={
+                        channel.description === undefined
+                          ? "Not available"
+                          : channel.description || "No description"
+                      }
+                      valueClassName={styles.settingsDescription}
+                      actionLabel="Edit"
+                      loading={edit?.pending}
+                      onOpen={
+                        edit
+                          ? (trigger) => edit.open(trigger, "description")
+                          : undefined
+                      }
+                    />
                   )}
                 {channel.members && (
                   <SettingsDetail
@@ -314,7 +300,7 @@ function ChannelIdDetail({ id }: { id: string }) {
     setFeedbackOpen(false);
     setState("copying");
     try {
-      await navigator.clipboard.writeText(id);
+      await writeClipboardText(id);
       setState("copied");
       setFeedbackOpen(true);
     } catch {

@@ -1,3 +1,4 @@
+import { selectCommunity } from "./navigation.mjs";
 import { test, expect, historySize } from "./fixture.mjs";
 import { streamEvidence } from "./stream-evidence.mjs";
 
@@ -124,7 +125,7 @@ readingTest(
       await button(page, "Alpha").click();
       await settle(page);
       await expectAnchor(page, saved);
-      await button(page, "Switch to Secondary").click();
+      await selectCommunity(page, "Secondary");
       await composer(page, "Alpha").waitFor();
       await expect(composer(page, "Alpha")).toHaveJSProperty(
         "value",
@@ -145,7 +146,7 @@ readingTest(
       });
       expect(persisted?.anchor?.id).toBe(saved.id);
       await composer(page, "Alpha").fill("B draft");
-      await button(page, "Switch to Primary").click();
+      await selectCommunity(page, "Primary");
       await expect(composer(page, "Alpha")).toHaveJSProperty(
         "value",
         "A draft",
@@ -189,8 +190,8 @@ readingTest(
     await expectAnchor(page, reloadedAnchor);
     const jumpToLatest = history(page).locator("button[data-jump-to-latest]");
     await expect(jumpToLatest).toBeVisible();
-    await expect(jumpToLatest).toHaveCSS("border-radius", "26px");
-    await expect(jumpToLatest.locator("..")).toHaveCSS("border-radius", "26px");
+    await expect(jumpToLatest).toHaveCSS("border-radius", "34px");
+    await expect(jumpToLatest.locator("..")).toHaveCSS("border-radius", "34px");
     await jumpToLatest.focus();
     await page.keyboard.press("Enter");
     await expect(history(page)).toBeFocused();

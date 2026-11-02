@@ -73,6 +73,60 @@ export async function leaveCommunity(
   }
 }
 
+export type DepartureIntent = "leave" | "remove";
+export type Departure =
+  | (DeviceRemovalResult & Readonly<{ intent: "remove" }>)
+  | (CommunityLeaveResult & Readonly<{ intent: "leave" }>);
+
+/** Runs the chosen departure. Removal never contacts the relay, so it stays
+ * available for a community whose relay can no longer be reached. */
+export async function departCommunity(
+  communities: Communities,
+  membership: Membership,
+  intent: DepartureIntent,
+): Promise<Departure> {
+  return intent === "remove"
+    ? { intent, ...(await removeCommunityFromDevice(communities, membership)) }
+    : { intent, ...(await leaveCommunity(communities, membership)) };
+}
+
+/** The notice for a finished departure and its toast tone. Removal only
+ * follows a leave its relay never settled, which may still have applied, so
+ * the notice cannot claim the membership is unchanged. */
+export function departedText(
+  name: string,
+  departure: Departure,
+): [string, "success" | "info"] {
+  const residue = departure.residue.length > 0;
+  if (departure.intent === "remove") {
+    const removed = `${name} was removed from this device. Its relay didn’t confirm the leave, so you may still be a member.`;
+    return [
+      residue ? `${removed} Some saved data couldn’t be cleared.` : removed,
+      "success",
+    ];
+  }
+  return [
+    leftCommunityText(name, departure.outcome, residue),
+    departure.outcome === "left" ? "success" : "info",
+  ];
+}
+
+/** Once the relay accepts a leave, a device persistence failure has different
+ * recovery copy from a request it never settled. */
+export function departureFailureText(
+  name: string,
+  intent: DepartureIntent,
+  error: unknown,
+) {
+  const departure =
+    error instanceof CommunityDepartureError ? error : undefined;
+  if (intent === "remove")
+    return deviceRemovalFailureText(name, departure?.reason ?? error);
+  return departure?.phase === "device"
+    ? leaveCleanupFailureText(name, departure.reason, departure.outcome)
+    : leaveCommunityFailureText(name, departure?.reason ?? error);
+}
+
 export function removedFromDeviceText(name: string, residue: boolean) {
   const result = `${name} was removed from this device. Your membership wasn’t changed. You can add it again later.`;
   return residue ? `${result} Some saved data couldn’t be cleared.` : result;
@@ -116,10 +170,21 @@ export function leaveCleanupFailureText(
   return `Left ${name}, but this device couldn’t finish cleaning up${details}. Leave it again to finish.`;
 }
 
+const OWNER_REFUSAL = "invalid: relay owner cannot leave";
+
+/** A leave the relay never settled, other than refusing its owner: the
+ * membership may stand, but the device can still forget the community. */
+export function leaveUnsettled(error: unknown) {
+  return (
+    error instanceof CommunityDepartureError &&
+    error.phase === "relay" &&
+    error.message !== OWNER_REFUSAL
+  );
+}
+
 export function leaveCommunityFailureText(name: string, error: unknown) {
   const reason = error instanceof Error ? error.message : "";
-  if (reason === "invalid: relay owner cannot leave")
-    return `The relay owner can’t leave ${name}.`;
+  if (reason === OWNER_REFUSAL) return `The relay owner can’t leave ${name}.`;
   return `Couldn’t leave ${name}. Check your connection and try again.`;
 }
 

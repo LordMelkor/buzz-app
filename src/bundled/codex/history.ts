@@ -1,5 +1,12 @@
-import type { EventData, ReadFilter } from "../../features/relay/events";
-import { foldMessages } from "../../features/relay/fold";
+import { attestedOwner } from "../../features/agents/owner-attestation";
+import type { AgentReads } from "../../features/agents/reads";
+import { hasEventProof } from "../../features/relay/events";
+import type {
+  EventData,
+  ReadFilter,
+  RelayEvent,
+} from "../../features/relay/events";
+import { foldMessages, messageAuthor } from "../../features/relay/fold";
 import { compareMessages, eventMs } from "../../features/relay/message-order";
 import type { Conversation } from "./prompt";
 
@@ -8,6 +15,8 @@ export async function conversationHistory(
   event: EventData,
   conversation: Conversation,
   read: (filters: readonly ReadFilter[]) => Promise<readonly EventData[]>,
+  profiles?: Pick<AgentReads, "profiles" | "profile">,
+  signingAuthority?: string,
 ) {
   const { channelId, root } = conversation;
   const filter = {
@@ -49,8 +58,31 @@ export async function conversationHistory(
         cutoff,
       ) < 0,
   );
+  const owners = new Map<string, { owner: string; profile: RelayEvent }>();
+  if (profiles && found.length) {
+    const authors = [
+      ...new Set(found.map((item) => messageAuthor(item, signingAuthority))),
+    ];
+    await profiles.profiles(authors).catch(() => {});
+    await Promise.all(
+      authors.map(async (author) => {
+        const profile = profiles.profile(author);
+        if (!profile || !hasEventProof(profile)) return;
+        const owner = await attestedOwner(profile);
+        if (owner && profiles.profile(author) === profile)
+          owners.set(author, { owner, profile });
+      }),
+    );
+  }
   const messages = foldMessages(channelId, "", earlier, {
     includeReplies: true,
+    signingAuthority,
+    agentOwner: (author) => {
+      const verified = owners.get(author);
+      return verified && profiles?.profile(author) === verified.profile
+        ? verified.owner
+        : undefined;
+    },
   })
     .filter(
       (message) =>

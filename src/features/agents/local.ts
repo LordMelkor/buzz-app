@@ -12,6 +12,8 @@ export type LocalAgent = Readonly<{
 export type LocalAgentsSnapshot = Readonly<{
   status: "unavailable" | "loading" | "ready" | "error";
   agents: readonly LocalAgent[];
+  /** Completed owned hosted agents shown in the selected community. No local custody. */
+  hosted?: readonly LocalAgent[];
   error?: string;
 }>;
 export type LocalAgents = {

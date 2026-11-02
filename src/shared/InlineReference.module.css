@@ -7,8 +7,9 @@
   margin-inline: calc(-1 * var(--space-half));
   border-radius: var(--radius-chip);
   color: var(--link-text);
-  background: transparent;
-  text-decoration: none;
+  /* Chips set a resting fill here, so the hover rule below still wins. */
+  background: var(--link-fill, transparent);
+  text-decoration: underline;
   overflow-wrap: anywhere;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
@@ -23,9 +24,26 @@ html[data-keyboard-navigation] .link:focus-visible {
   outline-offset: 2px;
 }
 
-/* Channel hosts reset ordinary buttons to inherited text color. */
+/* A mention is a person, not a destination: a quiet neutral chip. A mention
+   of you takes the strong pairing instead. Hosts with their own pairing (own
+   bubbles) set the --mention-* trio, which wins over both.
+   Channel hosts reset ordinary buttons, so the color is restated here. */
 [data-mention-kind].link {
+  border-radius: var(--radius-pill);
+  text-decoration: none;
+  --link-text: var(--mention-text, var(--text-mention));
+  --link-hover: var(--mention-hover, var(--affordance-mention-hover));
+  /* A resting fill must not swallow the neighbouring word spaces, so the chip
+     takes its own inline room instead of the link's hover-only overhang. */
+  padding-inline: var(--space-chip-inset);
+  margin-inline: 0;
+  --link-fill: var(--mention-fill, var(--affordance-mention));
   color: var(--link-text);
+}
+[data-mention-kind][data-mention-self].link {
+  --link-text: var(--mention-text, var(--text-mention-self));
+  --link-hover: var(--mention-hover, var(--affordance-mention-self-hover));
+  --link-fill: var(--mention-fill, var(--affordance-mention-self));
 }
 
 .icon {

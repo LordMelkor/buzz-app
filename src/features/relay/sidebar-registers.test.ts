@@ -53,6 +53,24 @@ it("reads metadata rather than stale legacy projections and preserves deletion r
   ).toBe(next);
   expect(nextSidebarSectionOrder(current)).toBe(100);
 });
+it("prepends before canonical negative orders without counting deleted sections", () => {
+  const current = editSidebarRecord(
+    "channel-sections",
+    sections(),
+    1,
+    [
+      [["s", "live", "order"], -7],
+      [["s", "dead", "order"], -100],
+    ],
+    110,
+  );
+  expect(nextSidebarSectionOrder(current, "first")).toBe(-8);
+  expect(
+    nextSidebarSectionOrder({ sections: [{ order: -2.4 }] }, "first"),
+  ).toBe(-3);
+  expect(nextSidebarSectionOrder({ sections: [] }, "first")).toBe(-1);
+});
+
 it("imports a meta-less head at event milliseconds and edits only the requested leaf", () => {
   const next = editSidebarRecord(
     "channel-sort",

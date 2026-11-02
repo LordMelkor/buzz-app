@@ -3,5 +3,5 @@
   "name": "Inbox",
   "apiVersion": 1,
   "description": "Review conversation activity that needs your attention.",
-  "discovery": { "category": "productivity", "tags": ["Essentials"] }
+  "discovery": { "category": "communication", "tags": ["Essentials", "tasks"] }
 }

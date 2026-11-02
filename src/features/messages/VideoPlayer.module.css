@@ -306,7 +306,7 @@
   font-size: var(--text-caption);
 }
 @media (hover: hover) and (pointer: fine) {
-  .player:where(:has(.controls[data-playing])):is(
+  .player:not([data-controls-revealed]):where(:has(.controls[data-playing])):is(
       :not(:hover),
       [data-controls-idle]
     ):not(:has(:focus-visible)):not(:has([aria-expanded="true"]))

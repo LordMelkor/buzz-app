@@ -3,6 +3,9 @@ use bech32::{primitives::decode::CheckedHrpstring, Bech32};
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use zeroize::Zeroizing;
 
+/// NIP-AR artifact revisions.
+const ARTIFACT_KIND: u16 = 45010;
+
 /// NIP-44 v2: 65,535 bytes pad to 65,536 with a two-byte prefix;
 /// base64(1 version + 32 nonce + 2 length + 65,536 padded + 32 MAC)
 /// is exactly 87,472 bytes, the native reader cap. At 65,536 the prefix grows
@@ -102,7 +105,9 @@ impl Secret {
     /// A plain signed event; callers bound the kind and size. A channel event
     /// (one with an `h` tag) gets the `ms` tag the app's own outbox adds, read
     /// from the same clock as `created_at`, so the timeline orders it by
-    /// millisecond instead of placing it at the start of its second.
+    /// millisecond instead of placing it at the start of its second. An
+    /// artifact revision (45010) is state, not a timeline entry, and its
+    /// deletion envelope allows no other tags, so it gets none.
     pub(crate) fn signed(
         &self,
         kind: u16,
@@ -113,9 +118,10 @@ impl Secret {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| "System clock is unavailable")?;
         tags.retain(|tag| tag.first().map(String::as_str) != Some("ms"));
-        if tags
-            .iter()
-            .any(|tag| tag.first().map(String::as_str) == Some("h"))
+        if kind != ARTIFACT_KIND
+            && tags
+                .iter()
+                .any(|tag| tag.first().map(String::as_str) == Some("h"))
         {
             tags.push(vec!["ms".into(), now.subsec_millis().to_string()]);
         }
@@ -172,12 +178,13 @@ impl Secret {
         )
     }
 
-    /// A single NIP-AE owner-addressed memory event. Never return key material.
+    /// A single NIP-AE owner-addressed memory event; without a body, the
+    /// tombstone that deletes a memory entry. Never return key material.
     pub fn memory_event(
         &self,
         owner: &str,
         slug: &str,
-        body: &str,
+        body: Option<&str>,
         created_at: u64,
     ) -> Result<serde_json::Value> {
         use hmac::{Hmac, Mac};
@@ -203,7 +210,7 @@ impl Secret {
                                 }
                             })
                     })))
-            || body.len() > 64 * 1024
+            || body.is_some_and(|body| body.len() > 64 * 1024)
         {
             return Err("Invalid snapshot memory entry".into());
         }
@@ -217,12 +224,19 @@ impl Secret {
         mac.update(b"agent-memory/v1/d-tag\0");
         mac.update(slug.as_bytes());
         let address = format!("{:x}", mac.finalize().into_bytes());
-        let plaintext = if slug == "core" {
-            serde_json::json!({"slug":slug,"profile":body})
-        } else {
-            serde_json::json!({"slug":slug,"value":body})
+        let plaintext = match body {
+            // NIP-AE defines no tombstone for core.
+            None if slug == "core" => return Err("core cannot be deleted".into()),
+            None => serde_json::json!({"slug":slug,"value":null}),
+            Some(body) => {
+                validate_snapshot_memory_envelope(slug, body)?;
+                if slug == "core" {
+                    serde_json::json!({"slug":slug,"profile":body})
+                } else {
+                    serde_json::json!({"slug":slug,"value":body})
+                }
+            }
         };
-        validate_snapshot_memory_envelope(slug, body)?;
         let mut nonce = [0; 32];
         getrandom::fill(&mut nonce).map_err(|_| "Could not encrypt snapshot memory")?;
         let encrypted = base64::Engine::encode(
@@ -376,7 +390,9 @@ mod memory_tests {
             ("core", "remember café", "profile"),
             ("mem/one", "value", "value"),
         ] {
-            let event = agent.memory_event(owner.pubkey(), slug, body, 100).unwrap();
+            let event = agent
+                .memory_event(owner.pubkey(), slug, Some(body), 100)
+                .unwrap();
             assert_eq!(event["kind"], 30174);
             assert_eq!(event["pubkey"], agent.pubkey());
             assert_eq!(event["tags"][1], serde_json::json!(["p", owner.pubkey()]));
@@ -400,6 +416,18 @@ mod memory_tests {
             assert!(!event.to_string().contains(body));
             assert!(!event.to_string().contains("nsec1"));
         }
+        let tombstone = agent
+            .memory_event(owner.pubkey(), "mem/one", None, 101)
+            .unwrap();
+        let ciphertext = Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            tombstone["content"].as_str().unwrap(),
+        )
+        .unwrap();
+        let decoded: serde_json::Value =
+            serde_json::from_slice(&v2::decrypt_to_bytes(&conversation, &ciphertext).unwrap())
+                .unwrap();
+        assert_eq!(decoded, serde_json::json!({"slug":"mem/one","value":null}));
     }
     #[test]
     fn invalid_memory_never_builds_an_event() {
@@ -407,11 +435,14 @@ mod memory_tests {
         let owner = Secret::generate().unwrap();
         for slug in ["mem/", "mem/../x", "mem/UPPER", "other"] {
             assert!(agent
-                .memory_event(owner.pubkey(), slug, "text", 100)
+                .memory_event(owner.pubkey(), slug, Some("text"), 100)
                 .is_err());
         }
         assert!(agent
-            .memory_event(owner.pubkey(), "core", &"x".repeat(65537), 100)
+            .memory_event(owner.pubkey(), "core", Some(&"x".repeat(65537)), 100)
+            .is_err());
+        assert!(agent
+            .memory_event(owner.pubkey(), "core", None, 100)
             .is_err());
     }
 }

@@ -1,24 +1,37 @@
-import { BUZZ_PROMPT, TOP_LEVEL_PROMPT } from "../../buzz-mcp/prompt";
+import {
+  BUZZ_PROMPT,
+  TOP_LEVEL_PROMPT,
+  CHANNEL_LEVEL_PROMPT,
+} from "../../buzz-mcp/prompt";
 import { BASE_PROMPT } from "../../features/agent-harness/base-prompt";
 import { coreMemorySection } from "../../features/agent-harness/core-memory";
+import {
+  type ConversationWake,
+  wakeSection,
+} from "../../features/agent-harness/plugin-wake";
+import type { AgentKey } from "../../features/agents/membership";
 import type { AgentHandle } from "../../features/agents/service";
 import type { EventData } from "../../features/relay/events";
 import { threadReference } from "../../features/relay/thread-reference";
 import type { Config } from "./config";
 
-/** `topLevel` is an owner's Me chat: one channel conversation, posted at
- * its top level. */
+/** A conversation's routing default. Solo chats forbid replies; an addressed
+ * channel wake allows the Interest to direct a thread reply. */
 export type Conversation = {
   channelId: string;
   name: string;
   root?: string;
   topLevel?: true;
+  /** A channel-level default, without the Solo chat reply restriction. */
+  threadReplies?: true;
 };
 const quoted = (value: unknown) =>
   JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
 export const rootOf = (event: EventData) =>
   threadReference(event)?.rootId ?? event.id;
-export function developerInstructions(agent: AgentHandle) {
+export function developerInstructions(
+  agent: Pick<AgentHandle, "name" | "pubkey">,
+) {
   return `You are ${agent.name} (pubkey ${agent.pubkey}), a coding agent in Buzz.
 The buzz namespace provides the shared Buzz tools, including messages, reactions, reads, uploads, canvas, and encrypted memory. Buzz access and signing are handled by the host. Do not invoke the buzz CLI or look for credentials. Use Codex's native coding tools in the workspace.
 
@@ -41,12 +54,15 @@ export function turnContext(
   team = "",
   /** The agent's `core` memory: `null` when it has none, undefined if unread. */
   memory?: string | null,
+  repositories = "",
 ) {
   const core = coreMemorySection(memory);
   const text = `You are ${agent.name} (pubkey ${agent.pubkey}).\nCurrent Buzz custom instructions replace all prior Buzz custom instructions. An empty section means no custom instructions apply.\n<agent-instructions>\n${settings.instructions}\n</agent-instructions>\n\nCurrent team sections replace all prior team sections. None means you are on no team.${team ? `\n${team}` : ""}${core ? `\n\nCurrent core memory replaces all prior core memory.\n${core}` : ""}`;
   const values = [""];
   let size = 0;
-  for (const line of text.split(/(?<=\n)/)) {
+  for (const line of `${text}${repositories ? `\n\n${repositories}` : ""}`.split(
+    /(?<=\n)/,
+  )) {
     // A line over the limit splits by code point.
     const pieces = bytes(line) > CONTEXT_VALUE_BYTES ? [...line] : [line];
     for (const piece of pieces) {
@@ -70,20 +86,27 @@ export function turnContext(
 }
 
 export function turnInput(
+  /** The membership the turn is for, which its usage is read by. */
+  agent: AgentKey,
   event: EventData,
   conversation: Conversation,
   text: string,
   steering = false,
   /** The Buzz tools' note for the end of the turn, if any. */
   note?: string,
+  /** A plugin's wake, whose section takes the place of `event`'s. */
+  wake?: ConversationWake,
 ) {
   const section = steering
     ? "new-message-arrived-while-you-were-working"
     : "buzz-event";
+  const body = wake
+    ? wakeSection(wake)
+    : `${quoted(event)}\nRequest: ${quoted(text)}`;
   const routing = conversation.topLevel
     ? { posting: "top-level" }
     : { session_thread: conversation.root, reply_to: rootOf(event) };
-  return `<context>\n${quoted({ channel_id: conversation.channelId, channel_name: conversation.name, session_scope: conversation.root ? "thread" : "channel", ...routing })}\n</context>\n${conversation.topLevel ? `${TOP_LEVEL_PROMPT}\n` : ""}<${section}>\n${quoted(event)}\nRequest: ${quoted(text)}\n</${section}>${note ? `\n\n${note}` : ""}`;
+  return `<context>\n${quoted({ agent, channel_id: conversation.channelId, channel_name: conversation.name, session_scope: conversation.root ? "thread" : "channel", ...routing })}\n</context>\n${conversation.topLevel ? `${conversation.threadReplies ? CHANNEL_LEVEL_PROMPT : TOP_LEVEL_PROMPT}\n` : ""}${wake && !steering ? body : `<${section}>\n${body}\n</${section}>`}${note ? `\n\n${note}` : ""}`;
 }
 /** The readable part of a conversation's thread name; earlier versions used
  * it alone. */
@@ -95,13 +118,13 @@ export function sessionTitle(agentName: string, conversation: Conversation) {
  * 64-bit FNV-1a hash: stable and synchronous, so naming a thread does not
  * reorder concurrent turn starts. */
 export function sessionTag(
-  agentPubkey: string,
+  agent: AgentKey,
   conversation: Pick<Conversation, "channelId" | "root">,
 ) {
   let hash = 0xcbf29ce484222325n;
   for (const byte of new TextEncoder().encode(
     JSON.stringify([
-      agentPubkey,
+      agent,
       conversation.channelId,
       conversation.root ?? "channel",
     ]),
@@ -109,6 +132,9 @@ export function sessionTag(
     hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);
   return `buzz:${hash.toString(16).padStart(16, "0")}`;
 }
-export function sessionName(agent: AgentHandle, conversation: Conversation) {
-  return `${sessionTitle(agent.name, conversation)} · ${sessionTag(agent.pubkey, conversation)}`;
+export function sessionName(
+  agent: Pick<AgentHandle, "key" | "name">,
+  conversation: Conversation,
+) {
+  return `${sessionTitle(agent.name, conversation)} · ${sessionTag(agent.key, conversation)}`;
 }

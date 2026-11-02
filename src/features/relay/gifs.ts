@@ -1,3 +1,5 @@
+import { retryRead } from "./read-retry";
+import { ReadError, transientStatus } from "./errors";
 import { nativeIdentityEnabled } from "../identity/service";
 import {
   relayKlipySearchPath,
@@ -148,8 +150,12 @@ async function brokerRequest<T>(
         ...(signal ? { signal } : {}),
       });
   const result = (await response.json()) as T & { error?: string };
-  if (!response.ok)
-    throw new Error(result.error ?? `GIF request failed (${response.status})`);
+  if (!response.ok) {
+    const message = result.error ?? `GIF request failed (${response.status})`;
+    throw transientStatus(response.status)
+      ? new ReadError("unavailable", message, response.status)
+      : new Error(message);
+  }
   return result;
 }
 
@@ -204,15 +210,19 @@ export async function fetchKlipyGifs(
   if (nativeIdentityEnabled() && route !== "/gifs/search")
     throw new Error("GIF search is unavailable");
   try {
-    const response = await brokerRequest<KlipyResponse>(
-      community,
-      route,
-      {
-        customer_id: customerId(),
-        locale: navigator.language || "en-US",
-        query: query.trim(),
-      },
-      signal,
+    const response = await retryRead(
+      (signal) =>
+        brokerRequest<KlipyResponse>(
+          community,
+          route,
+          {
+            customer_id: customerId(),
+            locale: navigator.language || "en-US",
+            query: query.trim(),
+          },
+          signal,
+        ),
+      signal ?? new AbortController().signal,
     );
     if (response.result === false) throw new Error("GIF search failed");
     return normalizeKlipyGifs(response.data?.data ?? []);
@@ -224,6 +234,16 @@ export async function fetchKlipyGifs(
     throw error;
   }
 }
+
+/** Pickers can delegate relay access to their owning window. */
+export type GifRequests = {
+  supports: typeof relaySupportsKlipy;
+  search: typeof fetchKlipyGifs;
+};
+export const relayGifRequests: GifRequests = {
+  supports: relaySupportsKlipy,
+  search: fetchKlipyGifs,
+};
 
 /** URL-only media keeps provider bytes and credentials out of Buzz storage. */
 export function gifMarkdown(gif: KlipyGif) {

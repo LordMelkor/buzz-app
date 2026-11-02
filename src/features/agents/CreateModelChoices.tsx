@@ -16,7 +16,7 @@ export function CreateModelChoices({
   error,
   retry,
 }: {
-  modelAppearance?: "subtle";
+  modelAppearance?: "glass-ghost";
   models: readonly ModelChoice[];
   value: string;
   defaultLabel: string;

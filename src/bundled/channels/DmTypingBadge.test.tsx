@@ -91,13 +91,7 @@ function fixture() {
               // Stands in for the page's agent-activity working signal.
               working={channel.id === "agent"}
               selected={selected}
-              collapsed={false}
-              onToggle={() => {}}
-              draft={false}
-              draftSelected={false}
-              sessions={undefined}
               onSelect={() => {}}
-              onNewSession={() => {}}
               onOpenThread={() => {}}
             />
           </Profiler>

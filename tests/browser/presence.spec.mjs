@@ -524,6 +524,9 @@ test("avatar choices publish through the existing socket and persist across relo
   await avatar.screenshot({
     path: test.info().outputPath("avatar-online.png"),
   });
+  // Online UI can precede the socket's startup publication. Establish the
+  // first send before measuring the explicit Away publication against it.
+  await expect.poll(() => published("online")).toBeGreaterThan(0);
   await avatar.click();
   await expect(
     page.getByRole("button", { name: "Availability: Online", exact: true }),

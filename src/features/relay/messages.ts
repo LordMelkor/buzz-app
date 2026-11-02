@@ -1,9 +1,11 @@
+import { attestedOwner } from "../agents/owner-attestation";
+import { hasEventProof } from "./events";
+import type { ProfileQueries } from "./profile-directory";
 import { attachmentMessage, type UploadedAttachment } from "./attachments";
 import { validReactionContent, type CustomEmoji } from "./emoji";
 import type { EventTemplate } from "nostr-tools";
 import type { ChannelMessage } from "./contracts";
 import { messageAuthor } from "./fold";
-import { sharedSessionTags } from "../sessions/shared-session-marker";
 import { threadReference } from "./thread-reference";
 import type { EventData } from "./events";
 import type { Outbox, OutboxRecovery } from "./outbox";
@@ -26,11 +28,11 @@ export const REPORT_TYPES = [
 ] as const;
 export type ReportType = (typeof REPORT_TYPES)[number];
 /** `["effort", agentPubkey, level]` and `["model", agentPubkey, model]`: what
- * a mentioned agent's owner asks of its next run. Only the owner is honoured. */
+ * an addressed agent's owner asks of its next run. Only the owner is honoured. */
 export const EFFORT_TAG = "effort";
 export const MODEL_TAG = "model";
 export type RunPick = Readonly<{ model?: string; effort?: string }>;
-/** The model and effort picked for each mentioned agent, by pubkey. */
+/** The model and effort picked for each addressed agent, by pubkey. */
 export type MentionPicks = Readonly<Record<string, RunPick>>;
 
 /** Domain convenience only. Delivery and read reconciliation remain session-owned. */
@@ -40,16 +42,29 @@ export function createMessages(
   find: (id: string) => EventData | undefined,
   emojiTags: (content: string) => string[][],
   validateMentions: (channelId: string, pubkeys: readonly string[]) => void,
-  canParticipate: (channelId: string) => boolean = () => true,
+  canWrite: (
+    channelId: string,
+    owner?: AgentOwnerAuthorization,
+  ) => boolean = () => true,
   relayOrigin?: string,
   /** Resolves on relay OK. Reports are never echoed, so they bypass the outbox. */
   publishReport?: (template: EventTemplate) => Promise<void>,
   /** Explicit relay NIP-11 self; never inferred from contacts or a displayed row. */
   signingAuthority?: string,
+  profiles?: ProfileQueries,
+  /** Who a message in the channel addresses without a mention: a one-to-one
+   * DM's other member. A pick may name them as well as a mention. */
+  unmentionedRecipients: (channelId: string) => readonly string[] = () => [],
+  /** Events whose `buzz:copy-of` tag names this message id (sent-to-channel copies). */
+  copiesOf: (id: string) => readonly EventData[] = () => [],
 ) {
-  const writer = (kind: number, channelId: string) => {
-    if (!canParticipate(channelId))
-      throw new Error("Join the conversation before posting");
+  const writer = (
+    kind: number,
+    channelId: string,
+    owner?: AgentOwnerAuthorization,
+  ) => {
+    if (!canWrite(channelId, owner))
+      throw new Error("You don’t have write access to this conversation.");
     if (!outbox?.supports(kind))
       throw new Error("This connection cannot publish that operation");
     return outbox;
@@ -79,19 +94,168 @@ export function createMessages(
       throw new Error("Choose at most 32 valid mention references");
     return [...new Set(pubkeys)].map((key) => ["mention", key]);
   };
-  const pickTags = (mentions: readonly string[], picks: MentionPicks) =>
-    Object.entries(picks).flatMap(([key, { model, effort }]) => {
+  const pickTags = (
+    channelId: string,
+    mentions: readonly string[],
+    picks: MentionPicks,
+  ) => {
+    const entries = Object.entries(picks);
+    const addressed = entries.length
+      ? [...mentions, ...unmentionedRecipients(channelId)]
+      : mentions;
+    return entries.flatMap(([key, { model, effort }]) => {
       if (
-        !mentions.includes(key) ||
+        !addressed.includes(key) ||
         (model !== undefined && !/^[\w.:/[\]-]{1,64}$/.test(model)) ||
         (effort !== undefined && !/^[a-z0-9-]{1,32}$/.test(effort))
       )
-        throw new Error("A model or effort applies only to a mentioned agent");
+        throw new Error("A model or effort applies only to an addressed agent");
       return [
         ...(model === undefined ? [] : [[MODEL_TAG, key, model]]),
         ...(effort === undefined ? [] : [[EFFORT_TAG, key, effort]]),
       ];
     });
+  };
+  /** The author's other copies of a message: its source reply and every
+   * sent-to-channel copy of it, deduplicated, never the message itself. */
+  const linkedCopies = (message: EventData, channelId: string) => {
+    if (!ownedMessage(message) || message.kind !== 9) return [];
+    const sourceId = message.tags.find(
+      ([name, value]) => name === "buzz:copy-of" && value,
+    )?.[1];
+    const root = sourceId ? find(sourceId) : message;
+    const candidates = [
+      ...(root ? [root] : []),
+      ...copiesOf(sourceId ?? message.id),
+    ];
+    return [
+      ...new Map(candidates.map((event) => [event.id, event])).values(),
+    ].filter(
+      (other) =>
+        other.id !== message.id &&
+        other.kind === 9 &&
+        ownedMessage(other) &&
+        other.tags.some(([name, value]) => name === "h" && value === channelId),
+    );
+  };
+  const edit = (
+    messageId: string,
+    content: string,
+    attachmentSourceId: string,
+    authorization?: AgentOwnerAuthorization,
+  ) => {
+    const original = find(messageId);
+    if (!original || ![9, 40002].includes(original.kind))
+      throw new Error("Load the message before editing it");
+    const ownerEdit =
+      !!viewer &&
+      authorization?.ownerId === viewer &&
+      authorization.agentId === messageAuthor(original, signingAuthority);
+    if (!ownedMessage(original) && !ownerEdit)
+      throw new Error("Only your own messages can be edited");
+    const channelId = original.tags.find((tag) => tag[0] === "h")?.[1];
+    if (!channelId) throw new Error("Message has no channel");
+    // The displayed fold owns edit/deletion precedence. Resolve its provenance,
+    // never silently resurrect the original attachments if evidence was evicted.
+    const attachmentSource = find(attachmentSourceId);
+    if (
+      !attachmentSource ||
+      (attachmentSource.id !== original.id &&
+        (attachmentSource.kind !== 40003 ||
+          (!ownedMessage(attachmentSource) &&
+            attachmentSource.pubkey !==
+              profiles?.owner?.(messageAuthor(original, signingAuthority)) &&
+            (!ownerEdit ||
+              messageAuthor(attachmentSource, signingAuthority) !==
+                messageAuthor(original, signingAuthority))) ||
+          !attachmentSource.tags.some(
+            ([name, id]) => name === "e" && id === messageId,
+          ) ||
+          attachmentSource.tags.some(
+            ([name, id]) => name === "h" && id !== channelId,
+          ) ||
+          !attachmentSource.tags.some(([name]) => name === "imeta")))
+    )
+      throw new Error("Reload the message before editing its attachments.");
+    const sendEdit = (targetId: string) =>
+      writer(40003, channelId, ownerEdit ? authorization : undefined).send({
+        kind: 40003,
+        content: text(content),
+        tags: [
+          ["h", channelId],
+          ["e", targetId],
+          ...attachmentSource.tags.filter((tag) => tag[0] === "imeta"),
+          ...emojiTags(content),
+        ],
+      });
+    const id = sendEdit(messageId);
+    // A sent-to-channel copy and its thread reply are one message to the author:
+    // mirror the edit onto the counterpart. Best effort; the primary edit stands.
+    for (const other of linkedCopies(original, channelId)) {
+      try {
+        sendEdit(other.id);
+      } catch {
+        // Counterpart unavailable; leave it as-is.
+      }
+    }
+    return id;
+  };
+  const remove = (
+    eventIds: readonly string[],
+    authorization?: AgentOwnerAuthorization,
+  ) => {
+    const ids = [...new Set(eventIds)];
+    if (!ids.length || ids.length > 100)
+      throw new Error("Choose between 1 and 100 events to remove");
+    const originals = ids.map((id) => {
+      const event = find(id);
+      if (!event || ![7, 9, 40002].includes(event.kind))
+        throw new Error("Load the message or reaction before removing it");
+      const agentOwnerRemoval =
+        !!viewer &&
+        event.kind !== 7 &&
+        messageAuthor(event, signingAuthority) === authorization?.agentId &&
+        authorization.ownerId === viewer;
+      if (
+        event.kind === 7
+          ? event.pubkey !== viewer
+          : !ownedMessage(event) && !agentOwnerRemoval
+      )
+        throw new Error("Only your own messages and reactions can be removed");
+      return event;
+    });
+    const channel = (event: EventData) =>
+      event.tags.find(([name]) => name === "h")?.[1] ??
+      (event.kind === 7
+        ? find(event.tags.find(([name]) => name === "e")?.[1] ?? "")?.tags.find(
+            ([name]) => name === "h",
+          )?.[1]
+        : undefined);
+    const first = originals[0];
+    const channelId = first ? channel(first) : undefined;
+    if (!channelId || originals.some((event) => channel(event) !== channelId))
+      throw new Error("Removal must belong to one loaded conversation");
+    // Deleting a thread reply or its sent-to-channel copy removes the author's
+    // other linked copies too, so none lingers as an orphan.
+    const linked = originals
+      .flatMap((event) => linkedCopies(event, channelId))
+      .filter((event) => !ids.includes(event.id));
+    const all = [...ids, ...new Set(linked.map((event) => event.id))];
+    const removed = all.length <= 100 ? all : ids;
+    const targets = [...originals, ...(all.length <= 100 ? linked : [])];
+    return writer(5, channelId, authorization).send({
+      kind: 5,
+      content: "",
+      tags: [
+        ["h", channelId],
+        ...removed.map((id) => ["e", id]),
+        ...[...new Set(targets.map((event) => event.kind))].map((kind) => [
+          "k",
+          String(kind),
+        ]),
+      ],
+    });
+  };
   return Object.freeze({
     send(
       channelId: string,
@@ -101,7 +265,6 @@ export function createMessages(
       recovery?: OutboxRecovery,
       references: readonly string[] = [],
       picks: MentionPicks = {},
-      sharedSessions: readonly string[] = [],
     ) {
       if (!channelId) throw new Error("A channel is required");
       const message = attachmentMessage(content, attachments, relayOrigin);
@@ -113,8 +276,7 @@ export function createMessages(
             ["h", channelId],
             ...mentionTags(channelId, mentions),
             ...referenceTags(references),
-            ...pickTags(mentions, picks),
-            ...sharedSessionTags(content, sharedSessions),
+            ...pickTags(channelId, mentions, picks),
             ...emojiTags(content),
             ...message.tags,
           ],
@@ -143,7 +305,9 @@ export function createMessages(
       const attachmentSource = find(row.attachmentSourceId ?? row.id);
       if (
         !attachmentSource ||
-        !ownedMessage(attachmentSource) ||
+        (!ownedMessage(attachmentSource) &&
+          attachmentSource.pubkey !==
+            profiles?.owner?.(messageAuthor(original, signingAuthority))) ||
         (attachmentSource.id !== original.id &&
           (attachmentSource.kind !== 40003 ||
             !attachmentSource.tags.some(
@@ -184,6 +348,8 @@ export function createMessages(
         tags: [
           ["h", channelId],
           ["buzz:sent-from-thread", thread.rootId, ...(label ? [label] : [])],
+          // Links the copy to its reply so later edits reach both.
+          ["buzz:copy-of", original.id],
           // Sharing does not notify the original recipients again. Preserve display binding only.
           ...referenceTags(
             row.edited
@@ -210,7 +376,6 @@ export function createMessages(
       parentId: string = rootId,
       references: readonly string[] = [],
       picks: MentionPicks = {},
-      sharedSessions: readonly string[] = [],
     ) {
       if (!channelId) throw new Error("A channel is required");
       if (!/^[0-9a-f]{64}$/.test(rootId))
@@ -227,49 +392,40 @@ export function createMessages(
           ["e", parentId, "", "reply"],
           ...mentionTags(channelId, mentions),
           ...referenceTags(references),
-          ...pickTags(mentions, picks),
-          ...sharedSessionTags(content, sharedSessions),
+          ...pickTags(channelId, mentions, picks),
           ...emojiTags(content),
           ...message.tags,
         ],
       });
     },
     /** Supply the current folded attachmentSourceId, or the row ID for original media. */
-    edit(messageId: string, content: string, attachmentSourceId: string) {
+    edit: (messageId: string, content: string, attachmentSourceId: string) =>
+      edit(messageId, content, attachmentSourceId),
+    /** Verified owner edit. Empty text removes the message, as in the composer. */
+    async editOwnedAgent(
+      messageId: string,
+      content: string,
+      attachmentSourceId: string,
+    ) {
       const original = find(messageId);
-      if (!original || ![9, 40002].includes(original.kind))
-        throw new Error("Load the message before editing it");
-      if (!ownedMessage(original))
-        throw new Error("Only your own messages can be edited");
-      const channelId = original.tags.find((tag) => tag[0] === "h")?.[1];
-      if (!channelId) throw new Error("Message has no channel");
-      // The displayed fold owns edit/deletion precedence. Resolve its provenance,
-      // never silently resurrect the original attachments if evidence was evicted.
-      const attachmentSource = find(attachmentSourceId);
+      if (!original || !viewer || !profiles)
+        throw new Error("Load the owned agent's message before editing it");
+      const author = messageAuthor(original, signingAuthority);
+      await profiles.ensure([author]);
+      const profile = profiles.event?.(author);
       if (
-        !attachmentSource ||
-        (attachmentSource.id !== original.id &&
-          (attachmentSource.kind !== 40003 ||
-            !ownedMessage(attachmentSource) ||
-            !attachmentSource.tags.some(
-              ([name, id]) => name === "e" && id === messageId,
-            ) ||
-            attachmentSource.tags.some(
-              ([name, id]) => name === "h" && id !== channelId,
-            ) ||
-            !attachmentSource.tags.some(([name]) => name === "imeta")))
+        !profile ||
+        profile.pubkey !== author ||
+        profile.kind !== 0 ||
+        !hasEventProof(profile) ||
+        (await attestedOwner(profile)) !== viewer ||
+        profiles.event?.(author)?.id !== profile.id
       )
-        throw new Error("Reload the message before editing its attachments.");
-      return writer(40003, channelId).send({
-        kind: 40003,
-        content: text(content),
-        tags: [
-          ["h", channelId],
-          ["e", messageId],
-          ...attachmentSource.tags.filter((tag) => tag[0] === "imeta"),
-          ...emojiTags(content),
-        ],
-      });
+        throw new Error("Only an agent's verified owner can edit its messages");
+      const authorization = { agentId: author, ownerId: viewer };
+      return content.trim()
+        ? edit(messageId, content, attachmentSourceId, authorization)
+        : remove([messageId], authorization);
     },
     react(messageId: string, content: string, emoji?: CustomEmoji) {
       const original = find(messageId);
@@ -291,56 +447,7 @@ export function createMessages(
         ],
       });
     },
-    remove(
-      eventIds: readonly string[],
-      authorization?: AgentOwnerAuthorization,
-    ) {
-      const ids = [...new Set(eventIds)];
-      if (!ids.length || ids.length > 100)
-        throw new Error("Choose between 1 and 100 events to remove");
-      const originals = ids.map((id) => {
-        const event = find(id);
-        if (!event || ![7, 9, 40002].includes(event.kind))
-          throw new Error("Load the message or reaction before removing it");
-        const agentOwnerRemoval =
-          !!viewer &&
-          event.kind !== 7 &&
-          messageAuthor(event, signingAuthority) === authorization?.agentId &&
-          authorization.ownerId === viewer;
-        if (
-          event.kind === 7
-            ? event.pubkey !== viewer
-            : !ownedMessage(event) && !agentOwnerRemoval
-        )
-          throw new Error(
-            "Only your own messages and reactions can be removed",
-          );
-        return event;
-      });
-      const channel = (event: EventData) =>
-        event.tags.find(([name]) => name === "h")?.[1] ??
-        (event.kind === 7
-          ? find(
-              event.tags.find(([name]) => name === "e")?.[1] ?? "",
-            )?.tags.find(([name]) => name === "h")?.[1]
-          : undefined);
-      const first = originals[0];
-      const channelId = first ? channel(first) : undefined;
-      if (!channelId || originals.some((event) => channel(event) !== channelId))
-        throw new Error("Removal must belong to one loaded conversation");
-      return writer(5, channelId).send({
-        kind: 5,
-        content: "",
-        tags: [
-          ["h", channelId],
-          ...ids.map((id) => ["e", id]),
-          ...[...new Set(originals.map((event) => event.kind))].map((kind) => [
-            "k",
-            String(kind),
-          ]),
-        ],
-      });
-    },
+    remove,
     /** Undefined when this connection cannot publish reports. */
     report: publishReport
       ? (messageId: string, type: ReportType, note = "") => {

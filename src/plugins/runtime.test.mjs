@@ -90,6 +90,7 @@ test("pages wait for dependencies and completion of async activation", async () 
     await settle();
     assert.equal(starts, 0);
     assert.equal(h.states["example.page"].status, "starting");
+    assert.equal(h.root.pluginStatus.settled(), false);
     assert.deepEqual(h.pages.snapshot(), []);
     h.root.provide("connection", {});
     await started.promise;
@@ -98,9 +99,29 @@ test("pages wait for dependencies and completion of async activation", async () 
     release.resolve();
     await h.wait((s) => s["example.page"]?.status === "active");
     assert.equal(h.pages.snapshot()[0].key, "example.page/main");
+    assert.equal(h.root.pluginStatus.settled(), true);
   } finally {
     release.resolve();
     await h.dispose();
+  }
+});
+
+test("startup is not over while the plugin settings are being read", async () => {
+  let configuring = true;
+  const root = new Context();
+  const runtime = new PluginRuntime(
+    root,
+    async () => ({ apply() {} }),
+    undefined,
+    () => configuring,
+  );
+  try {
+    assert.equal(root.pluginStatus.settled(), false);
+    configuring = false;
+    assert.equal(root.pluginStatus.settled(), true);
+  } finally {
+    await runtime.dispose();
+    await root.fiber.dispose();
   }
 });
 
@@ -470,6 +491,56 @@ test("a replacement timeout never releases the actual predecessor cleanup barrie
     await h.wait((s) => s["example.page"]?.status === "active");
     assert.deepEqual(starts, ["one", "three"]);
   } finally {
+    cleanup.resolve();
+    await h.dispose();
+  }
+});
+
+test("explicit retry waits for failed cleanup and leaves healthy plugins running", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const cleanup = deferred();
+  const started = deferred();
+  const activation = deferred();
+  let attempts = 0;
+  let healthyStarts = 0;
+  const h = harness(async (p) => ({
+    async apply(ctx) {
+      if (p.manifest.id === "bad") {
+        attempts++;
+        if (attempts === 1) {
+          ctx.effect(() => () => cleanup.promise);
+          started.resolve();
+          await activation.promise;
+          return;
+        }
+      } else healthyStarts++;
+      ctx.pages.register({ id: "main", title: "Main", component: Page });
+    },
+  }));
+  const both = [plugin("bad"), plugin("good")];
+  try {
+    h.runtime.reconcile(both);
+    await started.promise;
+    await h.wait((s) => s.good?.status === "active");
+    vi.advanceTimersByTime(10_001);
+    await h.wait((s) => s.bad?.status === "failed");
+    h.runtime.reconcile(both, "good");
+    await settle();
+    assert.equal(healthyStarts, 1);
+    h.runtime.reconcile(both, "bad");
+    assert.equal(h.states.bad.status, "starting");
+    await settle();
+    assert.equal(attempts, 1);
+    assert.equal(healthyStarts, 1);
+    activation.resolve();
+    cleanup.resolve();
+    await h.wait((s) => s.bad?.status === "active");
+    assert.equal(attempts, 2);
+    assert.equal(healthyStarts, 1);
+    assert.equal(h.states.bad.revision, "one");
+    assert.equal(h.pages.snapshot().length, 2);
+  } finally {
+    activation.resolve();
     cleanup.resolve();
     await h.dispose();
   }

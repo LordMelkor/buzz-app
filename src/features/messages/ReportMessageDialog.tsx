@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import { useConversationPresentation } from "../conversation/ConversationPresentation";
 import { FlagIcon } from "../../shared/design-system/icons";
 import { Button } from "../../shared/design-system/ui/Button";
@@ -30,6 +30,7 @@ export function ReportMessageDialog({
   finalFocus?: RefObject<HTMLElement | null>;
 }) {
   const formId = useId();
+  const reason = useRef<HTMLButtonElement>(null);
   const active = useConversationPresentation();
   const [present, setPresent] = useState(true);
   if (!active && present) setPresent(false);
@@ -69,8 +70,14 @@ export function ReportMessageDialog({
       onOpenChange={(open) => {
         if (!open) close(false);
       }}
+      dismissOnOutsideClick={false}
       preventClose={pending}
       finalFocus={finalFocus}
+      initialFocus={(type) =>
+        type === "touch" || window.matchMedia?.("(pointer: coarse)").matches
+          ? (reason.current?.closest<HTMLElement>('[role="dialog"]') ?? null)
+          : reason.current
+      }
       title={
         <span className="flex items-center gap-2">
           <FlagIcon size={16} aria-hidden="true" />
@@ -111,8 +118,13 @@ export function ReportMessageDialog({
             disabled={pending}
             onValueChange={setCategory}
           >
-            {CATEGORIES.map(([value, label]) => (
-              <Radio key={value} value={value} label={label} />
+            {CATEGORIES.map(([value, label], index) => (
+              <Radio
+                ref={index === 0 ? reason : undefined}
+                key={value}
+                value={value}
+                label={label}
+              />
             ))}
           </RadioGroup>
         </Field>

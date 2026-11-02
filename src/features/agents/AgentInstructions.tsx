@@ -8,6 +8,7 @@ export function AgentInstructions({
   disabled,
   onChange,
   description,
+  creation = false,
 }: {
   value: string;
   disabled: boolean;
@@ -16,10 +17,10 @@ export function AgentInstructions({
   creation?: boolean;
 }) {
   return (
-    <Field label="Instructions" description={description}>
+    <Field label="Instructions" description={description} optional={creation}>
       <Textarea
         appearance="outlined"
-        rows={8}
+        rows={creation ? 4 : 8}
         value={value}
         disabled={disabled}
         placeholder={EXAMPLE}

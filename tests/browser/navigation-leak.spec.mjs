@@ -1,4 +1,5 @@
 import { test, expect } from "./fixture.mjs";
+import { closeSettings, openSettings } from "./navigation.mjs";
 
 test.use({ historyCounts: { alpha: 1, beta: 0 } });
 
@@ -9,10 +10,10 @@ const composer = (page) =>
 // Navigation aborts the previous attempt inside the next opening's click
 // dispatch. A reason-less abort() made Blink mint a DOMException per abort whose
 // unformatted V8 stack retained that click's target, so every Settings → Back
-// kept the unmounted Settings sidebar alive (about 450 nodes a cycle). jsdom
+// kept the unmounted Settings navigation alive (about 450 nodes a cycle). jsdom
 // has neither Blink's retention nor a forced GC; only Chromium exposes both
 // through CDP, so WebKit is skipped rather than reported as leak-free.
-test("Settings → Back releases the unmounted Settings DOM", async ({
+test("Settings → Close releases the unmounted Settings DOM", async ({
   page,
   app,
   browserName,
@@ -35,17 +36,8 @@ test("Settings → Back releases the unmounted Settings DOM", async ({
       return metrics.find((metric) => metric.name === "Nodes").value;
     };
     const cycle = async () => {
-      await button(page, "Your profile").click();
-      await page
-        .getByRole("menuitem", { name: "Settings", exact: true })
-        .click();
-      await expect(
-        page.getByRole("heading", { name: "Settings", level: 1, exact: true }),
-      ).toBeVisible();
-      await page
-        .getByRole("complementary", { name: "Settings sidebar" })
-        .getByRole("button", { name: "Back", exact: true })
-        .click();
+      await openSettings(page);
+      await closeSettings(page);
       await expect(composer(page)).toBeVisible();
     };
 

@@ -3,7 +3,7 @@ import type { EventData } from "./events";
 import { objectBody } from "./body";
 
 /** Content rows retained by channel history/live windows, not the unread kind set. */
-export const CHANNEL_ROW_KINDS = [9, 40002, 40008, 40099];
+export const CHANNEL_ROW_KINDS = [9, 40002, 40008, 40099, 48100, 48103];
 export const channelRowKind = (kind: number) =>
   CHANNEL_ROW_KINDS.includes(kind);
 const pubkey = (value: unknown): value is string =>
@@ -55,7 +55,7 @@ export function messagePreview(
 ): string | undefined {
   for (let i = rows.length - 1; i >= 0; i--) {
     const row = rows[i];
-    if (row && !row.membership)
+    if (row && !row.membership && !row.huddle)
       return row.diff
         ? `Diff: ${row.diff.filePath || "patch"}${row.diff.description ? ` — ${row.diff.description}` : ""}`
         : row.content;

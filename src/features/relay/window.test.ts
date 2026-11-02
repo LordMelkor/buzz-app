@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseWindow, windowFilter } from "./window";
+import { noticeFilter, parseWindow, windowFilter } from "./window";
 import { bounds, keypair, message } from "./testing";
 
 const relay = keypair(),
@@ -11,7 +11,7 @@ const id = "a".repeat(64);
 describe("channel window bounds", () => {
   it("requests top-level rows with aux and summaries, and only echoes a full composite cursor", () => {
     expect(windowFilter(channel, null)).toMatchObject({
-      kinds: [9, 40002, 40008, 40099],
+      kinds: [9, 40002, 40008, 48100, 48103],
       "#h": [channel],
       top_level: true,
       include_aux: true,
@@ -22,6 +22,17 @@ describe("channel window bounds", () => {
     expect(
       windowFilter(channel, { createdAt: 5, eventId: id }, 999),
     ).toMatchObject({ until: 5, before_id: id, limit: 200 });
+  });
+  it("reads the relay's membership notices apart, by the same composite cursor", () => {
+    expect(noticeFilter(channel, relay.pubkey, null)).toEqual({
+      kinds: [40099],
+      "#h": [channel],
+      authors: [relay.pubkey],
+      limit: 500,
+    });
+    expect(
+      noticeFilter(channel, relay.pubkey, { createdAt: 5, eventId: id }),
+    ).toMatchObject({ until: 5, before_id: id });
   });
   it("accepts exactly one relay-signed bound for the requested cursor and strips overlays", () => {
     const row = message(author, channel, "hi", 10);

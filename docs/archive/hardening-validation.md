@@ -132,7 +132,7 @@ day authorized a narrow portability fix, not native sign-in.
 - Replaced the hard-coded viewer with public `BUZZ_DEV_VIEWER` configuration from
   Vite's existing env loading. Missing/invalid pins fail before Keychain access;
   matching hex/npub works, mismatches still fail, no credential fallback.
-- Updated web/desktop notices and [setup guidance](../../README.md#relay-channels).
+- Updated web/desktop notices and [setup guidance](../contributing.md#live-relay-development).
   A public-only, ignored `.env.local` configures Wes's signed-request identity in
   this worktree; it does not enable live mode or alter Keychain credentials.
 - Full `bin/just scan` passes on the uncommitted follow-up at the same HEAD:

@@ -27,6 +27,7 @@ import {
 } from "./service";
 import { fakeNative } from "./service-testing";
 import { memoryStorage } from "./test-fakes";
+import type { AgentStore } from "./store";
 import { claudeRun } from "../../bundled/claude-code/run";
 import { ClaudeRuntime } from "../../bundled/claude-code/runtime";
 import { fakeSpawn as fakeClaude } from "../../bundled/claude-code/claude-testing";
@@ -71,7 +72,7 @@ const revision = (body: object | null, op = "create") =>
   ) as RelayEvent;
 
 /** Confirmed copies in this device's storage, as a sync read installs them. */
-function seed(storage: Storage, heads: [Subject, RelayEvent][]) {
+function seed(storage: AgentStore, heads: [Subject, RelayEvent][]) {
   const store = new AgentConfigStore(storage);
   for (const [subject, head] of heads)
     store.applyRead(subject, store.capture(subject), {
@@ -544,7 +545,12 @@ function gooseHost() {
     ],
     supported: ["synced-model"],
   });
-  const host = { spawn: goose.spawn, serveMcp: goose.serve } as unknown as Host;
+  const host = {
+    spawn: goose.spawn,
+    resolveDirectory: goose.resolveDirectory,
+    readFile: vi.fn(),
+    serveMcp: goose.serve,
+  } as unknown as Host;
   return { goose, host };
 }
 
@@ -617,3 +623,91 @@ it("refuses to start from deleted synced settings once: no launch, the reason on
   expect(goose.geese).toEqual([]);
   expectOnlyAllowed(f);
 });
+
+it.each([
+  {
+    name: "Claude",
+    start: async (effort: string) => {
+      const claude = fakeClaude();
+      const host = { spawn: claude.spawn, request: vi.fn() } as unknown as Host;
+      const { seeded } = heads("buzz/claude-code", {
+        model: "haiku",
+        effort,
+        scope: "thread",
+      });
+      const f = await setup(
+        "claude-code",
+        (_relay, reads, core) =>
+          claudeRun(new ClaudeRuntime(host, reads, core, memoryStorage())),
+        { ...GOOSE_LOCAL, model: "haiku", effort: "low" },
+        seeded,
+        synced(),
+      );
+      return {
+        f,
+        prompted: () =>
+          claude.processes.reduce((sum, item) => sum + item.prompts.length, 0),
+      };
+    },
+  },
+  {
+    name: "Codex",
+    start: async (effort: string) => {
+      const codex = fakeCodex();
+      const { seeded } = heads("buzz/codex", {
+        model: "synced-model",
+        effort,
+        scope: "thread",
+      });
+      const f = await setup(
+        "codex",
+        (_relay, reads, core) =>
+          codexRun(new CodexRuntime(codex.spawn, reads, core, memoryStorage())),
+        { ...GOOSE_LOCAL, model: "local-model", effort: "low" },
+        seeded,
+        synced(),
+      );
+      return {
+        f,
+        prompted: () =>
+          codex.sent.filter((wire) => wire.method === "turn/start").length,
+      };
+    },
+  },
+  {
+    name: "goose",
+    start: async (effort: string) => {
+      const { goose, host } = gooseHost();
+      const { seeded } = heads("buzz/goose", {
+        model: "synced-model",
+        provider: "synced-provider",
+        effort,
+        scope: "thread",
+      });
+      const f = await setup(
+        "goose",
+        (relay, _reads, core) => gooseRun(new GooseRuntime(host, relay, core)),
+        { ...GOOSE_LOCAL },
+        seeded,
+        synced(),
+      );
+      return {
+        f,
+        prompted: () =>
+          goose.geese.reduce((sum, item) => sum + item.turns.length, 0),
+      };
+    },
+  },
+])(
+  "refuses $name a synced effort its model lacks, with the reason on the mention",
+  async ({ start }) => {
+    const { f, prompted } = await start("max");
+    const sent = f.mention();
+    const work = () =>
+      f.activity.reader.work().find((item) => item.messageId === sent.id);
+    await vi.waitFor(() => expect(work()?.state).toBe("error"));
+    expect(work()?.error).toContain('synced effort "max"');
+    expect(f.deliveries[0]?.synced).toMatchObject({ effort: "max" });
+    expect(prompted()).toBe(0);
+  },
+);

@@ -1,6 +1,45 @@
 import { test, expect } from "./playwright-test.mjs";
 import { createServer } from "./vite-server.mjs";
+import { activate } from "./navigation.mjs";
 import { virtuaIdle } from "./timeline.mjs";
+
+function observeScrollWrites(element) {
+  const offsets = [element.scrollTop];
+  const record = () => offsets.push(element.scrollTop);
+  // Scroll events coalesce; record every scrollTop and scrollTo write,
+  // including two owners undoing each other's movement within the same frame.
+  // Virtua's scrollBy size compensation and scrollIntoView are not recorded.
+  const scrollTop = Object.getOwnPropertyDescriptor(
+    Element.prototype,
+    "scrollTop",
+  );
+  const scrollTo = element.scrollTo;
+  Object.defineProperty(element, "scrollTop", {
+    configurable: true,
+    get() {
+      return scrollTop.get.call(element);
+    },
+    set(value) {
+      scrollTop.set.call(element, value);
+      record();
+    },
+  });
+  element.scrollTo = (...args) => {
+    scrollTo.apply(element, args);
+    record();
+  };
+  return {
+    reset() {
+      offsets.length = 0;
+      record();
+    },
+    stop() {
+      delete element.scrollTop;
+      delete element.scrollTo;
+      return offsets;
+    },
+  };
+}
 
 // The real virtualizer must measure folded zero-height entries, preserve focus
 // and reading position, and reveal a message that was previously unmounted.
@@ -130,6 +169,7 @@ test("Solo activity folds, stays expanded on append/prepend, and reveals exact v
     await expect(
       history.getByRole("button", { name: "Show 13 previous steps" }),
     ).toBeFocused();
+    const revealScroll = await history.evaluateHandle(observeScrollWrites);
     await page.getByRole("button", { name: "Visit first update" }).click();
     await expect(first).toBeVisible();
     await expect(first).toBeFocused();
@@ -143,10 +183,28 @@ test("Solo activity folds, stays expanded on append/prepend, and reveals exact v
       name: /Activity update 0/,
     });
     // Exact navigation focuses the row before its reveal/scroll has finished.
-    // Virtua suppresses pointer events while scrolling; wait for that boundary
-    // before exercising the disclosure's pointer interaction.
+    // Wait for it to finish before reading the recorded writes.
     await virtuaIdle(page, history);
-    await detailsToggle.click();
+    const offsets = await revealScroll.evaluate((observer) => observer.stop());
+    await revealScroll.dispose();
+    // Expanding above the target can advance its offset. A retained centered
+    // virtualizer scroll must not pull it back against the exact reveal hold.
+    expect(
+      offsets.slice(1).some((offset, index) => offset < offsets[index] - 1),
+    ).toBe(false);
+    // The reveal keeps this row in place while the fold expansion is still
+    // measuring, and each correction restarts Virtua's pointer hold and can
+    // move the row between a click's press and release. The disclosure, not
+    // hit testing, is under test here; the pointer path is exercised above.
+    // Opened during the fold's transitions, the detail's own transition
+    // shares their frames, which a slow runner can starve below the samples
+    // asserted next. Start it once the fold has finished moving.
+    await expect
+      .poll(() =>
+        history.evaluate((e) => e.getAnimations({ subtree: true }).length),
+      )
+      .toBe(0);
+    await activate(detailsToggle);
     await expect(detailsToggle).toHaveAttribute("aria-expanded", "true");
     await expect
       .poll(() =>
@@ -177,6 +235,43 @@ test("Solo activity folds, stays expanded on append/prepend, and reveals exact v
     await page.screenshot({
       path: test.info().outputPath("activity-details.png"),
     });
+    // Measure again as soon as the reveal verifies and installs its hold,
+    // while the preceding Jump's retained request would still be live.
+    await history.evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    await expect(history.locator("[data-jump-to-latest]")).toBeVisible();
+    await virtuaIdle(page, history);
+    const retargetScroll = await history.evaluateHandle(observeScrollWrites);
+    await retargetScroll.evaluate(async (observer) => {
+      const element = document.querySelector("[data-channel-timeline]");
+      const button = (name) =>
+        [...document.querySelectorAll("button")].find(
+          (candidate) => candidate.textContent.trim() === name,
+        );
+      await new Promise((resolve) => {
+        element.addEventListener("scroll", resolve, { once: true });
+        element.querySelector("[data-jump-to-latest]").click();
+      });
+      await new Promise((resolve) => {
+        element.addEventListener("reading-positioned", resolve, { once: true });
+        button("Visit first update").click();
+      });
+      observer.reset();
+      button("Append update").click();
+    });
+    await expect(messages).toHaveCount(19);
+    await expect(first).toBeFocused();
+    await virtuaIdle(page, history);
+    const retargetOffsets = await retargetScroll.evaluate((observer) =>
+      observer.stop(),
+    );
+    await retargetScroll.dispose();
+    expect(
+      retargetOffsets.every(
+        (offset) => Math.abs(offset - retargetOffsets[0]) <= 1,
+      ),
+    ).toBe(true);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await detailsToggle.click();
     await detailsToggle.click();
@@ -184,9 +279,11 @@ test("Solo activity folds, stays expanded on append/prepend, and reveals exact v
       "transition-duration",
       "0s",
     );
-    await history.getByRole("button", { name: "Show fewer" }).click();
+    // Virtua can start a pointer hold between press and release after the
+    // detail resize. Reduced-motion behavior does not depend on hit testing.
+    await activate(history.getByRole("button", { name: "Show fewer" }));
     const reducedToggle = history.getByRole("button", {
-      name: "Show 13 previous steps",
+      name: "Show 14 previous steps",
     });
     await reducedToggle.click();
     await expect(messages.first().locator("..")).toHaveCSS(

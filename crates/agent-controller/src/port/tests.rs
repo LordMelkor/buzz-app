@@ -247,7 +247,7 @@ fn takes_the_key_from_the_store_it_was_listed_in() {
     .unwrap();
     let destination = crate::AppAgents::open(dir.path().join("agents/identities.json"));
     let (agent, key) = destination.commit(prepared, &auth, &credentials).unwrap();
-    let reopened = destination.get(&agent.pubkey).unwrap();
+    let reopened = destination.get(&agent.pubkey, &agent.relay).unwrap();
     let profile = reopened.profile_event(&key).unwrap();
     let content: Value = serde_json::from_str(profile["content"].as_str().unwrap()).unwrap();
     assert_eq!(
@@ -469,7 +469,9 @@ fn retained_harness_artwork_survives_agents_storage_and_signed_publication() {
         let (agent, _) = crate::AppAgents::open(path.clone())
             .commit(prepared, &auth, &credentials)
             .unwrap();
-        let reopened = crate::AppAgents::open(path).get(&agent.pubkey).unwrap();
+        let reopened = crate::AppAgents::open(path)
+            .get(&agent.pubkey, &agent.relay)
+            .unwrap();
         let event = reopened
             .profile_event(&reopened.read_key(&credentials).unwrap())
             .unwrap();

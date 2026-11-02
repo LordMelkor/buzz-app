@@ -80,11 +80,11 @@ function setup() {
 }
 
 it.each([
-  { observedCount: 3, manual: "none", name: "Mark as Read" },
-  { observedCount: 0, manual: "local-only", name: "Mark as Read" },
-  { observedCount: 0, manual: "remote", name: "Mark as Read" },
-  { observedCount: 0, manual: "none", name: "Mark as Unread" },
-  { observedCount: null, manual: "none", name: "Mark as Unread" },
+  { observedCount: 3, manual: "none", name: "Mark as read" },
+  { observedCount: 0, manual: "local-only", name: "Mark as read" },
+  { observedCount: 0, manual: "remote", name: "Mark as read" },
+  { observedCount: 0, manual: "none", name: "Mark as unread" },
+  { observedCount: null, manual: "none", name: "Mark as unread" },
 ] as const)(
   "offers only $name for count=$observedCount/manual=$manual",
   async ({ name, ...snapshot }) => {
@@ -99,7 +99,7 @@ it.each([
     );
     expect(item.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
     await userEvent.click(item);
-    if (name === "Mark as Read") {
+    if (name === "Mark as read") {
       expect(h.unread.markChannelRead).toHaveBeenCalledExactlyOnceWith("room");
       expect(h.unread.markUnreadLocal).not.toHaveBeenCalled();
     } else {
@@ -117,23 +117,23 @@ it("updates an open menu from the domain snapshot, disables pending work and rel
   const h = setup();
   const view = render(h.menu());
   const initial = await screen.findByRole("menuitem", {
-    name: "Mark as Unread",
+    name: "Mark as unread",
   });
   await waitFor(() => expect(initial).toBeVisible());
   act(() => h.set("room", { observedCount: 1 }));
-  expect(screen.getByRole("menuitem", { name: "Mark as Read" })).toBeVisible();
+  expect(screen.getByRole("menuitem", { name: "Mark as read" })).toBeVisible();
   act(() => h.set("room"));
   expect(
-    screen.getByRole("menuitem", { name: "Mark as Unread" }),
+    screen.getByRole("menuitem", { name: "Mark as unread" }),
   ).toBeVisible();
   view.rerender(h.menu("room", true));
-  const disabled = screen.getByRole("menuitem", { name: "Mark as Unread" });
+  const disabled = screen.getByRole("menuitem", { name: "Mark as unread" });
   expect(disabled).toHaveAttribute("aria-disabled", "true");
   await userEvent.click(disabled);
   expect(h.run).not.toHaveBeenCalled();
   view.rerender(h.menu("other"));
   expect(h.listeners.get("room")?.size).toBe(0);
-  await userEvent.click(screen.getByRole("menuitem", { name: "Mark as Read" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Mark as read" }));
   expect(h.unread.markChannelRead).toHaveBeenCalledExactlyOnceWith("other");
   view.rerender(h.menu("other", false, false));
   await waitFor(() => expect(h.listeners.get("other")?.size).toBe(0));

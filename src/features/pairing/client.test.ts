@@ -63,7 +63,6 @@ it("displays the native outcome when cancel wins the poll gap after transfer", a
   api.status.mockResolvedValue({
     phase: "code",
     code: "123456",
-    codeEntry: true,
   });
   const client = createPairingClient(api);
   await client.start("viewer", "https://relay.test");
@@ -77,21 +76,16 @@ it("displays the native outcome when cancel wins the poll gap after transfer", a
   await vi.advanceTimersByTimeAsync(1000);
   expect(api.status).toHaveBeenCalledTimes(1);
 });
-it("allows desktop confirmation only for a legacy phone", async () => {
+it("allows desktop confirmation only during a live comparison", async () => {
   const api = native();
   const client = createPairingClient(api);
-  api.status.mockResolvedValue({
-    phase: "code",
-    code: "001234",
-    codeEntry: true,
-  });
+  api.status.mockResolvedValue({ phase: "qr", svg: "<svg/>", uri: "fixture" });
   await client.start("viewer", "https://relay.test");
   await client.confirm();
   expect(api.confirm).not.toHaveBeenCalled();
   api.status.mockResolvedValue({
     phase: "code",
     code: "001234",
-    codeEntry: false,
   });
   await client.start("viewer", "https://relay.test");
   await client.confirm();
@@ -122,13 +116,12 @@ it("reports cleanup failures instead of starting another live session", async ()
   expect(client.snapshot().phase).toBe("error");
 });
 
-it("does not revive legacy confirmation from a status response already in flight", async () => {
+it("does not revive confirmation from a status response already in flight", async () => {
   vi.useFakeTimers();
   const api = native();
   api.status.mockResolvedValue({
     phase: "code",
     code: "001234",
-    codeEntry: false,
   });
   const client = createPairingClient(api);
   await client.start("viewer", "https://relay.test");
@@ -136,7 +129,7 @@ it("does not revive legacy confirmation from a status response already in flight
   api.status.mockReturnValue(late.promise);
   await vi.advanceTimersByTimeAsync(400);
   await client.confirm();
-  late.resolve({ phase: "code", code: "001234", codeEntry: false });
+  late.resolve({ phase: "code", code: "001234" });
   await Promise.resolve();
   expect(client.snapshot().phase).toBe("transferring");
   await client.confirm();
@@ -158,21 +151,16 @@ it("resets client-controlled cleanup without treating native cancellation as idl
   expect(client.snapshot().phase).toBe("error");
 });
 
-it("denies only a live legacy comparison", async () => {
+it("denies only a live comparison", async () => {
   const api = native();
   const client = createPairingClient(api);
-  api.status.mockResolvedValue({
-    phase: "code",
-    code: "123456",
-    codeEntry: true,
-  });
+  api.status.mockResolvedValue({ phase: "qr", svg: "<svg/>", uri: "fixture" });
   await client.start("viewer", "https://relay.test");
   await client.deny();
   expect(api.deny).not.toHaveBeenCalled();
   api.status.mockResolvedValue({
     phase: "code",
     code: "123456",
-    codeEntry: false,
   });
   await client.start("viewer", "https://relay.test");
   await client.deny();
@@ -187,7 +175,6 @@ it("does not revive a decision while native denial is pending after IPC returns"
   let status: PairingStatus = {
     phase: "code",
     code: "123456",
-    codeEntry: false,
   };
   api.status.mockImplementation(async () => status);
   const client = createPairingClient(api);

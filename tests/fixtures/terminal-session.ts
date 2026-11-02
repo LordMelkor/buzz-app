@@ -20,7 +20,7 @@ const writes: { owner: string; id: string; data: string }[] = [];
 const generated: { data: string; source: TerminalInputSource }[] = [];
 const readers = new Map<
   string,
-  (result: { data: number[]; exited: boolean }) => void
+  (result: { data: Uint8Array; exited: boolean }) => void
 >();
 const bridge: TerminalBridge = {
   available: true,
@@ -34,11 +34,12 @@ const bridge: TerminalBridge = {
   },
   resize: async () => {},
   close: async (_owner, id) => {
-    readers.get(id)?.({ data: [], exited: true });
+    readers.get(id)?.({ data: new Uint8Array(), exited: true });
     readers.delete(id);
   },
   closeOwner: async () => {
-    for (const resolve of readers.values()) resolve({ data: [], exited: true });
+    for (const resolve of readers.values())
+      resolve({ data: new Uint8Array(), exited: true });
     readers.clear();
   },
 };
@@ -75,7 +76,7 @@ const api = {
     const resolve = readers.get("pty-1");
     if (!resolve) throw new Error("No pending PTY read");
     readers.delete("pty-1");
-    resolve({ data: [...new TextEncoder().encode(data)], exited: false });
+    resolve({ data: new TextEncoder().encode(data), exited: false });
   },
   holdWrites() {
     writing = new Promise<void>((resolve) => {

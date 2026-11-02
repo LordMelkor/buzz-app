@@ -7,15 +7,48 @@ import type { RelayEvent } from "../relay/events";
 import { addChannelMember, canAddMembers } from "./members";
 
 const cleanups: (() => void)[] = [];
+it.each([
+  ["guest", "member", false],
+  ["guest", "guest", false],
+  ["member", "guest", true],
+  ["owner", "guest", true],
+  [undefined, "guest", false],
+  [undefined, "member", true],
+] as const)(
+  "keeps invitation eligibility separate from the %s viewer's %s admission default",
+  (viewerRole, joinRole, allowed) => {
+    expect(
+      canAddMembers(
+        { viewer: "viewer", outbox: { supports: () => true } },
+        {
+          id: "channel",
+          name: "Updates",
+          channelType: "stream",
+          joinRole,
+          viewerRole,
+          members: viewerRole ? ["viewer"] : [],
+          ...(viewerRole === "guest" || !viewerRole
+            ? { readOnly: true as const }
+            : {}),
+        },
+      ),
+    ).toBe(allowed);
+  },
+);
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
-function setup(type = "stream") {
+function setup(
+  type = "stream",
+  visibility: "private" | "public" = "private",
+  joinRole: "member" | "guest" = "member",
+) {
   const viewer = keypair(),
     relay = keypair(),
     person = keypair();
   const id = "11111111-1111-4111-8111-111111111111";
   let members = [viewer.pubkey];
+  let personRole: string | undefined;
   let clock = 1700000000;
   let fail = "";
   let unknown = false;
@@ -66,9 +99,29 @@ function setup(type = "stream") {
             signed(relay, {
               kind: 39000,
               content: "",
-              tags: [["d", id], ["t", type], ["private"], ["name", "Design"]],
+              tags: [
+                ["d", id],
+                ["t", type],
+                [visibility],
+                ["join_role", joinRole],
+                ["name", "Design"],
+              ],
             }),
-            roster(foreign ? person : relay, id, members, clock),
+            personRole
+              ? signed(relay, {
+                  kind: 39002,
+                  content: "",
+                  created_at: clock,
+                  tags: [
+                    ["d", id],
+                    ...members.map((key) =>
+                      key === person.pubkey && personRole
+                        ? ["p", key, "", personRole]
+                        : ["p", key],
+                    ),
+                  ],
+                })
+              : roster(foreign ? person : relay, id, members, clock),
           ].filter((event) =>
             filters.some((filter) => matchesEvent(event, filter)),
           );
@@ -119,7 +172,7 @@ function setup(type = "stream") {
       loseReceipt = value;
     },
     profileAdd: (active = () => true) =>
-      owner.session.workSessions.addAgents(id, [person.pubkey], active),
+      owner.session.channelWrites.addAgents(id, [person.pubkey], active),
     setSaveFailure: (value: boolean) => {
       failSave = value;
     },
@@ -133,8 +186,9 @@ function setup(type = "stream") {
       members = [viewer.pubkey];
       clock++;
     },
-    confirmPerson: () => {
+    confirmPerson: (role?: string) => {
       members = [viewer.pubkey, person.pubkey];
+      personRole = role;
       clock++;
     },
     managedAdd: () => owner.session.memberAdditions.add(id, person.pubkey),
@@ -166,7 +220,7 @@ function setup(type = "stream") {
       addChannelMember(owner.session, id, person.pubkey, signal),
   };
 }
-it("adds a person without changing roles and confirms the live roster using membership capability alone", async () => {
+it("adds a private-channel participant explicitly and confirms the live roster using membership capability alone", async () => {
   const t = setup();
   await t.ready();
   await t.add();
@@ -177,9 +231,7 @@ it("adds a person without changing roles and confirms the live roster using memb
       ["p", t.person.pubkey],
     ]),
   );
-  expect(
-    t.publish.mock.calls[0]?.[0].tags.some(([tag]) => tag === "role"),
-  ).toBe(false);
+  expect(t.publish.mock.calls[0]?.[0].tags).toContainEqual(["role", "member"]);
   expect(t.session.channels.list().channels[0]?.members).toContain(
     t.person.pubkey,
   );
@@ -193,6 +245,53 @@ it("uses the bot role for an existing library agent", async () => {
   await t.add();
   expect(t.publish.mock.calls[0]?.[0].tags).toContainEqual(["role", "bot"]);
 });
+it("adds a participant despite a private channel's saved Guest default", async () => {
+  const t = setup("stream", "private", "guest");
+  await t.ready();
+  await t.managedAdd();
+  expect(t.publish.mock.calls[0]?.[0].tags).toContainEqual(["role", "member"]);
+});
+it.each(["member", "guest"] as const)(
+  "leaves the public %s admission default to the relay",
+  async (joinRole) => {
+    const t = setup("stream", "public", joinRole);
+    await t.ready();
+    await t.add();
+    expect(
+      t.publish.mock.calls[0]?.[0].tags.some(([tag]) => tag === "role"),
+    ).toBe(false);
+  },
+);
+it("does not resend an addition for someone already in the private channel", async () => {
+  const t = setup("stream", "private", "guest");
+  await t.ready();
+  t.confirmPerson();
+  await t.managedAdd();
+  expect(t.publish).not.toHaveBeenCalled();
+});
+it.each(["guest", "admin"])(
+  "does not replay a failed private addition over a newer %s admission after restart",
+  async (role) => {
+    const t = setup();
+    await t.ready();
+    t.setFail("Not committed");
+    await expect(t.managedAdd()).rejects.toThrow(/Not committed/);
+    const original = t.records()[0]?.event.id;
+    t.confirmPerson(role);
+    t.setFail("");
+    t.restart();
+    await t.ready();
+    await t.managedAdd();
+    expect(t.publish).toHaveBeenCalledOnce();
+    expect(t.records()[0]).toMatchObject({
+      event: { id: original },
+      acknowledged: true,
+    });
+    expect(t.session.channels.list().channels[0]?.members).toContain(
+      t.person.pubkey,
+    );
+  },
+);
 it("preserves a rejected operation and retries its exact identity", async () => {
   const t = setup();
   await t.ready();
@@ -232,6 +331,23 @@ it.each(["dm", "unknown"])("never expands a %s conversation", async (type) => {
   );
   await expect(t.add()).rejects.toThrow(/cannot add/);
   expect(t.publish).not.toHaveBeenCalled();
+});
+it("adds a member to a system channel through the session, which plugins use", async () => {
+  const t = setup("system");
+  await t.ready();
+  expect(t.session.channels.list().channels).toEqual([]);
+  await t.session.channels.resolve?.([t.id]);
+  expect(t.session.channels.get?.(t.id)?.channelType).toBe("system");
+  await t.managedAdd();
+  expect(t.publish).toHaveBeenCalledOnce();
+  expect(t.publish.mock.calls[0]?.[0].tags).toEqual(
+    expect.arrayContaining([
+      ["h", t.id],
+      ["p", t.person.pubkey],
+    ]),
+  );
+  expect(t.session.channels.get?.(t.id)?.members).toContain(t.person.pubkey);
+  expect(t.session.channels.list().channels).toEqual([]);
 });
 it("cancellation before intent and session disposal never publish", async () => {
   const t = setup();
@@ -276,7 +392,7 @@ it.each(["rejected", "unknown", "unconfirmed"])(
     expect(t.session.outbox?.snapshot()).toEqual([]);
     expect(t.session.memberAdditions.snapshot()).toEqual([]);
     t.removePerson();
-    await t.session.workSessions.refreshMembership(t.id);
+    await t.session.channelWrites.refreshMembership(t.id);
     expect(t.publish).toHaveBeenCalledOnce();
     if (failure !== "unconfirmed")
       t.setFail("Failed re-add", failure === "unknown");

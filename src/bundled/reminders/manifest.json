@@ -3,5 +3,5 @@
   "name": "Reminders",
   "apiVersion": 1,
   "description": "Set message reminders and review what is due.",
-  "discovery": { "category": "productivity" }
+  "discovery": { "category": "productivity", "tags": ["tasks"] }
 }

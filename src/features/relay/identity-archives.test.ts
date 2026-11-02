@@ -14,6 +14,7 @@ import {
 } from "./testing";
 import type { RelayEvent } from "./events";
 import type { LiveCallbacks } from "./live";
+import { archiveHides } from "./identity-archives";
 
 const viewer = keypair(),
   relay = keypair(),
@@ -158,20 +159,42 @@ it.each([
     ],
   ],
 ] as const)(
-  "%s evidence cannot present known active state or retain old contents",
+  "%s evidence cannot present known active state; known archives stay hidden but unconfirmed",
   async (_label, events) => {
     const h = harness();
     await read(h, [snapshot()]);
+    const { readAt } = h.archives.snapshot();
     await read(h, events());
     expect(h.archives.snapshot()).toMatchObject({
       status: "error",
-      archived: [],
+      archived: [target.pubkey],
+      readAt,
     });
     expect(h.archives.snapshot().error).not.toContain("secret");
+    // Visibility keeps the known archive; deletion and confirmation, which
+    // read state(), need a fresh read.
+    expect(archiveHides(h.archives, target.pubkey, viewer.pubkey)).toBe(true);
     expect(h.archives.state(target.pubkey)).toBe("unknown");
     expect(h.archives.state(other.pubkey)).toBe("unknown");
   },
 );
+it("keeps the last known archives while rereading", async () => {
+  const h = harness();
+  await read(h, [snapshot()]);
+  const pending = h.archives.refresh();
+  expect(h.archives.snapshot()).toMatchObject({
+    status: "loading",
+    archived: [target.pubkey],
+    readAt: expect.any(Number),
+  });
+  expect(archiveHides(h.archives, target.pubkey, viewer.pubkey)).toBe(true);
+  expect(h.archives.state(target.pubkey)).toBe("unknown");
+  expect(h.archives.state(other.pubkey)).toBe("unknown");
+  await vi.waitFor(() => expect(h.wire.pending).toHaveLength(1));
+  h.wire.next().respond([snapshot(2, [])]);
+  await pending;
+  expect(h.archives.state(target.pubkey)).toBe("not-archived");
+});
 it("read failures redact payload and remain retryable", async () => {
   const h = harness();
   const pending = h.archives.refresh();
@@ -181,6 +204,18 @@ it("read failures redact payload and remain retryable", async () => {
   expect(h.archives.snapshot().error).not.toContain("secret");
   await read(h, [snapshot()]);
   expect(h.archives.state(target.pubkey)).toBe("archived");
+});
+it("archives no one before the relay's first snapshot, but never rolls back to none", async () => {
+  const h = harness();
+  await read(h, []);
+  expect(h.archives.snapshot().status).toBe("ready");
+  expect(h.archives.state(target.pubkey)).toBe("not-archived");
+  await read(h, [snapshot()]);
+  expect(h.archives.state(target.pubkey)).toBe("archived");
+  await h.clearCache();
+  await read(h, []);
+  expect(h.archives.snapshot().status).toBe("error");
+  expect(h.archives.state(target.pubkey)).toBe("unknown");
 });
 it("rejects rollback across refresh, failure and cache clear; permits the same head and lower-id tie winner", async () => {
   const h = harness();
@@ -202,13 +237,14 @@ it("rejects rollback across refresh, failure and cache clear; permits the same h
   expect(h.archives.snapshot().createdAt).toBe(6);
 });
 it.each(["cache", "disconnect", "access", "dispose"] as const)(
-  "%s invalidation clears known state and fences late results",
+  "%s invalidation fences late results; only a disconnect keeps known state",
   async (action) => {
     const h = harness();
     h.live.state({ status: "connected", routes: [] });
     if (action === "access")
       h.live.receive([roster(relay, "room", [viewer.pubkey], 1)]);
     await read(h, [snapshot()]);
+    const { readAt } = h.archives.snapshot();
     const pending = h.archives.refresh();
     const req = h.wire.next();
     if (action === "cache") await h.clearCache();
@@ -218,12 +254,16 @@ it.each(["cache", "disconnect", "access", "dispose"] as const)(
       h.live.receive([roster(relay, "room", [], 2)]);
     else h.dispose();
     expect(req.signal?.aborted).toBe(true);
+    const kept = action === "disconnect";
+    expect(archiveHides(h.archives, target.pubkey, viewer.pubkey)).toBe(kept);
     expect(h.archives.state(target.pubkey)).toBe("unknown");
     req.respond([snapshot(2)]);
     await pending;
-    expect(h.archives.snapshot().status).toBe(
-      action === "dispose" ? "unavailable" : "idle",
-    );
+    expect(h.archives.snapshot()).toMatchObject({
+      status: action === "dispose" ? "unavailable" : "idle",
+      archived: kept ? [target.pubkey] : [],
+    });
+    expect(h.archives.snapshot().readAt).toBe(kept ? readAt : undefined);
     if (action === "dispose") {
       // Closing is not lack of support: callers must not read it as "none".
       expect(h.archives.supported).toBe(true);

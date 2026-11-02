@@ -1,0 +1,7 @@
+{
+  "id": "buzz.repos",
+  "name": "Repositories",
+  "apiVersion": 1,
+  "description": "Browse repositories and share issues or pull requests.",
+  "discovery": { "category": "productivity", "tags": ["code", "tasks"] }
+}

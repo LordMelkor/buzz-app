@@ -52,9 +52,9 @@ export const dialogs = [
   },
   {
     id: "join",
-    name: "Add a community",
+    name: "Join a community",
     group: "Shared dialogs",
-    path: "Community rail → Add a community",
+    path: "Community picker → Join a community",
     source: "src/features/communities/CommunityDialog.tsx",
     frame: "Dialog · 3 steps",
     note: "Try wss://relay.example.test, then Continue through access and profile. Requests and publication are simulated locally.",

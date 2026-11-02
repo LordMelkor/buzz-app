@@ -3,5 +3,5 @@
   "name": "Voice Notes",
   "apiVersion": 1,
   "description": "Record voice notes and play them in conversations.",
-  "discovery": { "category": "communication" }
+  "discovery": { "category": "communication", "tags": ["messaging"] }
 }

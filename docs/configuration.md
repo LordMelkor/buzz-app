@@ -1,17 +1,22 @@
 # Deployment configuration: current-feature parity
 
 Buzz Foundation supports configuration for capabilities that exist here, not a
-port of every OG Buzz feature. Keep deployment values in local/CI configuration,
-not in source. Build defaults are readable binary data, **never secret storage**.
+port of every OG Buzz feature. Keep deployment overrides in local/CI configuration.
+Build defaults are readable binary data, **never secret storage**.
 
 ## Supported inputs and surfaces
 
 | Input | Consumer and boundary |
 | --- | --- |
-| `BUZZ_BUILDERLAB_URL` | Shared frontend/native build: public login URL and the bundled plugin's exact HTTPS host grant; no runtime override. |
+| `BUZZ_BUILDERLAB_URL` | Shared frontend/native build: public login URL and the bundled plugin's native grants; no runtime override. |
+| `BUZZ_BUILDERLAB_APPS_DOMAIN` | Shared frontend/native build: exact Apps cookie domain paired with the login origin for native viewer SSO; no runtime override. |
+| `BUZZ_DEFAULT_COMMUNITY_URL` | Packaged frontend build: secure relay origin to select once, after identity setup, only when this viewer has no saved community record. Saved choices, including Personal space, always win. Unset in OSS builds. |
+| `BUZZ_DATABRICKS_HOST` | Frontend build and dev server: `https://` Databricks workspace URL passed as `DATABRICKS_HOST` to every bundled `goose-acp`, which then prefers it to the host in goose's config. Unset in OSS builds. See [Databricks host](#databricks-host). |
 | `BUZZ_RELAY_URL` | Live development broker's default community, not an agent relay override or a packaged default. |
 | `BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY` | Presence-only alias for fresh-viewer community selection in live development only. Saved viewer choice wins. |
+| `BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG` | Native build: federated identity authority, adapter prefix and community hosts. See below. |
 | `BUZZ_DEV_OPEN_RELAY` | Development-specific override of that alias: only `1` enables; `0` explicitly opts out. Requires a relay URL and live viewer pin to have an effect. |
+| `BUZZ_DEV_FIRST_RUN_ACCOUNT` | Dev server only: replaces first run's kgoose reads and writes (including the key link, the unlink and the saved-community add), its key backup and backup recovery. Builds define it empty. See [below](#first-run-account-seed-development). |
 | `BUZZ_DEV_VIEWER`, `BUZZ_COMMUNITY_ALIASES`, `BUZZ_DEV_NOTIFICATIONS` | Existing public viewer pin, public routing aliases and dev notification override; unchanged. See the [development setup](contributing.md). |
 | `BUZZ_UPDATER_PUBLIC_KEY`, `BUZZ_UPDATER_ENDPOINT` | Native release build, process environment only: two non-empty values register the updater plugin. The same public key and endpoint must reach `tauri build --config` as `plugins.updater`, and update archives must be signed by the matching private key. Desktop preview release runs supply both for every platform (see [releases](releases.md)); candidate-only and local builds report automatic updates as unavailable. |
 
@@ -19,38 +24,193 @@ The retired v1 inputs `BUZZ_BUILD_AGENT_ENV`, `BUZZ_BUILD_BUZZ_AGENT_PROVIDER`
 and `BUZZ_BUILD_AGENT_ACCESS_OWNER_ONLY` are no longer read or compiled. Agents
 uses each plugin agent type's settings. Remove these old defaults from local/CI
 configuration; they do not configure Agents. Restart Vite to change broker or
-routing configuration. Production frontend builds neither load the dev broker
-nor expose the auto-open seed.
+routing configuration. Production frontend builds never load the dev broker or
+expose its auto-open seed. They can separately opt into the packaged community
+default below.
+
+## Packaged community default
+
+Internal packagers can set a public community origin for fresh installs:
+
+```sh
+BUZZ_DEFAULT_COMMUNITY_URL=wss://relay.example.com bin/pnpm tauri build
+```
+
+The frontend build reads this value from repository-root `.env.local` or the build
+process environment (process wins, including an explicit empty value). It accepts
+only `wss://` or `https://` origins without credentials, paths, queries or fragments;
+invalid values fail the build. It is compiled into the frontend, so changing the
+launched app's environment cannot override it. Leave it unset for OSS builds.
+The dev server ignores it; live development retains its existing opt-in inputs.
+
+After native identity restoration, creation or import, the existing community
+service selects and saves this origin only if the viewer has no `buzz-client.v1`
+record on this device. Any saved record wins, including Personal space, malformed
+records and unresolvable aliases. A later build default cannot change that saved
+choice. Selection starts the normal authenticated relay session; it grants no
+membership or admission bypass. If the relay refuses admission or is offline,
+the normal connection error/retry flow applies. No legacy preferences are copied.
+
+## Databricks host
+
+Internal packagers can point the bundled goose's Databricks provider at a
+workspace:
+
+```sh
+BUZZ_DATABRICKS_HOST=https://workspace.cloud.databricks.com/ bin/pnpm tauri build
+```
+
+The frontend reads it from repository-root `.env.local` or the process
+environment (process wins) and compiles it in. It must be an `https://` URL
+without credentials; invalid values fail the build. Every `goose-acp` the goose
+plugin starts receives it as `DATABRICKS_HOST`, so goose reports Databricks as
+configured and ignores a host saved in goose's config. Only the host is set:
+the model, thinking level and sign-in stay goose's own. Leave it unset for OSS
+builds.
 
 ## Builderlab URL build input
 
-Set `BUZZ_BUILDERLAB_URL` in repository-root `.env.local` for development, or in
-the process running `bin/pnpm build` / `bin/pnpm tauri build` for packaging:
+Development and packaged builds default to `https://app.builderlab.xyz`, matching
+the desktop release workflow. To use another deployment, set `BUZZ_BUILDERLAB_URL`
+in repository-root `.env.local` for development, or in the process running
+`bin/pnpm build` / `bin/pnpm tauri build` for packaging:
 
 ```sh
 BUZZ_BUILDERLAB_URL=https://app.builderlab.xyz bin/pnpm tauri build
 ```
+
+Without the federated identity input below, the bundled Builderlab plugin keeps
+its own in-memory login against this origin. With it, Builderlab is the FI
+identity origin with `apiBasePath` less its `/api/goose/` suffix (another API
+base leaves Builderlab unconfigured), sign-in uses the native FI session, and a
+nonempty `BUZZ_BUILDERLAB_URL` fails the build.
+
+## Federated identity build input
+
+`BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG` is a public JSON descriptor supplied to
+Cargo through the build environment. It is validated and compiled into native
+code, with no runtime override or credential field:
+
+```json
+{
+  "version": 1,
+  "id": "example",
+  "identityOrigin": "https://identity.example",
+  "communityHosts": ["*.communities.example", "custom.example:8443"],
+  "adapterBase": "https://identity.example/nip-fa/",
+  "apiBasePath": "/api/goose/",
+  "signIn": "at-launch",
+  "organization": "Example"
+}
+```
+
+`signIn` and `organization` are optional. `signIn` is `on-demand` by default:
+the app asks for organization sign-in only when a protected community refuses
+the viewer, or from Settings → Identity. `at-launch` signs in before the app
+opens and again whenever the session ends (see
+[identity](identity.md#sign-in-at-launch)). `organization` is the display name
+used in that sign-in copy, up to 64 characters. Neither is part of the deployment
+fingerprint, so changing them keeps saved sessions.
+
+The first-run welcome screen does not yet support FI builds: its **Sign in
+with email** needs the bundled Builderlab plugin's own network grant, which an
+FI build does not have, so sign-in fails after the browser step (see
+[identity](identity.md)).
 
 Vite uses its existing environment loader; the native plugin-manager build reads
 repository-root `.env.local` and process values using the native dotenv pattern.
 For desktop, supply the full URL in `.env.local` or the build process environment
 so both stages receive it. Vite's additional `.env` and mode-specific files do
 not configure native grants. Process values take precedence, including an
-explicit empty value. When unset or empty, login is unconfigured and no network
-origin is granted. The repository supplies no deployment default.
+explicit empty value. Set `BUZZ_BUILDERLAB_URL=` to leave login unconfigured and
+clear the bundled plugin's native grants. The desktop release workflow supplies the
+production URL by default; see [release configuration](releases.md#builderlab-url).
 
 Any HTTPS host is supported, including an explicit port or deployment path. URL
 credentials, query parameters and fragments are rejected by the native build.
 The desktop's native plugin catalog supplies the effective manifest, granting
-only the configured URL's exact origin. Never put credentials in this input.
+the configured URL's exact origin. For recognized Builderlab deployments, its
+existing Apps policy also grants file access and the mapped control-plane origin
+(`https://compose-ctrl.builderlab.xyz` for production). Never put credentials in
+this input.
+
+The build origin also controls whether a Builderlab session can be reused by
+identity backup when its separately configured service URL has the same origin.
+Backup still requires its own service URL, namespace and user choice. The existing
+identity-binding validator accepts production Builderlab or the configured origin;
+production binding was already allowed before this default.
 
 The bundled Builderlab login consumes this public URL and appends `/api/goose`.
+
+Native viewer SSO also needs the exact Apps domain in
+`BUZZ_BUILDERLAB_APPS_DOMAIN`, for example `apps.example.com` for a configured
+login at `https://login.example.com`. Set both inputs in the same local/build
+environment. Only the public production login has a default Apps domain; other
+deployments supply their mapping through build configuration. An explicit empty
+domain disables native SSO. A missing mapping or an exchange endpoint returning
+404 keeps the account-isolated browser-login path. Authentication, permission,
+transport and other server errors do not fall back.
 
 Restart desktop development after changing this input so Vite and the native
 grant rebuild together; browser-only development needs a Vite restart. Production
 web and desktop frontend builds substitute the value into compiled code: changing `.env.local`
 or the launched app's environment afterward cannot override it. Rebuild and
 redistribute to change a packaged value.
+
+## First-run account seed (development)
+
+After Builderlab sign-in, the first-launch flow reads four things about the
+account from kgoose: the Nostr key bound to it, the communities it owns, the
+destinations saved to it ([known communities](communities.md#known-communities))
+and the keys it holds a backup of ([identity](identity.md)), binds a key it creates or
+imports to an unlinked account, and, on Start over, unlinks the lost key
+before binding the new one. A developer's real account is bound to their real key and that binding
+must not change, so `BUZZ_DEV_FIRST_RUN_ACCOUNT` replaces those reads, the
+binding, the unlink, the key backup and backup recovery — and nothing else —
+on a dev server:
+
+```sh
+# A brand-new account: the key-setup choice follows sign-in.
+BUZZ_DEV_FIRST_RUN_ACCOUNT=unlinked
+# A returning user: Welcome back for this npub, with these owned communities.
+BUZZ_DEV_FIRST_RUN_ACCOUNT='{"npub":"npub1…","communities":["design.example.com"]}'
+# An account with these destinations saved to it (read with the account check).
+BUZZ_DEV_FIRST_RUN_ACCOUNT='{"known":["chat.example.com","wss://buzz.example.org:8443"]}'
+# A brand-new account whose every backup fails as if Builderlab were unreachable.
+BUZZ_DEV_FIRST_RUN_ACCOUNT='{"backup":"unreachable"}'
+# A brand-new account whose first backup fails, so Try again then succeeds.
+BUZZ_DEV_FIRST_RUN_ACCOUNT='{"backup":"fail-once"}'
+# A returning user whose Start over unlink fails as kgoose answering 503 would.
+BUZZ_DEV_FIRST_RUN_ACCOUNT='{"npub":"npub1…","unlink":503}'
+# A returning user with Restore from backup, which answers that recovery is unavailable.
+BUZZ_DEV_FIRST_RUN_ACCOUNT='{"npub":"npub1…","backups":["npub1…"]}'
+# The same, where every restore recovers this throwaway key.
+BUZZ_DEV_FIRST_RUN_ACCOUNT='{"npub":"npub1…","backups":["npub1…"],"recovery":"nsec1…"}'
+```
+
+Every field is optional; without `npub` the account is unlinked. `communities`
+lists hostnames (or `wss://`/`https://` origins) the way the Community URL field
+accepts them; `known` lists the destinations saved to the account the same way,
+answered as kgoose spells them (`wss://host[:port]`). `backup` names a failure kind from
+`src/features/identity/backup-failure.ts` (such as `unreachable`, `timeout` or
+`refused`), and every backup then fails with that kind's page; `fail-once`
+fails only the first backup after each sign-in, as Builderlab not confirming
+it, so Try again succeeds. `unlink` is an
+HTTP error status (400–599), and every unlink then fails as kgoose answering it
+would: a 429 or 5xx offers Try again, and a 401 reads as a lapsed sign-in. `backups` lists the npubs backup status answers
+(none when absent), so Welcome back offers Restore from backup when it holds
+`npub`. `recovery` is the `nsec1…` every restore recovers, which installing
+imports as if it were typed; without it every restore answers that recovery is
+unavailable, as every tenant does today. The value is plain text in your
+environment, so use a throwaway key, never a real one. Vite exposes the value
+as `VITE_BUZZ_FIRST_RUN_ACCOUNT` for `serve` only; `pnpm build` and
+`pnpm tauri build` define it empty, so packaged apps always ask kgoose. A
+malformed value fails the Vite configuration without being echoed. Restart the
+dev server after changing it. With a seed, binding, unlinking and backup
+succeed (unless `unlink` or `backup` is set), and a joined community's save to
+the account succeeds, without a request, a native signature or a native backup
+command, in every build.
+Restore opens no browser and runs no native recovery command.
 
 ## Whole-video limit
 
@@ -83,7 +243,7 @@ copied here.
 
 | OG/release input | Why it is not implemented here |
 | --- | --- |
-| `BUZZ_DESKTOP_BUILD_RELAY_URL`; packaged auto-connect | No packaged default or auto-join is configured. Native macOS, Windows and Linux use the persisted identity and restore only the selected saved community; new admission uses Add a community. Windows/Linux installed-app acceptance remains unverified. The dev broker and saved agent destinations remain separate. See [packaged identity](identity.md). |
+| `BUZZ_DESKTOP_BUILD_RELAY_URL` | Retired name; internal builds use `BUZZ_DEFAULT_COMMUNITY_URL` above. No legacy input alias or admission bypass is added. Native macOS, Windows and Linux otherwise restore the selected saved community; new admission uses Join a community. Windows/Linux installed-app acceptance remains unverified. The dev broker and saved agent destinations remain separate. See [packaged identity](identity.md). |
 | `BUZZ_BUILD_RELAY_RECONNECT_CMD` | No reconnect-command feature; arbitrary deployment command execution is not added. |
 | Updater helper fallback aliases | Only the two canonical updater names above are read. Private signing keys never belong in app defaults. |
 | `--features mesh-llm` | No mesh/provider integration is supplied by the native identity crate. Import carries identities, not legacy runtimes. |

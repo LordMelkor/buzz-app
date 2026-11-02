@@ -94,13 +94,62 @@ function Control({
   );
 }
 
+/** A button-style field for comboboxes whose search input lives in the popup. */
+function Trigger({
+  label,
+  children,
+  error,
+  disabled,
+}: {
+  label: string;
+  children: ReactNode;
+  error?: ReactNode;
+  disabled?: boolean | undefined;
+}) {
+  return (
+    <Field label={label} error={error}>
+      <BaseCombobox.Trigger
+        aria-label={label}
+        disabled={disabled}
+        data-buzz-ui=""
+        className="buzz-input buzz-select-trigger"
+      >
+        <span className="buzz-select-value">{children}</span>
+        <CaretDownIcon
+          size={16}
+          className="buzz-dropdown-chevron"
+          aria-hidden="true"
+        />
+      </BaseCombobox.Trigger>
+    </Field>
+  );
+}
+
+function Search() {
+  return (
+    <div className="p-2">
+      <BaseCombobox.Input
+        aria-label="Search"
+        placeholder="Search"
+        data-buzz-ui=""
+        className="buzz-input"
+        autoCorrect="off"
+        autoCapitalize="none"
+        spellCheck={false}
+      />
+    </div>
+  );
+}
+
 function Popup({
   children,
   empty,
   className = "",
   collisionBoundary,
+  search = false,
 }: {
   children: ReactNode;
+  search?: boolean;
   empty: ReactNode;
   className?: string | undefined;
   /** Constrain nested choices to their containing surface; Base UI owns sizing. */
@@ -119,7 +168,9 @@ function Popup({
           data-buzz-ui=""
           className={`buzz-select-popup text-body ${className}`}
           data-variant="field"
+          initialFocus={search ? true : undefined}
         >
+          {search && <Search />}
           <BaseCombobox.Empty className="buzz-combobox-empty">
             {empty}
           </BaseCombobox.Empty>
@@ -161,6 +212,7 @@ function Item({
 export const Combobox = {
   Root: BaseCombobox.Root,
   Control,
+  Trigger,
   Popup,
   List: BaseCombobox.List,
   Item,

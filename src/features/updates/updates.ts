@@ -26,7 +26,7 @@ export type UpdatePlatform = {
   relaunch(): Promise<void>;
 };
 
-export const BACKGROUND_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+export const BACKGROUND_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 // Native request deadlines, so a stalled server cannot pin a check or download.
 // The updater does not carry the check timeout over to the download.
 export const UPDATE_CHECK_TIMEOUT_MS = 30 * 1000;

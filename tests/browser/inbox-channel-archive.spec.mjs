@@ -26,7 +26,7 @@ test("excludes a channel-archived conversation across reload without clearing lo
     .getByRole("listitem");
   await expect(rows).toHaveCount(1);
   await rows.getByRole("button", { name: /^Open / }).click();
-  const detail = inbox.getByRole("region", { name: "Inbox detail" });
+  const detail = inbox.getByRole("region", { name: /^Conversation in / });
   await expect(
     detail.locator(`[data-message-id="${app.inboxWindow.root.id}"]`),
   ).toBeVisible();
@@ -82,11 +82,14 @@ test("excludes a channel-archived conversation across reload without clearing lo
     })
     .click();
   await expect(
+    page.getByRole("region", { name: "Archived channel", exact: true }),
+  ).toHaveText("This channel is archived");
+  await expect(
     page.getByRole("textbox", {
       name: "Message #Lifecycle channel",
       exact: true,
     }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await expect(
     page.locator(`[data-message-id="${app.inboxWindow.root.id}"]`),
   ).toBeVisible();

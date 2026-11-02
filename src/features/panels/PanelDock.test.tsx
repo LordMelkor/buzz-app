@@ -97,6 +97,44 @@ test("layouts without a running transition remove closed content immediately", (
   expect(screen.queryByText("Panel content")).not.toBeInTheDocument();
 });
 
+test("releasing kept content during an exit does not remount an obsolete panel", async () => {
+  const exit = pendingExit();
+  const mounted = vi.fn();
+  function Plugin() {
+    mounted();
+    return <span>Plugin content</span>;
+  }
+  const view = render(
+    <PanelDock open keepMounted className="">
+      <Plugin />
+    </PanelDock>,
+  );
+  const dock = screen.getByText("Plugin content").parentElement;
+  try {
+    view.rerender(
+      <PanelDock open={false} keepMounted className="">
+        {null}
+      </PanelDock>,
+    );
+    expect(screen.queryByText("Plugin content")).not.toBeInTheDocument();
+    view.rerender(
+      <PanelDock open={false} className="">
+        {null}
+      </PanelDock>,
+    );
+    expect(screen.queryByText("Plugin content")).not.toBeInTheDocument();
+    expect(mounted).toHaveBeenCalledTimes(1);
+    expect(dock).toBeInTheDocument();
+    expect(dock).toHaveAttribute("data-closing");
+    await act(async () => exit.finish());
+    expect(dock).not.toBeInTheDocument();
+    expect(screen.queryByText("Plugin content")).not.toBeInTheDocument();
+  } finally {
+    exit.finish();
+    exit.restore();
+  }
+});
+
 test("a retained tab pane leaves layout after its exit and reopens the same content", async () => {
   const exit = pendingExit();
   const content = <input aria-label="Draft" defaultValue="Keep me" />;

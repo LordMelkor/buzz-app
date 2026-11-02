@@ -23,7 +23,13 @@ const event = (
 it("lists the newest head per owner and slug", () => {
   const agents = sharedAgents([
     event("a", 1, { display_name: "Old" }),
-    event("b", 3, { display_name: "New", model: " m ", system_prompt: "Hi" }),
+    event("b", 3, {
+      display_name: "New",
+      model: " m ",
+      runtime: " goose ",
+      provider: " example ",
+      system_prompt: "Hi",
+    }),
     event("c", 2, { display_name: "Middle" }),
   ]);
   expect(agents).toEqual([
@@ -32,6 +38,8 @@ it("lists the newest head per owner and slug", () => {
       name: "New",
       owner,
       model: "m",
+      runtime: "goose",
+      provider: "example",
       instructions: "Hi",
     },
   ]);

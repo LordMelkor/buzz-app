@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type {
   HostProcess,
   HostProcessOptions,
@@ -25,8 +25,15 @@ function finished(result: Result, options: HostProcessOptions = {}) {
   };
 }
 
-/** An app server that lists `models` models and exits once its input ends. */
-function appServer(models: number, options: HostProcessOptions = {}) {
+type Account = { account: unknown; requiresOpenaiAuth: boolean };
+const SIGNED_OUT: Account = { account: null, requiresOpenaiAuth: true };
+
+/** An app server that lists `models` models, reads `account`, and exits once its input ends. */
+function appServer(
+  models: number,
+  options: HostProcessOptions = {},
+  account = SIGNED_OUT,
+) {
   let exit!: (code: number | null) => void;
   const process: HostProcess & { ended?: boolean } = {
     write: async (text) => {
@@ -40,7 +47,9 @@ function appServer(models: number, options: HostProcessOptions = {}) {
               })),
               nextCursor: null,
             }
-          : {};
+          : wire.method === "account/read"
+            ? account
+            : {};
       options.onStdout?.(`${JSON.stringify({ id: wire.id, result })}\n`);
     },
     end: async () => {
@@ -55,12 +64,14 @@ function appServer(models: number, options: HostProcessOptions = {}) {
   return process;
 }
 
-/** A spawn whose processes print `output[args]` and exit with its code. */
-function scripted(output: Record<string, Partial<Result>>) {
+/** A spawn whose processes print `output[args]` and exit with its code, and
+ * whose app server reads `account`. */
+function scripted(output: Record<string, Partial<Result>>, account?: Account) {
   const calls: { id: string; args: readonly string[] }[] = [];
   const spawn = async (id: string, options: HostProcessOptions = {}) => {
     const args = options.args ?? [];
     calls.push({ id, args });
+    if (id === "app-server") return appServer(0, options, account);
     const result = output[`${id} ${args.join(" ")}`.trim()];
     return finished({ code: 0, ...result }, options);
   };
@@ -89,6 +100,74 @@ it("reports the version and whether it is signed in", async () => {
     state: "ready",
     version: "0.162.1",
   });
+  // Stored sign-in is enough; the app server is not asked.
+  expect(ready.calls.map((call) => call.id)).toEqual(["codex", "codex"]);
+});
+
+it("is ready without an OpenAI sign-in when its model provider needs none", async () => {
+  const signedOut = {
+    "codex --version": { stdout: "codex-cli 0.163.0\n" },
+    "codex login status": { stderr: "Not logged in\n", code: 1 },
+  };
+  const own = scripted(signedOut, { account: null, requiresOpenaiAuth: false });
+  await expect(checkCodex(own.spawn)).resolves.toEqual({
+    state: "ready",
+    version: "0.163.0",
+  });
+  expect(own.calls.map((call) => call.id)).toEqual([
+    "codex",
+    "codex",
+    "app-server",
+  ]);
+  const openai = scripted(signedOut, SIGNED_OUT);
+  await expect(checkCodex(openai.spawn)).resolves.toEqual({
+    state: "signed-out",
+    version: "0.163.0",
+  });
+});
+
+it("stops asking an app server that does not answer within the check's bound", async () => {
+  const { spawn } = scripted({
+    "codex --version": { stdout: "codex-cli 0.163.0\n" },
+    "codex login status": { stderr: "Not logged in\n", code: 1 },
+  });
+  let ended = false;
+  let started!: () => void;
+  const starting = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const silent = async (id: string, options: HostProcessOptions = {}) => {
+    if (id !== "app-server") return spawn(id, options);
+    // The check arms its bound right after starting the app server.
+    vi.useFakeTimers();
+    started();
+    let exit!: (code: number | null) => void;
+    return {
+      write: async () => undefined,
+      end: async () => {
+        ended = true;
+        exit(0);
+      },
+      kill: async () => exit(null),
+      exited: new Promise<number | null>((resolve) => {
+        exit = resolve;
+      }),
+    };
+  };
+  try {
+    let status: unknown;
+    void checkCodex(silent).then((result) => {
+      status = result;
+    });
+    await starting;
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(status).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(status).toEqual({ state: "signed-out", version: "0.163.0" });
+    expect(ended).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("runs sign-in, shows its output, and checks again after", async () => {

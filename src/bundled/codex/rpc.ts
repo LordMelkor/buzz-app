@@ -31,6 +31,9 @@ export type ToolReply = {
   )[];
 };
 
+/** Codex's answer refusing a request, which it therefore did not carry out. */
+export class Refused extends Error {}
+
 /** One request owner for the JSONL app-server connection. No Node sidecar. */
 export class AppServer {
   private next = 0;
@@ -118,7 +121,7 @@ export class AppServer {
         if (waiter) {
           this.pending.delete(message.id as number);
           clearTimeout(waiter.timer);
-          if (message.error) waiter.reject(new Error(message.error.message));
+          if (message.error) waiter.reject(new Refused(message.error.message));
           else waiter.resolve(message.result);
         } else if (message.id != null && message.method) {
           if (message.method === "item/tool/call" && this.toolCall) {
@@ -230,6 +233,16 @@ export class AppServer {
     })();
     return this.closing;
   }
+}
+
+/** Whether Codex lacks an OpenAI sign-in that its model provider needs. A provider set with
+ * `requires_openai_auth = false` brings its own credentials, so Codex asks for no sign-in. */
+export async function needsSignIn(rpc: AppServer) {
+  const { account, requiresOpenaiAuth } = await rpc.request<{
+    account: unknown;
+    requiresOpenaiAuth?: boolean;
+  }>("account/read");
+  return !account && requiresOpenaiAuth !== false;
 }
 
 export async function listModels(rpc: AppServer) {

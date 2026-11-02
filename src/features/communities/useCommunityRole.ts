@@ -11,7 +11,7 @@ const message = (reason: unknown) =>
 
 /** The viewer's role in one community, derived from the relay-signed roster
  * read through that community's own session and verified against the relay
- * authority the session already holds, so the community rail menu can gate
+ * authority the session already holds, so the community picker menu can gate
  * owner/admin actions on the roles the Membership settings card reads without
  * asking the broker for the session contract again.
  *

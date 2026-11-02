@@ -1,3 +1,11 @@
+import activityStyles from "../../features/agents/ActivityLayout.module.css";
+import { formatItemTimestamp } from "../../shared/datetime";
+import { InlineHeader } from "../../shared/design-system/ui/Header";
+import { IconButton } from "../../shared/design-system/ui/IconButton";
+import {
+  ArrowsClockwiseIcon,
+  CaretRightIcon,
+} from "../../shared/design-system/icons";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
 import { ProviderDialogActions } from "../../features/agents/ProviderDialogActions";
 import { AgentSaveButton } from "../../features/agents/AgentSaveButton";
@@ -15,6 +23,7 @@ import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
 import { ModelPicker } from "../../features/agents/ModelPicker";
 import {
+  ConversationName,
   OpenedConversation,
   useOpenedSession,
   useOpenTranscript,
@@ -24,8 +33,11 @@ import type {
   AgentProviderSnapshot,
   AgentViewProps,
 } from "../../features/agents/service";
+import { localStore, type AgentStore } from "../../features/agents/store";
 import { PanelSubview } from "../../features/panels/PanelSubview";
+import { Accordion } from "../../shared/design-system/ui/Accordion";
 import { Button } from "../../shared/design-system/ui/Button";
+import { Dialog } from "../../shared/design-system/ui/Dialog";
 import { Field } from "../../shared/design-system/ui/Field";
 import { Input } from "../../shared/design-system/ui/Input";
 import { Select } from "../../shared/design-system/ui/Select";
@@ -38,13 +50,13 @@ import {
   type Config,
   type Model,
 } from "./config";
-import { AppServer, listModels, type Spawn } from "./rpc";
+import { AppServer, listModels, needsSignIn, type Spawn } from "./rpc";
 import type { CodexRuntime, SavedConversation } from "./runtime";
 import type { CodexSetup } from "./setup";
 import { readTranscript, TURN_LIMIT, type CodexTranscript } from "./transcript";
 
 const label = ({ channelId, name, root }: SavedConversation) =>
-  `${name ? `#${name}` : channelId.slice(0, 8)} · ${root ? `thread ${root.slice(0, 8)}` : "channel"}`;
+  `${name || channelId.slice(0, 8)} · ${root ? `thread ${root.slice(0, 8)}` : "channel"}`;
 type Read =
   | { status: "ready"; transcript: CodexTranscript }
   | { status: "missing" }
@@ -52,7 +64,6 @@ type Read =
 
 type Catalog = {
   models: Model[];
-  account: string;
 };
 type ProviderDefaults = Readonly<{ model: string; effort: string }>;
 type ProviderState = AgentProviderSnapshot &
@@ -77,15 +88,8 @@ async function catalog(spawn: Spawn, signal: AbortSignal) {
     signal.throwIfAborted();
     await rpc.open(spawn, defaults.workspace);
     signal.throwIfAborted();
-    const account = await rpc.request<{
-      account: { type: string; email?: string } | null;
-    }>("account/read");
-    if (!account.account) throw new Error(SIGN_IN_ERROR);
-    const models = await listModels(rpc);
-    return {
-      models,
-      account: account.account.email ?? account.account.type,
-    };
+    if (await needsSignIn(rpc)) throw new Error(SIGN_IN_ERROR);
+    return { models: await listModels(rpc) };
   } finally {
     signal.removeEventListener("abort", abort);
     await rpc.close();
@@ -102,7 +106,7 @@ export class CodexProvider {
 
   constructor(
     private readonly spawn: Spawn,
-    private readonly storage: Storage = localStorage,
+    private readonly storage: AgentStore = localStore(),
     private readonly setup?: CodexSetup,
   ) {
     this.state = Object.freeze({
@@ -187,7 +191,9 @@ export class CodexProvider {
       if (this.abort === abort) this.abort = undefined;
     }
   }
-  saveDefaults(next: ProviderDefaults) {
+  /** Settles once the defaults are saved, and only then uses them; rejects,
+   * keeping the saved ones, when they could not be saved. */
+  async saveDefaults(next: ProviderDefaults) {
     const selected = this.model(next.model);
     const effort =
       !next.effort ||
@@ -197,7 +203,10 @@ export class CodexProvider {
         ? next.effort
         : (selected?.defaultReasoningEffort ?? "");
     const defaults = Object.freeze({ model: next.model, effort });
-    this.writeDefaults(defaults);
+    await this.storage.set(
+      STORAGE_KEY,
+      JSON.stringify({ version: 1, ...defaults }),
+    );
     this.set({ defaults });
   }
   resolve(raw: unknown): Config {
@@ -230,16 +239,10 @@ export class CodexProvider {
   private model(model: string) {
     return catalogModel(model, this.state.data);
   }
-  private writeDefaults(defaults: ProviderDefaults) {
-    this.storage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ version: 1, ...defaults }),
-    );
-  }
   private readDefaults(): ProviderDefaults {
     try {
       const value: unknown = JSON.parse(
-        this.storage.getItem(STORAGE_KEY) ?? "null",
+        this.storage.get(STORAGE_KEY) ?? "null",
       );
       if (
         value &&
@@ -304,44 +307,109 @@ const modelChange = (model: string, data?: Catalog) => ({
 function CodexSignIn({
   login,
   step,
+  checking,
+  check,
   disabled,
 }: {
   login: CodexSetup;
   step: "install" | "login";
+  checking: boolean;
+  check(): void;
   disabled: boolean;
 }) {
+  const [open, setOpen] = useState(false);
   const { running, output } = useSyncExternalStore(
     login.subscribe,
     login.snapshot,
   );
+  const action = step === "install" ? "Install Codex" : "Sign in";
+  // A step's process ends before the check that follows it, which may still
+  // find the step needed; until it answers, neither button starts another.
   return (
-    <div className="grid gap-2">
-      <div className="flex justify-end gap-2">
-        <Button
-          variant="prominent"
-          size="sm"
-          disabled={disabled}
-          loading={Boolean(running)}
-          onClick={() => void login.run(step)}
-        >
-          {step === "install" ? "Install Codex" : "Sign in"}
-        </Button>
-        {running && (
-          <Button size="sm" onClick={() => void login.cancel()}>
-            Cancel
-          </Button>
-        )}
-      </div>
-      {output && (
-        <pre
-          role="log"
-          aria-label="Setup output"
-          className="m-0 max-h-40 max-w-sm overflow-auto whitespace-pre-wrap break-all text-caption"
-        >
-          {output}
-        </pre>
-      )}
-    </div>
+    <>
+      <Button
+        size="sm"
+        variant="prominent"
+        disabled={disabled || !!running || checking}
+        focusableWhenDisabled
+        onClick={() => {
+          if (login.snapshot().running) return;
+          setOpen(true);
+          void login.run(step);
+        }}
+      >
+        {action}
+      </Button>
+      <Dialog
+        open={open}
+        title={step === "install" ? "Set up Codex" : "Sign in to Codex"}
+        description={step === "login" ? "Continue in your browser." : undefined}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) void login.cancel();
+        }}
+      >
+        <section className="grid gap-2">
+          {step === "install" && (
+            <p role="status" className="m-0">
+              {checking && !running
+                ? "Checking Codex…"
+                : "Codex is not installed."}
+            </p>
+          )}
+          {/* One button per slot, so focus stays put as Install becomes
+              Sign in and Cancel becomes Check again. */}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="prominent"
+              size="sm"
+              loading={running === step || (!running && checking)}
+              disabled={disabled || (!!running && running !== step)}
+              onClick={() => void login.run(step)}
+            >
+              {action}
+            </Button>
+            {(step !== "login" || running) && (
+              <Button
+                variant="ghost"
+                disabled={!running && checking}
+                focusableWhenDisabled
+                onClick={() => void (running ? login.cancel() : check())}
+              >
+                {running ? "Cancel" : "Check again"}
+              </Button>
+            )}
+          </div>
+          {step === "install" && (
+            <p className="m-0 text-body-sm text-subtle">
+              Downloads Buzz's own copy of Codex (about 130 MB) from
+              releases.openai.com and keeps it on the latest release. It does
+              not change the <code>codex</code> in your terminal, and uses the
+              same sign-in and settings.
+            </p>
+          )}
+          {output && (
+            <Accordion
+              items={[
+                {
+                  value: "details",
+                  title: "Setup details",
+                  content: (
+                    <pre
+                      role="log"
+                      aria-label="Setup output"
+                      className="m-0 max-h-60 overflow-auto whitespace-pre-wrap break-all text-caption"
+                    >
+                      {output}
+                    </pre>
+                  ),
+                },
+              ]}
+            />
+          )}
+        </section>
+      </Dialog>
+    </>
   );
 }
 
@@ -387,25 +455,103 @@ export function createTabs(
         : status?.state === "signed-out" || error === SIGN_IN_ERROR
           ? "login"
           : undefined;
+    const field = useRef<HTMLDivElement>(null);
+    const hadStep = useRef(false);
+    const handoff = useRef(false);
+    // Setup's dialog and button leave once Codex is ready; focus they held
+    // moves to the model field, not to the page. The field takes it once
+    // the models load, as it is disabled until then.
+    useEffect(() => {
+      const unfocused = () =>
+        !document.activeElement || document.activeElement === document.body;
+      if (step) handoff.current = false;
+      else if (hadStep.current) handoff.current = unfocused();
+      hadStep.current = Boolean(step);
+      if (!handoff.current || checking) return;
+      handoff.current = false;
+      if (unfocused())
+        field.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus();
+    }, [step, checking]);
     if (step)
       return (
-        <CodexSignIn login={login} step={step} disabled={props.disabled} />
+        <CodexSignIn
+          login={login}
+          step={step}
+          checking={checking}
+          check={retry}
+          disabled={props.disabled}
+        />
       );
     return (
-      <CreateModelChoices
-        {...props}
-        models={choices(data)}
-        value={current.model}
-        defaultModel={catalogModel(providerDefaults.model, data)?.model ?? ""}
-        defaultLabel={providerDefaultLabel(providerDefaults.model, data)}
-        defaultDescription="Following the provider's model default"
-        loading={checking}
-        error={error}
-        retry={retry}
-        onChange={(model) =>
-          onChange(readConfig({ ...current, ...modelChange(model, data) }))
-        }
-      />
+      <div ref={field} className="contents">
+        <CreateModelChoices
+          {...props}
+          models={choices(data)}
+          value={current.model}
+          defaultModel={catalogModel(providerDefaults.model, data)?.model ?? ""}
+          defaultLabel={providerDefaultLabel(providerDefaults.model, data)}
+          defaultDescription="Following the provider's model default"
+          loading={checking}
+          error={error}
+          retry={retry}
+          onChange={(model) =>
+            onChange(readConfig({ ...current, ...modelChange(model, data) }))
+          }
+        />
+      </div>
+    );
+  }
+
+  function DefaultControl({ onConfigure }: { onConfigure(): void }) {
+    const state = useProvider();
+    const [error, setError] = useState("");
+    return (
+      <>
+        <ModelPicker
+          includeDefault={false}
+          resetLabel="Use Codex recommended"
+          compact
+          groupByFamily
+          label="Codex default model"
+          loading={state.checking}
+          models={choices(state.data).map((choice) => ({
+            ...choice,
+            efforts: [
+              { id: "", label: "Automatic" },
+              ...(
+                catalogModel(choice.id, state.data)
+                  ?.supportedReasoningEfforts ?? []
+              ).map((level) => ({
+                id: level.reasoningEffort,
+                label: effortName(level.reasoningEffort),
+              })),
+            ],
+          }))}
+          effort={state.defaults.effort}
+          effortLabel={
+            state.defaults.effort
+              ? effortName(state.defaults.effort)
+              : "Automatic"
+          }
+          onEffortChange={(model, effort) => {
+            provider.saveDefaults({ model, effort }).then(
+              () => setError(""),
+              (reason) => setError(String(reason)),
+            );
+          }}
+          value={state.defaults.model}
+          defaultModel={catalogModel("", state.data)?.model}
+          defaultLabel={providerDefaultLabel("", state.data)}
+          onConfigure={onConfigure}
+          onChange={(model) => {
+            provider.saveDefaults({ model, effort: "" }).then(
+              () => setError(""),
+              (reason) => setError(String(reason)),
+            );
+          }}
+        />
+        {error && <span role="alert">{error}</span>}
+      </>
     );
   }
 
@@ -420,6 +566,7 @@ export function createTabs(
     );
     const [draft, setDraft] = useState(state.defaults);
     const [saveError, setSaveError] = useState("");
+    const [savingDefaults, setSavingDefaults] = useState(false);
     const action =
       error === NOT_INSTALLED
         ? ({ step: "install", label: "Install Codex" } as const)
@@ -427,7 +574,6 @@ export function createTabs(
           ? ({ step: "login", label: "Sign in" } as const)
           : undefined;
     useEffect(() => setDraft(state.defaults), [state.defaults]);
-    const nativeModel = data?.models.find((model) => model.isDefault);
     const selected = catalogModel(draft.model, data);
     const efforts = [
       {
@@ -499,66 +645,16 @@ export function createTabs(
           hidden={state.readiness !== "ready"}
           onSubmit={(event) => {
             event.preventDefault();
+            if (savingDefaults) return;
             setSaveError("");
-            try {
-              provider.saveDefaults(draft);
-            } catch (reason) {
-              setSaveError(message(reason));
-              return;
-            }
-            onClose();
+            setSavingDefaults(true);
+            // Closes only once saved; else the draft stays to try again.
+            provider
+              .saveDefaults(draft)
+              .then(onClose, (reason) => setSaveError(message(reason)))
+              .finally(() => setSavingDefaults(false));
           }}
         >
-          <Select
-            label="Default model"
-            variant="preference"
-            value={draft.model}
-            disabled={checking || !data}
-            valueLabel={
-              checking
-                ? "Loading models…"
-                : draft.model
-                  ? undefined
-                  : nativeModel?.displayName
-            }
-            valueSuffix={
-              !checking && !draft.model && nativeModel
-                ? " · Default"
-                : undefined
-            }
-            groups={[
-              {
-                label: "",
-                options: [
-                  {
-                    value: "",
-                    label: nativeModel
-                      ? `${nativeModel.displayName} · Default`
-                      : "Default",
-                    description: nativeModel
-                      ? "Following Codex's recommendation"
-                      : undefined,
-                    disabled: !nativeModel,
-                  },
-                  ...(draft.model &&
-                  !data?.models.some((model) => model.model === draft.model)
-                    ? [
-                        {
-                          value: draft.model,
-                          label: `${draft.model} (unavailable)`,
-                        },
-                      ]
-                    : []),
-                  ...(data?.models.map((model) => ({
-                    value: model.model,
-                    label: model.displayName,
-                    description: model.description,
-                  })) ?? []),
-                ],
-              },
-            ]}
-            onValueChange={(model) => setDraft({ ...draft, model, effort: "" })}
-          />
           <Select
             label="Default thinking"
             valueLabel={
@@ -568,7 +664,7 @@ export function createTabs(
             variant="preference"
             value={draft.effort}
             groups={[{ label: "", options: efforts }]}
-            disabled={checking || !selected}
+            disabled={checking || !selected || savingDefaults}
             onValueChange={(effort) => setDraft({ ...draft, effort })}
           />
           {saveError && (
@@ -590,6 +686,7 @@ export function createTabs(
               type="submit"
               form={defaultsForm}
               variant="prominent"
+              loading={savingDefaults}
               disabled={
                 JSON.stringify(draft) === JSON.stringify(state.defaults)
               }
@@ -644,9 +741,9 @@ export function createTabs(
       setLoading(true);
       void readTranscript(
         spawn,
-        { agent: { pubkey: agent.pubkey, name: agent.name }, ...conversation },
+        { agent: { key: agent.key, name: agent.name }, ...conversation },
         abort.signal,
-        (pubkey) => runtime.name(agent.pubkey, pubkey),
+        (pubkey) => runtime.name(agent.key, pubkey),
       )
         .then(
           (transcript): Read =>
@@ -663,17 +760,25 @@ export function createTabs(
       return () => abort.abort();
     }, [conversation, attempt]);
     return (
-      <div className="grid gap-4">
-        <div className="flex gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            loading={loading}
-            onClick={() => setAttempt((value) => value + 1)}
-          >
-            Refresh
-          </Button>
-        </div>
+      <div className={activityStyles.transcript}>
+        <InlineHeader
+          title="Transcript"
+          actions={
+            <IconButton
+              hint="familiar"
+              aria-label="Refresh transcript"
+              title="Refresh transcript"
+              loading={loading}
+              onClick={() => setAttempt((value) => value + 1)}
+              icon={<ArrowsClockwiseIcon size="1rem" aria-hidden="true" />}
+            />
+          }
+        />
+        {read && loading && (
+          <span role="status" className="sr-only">
+            Refreshing transcript…
+          </span>
+        )}
         {!read ? (
           <p role="status" className="m-0">
             Reading the Codex session…
@@ -710,34 +815,57 @@ export function createTabs(
   function ActivityTab({
     agent,
     conversation,
+    initialTranscript,
+    close,
   }: {
     agent: AgentViewProps<Config>["agent"];
     conversation?: AgentViewProps<Config>["conversation"];
+    initialTranscript?: AgentViewProps<Config>["initialTranscript"];
+    close?: AgentViewProps<Config>["close"];
   }) {
     const sessions = useSyncExternalStore(runtime.subscribe, () =>
-      runtime.sessions(agent.pubkey),
+      runtime.sessions(agent.key),
     );
-    const conversations = runtime.conversations(agent.pubkey);
+    const conversations = runtime.conversations(agent.key);
     const {
       session: here,
       searching,
       error: lookupError,
-    } = useOpenedSession(conversations, conversation, (place, signal) =>
-      runtime.find({ pubkey: agent.pubkey, name: agent.name }, place, signal),
+    } = useOpenedSession(
+      conversations,
+      conversation,
+      (place, signal) =>
+        runtime.find({ key: agent.key, name: agent.name }, place, signal),
+      (channelId) => runtime.channelLabel(agent.key, channelId),
     );
     const recent = conversations
       .filter((item) => item.key !== here?.key)
       .slice(0, CONVERSATION_LIMIT);
-    const { open, show, back } = useOpenTranscript(conversation, label);
+    const { open, show, back } = useOpenTranscript(
+      conversation,
+      label,
+      initialTranscript && { initial: here, searching, ...initialTranscript },
+      close,
+    );
     const saved = new Set(conversations.map((row) => row.key));
     const views = new Map(sessions.map((view) => [view.key, view]));
-    const detail = (text: string) => (
-      <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap text-caption">
-        {text}
-      </pre>
-    );
+    const unbound = sessions.filter((view) => !saved.has(view.key));
+    const detail = (text: string, status?: string) =>
+      status !== "Working" ? (
+        <p className="m-0 whitespace-pre-wrap break-words text-body-sm text-subtle">
+          {text}
+        </p>
+      ) : (
+        <details className={activityStyles.details}>
+          <summary className="text-body-sm text-subtle">
+            <CaretRightIcon size={14} aria-hidden="true" />
+            <span>Latest activity</span>
+          </summary>
+          <pre className={`${activityStyles.detail} text-mono`}>{text}</pre>
+        </details>
+      );
     return (
-      <div className="grid gap-4">
+      <div className={activityStyles.activity}>
         {conversation && (
           <OpenedConversation
             conversation={conversation}
@@ -749,56 +877,68 @@ export function createTabs(
             onView={() => here && show(here)}
           />
         )}
-        <section className="grid gap-1">
-          <h3 className="m-0 text-body">Recent conversations</h3>
-          {recent.length || sessions.length ? (
-            <ul className="m-0 grid list-none gap-4 p-0">
-              {/* Work that failed before Codex started a thread has no binding. */}
-              {sessions
-                .filter((view) => !saved.has(view.key))
-                .map((view) => (
-                  <li key={view.key}>
-                    <p className="m-0">
+        <section className={activityStyles.section}>
+          <InlineHeader title="Recent conversations" />
+          <SettingsGroup layout="form">
+            {recent.length || unbound.length ? (
+              <ul className={activityStyles.list}>
+                {/* Work that failed before Codex started a thread has no binding. */}
+                {unbound.map((view) => (
+                  <li key={view.key} className={activityStyles.entry}>
+                    <p className="m-0 break-words text-body-sm">
                       <code>{view.key}</code> · {view.status}
                     </p>
-                    {view.detail && detail(view.detail)}
+                    {view.detail && detail(view.detail, view.status)}
                   </li>
                 ))}
-              {recent.map((conversation) => {
-                const view = views.get(conversation.key);
-                return (
-                  <li key={conversation.key} className="grid gap-2">
-                    <p className="m-0">
-                      {label(conversation)}
-                      {[
-                        view?.status,
-                        conversation.at
-                          ? new Date(conversation.at).toLocaleString()
-                          : undefined,
-                      ]
-                        .filter(Boolean)
-                        .map((part) => ` · ${part}`)
-                        .join("")}
-                    </p>
-                    {view?.detail && detail(view.detail)}
-                    <div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        onClick={() => show(conversation)}
-                      >
-                        View transcript
-                      </Button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            <p className="m-0 text-body-sm text-subtle">
-              None. A conversation's session starts when the agent is mentioned.
-            </p>
-          )}
+                {recent.map((conversation) => {
+                  const view = views.get(conversation.key);
+                  return (
+                    <li key={conversation.key} className={activityStyles.entry}>
+                      <div className={activityStyles.row}>
+                        <div className={activityStyles.copy}>
+                          <ConversationName
+                            session={conversation}
+                            title={label(conversation)}
+                            className="text-label-sm"
+                          />
+                          <p className="m-0 text-body-sm text-subtle">
+                            {[
+                              conversation.root
+                                ? `Thread ${conversation.root.slice(0, 8)}`
+                                : "Channel",
+                              view?.status,
+                              conversation.at
+                                ? formatItemTimestamp(conversation.at / 1000, {
+                                    withTime: true,
+                                  })
+                                : undefined,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="subtle"
+                          size="sm"
+                          aria-label={`View transcript: ${label(conversation)}`}
+                          onClick={() => show(conversation)}
+                        >
+                          View transcript
+                        </Button>
+                      </div>
+                      {view?.detail && detail(view.detail, view.status)}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="m-0 text-body-sm text-subtle">
+                No other conversations saved in this app yet.
+              </p>
+            )}
+          </SettingsGroup>
         </section>
         {open && (
           <PanelSubview
@@ -806,7 +946,7 @@ export function createTabs(
             backLabel="Back to profile"
             onBack={back}
           >
-            <TranscriptView agent={agent} conversation={open} />
+            <TranscriptView key={open.key} agent={agent} conversation={open} />
           </PanelSubview>
         )}
       </div>
@@ -997,6 +1137,7 @@ export function createTabs(
     CreateModel,
     Create,
     ProviderDialogBody,
+    DefaultControl,
     SettingsTab,
     ActivityTab,
   };

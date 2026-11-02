@@ -1,0 +1,9 @@
+language js
+
+// Text copies go through writeClipboardText (shared/clipboard.ts). In the
+// desktop app, Tauri's host script evaluation clears WebKit's user activation,
+// so a direct navigator.clipboard.writeText from a click fails intermittently.
+`$clipboard.writeText($text)` where {
+  $clipboard <: r".*\bclipboard",
+  register_diagnostic(span=$clipboard, message="Copy text with writeClipboardText from shared/clipboard.ts; desktop host traffic makes navigator.clipboard.writeText fail.", severity="error")
+}

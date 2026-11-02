@@ -16,7 +16,7 @@ import {
 } from "./composer-document";
 import { mentionDraft, type MentionDraft } from "./mention-draft";
 import { scanMarkdown } from "../relay/message-content";
-import { entityHref } from "../projects/routes";
+import { entityHref } from "../repos/routes";
 
 composerDOMFixture();
 afterEach(cleanup);

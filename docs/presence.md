@@ -10,7 +10,7 @@ badges and demand presence when mounted. Their online badge morphs into a center
 three-dot pill while the existing agent activity feed reports working or typing;
 activity is scoped to the displayed conversation when one is supplied. The same
 indicator is used in DM rows. It publishes no presence changes.
-Visible member/invitation rows in Channel members also demand presence and display
+Visible member/invitation rows in Members also demand presence and display
 the shared avatar status badges for people and agents.
 This describes recent Buzz session status in this community, not proof that a
 person is available. Signed live status changes arrive on the existing socket;

@@ -1,0 +1,22 @@
+{
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        "main-window",
+        "desktop-window",
+        "huddle-window",
+        {
+          "identifier": "native-mcp-callbacks",
+          "description": "Callbacks for the opt-in native MCP test bridge.",
+          "webviews": ["main"],
+          "permissions": [
+            "mcp-bridge:allow-script-result",
+            "mcp-bridge:allow-request-script-injection",
+            "mcp-bridge:allow-report-ipc-event"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,30 +1,28 @@
-import { useRelayConnection } from "../features/relay/react";
-import { ResizableSidebar } from "../features/channel-navigation/ResizableSidebar";
-import { useMemo, useSyncExternalStore, type ReactNode } from "react";
+import { SidebarNavigation } from "../shared/design-system/ui/SidebarNavigation";
+import { CommunityAddress } from "./CommunityAddress";
+import { useMemo, useSyncExternalStore } from "react";
 import { NavigationItem } from "../shared/design-system/ui/NavigationItem";
-import { Panel } from "../shared/design-system/ui/Panel";
-import { ArrowLeftIcon, ChatCircleIcon } from "../shared/design-system/icons";
-import channelStyles from "../bundled/channels/Channels.module.css";
+import { NavigationSection } from "../shared/design-system/ui/NavigationSection";
+import { ChatCircleIcon } from "../shared/design-system/icons";
 import type { Communities } from "../features/communities/service";
 import type { SettingsCards } from "../features/settings/service";
+import { RecommendationCount } from "./RecommendationCount";
 import { settingsSections, type SettingsSection } from "./settings-sections";
-import styles from "./Settings.module.css";
 
 export function SettingsSidebar({
   cards,
   communities,
   selected,
-  onBack,
+  recommendations = 0,
   onSection,
 }: {
   cards: SettingsCards;
   communities: Communities;
   selected?: string;
-  onBack: () => void;
+  /** Managed plugin recommendations awaiting review. */
+  recommendations?: number;
   onSection: (section: string) => void;
 }) {
-  const connection = useRelayConnection(communities.relay);
-  const scope = connection.scope ?? "disconnected";
   const contributed = useSyncExternalStore(cards.subscribe, cards.snapshot);
   const client = useSyncExternalStore(
     communities.subscribe,
@@ -48,47 +46,29 @@ export function SettingsSidebar({
       label={label}
       icon={<Icon aria-hidden="true" size={18} />}
       selected={current === id}
+      {...(id === "plugins" && recommendations > 0
+        ? { trailing: <RecommendationCount count={recommendations} /> }
+        : {})}
       aria-current={current === id ? "page" : undefined}
       onClick={() => onSection(id)}
     />
   );
 
   return (
-    <ResizableSidebar scope={scope}>
-      <Panel as="aside" aria-label="Settings sidebar">
-        <div className={`${channelStyles.sidebar} ${styles.settingsSidebar}`}>
-          <NavigationItem
-            label="Back"
-            icon={<ArrowLeftIcon aria-hidden="true" size={18} />}
-            onClick={onBack}
+    <SidebarNavigation wrapSections>
+      {selectedCommunity && (
+        <NavigationSection>
+          <CommunityAddress
+            communities={communities}
+            community={selectedCommunity}
           />
-          <nav
-            aria-label="Settings sections"
-            className={styles.settingsNavigation}
-          >
-            {groups.map((group) => (
-              <SettingsGroup key={group.id} label={group.label}>
-                {group.sections.map(section)}
-              </SettingsGroup>
-            ))}
-          </nav>
-        </div>
-      </Panel>
-    </ResizableSidebar>
-  );
-}
-
-function SettingsGroup({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <section>
-      <h2 className={styles.settingsGroupTitle}>{label}</h2>
-      <div className={styles.settingsGroupItems}>{children}</div>
-    </section>
+        </NavigationSection>
+      )}
+      {groups.map((group) => (
+        <NavigationSection key={group.id} label={group.label}>
+          {group.sections.map(section)}
+        </NavigationSection>
+      ))}
+    </SidebarNavigation>
   );
 }

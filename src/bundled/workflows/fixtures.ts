@@ -94,6 +94,7 @@ export function createWorkflowFixture() {
     },
     disposed: () => definitionViews.every((owned) => owned.disposed()),
     active: () => definitionViews.filter((owned) => !owned.disposed()).length,
+    created: () => definitionViews.length,
   };
   const listeners = new Set<() => void>();
   let operations: readonly WorkflowOperation[] = [];

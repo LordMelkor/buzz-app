@@ -8,16 +8,84 @@ import { Context } from "@deepseek-ai/cordis";
 import { createIdentity } from "../../src/features/identity/service";
 import { IdentitySetup } from "../../src/features/identity/IdentitySetup";
 import { createCommunities } from "../../src/features/communities/service";
-import { CommunityRail } from "../../src/features/communities/CommunityRail";
+import { CommunityPicker } from "../../src/features/communities/CommunityPicker";
 import { ProfileSettings } from "../../src/app/ProfileSettings";
 import { ToastProvider } from "../../src/shared/design-system/ui/Toast";
+import { useKeyboardFocusVisibility } from "../../src/shared/design-system/useKeyboardFocusVisibility";
 import "../../src/shared/styles/globals.css";
+import "@fontsource-variable/inter/wght.css";
+import "@fontsource-variable/inter/wght-italic.css";
+import "@fontsource/jetbrains-mono/400.css";
 const bytes = new Uint8Array(32).fill(1);
 const fixtureKey = nsecEncode(bytes);
+const fixtureViewer = getPublicKey(bytes);
+const previousViewer = getPublicKey(new Uint8Array(32).fill(2));
+const recoveryMode = new URLSearchParams(location.search).get("recovery");
 let saved: string | null = null;
+let activeRecovery = false;
+let finishRecovery: (() => void) | undefined;
 mockIPC((command, payload) => {
-  if (command === "identity_restore")
+  if (command === "identity_restore") {
+    if (recoveryMode === "locked")
+      throw "Secure storage is locked. Unlock it and try again.";
     return saved ? getPublicKey(bytesFrom(saved)) : null;
+  }
+  if (command === "nsec_backup_available") return recoveryMode !== "disabled";
+  if (command === "identity_legacy_available") return false;
+  if (command === "nsec_restore_begin") {
+    activeRecovery = true;
+    return { attempt: "fixture-attempt" };
+  }
+  if (command === "nsec_restore_cancel") {
+    activeRecovery = false;
+    finishRecovery?.();
+    finishRecovery = undefined;
+    return;
+  }
+  if (command === "nsec_restore_wait") {
+    const result = {
+      candidates:
+        recoveryMode === "empty" || recoveryMode === "failed"
+          ? []
+          : [
+              { handle: "fixture-current", pubkey: fixtureViewer },
+              { handle: "fixture-previous", pubkey: previousViewer },
+            ],
+      currentPubkey:
+        recoveryMode === "historical" ? "ab".repeat(32) : fixtureViewer,
+      failedCount:
+        recoveryMode === "partial" || recoveryMode === "failed" ? 1 : 0,
+    };
+    if (recoveryMode === "unavailable") throw "Backup recovery is unavailable.";
+    if (recoveryMode === "waiting")
+      return new Promise((resolve) => {
+        finishRecovery = () => resolve(result);
+      });
+    return result;
+  }
+  if (command === "nsec_restore_install") {
+    if (!activeRecovery || saved) throw "The identity cannot be restored now.";
+    const install = () => {
+      if (!activeRecovery || saved)
+        throw "The identity cannot be restored now.";
+      const current =
+        (payload as { handle: string }).handle === "fixture-current";
+      saved = nsecEncode(current ? bytes : new Uint8Array(32).fill(2));
+      activeRecovery = false;
+      return current ? fixtureViewer : previousViewer;
+    };
+    if (recoveryMode === "saving")
+      return new Promise((resolve, reject) => {
+        finishRecovery = () => {
+          try {
+            resolve(install());
+          } catch {
+            reject("Recovery was canceled.");
+          }
+        };
+      });
+    return install();
+  }
   if (command === "identity_export") {
     if (!saved) throw new Error("No fixture identity");
     return saved;
@@ -44,6 +112,7 @@ function bytesFrom(value: string) {
   return result.data;
 }
 function Fixture() {
+  useKeyboardFocusVisibility();
   const [attempt, setAttempt] = useState(0);
   return (
     <>
@@ -65,6 +134,9 @@ function Fixture() {
         </button>
         <button type="button" onClick={() => setAttempt(attempt + 1)}>
           Simulate restart
+        </button>
+        <button type="button" onClick={() => finishRecovery?.()}>
+          Complete fixture recovery
         </button>
       </aside>
       <Client key={attempt} />
@@ -89,7 +161,7 @@ function Client() {
     <IdentitySetup identity={identity}>
       <ToastProvider>
         <main className="p-8">
-          <CommunityRail communities={communities} />
+          <CommunityPicker communities={communities} />
           <button type="button" onClick={() => setActive(!active)}>
             {active ? "Leave Profile" : "Open Profile"}
           </button>

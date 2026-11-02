@@ -21,6 +21,7 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   cleanup();
   for (const stop of cleanups.splice(0)) await stop();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   native.value = true;
@@ -82,6 +83,28 @@ it.each(["disabled", "denied"] as const)(
     expect(h.permission.mock.calls).toEqual([[false], [false]]);
   },
 );
+
+it("keeps an immediately unchanged Dock check visibly busy", async () => {
+  const h = setup("enabled");
+  await act(() => h.dock.refresh());
+  vi.useFakeTimers();
+  const button = screen.getByRole("button", { name: "Check Dock permission" });
+  button.focus();
+  await act(async () => {
+    button.click();
+  });
+  expect(h.permission.mock.calls).toEqual([[false], [false]]);
+  expect(screen.getByText("Buzz can show Dock badges.")).toBeInTheDocument();
+  expect(button).toHaveAttribute("aria-busy", "true");
+  expect(button).not.toHaveAttribute("disabled");
+  expect(button).toHaveFocus();
+  await act(() => vi.advanceTimersByTimeAsync(499));
+  expect(button).toHaveAttribute("aria-busy", "true");
+  await act(() => vi.advanceTimersByTimeAsync(1));
+  expect(button).not.toHaveAttribute("aria-busy", "true");
+  expect(button).toHaveAccessibleName("Check Dock permission");
+  expect(button).toHaveFocus();
+});
 
 it("shows no dead permission actions when Dock badges are unavailable", async () => {
   const h = setup("unavailable");

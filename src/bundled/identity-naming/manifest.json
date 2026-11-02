@@ -3,5 +3,5 @@
   "name": "Identity Naming",
   "apiVersion": 1,
   "description": "Resolve human-first display names throughout Buzz.",
-  "discovery": { "category": "agents" }
+  "discovery": { "category": "people-and-communities", "tags": ["people"] }
 }

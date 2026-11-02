@@ -1,3 +1,4 @@
+import { huddleDescription } from "../huddle/lifecycle";
 import { afterEach, expect, it, vi } from "vitest";
 import type {
   SidebarDecoder,
@@ -5,6 +6,7 @@ import type {
 } from "../relay/sidebar-preferences";
 import {
   keypair,
+  metadata,
   message,
   profile,
   roster,
@@ -845,4 +847,96 @@ it("explicit thread choices decide reply alerts; mentions still alert", async ()
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it("suppresses ordinary notifications after a channel is marked as a Huddle", async () => {
+  const h = await setup();
+  h.emit([h.make("ordinary mention")], "live");
+  await vi.waitFor(() => expect(h.show).toHaveBeenCalledOnce());
+  h.emit([
+    metadata(h.relay, "room", "Huddle", Math.floor(Date.now() / 1000), [
+      ["private"],
+      ["P", h.peer.pubkey],
+      ["about", huddleDescription("00000000-0000-4000-8000-000000000001")],
+    ]),
+    signed(h.peer, {
+      kind: 9007,
+      created_at: 10,
+      content: "",
+      tags: [
+        ["h", "room"],
+        ["visibility", "private"],
+        ["channel_type", "stream"],
+        ["about", huddleDescription("00000000-0000-4000-8000-000000000001")],
+      ],
+    }),
+  ]);
+  h.emit([h.make("private mention")], "live");
+  await flush();
+  expect(h.show).toHaveBeenCalledOnce();
+  expect(
+    h.owner.session.channels
+      .list()
+      .channels.find((channel) => channel.id === "room")?.huddle,
+  ).toBe(true);
+});
+
+it("withholds unclassified room notifications and allows new messages after ordinary metadata arrives", async () => {
+  const h = await setup();
+  h.emit([roster(h.relay, "pending", [h.viewer.pubkey])]);
+  const make = (text: string) =>
+    message(h.peer, "pending", text, Math.floor(Date.now() / 1000), [
+      ["p", h.viewer.pubkey],
+    ]);
+  h.emit([make("unclassified mention")], "live", "pending");
+  await flush();
+  expect(h.show).not.toHaveBeenCalled();
+  h.emit([metadata(h.relay, "pending", "Ordinary")]);
+  h.emit([make("ordinary mention")], "live", "pending");
+  await vi.waitFor(() => expect(h.show).toHaveBeenCalledOnce());
+});
+
+it("cancels a pending thread notification when metadata marks its room as a Huddle", async () => {
+  const h = await setup();
+  let release: (value: "granted") => void = () => {};
+  let started = false;
+  h.permission.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+        started = true;
+      }),
+  );
+  const now = Math.floor(Date.now() / 1000);
+  const root = message(h.viewer, "room", "root", now - 1);
+  const reply = message(h.peer, "room", "private reply", now, [
+    ["e", root.id, "", "reply"],
+  ]);
+  h.emit([root], "replay");
+  h.emit([reply], "live");
+  try {
+    await vi.waitFor(() => expect(started).toBe(true));
+    h.emit([
+      metadata(h.relay, "room", "Huddle", now, [
+        ["private"],
+        ["P", h.peer.pubkey],
+        ["about", huddleDescription("00000000-0000-4000-8000-000000000001")],
+      ]),
+      signed(h.peer, {
+        kind: 9007,
+        created_at: 10,
+        content: "",
+        tags: [
+          ["h", "room"],
+          ["visibility", "private"],
+          ["channel_type", "stream"],
+          ["about", huddleDescription("00000000-0000-4000-8000-000000000001")],
+        ],
+      }),
+    ]);
+  } finally {
+    release("granted");
+  }
+  await flush();
+  expect(h.show).not.toHaveBeenCalled();
 });

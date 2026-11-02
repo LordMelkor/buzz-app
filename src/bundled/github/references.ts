@@ -1,41 +1,14 @@
-/** A conversation comment or submitted review the PR Discussion tab can reveal. */
-export type GitHubAnchor = Readonly<{
-  kind: "discussion" | "review";
-  id: string;
-}>;
 export type GitHubReference = Readonly<{
-  /** Hash-less identity: an anchor changes what is revealed, not which object. */
+  /** Hash-less identity. */
   url: string;
   repository: string;
   kind: "repository" | "pull" | "issue" | "commit";
   label: string;
-  anchor?: GitHubAnchor | undefined;
 }>;
-const fragmentKinds = {
-  issuecomment: "discussion",
-  pullrequestreview: "review",
-} as const;
-/**
- * Fragments the pane can show. The PR Discussion tab lists conversation
- * comments and submitted reviews; review-thread (`discussion_r…`), timeline
- * event and other anchors fall through to the browser instead of opening a
- * pane that cannot show them. Issues render only their body, so no fragment
- * qualifies.
- */
-function parseGitHubAnchor(hash: string): GitHubAnchor | undefined {
-  const match = /^#(issuecomment|pullrequestreview)-(\d+)$/.exec(hash);
-  const fragment = match?.[1] as keyof typeof fragmentKinds | undefined;
-  const id = match?.[2];
-  return fragment && id ? { kind: fragmentKinds[fragment], id } : undefined;
-}
-export function gitHubAnchorUrl(url: string, anchor: GitHubAnchor) {
-  const fragment =
-    anchor.kind === "review" ? "pullrequestreview" : "issuecomment";
-  return `${url}#${fragment}-${anchor.id}`;
-}
 /** Exact host parsing: a lookalike domain or credentials can never become a GitHub card. */
 export function parseGitHubReference(
   value: string,
+  { pullSubtargets = false }: { pullSubtargets?: boolean } = {},
 ): GitHubReference | undefined {
   try {
     const url = new URL(value);
@@ -55,20 +28,24 @@ export function parseGitHubReference(
     const base = `https://github.com/${repository}`;
     if (!surface)
       return { url: base, repository, kind: "repository", label: repo };
-    const target = rest.join("/");
+    // Badges identify the parent PR; panel navigation must still preserve
+    // destinations (comments, diffs, checks) the panel cannot show.
+    const parentPull = surface === "pull" && pullSubtargets;
+    const target = rest[0] ?? "";
     if (
       (surface === "pull" || surface === "issues") &&
-      rest.length === 1 &&
-      /^[1-9]\d*$/.test(target)
+      (rest.length === 1 || parentPull) &&
+      /^[1-9]\d*$/.test(target) &&
+      // GitHub numbers these with a signed 32-bit integer; past it is no one's.
+      Number(target) <= 0x7fffffff
     ) {
-      const anchor = parseGitHubAnchor(url.hash);
-      if (url.hash && (surface === "issues" || !anchor)) return;
+      // A link to one comment or review goes to GitHub, which can show it.
+      if (url.hash && !parentPull) return;
       return {
         url: `${base}/${surface}/${target}`,
         repository,
         kind: surface === "pull" ? "pull" : "issue",
         label: `#${target}`,
-        anchor,
       };
     }
     if (

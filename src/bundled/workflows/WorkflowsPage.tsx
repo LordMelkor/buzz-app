@@ -1,11 +1,18 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import type { RelayData } from "../../features/relay/service";
 import type { RelaySession } from "../../features/relay/session";
 import type { WorkflowDefinition } from "../../features/workflows/types";
 import { useChannelList, useRelayConnection } from "../../features/relay/react";
 import {
-  ArrowLeftIcon,
   ArrowsClockwiseIcon,
+  LightningIcon,
+  PlusIcon,
 } from "../../shared/design-system/icons";
 import { Button } from "../../shared/design-system/ui/Button";
 import { ToastNotice } from "../../shared/design-system/ui/Toast";
@@ -13,52 +20,50 @@ import { WorkflowEditor } from "./WorkflowEditor";
 import { DEFAULT_FORM_STATE, formStateToYaml } from "./workflowFormTypes";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { Panel } from "../../shared/design-system/ui/Panel";
-import { Select } from "../../shared/design-system/ui/Select";
+import {
+  PanelHeader,
+  PanelHeaderLabel,
+} from "../../shared/design-system/ui/PanelHeader";
 import { WorkflowChannelPicker } from "./WorkflowChannelPicker";
 import { WorkflowChannel } from "./WorkflowChannel";
 import { WorkflowWebhookSecrets } from "./WorkflowWebhookSecrets";
 import { WorkflowLanding, workflowOperationLocked } from "./WorkflowLanding";
+import { PanelWorkspace } from "../../features/panels/PanelWorkspace";
+import { usePanelSplit } from "../../features/panels/usePanelSplit";
 import "./workflows.css";
 
 export function WorkflowsPage({ relay }: { relay: RelayData }) {
   const connection = useRelayConnection(relay);
-  return (
-    <Panel aria-label="Workflows">
-      <div className="workflows-page text-body">
-        {connection.status === "ready" ? (
-          <WorkflowCommunity
-            key={`${connection.scope}:${connection.generation}`}
-            session={connection.session}
-            viewer={connection.viewer ?? ""}
-          />
-        ) : (
+  return connection.status === "ready" ? (
+    <WorkflowCommunity
+      key={`${connection.scope}:${connection.generation}`}
+      session={connection.session}
+      viewer={connection.viewer ?? ""}
+    />
+  ) : (
+    <WorkflowsPanel>
+      <WorkflowPageHeader />
+      <div className="workflow-page-state">
+        <p>
+          {connection.status === "connecting"
+            ? "Connecting to your community…"
+            : "Connect to a community to browse workflows."}
+        </p>
+        {connection.status === "error" && (
           <>
-            <header className="workflow-page-header">
-              <div>
-                <h1 className="text-title">Workflows</h1>
-                <p className="text-secondary">
-                  Automations that keep your community moving.
-                </p>
-              </div>
-            </header>
-            <div className="workflow-page-state">
-              <p>
-                {connection.status === "connecting"
-                  ? "Connecting to your community…"
-                  : "Connect to a community to browse workflows."}
-              </p>
-              {connection.status === "error" && (
-                <>
-                  <p role="alert">{connection.error}</p>
-                  <Button onClick={() => relay.retry()}>
-                    Retry connection
-                  </Button>
-                </>
-              )}
-            </div>
+            <p role="alert">{connection.error}</p>
+            <Button onClick={() => relay.retry()}>Retry connection</Button>
           </>
         )}
       </div>
+    </WorkflowsPanel>
+  );
+}
+
+function WorkflowsPanel({ children }: { children: ReactNode }) {
+  return (
+    <Panel aria-label="Workflows">
+      <div className="workflows-page text-body">{children}</div>
     </Panel>
   );
 }
@@ -71,50 +76,86 @@ export function WorkflowCommunity({
 }) {
   const capability = session.workflows;
   const channels = useChannelList(session.channels);
+  const eligible = channels.channels.filter(
+    (item) => !item.huddle && !item.metadataPending,
+  );
   const [selected, setSelected] = useState("");
   const [selectedDefinition, setSelectedDefinition] = useState<
     WorkflowDefinition | "new" | undefined
   >();
-  const [initialAction, setInitialAction] = useState<"run" | undefined>();
   const [refreshRequest, setRefreshRequest] = useState(0);
   const [saveReadback, setSaveReadback] =
     useState<Pick<WorkflowDefinition, "channelId" | "revision">>();
   const deleting = useRef(false);
   const [deleteError, setDeleteError] = useState<string>();
   const [createOpen, setCreateOpen] = useState(false);
-  const channel = channels.channels.find((item) => item.id === selected);
+  const [filter, setFilter] = useState<readonly string[]>([]);
+  const split = usePanelSplit(448, 320);
+  const [detail, setDetail] = useState<{ key: string; name: string }>();
+  const [detailTarget, setDetailTarget] = useState<HTMLElement | null>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+  const selectDetail = useCallback((key: string | undefined, name?: string) => {
+    setDetail((current) =>
+      !key
+        ? undefined
+        : current?.key === key && (name === undefined || current.name === name)
+          ? current
+          : { key, name: name ?? (current?.key === key ? current.name : "") },
+    );
+  }, []);
+  // The landing that reconciles the selection unmounts without channels.
+  if (detail && !eligible.length) setDetail(undefined);
+  const open = !!detail;
+  useEffect(() => {
+    const narrow = window.matchMedia?.("(max-width: 52rem)");
+    if (!open || !narrow || !detailTarget) return;
+    // Below 52rem the pane replaces the list, so focus left there moves to it.
+    const handoff = () => {
+      const focus = document.activeElement;
+      if (
+        narrow.matches &&
+        (focus === document.body || mainRef.current?.contains(focus))
+      )
+        detailTarget.focus();
+    };
+    handoff();
+    narrow.addEventListener("change", handoff);
+    return () => narrow.removeEventListener("change", handoff);
+  }, [open, detailTarget]);
+  const channel = eligible.find((item) => item.id === selected);
   useEffect(() => {
     if (
       !selected ||
       channel ||
-      channels.status !== "ready" ||
-      channels.coverage === "partial"
+      (!channels.channels.some(
+        (item) => item.id === selected && (item.huddle || item.metadataPending),
+      ) &&
+        (channels.status !== "ready" || channels.coverage === "partial"))
     )
       return;
     setSelected("");
     setSelectedDefinition(undefined);
-  }, [channel, channels.coverage, channels.status, selected]);
+  }, [channel, channels, selected]);
   if (!capability) {
     return (
-      <>
+      <WorkflowsPanel>
         <WorkflowPageHeader />
-        <p role="status">Workflow operations are unavailable from this host.</p>
-      </>
+        <div className="workflows-body">
+          <p role="status">
+            Workflow operations are unavailable from this host.
+          </p>
+        </div>
+      </WorkflowsPanel>
     );
   }
 
   const openChannel = (
     next: string,
     definition?: WorkflowDefinition | "new",
-    action?: "run",
   ) => {
-    setInitialAction(action);
+    if (next && !eligible.some((item) => item.id === next)) return;
     setSelectedDefinition(definition);
     setSelected(next);
-  };
-  const changeChannel = (next: string) => {
-    if (next === selected) return;
-    openChannel(next);
   };
   const beginCreate = () => setCreateOpen(true);
   const deleteWorkflow = (definition: WorkflowDefinition) => {
@@ -150,80 +191,116 @@ export function WorkflowCommunity({
 
   return (
     <>
-      <WorkflowPageHeader
-        action={
-          channel && selectedDefinition === undefined ? (
-            <Button onClick={() => changeChannel("")} variant="ghost">
-              <ArrowLeftIcon size={16} aria-hidden="true" />
-              All workflows
-            </Button>
-          ) : (
-            <IconButton
-              aria-label="Refresh workflows"
-              icon={<ArrowsClockwiseIcon size={18} aria-hidden="true" />}
-              onClick={() => setRefreshRequest((request) => request + 1)}
+      <div
+        ref={split.ref}
+        className="workflows-split"
+        data-side={detail ? "" : undefined}
+      >
+        <div className="workflows-main" ref={mainRef}>
+          <WorkflowsPanel>
+            <WorkflowPageHeader
+              actions={
+                <>
+                  <IconButton
+                    hint="familiar"
+                    size="sm"
+                    variant="ghost"
+                    aria-label="New workflow"
+                    title="New workflow"
+                    aria-haspopup="dialog"
+                    disabled={!capability.availability.save || !eligible.length}
+                    icon={<PlusIcon size="1rem" aria-hidden="true" />}
+                    onClick={beginCreate}
+                  />
+                  <IconButton
+                    hint="familiar"
+                    size="sm"
+                    variant="ghost"
+                    aria-label="Refresh workflows"
+                    title="Refresh workflows"
+                    icon={
+                      <ArrowsClockwiseIcon size="1rem" aria-hidden="true" />
+                    }
+                    onClick={() => setRefreshRequest((request) => request + 1)}
+                  />
+                </>
+              }
             />
-          )
-        }
-      />
-      {channels.status === "loading" && !channels.channels.length && (
-        <p role="status">Reading channels…</p>
-      )}
-      {channels.status === "error" && (
-        <div className="workflow-page-state">
-          <p role="alert" className="text-danger">
-            {channels.error ?? "Channels could not be read."}
-          </p>
-          <Button onClick={() => session.channels.refreshList?.()}>
-            Retry channels
-          </Button>
+            <div className="workflows-body">
+              {channels.status === "loading" && !eligible.length && (
+                <p role="status">Reading channels…</p>
+              )}
+              {channels.status === "error" && (
+                <div className="workflow-page-state">
+                  <p role="alert" className="text-danger">
+                    {channels.error ?? "Channels could not be read."}
+                  </p>
+                  <Button onClick={() => session.channels.refreshList?.()}>
+                    Retry channels
+                  </Button>
+                </div>
+              )}
+              {channels.status === "ready" && !eligible.length && (
+                <div className="workflow-page-state">
+                  <p>No channels are available in this community.</p>
+                </div>
+              )}
+              {channels.coverage === "partial" && (
+                <p className="text-secondary">The channel list is partial.</p>
+              )}
+              {eligible.length > 0 && (
+                <WorkflowLanding
+                  session={session}
+                  capability={capability}
+                  channels={eligible}
+                  filter={filter}
+                  onFilterChange={setFilter}
+                  detailTarget={detailTarget}
+                  selected={detail?.key}
+                  onSelect={selectDetail}
+                  onCreate={beginCreate}
+                  onDelete={deleteWorkflow}
+                  onOpen={(definition, nextChannel) =>
+                    openChannel(nextChannel.id, definition)
+                  }
+                  refreshRequest={refreshRequest}
+                  saveReadback={saveReadback}
+                  viewer={viewer}
+                />
+              )}
+            </div>
+          </WorkflowsPanel>
         </div>
-      )}
-      {channels.channels.length > 0 && selectedDefinition === undefined && (
-        <div className="workflow-page-filter">
-          <Select
-            label="Channel"
-            value={channel?.id ?? ""}
-            groups={[
-              {
-                label: "Community channels",
-                options: [
-                  { value: "", label: "All workflows" },
-                  ...channels.channels.map((item) => ({
-                    value: item.id,
-                    label: item.name,
-                  })),
-                ],
-              },
-            ]}
-            onValueChange={changeChannel}
-          />
-        </div>
-      )}
-      {channels.status === "ready" && !channels.channels.length && (
-        <div className="workflow-page-state">
-          <p>No channels are available in this community.</p>
-        </div>
-      )}
-      {channels.coverage === "partial" && (
-        <p className="text-secondary">The channel list is partial.</p>
-      )}
-      {channels.channels.length > 0 && (
-        <div hidden={!!channel && selectedDefinition === undefined}>
-          <WorkflowLanding
-            capability={capability}
-            channels={channels.channels}
-            onCreate={beginCreate}
-            onDelete={deleteWorkflow}
-            onOpen={(definition, nextChannel, action) =>
-              openChannel(nextChannel.id, definition, action)
-            }
-            refreshRequest={refreshRequest}
-            saveReadback={saveReadback}
-            viewer={viewer}
-          />
-        </div>
-      )}
+        {detail && (
+          <aside className="workflows-side">
+            {split.handle}
+            <Panel aria-label="Workflow details">
+              <PanelWorkspace
+                focusOnMount={false}
+                adoptSelection={detail.key}
+                value={detail.key}
+                select={() => {}}
+                items={[
+                  {
+                    id: detail.key,
+                    label: detail.name,
+                    icon: <LightningIcon size="1rem" />,
+                    content: (
+                      <section
+                        className="workflow-detail-host"
+                        ref={setDetailTarget}
+                        aria-label={`${detail.name} details`}
+                        tabIndex={-1}
+                      />
+                    ),
+                    close: () => selectDetail(undefined),
+                  },
+                ]}
+              />
+            </Panel>
+          </aside>
+        )}
+      </div>
       {deleteError && (
         <ToastNotice
           title="Couldn't start deletion"
@@ -231,24 +308,21 @@ export function WorkflowCommunity({
           onDismiss={() => setDeleteError(undefined)}
         />
       )}
-      {channel ? (
+      {channel && selectedDefinition ? (
         <WorkflowChannel
           key={`${channel.id}:${
             typeof selectedDefinition === "object"
               ? selectedDefinition.revision
-              : (selectedDefinition ?? "browse")
+              : selectedDefinition
           }`}
           capability={capability}
           channelId={channel.id}
-          channelName={channel.name}
+          channel={channel}
           initialSelection={selectedDefinition}
-          initialAction={initialAction}
           onSaveReadback={setSaveReadback}
           onDelete={deleteWorkflow}
           viewer={viewer}
-          {...(selectedDefinition === undefined
-            ? {}
-            : { onClose: () => openChannel("") })}
+          onClose={() => openChannel("")}
         />
       ) : null}
       <WorkflowWebhookSecrets capability={capability} />
@@ -265,7 +339,7 @@ export function WorkflowCommunity({
           onCancel={() => setCreateOpen(false)}
           scope={
             <WorkflowChannelPicker
-              channels={channels.channels}
+              channels={eligible}
               onSelect={(id) => {
                 setCreateOpen(false);
                 openChannel(id, "new");
@@ -278,16 +352,16 @@ export function WorkflowCommunity({
   );
 }
 
-function WorkflowPageHeader({ action }: { action?: ReactNode }) {
+function WorkflowPageHeader({ actions }: { actions?: ReactNode }) {
   return (
-    <header className="workflow-page-header">
-      <div>
-        <h1 className="text-title">Workflows</h1>
-        <p className="text-secondary">
-          Automations that keep your community moving.
-        </p>
-      </div>
-      {action && <div className="workflow-page-action">{action}</div>}
-    </header>
+    <PanelHeader
+      title={
+        <PanelHeaderLabel
+          title="Workflows"
+          icon={<LightningIcon size="1rem" />}
+        />
+      }
+      actions={actions}
+    />
   );
 }

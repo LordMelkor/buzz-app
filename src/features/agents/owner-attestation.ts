@@ -12,7 +12,8 @@ const CLAUSE = /^(kind=|created_at<|created_at>)(0|[1-9][0-9]*)$/;
 /** NIP-OA owner of a signature-verified event, or undefined. Provenance only:
  * the event stays authored by `event.pubkey`; the owner is never an author. */
 export async function attestedOwner(
-  event: Pick<EventData, "pubkey" | "kind" | "created_at" | "tags">,
+  event: Pick<EventData, "pubkey" | "kind" | "created_at"> &
+    Readonly<{ tags: readonly (readonly string[])[] }>,
 ): Promise<string | undefined> {
   const [tag, ...extra] = event.tags.filter((tag) => tag[0] === "auth");
   if (!tag || extra.length || !satisfied(tag[2] ?? "", event)) return undefined;

@@ -20,7 +20,7 @@
 .conversation > aside {
   flex: 1;
 }
-.conversation > [data-session-column] {
+.conversation > [data-solo-column] {
   flex: 1;
   min-height: 0;
   width: 100%;

@@ -27,13 +27,14 @@ const base: Snapshot = {
 function recoveryIn(state: "idle" | "shown") {
   const snapshot = Object.freeze(
     state === "shown"
-      ? { recovering: true, attempt: 1, shown: true }
-      : { recovering: false, attempt: 0, shown: false },
+      ? { recovering: true, attempt: 1, shown: true, reauthorized: 0 }
+      : { recovering: false, attempt: 0, shown: false, reauthorized: 0 },
   );
   return {
     snapshot: () => snapshot,
     subscribe: () => () => {},
     retryNow: vi.fn(),
+    retryAll: vi.fn(),
     dispose() {},
   };
 }
@@ -308,12 +309,13 @@ it("diagnostics does not duplicate notices; changing the selected channel/sessio
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
 });
 
-it("stays quiet before the first automatic retry, then shows one inline notice whose Retry now retries the session", async () => {
+it("stays quiet before the notice delay, then shows one inline notice whose Retry now retries the session", async () => {
   const failed: Snapshot = { ...base, status: "retrying" };
   const quietState = Object.freeze({
     recovering: true,
     attempt: 0,
     shown: false,
+    reauthorized: 0,
   });
   const live = {
     snapshot: () => failed,
@@ -393,6 +395,7 @@ it("shows a permanent live failure even while other reads recover", () => {
     recovering: true,
     attempt: 0,
     shown: false,
+    reauthorized: 0,
   });
   const quiet = { ...recoveryIn("idle"), snapshot: () => quietState };
   const onRecovered = vi.fn();
@@ -410,10 +413,266 @@ it("shows a permanent live failure even while other reads recover", () => {
   ).toHaveTextContent("Relay rejected live authentication");
   // Recovery skips a terminal failure, so the user keeps an explicit retry
   // for after they fix the signer or access problem.
-  screen.getByRole("button", { name: "Retry live updates" }).click();
+  const retry = screen.getByRole("button", { name: "Retry live updates" });
+  retry.focus();
+  retry.click();
   expect(live.retry).toHaveBeenCalledTimes(1);
-  expect(onRecovered).toHaveBeenCalledTimes(1);
+  // Nothing changed yet, so the notice and its focused Retry stay.
+  expect(retry).toHaveFocus();
+  expect(onRecovered).not.toHaveBeenCalled();
 });
+
+it.each([
+  [
+    "a connection",
+    {
+      ...base,
+      status: "error",
+      error: "Relay rejected live authentication",
+    } as Snapshot,
+    { ...base, status: "connecting" } as Snapshot,
+  ],
+  [
+    "a channel route",
+    {
+      ...base,
+      routes: [
+        { ...channel, status: "error", error: "blocked: channel archived" },
+      ],
+    } as Snapshot,
+    // The live layer keeps the refusal on the route while it tries again.
+    {
+      ...base,
+      routes: [
+        { ...channel, status: "pending", error: "blocked: channel archived" },
+      ],
+    } as Snapshot,
+  ],
+])(
+  "keeps the notice and Retry through a slow retry of %s, and hands focus on once it succeeds",
+  (_, failed, retrying) => {
+    const onRecovered = vi.fn();
+    const content = (view: Snapshot) => (
+      <LiveStatus
+        live={{
+          snapshot: () => view,
+          subscribe: () => () => {},
+          retry: vi.fn(),
+        }}
+        channelId="a"
+        partialRoster={false}
+        recovery={recoveryIn("idle")}
+        onRecovered={onRecovered}
+      />
+    );
+    const notice = () =>
+      screen.queryByRole("status", { name: "Live updates limited" });
+    const view = mount(content(failed));
+    const reason = notice()?.textContent;
+    screen.getByRole("button", { name: "Retry live updates" }).focus();
+    view.rerender(content(retrying));
+    expect(notice()).toHaveTextContent(reason ?? "");
+    expect(
+      screen.getByRole("button", { name: "Retry live updates" }),
+    ).toHaveFocus();
+    view.rerender(content(failed));
+    view.rerender(content(retrying));
+    expect(onRecovered).not.toHaveBeenCalled();
+    view.rerender(content(base));
+    expect(notice()).not.toBeInTheDocument();
+    expect(onRecovered).toHaveBeenCalledTimes(1);
+    // Success ends the hold: a later attempt alone offers no Retry.
+    view.rerender(content(retrying));
+    expect(
+      screen.queryByRole("button", { name: "Retry live updates" }),
+    ).not.toBeInTheDocument();
+    // Focus the user moved elsewhere stays there.
+    const elsewhere = document.createElement("button");
+    document.body.append(elsewhere);
+    try {
+      view.rerender(content(failed));
+      screen.getByRole("button", { name: "Retry live updates" }).focus();
+      elsewhere.focus();
+      view.rerender(content(base));
+      expect(onRecovered).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(elsewhere);
+    } finally {
+      elsewhere.remove();
+    }
+  },
+);
+
+it.each([
+  ["roster", { roster: { state: "pending" } }],
+  ["head", { heads: [{ channelId: "a", state: "pending" }] }],
+] as const)(
+  "keeps a focused Retry while a routine %s refresh runs",
+  (_, refresh) => {
+    const failed: Snapshot = {
+      ...base,
+      routes: [
+        { ...channel, status: "error", error: "blocked: channel archived" },
+      ],
+    };
+    const onRecovered = vi.fn();
+    const content = (view: Snapshot) => (
+      <LiveStatus
+        live={{
+          snapshot: () => view,
+          subscribe: () => () => {},
+          retry: vi.fn(),
+        }}
+        channelId="a"
+        partialRoster={false}
+        recovery={recoveryIn("idle")}
+        onRecovered={onRecovered}
+      />
+    );
+    const view = mount(content(failed));
+    const retry = screen.getByRole("button", { name: "Retry live updates" });
+    retry.focus();
+    view.rerender(content({ ...failed, ...refresh } as Snapshot));
+    expect(retry.isConnected).toBe(true);
+    expect(retry).toHaveFocus();
+    view.rerender(content(failed));
+    expect(retry).toHaveFocus();
+    expect(onRecovered).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  [
+    "another channel's route is pending",
+    {
+      routes: [
+        channel,
+        { ...channel, id: "channel:b", channelId: "b", status: "pending" },
+      ],
+    },
+  ],
+  [
+    "another channel's head is pending",
+    { heads: [{ channelId: "b", state: "pending" }] },
+  ],
+  [
+    "another channel's route has a transient error",
+    {
+      routes: [
+        channel,
+        {
+          ...channel,
+          id: "channel:b",
+          channelId: "b",
+          status: "error",
+          error: "temporary: relay busy",
+        },
+      ],
+    },
+  ],
+  ["previews are being checked", { previews: "checking" }],
+] as const)(
+  "ends the held notice when this channel recovers while %s",
+  (_, elsewhere) => {
+    const failed: Snapshot = {
+      ...base,
+      routes: [
+        { ...channel, status: "error", error: "blocked: channel archived" },
+      ],
+    };
+    const onRecovered = vi.fn();
+    const content = (view: Snapshot) => (
+      <LiveStatus
+        live={{
+          snapshot: () => view,
+          subscribe: () => () => {},
+          retry: vi.fn(),
+        }}
+        channelId="a"
+        partialRoster={false}
+        recovery={recoveryIn("idle")}
+        onRecovered={onRecovered}
+      />
+    );
+    const view = mount(content(failed));
+    screen.getByRole("button", { name: "Retry live updates" }).focus();
+    view.rerender(content({ ...base, ...elsewhere } as Snapshot));
+    expect(
+      screen.queryByRole("status", { name: "Live updates limited" }),
+    ).not.toBeInTheDocument();
+    expect(onRecovered).toHaveBeenCalledTimes(1);
+  },
+);
+
+const pendingB = {
+  ...channel,
+  id: "channel:b",
+  channelId: "b",
+  status: "pending",
+} as const;
+it.each([
+  [
+    "a partial roster while another route is pending",
+    true,
+    { routes: [channel, pendingB] },
+  ],
+  [
+    "a partial roster while another route has a transient error",
+    true,
+    {
+      routes: [
+        channel,
+        { ...pendingB, status: "error", error: "temporary: relay busy" },
+      ],
+    },
+  ],
+  [
+    "capacity while another route is pending",
+    false,
+    {
+      routes: [
+        {
+          ...channel,
+          status: "limited",
+          error: "Live channel capacity reached; finite reads remain available",
+        },
+        pendingB,
+      ],
+    },
+  ],
+] as const)(
+  "drops the held Retry when this channel recovers to %s",
+  (_, partialRoster, recovered) => {
+    const failed: Snapshot = {
+      ...base,
+      routes: [
+        { ...channel, status: "error", error: "blocked: channel archived" },
+      ],
+    };
+    const content = (view: Snapshot) => (
+      <LiveStatus
+        live={{
+          snapshot: () => view,
+          subscribe: () => () => {},
+          retry: vi.fn(),
+        }}
+        channelId="a"
+        partialRoster={partialRoster}
+        recovery={recoveryIn("idle")}
+      />
+    );
+    const view = mount(content(failed));
+    expect(
+      screen.getByRole("button", { name: "Retry live updates" }),
+    ).toBeVisible();
+    view.rerender(content({ ...base, ...recovered } as Snapshot));
+    expect(
+      screen.getByRole("status", { name: "Live updates limited" }),
+    ).not.toHaveTextContent("blocked: channel archived");
+    expect(
+      screen.queryByRole("button", { name: "Retry live updates" }),
+    ).not.toBeInTheDocument();
+  },
+);
 
 it("keeps capacity and partial-roster notices passive", () => {
   const capacity: Snapshot = {

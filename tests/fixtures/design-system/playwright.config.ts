@@ -2,7 +2,13 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: ["viewer.spec.ts", "toast.spec.ts", "typing-dots.spec.ts"],
+  testMatch: [
+    "viewer.spec.ts",
+    "select.spec.ts",
+    "toast.spec.ts",
+    "typing-dots.spec.ts",
+    "split-button.spec.ts",
+  ],
   outputDir: "../../../test-results/design-system",
   workers: 1,
   retries: 0,

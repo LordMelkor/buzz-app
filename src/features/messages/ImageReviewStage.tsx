@@ -27,7 +27,7 @@ import {
   safeOpenUrl,
 } from "./attachment-source";
 import styles from "./Messages.module.css";
-import { downloadNativeMedia } from "./native-download";
+import { MediaDownloadAction } from "./MediaDownloadAction";
 import { copyImageToClipboard, supportsImageCopy } from "./image-copy";
 import { copyNativeImage } from "./native-image-copy";
 
@@ -44,6 +44,7 @@ type ImageReviewStageProps = {
   media(url: string): string | undefined;
   select(url: string): void;
   onOpenLink(url: string): boolean;
+  allowCopy?: boolean;
 };
 
 export function ImageReviewStage({
@@ -52,6 +53,7 @@ export function ImageReviewStage({
   media,
   select,
   onOpenLink,
+  allowCopy = true,
 }: ImageReviewStageProps) {
   const stage = useRef<HTMLDivElement>(null);
   const image = useRef<HTMLImageElement>(null);
@@ -85,7 +87,7 @@ export function ImageReviewStage({
   }, [source]);
   const nativeSource = source ? isNativeMediaSource(source) : false;
   const proxySource = source ? isProxySource(source) || nativeSource : false;
-  const [downloadErrorSource, setDownloadErrorSource] = useState<string>();
+  const [downloadFeedbackVisible, setDownloadFeedbackVisible] = useState(false);
   const [copying, setCopying] = useState(false);
   const [copyNotice, setCopyNotice] = useState<"success" | "error">();
   const copyBusy = useRef(false);
@@ -93,7 +95,8 @@ export function ImageReviewStage({
   const selectedUrlRef = useRef(selectedUrl);
   selectedUrlRef.current = selectedUrl;
   const externalSource = source ? safeOpenUrl(source) && !proxySource : false;
-  const canCopyImage = proxySource && (nativeSource || supportsImageCopy());
+  const canCopyImage =
+    allowCopy && proxySource && (nativeSource || supportsImageCopy());
   const {
     zoom,
     offset,
@@ -104,7 +107,8 @@ export function ImageReviewStage({
     constrain,
   } = useImageViewport(stage, image, source);
   const copyFeedbackVisible = copying || copyNotice !== undefined;
-  const idle = useMediaControls(stage, source, copyFeedbackVisible);
+  const feedbackVisible = copyFeedbackVisible || downloadFeedbackVisible;
+  const idle = useMediaControls(stage, source, feedbackVisible);
   const pannable = zoom > 1;
   const nextZoom = ZOOM_PRESETS.find((preset) => preset > zoom) ?? MIN_ZOOM;
   const { departing, prepare } = useImageGalleryMotion(
@@ -234,7 +238,7 @@ export function ImageReviewStage({
       aria-label="Image gallery"
       tabIndex={-1}
       data-controls-idle={idle || undefined}
-      data-controls-revealed={copyFeedbackVisible || undefined}
+      data-controls-revealed={feedbackVisible || undefined}
       data-review-zoomed={zoom !== 1 || undefined}
       className={`${styles.imageReviewStage} ${pannable ? styles.imageReviewPannable : ""} ${dragging ? styles.imageReviewDragging : ""}`}
       onPointerDown={(event) => {
@@ -383,6 +387,7 @@ export function ImageReviewStage({
         </div>
         {canCopyImage && (
           <IconButton
+            hint="familiar"
             size="sm"
             type="button"
             aria-label="Copy image"
@@ -399,22 +404,13 @@ export function ImageReviewStage({
           </span>
         )}
         {nativeSource && source && (
-          <IconButton
-            size="sm"
-            type="button"
-            aria-label="Download image"
-            title="Download image"
-            onClick={() => {
-              setDownloadErrorSource(undefined);
-              void downloadNativeMedia(source).catch(() =>
-                setDownloadErrorSource(source),
-              );
-            }}
-            icon={<DownloadIcon size={17} />}
+          <MediaDownloadAction
+            key={JSON.stringify([selected.url, source, selected.name])}
+            kind="image"
+            source={source}
+            name={selected.name ?? ""}
+            onFeedbackVisible={setDownloadFeedbackVisible}
           />
-        )}
-        {downloadErrorSource === source && (
-          <span role="alert">Download failed. Try again.</span>
         )}
         {proxySource && !nativeSource && (
           <IconButton

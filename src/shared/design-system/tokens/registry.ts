@@ -1,3 +1,5 @@
+import { ACCENTS, BRAND_GRADIENTS, PALETTE_FAMILIES } from "./brand";
+
 /**
  * Documentation metadata for the shared tokens: names, purposes, sources,
  * and adoption status. The viewer renders these entries; token guards check
@@ -109,7 +111,7 @@ export interface BackdropTreatment {
  */
 export const PALETTE: PaletteHue[] = [
   { id: "neutral", usedBy: "structure", steps: [] },
-  { id: "purple", usedBy: "accent", steps: [] },
+  { id: "purple", usedBy: "categorical", steps: [] },
   { id: "red", usedBy: "danger", steps: [] },
   { id: "green", usedBy: "success", steps: [] },
   { id: "amber", usedBy: "warning", steps: [] },
@@ -124,6 +126,26 @@ export const PALETTE: PaletteHue[] = [
     job: STEP_JOBS[i] ?? "Palette step",
   })),
 }));
+
+// Existing Appearance ramps are palette owners in both modes.
+PALETTE.push(
+  ...PALETTE_FAMILIES.map((id) => ({
+    id,
+    usedBy: BRAND_GRADIENTS.some(
+      ({ start, end }) =>
+        start.startsWith(`${id}-`) || end.startsWith(`${id}-`),
+    )
+      ? ACCENTS.some((family) => family === id)
+        ? "Appearance and artwork"
+        : "artwork"
+      : "Appearance",
+    steps: STEP_JOBS.map((job, index) => ({
+      step: index + 1,
+      variable: `--${id}-${index + 1}`,
+      job,
+    })),
+  })),
+);
 
 export const BACKDROP_TREATMENTS: BackdropTreatment[] = [
   {
@@ -249,6 +271,35 @@ export const RAMPS: Ramp[] = [
 /** Semantic roles name color jobs; the palette remains an implementation detail. */
 export const ROLE_GROUPS: RoleGroup[] = [
   {
+    id: "plugin-artwork",
+    name: "Plugin artwork (proposed)",
+    description:
+      "Palette-backed category artwork used by the Settings plugin catalog.",
+    roles: BRAND_GRADIENTS.flatMap((gradient) =>
+      (["start", "end", "gradient"] as const).map(
+        (part): Role => ({
+          token: `art-plugin-${gradient.category}-${part}`,
+          variable: `--art-plugin-${gradient.category}-${part}`,
+          pointsAt:
+            part === "gradient"
+              ? `${gradient.start} → ${gradient.end}`
+              : part === "start"
+                ? `--${gradient.start}`
+                : `--${gradient.end}`,
+          use: `${gradient.name} decorative artwork ${part}.`,
+          status: "proposed",
+          owner: "Settings plugin catalog",
+          ...(part === "gradient"
+            ? {
+                exception:
+                  "Complete decorative composition of palette-backed endpoints.",
+              }
+            : {}),
+        }),
+      ),
+    ),
+  },
+  {
     id: "semantic-surface",
     name: "Surface",
     description: "Shared surface roles, with values for both themes.",
@@ -275,6 +326,13 @@ export const ROLE_GROUPS: RoleGroup[] = [
         status: "core",
       },
       {
+        token: "bg-surface-composer",
+        variable: "--surface-composer",
+        pointsAt: "surface-panel light / neutral-4 dark",
+        use: "Message drafting surface, raised above the panel in dark mode.",
+        status: "core",
+      },
+      {
         token: "bg-surface-popover",
         variable: "--surface-popover",
         pointsAt: "neutral-1 light / neutral-raised dark",
@@ -298,38 +356,69 @@ export const ROLE_GROUPS: RoleGroup[] = [
       {
         token: "bg-surface-message-own",
         variable: "--surface-message-own",
-        pointsAt: "bubble-neutral in both modes; selected accent otherwise",
+        pointsAt: "accent 4 at Chillin’; accent 9 at Buzzin’",
         use: "Own message bubbles; pair with --text-message-own.",
+        status: "core",
+      },
+      {
+        token: "bg-surface-message-hover",
+        variable: "--surface-message-hover",
+        pointsAt:
+          "surface-message mixed 5% toward black in light mode / white in dark mode",
+        use: "Received bubble fill while its actions show; text and media are unchanged.",
+        status: "core",
+      },
+      {
+        token: "bg-surface-message-own-hover",
+        variable: "--surface-message-own-hover",
+        pointsAt:
+          "surface-message-own mixed 5% toward black in light mode / white in dark mode",
+        use: "Own bubble fill while its actions show; text and media are unchanged.",
+        status: "core",
+      },
+      {
+        token: "--affordance-message-own-hover",
+        variable: "--affordance-message-own-hover",
+        pointsAt:
+          "black 4% on light bubbles / white 8% on dark ones; at Buzzin’, black 4% on the accent fill (white 8% on Mono in light mode)",
+        use: "Overlay across your own bubble while its actions show. It follows the bubble's lightness, as its chips do.",
+        status: "core",
+      },
+      {
+        token: "--affordance-message-highlight",
+        variable: "--affordance-message-highlight",
+        pointsAt: "black 10% light / white 16% dark",
+        use: "Temporary arrival cue across a received bubble; replaces hover while it shows.",
+        status: "core",
+      },
+      {
+        token: "--affordance-message-own-highlight",
+        variable: "--affordance-message-own-highlight",
+        pointsAt:
+          "affordance-message-highlight; at Buzzin’, the accent's regular overlay step on its fill (black 10%, white 16% on Mono in light mode)",
+        use: "Temporary arrival cue across your own bubble. It follows the bubble's lightness, as its chips do.",
+        status: "core",
+      },
+      {
+        token: "--affordance-reaction",
+        variable: "--affordance-reaction",
+        pointsAt: "black 6% light / white 10% dark",
+        use: "Reaction strip on received bubbles and the panel; the add-reaction hover lays it again on top.",
+        status: "core",
+      },
+      {
+        token: "--affordance-reaction-own",
+        variable: "--affordance-reaction-own",
+        pointsAt:
+          "affordance-reaction; at Buzzin’, black 6% on the accent fill (white 10% on Mono in light mode)",
+        use: "Reaction strip inside your own bubble. It follows the bubble's lightness, as its chips do.",
         status: "core",
       },
       {
         token: "bg-surface-message-highlight",
         variable: "--surface-message-highlight",
-        pointsAt: "20% selected message bubble mixed with the panel surface",
-        use: "Temporary return-to-message cue; follows the bubble color preference.",
-        status: "core",
-      },
-      {
-        token: "bg-surface-message-action",
-        variable: "--surface-message-action",
-        pointsAt: "neutral-12 by default; selected message accent otherwise",
-        use: "Send button and color swatches; pair with text-message-action.",
-        status: "core",
-      },
-      {
-        token: "bg-surface-message-action-hover",
-        variable: "--surface-message-action-hover",
-        pointsAt:
-          "neutral-11 by default; selected accent darkened 10% otherwise",
-        use: "Hover state for message-colored prominent actions.",
-        status: "core",
-      },
-      {
-        token: "bg-surface-message-action-pressed",
-        variable: "--surface-message-action-pressed",
-        pointsAt:
-          "neutral-action-pressed by default; selected accent darkened 20% otherwise",
-        use: "Pressed state for message-colored prominent actions.",
+        pointsAt: "accent step 3",
+        use: "Temporary arrival cue on a message without a filled bubble; follows the accent color.",
         status: "core",
       },
       {
@@ -368,11 +457,107 @@ export const ROLE_GROUPS: RoleGroup[] = [
         status: "core",
       },
       {
+        token: "text-row",
+        variable: "--text-row",
+        pointsAt:
+          "text-navigation; text-sidebar-hover inside SidebarNavigation",
+        use: "Primary navigation text on a hovered or selected row; follows the row's fill.",
+        status: "proposed",
+      },
+      {
+        token: "text-row-selected",
+        variable: "--text-row-selected",
+        pointsAt:
+          "text-navigation-selected; text-sidebar-selected inside SidebarNavigation",
+        use: "Navigation label on the selected row; sidebar labels use the solid fill's paired ink.",
+        status: "proposed",
+      },
+      {
+        token: "text-row-selected-subtle",
+        variable: "--text-row-selected-subtle",
+        pointsAt:
+          "text-navigation-selected; text-sidebar-selected inside SidebarNavigation",
+        use: "Icons and supporting text on the selected sidebar destination.",
+        status: "proposed",
+      },
+      {
+        token: "text-row-selected-metadata",
+        variable: "--text-row-selected-metadata",
+        pointsAt:
+          "text-navigation-selected; text-sidebar-selected inside SidebarNavigation",
+        use: "Counts and metadata on the selected sidebar destination.",
+        status: "proposed",
+      },
+      {
+        token: "bg-affordance-navigation-selected",
+        variable: "--affordance-navigation-selected",
+        pointsAt:
+          "surface-navigation-selected; surface-sidebar-selected inside SidebarNavigation",
+        use: "Selected navigation fill; SidebarNavigation scopes this alias to its solid accent fill.",
+        status: "proposed",
+      },
+      {
+        token: "bg-surface-row-selected-detail",
+        variable: "--surface-row-selected-detail",
+        pointsAt: "neutral-2 light / neutral-6 dark",
+        use: "Quiet fill for working, typing and count badges on a selected sidebar row.",
+        status: "proposed",
+      },
+      {
+        token: "text-row-selected-detail",
+        variable: "--text-row-selected-detail",
+        pointsAt: "neutral standard ink light / text-row-selected dark",
+        use: "Readable marks on surface-row-selected-detail, independent of the row's strong fill.",
+        status: "proposed",
+      },
+      {
+        token: "text-row-subtle",
+        variable: "--text-row-subtle",
+        pointsAt: "text-subtle; text-sidebar-hover inside SidebarNavigation",
+        use: "Supporting text on a hovered or selected row; follows the row's fill.",
+        status: "proposed",
+      },
+      {
+        token: "text-row-metadata",
+        variable: "--text-row-metadata",
+        pointsAt: "text-metadata; text-sidebar-hover inside SidebarNavigation",
+        use: "Metadata on a hovered or selected row; follows the row's fill.",
+        status: "proposed",
+      },
+      {
+        token: "text-chrome-subtle",
+        variable: "--text-chrome-subtle",
+        pointsAt: "text-subtle (neutral)",
+        use: "Inactive labels in the chrome capsule on the app shell.",
+        status: "proposed",
+      },
+      {
         token: "text-inverse",
         variable: "--text-inverse",
         pointsAt: "neutral-1 light / neutral-1 dark",
         use: "Text on prominent actions and inverse media surfaces.",
         status: "core",
+      },
+      {
+        token: "text-on-selection",
+        variable: "--text-on-selection",
+        pointsAt: "neutral-1 light / neutral-1 dark",
+        use: "Selected text on surface-text-selection, including composer tokens.",
+        status: "core",
+      },
+      {
+        token: "text-on-selection-own",
+        variable: "--text-on-selection-own",
+        pointsAt: "neutral-1 / own bubble fill at Buzzin’",
+        use: "Selected text inside outgoing bubbles, paired with surface-text-selection-own.",
+        status: "core",
+      },
+      {
+        token: "text-on-prominent",
+        variable: "--text-on-prominent",
+        pointsAt: "text-inverse (neutral prominent controls)",
+        use: "Text and icons on a prominent fill: buttons, checked controls, tooltips, badges.",
+        status: "proposed",
       },
       {
         token: "text-unavailable",
@@ -387,6 +572,14 @@ export const ROLE_GROUPS: RoleGroup[] = [
         pointsAt: "red-12 light / red-12 dark",
         use: "Error text and destructive action labels.",
         status: "core",
+      },
+      {
+        token: "text-call-leave",
+        variable: "--text-call-leave",
+        pointsAt: "red-10 light / red-10 dark",
+        use: "Huddle Leave label and icon on glass or neutral controls. Product-directed lighter red; contrast exception, not general error text.",
+        status: "proposed",
+        owner: "Huddles",
       },
       {
         token: "text-warning",
@@ -417,31 +610,74 @@ export const ROLE_GROUPS: RoleGroup[] = [
         status: "core",
       },
       {
+        token: "icon-subtle",
+        variable: "--icon-subtle",
+        pointsAt: "text-subtle",
+        use: "Neutral / inactive state icons, including inside message bubbles. Not text.",
+        status: "core",
+      },
+      {
+        token: "icon-subtle-own",
+        variable: "--icon-subtle-own",
+        pointsAt: "icon-subtle; the own bubble's link ink at Buzzin’",
+        use: "Neutral state icons inside your own bubble, where the solid fill clears no grey.",
+        status: "core",
+      },
+      {
+        token: "icon-success",
+        variable: "--icon-success",
+        pointsAt: "green-11 light / green-11 dark",
+        use: "Success / positive state icons, including inside message bubbles. Not text.",
+        status: "core",
+      },
+      {
+        token: "icon-success-own",
+        variable: "--icon-success-own",
+        pointsAt: "icon-success; the own bubble's link ink at Buzzin’",
+        use: "Success state icons inside your own bubble, where the solid fill clears no green.",
+        status: "core",
+      },
+      {
         token: "text-link",
         variable: "--text-link",
-        pointsAt: "blue-11 light / blue-11 dark",
-        use: "Inline links and mentions in prose.",
+        pointsAt: "text-standard (neutral outside message bubbles)",
+        use: "Inline links in prose. Mentions use text-mention on a highlight instead.",
         status: "core",
       },
       {
         token: "text-message-own",
         variable: "--text-message-own",
-        pointsAt: "text-standard by default; bubble-ink for accents",
+        pointsAt: "accent 12 at low contrast; accent ink at high contrast",
+
         use: "Prose on the selected outgoing message surface.",
         status: "core",
       },
       {
         token: "text-message-link-own",
         variable: "--text-message-link-own",
-        pointsAt: "text-link by default; bubble-ink for accents",
-        use: "Links and mentions on the selected outgoing message surface.",
+        pointsAt: "accent link at Chillin’; accent ink at Buzzin’",
+        use: "Links on the selected outgoing message surface.",
         status: "core",
       },
       {
-        token: "text-message-action",
-        variable: "--text-message-action",
-        pointsAt: "neutral-1 by default; bubble-ink for accents",
-        use: "Send icon and selected swatch check on surface-message-action.",
+        token: "text-mention",
+        variable: "--text-mention",
+        pointsAt: "text-standard",
+        use: "Ordinary mention labels, paired with bg-affordance-mention. Mentions are people, not links.",
+        status: "core",
+      },
+      {
+        token: "text-mention-own",
+        variable: "--text-mention-own",
+        pointsAt: "text-mention; the own bubble's ink at Buzzin’",
+        use: "Mention labels inside your own bubble, paired with bg-affordance-mention-own.",
+        status: "core",
+      },
+      {
+        token: "text-mention-self",
+        variable: "--text-mention-self",
+        pointsAt: "text-on-accent",
+        use: "A mention of you, paired with bg-affordance-mention-self. It asks for your attention, so it joins the strong group.",
         status: "core",
       },
       {
@@ -452,9 +688,24 @@ export const ROLE_GROUPS: RoleGroup[] = [
         status: "core",
       },
       {
+        token: "icon-categorical-purple",
+        variable: "--icon-categorical-purple",
+        pointsAt: "purple-11 light / purple-11 dark",
+        use: "Accent-independent categorical state icons, the icon tier of text-categorical-purple. Not text.",
+        status: "core",
+      },
+      {
+        token: "icon-categorical-purple-own",
+        variable: "--icon-categorical-purple-own",
+        pointsAt:
+          "icon-categorical-purple; the own bubble's link ink at Buzzin’",
+        use: "Categorical state icons inside your own bubble, where the solid fill clears no purple.",
+        status: "core",
+      },
+      {
         token: "text-accent",
         variable: "--text-accent",
-        pointsAt: "purple-12 light / purple-12 dark",
+        pointsAt: "text-standard (neutral compatibility role)",
         use: "Linked or selected identity text.",
         status: "core",
       },
@@ -536,6 +787,24 @@ export const ROLE_GROUPS: RoleGroup[] = [
     ],
   },
   {
+    id: "chart",
+    name: "Chart series",
+    description:
+      "Marks that tell chart series apart, assigned in order and never cycled. Labels and values keep text roles.",
+    roles: [
+      "blue-10 light / blue-9 dark",
+      "orange-10 light / orange-8 dark",
+      "green-10 light / green-9 dark",
+      "purple-9 light / purple-10 dark",
+    ].map((pointsAt, index) => ({
+      token: `chart-series-${index + 1}`,
+      variable: `--chart-series-${index + 1}`,
+      pointsAt,
+      use: `Series ${index + 1} bars, lines and legend swatches; 3:1 against panels.`,
+      status: "core",
+    })),
+  },
+  {
     id: "scrollbars",
     name: "Scrollbars",
     description:
@@ -565,7 +834,7 @@ export const ROLE_GROUPS: RoleGroup[] = [
       {
         token: "border-standard",
         variable: "--border-standard",
-        pointsAt: "neutral-3 light / neutral-4 dark",
+        pointsAt: "neutral-3 light / neutral-5 dark",
         use: "A quiet separator or panel edge.",
         status: "core",
       },
@@ -598,6 +867,13 @@ export const ROLE_GROUPS: RoleGroup[] = [
         status: "core",
       },
       {
+        token: "border-success-subtle",
+        variable: "--border-success-subtle",
+        pointsAt: "green-6 light / green-6 dark",
+        use: "A decorative separator inside a success control.",
+        status: "core",
+      },
+      {
         token: "border-danger",
         variable: "--border-danger",
         pointsAt: "red-9 light / red-9 dark",
@@ -614,7 +890,7 @@ export const ROLE_GROUPS: RoleGroup[] = [
       {
         token: "border-accent",
         variable: "--border-accent",
-        pointsAt: "purple-8 light / purple-8 dark",
+        pointsAt: "border-focus (neutral compatibility role)",
         use: "An identity accent boundary.",
         status: "core",
       },
@@ -626,9 +902,73 @@ export const ROLE_GROUPS: RoleGroup[] = [
     description: "Shared affordance roles, with values for both themes.",
     roles: [
       {
+        token: "text-message-link",
+        variable: "--text-message-link",
+        pointsAt: "accent link",
+        use: "Links in received message bubbles.",
+        status: "core",
+      },
+      {
+        token: "surface-sidebar-selected",
+        variable: "--surface-sidebar-selected",
+        pointsAt: "accent 9",
+        use: "Persistent sidebar selection, independent of vibe.",
+        status: "core",
+      },
+      {
+        token: "text-sidebar-selected",
+        variable: "--text-sidebar-selected",
+        pointsAt: "accent contrast",
+        use: "Labels, icons and metadata on selected sidebar rows.",
+        status: "core",
+      },
+      {
+        token: "affordance-sidebar-hover",
+        variable: "--affordance-sidebar-hover",
+        pointsAt: "accent 2 light / accent 3 dark",
+        use: "Sidebar row hover and Solo card drop destinations, quieter than selection.",
+        status: "core",
+      },
+      {
+        token: "text-sidebar-hover",
+        variable: "--text-sidebar-hover",
+        pointsAt: "accent 12",
+        use: "Text on hovered sidebar rows.",
+        status: "core",
+      },
+      {
+        token: "bg-surface-control-selected",
+        variable: "--surface-control-selected",
+        pointsAt: "surface-panel at both vibe levels",
+        use: "Persistent segmented selection; pair with text-control-selected.",
+        status: "core",
+      },
+      {
+        token: "text-control-selected",
+        variable: "--text-control-selected",
+        pointsAt: "text-standard at both vibe levels",
+        use: "Labels and icons on surface-control-selected.",
+        status: "core",
+      },
+      {
+        token: "--surface-navigation-selected",
+        variable: "--surface-navigation-selected",
+        pointsAt: "affordance-selected (neutral)",
+        use: "Selected navigation fill, paired with text-navigation-selected.",
+        status: "core",
+      },
+      {
+        token: "--text-navigation-selected",
+        variable: "--text-navigation-selected",
+        pointsAt: "text-standard (neutral)",
+        use: "Labels and icons on selected navigation.",
+        status: "core",
+      },
+      {
         token: "bg-affordance-prominent",
         variable: "--affordance-prominent",
-        pointsAt: "neutral-12 light / neutral-12 dark",
+        pointsAt: "neutral-12 in both modes",
+
         use: "The main action fill.",
         status: "core",
       },
@@ -647,16 +987,25 @@ export const ROLE_GROUPS: RoleGroup[] = [
         status: "core",
       },
       {
+        token: "bg-affordance-prominent-mark",
+        variable: "--affordance-prominent-mark",
+        pointsAt: "affordance-prominent (neutral)",
+        use: "A prominent dot, insertion line or label standing alone on a surface; stays 3:1 by itself.",
+        status: "proposed",
+      },
+      {
         token: "bg-affordance-subtle",
         variable: "--affordance-subtle",
-        pointsAt: "neutral-2 light / neutral-4 dark",
+        pointsAt:
+          "neutral-2 light / neutral-4 dark; neutral-5 in dark composers",
         use: "A secondary action fill.",
         status: "core",
       },
       {
         token: "bg-affordance-subtle-hover",
         variable: "--affordance-subtle-hover",
-        pointsAt: "neutral-quiet-hover in both modes",
+        pointsAt:
+          "neutral-quiet-hover in both modes; neutral-6 in dark composers",
         use: "A secondary action under a pointer.",
         status: "core",
       },
@@ -677,7 +1026,8 @@ export const ROLE_GROUPS: RoleGroup[] = [
       {
         token: "bg-affordance-subtle-pressed",
         variable: "--affordance-subtle-pressed",
-        pointsAt: "neutral-4 light / neutral-5 dark",
+        pointsAt:
+          "neutral-4 light / neutral-5 dark; neutral-7 in dark composers",
         use: "A secondary action while pressed.",
         status: "core",
       },
@@ -700,6 +1050,27 @@ export const ROLE_GROUPS: RoleGroup[] = [
         variable: "--affordance-navigation-quiet",
         pointsAt: "neutral-navigation-quiet",
         use: "Gentle hover and selected fill for the sidenav, requested by Cynthia; paired with standard row text in both themes.",
+        status: "proposed",
+      },
+      {
+        token: "bg-affordance-row-hover",
+        variable: "--affordance-row-hover",
+        pointsAt: "affordance-subtle (neutral)",
+        use: "A list or navigation row under the pointer, separate from resting quiet control fills.",
+        status: "proposed",
+      },
+      {
+        token: "bg-affordance-chrome",
+        variable: "--affordance-chrome",
+        pointsAt: "neutral-3 light / affordance-subtle dark",
+        use: "The grouped chrome capsule on the app shell, such as Solo and Multiplayer.",
+        status: "proposed",
+      },
+      {
+        token: "bg-affordance-chrome-hover",
+        variable: "--affordance-chrome-hover",
+        pointsAt: "affordance-subtle-hover (neutral)",
+        use: "An inactive chrome capsule item under the pointer.",
         status: "proposed",
       },
       {
@@ -802,38 +1173,149 @@ export const ROLE_GROUPS: RoleGroup[] = [
         status: "core",
       },
       {
+        token: "bg-affordance-success-hover",
+        variable: "--affordance-success-hover",
+        pointsAt: "green-4 light / green-4 dark",
+        use: "A success control under a pointer.",
+        status: "core",
+      },
+      {
+        token: "bg-affordance-success-pressed",
+        variable: "--affordance-success-pressed",
+        pointsAt: "green-5 light / green-5 dark",
+        use: "A success control while pressed or expanded.",
+        status: "core",
+      },
+      {
+        token: "bg-affordance-call-join",
+        variable: "--affordance-call-join",
+        pointsAt: "green-10 light / green-10 dark",
+        use: "Incoming Huddle join fill, paired with inverse text. Product-directed contrast exception.",
+        status: "proposed",
+        owner: "Huddles",
+      },
+      {
+        token: "bg-affordance-call-join-hover",
+        variable: "--affordance-call-join-hover",
+        pointsAt: "green-9 light / green-9 dark",
+        use: "Incoming Huddle join hover fill, paired with inverse text. Product-directed contrast exception.",
+        status: "proposed",
+        owner: "Huddles",
+      },
+      {
+        token: "bg-affordance-call-decline",
+        variable: "--affordance-call-decline",
+        pointsAt: "red-10 light / red-10 dark",
+        use: "Incoming Huddle decline fill, paired with inverse text. Product-directed contrast exception.",
+        status: "proposed",
+        owner: "Huddles",
+      },
+      {
+        token: "bg-affordance-call-decline-hover",
+        variable: "--affordance-call-decline-hover",
+        pointsAt: "red-9 light / red-9 dark",
+        use: "Incoming Huddle decline hover fill, paired with inverse text. Product-directed contrast exception.",
+        status: "proposed",
+        owner: "Huddles",
+      },
+      {
         token: "bg-affordance-link-hover",
         variable: "--affordance-link-hover",
-        pointsAt: "blue-3 light / blue-3 dark",
+        pointsAt: "affordance-subtle-hover (neutral)",
         use: "An inline link under a pointer.",
+        status: "core",
+      },
+      {
+        token: "bg-surface-text-selection",
+        variable: "--surface-text-selection",
+        pointsAt: "neutral-12 light / neutral-12 dark",
+        use: "Text-selection fill distinct from panels and message bubbles; pair with text-on-selection.",
+        status: "core",
+      },
+      {
+        token: "bg-surface-text-selection-own",
+        variable: "--surface-text-selection-own",
+        pointsAt: "neutral-12 / accent ink at Buzzin’",
+        use: "Neutral selection fill that contrasts with the outgoing bubble at either vibe.",
         status: "core",
       },
       {
         token: "bg-affordance-accent",
         variable: "--affordance-accent",
-        pointsAt: "purple-3 light / purple-3 dark",
-        use: "A quiet identity or selection fill.",
+        pointsAt: "affordance-subtle (neutral compatibility role)",
+        use: "A quiet compatibility fill; text selection uses surface-text-selection.",
+        status: "core",
+      },
+      {
+        token: "bg-affordance-mention",
+        variable: "--affordance-mention",
+        pointsAt: "black 10% light / white 16% dark",
+        use: "Ordinary mention chip fill, paired with text-mention. Frequent, so it stays a neutral overlay that shows the bubble through.",
+        status: "core",
+      },
+      {
+        token: "bg-affordance-mention-hover",
+        variable: "--affordance-mention-hover",
+        pointsAt: "black 14% light / white 20% dark",
+        use: "Mention chip under the pointer.",
+        status: "core",
+      },
+      {
+        token: "bg-affordance-mention-own",
+        variable: "--affordance-mention-own",
+        pointsAt:
+          "affordance-mention; at Buzzin’, black 10% on the accent fill (16% on Magenta, Iris and Cobalt; white 16% on Mono in light mode)",
+        use: "Mention chip fill inside your own bubble, paired with text-mention-own.",
+        status: "core",
+      },
+      {
+        token: "bg-affordance-mention-own-hover",
+        variable: "--affordance-mention-own-hover",
+        pointsAt:
+          "affordance-mention-hover; at Buzzin’, black 14% on the accent fill (22% on Magenta, Iris and Cobalt; white 20% on Mono in light mode)",
+        use: "Own-bubble mention chip under the pointer.",
+        status: "core",
+      },
+      {
+        token: "bg-affordance-mention-self",
+        variable: "--affordance-mention-self",
+        pointsAt: "affordance-accent-prominent",
+        use: "Chip fill for a mention of you, paired with text-mention-self.",
+        status: "core",
+      },
+      {
+        token: "bg-affordance-mention-self-hover",
+        variable: "--affordance-mention-self-hover",
+        pointsAt: "affordance-accent-prominent-hover",
+        use: "A mention of you under the pointer.",
         status: "core",
       },
       {
         token: "bg-affordance-accent-hover",
         variable: "--affordance-accent-hover",
-        pointsAt: "purple-4 light / purple-4 dark",
+        pointsAt: "affordance-subtle-hover (neutral compatibility role)",
         use: "A quiet identity fill under a pointer.",
         status: "core",
       },
       {
         token: "bg-affordance-accent-prominent",
         variable: "--affordance-accent-prominent",
-        pointsAt: "purple-9 light / purple-9 dark",
+        pointsAt: "accent step 9",
         use: "An identity accent fill paired with text-on-accent.",
         status: "core",
       },
       {
         token: "bg-affordance-accent-prominent-hover",
         variable: "--affordance-accent-prominent-hover",
-        pointsAt: "purple-10 light / purple-10 dark",
+        pointsAt: "accent step 10, each accent's hover",
         use: "An identity accent fill under a pointer.",
+        status: "core",
+      },
+      {
+        token: "bg-affordance-accent-prominent-pressed",
+        variable: "--affordance-accent-prominent-pressed",
+        pointsAt: "accent pressed fill",
+        use: "An identity accent fill while pressed, such as an accent swatch.",
         status: "core",
       },
     ],
@@ -1426,44 +1908,44 @@ export const RADII = [
   {
     token: "radius-chip",
     variable: "--radius-chip",
-    value: "4px",
+    value: "12px",
     use: "Small chips and tight details.",
   },
   {
     token: "radius-row",
     variable: "--radius-row",
-    value: "8px",
+    value: "16px",
     use: "Dense navigator rows, compact selected regions and compact floating surfaces.",
   },
   {
     token: "radius-icon-button",
     variable: "--radius-icon-button",
-    value: "10px",
+    value: "18px",
     use: "Independent icon controls, including top-bar and content-toolbar actions, with the same radius on every corner.",
   },
   {
     token: "radius-control",
     variable: "--radius-control",
-    value: "12px",
+    value: "20px",
     use: "Inputs, rounded cue buttons and the message action toolbar. Icon controls use radius-icon-button; text buttons default to radius-capsule.",
   },
   {
     token: "radius-container",
     variable: "--radius-container",
-    value: "16px",
+    value: "24px",
     use: "Medium containers, including menus, content popovers, pickers and the media review frame.",
   },
   {
     token: "radius-panel",
     variable: "--radius-panel",
-    value: "20px",
+    value: "28px",
     use: "Major workspace panels and dialogs. Maximum standalone container radius.",
   },
   {
     token: "radius-capsule",
     variable: "--radius-capsule",
-    value: "26px",
-    use: "Text buttons and similarly sized actions: capsule-shaped through large (52px), bounded on taller controls.",
+    value: "34px",
+    use: "Text buttons and similarly sized actions: capsule-shaped through 68px, bounded on taller controls.",
   },
   {
     token: "radius-pill",
@@ -1522,7 +2004,7 @@ export const ELEVATION = [
   {
     token: "shadow-panel",
     variable: "--shadow-panel",
-    use: "Workspace panels: translucent contour and subtle lift; a quiet light rim in dark mode.",
+    use: "Workspace panels and floating surfaces: translucent contour and subtle lift; a quiet light rim in dark mode.",
   },
   {
     token: "shadow-xs",
@@ -1532,7 +2014,7 @@ export const ELEVATION = [
   {
     token: "shadow-sm",
     variable: "--shadow-sm",
-    use: "A floating surface: menus, dialogs, popovers.",
+    use: "Ordinary elevation for bordered dialogs, tooltips, and raised controls.",
   },
 ];
 

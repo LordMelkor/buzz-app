@@ -32,11 +32,12 @@ afterEach(() => {
 function fixture(now = 100) {
   const key = keypair();
   let journal: ReadJournal | undefined;
-  const storage: ReadStateStorage = {
+  const storage: Required<ReadStateStorage> = {
     update: vi.fn(async (change) => {
       journal = readJournal(change(journal), key.pubkey);
       return journal;
     }),
+    read: vi.fn(async () => journal && readJournal(journal, key.pubkey)),
     close: vi.fn(),
   };
   let remote: RelayEvent[] = [];
@@ -102,7 +103,7 @@ function fixture(now = 100) {
       now = value;
     },
     journal: () => journal,
-    setJournal: (value: ReadJournal) => {
+    setJournal: (value: ReadJournal | undefined) => {
       journal = value;
     },
   };
@@ -550,6 +551,110 @@ describe("durable read-state owner", () => {
     await vi.advanceTimersByTimeAsync(400);
     expect(f.host.publish).toHaveBeenCalledTimes(1);
   });
+  it("a peer refresh loads the saved journal without writing it back", async () => {
+    const f = fixture();
+    const options = { broadcastName: `read-load:${crypto.randomUUID()}` };
+    const a = f.make(options),
+      b = f.make(options);
+    await Promise.all([a.ready, b.ready]);
+    const updates = vi.mocked(f.storage.update).mock.calls.length;
+    await a.read("room", 12, () => true);
+    await expect.poll(() => b.revision()).toBe(1);
+    expect(b.state().frontiers.room).toBe(12);
+    expect(f.storage.update).toHaveBeenCalledTimes(updates + 1);
+  });
+  it("a peer refresh saves a new journal only when none is stored", async () => {
+    const f = fixture();
+    const options = { broadcastName: `read-missing:${crypto.randomUUID()}` };
+    const owner = f.make(options);
+    await owner.ready;
+    const slot = f.journal()?.slot;
+    f.setJournal(undefined);
+    const notify = new BroadcastChannel(options.broadcastName);
+    notify.postMessage("changed");
+    notify.close();
+    await expect.poll(() => f.journal()).toBeDefined();
+    expect(f.journal()?.slot).not.toBe(slot);
+    expect(owner.snapshot().error).toBeUndefined();
+  });
+  it("a peer refresh reports corrupt saved state without replacing it", async () => {
+    const f = fixture();
+    const options = { broadcastName: `read-corrupt:${crypto.randomUUID()}` };
+    const owner = f.make(options);
+    await owner.ready;
+    const corrupt = {
+      ...newReadJournal(),
+      state: { frontiers: { room: -1 }, overrides: {} },
+    };
+    f.setJournal(corrupt);
+    const updates = vi.mocked(f.storage.update).mock.calls.length;
+    const notify = new BroadcastChannel(options.broadcastName);
+    notify.postMessage("changed");
+    notify.close();
+    await expect.poll(() => owner.snapshot().status).toBe("error");
+    expect(f.journal()).toBe(corrupt);
+    expect(f.storage.update).toHaveBeenCalledTimes(updates);
+  });
+  it("a late peer load cannot restore a purge, replace later intent or apply after disposal", async () => {
+    const f = fixture();
+    const options = { broadcastName: `read-late:${crypto.randomUUID()}` };
+    const load = vi.fn(() => f.storage.read());
+    const a = f.make(options),
+      b = f.make({ ...options, storage: { ...f.storage, read: load } });
+    await Promise.all([a.ready, b.ready]);
+    const hold = () => {
+      let release = () => {};
+      let started = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const reading = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      load.mockImplementationOnce(async () => {
+        const loaded = await f.storage.read();
+        started();
+        await held;
+        return loaded;
+      });
+      return { release, reading };
+    };
+    let held = hold();
+    await a.read("a", 1, () => true);
+    await held.reading;
+    const local = b.read("b", 2, () => true);
+    await a.read("c", 3, () => true);
+    held.release();
+    await local;
+    await expect.poll(() => [a.revision(), b.revision()]).toEqual([3, 3]);
+    expect(b.state().frontiers).toEqual({ a: 1, b: 2, c: 3 });
+    expect(f.journal()).toMatchObject({
+      revision: 3,
+      state: { frontiers: { a: 1, b: 2, c: 3 } },
+    });
+
+    held = hold();
+    await a.read("d", 4, () => true);
+    await held.reading;
+    f.setJournal(undefined);
+    const updates = vi.mocked(f.storage.update).mock.calls.length;
+    held.release();
+    await expect.poll(() => b.revision()).toBe(4);
+    expect(f.journal()).toBeUndefined();
+    expect(f.storage.update).toHaveBeenCalledTimes(updates);
+
+    f.setJournal({ ...newReadJournal(), revision: 9, acceptedRevision: 9 });
+    held = hold();
+    const notify = new BroadcastChannel(options.broadcastName);
+    notify.postMessage("changed");
+    notify.close();
+    await held.reading;
+    b.dispose();
+    held.release();
+    await expect.poll(() => a.revision()).toBe(9);
+    expect(b.revision()).toBe(4);
+    expect(f.storage.update).toHaveBeenCalledTimes(updates);
+  });
   it("broadcast handoff retries saved bytes and no-op broadcasts preserve a failed outcome", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const f = fixture();
@@ -572,12 +677,12 @@ describe("durable read-state owner", () => {
     await expect.poll(() => b.snapshot().status).toBe("error");
     expect(f.host.publish.mock.calls[1]?.[0]).toEqual(pending);
     const notify = new BroadcastChannel(options.broadcastName);
-    const updates = vi.mocked(f.storage.update).mock.calls.length;
+    const loads = vi.mocked(f.storage.read).mock.calls.length;
     notify.postMessage("changed");
     notify.close();
     await expect
-      .poll(() => vi.mocked(f.storage.update).mock.calls.length)
-      .toBeGreaterThan(updates);
+      .poll(() => vi.mocked(f.storage.read).mock.calls.length)
+      .toBeGreaterThan(loads);
     expect(b.snapshot()).toMatchObject({
       status: "error",
       error: "still offline",
@@ -684,13 +789,13 @@ describe("durable read-state owner", () => {
     await b.refresh();
     expect(b.snapshot().error).toBe("marker load failed");
     await a.flush();
-    const updates = vi.mocked(f.storage.update).mock.calls.length;
+    const loads = vi.mocked(f.storage.read).mock.calls.length;
     const notify = new BroadcastChannel(options.broadcastName);
     notify.postMessage("changed");
     notify.close();
     await expect
-      .poll(() => vi.mocked(f.storage.update).mock.calls.length)
-      .toBeGreaterThan(updates);
+      .poll(() => vi.mocked(f.storage.read).mock.calls.length)
+      .toBeGreaterThan(loads);
     expect(b.snapshot()).toMatchObject({
       status: "error",
       error: "marker load failed",

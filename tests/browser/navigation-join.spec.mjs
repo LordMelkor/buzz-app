@@ -1,3 +1,4 @@
+import { selectCommunity, openCommunityPicker } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
 
@@ -17,15 +18,17 @@ for (const startingScope of ["Primary", "Personal space"]) {
     await open(page, app);
     const rail = page.getByRole("navigation", { name: "Communities" });
     if (startingScope === "Personal space") {
-      await button(page, "Personal space").click();
+      await selectCommunity(page, "Personal space");
       await expect(
         page.getByRole("heading", { name: "Your channels, one conversation." }),
       ).toBeVisible();
     }
     const before = await entry(page);
-    await button(page, "Add a community").click();
+    await (await openCommunityPicker(page))
+      .getByRole("button", { name: "Join a community", exact: true })
+      .click();
     await page
-      .getByRole("textbox", { name: "Relay URL", exact: true })
+      .getByRole("textbox", { name: "Community URL", exact: true })
       .fill("wss://secondary.example");
     await button(page, "Continue").click();
     await expect(
@@ -36,8 +39,8 @@ for (const startingScope of ["Primary", "Personal space"]) {
     ).toBeVisible();
     await button(page, "Open community").click();
     await expect(
-      rail.getByRole("button", { name: "Switch to Secondary" }),
-    ).toHaveAttribute("aria-current", "true", { timeout: 1500 });
+      rail.getByRole("button", { name: "Community switcher: Secondary" }),
+    ).toBeVisible({ timeout: 1500 });
     const secondaryMessage = page.getByText("secondary alpha message 639", {
       exact: false,
     });
@@ -52,10 +55,9 @@ for (const startingScope of ["Primary", "Personal space"]) {
     await button(page, "Go back").click();
     await expect(
       rail.getByRole("button", {
-        name:
-          startingScope === "Primary" ? "Switch to Primary" : "Personal space",
+        name: `Community switcher: ${startingScope}`,
       }),
-    ).toHaveAttribute("aria-current", "true");
+    ).toBeVisible();
     expect(await entry(page)).toEqual(before);
     if (startingScope === "Primary")
       await expect(
@@ -67,8 +69,8 @@ for (const startingScope of ["Primary", "Personal space"]) {
       ).toBeVisible();
     await button(page, "Go forward").click();
     await expect(
-      rail.getByRole("button", { name: "Switch to Secondary" }),
-    ).toHaveAttribute("aria-current", "true");
+      rail.getByRole("button", { name: "Community switcher: Secondary" }),
+    ).toBeVisible();
     await expect(secondaryMessage).toBeVisible();
     expect(await entry(page)).toEqual(joined);
   });

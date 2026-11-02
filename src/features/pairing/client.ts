@@ -13,7 +13,7 @@ export type PairingStatus =
         | "cancelled";
     }
   | { phase: "qr"; svg: string; uri: string }
-  | { phase: "code"; code: string; codeEntry: boolean }
+  | { phase: "code"; code: string }
   | { phase: "error"; message: string };
 export type PairingNative = {
   account(): Promise<string>;
@@ -127,13 +127,7 @@ export function createPairingClient(native: PairingNative = nativePairing) {
     },
     async decide(kind: "confirm" | "deny") {
       const session = active;
-      if (
-        !session ||
-        state.phase !== "code" ||
-        state.codeEntry ||
-        session.deciding
-      )
-        return;
+      if (!session || state.phase !== "code" || session.deciding) return;
       session.deciding = true;
       // Do not invent a new pairing operation while an abort is pending.
       update({ phase: kind === "confirm" ? "transferring" : "cancelling" });

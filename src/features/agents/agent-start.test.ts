@@ -2,12 +2,14 @@ import { finalizeEvent, generateSecretKey } from "nostr-tools";
 import { describe, expect, it } from "vitest";
 import type { RelayEvent } from "../relay/events";
 import { AgentConfigStore, type Subject } from "./agent-config";
-import { resolveStart, Runs, type Mode, type StartInput } from "./agent-start";
+import { resolveStart, type Mode, type StartInput } from "./agent-start";
 import {
   syncedSettingsSchema,
   withSyncedSettings,
 } from "../../bundled/claude-code/settings";
 import type { Config } from "../../bundled/claude-code/runtime";
+import * as codex from "../../bundled/codex/settings";
+import * as goose from "../../bundled/goose/settings";
 import { memoryStorage } from "./test-fakes";
 
 const key = generateSecretKey();
@@ -94,6 +96,55 @@ function seeded() {
 }
 
 describe("start resolution", () => {
+  it("gives a field the synced copy leaves out its default, never this device's value, in every runtime", () => {
+    const own = { ...local, provider: "local-provider" } as unknown as Config;
+    for (const [agentType, merge] of [
+      ["claude-code", plugin],
+      [
+        "codex",
+        {
+          schema: codex.syncedSettingsSchema,
+          withSynced: codex.withSyncedSettings,
+        },
+      ],
+      [
+        "goose",
+        {
+          schema: goose.syncedSettingsSchema,
+          withSynced: goose.withSyncedSettings,
+        },
+      ],
+    ] as const)
+      for (const synced of [{}, { scope: "channel" }] as Record<
+        string,
+        string
+      >[]) {
+        const store = new AgentConfigStore(memoryStorage());
+        install(store, settings, revision({ agentType, settings: synced }));
+        const start = resolveStart({
+          store,
+          local: own,
+          agentType,
+          settings: {
+            mode: "synced",
+            subject: settings,
+            schema: merge.schema,
+            withSynced: merge.withSynced as typeof plugin.withSynced,
+          },
+        });
+        if (!start.ok) throw new Error(start.reason);
+        expect(start.config).toMatchObject({
+          model: "",
+          effort: "",
+          scope: synced.scope ?? "thread",
+          workspace: "/this/device",
+        });
+        if (agentType === "goose")
+          expect(start.config).toMatchObject({ provider: "" });
+        expect(start.synced).toEqual(synced);
+      }
+  });
+
   it("starts local and migrating types from the local row, unchanged", () => {
     const store = new AgentConfigStore(memoryStorage());
     for (const mode of ["local", "migrating"] as const)
@@ -111,10 +162,12 @@ describe("start resolution", () => {
       config: {
         ...local,
         model: "synced-model",
+        effort: "",
         scope: "channel",
         instructions: "synced text",
       },
       revisions: [s.id, i.id],
+      synced: { model: "synced-model", scope: "channel" },
     });
   });
 
@@ -230,6 +283,7 @@ describe("team sections", () => {
         },
       ],
       revisions: [s.id, i.id, t.id],
+      synced: expect.any(Object),
     });
     expect(
       resolveStart(input(store, "synced", { teams: [member("archived")] })),
@@ -254,22 +308,5 @@ describe("team sections", () => {
       state: "unavailable",
       reason: expect.stringContaining('"team-1"'),
     });
-  });
-});
-
-describe("applying changes to a running agent", () => {
-  it("restarts on a local save, marks a remote change, and restarts no one for a team save", () => {
-    const runs = new Runs();
-    expect(runs.changed("agent", "remote", ["b"])).toBe("none");
-    runs.start("agent", ["a"]);
-    expect(runs.revisions("agent")).toEqual(["a"]);
-    expect(runs.changed("agent", "team", ["a", "t2"])).toBe("none");
-    expect(runs.changed("agent", "remote", ["a"])).toBe("none");
-    expect(runs.restartToApply("agent")).toBe(false);
-    expect(runs.changed("agent", "remote", ["b"])).toBe("restart-to-apply");
-    expect(runs.restartToApply("agent")).toBe(true);
-    expect(runs.changed("agent", "local", ["c"])).toBe("restart");
-    runs.start("agent", ["c"]);
-    expect(runs.restartToApply("agent")).toBe(false);
   });
 });

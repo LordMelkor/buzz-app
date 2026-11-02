@@ -45,7 +45,11 @@ strike.peek = () => "~";
  * Marked content uses CommonMark/GFM delimiter escaping and flanking rules. */
 export function composerMarkdown(draft: MentionDraft): string {
   const doc = readComposerDocument(draft, []);
-  return [...(draft.sessionCards ?? []), blocksMarkdown(doc)]
+  return [
+    ...(draft.chatCards ?? []),
+    blocksMarkdown(doc),
+    ...(draft.gifs ?? []),
+  ]
     .filter(Boolean)
     .join("\n\n");
 }

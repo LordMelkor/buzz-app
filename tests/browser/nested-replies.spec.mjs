@@ -1,3 +1,4 @@
+import { hoverMessage } from "./message-actions.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
 import { settlePanelMotion } from "./navigation.mjs";
@@ -13,7 +14,7 @@ test.use({
 // Every thread reply, nested or not, carries the same full action bar; on desktop
 // it is revealed by hover or focus.
 async function replyActions(row) {
-  await row.hover();
+  await hoverMessage(row);
   return row.getByRole("group", { name: "Message actions", exact: true });
 }
 
@@ -75,7 +76,7 @@ test("nested replies send, stay open, and reveal through links at readable panel
     path: test.info().outputPath("ordinary-thread-replies.png"),
   });
   await editor.fill("Nested browser reply");
-  await parent.hover();
+  await hoverMessage(parent);
   await parent.getByRole("button", { name: "Reply", exact: true }).click();
   await expect(editor).toHaveText("Nested browser reply");
   let rejected;
@@ -190,7 +191,9 @@ test("nested replies send, stay open, and reveal through links at readable panel
     const pending = panel
       .locator("[data-message-id]")
       .filter({ hasText: "Grandchild browser reply" });
-    await expect(pending.locator('[data-layout="thread"]')).toBeVisible();
+    // Replying to a nested reply continues its branch, so an own consecutive
+    // send stacks as a continuation.
+    await expect(pending.locator('[data-layout="continuation"]')).toBeVisible();
     await expect.poll(() => grandchildRequested).toBe(true);
     await expect(
       (await replyActions(pending)).getByRole("button", {
@@ -228,9 +231,19 @@ test("nested replies send, stay open, and reveal through links at readable panel
   const grandchildRow = panel.locator(`[data-message-id="${grandchild.id}"]`);
   await expect(grandchildRow).toBeInViewport();
   await expect(editor).toBeFocused();
-  // Crossing into a nested branch repeats the author, even for own consecutive sends.
-  await expect(grandchildRow.locator('[data-layout="thread"]')).toBeVisible();
-  await expect(grandchildRow.locator("time")).toBeVisible();
+  // The signed parent stays exact, but the display keeps one level: the reply
+  // joins the nested row's branch instead of opening a deeper one.
+  await expect(
+    grandchildRow.locator('[data-layout="continuation"]'),
+  ).toBeVisible();
+  const branchOf = (row) =>
+    row.locator('xpath=ancestor::*[@data-depth="0"][1]');
+  await expect(
+    grandchildRow.locator("xpath=ancestor::*[@data-depth][1]"),
+  ).toHaveAttribute("data-depth", "1");
+  await expect(
+    branchOf(nestedRow).locator(`[data-message-id="${grandchild.id}"]`),
+  ).toHaveCount(1);
   await editor.focus();
   await expect(
     panel.getByRole("button", { name: /Hide replies|Collapse this branch/ }),
@@ -256,8 +269,21 @@ test("nested replies send, stay open, and reveal through links at readable panel
     const event = app.report.publications.find(
       ({ event }) => event?.content === content,
     ).event;
+    expect(event.tags.filter(([key]) => key === "e")).toContainEqual([
+      "e",
+      root.id,
+      "",
+      "root",
+    ]);
     deepest = panel.locator(`[data-message-id="${event.id}"]`);
     await expect(deepest).toBeInViewport();
+    // Every reply in the chain stays in the same one-level branch.
+    await expect(
+      deepest.locator("xpath=ancestor::*[@data-depth][1]"),
+    ).toHaveAttribute("data-depth", "1");
+    await expect(
+      branchOf(nestedRow).locator(`[data-message-id="${event.id}"]`),
+    ).toHaveCount(1);
   }
   // Include phone widths with the persistent sidebar still visible.
   for (const width of [1492, 1280, 1024, 524, 522, 480, 390]) {
@@ -273,18 +299,20 @@ test("nested replies send, stay open, and reveal through links at readable panel
     ).toHaveCount(0);
     const deepestBox = await deepest.boundingBox();
     expect(deepestBox.width).toBeGreaterThan(140);
-    const capped = deepest.locator(
-      'xpath=ancestor::*[@data-depth and @data-open="true"][1]',
-    );
-    const spine = await capped.evaluate((node) => {
+    // The open branch keeps its spine at every width.
+    const spine = await branchOf(deepest).evaluate((node) => {
       const message = node.firstElementChild;
+      const style = getComputedStyle(message, "::after");
+      const history = node.closest('[aria-label="Thread messages"]');
+      const x =
+        message.getBoundingClientRect().left + parseFloat(style.left || "0");
+      const bounds = history.getBoundingClientRect();
       return {
-        stub: getComputedStyle(message, "::after").display,
-        offset: getComputedStyle(message, "::after").left,
+        content: style.content,
+        inside: x >= bounds.left && x <= bounds.right,
       };
     });
-    expect(spine.stub).not.toBe("none");
-    expect(parseFloat(spine.offset)).toBeLessThan(0);
+    expect(spine).toEqual({ content: '""', inside: true });
 
     for (const theme of ["light", "dark"]) {
       await page.evaluate(
@@ -311,7 +339,9 @@ test("nested replies send, stay open, and reveal through links at readable panel
   const linkRow = page.locator(
     `[data-channel-timeline] [data-message-id="${linked.id}"]`,
   );
-  await linkRow.getByRole("link", { name: "Alpha", exact: true }).click();
+  await linkRow
+    .getByRole("link", { name: "Fixture Reader in #Alpha", exact: true })
+    .click();
   await expect(grandchildRow).toBeInViewport();
   await expect(grandchildRow).toBeFocused();
   await expect
@@ -353,6 +383,173 @@ test("nested replies send, stay open, and reveal through links at readable panel
   ).toBeEnabled();
 });
 
+// Geometry, not presence: each hook must end on its own reply's avatar, on
+// the reply's side, whatever renders around the row.
+async function hookFor(row) {
+  return row.evaluate((node) => {
+    const item = node.closest("li");
+    const line = getComputedStyle(item, "::before");
+    const box = item.getBoundingClientRect();
+    const avatar = node
+      .querySelector('[class*="messageAvatar"], [class*="audienceAvatar"]')
+      .getBoundingClientRect();
+    const left = box.left + parseFloat(line.left);
+    const top = box.top + parseFloat(line.top);
+    return {
+      content: line.content,
+      curved: line.borderBottomWidth !== "0px",
+      left,
+      right: left + parseFloat(line.width),
+      bottom: top + parseFloat(line.height),
+      itemBottom: box.bottom,
+      avatar: {
+        left: avatar.left,
+        right: avatar.right,
+        center: (avatar.top + avatar.bottom) / 2,
+      },
+    };
+  });
+}
+function expectHookOnAvatar(hook, side) {
+  expect(hook.content).toBe('""');
+  expect(hook.curved).toBe(true);
+  expect(Math.abs(hook.bottom - hook.avatar.center)).toBeLessThan(1);
+  // The hook stops one token short of the avatar's near edge.
+  if (side === "left") {
+    expect(hook.right).toBeLessThan(hook.avatar.left);
+    expect(hook.avatar.left - hook.right).toBeLessThan(6);
+  } else {
+    expect(hook.left).toBeGreaterThan(hook.avatar.right);
+    expect(hook.left - hook.avatar.right).toBeLessThan(6);
+  }
+}
+function expectStraightLine(hook) {
+  expect(hook.content).toBe('""');
+  expect(hook.curved).toBe(false);
+  expect(Math.abs(hook.bottom - hook.itemBottom)).toBeLessThan(1);
+}
+
+test("branch hooks land on each reply's avatar across sides and row shapes", async ({
+  page,
+  app,
+}) => {
+  const root = app.histories
+    .get("primary/alpha")
+    .find((event) => event.content === "Thread root 0");
+  const post = (content, own, parent, tags) =>
+    app.append("primary", "alpha", content, false, own, root.id, parent, tags);
+  const agents = [["audience", "agents"]];
+  const note =
+    "Agents coordination note that wraps onto several lines once it opens in the thread";
+  const peer = post("Peer branch", false);
+  const peerReply = post("Peer reply", false, peer.id);
+  const peerOwn = post("Own reply on the other side", true, peer.id);
+  const viewer = post("Viewer branch", true);
+  const viewerPeer = post("Peer reply on the other side", false, viewer.id);
+  const viewerReply = post("Viewer reply", true, viewer.id);
+  const agentPeer = post("Agent branch", false);
+  const agentPeerReply = post(note, false, agentPeer.id, agents);
+  const agentViewer = post("Viewer agents branch", true);
+  const ownAgents = post(`Own ${note}`, true, agentViewer.id, agents);
+  const ownAgentsInPeer = post("Agents host", false);
+  const ownAgentsLeft = post(
+    `Viewer ${note}`,
+    true,
+    ownAgentsInPeer.id,
+    agents,
+  );
+  const ownAgentsStart = post("Own agents start", true, undefined, agents);
+  const startReply = post(
+    "Reply to own agents start",
+    false,
+    ownAgentsStart.id,
+  );
+  const emoji = post("Emoji branch", false);
+  const emojiReply = post("🎉", false, emoji.id);
+  await open(page, app);
+  await page.setViewportSize({ width: 1280, height: 1600 });
+  await page
+    .locator(`[data-channel-timeline] [data-message-id="${root.id}"]`)
+    .getByRole("button", { name: /^View thread:/ })
+    .click();
+  const panel = page.getByRole("complementary", {
+    name: "Thread",
+    exact: true,
+  });
+  const row = (event) => panel.locator(`[data-message-id="${event.id}"]`);
+  for (const branch of [
+    peer,
+    viewer,
+    agentPeer,
+    agentViewer,
+    ownAgentsInPeer,
+    ownAgentsStart,
+    emoji,
+  ]) {
+    const summary = row(branch)
+      .locator("xpath=ancestor::*[@data-depth][1]")
+      .locator(":scope > div [data-thread-summary]");
+    if (await summary.count()) await summary.click();
+  }
+  await expect(row(startReply)).toBeVisible();
+
+  // Peer- and viewer-started branches hook on their own side; a reply on the
+  // other side gets a straight line past it.
+  await row(peerReply).scrollIntoViewIfNeeded();
+  expectHookOnAvatar(await hookFor(row(peerReply)), "left");
+  expectStraightLine(await hookFor(row(peerOwn)));
+  await row(viewerReply).scrollIntoViewIfNeeded();
+  expectStraightLine(await hookFor(row(viewerPeer)));
+  expectHookOnAvatar(await hookFor(row(viewerReply)), "right");
+
+  // A final agents reply keeps its hook on the avatar, open or closed. The
+  // viewer's own agents line renders on the left, so it is not right-side.
+  for (const [event, check] of [
+    [agentPeerReply, (hook) => expectHookOnAvatar(hook, "left")],
+    [ownAgentsLeft, (hook) => expectHookOnAvatar(hook, "left")],
+    [ownAgents, expectStraightLine],
+  ]) {
+    const reply = row(event);
+    await reply.scrollIntoViewIfNeeded();
+    check(await hookFor(reply));
+    const toggle = reply.getByRole("button", { name: /coordination note/ });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await reply.evaluate((node) =>
+      Promise.all(
+        node.getAnimations({ subtree: true }).map((motion) => motion.finished),
+      ),
+    );
+    check(await hookFor(reply));
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await reply.evaluate((node) =>
+      Promise.all(
+        node.getAnimations({ subtree: true }).map((motion) => motion.finished),
+      ),
+    );
+    check(await hookFor(reply));
+  }
+  // An own agents line starting a branch keeps the spine and hooks on the left.
+  await row(startReply).scrollIntoViewIfNeeded();
+  expectHookOnAvatar(await hookFor(row(startReply)), "left");
+
+  // Reactions under an emoji-only bubble do not move the hook off the avatar.
+  const reacted = row(emojiReply);
+  await reacted.scrollIntoViewIfNeeded();
+  await hoverMessage(reacted);
+  await reacted
+    .getByRole("button", { name: "React with 👍", exact: true })
+    .click();
+  await expect(
+    reacted.getByRole("button", { name: /👍/ }).last(),
+  ).toBeVisible();
+  await panel.getByRole("textbox", { name: "Reply to thread" }).focus();
+  const hook = await hookFor(reacted);
+  expect(hook.itemBottom - hook.avatar.center).toBeGreaterThan(30);
+  expectHookOnAvatar(hook, "left");
+});
+
 test("an exact linked reply stays readable when its parent is outside loaded history", async ({
   page,
   app,
@@ -380,7 +577,7 @@ test("an exact linked reply stays readable when its parent is outside loaded his
   await open(page, app);
   await page
     .locator(`[data-channel-timeline] [data-message-id="${link.id}"]`)
-    .getByRole("link", { name: "Alpha", exact: true })
+    .getByRole("link", { name: "Alice Fixture in #Alpha", exact: true })
     .click();
   const panel = page.getByRole("complementary", {
     name: "Thread",
@@ -529,24 +726,43 @@ for (const width of [1492, 1280, 1024, 700, 390])
     });
     const branchFor = (id) =>
       panel.locator(`[data-message-id="${id}"]`).locator("../..");
+    // The whole reply chain lifts into the first reply's branch, so one
+    // disclosure reveals every reply in history order.
     const expandAll = async () => {
-      for (const id of ids.slice(0, -1)) {
-        const branch = branchFor(id);
-        if ((await branch.getAttribute("data-open")) === "false")
-          await branch
-            .locator(":scope > div")
-            .nth(1)
-            .getByRole("button")
-            .press("Enter");
-        await expect(
-          panel.locator(`[data-message-id="${ids[ids.indexOf(id) + 1]}"]`),
-        ).toBeFocused();
-      }
+      const branch = branchFor(ids[0]);
+      await expect(branch).toHaveAttribute("data-open", "false");
+      await branch
+        .locator(":scope > div")
+        .nth(1)
+        .getByRole("button")
+        .press("Enter");
+      await expect(
+        panel.locator(`[data-message-id="${ids[1]}"]`),
+      ).toBeFocused();
+      await expect(
+        branch.getByRole("button", { name: /^View \d+ repl/ }),
+      ).toHaveCount(0);
+      expect(
+        await branch
+          .locator("[data-message-id]")
+          .evaluateAll((rows) => rows.map((row) => row.dataset.messageId)),
+      ).toEqual([...ids, continuation.id]);
     };
     await page.setViewportSize({ width, height: 950 });
     await expandAll();
-    // A same-parent continuation keeps its full timestamp accessible and
-    // exposes it on a long bubble hover, without bringing back an inline clock.
+    // Stacked bubbles share one avatar, so only the last of a run hooks in.
+    const hooks = await panel
+      .locator(
+        `[data-message-id="${ids[9]}"], [data-message-id="${continuation.id}"]`,
+      )
+      .evaluateAll((rows) =>
+        rows.map(
+          (row) => getComputedStyle(row.closest("li"), "::before").content,
+        ),
+      );
+    expect(hooks).toEqual(["none", '""']);
+    // A same-parent continuation keeps its full timestamp for assistive
+    // technology without an inline clock or a bubble hover.
     const continuationRow = panel.locator(
       `[data-message-id="${continuation.id}"]`,
     );
@@ -562,7 +778,8 @@ for (const width of [1492, 1280, 1024, 700, 390])
     await continuationRow
       .getByText("Same-parent continuation", { exact: true })
       .hover();
-    await expect(page.getByRole("tooltip")).toContainText(/\d{4}/);
+    await expect(clock).toContainText(/\d{4}/);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
     await continuationRow
       .getByRole("button", { name: "More message actions", exact: true })
       .focus();
@@ -570,7 +787,7 @@ for (const width of [1492, 1280, 1024, 700, 390])
       .locator('[role="tab"][data-tab-value^="thread:"][aria-selected="true"]')
       .hover();
     await expect(clock).toHaveClass(/sr-only/);
-    for (const id of [...ids.slice(0, -1), continuation.id]) {
+    for (const id of [...ids, continuation.id]) {
       const branch = branchFor(id);
       const row = panel.locator(`[data-message-id="${id}"]`);
       await panel.getByRole("textbox", { name: "Reply to thread" }).focus();
@@ -590,7 +807,7 @@ for (const width of [1492, 1280, 1024, 700, 390])
           history.clientHeight / 2;
       });
       const restingHeight = (await row.boundingBox()).height;
-      await row.hover();
+      await hoverMessage(row);
       expect((await row.boundingBox()).height).toBe(restingHeight);
       // Every reply, nested or not, exposes the same full bar. Revealing it must
       // not reflow the row.
@@ -606,20 +823,18 @@ for (const width of [1492, 1280, 1024, 700, 390])
         Promise.all(bar.getAnimations().map((animation) => animation.finished)),
       );
       if (width >= 640) {
-        // Both headers and continuations use centered beside controls when
-        // they fit, and the same token-sized corner overlap otherwise.
+        // Headers and continuations both lift the bar over the bubble's top
+        // corner by the same token-sized overlap.
         const placement = await row.evaluate((node) => {
           const bar = node.querySelector('[aria-label="Message actions"]');
           const body = node.querySelector('[class*="_messageBubble_"]');
           const rect = bar.getBoundingClientRect();
           const anchor = body.getBoundingClientRect();
-          const beside = bar.dataset.placement === "beside";
           return {
-            actual: beside ? rect.top + rect.height / 2 : rect.bottom,
-            expected: beside
-              ? anchor.top + anchor.height / 2
-              : anchor.top +
-                parseFloat(getComputedStyle(bar).scrollMarginBlockStart),
+            actual: rect.bottom,
+            expected:
+              anchor.top +
+              parseFloat(getComputedStyle(bar).scrollMarginBlockStart),
           };
         });
         expect(placement.actual).toBeCloseTo(placement.expected, 1);
@@ -639,6 +854,10 @@ for (const width of [1492, 1280, 1024, 700, 390])
       // layer stack, so a hoverable hint would swallow every action click.
       const stamp = row.locator("time");
       if (await stamp.count()) {
+        // Metadata is not a pointer reveal target. Keep the toolbar keyboard-
+        // owned while checking that it remains hit-testable over the byline.
+        await page.keyboard.press("Tab");
+        await actions.getByRole("button").first().focus();
         const hint = await stamp.boundingBox();
         await page.mouse.move(hint.x + 4, hint.y + hint.height / 2);
         await expect
@@ -661,7 +880,7 @@ for (const width of [1492, 1280, 1024, 700, 390])
             ),
           )
           .toBe(true);
-        await row.hover();
+        await hoverMessage(row);
       }
       // Every action is on screen, enabled and owns the pointer at its centre.
       // One page-side check per row: a trial click per button made this test
@@ -770,7 +989,7 @@ for (const width of [1492, 1280, 1024, 700, 390])
       .hover();
     // Resting state must match the contract for every rendered reply, not just
     // the first: hidden on desktop hover-capable widths, always usable below 640.
-    for (const id of [...ids.slice(0, -1), continuation.id]) {
+    for (const id of [...ids, continuation.id]) {
       await expect(
         panel
           .locator(`[data-message-id="${id}"]`)

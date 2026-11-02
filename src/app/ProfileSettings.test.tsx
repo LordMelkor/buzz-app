@@ -10,13 +10,15 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { npubEncode } from "nostr-tools/nip19";
+import { createRelaySession } from "../features/relay/session";
+import { keypair, profile as signedProfile } from "../features/relay/testing";
 import { afterEach, expect, it, vi } from "vitest";
 import type {
   PersonalProfile,
   Communities,
 } from "../features/communities/service";
 import * as communityApi from "../features/communities/api";
+import * as avatarUpload from "../features/profiles/avatar-upload";
 import { ToastProvider } from "../shared/design-system/ui/Toast";
 import { ProfileSettings } from "./ProfileSettings";
 import { stubAvatarBrowserApis } from "../features/agents/avatar-testing";
@@ -74,7 +76,7 @@ it("loads and publishes the selected community profile before updating the local
       inspect.mockResolvedValue({ exists: true, existing, profile });
     });
   const user = userEvent.setup();
-  render(
+  const view = render(
     <ProfileSettings
       communities={service}
       community={{ id: "community-id", name: "Acme" }}
@@ -82,9 +84,7 @@ it("loads and publishes the selected community profile before updating the local
     { wrapper: ToastProvider },
   );
 
-  expect(screen.getByRole("status")).toHaveTextContent(
-    "Loading your profile in Acme",
-  );
+  expect(screen.queryByText("Loading your profile in Acme…")).toBeNull();
   const name = await screen.findByLabelText("Display name");
   expect(name).toHaveValue("Community name");
   expect(screen.getByLabelText("Profile description (optional)")).toHaveValue(
@@ -92,6 +92,18 @@ it("loads and publishes the selected community profile before updating the local
   );
   await user.clear(name);
   await user.type(name, "Updated community name");
+  view.rerender(
+    <ProfileSettings
+      communities={service}
+      community={{
+        id: "community-id",
+        name: "Acme",
+        publishedName: "New published label",
+      }}
+    />,
+  );
+  expect(name).toHaveValue("Updated community name");
+  expect(inspect).toHaveBeenCalledTimes(1);
   await user.click(screen.getByRole("button", { name: "Save" }));
 
   await waitFor(() =>
@@ -112,6 +124,137 @@ it("loads and publishes the selected community profile before updating the local
   });
   expect(await screen.findByText("Profile updated")).toBeVisible();
   expect(inspect).toHaveBeenCalledWith("community-id");
+});
+
+function verifiedProfileSettings(
+  signedName: string,
+  status: "checked" | "cached" | null,
+) {
+  const service = communities();
+  service.snapshot().selected = "community-id";
+  const profiles = new Map<string, unknown>();
+  const listeners = new Set<() => void>();
+  const verify = (next: "checked" | "cached") => {
+    profiles.set(viewer, {
+      name: "Verified Name",
+      verified: {
+        displayName: "Verified Name",
+        username: "verified",
+        issuerLabel: "Block",
+        verifiedAt: 1,
+        status: next,
+        multipleIssuers: false,
+      },
+    });
+    for (const listener of listeners) listener();
+  };
+  if (status) verify(status);
+  const ensure = vi.fn().mockResolvedValue(undefined);
+  vi.spyOn(service.relay, "snapshot").mockReturnValue({
+    status: "ready",
+    viewer,
+    scope: "community-id",
+    generation: 1,
+    session: {
+      viewer,
+      profiles: {
+        snapshot: () => profiles,
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        ensure,
+      },
+    },
+  } as unknown as ReturnType<Communities["relay"]["snapshot"]>);
+  vi.spyOn(communityApi, "inspectProfile").mockResolvedValue({
+    exists: true,
+    existing: {},
+    profile: { name: signedName, picture: "", about: "" },
+  });
+  const publish = vi
+    .spyOn(communityApi, "publishProfile")
+    .mockRejectedValue(new Error("stop"));
+  render(
+    <ProfileSettings
+      communities={service}
+      community={{ id: "community-id", name: "Acme" }}
+    />,
+    { wrapper: ToastProvider },
+  );
+  return {
+    ensure,
+    publish,
+    verify: (next: "checked" | "cached") => act(() => verify(next)),
+  };
+}
+
+it("shows the verified name read-only and keeps the signed name when saving", async () => {
+  const { ensure, publish } = verifiedProfileSettings("Signed name", "checked");
+  const user = userEvent.setup();
+
+  const name = await screen.findByLabelText("Display name");
+  await waitFor(() => expect(name).toHaveValue("Verified Name"));
+  expect(name).toHaveAttribute("readonly");
+  expect(screen.getByText("Name verified by Block")).toBeVisible();
+  expect(ensure).toHaveBeenCalledWith([viewer]);
+  await user.type(
+    screen.getByLabelText("Profile description (optional)"),
+    "Bio",
+  );
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(publish).toHaveBeenCalledWith(
+      "community-id",
+      { name: "Signed name", picture: "", about: "Bio" },
+      {},
+    ),
+  );
+});
+
+it("keeps the signed name when verification arrives after a name edit", async () => {
+  const { publish, verify } = verifiedProfileSettings("Signed name", null);
+  const user = userEvent.setup();
+
+  const name = await screen.findByLabelText("Display name");
+  await waitFor(() => expect(name).toHaveValue("Signed name"));
+  await user.clear(name);
+  await user.type(
+    screen.getByLabelText("Profile description (optional)"),
+    "Bio",
+  );
+  verify("cached");
+
+  expect(name).toHaveValue("Verified Name");
+  expect(name).toHaveAttribute("readonly");
+  expect(screen.getByText("Cached verification from Block")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(publish).toHaveBeenCalledWith(
+      "community-id",
+      { name: "Signed name", picture: "", about: "Bio" },
+      {},
+    ),
+  );
+});
+
+it("keeps an empty signed name editable for repair when verified", async () => {
+  const { publish } = verifiedProfileSettings("", "checked");
+  const user = userEvent.setup();
+
+  const name = await screen.findByLabelText("Display name");
+  await waitFor(() => expect(name).toBeEnabled());
+  expect(name).not.toHaveAttribute("readonly");
+  expect(name).toHaveValue("");
+  await user.type(name, "Repaired");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(publish).toHaveBeenCalledWith(
+      "community-id",
+      { name: "Repaired", picture: "", about: "" },
+      {},
+    ),
+  );
 });
 
 it("keeps a newer profile seed when an older community publication finishes last", async () => {
@@ -181,6 +324,82 @@ it("keeps a newer profile seed when an older community publication finishes last
   await waitFor(() => expect(olderName).not.toBeDisabled());
   expect(publish).toHaveBeenCalledTimes(2);
   expect(service.saveProfile).toHaveBeenCalledTimes(1);
+});
+
+it("stops reporting a discardable draft once its save is dispatched", async () => {
+  const publication = deferred();
+  let saved = { name: "Saved", picture: "" };
+  vi.spyOn(communityApi, "inspectProfile").mockImplementation(async () => ({
+    exists: true,
+    existing: { name: saved.name },
+    profile: saved,
+  }));
+  vi.spyOn(communityApi, "publishProfile").mockImplementation(
+    async (_id, profile) => {
+      await publication.promise;
+      saved = profile;
+    },
+  );
+  const onUnsavedChange = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <ProfileSettings
+      communities={communities()}
+      community={{ id: "primary", name: "Primary" }}
+      onUnsavedChange={onUnsavedChange}
+    />,
+    { wrapper: ToastProvider },
+  );
+  const name = await screen.findByLabelText("Display name");
+  await user.clear(name);
+  await user.type(name, "Edited");
+  expect(onUnsavedChange).toHaveBeenLastCalledWith(true);
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  // The save continues even if Settings closes, so nothing is left to discard.
+  await waitFor(() => expect(onUnsavedChange).toHaveBeenLastCalledWith(false));
+  publication.resolve();
+  await publication.promise;
+  await waitFor(() => expect(name).not.toBeDisabled());
+  expect(onUnsavedChange).toHaveBeenLastCalledWith(false);
+});
+
+it("keeps a draft discardable while Save reads the latest profile", async () => {
+  const read = deferred();
+  let reads = 0;
+  vi.spyOn(communityApi, "inspectProfile").mockImplementation(async () => {
+    // The second read is Save's fresh inspection before publication.
+    if (++reads === 2) await read.promise;
+    return {
+      exists: true,
+      existing: { name: "Saved" },
+      profile: { name: "Saved", picture: "" },
+    };
+  });
+  const publish = vi
+    .spyOn(communityApi, "publishProfile")
+    .mockImplementation(() => new Promise(() => {}));
+  const onUnsavedChange = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <ProfileSettings
+      communities={communities()}
+      community={{ id: "primary", name: "Primary" }}
+      onUnsavedChange={onUnsavedChange}
+    />,
+    { wrapper: ToastProvider },
+  );
+  const name = await screen.findByLabelText("Display name");
+  await waitFor(() => expect(name).toHaveValue("Saved"));
+  await user.clear(name);
+  await user.type(name, "Edited");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(reads).toBe(2));
+  // Closing now would unmount before publication and silently lose the edit.
+  expect(publish).not.toHaveBeenCalled();
+  expect(onUnsavedChange).toHaveBeenLastCalledWith(true);
+  read.resolve();
+  await waitFor(() => expect(publish).toHaveBeenCalledOnce());
+  await waitFor(() => expect(onUnsavedChange).toHaveBeenLastCalledWith(false));
 });
 
 it("keeps a community draft when publication fails and retries a failed read", async () => {
@@ -356,83 +575,6 @@ it("rejects profile image URLs with embedded credentials", async () => {
   expect(service.saveProfile).not.toHaveBeenCalled();
 });
 
-it("shows exact public identity formats and copies either value", async () => {
-  const writeText = vi.fn(async () => {});
-  const user = userEvent.setup();
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: { writeText },
-  });
-  render(<ProfileSettings communities={communities()} />, {
-    wrapper: ToastProvider,
-  });
-
-  expect(screen.getByText(viewer, { exact: true })).toHaveTextContent(viewer);
-  expect(
-    screen.getByText(npubEncode(viewer), { exact: true }),
-  ).toHaveTextContent(npubEncode(viewer));
-
-  await user.click(screen.getByRole("button", { name: "Copy public key" }));
-  expect(writeText).toHaveBeenLastCalledWith(viewer);
-  expect(screen.getByText("Public key copied.")).toBeVisible();
-
-  await user.click(screen.getByRole("button", { name: "Copy nostr address" }));
-  expect(writeText).toHaveBeenLastCalledWith(npubEncode(viewer));
-  expect(screen.getByText("Nostr address copied.")).toBeVisible();
-});
-
-it("keeps copy feedback bound to the latest identity action", async () => {
-  let finishPublicKey: (() => void) | undefined;
-  const publicKeyWrite = new Promise<void>((resolve) => {
-    finishPublicKey = resolve;
-  });
-  const writeText = vi
-    .fn()
-    .mockReturnValueOnce(publicKeyWrite)
-    .mockResolvedValueOnce(undefined);
-  const user = userEvent.setup();
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: { writeText },
-  });
-  render(<ProfileSettings communities={communities()} />, {
-    wrapper: ToastProvider,
-  });
-
-  await user.click(screen.getByRole("button", { name: "Copy public key" }));
-  await user.click(screen.getByRole("button", { name: "Copy nostr address" }));
-  expect(screen.getByText("Nostr address copied.")).toBeVisible();
-
-  finishPublicKey?.();
-  await publicKeyWrite;
-  expect(screen.getByText("Nostr address copied.")).toBeVisible();
-  expect(screen.queryByText("Public key copied.")).not.toBeInTheDocument();
-});
-
-it("keeps the identity selectable and explains manual recovery when copy fails", async () => {
-  const user = userEvent.setup();
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: {
-      writeText: vi.fn(async () => Promise.reject(new Error("denied"))),
-    },
-  });
-  render(<ProfileSettings communities={communities()} />, {
-    wrapper: ToastProvider,
-  });
-
-  const publicKey = screen.getByText(viewer, { exact: true });
-  await user.click(screen.getByRole("button", { name: "Copy public key" }));
-  expect(screen.getByText(/Select it and copy manually\./)).toBeVisible();
-
-  // Native text selection is exercised in both browser engines.
-  expect(publicKey.tagName).toBe("CODE");
-  expect(publicKey).toHaveTextContent(viewer);
-  expect(
-    screen.queryByRole("textbox", { name: "Public key (hex)" }),
-  ).toBeNull();
-});
-
 function setup() {
   let state = { status: "ready", profile: { name: "Arjun", picture: "" } };
   const listeners = new Set<() => void>();
@@ -574,58 +716,7 @@ it("preserves input focus on implicit submit and external profile updates", asyn
   expect(description).toHaveFocus();
 });
 
-it("keeps identity backup available despite a failed community profile and clears on leaving Profile", async () => {
-  vi.spyOn(communityApi, "inspectProfile").mockRejectedValue(
-    new Error("Offline"),
-  );
-  const exportKey = vi.fn().mockResolvedValue("nsec-public-test-fixture");
-  const identity = {
-    exportKey,
-  } as unknown as import("../features/identity/service").Identity;
-  const service = communities();
-  const community = { id: "primary", name: "Offline community" };
-  const user = userEvent.setup();
-  const view = render(
-    <ProfileSettings
-      communities={service}
-      community={community}
-      identity={identity}
-      active
-    />,
-    { wrapper: ToastProvider },
-  );
-  await screen.findByText(
-    /Your profile in Offline community couldn’t be loaded/,
-  );
-  expect(exportKey).not.toHaveBeenCalled();
-  await user.click(screen.getByRole("button", { name: "Reveal private key" }));
-  expect(screen.getByLabelText("Private key (nsec)")).toHaveValue(
-    "nsec-public-test-fixture",
-  );
-  view.rerender(
-    <ProfileSettings
-      communities={service}
-      community={community}
-      identity={identity}
-      active={false}
-    />,
-  );
-  expect(screen.queryByLabelText("Private key (nsec)")).toBeNull();
-  view.rerender(
-    <ProfileSettings
-      communities={service}
-      community={community}
-      identity={identity}
-      active
-    />,
-  );
-  expect(screen.getByLabelText("Private key (nsec)")).toHaveValue(
-    "••••••••••••••••",
-  );
-  expect(exportKey).toHaveBeenCalledTimes(1);
-});
-
-it("keeps identity details available without requesting a community profile when transport is absent", async () => {
+it("does not request a community profile when transport is absent", () => {
   const service = communities();
   service.snapshot().relayAvailable = false;
   const inspect = vi.spyOn(communityApi, "inspectProfile");
@@ -634,17 +725,287 @@ it("keeps identity details available without requesting a community profile when
       communities={service}
       community={{ id: "https://saved.example", name: "Saved" }}
     />,
-    { wrapper: ToastProvider },
   );
   expect(
     screen.getByText("Community profiles are not available in this build yet."),
   ).toBeVisible();
-  expect(
-    screen.getByText(npubEncode(viewer), { exact: true }),
-  ).toHaveTextContent(npubEncode(viewer));
-  expect(
-    screen.getByText(/identity is shared across communities/),
-  ).toBeVisible();
   expect(inspect).not.toHaveBeenCalled();
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Copy public key" })).toBeNull();
+});
+
+it("reuses the verified same-community profile while refreshing and preserves edits without overwriting untouched fields", async () => {
+  const service = communities();
+  const key = keypair();
+  const event = signedProfile(key, {
+    name: "Cached name",
+    about: "Cached about",
+  });
+  const owner = createRelaySession({
+    viewer: key.pubkey,
+    relayAuthor: key.pubkey,
+    media: (url) => url,
+    query: async () => [event],
+  });
+  const refresh =
+    deferred<Awaited<ReturnType<typeof communityApi.inspectProfile>>>();
+  const inspect = vi
+    .spyOn(communityApi, "inspectProfile")
+    .mockReturnValue(refresh.promise);
+  service.snapshot().viewer = key.pubkey;
+  service.snapshot().selected = "primary";
+  vi.spyOn(service.relay, "snapshot").mockReturnValue({
+    status: "ready",
+    viewer: key.pubkey,
+    scope: "primary",
+    generation: 1,
+    session: owner.session,
+  });
+  try {
+    await owner.session.profiles.ensure([key.pubkey]);
+    const view = render(
+      <ProfileSettings
+        communities={service}
+        community={{ id: "primary", name: "Primary" }}
+      />,
+      { wrapper: ToastProvider },
+    );
+    const name = screen.getByRole("textbox", { name: "Display name" });
+    expect(name).toHaveValue("Cached name");
+    expect(screen.getByRole("button", { name: "Edit avatar" })).toBeEnabled();
+    expect(screen.queryByText(/Loading your profile/)).toBeNull();
+    fireEvent.change(name, { target: { value: "My edit" } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    await act(async () =>
+      refresh.resolve({
+        exists: true,
+        existing: {},
+        profile: { name: "Fresh name", picture: "", about: "Fresh about" },
+      }),
+    );
+    expect(name).toHaveValue("My edit");
+    expect(screen.getByLabelText("Profile description (optional)")).toHaveValue(
+      "Fresh about",
+    );
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(inspect).toHaveBeenCalledWith("primary", owner.session);
+    view.unmount();
+  } finally {
+    refresh.resolve({
+      exists: true,
+      existing: {},
+      profile: { name: "Final", picture: "" },
+    });
+    owner.dispose();
+  }
+});
+
+it("a failed cached-profile refresh leaves the form and edits in place for retry", async () => {
+  const service = communities();
+  const key = keypair();
+  const event = signedProfile(key, {
+    name: "Cached name",
+    about: "Cached about",
+  });
+  const owner = createRelaySession({
+    viewer: key.pubkey,
+    relayAuthor: key.pubkey,
+    media: (url) => url,
+    query: async () => [event],
+  });
+  const refresh =
+    deferred<Awaited<ReturnType<typeof communityApi.inspectProfile>>>();
+  const inspect = vi
+    .spyOn(communityApi, "inspectProfile")
+    .mockRejectedValueOnce(new Error("Offline refresh"))
+    .mockReturnValue(refresh.promise);
+  service.snapshot().viewer = key.pubkey;
+  service.snapshot().selected = "primary";
+  vi.spyOn(service.relay, "snapshot").mockReturnValue({
+    status: "ready",
+    viewer: key.pubkey,
+    scope: "primary",
+    generation: 1,
+    session: owner.session,
+  });
+  try {
+    await owner.session.profiles.ensure([key.pubkey]);
+    render(
+      <ProfileSettings
+        communities={service}
+        community={{ id: "primary", name: "Primary" }}
+      />,
+      { wrapper: ToastProvider },
+    );
+    const name = screen.getByRole("textbox", { name: "Display name" });
+    await screen.findByText(/Offline refresh/);
+    fireEvent.change(name, { target: { value: "Keep my edit" } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry loading profile" }),
+    );
+    await act(async () =>
+      refresh.resolve({
+        exists: true,
+        existing: {},
+        profile: { name: "New name", picture: "", about: "New bio" },
+      }),
+    );
+    expect(name).toHaveValue("Keep my edit");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(inspect).toHaveBeenCalledTimes(2);
+  } finally {
+    refresh.resolve({
+      exists: true,
+      existing: {},
+      profile: { name: "Final", picture: "" },
+    });
+    owner.dispose();
+  }
+});
+
+it.each(["refresh-first", "upload-first"])(
+  "keeps avatar editing available during refresh without restoring stale name or bio (%s)",
+  async (order) => {
+    const service = communities();
+    const key = keypair();
+    const event = signedProfile(key, {
+      name: "Cached name",
+      about: "Cached bio",
+    });
+    const owner = createRelaySession({
+      viewer: key.pubkey,
+      relayAuthor: key.pubkey,
+      media: (url) => url,
+      query: async () => [event],
+    });
+    const refresh =
+      deferred<Awaited<ReturnType<typeof communityApi.inspectProfile>>>();
+    const upload = deferred<string>();
+    const uploaded = "https://images.example/new-avatar.png";
+    vi.spyOn(communityApi, "inspectProfile").mockReturnValue(refresh.promise);
+    const publish = vi
+      .spyOn(communityApi, "publishProfile")
+      .mockResolvedValue();
+    vi.spyOn(avatarUpload, "paintEmojiAvatar").mockImplementation(() => {});
+    vi.spyOn(avatarUpload, "emojiAvatar").mockResolvedValue(
+      new File(["image"], "emoji.png", { type: "image/png" }),
+    );
+    const uploadAvatar = vi
+      .spyOn(avatarUpload, "uploadAvatar")
+      .mockReturnValue(upload.promise);
+    service.snapshot().viewer = key.pubkey;
+    service.snapshot().selected = "primary";
+    vi.spyOn(service.relay, "snapshot").mockReturnValue({
+      status: "ready",
+      viewer: key.pubkey,
+      scope: "primary",
+      generation: 1,
+      session: owner.session,
+    });
+    try {
+      await owner.session.profiles.ensure([key.pubkey]);
+      render(
+        <ProfileSettings
+          communities={service}
+          community={{ id: "primary", name: "Primary" }}
+        />,
+        { wrapper: ToastProvider },
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Edit avatar" }));
+      fireEvent.click(await screen.findByRole("tab", { name: "Background" }));
+      fireEvent.click(screen.getByRole("button", { name: "Done" }));
+      await waitFor(() => expect(uploadAvatar).toHaveBeenCalledTimes(1));
+      expect(publish).not.toHaveBeenCalled();
+      const fresh = {
+        exists: true,
+        existing: {},
+        profile: { name: "Fresh name", picture: "", about: "Fresh bio" },
+      };
+      await act(async () => {
+        if (order === "refresh-first") {
+          refresh.resolve(fresh);
+          upload.resolve(uploaded);
+        } else {
+          upload.resolve(uploaded);
+          refresh.resolve(fresh);
+        }
+      });
+      expect(screen.getByRole("textbox", { name: "Display name" })).toHaveValue(
+        "Fresh name",
+      );
+      expect(
+        screen.getByLabelText("Profile description (optional)"),
+      ).toHaveValue("Fresh bio");
+      expect(
+        screen
+          .getByRole("region", { name: "Profile preview" })
+          .querySelector("img"),
+      ).toHaveAttribute("src", uploaded);
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      refresh.resolve({
+        exists: true,
+        existing: {},
+        profile: { name: "Final", picture: "" },
+      });
+      upload.resolve(uploaded);
+      owner.dispose();
+    }
+  },
+);
+
+it("mounts the already-cached community thumbnail immediately while the profile refresh is pending", async () => {
+  const service = communities();
+  const key = keypair();
+  const picture = `https://primary.example/media/${"c".repeat(64)}.png`;
+  const cached = `/api/relay/primary/media?url=${encodeURIComponent(picture.replace(".png", ".thumb.jpg"))}`;
+  const event = signedProfile(key, { name: "Cached person", picture });
+  const owner = createRelaySession({
+    viewer: key.pubkey,
+    relayAuthor: key.pubkey,
+    media: () => cached,
+    query: async () => [event],
+  });
+  const refresh =
+    deferred<Awaited<ReturnType<typeof communityApi.inspectProfile>>>();
+  vi.spyOn(communityApi, "inspectProfile").mockReturnValue(refresh.promise);
+  vi.spyOn(HTMLImageElement.prototype, "complete", "get").mockReturnValue(true);
+  vi.spyOn(HTMLImageElement.prototype, "naturalWidth", "get").mockReturnValue(
+    80,
+  );
+  service.snapshot().viewer = key.pubkey;
+  service.snapshot().selected = "primary";
+  vi.spyOn(service.relay, "snapshot").mockReturnValue({
+    status: "ready",
+    viewer: key.pubkey,
+    scope: "primary",
+    generation: 1,
+    session: owner.session,
+  });
+  try {
+    await owner.session.profiles.ensure([key.pubkey]);
+    render(
+      <ProfileSettings
+        communities={service}
+        community={{ id: "primary", name: "Primary" }}
+      />,
+      { wrapper: ToastProvider },
+    );
+    const image = screen
+      .getByRole("region", { name: "Profile preview" })
+      .querySelector("img");
+    expect(image).toHaveAttribute("src", cached);
+    expect(image).toHaveAttribute("data-loaded", "true");
+  } finally {
+    await act(async () =>
+      refresh.resolve({
+        exists: true,
+        existing: {},
+        profile: { name: "Cached person", picture },
+      }),
+    );
+    owner.dispose();
+  }
 });

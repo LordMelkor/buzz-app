@@ -45,6 +45,10 @@ function fixture() {
       live = { ...live, roster: { state } };
       for (const listener of listeners) listener();
     },
+    heads() {
+      live = { ...live, heads: [...live.heads] };
+      for (const listener of listeners) listener();
+    },
     listeners,
   };
 }
@@ -124,6 +128,22 @@ it("reveals once after names, saved preferences, unread and Recent activity sett
   );
   expect(screen.queryByText("Loading", { exact: true })).toBeNull();
   expect(screen.queryByRole("button")).toBeNull();
+});
+
+it("does not render again when only live heads change", () => {
+  const h = fixture();
+  let renders = 0;
+  function Counted() {
+    renders += 1;
+    useSidebarStartup(h.session, list, preferences);
+    return null;
+  }
+  render(<Counted />);
+  const before = renders;
+  act(() => h.heads());
+  expect(renders).toBe(before);
+  act(() => h.names());
+  expect(renders).toBe(before + 1);
 });
 
 it("caps cold presentation waiting after authorization without needing optional reads to finish", async () => {

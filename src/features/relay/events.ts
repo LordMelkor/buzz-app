@@ -24,6 +24,8 @@ export type ReadFilter = Readonly<{
   consistency?: "strong";
   /** NIP-AR artifact reads: current heads only, or a `d`'s revision history. */
   artifact?: "current" | "history";
+  /** NIP-AR artifact page offset (≤ 10,000). */
+  offset?: number;
   until?: number;
   since?: number;
   "#h"?: readonly string[];
@@ -37,6 +39,8 @@ export type ReadFilter = Readonly<{
   /** HTTP bridge finite search, home-feed, and thread traversal extensions. */
   search?: string;
   search_mode?: "prefix" | "fulltext";
+  /** Only for relays advertising `buzz-search-sort`. */
+  search_sort?: "newest";
   page?: number;
   feed_types?: readonly string[];
   thread_window?: boolean;
@@ -140,7 +144,7 @@ export const hasTag = (event: RelayEvent, name: string, value: string) =>
   event.tags.some((entry) => entry[0] === name && entry[1] === value);
 
 /** Later created_at wins; ties break on lower id so replay order cannot flip the result. */
-export function newer<T extends EventData>(
+export function newer<T extends Pick<EventData, "created_at" | "id">>(
   current: T | undefined,
   candidate: T,
 ): T {

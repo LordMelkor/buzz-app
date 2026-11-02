@@ -12,6 +12,7 @@ export function ChannelReadMenuItem({
   channelId,
   pending,
   run,
+  closeOnClick = false,
 }: {
   unread: Pick<
     UnreadCapability,
@@ -20,6 +21,8 @@ export function ChannelReadMenuItem({
   channelId: string;
   pending: boolean;
   run: (action: () => Promise<unknown>) => Promise<void>;
+  /** Menus without a pending state close at once and report failures elsewhere. */
+  closeOnClick?: boolean;
 }) {
   const target = useMemo(
     () => ({ kind: "channel" as const, channelId }),
@@ -35,7 +38,7 @@ export function ChannelReadMenuItem({
     snapshot.manual !== "none" || (snapshot.observedCount ?? 0) > 0;
   return (
     <MenuItem
-      closeOnClick={false}
+      closeOnClick={closeOnClick}
       disabled={pending}
       title={hasUnread ? undefined : "Mark unread on this device only"}
       onClick={() =>
@@ -53,7 +56,7 @@ export function ChannelReadMenuItem({
           <EnvelopeIcon size={14} />
         )}
       </MenuIcon>
-      {hasUnread ? "Mark as Read" : "Mark as Unread"}
+      {hasUnread ? "Mark as read" : "Mark as unread"}
     </MenuItem>
   );
 }

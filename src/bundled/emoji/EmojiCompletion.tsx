@@ -115,7 +115,7 @@ export function EmojiCompletion({
   );
   const [attempt, retry] = useState(0);
   useEffect(() => {
-    void session.emoji.ensure();
+    void session.emoji.ensure("foreground");
   }, [session]);
   useEffect(() => {
     void attempt; // Explicit retry repeats this query even when catalog data is unchanged.

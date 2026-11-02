@@ -1,3 +1,6 @@
+import { Button } from "../../../../src/shared/design-system/ui/Button";
+import { IconButton } from "../../../../src/shared/design-system/ui/IconButton";
+import { DotsThreeIcon } from "../../../../src/shared/design-system/icons";
 import { RAMPS } from "../../../../src/shared/design-system/tokens/registry";
 
 import { PageHeader, Section } from "./primitives";
@@ -74,6 +77,28 @@ export function GlassPage() {
           >
             glass-secondary-interactive
           </button>
+        </div>
+      </Section>
+
+      <Section
+        title="Quiet artwork controls (proposed)"
+        description="Transparent at rest; primary glass on hover and while open. Blur and geometry stay fixed."
+      >
+        <div className="glass-scene flex flex-wrap gap-3 rounded-xl p-6">
+          <IconButton
+            variant="glass-ghost"
+            aria-label="Agent actions"
+            icon={<DotsThreeIcon />}
+          />
+          <Button variant="glass-ghost" size="xs">
+            Model choice
+          </Button>
+          <Button variant="glass-ghost" size="xs" aria-expanded="true">
+            Open menu
+          </Button>
+          <Button variant="glass-ghost" size="xs" disabled>
+            Unavailable
+          </Button>
         </div>
       </Section>
 

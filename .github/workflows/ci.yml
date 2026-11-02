@@ -21,13 +21,13 @@ env:
 jobs:
   javascript:
     if: github.event_name != 'workflow_dispatch'
-    name: JavaScript (${{ matrix.shard }}/2)
+    name: JavaScript (${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -42,13 +42,50 @@ jobs:
         env:
           # Bound contention between suites that sign and verify large fixtures.
           BUZZ_TEST_WORKERS: "2"
-        run: ./bin/node scripts/ci-test-report.mjs kind=vitest report=test-results/ci/vitest.json evidence=test-results/ci/vitest-timing.json title="Vitest shard ${{ matrix.shard }}/2" -- ./bin/pnpm exec vitest run --shard=${{ matrix.shard }}/2 --reporter=default --reporter=json --outputFile=test-results/ci/vitest.json
+        run: ./bin/node scripts/ci-test-report.mjs kind=vitest report=test-results/ci/vitest.json evidence=test-results/ci/vitest-timing.json title="Vitest shard ${{ matrix.shard }}/4" -- ./bin/pnpm exec vitest run --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile=test-results/ci/vitest.json
       - name: Vitest timing evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vitest-timing-${{ matrix.shard }}
           path: test-results/ci
+          retention-days: 7
+
+  agent_protection:
+    if: github.event_name != 'workflow_dispatch'
+    name: Protected agents (macOS)
+    runs-on: macos-15
+    # Native pinned runtime builds add cold compilation to the kernel fixtures.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Install pinned Pi test dependencies
+        run: |
+          source bin/activate-hermit
+          cd src/bundled/pi/deps
+          npm ci --ignore-scripts --no-audit --no-fund
+      - name: Real Pi tools and recovery
+        env:
+          PI_DEPS: ${{ github.workspace }}/src/bundled/pi/deps
+        run: ./bin/node scripts/ci-test-report.mjs kind=vitest report=test-results/protection/vitest.json evidence=test-results/protection/timing.json title="Protected Pi" -- ./bin/pnpm exec vitest run src/bundled/pi/protection.live.test.ts --reporter=default --reporter=json --outputFile=test-results/protection/vitest.json
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: agent-protection
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Native approval-state containment
+        run: |
+          mkdir -p test-results/protection
+          set -o pipefail
+          ./bin/cargo test --manifest-path src-tauri/Cargo.toml host_process --lib 2>&1 | tee test-results/protection/native.log
+      - name: Protection test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-protection
+          path: test-results/protection
           retention-days: 7
 
   native:
@@ -63,12 +100,18 @@ jobs:
       - uses: ./.github/actions/setup
       - name: Tauri system libraries
         run: |
+          # Azure package downloads can stall until the whole job expires:
+          # https://github.com/actions/runner-images/issues/14594
+          # Keep the image's official HTTPS archive and security fallbacks.
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y dbus-daemon libwebkit2gtk-4.1-dev build-essential libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: native
           save-if: ${{ github.event_name == 'push' }}
+      - name: Dependency policy
+        run: ./bin/cargo-deny --locked check
       - name: Rust formatting
         run: ./bin/cargo fmt --all --check
       - name: Rust lint
@@ -76,6 +119,19 @@ jobs:
       # --workspace includes Tauri, unlike the default Cargo member selection.
       - name: All Rust tests and doctests
         run: ./bin/cargo test --workspace --locked
+      - name: FI Builderlab build and grant tests
+        env:
+          # Fixture authority only; never use a release's real configuration.
+          BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG: '{"version":1,"id":"ci-fi","identityOrigin":"https://identity.example.test","communityHosts":["relay.example.test"],"adapterBase":"https://identity.example.test/api/goose/nip-fa","apiBasePath":"/api/goose/"}'
+          BUZZ_BUILDERLAB_URL: ""
+        run: |
+          ./bin/cargo test -p buzzodz-plugins --lib --locked
+          ./bin/cargo test -p Buzz --lib --locked host_request
+          ./bin/pnpm exec vite build
+      - name: Scheduled agent command identity
+        run: ./bin/node scripts/test-agent-command.mjs
+      - name: Bundled buzz CLI
+        run: ./bin/node scripts/test-buzz-cli.mjs
       - name: All Node integration tests
         run: ./bin/node --test tests/integration/*.test.mjs
 
@@ -93,20 +149,19 @@ jobs:
       - name: Select pinned Rust
         shell: pwsh
         run: |
-          $pins = @(Get-ChildItem bin/.rust-*.pkg)
-          if ($pins.Count -ne 1) { throw "Expected exactly one repository Rust pin" }
-          $version = $pins[0].Name -replace '^\.rust-(.*)\.pkg$', '$1'
+          $version = (Select-String -Path rust-toolchain.toml -Pattern '^channel = "(.+)"$').Matches.Groups[1].Value
+          if (!$version) { throw "Expected a rust-toolchain.toml channel" }
           rustup toolchain install $version --profile minimal --component clippy
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "RUSTUP_TOOLCHAIN=$version" >> $env:GITHUB_ENV
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: windows-native
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Native lint including Windows backend
-        run: cargo clippy -p buzz-foundation -p buzz-agent-controller -p buzz-credential-store --locked --all-targets -- -D warnings
+        run: cargo clippy -p Buzz -p buzz-agent-controller -p buzz-credential-store --locked --all-targets -- -D warnings
       - name: All native package tests
-        run: cargo test -p buzz-foundation -p buzz-agent-controller -p buzz-credential-store --locked --no-fail-fast
+        run: cargo test -p Buzz -p buzz-agent-controller -p buzz-credential-store --locked --no-fail-fast
 
   measurements:
     if: github.event_name != 'workflow_dispatch'
@@ -139,13 +194,17 @@ jobs:
         run: ./bin/node scripts/ci-test-report.mjs kind=playwright report=test-results/browser/ci-report.json evidence=test-results/browser/ci-timing.json title="Browser measurements" -- ./bin/pnpm test:browser:ci --project '*-measurements' --workers=1 --reporter=list,json
       # Cases tagged @classic-scrollbars need Chromium's platform scrollbars,
       # which Linux always draws as classic ones. One file cannot join the
-      # nine-way engine matrix (empty shards are errors), so it runs here, and
+      # sharded engine matrix (empty shards are errors), so it runs here, and
       # CI required already blocks on this job. The project writes to its own
       # outputDir so this run does not clear the measurement evidence above.
       - name: Chromium classic-scrollbar layout
         env:
           PLAYWRIGHT_JSON_OUTPUT_FILE: test-results/browser-classic-scrollbars/ci-report.json
         run: ./bin/node scripts/ci-test-report.mjs kind=playwright report=test-results/browser-classic-scrollbars/ci-report.json evidence=test-results/browser-classic-scrollbars/ci-timing.json title="Browser classic scrollbars" -- ./bin/pnpm test:browser:ci --project chromium-classic-scrollbars --no-deps --reporter=list,json
+      # Exercise the actual perf harness once per case; timing comparisons stay
+      # separate. Keep its Chromium workload serial with the measurements above.
+      - name: Perf suite smoke check
+        run: ./bin/pnpm perf --scenario all --repeat 1 --cpu 4
       - name: Measurement evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -154,6 +213,7 @@ jobs:
           path: |
             test-results/browser
             test-results/browser-classic-scrollbars
+            test-results/perf
           retention-days: 7
 
   browser_fixture:
@@ -168,7 +228,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: browser-fixture
           save-if: ${{ github.event_name == 'push' }}
@@ -189,11 +249,13 @@ jobs:
           name: browser-fixture-${{ github.sha }}-${{ github.run_attempt }}
           path: target/browser-fixture.tar
           if-no-files-found: error
-          retention-days: 1
+          # Re-running failed shards reuses this artifact by ID, so keep it as
+          # long as their evidence.
+          retention-days: 7
 
   browser:
     if: github.event_name != 'workflow_dispatch'
-    name: Browser journeys (${{ matrix.engine }}, ${{ matrix.shard }}/9)
+    name: Browser journeys (${{ matrix.engine }}, ${{ matrix.shard }}/${{ matrix.shards }})
     # Measurements stay isolated on their own runner, not on our critical path.
     # CI required still requires their success independently of these jobs.
     needs: [browser_fixture]
@@ -209,14 +271,24 @@ jobs:
       HOME: /root
       BUZZ_BROWSER_FIXTURE_DIR: target/ci-browser-fixture
     # Playwright sizes file-level shards by test count, not duration, so costly
-    # files can share one. Nine shards keep the slowest WebKit shard well inside
-    # this deadline on slower runners, setup included.
+    # files can share one. WebKit runs slower, so it gets fourteen shards to keep
+    # its slowest well inside this deadline on slower runners, setup included;
+    # Chromium keeps nine.
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         engine: [chromium, webkit]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        exclude:
+          - { engine: chromium, shard: 10 }
+          - { engine: chromium, shard: 11 }
+          - { engine: chromium, shard: 12 }
+          - { engine: chromium, shard: 13 }
+          - { engine: chromium, shard: 14 }
+        include:
+          - { engine: chromium, shards: 9 }
+          - { engine: webkit, shards: 14 }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -245,7 +317,7 @@ jobs:
       - name: Functional journeys
         env:
           PLAYWRIGHT_JSON_OUTPUT_FILE: test-results/browser/ci-report.json
-        run: ./bin/node scripts/ci-test-report.mjs kind=playwright report=test-results/browser/ci-report.json evidence=test-results/browser/ci-timing.json title="Browser journeys (${{ matrix.engine }}, ${{ matrix.shard }}/9)" -- ./bin/pnpm test:browser:ci --project ${{ matrix.engine }} --no-deps --shard=${{ matrix.shard }}/9 --reporter=list,json
+        run: ./bin/node scripts/ci-test-report.mjs kind=playwright report=test-results/browser/ci-report.json evidence=test-results/browser/ci-timing.json title="Browser journeys (${{ matrix.engine }}, ${{ matrix.shard }}/${{ matrix.shards }})" -- ./bin/pnpm test:browser:ci --project ${{ matrix.engine }} --no-deps --shard=${{ matrix.shard }}/${{ matrix.shards }} --reporter=list,json
       - name: Browser evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -306,11 +378,15 @@ jobs:
         run: ./bin/node scripts/flake-check.mjs select HEAD^1 HEAD
 
   flake_vitest:
-    name: Flake check (Vitest)
+    name: Flake check (Vitest, ${{ matrix.batch }}/2)
     needs: [flake_select]
     if: needs.flake_select.outputs.vitest != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        batch: [1, 2]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -321,12 +397,14 @@ jobs:
           # Match the JavaScript lane's worker contention.
           BUZZ_TEST_WORKERS: "2"
           SELECTED: ${{ needs.flake_select.outputs.vitest }}
-        run: ./bin/node scripts/flake-check.mjs vitest $SELECTED
+        # Keep ten independent repetitions without serial setup consuming
+        # the job budget; each batch retains two-worker contention.
+        run: ./bin/node scripts/flake-check.mjs vitest --iterations=5 $SELECTED
       - name: Vitest iteration reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: flake-vitest
+          name: flake-vitest-${{ matrix.batch }}
           path: test-results/flake
           retention-days: 7
 
@@ -392,7 +470,7 @@ jobs:
   required:
     name: ${{ github.event_name == 'workflow_dispatch' && 'Automatic CI (not requested)' || 'CI required' }}
     if: always() && github.event_name != 'workflow_dispatch'
-    needs: [javascript, native, measurements, browser_fixture, browser, media_recorder]
+    needs: [javascript, native, measurements, browser_fixture, browser, media_recorder, agent_protection]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -404,7 +482,8 @@ jobs:
           FIXTURE: ${{ needs.browser_fixture.result }}
           BROWSER: ${{ needs.browser.result }}
           MEDIA_RECORDER: ${{ needs.media_recorder.result }}
+          AGENT_PROTECTION: ${{ needs.agent_protection.result }}
         run: |
-          for result in "$JAVASCRIPT" "$NATIVE" "$MEASUREMENTS" "$FIXTURE" "$BROWSER" "$MEDIA_RECORDER"; do
+          for result in "$JAVASCRIPT" "$NATIVE" "$MEASUREMENTS" "$FIXTURE" "$BROWSER" "$MEDIA_RECORDER" "$AGENT_PROTECTION"; do
             test "$result" = success || exit 1
           done

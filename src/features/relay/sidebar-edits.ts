@@ -1,8 +1,11 @@
 import {
   projectSidebarPreferences,
+  validActiveWindow,
+  DEFAULT_ACTIVE_WINDOW_SECONDS,
   type SidebarAssignmentIntent,
   type SidebarGroups,
   type SidebarSortMode,
+  type SidebarFilterMode,
 } from "./sidebar-preferences.ts";
 import {
   editSidebarRecord,
@@ -26,6 +29,29 @@ export function editSidebarSectionRemoval(
   ))
     if (id === sectionId) writes.push([["a", channelId], null]);
   return editSidebarRecord("channel-sections", current, createdAt, writes, now);
+}
+
+/** Rewrite only the live section's name register; other fields stay untouched. */
+export function editSidebarSectionRename(
+  current: Record<string, unknown>,
+  createdAt: number,
+  sectionId: string,
+  name: string,
+  now = Date.now(),
+): Record<string, unknown> {
+  const sections = projectSidebarRecord("channel-sections", current)
+    .sections as SidebarGroups["sections"];
+  const section = sections.find(({ id }) => id === sectionId);
+  if (!section) throw new Error("Sidebar section no longer exists");
+  const next = name.trim();
+  if (section.name === next) return current;
+  return editSidebarRecord(
+    "channel-sections",
+    current,
+    createdAt,
+    [[["s", sectionId, "name"], next]],
+    now,
+  );
 }
 
 /** Requested live sections first, then unlisted live ones; every order is restamped. */
@@ -60,17 +86,28 @@ export function validSidebarAssignment(
 ): boolean {
   const { channelId, sectionId, createSection } = intent;
   return (
-    validSidebarChannelId(channelId) &&
+    (channelId === undefined
+      ? !!createSection
+      : validSidebarChannelId(channelId)) &&
     (sectionId === undefined || validSidebarChannelId(sectionId)) &&
     (!createSection ||
       (sectionId === undefined &&
         /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(createSection.id) &&
-        validSidebarChannelId(createSection.name)))
+        validSidebarChannelId(createSection.name) &&
+        (createSection.position === undefined ||
+          createSection.position === "first")))
   );
 }
 
 export function validSidebarSectionRemoval(sectionId: string): boolean {
   return validSidebarChannelId(sectionId);
+}
+
+export function validSidebarSectionRename(
+  sectionId: string,
+  name: string,
+): boolean {
+  return validSidebarChannelId(sectionId) && validSidebarChannelId(name);
 }
 
 export function validSidebarSectionOrder(
@@ -98,6 +135,22 @@ export function validSidebarSort(
   );
 }
 
+export function validSidebarFilter(
+  group: string,
+  mode: SidebarFilterMode,
+  sectionIds: readonly string[],
+  activeWindowSeconds?: number | null,
+): boolean {
+  return (
+    ["all", "unreads", "active"].includes(mode) &&
+    (activeWindowSeconds === undefined ||
+      (activeWindowSeconds === null
+        ? mode === "all"
+        : mode === "active" && validActiveWindow(activeWindowSeconds))) &&
+    validSidebarSort(group, "alpha", sectionIds)
+  );
+}
+
 // Pure edits of validated, projected heads. Hosts retain validation, signing,
 // publication, readback and serialization; these functions never perform I/O.
 export function editSidebarAssignment(
@@ -120,12 +173,13 @@ export function editSidebarAssignment(
       sections.push({
         id: createSection.id,
         name,
-        order: nextSidebarSectionOrder(current),
+        order: nextSidebarSectionOrder(current, createSection.position),
       });
   }
   if (section !== undefined && !sections.some((entry) => entry.id === section))
     throw new Error("Sidebar group no longer exists");
-  const writes: [string[], unknown][] = [[["a", channelId], section ?? null]];
+  const writes: [string[], unknown][] =
+    channelId === undefined ? [] : [[["a", channelId], section ?? null]];
   if (createSection && !existing.some(({ id }) => id === section)) {
     const added = sections.find(({ id }) => id === section);
     if (!added) throw new Error("Sidebar group no longer exists");
@@ -153,6 +207,35 @@ export function editSidebarSort(
     [[["g", group], mode === "alpha" ? null : mode]],
     now,
   );
+}
+
+export function editSidebarFilter(
+  current: Record<string, unknown>,
+  createdAt: number,
+  group: string,
+  mode: SidebarFilterMode,
+  now = Date.now(),
+  activeWindowSeconds?: number | null,
+): Record<string, unknown> {
+  const windows = {
+    ...(current.activeWindowSeconds as Record<string, number> | undefined),
+  };
+  const previous = windows[group] ?? DEFAULT_ACTIVE_WINDOW_SECONDS;
+  const changed =
+    activeWindowSeconds === null
+      ? Object.hasOwn(windows, group)
+      : activeWindowSeconds !== undefined && previous !== activeWindowSeconds;
+  if (activeWindowSeconds === null) delete windows[group];
+  else if (activeWindowSeconds !== undefined)
+    windows[group] = activeWindowSeconds;
+  const next = editSidebarRecord(
+    "channel-filter",
+    current,
+    createdAt,
+    [[["g", group], mode === "all" ? null : mode]],
+    now,
+  );
+  return changed ? { ...next, activeWindowSeconds: windows } : next;
 }
 
 export function editSidebarToggle(

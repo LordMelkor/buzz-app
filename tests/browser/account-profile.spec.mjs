@@ -1,10 +1,15 @@
 import { test, expect } from "./fixture.mjs";
-import { selectSettingsSection } from "./navigation.mjs";
+import {
+  closeSettings,
+  selectSettingsSection,
+  settingsDialog,
+} from "./navigation.mjs";
 
 test.use({ historyCounts: { alpha: 0, beta: 0 } });
 
-// Real menu dismissal must hand focus to Settings even without a relay session.
-test("account avatar opens profile Settings after a failed connection", async ({
+// Settings stays usable without a relay session. The account menu is covered
+// below; behind the modal it would race the reconnecting launch surface.
+test("profile Settings opens after a failed connection", async ({
   page,
   app,
 }) => {
@@ -16,26 +21,25 @@ test("account avatar opens profile Settings after a failed connection", async ({
       json: { error: "Connection unavailable" },
     });
   });
+  await page.clock.install();
   await page.goto(app.origin);
+  // Messages waits out its opening deadline while the connection retries.
+  await page.clock.runFor(15_000);
+  await expect(
+    page.getByRole("heading", { name: "Can’t connect", exact: true }),
+  ).toBeVisible();
+  // The card offers only Try again; the account menu still reaches Settings.
+  await page.getByRole("button", { name: "Your profile", exact: true }).click();
   await page
-    .getByRole("button", { name: "Open Settings", exact: true })
+    .locator("[data-profile-menu]")
+    .getByRole("menuitem", { name: /, edit profile$/ })
     .click();
   await selectSettingsSection(page, "Appearance");
-  const trigger = page.getByRole("button", {
-    name: "Your profile",
-    exact: true,
-  });
-  await trigger.focus();
-  await trigger.press("Enter");
-  const menu = page.locator("[data-profile-menu]");
-  const edit = menu.getByRole("menuitem", { name: /, edit profile$/ });
-  await expect(edit).toBeFocused();
-  await edit.press("Enter");
-  await expect(menu).toHaveCount(0);
+  await selectSettingsSection(page, "Profile");
   await expect(
     page.getByRole("region", { name: "Profile", exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("main")).toBeFocused();
+  await expect(settingsDialog(page).locator(":focus")).toHaveCount(1);
 });
 
 // Portaled submenus need real hit testing, collision handling and keyboard focus.
@@ -43,6 +47,12 @@ test("account menu choices remain reachable across themes, widths and enlarged t
   page,
   app,
 }, testInfo) => {
+  // Boot in Light instead of reloading over a booting app, which WebKit can
+  // fail with an internal error.
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("buzz-appearance.v1"))
+      localStorage.setItem("buzz-appearance.v1", "light");
+  });
   await page.goto(app.origin);
   const trigger = page.getByRole("button", {
     name: "Your profile",
@@ -55,11 +65,12 @@ test("account menu choices remain reachable across themes, widths and enlarged t
   });
   const choices = page.getByRole("menu", { name: "Appearance", exact: true });
   for (const mode of ["light", "dark"]) {
-    await page.evaluate(
-      (mode) => localStorage.setItem("buzz-appearance.v1", mode),
-      mode,
-    );
-    await page.reload();
+    if (mode === "dark") {
+      await page.evaluate(() =>
+        localStorage.setItem("buzz-appearance.v1", "dark"),
+      );
+      await page.reload();
+    }
     await expect(page.locator("html")).toHaveAttribute("data-color-mode", mode);
     for (const width of [1280, 800, 390]) {
       await page.setViewportSize({ width, height: 950 });
@@ -128,10 +139,11 @@ test("account menu choices remain reachable across themes, widths and enlarged t
   await trigger.click();
   await menu.getByRole("menuitem", { name: "Plugins", exact: true }).click();
   await expect(menu).toHaveCount(0);
-  await expect(page.getByRole("main")).toBeFocused();
+  await expect(settingsDialog(page).locator(":focus")).toHaveCount(1);
   await expect(
-    page.getByRole("region", { name: "Plugins", exact: true }),
+    page.getByRole("region", { name: "Manage plugins", exact: true }),
   ).toBeVisible();
+  await closeSettings(page);
   await trigger.click();
   await menu.getByRole("menuitem", { name: /, edit profile$/ }).click();
   await expect(

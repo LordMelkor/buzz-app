@@ -323,67 +323,81 @@ describe("device-local startup", () => {
     },
   );
 
-  it("keeps viewer layout across a real channel revocation without restoring denied content", async () => {
-    const storage = disk();
-    const participant = keypair();
-    const alpha = [
-      roster(relay, "alpha", [viewer.pubkey, participant.pubkey]),
-      metadata(relay, "alpha", "Alpha", 1_700_000_000, [["t", "dm"]]),
-    ];
-    const beta = [
-      roster(relay, "beta", [viewer.pubkey]),
-      metadata(relay, "beta", "Beta"),
-    ];
-    const layout = { ...preferences, starred: ["beta"] };
-    await storage.writeStartup?.({
-      discovery: {
-        savedAt: Date.now(),
-        relayAuthor: relay.pubkey,
-        events: [...alpha, ...beta],
-        profiles: [profile(participant, { name: "Alpha-only participant" })],
-      },
-      preferences: { savedAt: Date.now(), data: layout },
-    });
-    const { owner, channels, membership, query } = setup(storage);
-    await owner.restore();
-    expect(
-      owner.session.profiles.snapshot().get(participant.pubkey)?.name,
-    ).toBe("Alpha-only participant");
-    channels.ensureList();
-    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
-    membership.resolve([...alpha, ...beta]);
-    await vi.waitFor(() =>
-      expect(channels.list().channels.every((channel) => !channel.cached)).toBe(
-        true,
-      ),
-    );
-    query.mockResolvedValue([
-      roster(relay, "beta", [viewer.pubkey]),
-      metadata(relay, "beta", "Beta"),
-    ]);
-    channels.refreshList?.();
-    await vi.waitFor(() =>
-      expect(channels.list().channels.map((channel) => channel.id)).toEqual([
-        "beta",
-      ]),
-    );
-    expect(storage.clear).not.toHaveBeenCalled();
-    expect(await storage.read()).toEqual([]);
-    expect((await storage.readStartup?.())?.preferences?.data).toEqual(layout);
-    expect((await storage.readStartup?.())?.discovery?.profiles).toEqual([]);
-    const next = setup(storage, true);
-    await next.owner.restore();
-    expect(next.owner.session.profiles.snapshot().has(participant.pubkey)).toBe(
-      false,
-    );
-    expect(next.channels.list().channels.map((channel) => channel.id)).toEqual([
-      "beta",
-    ]);
-    expect(next.owner.session.sidebarPreferences.snapshot().data).toEqual(
-      layout,
-    );
-    expect(next.channels.window("alpha").rows).toEqual([]);
-  });
+  it.each([false, true])(
+    "keeps viewer layout across a real channel revocation without restoring denied content (saved duration: %s)",
+    async (withWindow) => {
+      const storage = disk();
+      const participant = keypair();
+      const alpha = [
+        roster(relay, "alpha", [viewer.pubkey, participant.pubkey]),
+        metadata(relay, "alpha", "Alpha", 1_700_000_000, [["t", "dm"]]),
+      ];
+      const beta = [
+        roster(relay, "beta", [viewer.pubkey]),
+        metadata(relay, "beta", "Beta"),
+      ];
+      const layout = {
+        ...preferences,
+        starred: ["beta"],
+        ...(withWindow
+          ? {
+              filters: { "section:work": "active" as const },
+              activeWindowSeconds: { "section:work": 14 * 86400 },
+            }
+          : {}),
+      };
+      await storage.writeStartup?.({
+        discovery: {
+          savedAt: Date.now(),
+          relayAuthor: relay.pubkey,
+          events: [...alpha, ...beta],
+          profiles: [profile(participant, { name: "Alpha-only participant" })],
+        },
+        preferences: { savedAt: Date.now(), data: layout },
+      });
+      const { owner, channels, membership, query } = setup(storage);
+      await owner.restore();
+      expect(
+        owner.session.profiles.snapshot().get(participant.pubkey)?.name,
+      ).toBe("Alpha-only participant");
+      channels.ensureList();
+      await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+      membership.resolve([...alpha, ...beta]);
+      await vi.waitFor(() =>
+        expect(
+          channels.list().channels.every((channel) => !channel.cached),
+        ).toBe(true),
+      );
+      query.mockResolvedValue([
+        roster(relay, "beta", [viewer.pubkey]),
+        metadata(relay, "beta", "Beta"),
+      ]);
+      channels.refreshList?.();
+      await vi.waitFor(() =>
+        expect(channels.list().channels.map((channel) => channel.id)).toEqual([
+          "beta",
+        ]),
+      );
+      expect(storage.clear).not.toHaveBeenCalled();
+      expect(await storage.read()).toEqual([]);
+      expect((await storage.readStartup?.())?.preferences?.data).toEqual(
+        layout,
+      );
+      expect((await storage.readStartup?.())?.discovery?.profiles).toEqual([]);
+      const next = setup(storage, true);
+      await next.owner.restore();
+      expect(
+        next.owner.session.profiles.snapshot().has(participant.pubkey),
+      ).toBe(false);
+      expect(
+        next.channels.list().channels.map((channel) => channel.id),
+      ).toEqual(["beta"]);
+      expect(next.owner.session.sidebarPreferences.snapshot().data).toEqual(
+        layout,
+      );
+      expect(next.channels.window("alpha").rows).toEqual([]);
+    },
+  );
 
   it("reveals the selected head before verifying unrelated history", async () => {
     const storage = disk();
@@ -801,16 +815,13 @@ describe("device-local startup", () => {
     const fresh = deferred<typeof preferences>();
     const sort = vi.fn(),
       mute = vi.fn();
-    const store = createSidebarPreferencesStore(
-      () => fresh.promise,
-      true,
-      undefined,
-      undefined,
-      undefined,
-      mute,
-      sort,
-      disk(),
-    );
+    const store = createSidebarPreferencesStore({
+      read: () => fresh.promise,
+      available: true,
+      writeMute: mute,
+      writeSort: sort,
+      persistence: disk(),
+    });
     try {
       await store.ready;
       expect(store.queries.snapshot()).toMatchObject({

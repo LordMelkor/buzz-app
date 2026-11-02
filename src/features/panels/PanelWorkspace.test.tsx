@@ -340,6 +340,47 @@ test("choosing a tab with the pointer resumes its composer; the keyboard stays i
   expect(tab("Two")).toHaveFocus();
 });
 
+test("a pointer-chosen tab's composer takes focus when it mounts later, unless the user acts first", async () => {
+  const user = userEvent.setup();
+  let ready: (id: string) => void = () => {};
+  function Harness() {
+    const [value, select] = useState("One");
+    const [mounted, setMounted] = useState(["One"]);
+    ready = (id) => setMounted((ids) => [...ids, id]);
+    return (
+      <>
+        <input aria-label="Search" />
+        <PanelWorkspace
+          value={value}
+          select={select}
+          items={["One", "Two", "Three", "Four"].map((id) => ({
+            id,
+            label: id,
+            content: mounted.includes(id) && (
+              <input aria-label={`${id} reply`} data-tab-focus="" />
+            ),
+          }))}
+        />
+      </>
+    );
+  }
+  render(<Harness />);
+  await user.click(tab("Two"));
+  expect(tab("Two")).toHaveFocus();
+  await act(async () => ready("Two"));
+  expect(screen.getByRole("textbox", { name: "Two reply" })).toHaveFocus();
+  await user.click(tab("Three"));
+  await user.keyboard("{ArrowLeft}");
+  await act(async () => ready("Three"));
+  expect(tab("Two")).toHaveFocus();
+  // Leaving the tab and returning before the composer mounts keeps it there.
+  await user.click(tab("Four"));
+  act(() => screen.getByRole("textbox", { name: "Search" }).focus());
+  act(() => tab("Four").focus());
+  await act(async () => ready("Four"));
+  expect(tab("Four")).toHaveFocus();
+});
+
 test("Escape cancelling IME composition does not close the tab", () => {
   render(<Fixture />);
   const draft = screen.getByRole("textbox", { name: "Thread draft" });
@@ -355,15 +396,21 @@ test("Escape cancelling IME composition does not close the tab", () => {
 
 // Exercise the exact script evaluated by the native menu, not a second shortcut
 // implementation. Geometry is the only browser-only boundary stubbed in jsdom.
-const requestClose = (tabEvent = "buzz:close-active-tab") =>
+const requestClose = (
+  tabEvent = "buzz:close-active-tab",
+  browserSessionId: string | null = null,
+) =>
   new Function(
     "window",
     "document",
     "Event",
     "tabEvent",
+    "browserSessionId",
     "script",
     "return eval(script)",
-  )(window, document, Event, tabEvent, closeRequest) as "handled" | "unhandled";
+  )(window, document, Event, tabEvent, browserSessionId, closeRequest) as
+    | "handled"
+    | "unhandled";
 const visibleWorkspace = () =>
   vi
     .spyOn(HTMLElement.prototype, "getClientRects")
@@ -466,15 +513,115 @@ test("a consumed native Close request cannot close another workspace", () => {
 
 // The exact script the native Show Next/Previous Tab items evaluate; Windows
 // and Linux shortcuts dispatch the same events.
-const switchTab = (tabEvent: "buzz:next-tab" | "buzz:previous-tab") =>
+const switchTab = (
+  tabEvent: "buzz:next-tab" | "buzz:previous-tab",
+  browserSessionId: string | null = null,
+) =>
   new Function(
     "window",
     "document",
     "Event",
     "tabEvent",
+    "browserSessionId",
     "script",
     "return eval(script)",
-  )(window, document, Event, tabEvent, switchTabRequest);
+  )(window, document, Event, tabEvent, browserSessionId, switchTabRequest);
+
+function NativePanes({
+  close,
+  select,
+}: {
+  close: (pane: string) => void;
+  select: (pane: string, id: string) => void;
+}) {
+  return (
+    <>
+      {["main", "side"].map((pane) => (
+        <PanelWorkspace
+          key={pane}
+          main={pane === "main"}
+          label={`${pane} tabs`}
+          value={`${pane}-one`}
+          select={(id) => select(pane, id)}
+          items={["one", "two", "three"].map((id) => ({
+            id: `${pane}-${id}`,
+            label: `${pane} ${id}`,
+            close: () => close(pane),
+            content: (
+              <div data-browser-session={`${pane}-${id}`}>
+                <input aria-label={`${pane} ${id} draft`} />
+              </div>
+            ),
+          }))}
+        />
+      ))}
+    </>
+  );
+}
+
+test.each(["main", "side"])(
+  "native Close belongs to the %s guest despite DOM focus in the other pane",
+  (pane) => {
+    visibleWorkspace();
+    const close = vi.fn();
+    render(<NativePanes close={close} select={() => {}} />);
+    screen
+      .getByRole("textbox", {
+        name: `${pane === "main" ? "side" : "main"} one draft`,
+      })
+      .focus();
+    act(() =>
+      expect(requestClose("buzz:close-active-tab", `${pane}-one`)).toBe(
+        "handled",
+      ),
+    );
+    expect(close).toHaveBeenCalledExactlyOnceWith(pane);
+  },
+);
+
+test.each(["main", "side"])(
+  "native tab cycling follows the %s guest instead of stale DOM focus",
+  (pane) => {
+    visibleWorkspace();
+    const select = vi.fn();
+    render(<NativePanes close={() => {}} select={select} />);
+    for (const [event, target] of [
+      ["buzz:next-tab", "two"],
+      ["buzz:previous-tab", "three"],
+    ] as const) {
+      screen
+        .getByRole("textbox", {
+          name: `${pane === "main" ? "side" : "main"} one draft`,
+        })
+        .focus();
+      act(() => switchTab(event, `${pane}-one`));
+      expect(select).toHaveBeenLastCalledWith(pane, `${pane}-${target}`);
+    }
+    expect(select).toHaveBeenCalledTimes(2);
+  },
+);
+
+test("stale guest requests and guest shortcuts under a modal leave both panes alone", () => {
+  visibleWorkspace();
+  const close = vi.fn(),
+    select = vi.fn();
+  render(<NativePanes close={close} select={select} />);
+  screen.getByRole("textbox", { name: "side one draft" }).focus();
+  act(() => {
+    expect(requestClose("buzz:close-active-tab", "retired")).toBe("unhandled");
+    switchTab("buzz:next-tab", "retired");
+  });
+  const dialog = document.createElement("dialog");
+  dialog.open = true;
+  document.body.append(dialog);
+  act(() => {
+    expect(requestClose("buzz:close-active-tab", "main-one")).toBe("handled");
+    switchTab("buzz:next-tab", "main-one");
+  });
+  dialog.remove();
+  expect(close).not.toHaveBeenCalled();
+  expect(select).not.toHaveBeenCalled();
+});
 const selectedTab = () =>
   within(tabs()).getByRole("tab", { selected: true }).textContent;
 

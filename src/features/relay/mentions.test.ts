@@ -17,7 +17,7 @@ const viewer = keypair(),
   honey = keypair(),
   namesake = keypair();
 const owners: ReturnType<typeof createRelaySession>[] = [];
-function setup(sessionMode = false) {
+function setup(soloMode = false) {
   const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
   let release: (() => void) | undefined;
   let held = false;
@@ -49,11 +49,11 @@ function setup(sessionMode = false) {
                 : [],
           );
         if (
-          sessionMode &&
+          soloMode &&
           filters.every((filter) => filter.kinds?.every((kind) => kind === 0))
         )
           return Promise.resolve(profileEvents);
-        if (sessionMode && filters.every((filter) => !!filter.ids))
+        if (soloMode && filters.every((filter) => !!filter.ids))
           return Promise.resolve(publish.mock.calls.map(([event]) => event));
         return wire.transport.query(filters, ...args);
       },
@@ -86,7 +86,7 @@ function setup(sessionMode = false) {
     currentRoster = roster(author, "c", keys, time);
     pending.respond([
       currentRoster,
-      sessionMode
+      soloMode
         ? signed(relay, {
             kind: 39000,
             content: JSON.stringify({ name: "Work" }),
@@ -94,7 +94,7 @@ function setup(sessionMode = false) {
               ["d", "c"],
               ["t", "stream"],
               ["private"],
-              ["about", "Buzz session (buzz.sessions/v1)"],
+              ["t", "buzz.solo"],
             ],
           })
         : metadata(relay, "c", "General"),
@@ -173,7 +173,7 @@ it("typed names create no recipient tags; unconfirmed or forged membership canno
   );
   await h.members(undefined, 1700000000, namesake);
   expect(() => h.session.messages.send("c", "@Honey", [honey.pubkey])).toThrow(
-    "Join the conversation before posting",
+    "You don’t have write access to this conversation.",
   );
   expect(h.sign).not.toHaveBeenCalled();
   expect(h.publish).not.toHaveBeenCalled();
@@ -257,7 +257,7 @@ it("disposal during signing fences publication to a retired session", async () =
 });
 
 it.each([false, true])(
-  "preserves an independent caller's explicit session recipients, reply=%s",
+  "preserves an independent caller's explicit Solo chat recipients, reply=%s",
   async (reply) => {
     const h = setup(true);
     await h.members([viewer.pubkey, honey.pubkey]);
@@ -368,16 +368,46 @@ it.each([false, true])(
       "anthropic/claude-sonnet-5-5",
     ]);
     expect(() => post({ [namesake.pubkey]: { effort: "high" } })).toThrow(
-      /mentioned agent/,
+      /addressed agent/,
     );
     expect(() => post({ [honey.pubkey]: { effort: "High Effort" } })).toThrow(
-      /mentioned agent/,
+      /addressed agent/,
     );
     expect(() => post({ [honey.pubkey]: { model: "two words" } })).toThrow(
-      /mentioned agent/,
+      /addressed agent/,
     );
   },
 );
+
+it("asks a one-to-one DM's other member for a model and effort without a mention", async () => {
+  const h = setup();
+  const read = h.session.read([
+    { kinds: [39002, 39000], "#d": ["c"], limit: 10 },
+  ]);
+  let pending = h.next();
+  while (!pending.filters.some((filter) => filter.kinds?.includes(39002))) {
+    pending.respond([]);
+    await flush();
+    pending = h.next();
+  }
+  pending.respond([
+    roster(relay, "c", [viewer.pubkey, honey.pubkey]),
+    metadata(relay, "c", "Honey", 1700000000, [["t", "dm"], ["private"]]),
+  ]);
+  await read;
+  h.session.messages.send("c", "think hard", [], [], undefined, [], {
+    [honey.pubkey]: { effort: "high" },
+  });
+  await flush();
+  const tags = h.publish.mock.calls[0]?.[0]?.tags;
+  expect(tags).toContainEqual(["effort", honey.pubkey, "high"]);
+  expect(tags).not.toContainEqual(["p", honey.pubkey]);
+  expect(() =>
+    h.session.messages.send("c", "think hard", [], [], undefined, [], {
+      [namesake.pubkey]: { effort: "high" },
+    }),
+  ).toThrow(/addressed agent/);
+});
 
 it.each(mentionConformance.tags.write)(
   "conforms to the portable mention tag writing contract: $name",

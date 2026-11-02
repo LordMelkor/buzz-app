@@ -117,17 +117,17 @@ if ! grep -aq "GST_PLUGIN_SYSTEM_PATH_1_0" "$APPRUN_WRAPPED"; then
   exit 1
 fi
 
-APP_BIN="$WORKDIR/squashfs-root/usr/bin/buzz-foundation"
+APP_BIN="$WORKDIR/squashfs-root/usr/bin/Buzz"
 if [[ ! -f "$APP_BIN" ]]; then
-  echo "Error: app binary usr/bin/buzz-foundation not found — bundler layout changed; update fix-appimage.sh" >&2
+  echo "Error: app binary usr/bin/Buzz not found — bundler layout changed; update fix-appimage.sh" >&2
   exit 1
 fi
 if [[ -e "$APP_BIN.bin" ]]; then
-  echo "Error: usr/bin/buzz-foundation.bin already exists — shim already installed?" >&2
+  echo "Error: usr/bin/Buzz.bin already exists — shim already installed?" >&2
   exit 1
 fi
 
-# The real binary moves aside; buzz-foundation becomes a shim AppRun.wrapped execs.
+# The real binary moves aside; Buzz becomes a shim AppRun.wrapped execs.
 mv "$APP_BIN" "$APP_BIN.bin"
 cat > "$APP_BIN" <<'SHIM'
 #!/usr/bin/env bash
@@ -150,7 +150,7 @@ for var in GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_SYSTEM_PATH \
     unset "$var"
   fi
 done
-exec -a "buzz-foundation" "$here/buzz-foundation.bin" "$@"
+exec -a "Buzz" "$here/Buzz.bin" "$@"
 SHIM
 chmod +x "$APP_BIN"
 

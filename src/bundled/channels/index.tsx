@@ -1,12 +1,15 @@
+import { StartLinkedChat, canStartLinkedChat } from "./StartLinkedChat";
 import { ChannelCompletion } from "./ChannelCompletion";
 import { channelQuery } from "./channel-query";
 import { isChannelRoute } from "../../features/channel-navigation/routes";
 import type { PluginModule } from "../../plugins/api";
 import { ChannelsPage } from "./ChannelsPage";
-import { registerSharedSessions } from "./shared-sessions-panel";
+import { PageTabs } from "./PageTabs";
+import { registerCanvas } from "./canvas-panel";
 import { ChannelTemplateSettings } from "./ChannelTemplateSettings";
-import { MessageSettings } from "./MessageSettings";
 import { ChatCircleIcon, CopyIcon } from "../../shared/design-system/icons";
+import { isApplePlatform } from "../../features/shortcuts/format";
+import type { ArchiveShortcut } from "./ChannelsPage";
 export const inject = [
   "pages",
   "relay",
@@ -15,9 +18,11 @@ export const inject = [
   "navigation",
   "settingsCards",
   "agents",
+  "shortcuts",
+  "communityReader",
 ];
 export const apply: PluginModule["apply"] = (ctx) => {
-  registerSharedSessions(ctx);
+  registerCanvas(ctx);
   ctx.conversation.registerCompletion({
     id: "channel-typeahead",
     title: "Channel",
@@ -25,20 +30,47 @@ export const apply: PluginModule["apply"] = (ctx) => {
     component: ChannelCompletion,
   });
   const extensions = ctx.conversation;
+  extensions.registerTabs((props) => (
+    <PageTabs {...props} host={ctx} extensions={extensions} />
+  ));
   const relay = ctx.relay;
-  const panels = ctx.panels;
-  const pages = ctx.pages;
   const navigator = ctx.navigation;
-  const agents = ctx.agents;
-  ctx.settingsCards.register({
-    id: "messages",
-    title: "Messages",
-    icon: ChatCircleIcon,
-    component: MessageSettings,
+  ctx.conversation.registerMessageAction({
+    id: "start-solo-chat",
+    title: "Start Solo chat",
+    placement: "menu",
+    icon: () => <ChatCircleIcon size={16} aria-hidden="true" />,
+    matches: (message, session) =>
+      canStartLinkedChat(session, message.channelId) &&
+      (!message.delivery || ["accepted", "seen"].includes(message.delivery)),
+    component: ({ message, session }) => (
+      <StartLinkedChat
+        session={session}
+        navigation={navigator}
+        channelId={message.channelId}
+        message={message}
+      />
+    ),
   });
+  const panels = ctx.panels;
+  const archive: ArchiveShortcut = {};
+  ctx.shortcuts.register({
+    id: "archive-chat",
+    title: "Archive chat",
+    // Apple Mail's Archive. Elsewhere Ctrl is Mod, and Ctrl+Shift+A is Home.
+    binding: isApplePlatform(globalThis.navigator?.platform ?? "")
+      ? { key: "a", mod: true, ctrl: true }
+      : { key: "e", mod: true, shift: true },
+    order: 20,
+    allowInEditable: true,
+    when: () => !!archive.current?.available(),
+    run: () => archive.current?.run(),
+  });
+  const agents = ctx.agents;
   ctx.settingsCards.register({
     id: "templates",
     title: "Channel templates",
+    group: "App",
     icon: CopyIcon,
     component: ({ active }) => (
       <ChannelTemplateSettings agents={agents} active={active} />
@@ -55,14 +87,16 @@ export const apply: PluginModule["apply"] = (ctx) => {
     route: { version: 1, validate: isChannelRoute },
     component: ({ companion, navigation }) => (
       <ChannelsPage
+        chatMenus={ctx.conversation.chatMenus}
         navigation={navigation}
         navigator={navigator}
         extensions={extensions}
         relay={relay}
         panels={panels}
-        pages={pages}
+        archive={archive}
         companion={companion}
         agents={agents}
+        communities={ctx.communityReader}
       />
     ),
   });

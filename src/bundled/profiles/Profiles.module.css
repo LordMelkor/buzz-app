@@ -1,5 +1,4 @@
 .root {
-  --radius-capsule: var(--radius-control);
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -7,12 +6,16 @@
   padding: var(--space-5);
   min-width: 0;
   background: var(--surface-panel);
+  container-type: inline-size;
 }
 .identity {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-1);
   min-width: 0;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 .portrait {
   flex: 0 0 auto;
@@ -41,24 +44,14 @@
   gap: var(--space-2);
   min-width: 0;
 }
-.keyHeading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-.keyHeading h3 {
-  margin: 0;
-  color: var(--text-subtle);
-}
-.publicKey code {
+.keyValue {
   display: block;
   overflow-wrap: anywhere;
   user-select: text;
-  padding: var(--space-3);
-  border-radius: var(--radius-control);
-  background: var(--surface-inset);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: var(--text-mono--line-height);
+  letter-spacing: var(--text-mono--letter-spacing);
 }
 .feedback {
   color: var(--text-subtle);
@@ -71,39 +64,22 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
-  padding-top: var(--space-4);
+  padding-top: var(--space-2);
   min-width: 0;
 }
 
 .channelList {
   min-width: 0;
+  margin-inline: calc(-1 * var(--space-control-inset));
+}
+@container (max-width: 30rem) {
+  .channelList {
+    margin-inline: calc(-1 * var(--space-2));
+  }
 }
 .channelNote {
   padding: var(--space-4);
 }
-[data-profile-channel-link] {
-  display: flex;
-  width: 100%;
-  min-height: 3.5rem;
-  align-items: center;
-  justify-content: space-between;
-  text-align: left;
-}
-/* biome-ignore lint/correctness/noUnknownPseudoClass: CSS Modules global selector targets the shared button label. */
-[data-profile-channel-link] :global(.buzz-button-label) {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-}
-/* biome-ignore lint/correctness/noUnknownPseudoClass: CSS Modules global selector targets the shared button label. */
-[data-profile-channel-link] :global(.buzz-button-label) span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .agentIdentity {
   display: flex;
   flex-direction: column;
@@ -115,53 +91,10 @@
   color: var(--text-subtle);
 }
 
-.copyField {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  text-align: left;
-  color: var(--text-primary);
-  background: var(--surface-panel);
-  border: 1px solid var(--border-standard);
-  border-radius: var(--radius-control);
-  cursor: pointer;
-}
-.copyField:hover {
-  background: var(--surface-inset);
-}
-.copyField:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
-}
-.fieldText {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-  flex: 1;
-}
-.fieldValue {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-secondary);
-}
-.copyIndicator {
-  flex-shrink: 0;
-  opacity: 0;
-}
-.copyField:hover .copyIndicator,
-.copyField:focus-visible .copyIndicator,
-.copyIndicator[data-copied="true"] {
-  opacity: 1;
-}
-
 .profileContents {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-4);
   min-width: 0;
 }
 .profileContents[inert] {

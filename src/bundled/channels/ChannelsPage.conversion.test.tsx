@@ -1,3 +1,5 @@
+import { createNavigationController } from "../../features/navigation/controller";
+import { createMemoryHistory } from "../../features/navigation/history";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { StrictMode } from "react";
@@ -19,6 +21,8 @@ import { matchesEvent } from "../../features/relay/projection";
 import { composerDOMFixture } from "../../features/messages/composer-testing";
 import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { ChannelsPage } from "./ChannelsPage";
+import { SOLO_LABEL } from "../../features/solo/labels";
+import type { RelayEvent } from "../../features/relay/events";
 
 composerDOMFixture();
 const owners: ReturnType<typeof createRelaySession>[] = [];
@@ -43,16 +47,19 @@ function fixture() {
   const viewer = keypair(),
     relayKey = keypair();
   let clock = 1_700_000_000;
-  let about = "Buzz session (buzz.sessions/v1)";
+  let labels = [SOLO_LABEL];
   const sign = vi.fn(async (event: import("nostr-tools").EventTemplate) =>
     signed(viewer, event),
   );
-  const publish = vi.fn(async () => {
-    about = "";
+  const publish = vi.fn(async (event: RelayEvent) => {
+    labels = event.tags.flatMap(([tag, value]) =>
+      tag === "t" && value ? [value] : [],
+    );
     clock++;
   });
   const owner = createRelaySession(
     {
+      channelIdentity: true,
       viewer: viewer.pubkey,
       relayAuthor: relayKey.pubkey,
       scope: "https://conversion.test",
@@ -61,8 +68,9 @@ function fixture() {
         [
           metadata(relayKey, id, "Work", clock, [
             ["t", "stream"],
+            ...labels.map((label) => ["t", label]),
             ["private"],
-            ["about", about],
+            ["P", viewer.pubkey],
           ]),
           signed(relayKey, {
             kind: 39001,
@@ -108,21 +116,30 @@ function fixture() {
       await held;
     },
   );
-  const placementSet = vi.fn(async () => {});
-  const placementState = {
-    ...owner.session.mePlacement.snapshot(),
+  const projects = (assignments: Record<string, string>) => ({
     status: "ready" as const,
-  };
+    data: {
+      sections: [{ id: "g", name: "Project", order: 0 }],
+      assignments,
+      starred: [],
+      muted: [],
+    },
+  });
+  const filedProjects = projects({ [id]: "g" });
+  const unfiledProjects = projects({});
+  let filed = true;
+  const unfile = vi.fn(async () => {
+    filed = false;
+    return { sections: [], assignments: {}, starred: [], muted: [] };
+  });
   const session = {
     ...owner.session,
     channelDetails: { ...owner.session.channelDetails, save },
-    mePlacement: {
-      ...owner.session.mePlacement,
-      available: true,
-      snapshot: () => placementState,
+    soloPreferences: {
+      ...owner.session.soloPreferences,
+      snapshot: () => (filed ? filedProjects : unfiledProjects),
       refresh: async () => {},
-      set: placementSet,
-      has: () => false,
+      assign: unfile,
     },
   };
   const snapshot = {
@@ -152,6 +169,8 @@ function fixture() {
       },
     },
     signal: visit.signal,
+    position: () => undefined,
+    savePosition() {},
     forSession: () => navigation,
     complete: () => true,
     resolve: () => true,
@@ -160,9 +179,17 @@ function fixture() {
     <StrictMode>
       <ToastProvider>
         <ChannelsPage
+          navigator={
+            createNavigationController(createMemoryHistory()).navigation
+          }
           relay={relay}
-          panels={{ ...contribution, register() {}, resolve: () => undefined }}
-          pages={contribution}
+          panels={{
+            ...contribution,
+            register() {},
+            resolve: () => undefined,
+            requestOpen: () => false,
+            handleOpenRequests: () => () => {},
+          }}
           navigation={navigation}
         />
       </ToastProvider>
@@ -171,22 +198,21 @@ function fixture() {
   return {
     session,
     save,
+    unfile,
     sign,
     publish,
     view,
     visit,
     release,
     confirmed,
-    placementSet,
   };
 }
 async function openConversion() {
   const user = userEvent.setup();
-  const trigger = await screen.findByRole("button", { name: "Share" });
+  const trigger = await screen.findByRole("button", { name: "Chat actions" });
   await user.click(trigger);
-  const share = await screen.findByRole("dialog", { name: "Share session" });
   await user.click(
-    within(share).getByRole("button", { name: "Convert to channel" }),
+    await screen.findByRole("menuitem", { name: "Convert to channel" }),
   );
   const dialog = await screen.findByRole("dialog", {
     name: "Convert to channel",
@@ -197,7 +223,7 @@ async function openConversion() {
   await waitFor(() => expect(confirm).toBeEnabled());
   return { user, trigger, dialog, confirm };
 }
-it("Messages conversion survives signed type replacement, announces completion and focuses the replacement header", async () => {
+it("Messages conversion survives signed type replacement, announces completion and focuses the channel composer", async () => {
   const t = fixture();
   const { user, dialog, confirm } = await openConversion();
   try {
@@ -206,7 +232,7 @@ it("Messages conversion survives signed type replacement, announces completion a
       await t.confirmed;
     });
     expect(
-      screen.getByRole("button", { name: "Channel members", hidden: true }),
+      screen.getByRole("button", { name: "Manage members", hidden: true }),
     ).toBeInTheDocument();
     expect(
       t.session.channels.list().channels.find((channel) => channel.id === id)
@@ -224,13 +250,13 @@ it("Messages conversion survives signed type replacement, announces completion a
   expect(await screen.findByText("Converted to channel.")).toBeVisible();
   await waitFor(() =>
     expect(
-      screen.getByRole("button", { name: "Channel actions" }),
+      screen.getByRole("textbox", { name: "Message #Work" }),
     ).toHaveFocus(),
   );
   expect(t.sign).toHaveBeenCalledOnce();
   expect(t.publish).toHaveBeenCalledOnce();
 });
-it("Messages conversion Cancel restores Share without publishing", async () => {
+it("Messages conversion Cancel restores chat actions without publishing", async () => {
   const t = fixture();
   const { user, dialog, trigger } = await openConversion();
   await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
@@ -261,9 +287,9 @@ it("a retired Messages visit receives no late conversion completion", async () =
   expect(t.publish).toHaveBeenCalledOnce();
 });
 
-it("Messages header reopens removal recovery after confirmed metadata and a failed Me save", async () => {
+it("Messages header reopens unfiling recovery after confirmed metadata and a failed project save", async () => {
   const t = fixture();
-  t.placementSet.mockRejectedValueOnce(new Error("Me save failed"));
+  t.unfile.mockRejectedValueOnce(new Error("Project save failed"));
   const { user, confirm, dialog } = await openConversion();
   try {
     await user.click(confirm);
@@ -276,7 +302,7 @@ it("Messages header reopens removal recovery after confirmed metadata and a fail
     });
   }
   expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-    "Me save failed",
+    "Project save failed",
   );
   const closeButton = within(dialog)
     .getAllByRole("button", { name: "Close" })
@@ -294,11 +320,11 @@ it("Messages header reopens removal recovery after confirmed metadata and a fail
     within(reopened).getByRole("button", { name: "Finish conversion" }),
   );
   await waitFor(() => expect(reopened).not.toBeInTheDocument());
-  expect(t.placementSet).toHaveBeenCalledTimes(2);
+  expect(t.unfile).toHaveBeenCalledTimes(2);
   expect(t.publish).toHaveBeenCalledOnce();
   await waitFor(() =>
     expect(
-      screen.getByRole("button", { name: "Channel actions" }),
+      screen.getByRole("textbox", { name: "Message #Work" }),
     ).toHaveFocus(),
   );
 });

@@ -1,7 +1,7 @@
 // While an agent this app runs works on a mention, it shows as typing there to
 // everyone in the channel, on every device: the owner's others and teammates'.
 // On this device the agent's activity takes the place of its typing.
-import type { RelayEvent } from "../relay/events";
+import type { EventData } from "../relay/events";
 import { threadReference } from "../relay/thread-reference";
 import type { AgentEventTemplate } from "./native";
 
@@ -18,7 +18,7 @@ export type Pulses = Map<string, { turns: number; stop: () => void }>;
 
 /** Pulses typing, signed as the agent, where it answers `event` until the
  * returned function is called: in the channel itself when `topLevel` settles
- * true, for a chat in the owner's Me, which reads as one conversation. It waits
+ * true, for a Solo chat, which reads as one conversation. It waits
  * for that answer, as its turn does, so both place it alike; a turn that cannot
  * tell where to answer fails, and shows no typing. The pulse ends with it:
  * clients drop typing when the agent replies, or a few seconds after its last
@@ -27,7 +27,7 @@ export type Pulses = Map<string, { turns: number; stop: () => void }>;
 export function pulseTyping(
   publish: (event: AgentEventTemplate) => Promise<unknown>,
   topLevel: Promise<boolean>,
-  event: RelayEvent,
+  event: Pick<EventData, "id" | "tags">,
   channelId: string,
   pulses: Pulses,
 ): () => void {

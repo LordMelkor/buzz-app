@@ -1,5 +1,4 @@
 import type { EventTemplate } from "nostr-tools";
-import { SESSION_NAMED_LABEL, sessionMetadata } from "../sessions/metadata.ts";
 import type { RelayEvent } from "./events.ts";
 import {
   exactLifecycleTag,
@@ -17,6 +16,8 @@ export type ChannelDetailsDraft = Readonly<{
   name: string;
   description: string;
   visibility: "public" | "private";
+  /** Admission default only; omission preserves existing relay behavior. */
+  joinRole?: "member" | "guest" | undefined;
   /** Absent means ongoing; retain existing custom temporary intervals. */
   ttlSeconds?: number | undefined;
   /** NIP-CL labels. Absent leaves the relay's set unchanged; empty clears it. */
@@ -64,8 +65,8 @@ export function detailsDraftErrors(draft: ChannelDetailsDraft) {
       typeof draft.description !== "string" ||
       [...draft.description].length > 1000
         ? "Use a description of at most 1,000 characters."
-        : draft.description.includes("Buzz session (")
-          ? 'Remove "Buzz session (" from the description; that text is used by Buzz for work sessions.'
+        : draft.description.includes("Buzz Huddle (")
+          ? 'Remove "Buzz Huddle (" from the description; that text is used by Buzz for Huddles.'
           : undefined,
     lifetime:
       draft?.ttlSeconds !== undefined &&
@@ -80,6 +81,12 @@ export function detailsDraftErrors(draft: ChannelDetailsDraft) {
         ? "Channel visibility could not be verified."
         : undefined,
     labels: labelsError(draft?.labels),
+    joinRole:
+      draft?.joinRole !== undefined &&
+      draft.joinRole !== "member" &&
+      draft.joinRole !== "guest"
+        ? "New participant role could not be verified."
+        : undefined,
   };
 }
 
@@ -103,40 +110,15 @@ export function sameLabels(a: readonly string[], b: readonly string[]) {
   );
 }
 
-export function validateDetailsDraft(
-  draft: ChannelDetailsDraft,
-  base?: ChannelDetailsDraft,
-): void {
-  const metadata = sessionMetadata(base?.description);
-  if (metadata && !metadata.parentId && draft.description !== "") {
-    const next = sessionMetadata(draft.description);
-    if (
-      !next ||
-      next.parentId ||
-      draft.visibility !== base?.visibility ||
-      draft.description !== base?.description ||
-      (draft.labels !== undefined &&
-        !sameLabels(draft.labels, base.labels ?? []) &&
-        !(
-          draft.name !== base.name &&
-          sameLabels(draft.labels, [
-            ...(base.labels ?? []),
-            SESSION_NAMED_LABEL,
-          ])
-        ))
-    )
-      throw new Error(
-        "Only the name and lifetime of a session can be changed here.",
-      );
-    draft = { ...draft, description: "" };
-  }
+export function validateDetailsDraft(draft: ChannelDetailsDraft): void {
   const errors = detailsDraftErrors(draft);
   const error =
     errors.name ??
     errors.description ??
     errors.visibility ??
     errors.lifetime ??
-    errors.labels;
+    errors.labels ??
+    errors.joinRole;
   if (error) throw new Error(error);
 }
 
@@ -156,6 +138,7 @@ export function detailsSettings(
     ([key, value]) => key === "p" && value === viewer,
   )?.[2];
   const visibility = channelVisibility(metadata);
+  const joinRole = channelJoinRole(metadata);
   const name = exactLifecycleTag(metadata, "name");
   const description = exactLifecycleTag(metadata, "about") ?? "";
   const ttl = exactLifecycleTag(metadata, "ttl");
@@ -168,12 +151,12 @@ export function detailsSettings(
     name,
     description,
     visibility,
+    ...(joinRole ? { joinRole } : {}),
     ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
     labels: channelIdentity(metadata).labels,
     canEdit:
       authority.channelType !== "dm" &&
       exactLifecycleTag(metadata, "archived") !== "true" &&
-      !sessionMetadata(description)?.parentId &&
       (role === "owner" || role === "admin"),
   });
   return { details, metadata };
@@ -184,29 +167,7 @@ export function detailsTemplate(
   draft: ChannelDetailsDraft,
   base: ChannelDetailsDraft,
 ): EventTemplate {
-  validateDetailsDraft(draft, base);
-  if (sessionMetadata(base.description) && sessionMetadata(draft.description))
-    return {
-      kind: 9002,
-      created_at: Math.floor(Date.now() / 1000),
-      content: "",
-      tags: [
-        ["h", lifecycleChannelId(id)],
-        ["name", draft.name],
-        ...(draft.ttlSeconds !== base.ttlSeconds
-          ? [
-              [
-                "ttl",
-                draft.ttlSeconds === undefined ? "" : String(draft.ttlSeconds),
-              ],
-            ]
-          : []),
-        ...(draft.labels !== undefined &&
-        !sameLabels(draft.labels, base.labels ?? [])
-          ? channelLabelTags(draft.labels)
-          : []),
-      ],
-    };
+  validateDetailsDraft(draft);
   return {
     kind: 9002,
     created_at: Math.floor(Date.now() / 1000),
@@ -227,6 +188,9 @@ export function detailsTemplate(
               draft.ttlSeconds === undefined ? "" : String(draft.ttlSeconds),
             ],
           ]
+        : []),
+      ...(draft.joinRole !== undefined && draft.joinRole !== base.joinRole
+        ? [["join_role", draft.joinRole]]
         : []),
       // NIP-CL: `t` tags replace the set; one empty `t` clears it; none keeps it.
       ...(draft.labels !== undefined &&
@@ -262,6 +226,15 @@ export function channelTtl(event: RelayEvent): number | undefined {
   }
 }
 
+/** Legacy absence means Member; malformed explicit defaults fail closed to Guest. */
+export function channelJoinRole(event: RelayEvent): "member" | "guest" {
+  const tags = event.tags.filter(([key]) => key === "join_role");
+  if (tags.length === 0) return "member";
+  return tags.length === 1 && tags[0]?.length === 2 && tags[0]?.[1] === "member"
+    ? "member"
+    : "guest";
+}
+
 /** A relay metadata TTL must be an unambiguous positive i32; only absence is ongoing. */
 function parseDetailsTtl(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
@@ -276,38 +249,6 @@ function parseDetailsTtl(value: string | undefined): number | undefined {
 
 /** Separate from lifecycle and outbox admission. Admits only explicit open/private visibility. */
 export function validateDetailsTemplate(event: EventTemplate): void {
-  if (
-    event?.kind === 9002 &&
-    event.content === "" &&
-    Number.isSafeInteger(event.created_at) &&
-    event.created_at >= 0 &&
-    Array.isArray(event.tags) &&
-    event.tags.length >= 2 &&
-    event.tags.every(
-      (tag, index) =>
-        Array.isArray(tag) &&
-        tag.length === 2 &&
-        (index < 2
-          ? tag[0] === ["h", "name"][index]
-          : tag[0] === "t" || (index === 2 && tag[0] === "ttl")) &&
-        typeof tag[1] === "string",
-    )
-  ) {
-    lifecycleChannelId(event.tags[0]?.[1] ?? "");
-    validateDetailsDraft({
-      name: event.tags[1]?.[1] ?? "",
-      description: "",
-      visibility: "private",
-      ttlSeconds:
-        event.tags.find(([key]) => key === "ttl")?.[1] === ""
-          ? undefined
-          : parseDetailsTtl(event.tags.find(([key]) => key === "ttl")?.[1]),
-      ...(event.tags.some(([key]) => key === "t")
-        ? { labels: detailsLabels(event.tags.filter(([key]) => key === "t")) }
-        : {}),
-    });
-    return;
-  }
   if (
     event?.kind !== 9002 ||
     event.content !== "" ||
@@ -324,7 +265,16 @@ export function validateDetailsTemplate(event: EventTemplate): void {
     !["h", "name", "about"].every(
       (key, index) => event.tags[index]?.[0] === key,
     ) ||
-    ![[], ["visibility"], ["ttl"], ["visibility", "ttl"]].some(
+    ![
+      [],
+      ["visibility"],
+      ["ttl"],
+      ["visibility", "ttl"],
+      ["join_role"],
+      ["visibility", "join_role"],
+      ["ttl", "join_role"],
+      ["visibility", "ttl", "join_role"],
+    ].some(
       (keys) =>
         keys.every((key, index) => event.tags[index + 3]?.[0] === key) &&
         event.tags.slice(keys.length + 3).every(([key]) => key === "t"),
@@ -336,12 +286,16 @@ export function validateDetailsTemplate(event: EventTemplate): void {
   if (visibility && !["private", "open"].includes(visibility[1] ?? ""))
     throw new Error("Invalid channel details command.");
   const ttl = event.tags.find(([key]) => key === "ttl")?.[1];
+  const joinRole = event.tags.find(([key]) => key === "join_role")?.[1];
+  if (joinRole !== undefined && joinRole !== "member" && joinRole !== "guest")
+    throw new Error("Invalid channel details command.");
   lifecycleChannelId(event.tags[0]?.[1] ?? "");
   validateDetailsDraft({
     name: event.tags[1]?.[1] ?? "",
     description: event.tags[2]?.[1] ?? "",
     visibility: visibility?.[1] === "private" ? "private" : "public",
     ttlSeconds: ttl === "" ? undefined : parseDetailsTtl(ttl),
+    ...(joinRole ? { joinRole } : {}),
     ...(event.tags.some(([key]) => key === "t") ? { labels } : {}),
   });
 }

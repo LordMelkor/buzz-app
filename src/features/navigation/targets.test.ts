@@ -10,6 +10,30 @@ const conversation = {
 } as const;
 
 describe("open target boundary", () => {
+  it("bounds nested provider addresses to Agent setup and keeps their scope", () => {
+    const target = {
+      version: 1,
+      kind: "settings",
+      section: "agents",
+      provider: "buzz.codex/codex",
+      scope: { viewer, communityOrigin: "https://relay.example" },
+    } as const;
+    expect(parseOpenTarget(target)).toEqual(target);
+    expect(targetKey(target)).not.toBe(
+      targetKey({
+        version: 1,
+        kind: "settings",
+        section: "agents",
+        scope: target.scope,
+      }),
+    );
+    for (const invalid of [
+      { ...target, section: "appearance" },
+      { ...target, provider: "invalid" },
+      { ...target, provider: `plugin/${"a".repeat(129)}` },
+    ])
+      expect(() => parseOpenTarget(invalid)).toThrow();
+  });
   it("canonicalizes and freezes a detached, bounded identity-scoped target", () => {
     const input = {
       ...conversation,
@@ -38,16 +62,34 @@ describe("open target boundary", () => {
     expect(Object.isFrozen(target)).toBe(true);
     expect(() => parseOpenTarget({ ...target, scope: undefined })).toThrow();
   });
-  it("preserves a scoped Shared sessions opening", () => {
+  it("opens a saved Shared sessions target as its conversation", () => {
     const target = parseOpenTarget({
       ...conversation,
       panel: "shared-sessions",
     });
-    expect(target).toEqual({
-      ...parseOpenTarget(conversation),
-      panel: "shared-sessions",
+    expect(target).toEqual(parseOpenTarget(conversation));
+  });
+  it("copies and bounds a read-only detail address independently of Members", () => {
+    const detail = { target: "nostr:npub1example", rootId: "C".repeat(64) };
+    const target = parseOpenTarget({ ...conversation, detail });
+    detail.target = "changed";
+    expect(target.kind === "conversation" && target.detail).toEqual({
+      target: "nostr:npub1example",
+      rootId: "c".repeat(64),
     });
+    expect(
+      Object.isFrozen(target.kind === "conversation" && target.detail),
+    ).toBe(true);
     expect(targetKey(target)).not.toBe(targetKey(conversation));
+    for (const detail of [
+      null,
+      {},
+      { target: "with space" },
+      { target: "x".repeat(4097) },
+      { target: "profile:x", rootId: "invalid" },
+      { target: "profile:x", action: "delete" },
+    ])
+      expect(() => parseOpenTarget({ ...conversation, detail })).toThrow();
   });
   it("supports local targets without account or relay and gives routes stable identity", () => {
     for (const target of [
@@ -215,4 +257,38 @@ it("keeps explicit Personal space distinct from an unspecified page scope", () =
   expect(parseOpenTarget(personal)).toEqual(personal);
   expect(targetKey(personal)).not.toBe(targetKey(page));
   expect(() => parseOpenTarget({ ...conversation, scope: null })).toThrow();
+});
+
+it("bounds plugin link targets to plain string params", () => {
+  const link = {
+    version: 1,
+    kind: "plugin",
+    pluginId: "com.example.catalog",
+    pageId: "detail",
+    params: { slug: "a", tab: "b" },
+    scope: { viewer, communityOrigin: "https://relay.example" },
+  } as const;
+  expect(parseOpenTarget(link)).toEqual(link);
+  expect(targetKey({ ...link, params: { tab: "b", slug: "a" } })).toBe(
+    targetKey(link),
+  );
+  const { pageId: _pageId, params: _params, scope: _scope, ...bare } = link;
+  expect(parseOpenTarget(bare)).toEqual(bare);
+  for (const invalid of [
+    { ...bare, pluginId: "Not.Valid" },
+    { ...bare, pageId: "" },
+    { ...bare, params: { n: 1 } },
+    { ...bare, params: { "bad key": "a" } },
+    { ...bare, params: { __proto__x: "a" } },
+    { ...bare, params: { slug: "x".repeat(1025) } },
+    {
+      ...bare,
+      params: Object.fromEntries(
+        Array.from({ length: 17 }, (_, index) => [`k${index}`, "v"]),
+      ),
+    },
+    { ...bare, params: ["a"] },
+    { ...bare, route: { version: 1, params: {} } },
+  ])
+    expect(() => parseOpenTarget(invalid)).toThrow();
 });

@@ -1,6 +1,16 @@
-import { motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Input } from "../../shared/design-system/ui/Input";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import {
   usePanelTabHost,
   usePanelTabTitle,
@@ -13,10 +23,13 @@ import type {
   Agents,
   AgentConversation,
   RegisteredAgentType,
+  TranscriptRequest,
 } from "../../features/agents/service";
 import {
   AgentArchiveRetry,
   AgentDelete,
+  AgentRemoveHere,
+  inSeveral,
 } from "../../features/agents/AgentManage";
 import {
   CopyIcon,
@@ -24,6 +37,15 @@ import {
   XIcon,
 } from "../../shared/design-system/icons";
 import { Button } from "../../shared/design-system/ui/Button";
+import { Avatar } from "../../shared/design-system/ui/Avatar";
+import { AvatarStack } from "../../shared/design-system/ui/AvatarStack";
+import {
+  PopoverRoot,
+  PopoverTrigger,
+  PopoverPopup,
+} from "../../shared/design-system/ui/Popover";
+import type { CommunityReader } from "../../features/communities/service";
+import { communityPresentation } from "../../features/communities/community-icon";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import {
   MenuRoot,
@@ -38,11 +60,16 @@ import {
   canonicalPublicKey,
   formatPublicKey,
 } from "../../shared/identity/public-key";
-import { AgentPortrait } from "./AgentCard";
+import { AgentPortrait, useAgentPortraitSource } from "./AgentCard";
 import { AgentIdentityDialog } from "./AgentIdentityDialog";
+import { useNamePrompt, useShake } from "./useNamePrompt";
 import { AgentTabs } from "./AgentTabs";
 import { useAgentSettingsHost } from "./AgentSettingsHost";
 import styles from "./AgentsPage.module.css";
+import { PackedAgentAvatar } from "./PackedAgentAvatar";
+import { ProfileBackdrop } from "../../features/profiles/ProfileBackdrop";
+import hero from "../../features/profiles/ProfileHero.module.css";
+import { writeClipboardText } from "../../shared/clipboard";
 
 export function AgentDetails({
   agents,
@@ -55,6 +82,9 @@ export function AgentDetails({
   messageAction,
   conversation,
   initialActivity,
+  initialTranscript,
+  close,
+  communities,
 }: {
   agents: Agents;
   agent: Agent;
@@ -63,10 +93,16 @@ export function AgentDetails({
   channels: readonly ChannelChoice[];
   memories: AgentMemories | undefined;
   onRemoved(): void;
-  messageAction: ReactNode;
+  messageAction: (variant: "glass" | "subtle") => ReactNode;
   conversation?: AgentConversation | undefined;
   initialActivity?: boolean;
+  initialTranscript?: TranscriptRequest | undefined;
+  /** Closes the panel showing the agent. */
+  close?: () => void;
+  communities?: CommunityReader | undefined;
 }) {
+  const ProfileActions = type?.ProfileActions ?? Fragment;
+  const { pack, src: backdrop } = useAgentPortraitSource(agent, agent.relay);
   const tabbed = !!usePanelTabHost();
   const reducedMotion = useReducedMotion();
   const identityTransition = {
@@ -87,22 +123,94 @@ export function AgentDetails({
   );
   usePanelTabTitle(agent.name, tabAvatar);
   const [saveFooter, setSaveFooter] = useState<HTMLDivElement | null>(null);
+  const [signInVisible, setSignInVisible] = useState(false);
+  const [footerVisible, setFooterVisible] = useState(false);
+  const [panelNotice, setPanelNotice] = useState<ReactNode>(null);
   const content = useRef<HTMLDivElement>(null);
+  const [panelFooter, setPanelFooter] = useState<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const footer = panelFooter;
+    const scroll = content.current;
+    if (!type?.PanelFooter || !footer || !scroll) {
+      setSignInVisible(false);
+      setFooterVisible(false);
+      return;
+    }
+    const measure = () => {
+      setFooterVisible(footer.childElementCount > 0);
+      setSignInVisible(
+        [...footer.children].some(
+          (sheet) =>
+            sheet.getAttribute("data-agent-access-required") !== "false",
+        ),
+      );
+      // Share the fields' usable width, excluding either side's scrollbar gutter.
+      footer.style.width = `${scroll.clientWidth}px`;
+      footer.style.left = `${scroll.offsetLeft + scroll.clientLeft}px`;
+      scroll.style.setProperty(
+        "--agent-footer-height",
+        `${footer.getBoundingClientRect().height}px`,
+      );
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      // Updating the scroll inset also resizes its content box; settle outside delivery.
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    });
+    observer.observe(footer);
+    observer.observe(scroll);
+    // Presence can replace equally tall sheets with different access semantics.
+    const changes = new MutationObserver((records) => {
+      measure();
+      // An exiting sheet becomes inert before its replacement mounts.
+      if (
+        document.activeElement === document.body &&
+        records.some((record) => record.addedNodes.length > 0)
+      )
+        footer
+          .querySelector<HTMLElement>(
+            ':scope > :not([inert]) :is(button:not(:disabled), [role="button"]:not([aria-disabled="true"]))',
+          )
+          ?.focus({ preventScroll: true });
+    });
+    changes.observe(footer, { childList: true });
+    return () => {
+      observer.disconnect();
+      changes.disconnect();
+      cancelAnimationFrame(frame);
+      scroll.style.removeProperty("--agent-footer-height");
+    };
+  }, [type?.PanelFooter, panelFooter]);
   useEffect(() => {
-    // Completing setup removes its focused button; continue in Identity.
-    if (document.activeElement === document.body)
+    // Setup or sign-in removes its focused button; continue in the selected tab.
+    if (!footerVisible && document.activeElement === document.body)
       content.current
         ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
         ?.focus();
-  }, []);
+  }, [footerVisible]);
   const [copied, setCopied] = useState(false);
   const [editingIdentity, setEditingIdentity] = useState(false);
   const identityMenu = useRef<HTMLButtonElement>(null);
   const [editingName, setEditingName] = useState(false);
+  useLayoutEffect(() => {
+    if (signInVisible) {
+      setEditingName(false);
+      setEditingIdentity(false);
+    }
+  }, [signInVisible]);
   const [name, setName] = useState(agent.name);
   const [namePending, setNamePending] = useState(false);
   const [nameError, setNameError] = useState("");
   const nameInput = useRef<HTMLInputElement>(null);
+  const nameEditor = useRef<HTMLDivElement>(null);
+  const namePrompt = useNamePrompt(nameInput);
+  useShake(nameEditor, namePrompt.attempts);
+  const nameMessage =
+    nameError || (namePrompt.attempts ? "Add a name to save your agent" : "");
+  const nameMessageId = useId();
   useEffect(() => {
     if (!editingName) return;
     // Wait for the closing menu's focus handoff before placing the caret.
@@ -119,11 +227,16 @@ export function AgentDetails({
     requestAnimationFrame(() => identityMenu.current?.focus());
   };
   const saveName = async () => {
-    if (namePending || !name.trim()) return;
+    if (namePending) return;
+    if (!name.trim()) {
+      setNameError("");
+      namePrompt.prompt();
+      return;
+    }
     setNamePending(true);
     setNameError("");
     try {
-      await agents.save(agent.pubkey, { name: name.trim() });
+      await agents.save(agent.key, { name: name.trim() });
       finishName();
     } catch (reason) {
       setNameError(reason instanceof Error ? reason.message : String(reason));
@@ -136,6 +249,7 @@ export function AgentDetails({
     else {
       setName(agent.name);
       setNameError("");
+      namePrompt.named(agent.name);
       setEditingName(true);
     }
   };
@@ -148,7 +262,19 @@ export function AgentDetails({
     return () => clearTimeout(timer);
   }, [copied]);
   return (
-    <AgentSaveFooter value={saveFooter}>
+    <AgentSaveFooter
+      value={{
+        target: saveFooter,
+        setPanelNotice,
+        notice: (
+          <SharedSettingsNotice
+            agents={agents}
+            agent={agent}
+            communities={communities}
+          />
+        ),
+      }}
+    >
       <div className={styles.build}>
         <div ref={content} className={styles.detailsScroll}>
           {!tabbed && (
@@ -159,7 +285,38 @@ export function AgentDetails({
               onClick={onRemoved}
             />
           )}
-          <aside className={styles.rail} aria-label={`${agent.name} identity`}>
+          <motion.aside
+            className={`${hero.hero} ${hero.panelHero} ${styles.identityCard}`}
+            aria-label={`${agent.name} identity`}
+            initial={false}
+            animate={{
+              "--agent-artwork-grayscale": signInVisible ? 1 : 0,
+              "--agent-artwork-scale":
+                signInVisible && !reducedMotion ? 0.85 : 1,
+              "--agent-artwork-opacity":
+                signInVisible && !reducedMotion ? 0.5 : 1,
+              "--agent-artwork-blur":
+                signInVisible && !reducedMotion ? "2px" : "0px",
+            }}
+            transition={
+              reducedMotion
+                ? { duration: 0 }
+                : signInVisible
+                  ? { duration: 10, ease: "linear" }
+                  : {
+                      duration: 0.8,
+                      ease: [0.23, 1, 0.32, 1],
+                      "--agent-artwork-scale": {
+                        type: "spring",
+                        duration: 1.1,
+                        bounce: 0.65,
+                      },
+                    }
+            }
+          >
+            <ProfileBackdrop src={backdrop}>
+              {pack && <PackedAgentAvatar avatar={pack} fit="cover" />}
+            </ProfileBackdrop>
             <motion.div
               className={styles.identityPortrait}
               initial={false}
@@ -181,20 +338,26 @@ export function AgentDetails({
               transition={identityTransition}
             >
               <h2
-                className="m-0 text-heading text-center break-words"
+                className="m-0 text-body-lg text-center break-words"
                 style={{ visibility: editingName ? "hidden" : undefined }}
               >
                 {agent.name}
               </h2>
               {editingName && (
-                <div className={styles.nameEditor}>
+                <div ref={nameEditor} className={styles.nameEditor}>
                   <Input
                     appearance="heading"
                     ref={nameInput}
                     aria-label="Agent name"
+                    placeholder="Name your agent"
+                    aria-invalid={namePrompt.attempts > 0 || undefined}
+                    aria-describedby={nameMessage ? nameMessageId : undefined}
                     value={name}
                     disabled={namePending}
-                    onChange={(event) => setName(event.target.value)}
+                    onChange={(event) => {
+                      setName(event.target.value);
+                      namePrompt.named(event.target.value);
+                    }}
                     onKeyDown={(event) => {
                       if (event.nativeEvent.isComposing) return;
                       if (event.key === "Enter") {
@@ -211,51 +374,50 @@ export function AgentDetails({
                 </div>
               )}
             </motion.div>
-            <div className={styles.identityActions}>
-              {editingName ? (
-                <motion.div
-                  className={styles.nameActions}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{
-                    duration:
-                      reducedMotion ||
-                      document.documentElement.hasAttribute(
-                        "data-keyboard-navigation",
-                      )
-                        ? 0
-                        : 0.15,
-                  }}
-                >
-                  <Button
-                    size="sm"
-                    shape="control"
-                    disabled={namePending}
-                    onClick={finishName}
+            <div className={hero.actions}>
+              <ProfileActions>
+                {!editingName && messageAction(backdrop ? "glass" : "subtle")}
+                {editingName ? (
+                  <motion.div
+                    className={styles.nameActions}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{
+                      duration:
+                        reducedMotion ||
+                        document.documentElement.hasAttribute(
+                          "data-keyboard-navigation",
+                        )
+                          ? 0
+                          : 0.15,
+                    }}
                   >
-                    Cancel
-                  </Button>
-                  <Button
-                    size="sm"
-                    shape="control"
-                    variant="prominent"
-                    loading={namePending}
-                    disabled={!name.trim()}
-                    onClick={() => void saveName()}
-                  >
-                    Save
-                  </Button>
-                </motion.div>
-              ) : (
-                <>
-                  {messageAction}
+                    <Button
+                      size="sm"
+                      shape="control"
+                      disabled={namePending}
+                      onClick={finishName}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      shape="control"
+                      variant="prominent"
+                      loading={namePending}
+                      onClick={() => void saveName()}
+                    >
+                      Save
+                    </Button>
+                  </motion.div>
+                ) : (
                   <MenuRoot>
                     <MenuTrigger
                       render={
                         <IconButton
                           ref={identityMenu}
                           aria-label="Agent profile actions"
-                          variant="subtle"
+                          variant={backdrop ? "glass" : "subtle"}
                           size="sm"
                           icon={<DotsThreeIcon aria-hidden="true" />}
                         />
@@ -275,24 +437,28 @@ export function AgentDetails({
                       </MenuItem>
                     </MenuPopup>
                   </MenuRoot>
-                </>
-              )}
+                )}
+              </ProfileActions>
             </div>
-            {editingName && nameError && (
-              <p role="alert" className="m-0 text-body-sm text-danger">
-                {nameError}
+            {editingName && nameMessage && (
+              <p
+                id={nameMessageId}
+                role="alert"
+                className="m-0 text-body-sm text-danger"
+              >
+                {nameMessage}
               </p>
             )}
             {editingIdentity && (
               <AgentIdentityDialog
                 agent={agent}
                 agents={agents}
+                communities={communities}
                 finalFocus={identityMenu}
-                initialAvatarPicker
                 onClose={() => setEditingIdentity(false)}
               />
             )}
-          </aside>
+          </motion.aside>
           <section
             className={styles.work}
             aria-label={`${agent.name} settings`}
@@ -300,7 +466,7 @@ export function AgentDetails({
             {!type && (
               <p className="m-0 mb-4 text-body-sm text-secondary">
                 Enable the plugin that provides this agent's type to change its
-                settings. Its attention can still be edited.
+                settings.
               </p>
             )}
             <AgentTabs
@@ -310,8 +476,12 @@ export function AgentDetails({
               channels={channels}
               conversation={conversation}
               initialActivity={initialActivity}
+              initialTranscript={initialTranscript}
+              close={close}
               settingsHost={settings.settingsHost}
+              onDiscard={settings.discard}
               memories={memories}
+              communities={communities}
               settingsContent={
                 <div>
                   <InlineHeader title="Agent details" level={4} />
@@ -333,7 +503,7 @@ export function AgentDetails({
                             if (!npub) return;
                             setCopyError("");
                             void Promise.resolve()
-                              .then(() => navigator.clipboard.writeText(npub))
+                              .then(() => writeClipboardText(npub))
                               .then(() => setCopied(true))
                               .catch(() =>
                                 setCopyError(
@@ -345,10 +515,48 @@ export function AgentDetails({
                       }
                     />
                     <AgentArchiveRetry agents={agents} agent={agent} />
+                    {inSeveral(agents, agent) && (
+                      <PreferenceRow
+                        title="Remove from this community"
+                        subtitle={
+                          agent.deleting
+                            ? "Its Remove didn't finish, so it stays stopped here. Remove it again to finish."
+                            : `Also in ${agents
+                                .memberships(agent.pubkey)
+                                .filter(
+                                  (membership) =>
+                                    membership.key !== agent.key &&
+                                    !membership.deleting,
+                                )
+                                .map(({ origin }) =>
+                                  origin.replace(/^https:\/\//, ""),
+                                )
+                                .join(", ")}, where it stays.`
+                        }
+                        trailing={
+                          <AgentRemoveHere
+                            agents={agents}
+                            agent={agent}
+                            onRemoved={onRemoved}
+                            trigger={(open) => (
+                              <Button
+                                size="compact"
+                                variant="outline"
+                                aria-label="Remove from this community"
+                                onClick={open}
+                              >
+                                Remove
+                              </Button>
+                            )}
+                          />
+                        }
+                      />
+                    )}
                     <PreferenceRow
                       title="Delete agent"
                       subtitle={
                         agent.deleting &&
+                        !inSeveral(agents, agent) &&
                         "Its Delete didn't finish, so it stays stopped. Delete it again to finish."
                       }
                       trailing={
@@ -379,9 +587,92 @@ export function AgentDetails({
               }
             />
           </section>
+          <div ref={setSaveFooter} className={styles.saveFooter} />
         </div>
-        <div ref={setSaveFooter} className={styles.saveFooter} />
+        {type?.PanelFooter && (
+          <div ref={setPanelFooter} className={styles.panelFooter}>
+            <AnimatePresence mode="wait">
+              {panelNotice ?? <type.PanelFooter key="sign-in" />}
+            </AnimatePresence>
+          </div>
+        )}
       </div>
     </AgentSaveFooter>
+  );
+}
+
+const noSubscribe = () => () => {};
+
+/** Shared configuration edits affect every remaining membership, including offline ones. */
+function SharedSettingsNotice({
+  agents,
+  agent,
+  communities,
+}: {
+  agents: Agents;
+  agent: Agent;
+  communities: CommunityReader | undefined;
+}) {
+  const known = useSyncExternalStore(
+    communities?.subscribe ?? noSubscribe,
+    () => communities?.snapshot(),
+  );
+  const memberships = agents
+    .memberships(agent.pubkey)
+    .filter((membership) => !membership.deleting)
+    .sort((a, b) => Number(b.key === agent.key) - Number(a.key === agent.key));
+  if (memberships.length < 2) return null;
+  const items = memberships.map(({ origin }) => ({
+    ...communityPresentation(origin, known?.memberships),
+    shape: "squircle" as const,
+  }));
+  const names = items.map((item) => item.name).join(", ");
+  return (
+    <div className={styles.sharedSettingsNotice}>
+      <PopoverRoot>
+        <PopoverTrigger
+          openOnHover="preview"
+          render={
+            <Button variant="plain" size="inline" style={{ maxWidth: "100%" }}>
+              <span className="flex min-w-0 flex-wrap items-center justify-center gap-1 whitespace-normal text-subtle">
+                Shared across
+                <AvatarStack items={items} size="mini" />
+                <span className="sr-only">{names}</span>
+              </span>
+            </Button>
+          }
+        />
+        <PopoverPopup
+          side="top"
+          align="center"
+          aria-label={`${agent.name}’s shared settings`}
+        >
+          <p className="m-0 text-body-sm text-subtle">
+            {agent.name}’s name, instructions, and settings are shared across
+            these communities:
+          </p>
+          <ul
+            aria-label="Communities"
+            className="m-0 mt-2 grid list-none gap-2 p-0"
+          >
+            {items.map((item) => (
+              <li
+                key={item.id}
+                className="flex min-w-0 items-center gap-2 text-body-sm"
+              >
+                <Avatar
+                  src={item.src}
+                  alt=""
+                  fallback={item.name}
+                  shape={item.shape}
+                  size="small"
+                />
+                <span className="min-w-0 break-words">{item.name}</span>
+              </li>
+            ))}
+          </ul>
+        </PopoverPopup>
+      </PopoverRoot>
+    </div>
   );
 }

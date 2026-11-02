@@ -18,15 +18,9 @@ import {
 } from "../../features/relay/channel-details-protocol";
 import { Button } from "../../shared/design-system/ui/Button";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
-import {
-  ChannelPrivacyConfirmation,
-  skipPrivacyConfirmation,
-  rememberPrivacyConfirmation,
-} from "./ChannelPrivacyConfirmation";
 import { ChannelDurationField } from "./ChannelDurationField";
 import { ChannelTextField } from "./ChannelTextField";
-import { Switch } from "../../shared/design-system/ui/Switch";
-import { DEFAULT_TEMPORARY_CHANNEL_TTL_SECONDS } from "../../features/relay/work-sessions";
+import { DEFAULT_TEMPORARY_CHANNEL_TTL_SECONDS } from "../../features/relay/channel-writes";
 import styles from "./Channels.module.css";
 
 export type ChannelDetailsAction = {
@@ -58,7 +52,6 @@ export function ChannelDetailsEditor({
     capability,
     id,
     scope,
-    skipWarning: false,
     loading: true,
     editing: false,
     focusField: "name" as "name" | "description",
@@ -67,7 +60,6 @@ export function ChannelDetailsEditor({
     temporaryTtl: undefined as number | undefined,
     // Comparison only: retained through failed reads, never used as authority.
     baselineTtl: undefined as number | undefined,
-    privacyChoice: undefined as ChannelDetailsDraft["visibility"] | undefined,
     error: "",
     base: undefined as ChannelDetails | undefined,
     draft: undefined as ChannelDetailsDraft | undefined,
@@ -82,7 +74,6 @@ export function ChannelDetailsEditor({
   const busy = useRef(false);
   const nameInput = useRef<HTMLInputElement>(null);
   const descriptionInput = useRef<HTMLTextAreaElement>(null);
-  const privacyCancel = useRef<HTMLButtonElement>(null);
   const keepEditing = useRef<HTMLButtonElement>(null);
   const confirmDiscard = view.confirmDiscard && !attempt;
   const previousDiscard = useRef(confirmDiscard);
@@ -91,21 +82,9 @@ export function ChannelDetailsEditor({
       (confirmDiscard ? keepEditing.current : nameInput.current)?.focus();
     previousDiscard.current = confirmDiscard;
   }, [view.editing, confirmDiscard]);
-  const previousPrivacyChoice = useRef(view.privacyChoice);
-  const privateSwitch = useRef<HTMLSpanElement>(null);
   const editButton = useRef<HTMLButtonElement>(null);
   const formId = useId();
-  const privateControlId = useId();
   const statusId = useId();
-  useLayoutEffect(() => {
-    if (view.editing && view.privacyChoice !== previousPrivacyChoice.current) {
-      (view.privacyChoice
-        ? privacyCancel.current
-        : privateSwitch.current
-      )?.focus();
-    }
-    previousPrivacyChoice.current = view.privacyChoice;
-  }, [view.editing, view.privacyChoice]);
   const patch = useCallback(
     (
       next:
@@ -121,22 +100,20 @@ export function ChannelDetailsEditor({
   );
   const load = useCallback(
     async (signal: AbortSignal) => {
-      patch({ loading: true, error: "", privacyChoice: undefined });
+      patch({ loading: true, error: "" });
       try {
         const base = await capability.load(id, signal);
         if (!signal.aborted)
           patch((old) => ({
             base,
             baselineTtl: base.ttlSeconds,
-            // Preserve explicit choices, but adopt remote visibility/lifetime
-            // for untouched fields. Unknown prior privacy must never reopen.
+            // Access is managed in Members; text/lifespan edits adopt its
+            // current values without silently changing anybody's access.
             draft: old.draft
               ? {
                   ...old.draft,
-                  visibility:
-                    old.base && old.draft.visibility !== old.base.visibility
-                      ? old.draft.visibility
-                      : base.visibility,
+                  visibility: base.visibility,
+                  joinRole: base.joinRole,
                   ttlSeconds:
                     old.draft.ttlSeconds === old.baselineTtl
                       ? base.ttlSeconds
@@ -181,6 +158,7 @@ export function ChannelDetailsEditor({
     (normalized.name !== view.base.name ||
       normalized.description !== view.base.description ||
       normalized.visibility !== view.base.visibility ||
+      normalized.joinRole !== view.base.joinRole ||
       normalized.ttlSeconds !== view.base.ttlSeconds);
   const temporaryTtl =
     draft?.ttlSeconds ??
@@ -189,7 +167,6 @@ export function ChannelDetailsEditor({
     DEFAULT_TEMPORARY_CHANNEL_TTL_SECONDS;
   const canSave =
     view.editing &&
-    !view.privacyChoice &&
     !confirmDiscard &&
     !locked &&
     canEdit &&
@@ -211,7 +188,6 @@ export function ChannelDetailsEditor({
       patch({
         editing: false,
         error: "",
-        privacyChoice: undefined,
         confirmDiscard: false,
       });
   };
@@ -224,11 +200,11 @@ export function ChannelDetailsEditor({
       draft.name !== view.base.name ||
       draft.description !== view.base.description ||
       draft.visibility !== view.base.visibility ||
+      draft.joinRole !== view.base.joinRole ||
       draft.ttlSeconds !== view.base.ttlSeconds);
   const requestClose = () => {
     if (pending || busy.current) return;
-    if (view.privacyChoice) patch({ privacyChoice: undefined });
-    else if (confirmDiscard) patch({ confirmDiscard: false });
+    if (confirmDiscard) patch({ confirmDiscard: false });
     else if (unsaved) patch({ confirmDiscard: true });
     else close();
   };
@@ -340,34 +316,24 @@ export function ChannelDetailsEditor({
       <Dialog
         open={view.editing}
         headerGap="compact"
-        footerGap={view.privacyChoice ? "compact" : "default"}
+        footerGap="default"
         step={
           confirmDiscard
             ? { key: "discard", scale: 0.95 }
-            : view.privacyChoice
-              ? { key: "privacy", scale: 0.95 }
-              : { key: "details", scale: 1.05 }
+            : { key: "details", scale: 1.05 }
         }
         onOpenChange={(open) => {
           if (!open) requestClose();
         }}
         dismissOnOutsideClick
-        title={
-          confirmDiscard
-            ? "Discard changes?"
-            : view.privacyChoice
-              ? view.privacyChoice === "private"
-                ? "Make channel private?"
-                : "Make channel public?"
-              : "Edit channel details"
-        }
+        title={confirmDiscard ? "Discard changes?" : "Edit channel details"}
         description={
           confirmDiscard
             ? "Your channel details have unsaved changes."
             : undefined
         }
         closeLabel={
-          confirmDiscard || view.privacyChoice
+          confirmDiscard
             ? "Back to edit channel details"
             : "Close edit channel details"
         }
@@ -393,57 +359,8 @@ export function ChannelDetailsEditor({
                 Discard changes
               </Button>
             </>
-          ) : view.privacyChoice ? (
-            <>
-              <Button
-                ref={privacyCancel}
-                onClick={() => patch({ privacyChoice: undefined })}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="prominent"
-                disabled={locked || !canEdit}
-                onClick={() => {
-                  if (draft && view.privacyChoice && !locked && canEdit) {
-                    if (view.skipWarning) rememberPrivacyConfirmation(scope);
-                    patch({
-                      draft: { ...draft, visibility: view.privacyChoice },
-                      privacyChoice: undefined,
-                    });
-                  }
-                }}
-              >
-                Continue
-              </Button>
-            </>
           ) : (
             <>
-              {draft && (
-                <span className={styles.detailsPrivate}>
-                  <Switch
-                    id={privateControlId}
-                    ref={privateSwitch}
-                    aria-label="Private"
-                    checked={draft.visibility === "private"}
-                    disabled={locked || !canEdit}
-                    onCheckedChange={(checked) => {
-                      if (locked || !canEdit) return;
-                      const visibility = checked ? "private" : "public";
-                      if (skipPrivacyConfirmation(scope))
-                        patch({ draft: { ...draft, visibility } });
-                      else
-                        patch({
-                          privacyChoice: visibility,
-                          skipWarning: false,
-                        });
-                    }}
-                  />
-                  <label className="text-label-sm" htmlFor={privateControlId}>
-                    Private
-                  </label>
-                </span>
-              )}
               <Button disabled={pending} onClick={close}>
                 {attempt ? "Close" : "Cancel"}
               </Button>
@@ -471,13 +388,7 @@ export function ChannelDetailsEditor({
           )
         }
       >
-        {confirmDiscard ? null : view.privacyChoice ? (
-          <ChannelPrivacyConfirmation
-            visibility={view.privacyChoice}
-            checked={view.skipWarning}
-            onCheckedChange={(skipWarning) => patch({ skipWarning })}
-          />
-        ) : (
+        {confirmDiscard ? null : (
           <form
             id={formId}
             className={styles.detailsEditor}

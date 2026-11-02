@@ -5,6 +5,7 @@ import {
   ArrowRightIcon,
   CaretDownIcon,
   PlusIcon,
+  TrashIcon,
   DotsThreeIcon,
   GearIcon,
   NotificationIcon,
@@ -16,15 +17,23 @@ import {
   MenuTrigger,
   MenuPopup,
   MenuItem,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuGroup,
+  MenuGroupLabel,
 } from "../../../../src/shared/design-system/ui/Menu";
 import { SurfaceButton } from "../../../../src/shared/design-system/ui/SurfaceButton";
 import { Button } from "../../../../src/shared/design-system/ui/Button";
+import { ChoiceRow } from "../../../../src/shared/design-system/ui/ChoiceRow";
 import { IconButton } from "../../../../src/shared/design-system/ui/IconButton";
+import { SplitButton } from "../../../../src/shared/design-system/ui/SplitButton";
 
 const variants = [
   "prominent",
   "subtle",
+  "subtle-muted",
   "ghost",
+  "glass",
   "inverted",
   "destructive",
   "outline",
@@ -35,7 +44,9 @@ const sizes = ["sm", "md", "lg"] as const;
 const descriptions = {
   prominent: "The main action in a group.",
   subtle: "A supporting action with a quiet fill.",
+  "subtle-muted": "A quiet fill with muted text until interaction.",
   ghost: "A low-emphasis action without a resting fill.",
+  glass: "A translucent action over artwork.",
   inverted: "An action on an inverse surface.",
   destructive: "An action that removes or destroys something.",
   outline: "A supporting action with a visible boundary.",
@@ -57,7 +68,7 @@ function ButtonMatrix({ kind }: { kind: "text" | "icon" }) {
       <div className="flex flex-col gap-6">
         <SectionHeading
           title="Emphasis and sizes"
-          description="Small · 32px, medium · 40px, large · 52px. Hover, press, or Tab through the controls to inspect their states."
+          description="Small · 32px, medium · 40px, large · 52px. Medium icon + label uses 12px leading / 16px trailing padding. Hover, press, or Tab through the controls to inspect their states."
         />
         <fieldset className="flex flex-wrap gap-2" aria-label="Preview state">
           {(["enabled", "disabled", "loading"] as const).map((value) => (
@@ -136,6 +147,7 @@ function ButtonMatrix({ kind }: { kind: "text" | "icon" }) {
 export function ButtonSpecimen() {
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [labelled, setLabelled] = useState(false);
   return (
     <div className="component-specimen-stack">
       <ExamplePreview
@@ -145,6 +157,64 @@ export function ButtonSpecimen() {
         <Button>Continue</Button>
       </ExamplePreview>
       <ButtonMatrix kind="text" />
+      <ExamplePreview code='<SplitButton menuLabel="Other add options" menu={<MenuItem>View only</MenuItem>}>Add</SplitButton>'>
+        <SplitButton
+          variant="prominent"
+          menuLabel="Other add options"
+          menu={
+            <MenuGroup>
+              <MenuGroupLabel>Add as</MenuGroupLabel>
+              <MenuItem>
+                <ChoiceRow
+                  label="Participant"
+                  description="Send messages, reply, and react."
+                />
+              </MenuItem>
+              <MenuItem>
+                <ChoiceRow
+                  label="View only"
+                  description="Read messages and threads."
+                />
+              </MenuItem>
+              <MenuItem>
+                <ChoiceRow
+                  label="Admin"
+                  description="Manage this channel and its members."
+                />
+              </MenuItem>
+            </MenuGroup>
+          }
+        >
+          Add
+        </SplitButton>
+      </ExamplePreview>
+      <ExamplePreview
+        className="bg-affordance-accent"
+        code='<Button variant="glass">Message</Button>'
+      >
+        <Button variant="glass">Message</Button>
+        <Button variant="glass" loading>
+          Message
+        </Button>
+        <Button variant="glass" disabled>
+          Message
+        </Button>
+      </ExamplePreview>
+      <Button size="caption" variant="subtle-muted">
+        Send
+      </Button>
+      <ExamplePreview code='<Button size="sm" shape={labelled ? "capsule" : "icon"} aria-label="Toggle label">…</Button>'>
+        <Button
+          size="sm"
+          variant="ghost"
+          shape={labelled ? "capsule" : "icon"}
+          aria-label="Toggle label"
+          onClick={() => setLabelled(!labelled)}
+        >
+          <PlusIcon aria-hidden="true" />
+          {labelled && "Labelled action"}
+        </Button>
+      </ExamplePreview>
       <ExamplePreview
         code={`<Button size="inline" variant="plain" aria-expanded={expanded}>Previous steps <CaretDownIcon aria-hidden="true" /></Button>`}
       >
@@ -360,7 +430,7 @@ export function IconButtonSpecimen() {
       <ExamplePreview
         label="Glyph-state toggle"
         code={
-          '<IconButton variant="bare" size="sm" aria-pressed={unread} aria-label="Unread only" icon={unread ? <NotificationFilledIcon /> : <NotificationIcon />} />'
+          '<IconButton variant="bare" size="sm" aria-pressed={unread} aria-label="Unread only" icon={unread ? <NotificationFilledIcon size="1.25rem" /> : <NotificationIcon size="1.25rem" />} />'
         }
       >
         <IconButton
@@ -370,10 +440,22 @@ export function IconButtonSpecimen() {
           aria-pressed={unread}
           title="Show unread only"
           onClick={() => setUnread(!unread)}
-          icon={unread ? <NotificationFilledIcon /> : <NotificationIcon />}
+          icon={
+            unread ? (
+              <NotificationFilledIcon size="1.25rem" />
+            ) : (
+              <NotificationIcon size="1.25rem" />
+            )
+          }
         />
       </ExamplePreview>
       <ButtonMatrix kind="icon" />
+      <IconButton
+        variant="destructive-quiet"
+        shape="inset"
+        aria-label="Remove queued message"
+        icon={<TrashIcon />}
+      />
       <ExamplePreview
         label="Row-end action"
         code={`<div className="flex min-h-12 items-center rounded-row bg-affordance-subtle">
@@ -563,6 +645,21 @@ export function IconButtonSpecimen() {
         >
           <div className="component-specimen-row">
             <IconButton
+              variant="inset"
+              shape="round"
+              size="md"
+              aria-label="Inset action"
+              icon={<GearIcon aria-hidden="true" />}
+            />
+            <IconButton
+              variant="inset"
+              disabled
+              shape="round"
+              size="md"
+              aria-label="Disabled inset action"
+              icon={<GearIcon aria-hidden="true" />}
+            />
+            <IconButton
               variant="chrome"
               aria-label="Chrome settings"
               icon={<GearIcon aria-hidden="true" />}
@@ -598,6 +695,75 @@ export function IconButtonSpecimen() {
           />
         </ExamplePreview>
       </section>
+    </div>
+  );
+}
+
+const harnesses = ["Claude", "Codex", "Goose"] as const;
+
+export function SplitButtonSpecimen() {
+  const [choice, setChoice] = useState<string>(harnesses[0]);
+  const [loading, setLoading] = useState(false);
+  const menu = (
+    <MenuRadioGroup value={choice} onValueChange={setChoice}>
+      {harnesses.map((item) => (
+        <MenuRadioItem key={item} value={item} closeOnClick>
+          {item}
+        </MenuRadioItem>
+      ))}
+    </MenuRadioGroup>
+  );
+  const run = () => {
+    setLoading(true);
+    setTimeout(() => setLoading(false), 1200);
+  };
+  return (
+    <div className="component-specimen-stack">
+      <p className="text-body-sm text-subtle">
+        The label names the chosen option. Choosing in the menu changes it
+        without running the action.
+      </p>
+      <ExamplePreview
+        className="justify-center"
+        code={`<SplitButton
+  menuLabel="Choose agent type"
+  menu={<MenuRadioGroup value={choice} onValueChange={setChoice}>…</MenuRadioGroup>}
+  onClick={run}
+>
+  Import as {choice}
+</SplitButton>`}
+      >
+        {(["subtle", "outline", "prominent"] as const).map((variant) => (
+          <SplitButton
+            key={variant}
+            variant={variant}
+            size="sm"
+            menuLabel="Choose agent type"
+            menu={menu}
+            loading={loading}
+            onClick={run}
+          >
+            Import as {choice}
+          </SplitButton>
+        ))}
+      </ExamplePreview>
+      <ExamplePreview
+        label="Medium and disabled"
+        code={`<SplitButton menuLabel="Choose agent type" menu={menu}>Import as {choice}</SplitButton>
+<SplitButton variant="outline" menuLabel="Choose agent type" menu={menu} disabled>Import as {choice}</SplitButton>`}
+      >
+        <SplitButton menuLabel="Choose agent type" menu={menu} onClick={run}>
+          Import as {choice}
+        </SplitButton>
+        <SplitButton
+          variant="outline"
+          menuLabel="Choose agent type"
+          menu={menu}
+          disabled
+        >
+          Import as {choice}
+        </SplitButton>
+      </ExamplePreview>
     </div>
   );
 }

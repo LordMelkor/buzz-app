@@ -1,0 +1,11 @@
+.createIcon {
+  transition: transform var(--duration-state) var(--easing-state);
+}
+[aria-expanded="true"] .createIcon {
+  transform: rotate(45deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .createIcon {
+    transition: none;
+  }
+}

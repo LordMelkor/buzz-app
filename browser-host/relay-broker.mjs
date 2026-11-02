@@ -1,4 +1,4 @@
-import { audienceAuthorityCommunity } from "../src/features/sessions/audience-authority.ts";
+import { isSidebarPreferencesBatch } from "../src/features/relay/sidebar-preferences.ts";
 import {
   isCatalogKind,
   MAX_EVENT_BYTES as CATALOG_EVENT_BYTES,
@@ -9,15 +9,21 @@ import { filterSummary, httpLabel } from "../src/features/developer/traffic.ts";
 
 import { isWorkflowDefinitionBatch } from "../src/features/workflows/queries.ts";
 import { validStatusTemplate } from "./user-status.mjs";
+import { validTypingTemplate } from "../src/features/relay/typing-protocol.ts";
 import { memoryFilter, decodeAgentMemory } from "./agent-memory.mjs";
 import { memoryResponseText } from "../src/features/agents/memory.ts";
 import { prepareMedia } from "./media-preparation.mjs";
-import { assertSidebarSortIntent, mutateSidebarSort } from "./sidebar-sort.mjs";
+import {
+  assertSidebarSortIntent,
+  mutateSidebarSort,
+  assertSidebarFilterIntent,
+  mutateSidebarFilter,
+} from "./sidebar-sort.mjs";
 import { readProjectGit } from "./project-git.mjs";
 import {
   communityGitRepository,
   parseGitRead,
-} from "../src/features/projects/git.ts";
+} from "../src/features/repos/git.ts";
 import { validateMemberAdministrationTemplate } from "../src/features/channel-members/administration-protocol.ts";
 import { validateLifecycleTemplate } from "../src/features/relay/channel-lifecycle-protocol.ts";
 import { validateDetailsTemplate } from "../src/features/relay/channel-details-protocol.ts";
@@ -30,7 +36,7 @@ import {
 } from "./channel-kit.mjs";
 import { uploadAttachment, UploadError } from "./attachment-upload.mjs";
 import { validateUploadResult } from "../src/features/relay/attachments.ts";
-import { validChannelCommand } from "./session-commands.mjs";
+import { validChannelCommand } from "./channel-commands.mjs";
 import {
   adminReason,
   claimReason,
@@ -46,6 +52,10 @@ import {
   directMessageReceipt,
 } from "./direct-messages.mjs";
 import { SocketRequestError } from "../src/features/relay/socket-requests.ts";
+import {
+  ARTIFACT_SYNC_MAX_VIEWS,
+  artifactSyncFilter,
+} from "../src/features/relay/artifact-sync-filter.ts";
 import {
   assertSidebarStarIntent,
   mutateSidebarStar,
@@ -84,8 +94,10 @@ import {
   assertSidebarAssignmentIntent,
   assertSidebarSectionOrderIntent,
   assertSidebarSectionRemovalIntent,
+  assertSidebarSectionRenameIntent,
   mutateSidebarSectionOrder,
   mutateSidebarSectionRemoval,
+  mutateSidebarSectionRename,
   mutateSidebarAssignment,
   SIDEBAR_REQUEST_BYTES,
   SIDEBAR_HEAD_BYTES,
@@ -233,7 +245,7 @@ function loadIdentity(authorizedViewer) {
   }
   if (!expected)
     throw new Error(
-      "Set BUZZ_DEV_VIEWER in .env.local to your existing Buzz public key (hex or npub, never nsec). See README.md#relay-channels.",
+      "Set BUZZ_DEV_VIEWER in .env.local to your existing Buzz public key (hex or npub, never nsec). See docs/contributing.md#live-relay-development.",
     );
   // The installed Buzz desktop keeps its secrets blob in the OS credential
   // store under service `buzz-desktop`, username `secrets`: the macOS Keychain,
@@ -314,13 +326,12 @@ async function relayAuthority(fetch, relay) {
     channelIdentity:
       Array.isArray(nip11.supported_extensions) &&
       nip11.supported_extensions.includes("nip-cl"),
-    ...(audienceAuthorityCommunity(nip11.audience_authority)
-      ? {
-          audienceAuthorityCommunity: audienceAuthorityCommunity(
-            nip11.audience_authority,
-          ),
-        }
-      : {}),
+    // NIP-AR sync: REQ with `"artifact": "current"` keeps a set current.
+    artifactSync: nip11.artifacts?.sync?.version === 1,
+    // Bridge search accepts `search_sort: "newest"`.
+    searchSort:
+      Array.isArray(nip11.supported_extensions) &&
+      nip11.supported_extensions.includes("buzz-search-sort"),
     ...(readSnapshotCommunity(nip11.read_state_snapshot)
       ? { readStateCommunity: readSnapshotCommunity(nip11.read_state_snapshot) }
       : {}),
@@ -599,6 +610,59 @@ export function validAgentEnrollment(event) {
     )
   );
 }
+/** Owner-signed agent listings; preserve prior settings and extension tags. */
+function validAgentRecord(event, viewer) {
+  if (
+    event?.kind !== 30177 ||
+    typeof event.content !== "string" ||
+    !Number.isSafeInteger(event.created_at) ||
+    event.created_at < 0 ||
+    !Array.isArray(event.tags) ||
+    !event.tags.every(
+      (tag) =>
+        Array.isArray(tag) && tag.every((value) => typeof value === "string"),
+    )
+  )
+    return false;
+  const coordinates = event.tags.filter(([name]) => name === "d");
+  if (
+    coordinates.length !== 1 ||
+    coordinates[0].length !== 2 ||
+    !/^[0-9a-f]{64}$/.test(coordinates[0][1])
+  )
+    return false;
+  // Admission must fit the complete socket frame, including the fixed-width
+  // hash and signature. This also fits the HTTP body and native signing bounds.
+  const frame = [
+    "EVENT",
+    {
+      id: "0".repeat(64),
+      pubkey: viewer,
+      created_at: event.created_at,
+      kind: event.kind,
+      tags: event.tags,
+      content: event.content,
+      sig: "0".repeat(128),
+    },
+  ];
+  if (Buffer.byteLength(JSON.stringify(frame)) > 64 * 1024) return false;
+  try {
+    const body = JSON.parse(event.content);
+    return (
+      body !== null &&
+      typeof body === "object" &&
+      !Array.isArray(body) &&
+      typeof body.name === "string" &&
+      !!body.name.trim() &&
+      Number.isSafeInteger(body.parallelism) &&
+      body.parallelism >= 0 &&
+      typeof body.respond_to === "string"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Base Buzz agent delete: only removal of one member, relay-authorized. */
 /** The owner's NIP-09 deletion of one of their own kind 30177 agent records. */
 export function validAgentRecordDeletion(event, owner) {
@@ -680,7 +744,9 @@ export function validFilters(filters) {
   return (
     Array.isArray(filters) &&
     filters.length >= 1 &&
-    (filters.length <= MAX_FILTERS || isWorkflowDefinitionBatch(filters)) &&
+    (filters.length <= MAX_FILTERS ||
+      isWorkflowDefinitionBatch(filters) ||
+      isSidebarPreferencesBatch(filters)) &&
     filters.every(
       (filter) =>
         filter &&
@@ -766,21 +832,6 @@ export function relayBrokerPlugin({
       const viewer = getPublicKey(key);
       let archive;
       const localArchive = () => (archive ??= openArchive(archiveFile));
-      const archiveSettings = (relay) =>
-        localArchive().request(viewer, relay, { action: "settings" }, key);
-      const updateArchiveCapture = (stream) => {
-        const settings = archiveSettings(stream.relay);
-        stream.archiveRevision = settings.revision;
-        stream.archiveObserver = settings.observer;
-        if (stream.archiveFailureRevision !== settings.revision) {
-          stream.archiveFailureRevision = undefined;
-          stream.archiveState(settings.observer ? "saving" : "off");
-        }
-        stream.traffic.archive([
-          ...(settings.observer ? [24200] : []),
-          ...(settings.metrics ? [44200] : []),
-        ]);
-      };
       const upstream = createUpstream();
       // Injected fixtures bypass the pool; the live relay always uses the warm agent.
       const fetchUpstream = upstreamFetch ?? upstream.fetch;
@@ -1064,9 +1115,15 @@ export function relayBrokerPlugin({
                 error: "Community discovery failed",
               });
             const info = await response.json();
-            // Saved-community icons are public NIP-11 metadata, not join admission.
+            // Saved-community presentation is public metadata, not join admission.
             if (route === "/api/relay/icon-info")
-              return json(res, 200, { icon: info?.icon });
+              return json(res, 200, {
+                name:
+                  typeof info?.name === "string" && info.name.length <= 100
+                    ? info.name
+                    : undefined,
+                icon: info?.icon,
+              });
             const gifSearchPath = relayKlipySearchPath(info);
             if (gifSearchPath)
               gifSearchPaths.set(relay, Promise.resolve(gifSearchPath));
@@ -1154,8 +1211,10 @@ export function relayBrokerPlugin({
               "/api/relay/sidebar-assignment",
               "/api/relay/sidebar-section-removal",
               "/api/relay/sidebar-section-order",
+              "/api/relay/sidebar-section-rename",
               "/api/relay/sidebar-star",
               "/api/relay/sidebar-sort",
+              "/api/relay/sidebar-filter",
               "/api/relay/sidebar-mute",
             ].includes(route) &&
             req.method === "POST"
@@ -1165,6 +1224,11 @@ export function relayBrokerPlugin({
                 "channel-sections",
                 assertSidebarSectionRemovalIntent,
                 mutateSidebarSectionRemoval,
+              ],
+              "/api/relay/sidebar-section-rename": [
+                "channel-sections",
+                assertSidebarSectionRenameIntent,
+                mutateSidebarSectionRename,
               ],
               "/api/relay/sidebar-section-order": [
                 "channel-sections",
@@ -1181,6 +1245,11 @@ export function relayBrokerPlugin({
                 assertSidebarStarIntent,
                 mutateSidebarStar,
               ],
+              "/api/relay/sidebar-filter": [
+                "channel-filter",
+                assertSidebarFilterIntent,
+                mutateSidebarFilter,
+              ],
               "/api/relay/sidebar-sort": [
                 "channel-sort",
                 assertSidebarSortIntent,
@@ -1192,7 +1261,8 @@ export function relayBrokerPlugin({
                 mutateSidebarMute,
               ],
             }[route];
-            const sorting = coordinate === "channel-sort";
+            const sorting =
+              coordinate === "channel-sort" || coordinate === "channel-filter";
             const muting = coordinate === "channel-mutes";
             // Sort and order intents carry up to 100 section IDs.
             const listing =
@@ -1321,7 +1391,14 @@ export function relayBrokerPlugin({
                   readHead,
                   publishEvent,
                 );
-                return sorting ? { groups: result } : result;
+                return coordinate === "channel-filter"
+                  ? {
+                      groups: result.filters,
+                      activeWindowSeconds: result.activeWindowSeconds,
+                    }
+                  : sorting
+                    ? { groups: result }
+                    : result;
               });
             sidebarMutations.set(relay, mutation);
             try {
@@ -1365,17 +1442,11 @@ export function relayBrokerPlugin({
             )
               return json(res, 400, { error: "Invalid archive request" });
             try {
-              const result = localArchive().request(viewer, relay, body, key);
-              if (["configure", "clear"].includes(body.action))
-                for (const stream of streams.values())
-                  if (stream.relay === relay) {
-                    try {
-                      updateArchiveCapture(stream);
-                    } catch {
-                      stream.archiveState("error");
-                    }
-                  }
-              return json(res, 200, result);
+              return json(
+                res,
+                200,
+                localArchive().request(viewer, relay, body, key),
+              );
             } catch {
               return json(res, 500, {
                 error:
@@ -1419,6 +1490,7 @@ export function relayBrokerPlugin({
                 9001,
                 30078,
                 30175,
+                30177,
                 30178,
                 40100,
                 1984,
@@ -1435,6 +1507,7 @@ export function relayBrokerPlugin({
               attachmentUploads: true,
               sidebarPreferences: true,
               sidebarSortWrites: true,
+              sidebarFilterWrites: true,
               channelActivity: true,
               sidebarMuteWrites: true,
               channelKit: true,
@@ -1443,6 +1516,7 @@ export function relayBrokerPlugin({
               sidebarPreferenceWrites: true,
               sidebarSectionRemoval: true,
               sidebarSectionOrder: true,
+              sidebarSectionRename: true,
               sidebarStarWrites: true,
               agentLibrary: true,
               agentLogProof: true,
@@ -1452,6 +1526,76 @@ export function relayBrokerPlugin({
               presence: true,
               agentActivity: true,
             });
+          }
+          if (
+            (route === "/api/relay/stream-artifact-sync" ||
+              route === "/api/relay/stream-artifact-sync-close") &&
+            req.method === "POST"
+          ) {
+            const opening = route === "/api/relay/stream-artifact-sync";
+            let raw = "";
+            req.setEncoding("utf8");
+            for await (const part of req) {
+              raw += part;
+              if (Buffer.byteLength(raw) > 300000)
+                return json(res, 413, { error: "Artifact sync too large" });
+            }
+            let streamId, id, filter;
+            try {
+              const body = JSON.parse(raw);
+              streamId = body.streamId;
+              id = body.id;
+              if (typeof id !== "string" || !/^[0-9a-z-]{1,32}$/.test(id))
+                throw new Error("Invalid sync id");
+              if (opening) filter = artifactSyncFilter(body.filter);
+            } catch {
+              return json(res, 400, { error: "Invalid artifact sync" });
+            }
+            if (
+              typeof streamId !== "string" ||
+              !/^[0-9a-f]{32}$/.test(streamId)
+            )
+              return json(res, 400, { error: "Invalid artifact sync" });
+            const stream = streams.get(streamId);
+            if (!stream || stream.relay !== relay)
+              return json(res, 404, {
+                error: "Live stream no longer available",
+              });
+            const existing = stream.syncs.get(id);
+            if (!opening) {
+              stream.syncs.delete(id);
+              existing?.();
+              // The close can overtake its open: remember it so the late
+              // open cannot take a slot. IDs are never reused on a stream.
+              // A forgotten record would let its open take a slot again, so
+              // a stream with too many unresolved closes ends instead: that
+              // ends every sync on it, and a late open finds no stream.
+              if (!existing) {
+                if (stream.closedSyncs.size >= 64) stream.close();
+                else stream.closedSyncs.add(id);
+              }
+              return json(res, 200, { accepted: true });
+            }
+            if (stream.closedSyncs.delete(id))
+              return json(res, 409, { error: "Artifact sync already closed" });
+            if (existing || stream.syncs.size >= ARTIFACT_SYNC_MAX_VIEWS)
+              return json(res, 429, {
+                error: "Artifact sync capacity reached",
+              });
+            const frame = (value) =>
+              stream.write("artifact-sync", { id, ...value });
+            stream.syncs.set(
+              id,
+              stream.traffic.syncArtifacts(filter, {
+                event: (event) => frame({ type: "event", event }),
+                eose: () => frame({ type: "eose" }),
+                closed: (reason) => {
+                  stream.syncs.delete(id);
+                  frame({ type: "closed", reason });
+                },
+              }),
+            );
+            return json(res, 200, { accepted: true });
           }
           if (
             [
@@ -1694,8 +1838,10 @@ export function relayBrokerPlugin({
               joined,
               interestRevision,
               traffic: undefined,
-              archiveState: (state) => write("archive-state", { state }),
               close: undefined,
+              write,
+              syncs: new Map(),
+              closedSyncs: new Set(),
             };
             const traffic = subscribeRelayTraffic(
               relay.replace(/^http/, "ws"),
@@ -1711,33 +1857,6 @@ export function relayBrokerPlugin({
                     });
                 },
                 presence: (event) => write("presence", event),
-                capture: (event) => {
-                  try {
-                    localArchive().ingest(
-                      viewer,
-                      relay,
-                      event,
-                      stream.archiveRevision,
-                      key,
-                    );
-                    if (event.kind === 24200) {
-                      stream.archiveFailureRevision = undefined;
-                      stream.archiveState(
-                        stream.archiveObserver ? "saving" : "off",
-                      );
-                    }
-                  } catch {
-                    if (event.kind === 24200) {
-                      stream.archiveFailureRevision = stream.archiveRevision;
-                      write("archive-error", {});
-                    }
-                    try {
-                      updateArchiveCapture(stream);
-                    } catch {
-                      /* Live decode stays independent of disk failure. */
-                    }
-                  }
-                },
                 telemetry: (event, generation) => {
                   if (res.destroyed) return;
                   try {
@@ -1796,11 +1915,6 @@ export function relayBrokerPlugin({
               res.destroy();
             };
             Object.assign(stream, { traffic, close });
-            try {
-              updateArchiveCapture(stream);
-            } catch {
-              write("archive-error", {});
-            }
             streams.set(streamId, stream);
             res.once("close", close);
             if (res.destroyed) close();
@@ -2570,6 +2684,12 @@ export function relayBrokerPlugin({
                   sent: false,
                 });
               }
+            } else if (filters?.kind === 30177) {
+              if (!validAgentRecord(filters, viewer))
+                return json(res, 400, {
+                  error: "Malformed agent record",
+                  sent: false,
+                });
             } else if ([30175, 30178].includes(filters?.kind)) {
               if (!validCatalogEnvelope(filters))
                 return json(res, 400, {
@@ -2582,6 +2702,12 @@ export function relayBrokerPlugin({
               if (!validReport(filters))
                 return json(res, 400, {
                   error: "Report rejected",
+                  sent: false,
+                });
+            } else if (filters?.kind === 20002) {
+              if (!validTypingTemplate(filters))
+                return json(res, 400, {
+                  error: "Invalid typing indicator",
                   sent: false,
                 });
             } else if (

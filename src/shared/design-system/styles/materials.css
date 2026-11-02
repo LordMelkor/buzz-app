@@ -72,10 +72,15 @@
     0px,
     calc(var(--floating-radius) - var(--floating-inset) - 1px)
   );
-  border: 1px solid var(--border-standard);
+  /* Keep inset geometry; the elevation recipe paints the contour. */
+  border: 1px solid transparent;
   border-radius: var(--floating-radius);
   @apply elevated-material;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-panel);
+
+  @media (forced-colors: active) {
+    border-color: CanvasText;
+  }
 }
 
 /*
@@ -151,11 +156,11 @@
   --interaction-pressed: var(--affordance-subtle-pressed);
   --interaction-selected: var(--affordance-selected);
   --interaction-border: var(--border-prominent);
-  --interaction-row-hover: var(--affordance-subtle);
-  --interaction-row-text: var(--text-subtle);
-  --interaction-row-metadata: var(--text-metadata);
-  --interaction-selected-text: var(--text-subtle);
-  --interaction-selected-metadata: var(--text-metadata);
+  --interaction-row-hover: var(--affordance-row-hover);
+  --interaction-row-text: var(--text-row-subtle);
+  --interaction-row-metadata: var(--text-row-metadata);
+  --interaction-selected-text: var(--text-row-subtle);
+  --interaction-selected-metadata: var(--text-row-metadata);
 }
 @utility interaction-floating {
   --interaction-fill: var(--affordance-floating-control);
@@ -214,7 +219,9 @@
    distinct from quieter control fills and hover. Keep composite channel-row
    paint and shared NavigationItem in agreement. */
 @utility interaction-navigation {
-  --interaction-selected: var(--affordance-selected);
+  --interaction-selected: var(--affordance-navigation-selected);
+  --interaction-selected-text: var(--text-row-selected-subtle);
+  --interaction-selected-metadata: var(--text-row-selected-metadata);
 }
 
 /* The profile's compact availability badge retains the shared status colors. */

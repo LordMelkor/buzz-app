@@ -19,12 +19,19 @@ export function PanelDock({
   keepMounted?: boolean;
 }) {
   const element = useRef<HTMLDivElement>(null);
-  const [retained, setRetained] = useState(open ? children : null);
-  if (open && retained !== children) setRetained(children);
+  const [retained, setRetained] = useState(open ? { children } : null);
+  if (
+    (open || (keepMounted && retained)) &&
+    (!retained || retained.children !== children)
+  )
+    setRetained({ children });
 
   useLayoutEffect(() => {
     if (open || !retained) return;
-    const animations = element.current?.getAnimations?.() ?? [];
+    const animations = [
+      ...(element.current?.getAnimations?.() ?? []),
+      ...(element.current?.parentElement?.getAnimations?.() ?? []),
+    ];
     if (!animations.length) {
       setRetained(null);
       return;
@@ -53,7 +60,7 @@ export function PanelDock({
       aria-hidden={!open || undefined}
     >
       {open && resizeHandle}
-      {open || keepMounted ? children : retained}
+      {open || keepMounted ? children : retained?.children}
     </div>
   );
 }

@@ -2,6 +2,18 @@
   "id": "buzz.github",
   "name": "GitHub",
   "apiVersion": 1,
-  "description": "View GitHub repositories, pull requests, issues, and commits.",
-  "discovery": { "category": "developer-tools-and-integrations" }
+  "description": "View GitHub repositories, issues, and commits, and merge pull requests.",
+  "discovery": {
+    "category": "developer-tools-and-integrations",
+    "tags": ["code"]
+  },
+  "host": {
+    "processes": [
+      {
+        "id": "graphql",
+        "program": "gh",
+        "args": ["api", "graphql", "--hostname", "github.com", "--input", "-"]
+      }
+    ]
+  }
 }

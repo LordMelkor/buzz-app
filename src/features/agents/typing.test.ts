@@ -101,7 +101,7 @@ it("stops after half an hour of a run that never settles", async () => {
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it("types in the channel itself for a Me chat, once its turn knows where it answers", async () => {
+it("types in the channel itself for a Solo chat, once its turn knows where it answers", async () => {
   vi.useFakeTimers();
   const publish = vi.fn(async () => {});
   let answer!: (topLevel: boolean) => void;
@@ -133,7 +133,7 @@ it("shows nothing for a turn that cannot tell where it answers, or that ended fi
   const publish = vi.fn(async () => {});
   pulseTyping(
     publish,
-    Promise.reject(new Error("Couldn't read your Me chats")),
+    Promise.reject(new Error("Couldn't read your Solo chats")),
     mention,
     "channel",
     new Map(),

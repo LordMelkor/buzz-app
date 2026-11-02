@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef } from "react";
 import { Button } from "../../shared/design-system/ui/Button";
 import { ToastNotice } from "../../shared/design-system/ui/Toast";
-import type { RelaySession } from "../relay/session";
+import type { ComposerSession } from "./composer-session";
 import {
   cancelBackgroundUpload,
   dismissBackgroundUploadNotice,
@@ -14,7 +14,7 @@ export function BackgroundUploadStatus({
   session,
   focusTarget,
 }: {
-  session: RelaySession;
+  session: ComposerSession;
   focusTarget: React.RefObject<HTMLElement | null>;
 }) {
   const uploads = useBackgroundUploads(session);

@@ -1,0 +1,10 @@
+{
+  "id": "buzz.watching",
+  "name": "Attention",
+  "apiVersion": 1,
+  "description": "Show and control what each agent is watching. While it is off, agents' watches don't run on this device.",
+  "discovery": {
+    "category": "agent-tools",
+    "tags": ["coding-agents"]
+  }
+}

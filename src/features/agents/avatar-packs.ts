@@ -12,6 +12,11 @@ export const agentAvatars = catalog.assets.map((asset) => ({
   preview: posters[`./avatar-packs/${asset.id}.png`],
 }));
 
+/** The bundled copy of pack art, which can be read back from a canvas: the
+ * CDN sends no CORS header. */
+export const bundledPoster = (src: string) =>
+  agentAvatars.find((avatar) => avatar.url === src.split("#", 1)[0])?.preview;
+
 /** Animations stream from the catalog's CDN; the bundled poster covers offline use. */
 export function avatarAnimation(id: string) {
   const animations = catalog.assets.find(

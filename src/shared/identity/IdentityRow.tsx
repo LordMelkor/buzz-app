@@ -7,6 +7,7 @@ import { Avatar } from "../design-system/ui/Avatar";
 import { ChoiceRow } from "../design-system/ui/ChoiceRow";
 import { PreviewCard } from "../design-system/ui/PreviewCard";
 import { formatPublicKey } from "./public-key";
+import { writeClipboardText } from "../clipboard";
 
 /** Shared identity presentation. The caller retains selection and action behavior. */
 export function IdentityRow({
@@ -112,7 +113,7 @@ export function IdentityRow({
             icon={<CopyIcon size={16} aria-hidden="true" />}
             onClick={() => {
               void Promise.resolve()
-                .then(() => navigator.clipboard.writeText(npub))
+                .then(() => writeClipboardText(npub))
                 .then(
                   () => notify("Copied npub", "success"),
                   () =>

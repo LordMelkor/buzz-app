@@ -3,5 +3,19 @@
   "name": "Agents",
   "apiVersion": 1,
   "description": "Create, configure, and manage agents.",
-  "discovery": { "category": "agents", "tags": ["Essentials"] }
+  "discovery": {
+    "category": "agents",
+    "tags": ["Core", "Essentials", "coding-agents"]
+  },
+  "host": {
+    "mcp": true,
+    "files": true,
+    "processes": [
+      {
+        "id": "attention-command",
+        "program": "bash",
+        "args": ["-c", "exec \"$@\"", "attention"]
+      }
+    ]
+  }
 }

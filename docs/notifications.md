@@ -54,6 +54,10 @@ checks, not that an OS banner was displayed or read.
   [workflow mention classifier](unread.md#workflow-mentions) preserves explicit
   template mentions and other recipients; DM and relevant-reply policies still
   apply. This does not change notification settings or suppress all workflows.
+- Messages signed `audience=agents` (coordination between agents) never alert,
+  even when they mention the viewer. The unread engine applies the same rule
+  ([quiet agent messages](unread.md#relevant-replies)), so badges, Inbox, thread
+  activity and the Dock indicator agree with the alert gate.
 - History, initial/reconnect replay and own messages stay quiet. Candidates older
   than two minutes (or over 30 seconds in the future) are ignored. Unknown read
   readiness waits; off/access loss cancels pending candidates. A reply whose

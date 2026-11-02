@@ -1,5 +1,7 @@
+import { regionLabels } from "../solo/region-labels";
 import { getEventHash, verifyEvent } from "nostr-tools";
 import type { RelayReader } from "./reader";
+import { retryRead } from "./read-retry";
 import type { RelayWriter } from "./transport";
 import type { RelayEvent } from "./events";
 import { PublishRejected } from "./outbox";
@@ -13,7 +15,7 @@ import {
   type ChannelDetailsDraft,
 } from "./channel-details-protocol";
 import { channelIdentityUnsupported } from "./channel-labels";
-import { SESSION_NAMED_LABEL, sessionMetadata } from "../sessions/metadata";
+import { SOLO_NAMED_LABEL, soloLabels } from "../solo/labels";
 
 export type DetailsAttempt = Readonly<{
   draft: ChannelDetailsDraft;
@@ -26,6 +28,8 @@ export interface ChannelDetailsCapability {
     base: ChannelDetails,
     draft: ChannelDetailsDraft,
     signal?: AbortSignal,
+    /** Checked synchronously right before publishing; false publishes nothing. */
+    active?: () => boolean,
   ): Promise<void>;
   check(id: string, signal?: AbortSignal): Promise<void>;
   snapshot(id: string): DetailsAttempt | undefined;
@@ -119,6 +123,7 @@ export function createChannelDetails({
       details.description !== draft.description ||
       details.visibility !== draft.visibility ||
       details.ttlSeconds !== draft.ttlSeconds ||
+      (draft.joinRole !== undefined && details.joinRole !== draft.joinRole) ||
       (draft.labels !== undefined &&
         JSON.stringify([...new Set(draft.labels)].sort()) !==
           JSON.stringify([...(details.labels ?? [])].sort()))
@@ -140,7 +145,10 @@ export function createChannelDetails({
       return owned(
         id,
         async (signal) => {
-          const { details, metadata } = await read(id, signal);
+          const { details, metadata } = await retryRead(
+            () => read(id, signal),
+            signal,
+          );
           acceptDiscovery([metadata]);
           signal.throwIfAborted();
           return details;
@@ -164,31 +172,42 @@ export function createChannelDetails({
       base: ChannelDetails,
       input: ChannelDetailsDraft,
       caller?: AbortSignal,
+      active?: () => boolean,
     ) {
       const id = lifecycleChannelId(base.channelId);
       if (!writer || !reader)
         throw new Error("Channel editing is unavailable on this connection.");
       if (attempts.has(id))
         throw new Error("Check the previous change before saving again.");
-      const metadata = sessionMetadata(base.description);
-      validateDetailsDraft(input, base);
+      validateDetailsDraft(input);
+      // Renaming a Solo chat records that its title is chosen, not automatic.
       const chosenName =
-        metadata &&
-        !metadata.parentId &&
-        sessionMetadata(input.description) &&
+        soloLabels(base.labels) &&
+        soloLabels(input.labels ?? base.labels) &&
         input.name !== base.name;
       if (chosenName && !labels) throw channelIdentityUnsupported();
       const draft = Object.freeze({
         ...input,
+        ...(input.labels !== undefined
+          ? {
+              labels: [
+                ...new Set([...input.labels, ...regionLabels(base.labels)]),
+              ],
+            }
+          : {}),
         ...(chosenName && labels
           ? {
               labels: [
-                ...new Set([...(base.labels ?? []), SESSION_NAMED_LABEL]),
+                ...new Set([
+                  ...(input.labels ?? base.labels ?? []),
+                  ...regionLabels(base.labels),
+                  SOLO_NAMED_LABEL,
+                ]),
               ],
             }
           : {}),
       });
-      validateDetailsDraft(draft, base);
+      validateDetailsDraft(draft);
       if (
         !labels &&
         draft.labels !== undefined &&
@@ -196,6 +215,7 @@ export function createChannelDetails({
       )
         throw channelIdentityUnsupported();
       let publicationStarted = false;
+      let phase = "Could not verify current channel access";
       attempts.set(id, Object.freeze({ draft, status: "saving" }));
       emit();
       try {
@@ -215,6 +235,7 @@ export function createChannelDetails({
             };
             await authorize();
             const template = detailsTemplate(id, draft, base);
+            phase = "Could not sign the channel change";
             const signed = await writer.sign(structuredClone(template), signal);
             signal.throwIfAborted();
             if (
@@ -227,8 +248,11 @@ export function createChannelDetails({
               !verifyEvent(signed)
             )
               throw new Error("Signer changed the channel details command.");
+            phase = "Could not recheck channel access after signing";
             await authorize();
             signal.throwIfAborted();
+            if (active?.() === false)
+              throw new DOMException("Channel edit cancelled", "AbortError");
             publicationStarted = true;
             await writer.publish(signed, signal);
             await confirm(id, draft, signal);
@@ -242,6 +266,12 @@ export function createChannelDetails({
           throw new Error(uncertain);
         }
         attempts.delete(id);
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        if (!publicationStarted)
+          throw new Error(
+            `${phase}: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
+          );
         throw error;
       } finally {
         emit();

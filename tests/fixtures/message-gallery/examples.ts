@@ -81,6 +81,42 @@ const patch =
   "diff --git a/greeting.ts b/greeting.ts\n--- a/greeting.ts\n+++ b/greeting.ts\n@@ -1 +1 @@\n-const greeting = 'Hello';\n+const greeting = 'Welcome';\n";
 export const groups: Group[] = [
   {
+    id: "agent-coordination",
+    title: "Agent coordination",
+    description: "Every compact entry keeps its author's avatar visible.",
+    examples: [
+      {
+        id: "repeated-agent",
+        title: "Consecutive agent updates",
+        description:
+          "Author icons remain visible before and after expanding a row.",
+        rows: [
+          message("coordination-first", "Investigating the missing icons.", {
+            authorId: agent,
+            audience: "agents",
+          }),
+          message(
+            "coordination-next",
+            "Found the cause.\n\nThe fix is ready to try.",
+            {
+              authorId: agent,
+              audience: "agents",
+            },
+          ),
+          message(
+            "coordination-addressed",
+            "@Sam Rivera please review the fix.",
+            {
+              authorId: agent,
+              audience: "agents",
+              mentions: [teammate],
+            },
+          ),
+        ],
+      },
+    ],
+  },
+  {
     id: "session-links",
     title: "Session links",
     description:
@@ -151,6 +187,20 @@ export const groups: Group[] = [
         "Colored bubbles preserve contrast for links, mentions, and revealed spoilers.",
         references,
         { mentions: [teammate, agent] },
+      ),
+      single(
+        "long-links",
+        "Long links",
+        "Long destinations wrap inside the bubble. Try Narrow preview.",
+        "Join https://feedback.communities.buzz.xyz/invite/workshop-testing to help test, and review https://github.com/block/buzz-app/pull/1423 too.",
+        { authorId: teammate },
+      ),
+      single(
+        "table-received",
+        "Received standalone table",
+        "A received table owns its surface even while message actions show.",
+        "| Item | State |\n| --- | --- |\n| Review | Ready |",
+        { authorId: teammate },
       ),
       single(
         "table-links",
@@ -357,6 +407,43 @@ export const groups: Group[] = [
         "I reviewed the changes. **Two details** still need attention:\n\n- Align the labels.\n- Check the narrow layout.",
         { authorId: agent, agentEnvelope: true },
       ),
+      {
+        id: "edited",
+        title: "Edited messages",
+        description:
+          "An author's edit is marked after the last line, or below a closing block.",
+        rows: [
+          message("edited-own", "Hi how are ya.", { edited: true }),
+          message("edited-own-emoji", "🎉", { edited: true }),
+          message(
+            "edited-own-table",
+            "| Day | Room |\n| --- | --- |\n| Thu | 4B |",
+            {
+              edited: true,
+            },
+          ),
+          message("edited-teammate", "Moved the review to Thursday.", {
+            authorId: teammate,
+            edited: true,
+          }),
+          message(
+            "edited-block",
+            "Use this command instead:\n\n```sh\njust iterate\n```",
+            { authorId: teammate, edited: true },
+          ),
+          message("edited-attachment", "", {
+            authorId: teammate,
+            edited: true,
+            attachments: [
+              {
+                url: "https://fixture.test/landscape",
+                kind: "image",
+                dimensions: { width: 640, height: 360 },
+              },
+            ],
+          }),
+        ],
+      },
       single(
         "fallback",
         "Unknown author",
@@ -447,12 +534,41 @@ export const groups: Group[] = [
         "@Sam Rivera could you review the spacing?",
         { mentions: [teammate] },
       ),
+    ],
+  },
+  {
+    id: "diagrams",
+    title: "Mermaid diagrams",
+    description:
+      "Fenced mermaid blocks drawn by the bundled plugin inside the host code frame.",
+    examples: [
       single(
-        "edited",
-        "Edited content",
-        "The current renderer shows the replacement body without a separate edited badge.",
-        "Updated: the review is now at 3 pm.",
-        { edited: true },
+        "diagram-flowchart",
+        "Flowchart with a subgraph",
+        "Nodes, edges and a subgraph between surrounding prose.",
+        "Here is the release flow:\n\n```mermaid\nflowchart LR\n  draft[Draft PR] --> review{Review}\n  review -->|changes| draft\n  review -->|approved| ci\n  subgraph Checks\n    ci[CI] --> e2e[Browser tests]\n  end\n  e2e --> merge((Merge))\n```\n\nPing me if a step is unclear.",
+        { authorId: agent },
+      ),
+      single(
+        "diagram-sequence",
+        "Sequence diagram",
+        "Participants, messages and a note.",
+        "```mermaid\nsequenceDiagram\n  participant App\n  participant Relay\n  App->>Relay: Publish event\n  Relay-->>App: OK\n  Note over App,Relay: Signed and verified\n```",
+        { authorId: agent },
+      ),
+      single(
+        "diagram-pie",
+        "Pie chart",
+        "Series colors on the message surface.",
+        '```mermaid\npie title Review time\n  "Waiting" : 45\n  "Reviewing" : 30\n  "Fixing" : 15\n  "Merging" : 10\n```',
+        { authorId: agent },
+      ),
+      single(
+        "diagram-invalid",
+        "Invalid source",
+        "The parse error and the source replace the diagram.",
+        "```mermaid\nflowchart LR\n  A --> (\n```",
+        { authorId: agent },
       ),
     ],
   },
@@ -595,7 +711,7 @@ export const groups: Group[] = [
         "video",
         "Video attachment",
         "The clip uses a locally generated sample and the real play/fullscreen controls.",
-        "A quick walkthrough.",
+        "",
         {
           attachments: [
             {
@@ -603,6 +719,38 @@ export const groups: Group[] = [
               kind: "video",
               previewUrl: "https://fixture.test/poster",
               dimensions: { width: 640, height: 360 },
+            },
+          ],
+        },
+      ),
+      single(
+        "video-portrait",
+        "Portrait video geometry",
+        "Portrait metadata keeps a readable preview width without a height clamp.",
+        "",
+        {
+          attachments: [
+            {
+              url: "https://fixture.test/video",
+              kind: "video",
+              previewUrl: "https://fixture.test/poster",
+              dimensions: { width: 360, height: 640 },
+            },
+          ],
+        },
+      ),
+      single(
+        "video-extreme",
+        "Extreme video metadata",
+        "An extreme aspect ratio keeps the preview and controls bounded.",
+        "",
+        {
+          attachments: [
+            {
+              url: "https://fixture.test/video",
+              kind: "video",
+              previewUrl: "https://fixture.test/poster",
+              dimensions: { width: 1, height: 1000000 },
             },
           ],
         },
@@ -746,6 +894,35 @@ export const groups: Group[] = [
             }),
             membershipRows: [reader, teammate, agent].map((id, index) =>
               message(`join-${index}`, "", {
+                membership: { type: "member_joined", actor: id, target: id },
+              }),
+            ),
+          },
+        ],
+      },
+      {
+        id: "grouped-members-overflow",
+        title: "Grouped joins with overflow",
+        description:
+          "Beyond three identities the avatar stack ends in a count that must stay legible at two or three digits.",
+        rows: [
+          {
+            ...message("grouped-overflow", "", {
+              membership: {
+                type: "member_joined",
+                actor: reader,
+                target: reader,
+              },
+            }),
+            membershipRows: [
+              reader,
+              teammate,
+              agent,
+              ...Array.from({ length: 31 }, (_, index) =>
+                index.toString(16).padStart(2, "0").repeat(32),
+              ),
+            ].map((id, index) =>
+              message(`join-overflow-${index}`, "", {
                 membership: { type: "member_joined", actor: id, target: id },
               }),
             ),

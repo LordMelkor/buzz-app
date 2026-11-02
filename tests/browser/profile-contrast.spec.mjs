@@ -1,4 +1,5 @@
 import { test, expect } from "./fixture.mjs";
+import { closeSettings, settingsDialog } from "./navigation.mjs";
 
 // A visible badge requires confirmed presence, not just local Online intent.
 test.use({ productionBroker: true });
@@ -20,7 +21,10 @@ test("profile avatar and Availability stay readable through hover and press in b
   );
   await control.click();
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await expect(page.getByRole("main")).toBeFocused();
+  await expect(settingsDialog(page).locator(":focus")).toHaveCount(1);
+  // The avatar stays mounted behind the Settings modal; closing it returns focus.
+  await closeSettings(page);
+  await expect(control).toBeFocused();
   await page.setViewportSize({ width: 1280, height: 844 });
   for (const mode of ["light", "dark"]) {
     await page.emulateMedia({ colorScheme: mode });

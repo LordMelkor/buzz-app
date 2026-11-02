@@ -1,3 +1,4 @@
+import type { ConversationHostServices } from "../conversation/ConversationHost";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { composerDOMFixture } from "../messages/composer-testing";
@@ -10,6 +11,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ChannelSummary } from "../relay/contracts";
@@ -28,6 +30,7 @@ import type { LocalAgentsSnapshot } from "../agents/local";
 
 composerDOMFixture();
 
+const emptyPanels: never[] = [];
 const scope = `https://relay.example:${"f".repeat(64)}`;
 
 const people = Array.from({ length: 10 }, (_, index) => ({
@@ -38,6 +41,36 @@ const people = Array.from({ length: 10 }, (_, index) => ({
 const channel = "11111111-1111-4111-8111-111111111111";
 const play = vi.fn(async () => {});
 beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockImplementation(
+    function (this: HTMLElement) {
+      return this.parentElement;
+    },
+  );
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        // Supply row and viewport sizes; real scrolling is covered in browsers.
+        queueMicrotask(() =>
+          this.callback(
+            [
+              {
+                target,
+                contentRect: {
+                  width: 400,
+                  height: target.getAttribute("role") === "listbox" ? 400 : 40,
+                },
+              } as ResizeObserverEntry,
+            ],
+            this as unknown as ResizeObserver,
+          ),
+        );
+      }
+      unobserve() {}
+      disconnect() {}
+    },
+  );
   localStorage.clear();
   play.mockClear();
   vi.stubGlobal(
@@ -52,6 +85,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 function setup() {
@@ -122,7 +156,10 @@ function setup() {
     directMessages,
     messages,
     outbox,
-    channels: { list: () => channels, subscribeList: () => () => {} },
+    channels: {
+      list: () => channels,
+      subscribeList: () => () => {},
+    },
     profiles: {
       ensure: async () => {},
       snapshot: () => profiles,
@@ -140,7 +177,7 @@ function setup() {
     },
     media: (url: string) => url,
   } as unknown as RelaySession;
-  const onOpened = vi.fn();
+  const onOpenThread = vi.fn();
   const onStarted = vi.fn();
   let controlState: LocalAgentsSnapshot = {
     status: "ready",
@@ -173,9 +210,23 @@ function setup() {
   const mount = () =>
     render(
       <NewMessage
+        channels={channels.channels}
+        host={
+          {
+            panels: {
+              snapshot: () => emptyPanels,
+              subscribe: () => () => {},
+              resolve: () => undefined,
+            },
+            relay: {
+              snapshot: () => ({ status: "ready", session: session, scope }),
+            },
+            navigation: { open: vi.fn() },
+          } as unknown as ConversationHostServices
+        }
         session={session}
         scope={scope}
-        onOpened={onOpened}
+        onOpenThread={onOpenThread}
         onStarted={onStarted}
       />,
     );
@@ -185,7 +236,7 @@ function setup() {
     directMessages,
     messages,
     outbox,
-    onOpened,
+    onOpenThread,
     onStarted,
     mount,
     control,
@@ -201,6 +252,47 @@ function setup() {
 const recipient = () =>
   screen.getByRole("combobox", { name: "Message recipients" });
 const send = () => screen.getByRole("button", { name: "Send message" });
+
+it("finds a hosted agent by its owned name and sends without local custody", async () => {
+  const t = setup();
+  const [owned] = t.control.snapshot().agents;
+  assert(owned);
+  const hosted = { ...owned, name: "Hosted helper" };
+  t.updateControl({ status: "ready", agents: [], hosted: [hosted] });
+  t.mount();
+  await t.user.type(recipient(), "Hosted helper");
+  await t.user.click(
+    await screen.findByRole("option", { name: "Person 2, Agent" }),
+  );
+  expect(t.directMessages.open).not.toHaveBeenCalled();
+  expect(t.messages.send).not.toHaveBeenCalled();
+  await t.user.type(screen.getByRole("textbox"), "Hello hosted helper");
+  await t.user.click(send());
+  await waitFor(() => expect(t.onStarted).toHaveBeenCalledOnce());
+  expect(t.directMessages.open).toHaveBeenCalledWith(
+    [hosted.pubkey],
+    expect.any(AbortSignal),
+  );
+  expect(t.messages.send).toHaveBeenCalledOnce();
+});
+
+it("revalidates a hosted recipient when its owned evidence disappears", async () => {
+  const t = setup();
+  const hosted = t.control.snapshot().agents;
+  t.updateControl({ status: "ready", agents: [], hosted });
+  t.mount();
+  await t.user.click(
+    await screen.findByRole("option", { name: "Person 2, Agent" }),
+  );
+  await t.user.type(screen.getByRole("textbox"), "Private draft");
+  t.updateControl({ status: "ready", agents: [], hosted: [] });
+  await t.user.click(send());
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "no longer available",
+  );
+  expect(t.directMessages.open).not.toHaveBeenCalled();
+  expect(t.messages.send).not.toHaveBeenCalled();
+});
 
 it("offers only local agents in this community, including cached searches after their list changes", async () => {
   const t = setup();
@@ -243,14 +335,18 @@ it("offers only local agents in this community, including cached searches after 
   await t.user.type(recipient(), "Other agent");
   await screen.findByText("No matching people.");
   await t.user.clear(recipient());
-  expect(screen.getByRole("option", { name: "Person 2, Agent" })).toBeVisible();
+  expect(
+    await screen.findByRole("option", { name: "Person 2, Agent" }),
+  ).toBeVisible();
   t.updateControl({ ...state, status: "error", error: "Unavailable" });
   expect(
     screen.queryByRole("option", { name: "Person 2, Agent" }),
   ).not.toBeInTheDocument();
   expect(screen.getByRole("option", { name: "Person 1" })).toBeVisible();
   t.updateControl(state);
-  expect(screen.getByRole("option", { name: "Person 2, Agent" })).toBeVisible();
+  expect(
+    await screen.findByRole("option", { name: "Person 2, Agent" }),
+  ).toBeVisible();
 });
 
 it("appends background pages without reshuffling and ranks new search results", async () => {
@@ -260,26 +356,73 @@ it("appends background pages without reshuffling and ranks new search results", 
     { pubkey: "b".repeat(64), name: "Adam Avery" },
     { pubkey: "c".repeat(64), name: "Avery" },
   ];
-  t.directMessages.people.mockImplementation(async (query, page) => ({
-    people: query
-      ? directory
-      : page === 1
-        ? directory.slice(0, 2)
-        : directory.slice(2),
-    hasMore: !query && page === 1,
-  }));
+  let release = () => {};
+  const background = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  t.directMessages.people.mockImplementation(async (query, page) => {
+    if (!query && page !== 1) await background;
+    return {
+      people: query
+        ? directory
+        : page === 1
+          ? directory.slice(0, 2)
+          : directory.slice(2),
+      hasMore: !query && page === 1,
+    };
+  });
   t.mount();
-  await screen.findByRole("option", { name: "Zoe" });
   const names = () =>
     screen
       .getAllByRole("option")
       .map((item) => item.getAttribute("aria-label"));
-  expect(names()).toEqual(["Adam Avery", "Zoe"]);
+  try {
+    await screen.findByRole("option", { name: "Zoe" });
+    expect(names()).toEqual(["Adam Avery", "Zoe"]);
+  } finally {
+    release();
+  }
   await screen.findByRole("option", { name: "Avery" });
   expect(names()).toEqual(["Adam Avery", "Zoe", "Avery"]);
   await t.user.type(recipient(), "avery");
   await screen.findByRole("option", { name: "Avery" });
   expect(names()).toEqual(["Avery", "Adam Avery"]);
+});
+
+it("retains mounted options and keyboard selection when paging past 100 people", async () => {
+  const t = setup();
+  const directory = Array.from({ length: 101 }, (_, index) => ({
+    pubkey: (index + 100).toString(16).padStart(64, "0"),
+    name: `Recipient ${String(index).padStart(3, "0")}`,
+  }));
+  let release = () => {};
+  const background = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  t.directMessages.people.mockImplementation(async (_query, page) => {
+    if (page !== 1) await background;
+    return {
+      people: page === 1 ? directory.slice(0, 100) : directory.slice(100),
+      hasMore: page === 1,
+    };
+  });
+  t.mount();
+  try {
+    const first = await screen.findByRole("option", { name: "Recipient 000" });
+    await t.user.keyboard("{ArrowDown}");
+    const activeId = recipient().getAttribute("aria-activedescendant");
+    expect(activeId).toBe(first.id);
+    release();
+    await waitFor(() => expect(first.getAttribute("aria-setsize")).toBe("101"));
+    expect(screen.getByRole("option", { name: "Recipient 000" })).toBe(first);
+    expect(recipient().getAttribute("aria-activedescendant")).toBe(activeId);
+    await t.user.keyboard("{Enter}");
+    expect(
+      screen.getByRole("button", { name: "Remove Recipient 000" }),
+    ).toBeTruthy();
+  } finally {
+    release();
+  }
 });
 
 it("highlights the first typed match, so Enter adds it, and keeps it as results arrive", async () => {
@@ -459,9 +602,14 @@ it("completes with Space only for one exact name, and with Tab", async () => {
     await screen.findByRole("button", { name: "Remove Avery Chen" }),
   ).toBeVisible();
   expect(recipient()).toHaveFocus();
-  // With nothing typed there is no highlight, so Tab leaves the field.
+  // With recipients chosen and nothing typed, Tab starts composing.
   await t.user.keyboard("{Tab}");
-  expect(recipient()).not.toHaveFocus();
+  const composer = screen.getByRole("textbox", {
+    name: "Message José, Avery Chen",
+  });
+  expect(composer).toHaveFocus();
+  await t.user.keyboard("Hello");
+  expect(composer).toHaveTextContent("Hello");
   expect(screen.getAllByRole("button", { name: /^Remove / })).toHaveLength(2);
 });
 
@@ -502,6 +650,30 @@ it("Space does not pick while the rest of the list failed to load", async () => 
   expect(
     screen.queryByRole("button", { name: "Remove Kim" }),
   ).not.toBeInTheDocument();
+});
+
+it("a pointer passing over the people returns Enter to the keyboard's choice when it leaves", async () => {
+  const t = setup();
+  t.directMessages.people.mockResolvedValue({ people, hasMore: false });
+  t.mount();
+  await screen.findByRole("option", { name: "Person 1" });
+  await t.user.keyboard("{ArrowDown}");
+  const chosen = screen.getByRole("option", { name: "Person 1" });
+  const hovered = screen.getByRole("option", { name: "Person 3" });
+  await waitFor(() => expect(chosen).toHaveAttribute("aria-selected", "true"));
+  for (const clientX of [10, 12])
+    fireEvent.pointerMove(hovered, {
+      pointerType: "mouse",
+      clientX,
+      clientY: 10,
+    });
+  expect(hovered).toHaveAttribute("aria-selected", "true");
+  fireEvent.pointerLeave(screen.getByRole("listbox", { name: "People" }), {
+    pointerType: "mouse",
+  });
+  expect(chosen).toHaveAttribute("aria-selected", "true");
+  await t.user.keyboard("{Enter}");
+  expect(screen.getByRole("button", { name: "Remove Person 1" })).toBeVisible();
 });
 
 it("reveals the highlighted person on every arrow key and when the list reopens", async () => {
@@ -571,6 +743,9 @@ it("opens blank and focused, adds multiple recipients, deduplicates, and enforce
     screen.getAllByRole("button", { name: /^Remove Person/ }),
   ).toHaveLength(8);
   expect(recipient()).toHaveAttribute("readonly");
+  await t.user.keyboard("{Tab}");
+  expect(screen.getByRole("textbox")).toHaveFocus();
+  await t.user.click(recipient());
   await t.user.keyboard("{Enter}");
   expect(
     screen.getAllByRole("button", { name: /^Remove Person/ }),
@@ -578,20 +753,47 @@ it("opens blank and focused, adds multiple recipients, deduplicates, and enforce
   expect(t.directMessages.open).not.toHaveBeenCalled();
 });
 
-it("opens the exact conversation without sending a message", async () => {
+it("shows selected recipient artwork without opening or sending, and updates it on removal", async () => {
   const t = setup();
-  t.mount();
+  const view = t.mount();
   await t.user.click(await screen.findByRole("option", { name: "Person 1" }));
-
-  await t.user.click(screen.getByRole("button", { name: "Open conversation" }));
-
-  await waitFor(() => expect(t.onOpened).toHaveBeenCalledWith(channel));
-  expect(t.directMessages.open).toHaveBeenCalledWith(
-    [people[0]?.pubkey],
-    expect.any(AbortSignal),
+  const editor = screen.getByRole("textbox");
+  expect(editor.querySelector("[data-placeholder]")).toHaveAttribute(
+    "data-placeholder",
+    "Message Person 1",
   );
+  await t.user.click(
+    await screen.findByRole("option", { name: "Person 2, Agent" }),
+  );
+  expect(editor.querySelector("[data-placeholder]")).toHaveAttribute(
+    "data-placeholder",
+    "Message Person 1, Person 2",
+  );
+  const artwork = () => view.container.querySelector("[data-new-message-body]");
+  expect(artwork()?.querySelector('[title="Person 1"]')).toHaveAttribute(
+    "data-avatar-shape",
+    "circle",
+  );
+  expect(artwork()?.querySelector('[title="Person 2"]')).toHaveAttribute(
+    "data-avatar-shape",
+    "squircle",
+  );
+  await t.user.click(screen.getByRole("button", { name: "Remove Person 1" }));
+  expect(artwork()?.querySelector('[title="Person 1"]')).toBeNull();
+  expect(artwork()?.querySelector('[title="Person 2"]')).toBeInTheDocument();
+  expect(screen.getByRole("textbox")).toBe(editor);
+  expect(editor.querySelector("[data-placeholder]")).toHaveAttribute(
+    "data-placeholder",
+    "Message Person 2",
+  );
+  await t.user.click(screen.getByRole("button", { name: "Remove Person 2" }));
+  expect(editor.querySelector("[data-placeholder]")).toHaveAttribute(
+    "data-placeholder",
+    "",
+  );
+  expect(t.directMessages.open).not.toHaveBeenCalled();
   expect(t.messages.send).not.toHaveBeenCalled();
-  expect(t.onStarted).not.toHaveBeenCalled();
+  expect(t.onOpenThread).not.toHaveBeenCalled();
 });
 
 it("requires an arrow key before Enter selects a recipient", async () => {
@@ -727,6 +929,111 @@ it("keeps a failed draft editable and resolves changed recipients again", async 
   expect(t.outbox.dismiss).toHaveBeenCalledOnce();
 });
 
+it("holds Send while the To field has text that is not a recipient", async () => {
+  const t = setup();
+  t.mount();
+  await t.user.click(await screen.findByRole("option", { name: "Person 1" }));
+  await t.user.type(screen.getByRole("textbox"), "Hello");
+  expect(send()).toBeEnabled();
+  const error = "“zz” is not a valid recipient";
+  await t.user.type(recipient(), "zz");
+  expect(send()).toBeDisabled();
+  // No error while the name is typed.
+  expect(screen.queryByText(error)).not.toBeInTheDocument();
+  await t.user.click(screen.getByRole("textbox"));
+  await t.user.keyboard("{Enter}");
+  expect(t.directMessages.open).not.toHaveBeenCalled();
+  expect(screen.getByRole("textbox")).toHaveTextContent("Hello");
+  // Once To is left, the error names its text in a status under the field.
+  const hint = within(
+    screen.getByRole("group", { name: "Recipients" }),
+  ).getByRole("status");
+  expect(hint).toHaveTextContent(error);
+  expect(hint).toHaveClass("text-body-sm", "text-danger");
+  // Back in To it hides with the list open, and shows when Escape closes it.
+  await t.user.click(recipient());
+  expect(screen.queryByText(error)).not.toBeInTheDocument();
+  await t.user.keyboard("{Escape}");
+  expect(screen.getByRole("status")).toHaveTextContent(error);
+  // Focus stays in To, which the error describes while it shows.
+  expect(recipient()).toHaveAccessibleDescription(error);
+  // Typing in To, where Escape left focus, removes it, so the status never
+  // changes text while shown.
+  await t.user.keyboard("z");
+  expect(screen.queryByText(/is not a valid recipient/)).toBeNull();
+  expect(recipient()).not.toHaveAccessibleDescription();
+  await t.user.clear(recipient());
+  await t.user.click(screen.getByRole("textbox"));
+  expect(screen.queryByText(error)).not.toBeInTheDocument();
+  await t.user.click(send());
+  await waitFor(() => expect(t.onStarted).toHaveBeenCalledOnce());
+  expect(t.directMessages.open).toHaveBeenCalledWith(
+    [people[0]?.pubkey],
+    expect.any(AbortSignal),
+  );
+});
+
+it("shows the To error only beside a recipient, and clears it once the text becomes one", async () => {
+  const t = setup();
+  t.mount();
+  await screen.findByRole("option", { name: "Person 1" });
+  // With no recipient Send is held anyway, so the closed list shows no error.
+  await t.user.type(recipient(), "Person 3");
+  await t.user.keyboard("{Escape}");
+  expect(screen.queryByText(/is not a valid recipient/)).toBeNull();
+  await t.user.clear(recipient());
+  await t.user.click(await screen.findByRole("option", { name: "Person 1" }));
+  await t.user.type(recipient(), "Person 3");
+  await t.user.click(screen.getByRole("textbox"));
+  expect(
+    screen.getByText("“Person 3” is not a valid recipient"),
+  ).toBeInTheDocument();
+  await t.user.click(recipient());
+  await t.user.click(screen.getByRole("option", { name: "Person 3" }));
+  await t.user.type(screen.getByRole("textbox"), "Hello");
+  expect(screen.queryByText(/is not a valid recipient/)).toBeNull();
+  expect(send()).toBeEnabled();
+});
+
+it("does not hold Send for spaces left in the To field", async () => {
+  const t = setup();
+  t.mount();
+  await t.user.click(await screen.findByRole("option", { name: "Person 1" }));
+  await t.user.type(recipient(), "  ");
+  expect(recipient()).toHaveValue("  ");
+  await t.user.click(screen.getByRole("textbox"));
+  await t.user.keyboard("Hello");
+  // Spaces are no name, so they neither hold Send nor raise the To error.
+  expect(send()).toBeEnabled();
+  expect(
+    within(screen.getByRole("group", { name: "Recipients" })).queryByRole(
+      "status",
+    ),
+  ).toBeNull();
+});
+
+it("cuts the text named by the To error to 24 characters", async () => {
+  const t = setup();
+  t.mount();
+  await t.user.click(await screen.findByRole("option", { name: "Person 1" }));
+  await t.user.click(recipient());
+  await t.user.paste("  Avery Chen and Jordan 👩‍👩‍👧 Lee");
+  await t.user.click(screen.getByRole("textbox"));
+  // Trimmed, then cut after the 23rd character, which here is an emoji
+  // sequence of several code points.
+  expect(
+    screen.getByText(
+      "“Avery Chen and Jordan 👩‍👩‍👧…” is not a valid recipient",
+    ),
+  ).toBeInTheDocument();
+  await t.user.clear(recipient());
+  await t.user.paste("Avery Chen and Jordan Le");
+  await t.user.click(screen.getByRole("textbox"));
+  expect(
+    screen.getByText("“Avery Chen and Jordan Le” is not a valid recipient"),
+  ).toBeInTheDocument();
+});
+
 it("locks during opening and delivery, waits for confirmation, and retries the same uncertain send", async () => {
   const t = setup();
   t.mount();
@@ -823,6 +1130,7 @@ it("searches again for people added after a completed directory when New message
     t.mount();
     fireEvent.change(recipient(), { target: { value: "New colleague" } });
     await act(() => vi.advanceTimersByTimeAsync(200));
+    await act(() => vi.advanceTimersToNextFrame());
     expect(screen.getByRole("option", { name: "New colleague" })).toBeVisible();
     // The reopened list is reused; a completed search is not read again.
     fireEvent.change(recipient(), { target: { value: "" } });
@@ -831,7 +1139,9 @@ it("searches again for people added after a completed directory when New message
   } finally {
     vi.useRealTimers();
   }
-  expect(screen.getByRole("option", { name: "New colleague" })).toBeVisible();
+  expect(
+    await screen.findByRole("option", { name: "New colleague" }),
+  ).toBeVisible();
   expect(t.directMessages.people.mock.calls.slice(requests)).toEqual([
     ["New colleague", 1, expect.any(AbortSignal)],
   ]);
@@ -861,10 +1171,11 @@ it("repeats a search completed during an earlier visit while the directory is in
     t.mount();
     fireEvent.change(recipient(), { target: { value: "Ali" } });
     await act(() => vi.advanceTimersByTimeAsync(200));
+    await act(() => vi.advanceTimersToNextFrame());
   } finally {
     vi.useRealTimers();
   }
-  expect(screen.getByRole("option", { name: "Alice" })).toBeVisible();
+  expect(await screen.findByRole("option", { name: "Alice" })).toBeVisible();
   expect(t.directMessages.people.mock.calls.slice(requests)).toEqual([
     ["Ali", 1, expect.any(AbortSignal)],
   ]);
@@ -885,7 +1196,7 @@ it("keeps local matches visible while an incomplete directory searches in the ba
   t.mount();
   await screen.findByRole("option", { name: "Person 1" });
   fireEvent.change(recipient(), { target: { value: "Person" } });
-  expect(screen.getByRole("option", { name: "Person 1" })).toBeVisible();
+  expect(await screen.findByRole("option", { name: "Person 1" })).toBeVisible();
   expect(
     screen.queryByRole("status", { name: "Loading people" }),
   ).not.toBeInTheDocument();
@@ -941,7 +1252,9 @@ it("loads directory pages on scroll and ignores a late previous search", async (
   await screen.findByRole("option", { name: "Person 2, Agent" });
   late({ people: people.slice(0, 1), hasMore: false });
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
-  expect(screen.getByRole("option", { name: "Person 2, Agent" })).toBeVisible();
+  expect(
+    await screen.findByRole("option", { name: "Person 2, Agent" }),
+  ).toBeVisible();
 });
 
 it("keeps loaded pages when clearing search or returning to New message, scoped to the session", async () => {
@@ -958,15 +1271,19 @@ it("keeps loaded pages when clearing search or returning to New message, scoped 
   await t.user.type(recipient(), "Person 3");
   await screen.findByRole("option", { name: "Person 3" });
   await t.user.clear(recipient());
-  expect(screen.getAllByRole("option").map((row) => row.textContent)).toEqual(
-    loaded,
+  await waitFor(() =>
+    expect(screen.getAllByRole("option").map((row) => row.textContent)).toEqual(
+      loaded,
+    ),
   );
   const requests = t.directMessages.people.mock.calls.length;
   view.unmount();
   const reopened = t.mount();
   await waitFor(() => expect(recipient()).toBeEnabled());
-  expect(screen.getAllByRole("option").map((row) => row.textContent)).toEqual(
-    loaded,
+  await waitFor(() =>
+    expect(screen.getAllByRole("option").map((row) => row.textContent)).toEqual(
+      loaded,
+    ),
   );
   await screen.findByRole("option", { name: "Person 3" });
   expect(t.directMessages.people).toHaveBeenCalledTimes(requests + 1);
@@ -1226,6 +1543,40 @@ it("retains an older build's pending pointer as confirmation-only recovery", asy
   ).toBeDisabled();
 });
 
+it("retires a confirmed legacy message when the page stays mounted", async () => {
+  const t = setup();
+  const person = people[0];
+  assert.exists(person);
+  const storageKey = (key: string) =>
+    `buzz-view.v1:${JSON.stringify([scope, key])}`;
+  localStorage.setItem(
+    storageKey("direct-message:recipients"),
+    JSON.stringify([person]),
+  );
+  localStorage.setItem(
+    storageKey("direct-message:pending"),
+    JSON.stringify({
+      id: "d".repeat(64),
+      channelId: channel,
+      recipients: person.pubkey,
+      draft: { text: "Already sent legacy message", recipients: [] },
+    }),
+  );
+  // No journal entry backs the legacy record, so delivery is never recorded.
+  t.directMessages.delivery.mockReturnValue(undefined);
+  t.mount();
+  await t.user.click(await screen.findByRole("button", { name: "Retry send" }));
+  await waitFor(() => expect(t.onStarted).toHaveBeenCalledOnce());
+  expect(
+    screen.queryByRole("button", { name: "Remove Person 1" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox")).not.toHaveTextContent(
+    "Already sent legacy message",
+  );
+  expect(send()).toBeDisabled();
+  expect(t.messages.send).not.toHaveBeenCalled();
+});
+
 it("can retry legacy confirmation after partial saved-view cleanup fails", async () => {
   const t = setup();
   const person = people[0];
@@ -1271,3 +1622,37 @@ it("can retry legacy confirmation after partial saved-view cleanup fails", async
   expect(t.messages.send).not.toHaveBeenCalled();
   expect(localStorage.getItem(pointerKey)).toBeNull();
 });
+
+it.each([
+  { archived: true },
+  { cached: true },
+  { readOnly: true },
+  { pending: true },
+  { members: ["f".repeat(64)] },
+  { channelType: "stream" },
+] as Partial<ChannelSummary>[])(
+  "does not preview a nonmatching or unavailable DM: %j",
+  async (override) => {
+    const t = setup();
+    t.channels.channels = [
+      {
+        id: channel,
+        name: "Unavailable",
+        channelType: "dm",
+        members: ["f".repeat(64), people[0]?.pubkey ?? ""],
+        ...override,
+      },
+    ];
+    const view = t.mount();
+    await t.user.click(await screen.findByRole("option", { name: "Person 1" }));
+    expect(
+      view.container.querySelector(
+        '[data-new-message-body] [title="Person 1"]',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Channel message history" }),
+    ).not.toBeInTheDocument();
+    expect(t.directMessages.open).not.toHaveBeenCalled();
+  },
+);

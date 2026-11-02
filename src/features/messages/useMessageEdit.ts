@@ -8,10 +8,10 @@ import {
 } from "react";
 import type { ChannelMessage } from "../relay/contracts";
 import type { OutgoingEvent } from "../relay/outbox";
-import type { RelaySession } from "../relay/session";
+import type { ComposerSession } from "./composer-session";
 
 export function lastEditableMessage(
-  session: RelaySession,
+  session: ComposerSession,
   rows: readonly ChannelMessage[],
 ): ChannelMessage | undefined {
   if (!session.viewer || !session.outbox?.supports(40003)) return;
@@ -45,7 +45,7 @@ const snapshot = () => empty;
 const subscribe = () => () => {};
 
 /** Edit delivery uses the session outbox; the composer owns input and draft restoration. */
-export function useMessageEdit(session: RelaySession, restore: () => void) {
+export function useMessageEdit(session: ComposerSession, restore: () => void) {
   const [target, setTarget] = useState<ChannelMessage>();
   const [operation, setOperation] = useState<string>();
   const submitted = useRef<string | undefined>(undefined);

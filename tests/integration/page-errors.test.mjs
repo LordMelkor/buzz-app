@@ -89,21 +89,43 @@ const navigate = (page, frame = page.mainFrame()) => {
 test("WebKit's log for a fetch refused while the document is replaced is explained", () => {
   const page = fakePage("webkit");
   const watched = watchPageErrors(page);
-  navigate(page);
+  const request = navigate(page);
   page.emit("pageerror", reloadCancelLog(presenceAuthors));
-  page.emit("framenavigated", page.mainFrame());
+  page.emit("requestfinished", request);
   assert.deepEqual(watched.errors, [
     `Fetch API cannot load ${presenceAuthors} due to access control checks.`,
   ]);
   assert.deepEqual(watched.unexplained(), []);
 });
 
+// The old document's startup history.replaceState fires framenavigated while
+// the navigation request is still in flight; the document is not replaced yet.
+test("a same-document navigation does not end the pending navigation", () => {
+  const page = fakePage("webkit");
+  const watched = watchPageErrors(page);
+  navigate(page);
+  page.emit("framenavigated", page.mainFrame());
+  page.emit("pageerror", reloadCancelLog(presenceAuthors));
+  assert.deepEqual(watched.unexplained(), []);
+});
+
+test("another request finishing does not end the pending navigation", () => {
+  const page = fakePage("webkit");
+  const watched = watchPageErrors(page);
+  navigate(page);
+  page.emit("requestfinished", { url: () => presenceAuthors });
+  page.emit("pageerror", reloadCancelLog(presenceAuthors));
+  assert.deepEqual(watched.unexplained(), []);
+});
+
 test("only the main frame's pending navigation explains a refused fetch", () => {
   for (const setup of [
     // The new document has committed.
+    (page) => page.emit("requestfinished", navigate(page)),
+    // The new document loaded without its request reporting an outcome.
     (page) => {
       navigate(page);
-      page.emit("framenavigated", page.mainFrame());
+      page.emit("domcontentloaded");
     },
     // The navigation failed, so the old document stays.
     (page) => page.emit("requestfailed", navigate(page)),
@@ -138,10 +160,10 @@ test("one cancellation explains one log", () => {
 test("a log during navigation uses up its cancellation", () => {
   const page = fakePage("webkit");
   const watched = watchPageErrors(page);
-  navigate(page);
+  const request = navigate(page);
   cancel(page, query);
   page.emit("pageerror", reloadCancelLog());
-  page.emit("framenavigated", page.mainFrame());
+  page.emit("requestfinished", request);
   // The new document reports the same URL without a new cancellation.
   page.emit("pageerror", reloadCancelLog());
   assert.equal(watched.unexplained().length, 1);

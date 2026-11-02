@@ -5,6 +5,7 @@ import type {
   AgentIdentity,
 } from "../../src/features/agents/native";
 import type { BundledPlugin } from "../../src/plugins/manager";
+import { createActivityTab } from "../../src/bundled/builderlab/adapter-type/Activity";
 import type { WorkOutcome } from "../../src/features/agents/local-activity";
 
 // A real curve point: the owner's session derives a NIP-44 key with it to read
@@ -12,6 +13,8 @@ import type { WorkOutcome } from "../../src/features/agents/local-activity";
 export const localAgentKey =
   "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 let identities: AgentIdentity[] = [];
+/** Requests the owner stopped, in order. */
+const stopped: string[] = [];
 const pending: {
   id: string;
   handover(): void;
@@ -20,12 +23,18 @@ const pending: {
 }[] = [];
 const controls = {
   pending: () => pending.map((row) => row.id),
+  stopped: () => [...stopped],
   /** Hands over and, like a real harness, reports a first step. */
   handover(id: string) {
     const row = pending.find((row) => row.id === id);
     if (!row) throw new Error("No pending request");
     row.handover();
     row.step("Read", "notes.txt");
+  },
+  step(id: string, tool: string, target?: string) {
+    const row = pending.find((row) => row.id === id);
+    if (!row) throw new Error("No pending request");
+    row.step(tool, target);
   },
   finish(id: string, ok: boolean) {
     const row = pending.find((row) => row.id === id);
@@ -81,6 +90,7 @@ export function localAgentsNative(): AgentsNative {
     publishProfile: async () => {},
     claim: async () => true,
     release: async () => {},
+    keepAwake: async () => {},
   };
 }
 export const localAgentPlugin: BundledPlugin = {
@@ -93,6 +103,15 @@ export const localAgentPlugin: BundledPlugin = {
         id: "tester",
         title: "Local tester",
         defaults: () => ({ config: {} }),
+        // The remote agent type's Activity tab, so published turns can be seen.
+        tabs: [
+          {
+            id: "activity",
+            title: "Activity",
+            role: "activity",
+            component: createActivityTab(ctx.relay),
+          },
+        ],
         run(delivery) {
           if (delivery.trigger.type !== "mention")
             throw new Error("Unexpected trigger");
@@ -104,8 +123,14 @@ export const localAgentPlugin: BundledPlugin = {
           const transferred = new Promise<void>((resolve) => {
             handover = resolve;
           });
+          const id = delivery.trigger.event.id;
+          // Like a harness, the stop ends the turn as it settles.
+          delivery.interruptible?.(async () => {
+            stopped.push(id);
+            finish({ ok: true, stopped: true });
+          });
           pending.push({
-            id: delivery.trigger.event.id,
+            id,
             handover,
             step: (tool, target) => delivery.step?.(tool, target),
             finish,

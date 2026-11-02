@@ -154,9 +154,9 @@ const OVERRIDES = new Map([
   // Preserve the existing, designer-approved availability capsule when moving
   // its recipe out of feature CSS. These are not new contrast exemptions:
   // docs/presence.md records the measured Online shortfall in both themes.
-  ["styles/materials.css:188", "Availability resting status mix: 12%."],
-  ["styles/materials.css:193", "Availability hover status mix: 18%."],
-  ["styles/materials.css:198", "Availability pressed/open status mix: 24%."],
+  ["styles/materials.css:193", "Availability resting status mix: 12%."],
+  ["styles/materials.css:198", "Availability hover status mix: 18%."],
+  ["styles/materials.css:203", "Availability pressed/open status mix: 24%."],
 ]);
 
 const failures = [];
@@ -223,6 +223,27 @@ auditLayers();
  */
 function auditLayers() {
   const css = readFileSync(TOKENS_FILE, "utf8");
+  // Artwork endpoints follow the same palette ownership as other aliases.
+  // Complete plugin gradients may compose their own two palette-backed endpoints.
+  for (const match of css.matchAll(/(--art-[a-z0-9-]+):\s*([^;]+);/g)) {
+    const [declaration, name, value] = match;
+    const alias =
+      /^var\(--(?:(?:amber|blue|cyan|green|orange|purple|red)-(?:[1-9]|1[0-2])|(?:bee|citrus|mono|flame|magenta|iris|cobalt|jade)-(?:[1-9]|1[0-2]))\)$/.test(
+        value.trim(),
+      );
+    const category = /^--art-plugin-(.+)-gradient$/.exec(name)?.[1];
+    const composition =
+      category &&
+      value.replace(/\s+/g, " ").trim() ===
+        `linear-gradient( to bottom in oklch, var(--art-plugin-${category}-start), var(--art-plugin-${category}-end) )`;
+    if (!alias && !composition)
+      failures.push({
+        at: "styles/tokens.css",
+        found: declaration,
+        why: "Artwork must reference an existing family step or compose its own palette-backed endpoints.",
+      });
+  }
+
   const rel = "styles/tokens.css";
 
   /** Every `:root` or `.dark` block, concatenated. One per layer, so several. */
@@ -301,6 +322,45 @@ function auditLayers() {
         }
       }
     }
+  }
+
+  // Appearance palettes retain explicit mode owners and scoped ramp bindings.
+  for (const family of [
+    "bee",
+    "citrus",
+    "mono",
+    "flame",
+    "magenta",
+    "iris",
+    "cobalt",
+    "jade",
+  ]) {
+    for (let step = 1; step <= 12; step += 1) {
+      for (const [mode, block] of Object.entries(modes)) {
+        const owner = `--${family}-${step}-${mode}`;
+        if (
+          !/^#[0-9a-f]{6}$/i.test(
+            read(css.slice(0, css.indexOf("LAYER 1 — FAMILIES")), owner) ?? "",
+          ) ||
+          read(block, `--${family}-${step}`) !== `var(${owner})`
+        ) {
+          failures.push({
+            at: `${rel} (${mode})`,
+            found: owner,
+            why: "Each Appearance step needs a literal mode owner and the matching scoped binding.",
+          });
+        }
+      }
+    }
+  }
+  for (const match of css.matchAll(
+    /--accent-[a-z0-9-]+:\s*(#[0-9a-f]{3,8})/g,
+  )) {
+    failures.push({
+      at: rel,
+      found: match[0],
+      why: "Accent mappings must reference named palette owners, not literals.",
+    });
   }
 
   // Semantic names describe purpose even when both themes choose the same step.

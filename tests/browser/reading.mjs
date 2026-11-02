@@ -7,7 +7,9 @@ export async function holdReadingFocus(page) {
       if (
         target instanceof HTMLElement &&
         (target.closest("[data-channel-timeline], [data-reading-surface]") ||
-          target.matches('[role="textbox"][aria-label^="Message #"]'))
+          target.matches(
+            '[role="textbox"][aria-label^="Message #"], [role="tab"][data-tab-value^="thread:"]',
+          ))
       )
         target.blur();
     };

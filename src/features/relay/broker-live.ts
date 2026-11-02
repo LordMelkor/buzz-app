@@ -1,6 +1,12 @@
 import { observerFrame, observerGeneration } from "../agents/observer";
 import { eventDto } from "./events";
+import type {
+  ArtifactSyncFilter,
+  ArtifactSyncSink,
+} from "./artifact-sync-filter.ts";
 import {
+  LIVE_RECOVERY_INTERVAL,
+  liveSlowRetryDelay,
   liveChannels,
   livePresenceAuthors,
   liveJoined,
@@ -20,7 +26,8 @@ export function subscribeBrokerTraffic(
 ): LiveSubscription {
   let closed = false,
     generation = 0,
-    attempts = 0;
+    attempts = 0,
+    refusals = 0;
   let channels: string[] = [];
   let joined: string[] = [];
   let sentChannels: string[] = [];
@@ -56,10 +63,89 @@ export function subscribeBrokerTraffic(
   };
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let heartbeat: ReturnType<typeof setTimeout> | undefined;
+  // NIP-AR syncs ride the stream: one host REQ each, ended when the stream ends.
+  type BrokerSync = {
+    id: string;
+    filter: ArtifactSyncFilter;
+    sink: ArtifactSyncSink;
+    sent?: number;
+  };
+  const syncs = new Map<string, BrokerSync>();
+  let syncSerial = 0;
+  const loseSyncs = (reason: string) => {
+    for (const sync of [...syncs.values()])
+      if (sync.sent !== undefined) {
+        syncs.delete(sync.id);
+        sync.sink.closed(reason);
+      }
+  };
+  // A refusal the host sends before it allocates anything.
+  class SyncRefused extends Error {}
+  /** End `id` on the host. The host remembers a close that arrives before
+   * its open, so the order of the two POSTs does not matter. If the close
+   * itself has no known outcome, the stream is reset: the host ends every
+   * sync with its stream, so no host sync can outlive this one. */
+  function retireSync(id: string) {
+    if (closed || !streamId) return;
+    const current = generation;
+    void fetch(`${endpoint}/stream-artifact-sync-close`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ streamId, id }),
+      signal: AbortSignal.any([
+        controller?.signal ?? new AbortController().signal,
+        AbortSignal.timeout(5000),
+      ]),
+    })
+      .then((response) => {
+        // 404: the stream, and so every sync on it, is already gone.
+        if (!response.ok && response.status !== 404)
+          throw new Error("Artifact sync close failed");
+      })
+      .catch(() => {
+        if (!closed && current === generation)
+          controller?.abort(new Error("Artifact sync close interrupted"));
+      });
+  }
+  function openSync(sync: BrokerSync) {
+    if (closed || !streamId) return;
+    const current = generation;
+    sync.sent = current;
+    void fetch(`${endpoint}/stream-artifact-sync`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ streamId, id: sync.id, filter: sync.filter }),
+      signal: AbortSignal.any([
+        controller?.signal ?? new AbortController().signal,
+        AbortSignal.timeout(5000),
+      ]),
+    })
+      .then((response) => {
+        if (response.ok) return;
+        const message = `broker refused sync (${response.status})`;
+        throw response.status >= 400 && response.status < 500
+          ? new SyncRefused(message)
+          : new Error(message);
+      })
+      .catch((error) => {
+        if (closed || current !== generation || syncs.get(sync.id) !== sync)
+          return;
+        syncs.delete(sync.id);
+        // A timeout, network error or 5xx does not say whether the host
+        // opened the sync: end it there too, so it cannot hold a slot.
+        if (!(error instanceof SyncRefused)) retireSync(sync.id);
+        sync.sink.closed(
+          `error: ${error instanceof Error ? error.message : "broker sync failed"}`,
+        );
+      });
+  }
   const state = (status: LiveSnapshot["status"], error?: string) =>
     publish({ status, routes: [], ...(error ? { error } : {}) });
   function start() {
     if (closed) return;
+    loseSyncs("disconnected: live broker restarted");
     const current = ++generation;
     streamId = undefined;
     controlPending = false;
@@ -91,6 +177,7 @@ export function subscribeBrokerTraffic(
     const startingObserver = observer;
     const startingPresence = JSON.stringify(presenceAuthors);
     void (async () => {
+      let opened: number | undefined;
       try {
         const response = await fetch(`${endpoint}/stream`, {
           method: "POST",
@@ -113,10 +200,12 @@ export function subscribeBrokerTraffic(
           !response.headers.get("content-type")?.startsWith("text/event-stream")
         ) {
           if ([400, 401, 403, 413].includes(response.status)) {
+            // A broker restart drops registrations, so even a 4xx can clear.
             state(
               "error",
               `Live broker rejected subscription (${response.status})`,
             );
+            retryTimer = setTimeout(start, liveSlowRetryDelay(++refusals));
             return;
           }
           throw new Error(`Live broker unavailable (${response.status})`);
@@ -125,11 +214,14 @@ export function subscribeBrokerTraffic(
         if (identity !== null && !/^[0-9a-f]{32}$/.test(identity))
           throw new Error("Invalid live broker control identity");
         streamId = identity ?? undefined;
+        opened = Date.now();
         if (startingInterests !== interestRevision) sendInterests();
         if (startingPriority !== JSON.stringify(priority)) sendPriority();
         if (startingObserver !== observer) sendObserver();
         if (startingPresence !== JSON.stringify(presenceAuthors))
           sendPresence();
+        for (const sync of syncs.values())
+          if (sync.sent === undefined) openSync(sync);
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -158,13 +250,7 @@ export function subscribeBrokerTraffic(
               if (!lines.length) continue; // Keepalives carry no data.
               const data: unknown = JSON.parse(lines.join("\n"));
               if (!valid()) return;
-              if (kind === "archive-error") callbacks.captureState?.("error");
-              else if (kind === "archive-state") {
-                const state = (data as { state?: unknown })?.state;
-                if (state === "saving" || state === "off" || state === "error")
-                  callbacks.captureState?.(state);
-              } else if (kind === "message")
-                callbacks.receive([eventDto(data)]);
+              if (kind === "message") callbacks.receive([eventDto(data)]);
               else if (kind === "traffic") {
                 if (
                   !data ||
@@ -188,6 +274,30 @@ export function subscribeBrokerTraffic(
                   presenceAuthors.includes(event.pubkey)
                 )
                   callbacks.presence?.(event);
+              } else if (kind === "artifact-sync") {
+                const frame = data as {
+                  id?: unknown;
+                  type?: unknown;
+                  event?: unknown;
+                  reason?: unknown;
+                };
+                const sync =
+                  typeof frame.id === "string"
+                    ? syncs.get(frame.id)
+                    : undefined;
+                if (sync && sync.sent === current) {
+                  if (frame.type === "event")
+                    sync.sink.event(eventDto(frame.event));
+                  else if (frame.type === "eose") sync.sink.eose();
+                  else if (frame.type === "closed") {
+                    syncs.delete(sync.id);
+                    sync.sink.closed(
+                      typeof frame.reason === "string"
+                        ? frame.reason.slice(0, 512)
+                        : "error: relay closed the sync",
+                    );
+                  }
+                }
               } else if (kind === "observer") {
                 const record = data as {
                   frame?: unknown;
@@ -249,6 +359,14 @@ export function subscribeBrokerTraffic(
         }
       } catch (error) {
         if (closed || current !== generation) return;
+        loseSyncs("disconnected: live broker interrupted");
+        // A stream up for a minute proves the broker healthy again. Its first
+        // frame does not: every accepted stream sends its state at once.
+        if (
+          opened !== undefined &&
+          Date.now() - opened >= LIVE_RECOVERY_INTERVAL
+        )
+          attempts = refusals = 0;
         state(
           "retrying",
           error instanceof Error ? error.message : "Live broker interrupted",
@@ -396,6 +514,26 @@ export function subscribeBrokerTraffic(
   }
   start();
   return {
+    syncArtifacts(filter, sink) {
+      if (closed) {
+        queueMicrotask(() =>
+          sink.closed("unsupported: relay session disposed"),
+        );
+        return () => {};
+      }
+      const sync: BrokerSync = { id: `s${++syncSerial}`, filter, sink };
+      syncs.set(sync.id, sync);
+      queueMicrotask(() => {
+        if (syncs.get(sync.id) === sync && sync.sent === undefined)
+          openSync(sync);
+      });
+      return () => {
+        if (syncs.get(sync.id) !== sync) return;
+        syncs.delete(sync.id);
+        // A sync opened on an earlier stream ended with that stream.
+        if (sync.sent === generation) retireSync(sync.id);
+      };
+    },
     watchPresence(authors) {
       const next = livePresenceAuthors(authors);
       if (closed || JSON.stringify(next) === JSON.stringify(presenceAuthors))
@@ -510,6 +648,10 @@ export function subscribeBrokerTraffic(
     dispose() {
       closed = true;
       generation++;
+      const ending = [...syncs.values()];
+      syncs.clear();
+      for (const sync of ending)
+        sync.sink.closed("unsupported: relay session disposed");
       controller?.abort();
       clearTimeout(retryTimer);
       clearTimeout(heartbeat);

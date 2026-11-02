@@ -13,10 +13,19 @@ export type PageProps = {
   navigation?: import("../navigation/service").PageNavigation | undefined;
 };
 
+/** Props for a page-owned replacement in the shell's sidebar slot. */
+export type PageSidebarProps = {
+  target: import("../navigation/targets").OpenTarget;
+  /** Shell-generated primary Pages navigation, when available. */
+  children?: ReactNode | undefined;
+};
+
 export type Page = Readonly<{
   id: string;
   title: string;
   component: ComponentType<PageProps>;
+  /** Replace the conversation sidebar while this page is selected. */
+  sidebar?: ComponentType<PageSidebarProps>;
   layout?: "document" | "workspace";
   // Opt in only when every page state places the supplied companion card.
   companion?: boolean;
@@ -78,6 +87,7 @@ export class PagesService extends Service implements Pages {
       typeof page.title !== "string" ||
       !page.title.trim() ||
       typeof page.component !== "function" ||
+      (page.sidebar !== undefined && typeof page.sidebar !== "function") ||
       (page.layout !== undefined &&
         page.layout !== "document" &&
         page.layout !== "workspace") ||

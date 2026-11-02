@@ -13,6 +13,7 @@ import {
   signed,
 } from "./testing";
 import type { LiveCallbacks } from "./live";
+import type { ReadFilter } from "./events";
 import type { HeadPersistence, SavedHead } from "./persistence";
 import { rowProfileIds } from "./membership";
 
@@ -84,10 +85,27 @@ it("admits only recognized, channel-scoped relay-authored membership payloads", 
   ).toEqual([]);
 });
 
+/** Take the pending read `match` selects, in whatever order the store issued it. */
+const take = (
+  wire: ReturnType<typeof scriptedTransport>,
+  match: (filter: ReadFilter) => boolean,
+) => {
+  const index = wire.pending.findIndex((entry) => entry.filters.some(match));
+  const [entry] = index < 0 ? [] : wire.pending.splice(index, 1);
+  assert(entry, "No matching pending read");
+  return entry;
+};
+const isWindow = (filter: ReadFilter) => filter.top_level === true;
+const isNotices = (filter: ReadFilter) =>
+  filter.kinds?.length === 1 && filter.kinds[0] === 40099;
+const isNames = (filter: ReadFilter) => !!filter.kinds?.includes(0);
+
 it.each([false, true])(
   "history, live, older pages and optional profiles share the existing session (prepared=%s)",
   async (prepared) => {
-    const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+    const wire = scriptedTransport(viewer.pubkey, relay.pubkey, {
+      notices: true,
+    });
     let live!: LiveCallbacks;
     const owner = createRelaySession(
       {
@@ -111,57 +129,65 @@ it.each([false, true])(
       await flush();
       q.ensure("a");
       const head = wire.next();
+      // Pages leave notices out, so joins cannot crowd messages from them.
       expect([...(head.filters[0]?.kinds ?? [])].sort((a, b) => a - b)).toEqual(
-        [9, 40002, 40008, 40099],
+        [9, 40002, 40008, 48100, 48103],
       );
-      const row = addition();
+      const hello = message(viewer, "a", "Hello", 20);
       head.respond([
-        row,
+        hello,
         bounds(relay, "a", "head", {
           has_more: true,
-          next_cursor: { created_at: row.created_at, id: row.id },
+          next_cursor: { created_at: hello.created_at, id: hello.id },
         }),
       ]);
       await flush();
-      expect(q.window("a").rows.map((r) => r.id)).toEqual([row.id]);
+      // Messages show before their notices are read.
+      expect(q.window("a").rows.map((r) => r.id)).toEqual([hello.id]);
+      const notices = take(wire, isNotices);
+      expect(notices.filters).toEqual([
+        { kinds: [40099], "#h": ["a"], authors: [relay.pubkey], limit: 500 },
+      ]);
+      // One below the oldest page waits for the page that reaches it.
+      const row = addition(pinky.pubkey, 21);
+      const below = addition(brain.pubkey, 19);
+      notices.respond([row, below]);
+      await flush();
+      expect(q.window("a").rows.map((r) => r.id)).toEqual([hello.id, row.id]);
+      expect(q.window("a").rows[1]?.membership?.target).toBe(pinky.pubkey);
       // Render before enrichment, with no per-row blocking request.
-      const names = wire.next();
-      expect([...(names.filters[0]?.authors ?? [])].sort()).toEqual(
-        [viewer.pubkey, pinky.pubkey].sort(),
-      );
-      names.respond([
+      take(wire, isNames).respond([
         profile(viewer, { name: "Wes" }),
         profile(pinky, { name: "Pinky" }),
       ]);
       await flush();
-      const chat = message(pinky, "a", "Conversation preview", 21);
-      live.receive([chat, addition(brain.pubkey, 22)]);
+      const chat = message(pinky, "a", "Conversation preview", 22);
+      live.receive([chat, addition(brain.pubkey, 23)]);
       await flush();
       expect(q.window("a").rows.map((r) => r.id)).toEqual([
+        hello.id,
         row.id,
         chat.id,
-        addition(brain.pubkey, 22).id,
+        addition(brain.pubkey, 23).id,
       ]);
       expect(q.list().channels[0]?.preview).toBe("Conversation preview");
       expect(
         owner.session.unread.snapshot({ kind: "channel", channelId: "a" })
           .observedCount,
       ).toBe(1);
-      const moreNames = wire.next();
-      expect(moreNames.filters[0]?.authors).toEqual([brain.pubkey]);
-      moreNames.respond([profile(brain, { name: "Brain" })]);
+      take(wire, isNames).respond([profile(brain, { name: "Brain" })]);
       await flush();
       q.loadOlder("a");
-      const older = wire.next();
+      const older = take(wire, isWindow);
       expect(older.filters[0]).toMatchObject({
-        kinds: [40002, 40008, 40099, 9],
         until: 20,
-        before_id: row.id,
+        before_id: hello.id,
       });
-      const old = addition(brain.pubkey, 19);
+      expect(older.filters[0]?.kinds).not.toContain(40099);
+      const old = message(pinky, "a", "First", 18);
       older.respond([
         old,
-        bounds(relay, "a", `20:${row.id}`, {
+        bounds(relay, "a", `20:${hello.id}`, {
           has_more: false,
           next_cursor: null,
         }),
@@ -169,15 +195,21 @@ it.each([false, true])(
       await flush();
       expect(q.window("a").rows.map((r) => r.id)).toEqual([
         old.id,
+        below.id,
+        hello.id,
         row.id,
         chat.id,
-        addition(brain.pubkey, 22).id,
+        addition(brain.pubkey, 23).id,
       ]);
+      // The first notice read reached the start; nothing is left to read.
+      expect(wire.pending.some((entry) => entry.filters.some(isNotices))).toBe(
+        false,
+      );
       const before = q.window("a").rows;
       live.receive([
         activity(
           { type: "member_joined", actor: viewer.pubkey, target: brain.pubkey },
-          23,
+          24,
           pinky,
         ),
       ]);
@@ -189,6 +221,93 @@ it.each([false, true])(
     }
   },
 );
+
+it("reads notices in relay pages down to the window floor, and a failed read never errors the window", async () => {
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey, {
+    notices: true,
+  });
+  let live!: LiveCallbacks;
+  const owner = createRelaySession({
+    ...wire.transport,
+    subscribe(callbacks) {
+      live = callbacks;
+      return { update() {}, retry() {}, dispose() {} };
+    },
+  });
+  const q = owner.session.channels;
+  try {
+    live.receive([roster(relay, "a", [viewer.pubkey])]);
+    q.ensure("a");
+    const hello = message(viewer, "a", "Hello", 1_000);
+    wire.next().respond([
+      hello,
+      bounds(relay, "a", "head", {
+        has_more: true,
+        next_cursor: { created_at: hello.created_at, id: hello.id },
+      }),
+    ]);
+    await flush();
+    // A full page of joins newer than every loaded message.
+    const burst = Array.from({ length: 500 }, (_, index) =>
+      activity(
+        {
+          type: "member_joined",
+          actor: viewer.pubkey,
+          target: keypair().pubkey,
+        },
+        1_001 + Math.floor(index / 2),
+      ),
+    );
+    take(wire, isNotices).respond(burst);
+    await flush();
+    expect(q.window("a").rows).toHaveLength(501);
+    // The page stopped above the floor, so the next one continues from its
+    // oldest notice by the relay's composite keyset.
+    const last = [...burst]
+      .sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id))
+      .at(-1);
+    const next = take(wire, isNotices);
+    expect(next.filters[0]).toMatchObject({
+      until: last?.created_at,
+      before_id: last?.id,
+    });
+    next.fail(new Error("notice read failed"));
+    await flush();
+    expect(q.window("a")).toMatchObject({ status: "ready", error: undefined });
+    expect(q.window("a").rows).toHaveLength(501);
+    // The next older page retries the descent from where it stopped.
+    q.loadOlder("a");
+    const older = take(wire, isWindow);
+    const first = message(viewer, "a", "First", 990);
+    older.respond([
+      first,
+      bounds(relay, "a", `1000:${hello.id}`, {
+        has_more: false,
+        next_cursor: null,
+      }),
+    ]);
+    await flush();
+    const retry = take(wire, isNotices);
+    expect(retry.filters[0]).toMatchObject({
+      until: last?.created_at,
+      before_id: last?.id,
+    });
+    const early = addition(pinky.pubkey, 995);
+    retry.respond([early]);
+    await flush();
+    expect(
+      q
+        .window("a")
+        .rows.slice(0, 3)
+        .map((r) => r.id),
+    ).toEqual([first.id, early.id, hello.id]);
+    expect(wire.pending.some((entry) => entry.filters.some(isNotices))).toBe(
+      false,
+    );
+  } finally {
+    owner.dispose();
+  }
+});
 
 it("live activity obeys the same retained row budget as messages", async () => {
   const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
@@ -295,5 +414,90 @@ it("prepared disk heads retain signed membership evidence and subject profiles f
     );
   } finally {
     second.dispose();
+  }
+});
+
+it("a catch-up head rereads the newest notices, and restarts the descent only when they do not meet the ones held", async () => {
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey, {
+    notices: true,
+  });
+  let live!: LiveCallbacks;
+  const owner = createRelaySession(
+    {
+      ...wire.transport,
+      subscribe(callbacks) {
+        live = callbacks;
+        return { update() {}, retry() {}, dispose() {} };
+      },
+    },
+    { prepared: true },
+  );
+  const q = owner.session.channels;
+  const hello = message(viewer, "a", "Hello", 1_000);
+  const head = () =>
+    take(wire, isWindow).respond([
+      hello,
+      bounds(relay, "a", "head", {
+        has_more: true,
+        next_cursor: { created_at: hello.created_at, id: hello.id },
+      }),
+    ]);
+  const noticeReads = () =>
+    wire.pending.filter(
+      (entry) => !entry.signal?.aborted && entry.filters.some(isNotices),
+    );
+  try {
+    q.ensureList();
+    wire
+      .next()
+      .respond([
+        roster(relay, "a", [viewer.pubkey]),
+        metadata(relay, "a", "A"),
+      ]);
+    await flush();
+    q.ensure("a");
+    head();
+    await flush();
+    const held = addition(pinky.pubkey, 1_001);
+    take(wire, isNotices).respond([held]);
+    await flush();
+    expect(q.window("a").rows.map((r) => r.id)).toEqual([hello.id, held.id]);
+    expect(noticeReads()).toHaveLength(0);
+    // A long drop: more joins than one page landed while the stream was down.
+    live.state({ status: "connected", routes: [] });
+    live.established("a");
+    await flush();
+    head();
+    await flush();
+    const missed = Array.from({ length: 500 }, (_, index) =>
+      addition(keypair().pubkey, 1_100 + index),
+    );
+    const top = take(wire, isNotices);
+    expect(top.filters[0]).not.toHaveProperty("until");
+    top.respond(missed);
+    await flush();
+    const resumed = take(wire, isNotices);
+    expect(resumed.filters[0]).toMatchObject({
+      until: 1_100,
+      before_id: missed[0]?.id,
+    });
+    resumed.respond([held]);
+    await flush();
+    expect(q.window("a").rows).toHaveLength(502);
+    expect(noticeReads()).toHaveLength(0);
+    // A head whose newest notices meet the ones held reads nothing more.
+    live.state({ status: "retrying", routes: [] });
+    await flush();
+    live.state({ status: "connected", routes: [] });
+    live.established("a");
+    await flush();
+    head();
+    await flush();
+    take(wire, isNotices).respond(missed);
+    await flush();
+    expect(noticeReads()).toHaveLength(0);
+    expect(q.window("a").rows).toHaveLength(502);
+  } finally {
+    owner.dispose();
   }
 });

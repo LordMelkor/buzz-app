@@ -2,8 +2,10 @@ import {
   editSidebarAssignment,
   editSidebarSectionOrder,
   editSidebarSectionRemoval,
+  editSidebarSectionRename,
   validSidebarSectionOrder,
   validSidebarSectionRemoval,
+  validSidebarSectionRename,
   validSidebarAssignment,
 } from "../src/features/relay/sidebar-edits.ts";
 import { projectSidebarRecord } from "../src/features/relay/sidebar-registers.ts";
@@ -13,7 +15,7 @@ import {
   SIDEBAR_COORDINATES,
 } from "../src/features/relay/sidebar-preferences.ts";
 
-export const SIDEBAR_REQUEST_BYTES = 768 * 1024; // Four bounded encrypted coordinates.
+export const SIDEBAR_REQUEST_BYTES = 960 * 1024; // Five bounded encrypted coordinates.
 export const SIDEBAR_HEAD_BYTES = 192 * 1024 + 4096; // One signed coordinate plus response framing.
 export const SIDEBAR_UPLOAD_SLOTS = 2;
 export const SIDEBAR_UPLOAD_MS = 10_000;
@@ -61,6 +63,8 @@ export function decodeSidebarPreferences(events, secret) {
       decoded.get("channel-stars"),
       decoded.get("channel-mutes"),
       decoded.get("channel-sort"),
+      undefined,
+      decoded.get("channel-filter"),
     );
   } finally {
     key.fill(0);
@@ -73,7 +77,7 @@ function validAssignmentIntent(intent) {
     intent &&
     typeof intent === "object" &&
     !Array.isArray(intent) &&
-    typeof intent.channelId === "string" &&
+    (intent.channelId === undefined || typeof intent.channelId === "string") &&
     (intent.sectionId === undefined || typeof intent.sectionId === "string") &&
     (intent.createSection === undefined ||
       (intent.createSection &&
@@ -82,7 +86,7 @@ function validAssignmentIntent(intent) {
         typeof intent.createSection.id === "string" &&
         typeof intent.createSection.name === "string" &&
         Object.keys(intent.createSection).every((key) =>
-          ["id", "name"].includes(key),
+          ["id", "name", "position"].includes(key),
         ))) &&
     validSidebarAssignment(intent) &&
     Object.keys(intent).every((key) =>
@@ -174,6 +178,35 @@ export function prepareSidebarSectionRemoval(
     ),
   );
 }
+export function assertSidebarSectionRenameIntent(intent) {
+  if (
+    !intent ||
+    typeof intent !== "object" ||
+    Array.isArray(intent) ||
+    typeof intent.sectionId !== "string" ||
+    typeof intent.name !== "string" ||
+    !validSidebarSectionRename(intent.sectionId, intent.name) ||
+    Object.keys(intent).some((key) => key !== "sectionId" && key !== "name")
+  )
+    throw new Error("Invalid sidebar section rename intent");
+}
+export function prepareSidebarSectionRename(
+  events,
+  intent,
+  secret,
+  now = Date.now(),
+) {
+  assertSidebarSectionRenameIntent(intent);
+  return prepareSections(events, secret, now, (current) =>
+    editSidebarSectionRename(
+      current.blob,
+      current.createdAt,
+      intent.sectionId,
+      intent.name,
+      now,
+    ),
+  );
+}
 export function assertSidebarSectionOrderIntent(intent) {
   if (
     !intent ||
@@ -259,6 +292,21 @@ export async function mutateSidebarSectionRemoval(
   assertSidebarSectionRemovalIntent(intent);
   return mutateSections(
     prepareSidebarSectionRemoval,
+    intent,
+    secret,
+    readHead,
+    publish,
+  );
+}
+export async function mutateSidebarSectionRename(
+  intent,
+  secret,
+  readHead,
+  publish,
+) {
+  assertSidebarSectionRenameIntent(intent);
+  return mutateSections(
+    prepareSidebarSectionRename,
     intent,
     secret,
     readHead,

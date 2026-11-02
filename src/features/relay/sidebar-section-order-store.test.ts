@@ -33,19 +33,13 @@ function gate<T>() {
 }
 function setup(write: SidebarSectionOrderMutator) {
   const read = vi.fn(async () => data);
-  const store = createSidebarPreferencesStore(
+  const store = createSidebarPreferencesStore({
     read,
-    true,
-    async () => data,
-    async () => [],
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    false,
-    write,
-  );
+    available: true,
+    write: async () => data,
+    writeStar: async () => [],
+    writeOrder: write,
+  });
   return { store, queries: store.queries, read };
 }
 

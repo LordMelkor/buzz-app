@@ -301,7 +301,7 @@ export function MenuSpecimen() {
       </p>
       <Example
         title="Choices and nested menus"
-        description="A check marks a persistent choice. Highlight follows navigation; a submenu keeps its parent highlighted while open."
+        description="A check marks a persistent choice. Highlight follows navigation; a submenu keeps its parent highlighted while open. Disabled rows mute their trailing text and indicators with the label."
         code={`function ActionMenu() {
   const [sort, setSort] = useState("recent");
   const [notifications, setNotifications] = useState(true);
@@ -475,7 +475,7 @@ export function MenuSpecimen() {
       </Example>
       <Example
         title="Context menu"
-        description="Right-click, or focus the trigger and use Shift+F10. Context actions use the same rows and surface."
+        description="Right-click, or focus the trigger and use Shift+F10. Context actions appear immediately, without entrance movement or blur, and retain a short fade on dismissal."
         code={`<ContextMenuRoot>
   <ContextMenuTrigger render={<Button>Context actions</Button>} />
   <MenuPopup>
@@ -766,9 +766,7 @@ export function PopoverSpecimen() {
         description="Hover or click for a richer list. Moving into the popup keeps it open; each row remains a single action."
         code={`<PopoverRoot>
   <PopoverTrigger
-    openOnHover
-    delay={250}
-    closeDelay={150}
+    openOnHover="preview"
     render={<Button>Recent activity</Button>}
   />
   <PopoverPopup aria-label="Recent activity" padding="list" size="wide">
@@ -819,9 +817,7 @@ export function PopoverSpecimen() {
       >
         <PopoverRoot>
           <PopoverTrigger
-            openOnHover
-            delay={250}
-            closeDelay={150}
+            openOnHover="preview"
             render={<Button>Recent activity</Button>}
           />
           <PopoverPopup aria-label="Recent activity" padding="list" size="wide">

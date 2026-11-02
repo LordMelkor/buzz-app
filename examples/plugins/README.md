@@ -33,3 +33,46 @@ To try Git import after these files are pushed, enter this repository's supporte
 HTTPS/SSH URL and its branch/tag, then select `examples/plugins/counter` or
 `examples/plugins/notes`. Private HTTPS authentication is not provided by this
 slice; use authenticated SSH with an existing agent and known host when available.
+
+## Add discovery metadata and a README
+
+The checked-in manifests are minimal. On a host that supports discovery metadata,
+you can extend `counter/manifest.json` like this:
+
+```json
+{
+  "id": "example.counter",
+  "name": "Counter playground",
+  "apiVersion": 1,
+  "description": "Try a click counter to explore plugin pages.",
+  "discovery": {
+    "category": "developer-tools-and-integrations",
+    "tags": ["Examples", "React"]
+  }
+}
+```
+
+Choose the category from the [recognized Settings categories](../../docs/plugin-architecture.md#writing-plugin-discovery-metadata).
+The description explains the behavior; tags add useful search terms. These
+optional fields do not change the runtime API version.
+Older hosts reject `description` and `discovery`, so omit both when targeting them.
+
+You can package `counter/README.md` beside its manifest and prebuilt module.
+Settings does not display external plugin READMEs, including this one. Keep the
+guide in the same short shape used for bundled plugins, for example:
+
+```markdown
+# Counter playground
+
+Explore a plugin page with a simple click counter.
+
+## Getting started
+
+1. Enable the plugin in Settings → Plugins, then open **Counter playground**
+   from page navigation.
+2. Click the counter button to increment the count.
+```
+
+See [plugin README guidance](../../docs/plugin-architecture.md#writing-the-plugin-readme)
+and [packaging limits](../../docs/plugin-architecture.md#loading-from-folders-and-repositories)
+before adding README or branding files to a build.

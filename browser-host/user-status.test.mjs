@@ -20,6 +20,10 @@ it("admits clears, text-only, emoji-only, custom emoji and expiration", () => {
         ["expiration", "1700086400"],
       ],
     },
+    {
+      ...template,
+      tags: [...template.tags, ["emoji", ":party:", "https://emoji.test/p"]],
+    },
   ])
     expect(validStatusTemplate(event)).toBe(true);
 });
@@ -34,6 +38,22 @@ it("rejects unrelated coordinates, duplicate tags, invalid times, channels and o
     { tags: [...template.tags, ["d", "general"]] },
     { tags: [...template.tags, ["h", "channel"]] },
     { tags: [...template.tags, ["emoji", "party", "https://wrong.test"]] },
+    { tags: [...template.tags, ["emoji", "🎉", "https://emoji.test/p"]] },
+    { tags: [...template.tags, ["emoji", ":party:", "data:image/png,x"]] },
+    { tags: [...template.tags, ["emoji", ":party:", " https://emoji.test/p"]] },
+    {
+      tags: [
+        ...template.tags,
+        ["emoji", ":party:", `https://emoji.test/${"x".repeat(2030)}`],
+      ],
+    },
+    {
+      tags: [
+        ...template.tags,
+        ["emoji", ":party:", "https://emoji.test/p", "extra"],
+      ],
+    },
+    { tags: [["d", "general", "https://wrong.test"]] },
     { tags: [...template.tags, ["expiration", "NaN"]] },
     { tags: [...template.tags, ["expiration", "1700086400"]] },
     { tags: [...template.tags, ["emoji", "x".repeat(101)]] },

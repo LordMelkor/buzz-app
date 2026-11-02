@@ -82,7 +82,7 @@ export function useTypingReplacement(value: Replacement, enabled: boolean) {
   }, [store, active, enabled, session, channelId, threadRootId, pubkey]);
 }
 export function useReplacedTypers(
-  session: RelaySession | undefined,
+  session: object | undefined,
   channelId: string,
   threadRootId: string | undefined,
 ) {

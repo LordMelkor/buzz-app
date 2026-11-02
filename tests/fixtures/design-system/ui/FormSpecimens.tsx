@@ -3,13 +3,18 @@ import { Section } from "./primitives";
 import { useState, type ReactNode } from "react";
 import { Field } from "../../../../src/shared/design-system/ui/Field";
 import { InputGroup } from "../../../../src/shared/design-system/ui/InputGroup";
-import { CodeIcon } from "../../../../src/shared/design-system/icons";
+import {
+  CodeIcon,
+  Filter2Icon,
+} from "../../../../src/shared/design-system/icons";
 import { Input } from "../../../../src/shared/design-system/ui/Input";
 import { Textarea } from "../../../../src/shared/design-system/ui/Textarea";
 import { SearchField } from "../../../../src/shared/design-system/ui/SearchField";
 import { Select } from "../../../../src/shared/design-system/ui/Select";
 import { Combobox } from "../../../../src/shared/design-system/ui/Combobox";
 import { Button } from "../../../../src/shared/design-system/ui/Button";
+
+import { IconButton } from "../../../../src/shared/design-system/ui/IconButton";
 
 const destinations = [
   {
@@ -31,8 +36,12 @@ const destinations = [
 export const workspaceGroups = [
   {
     label: "Workspaces",
+    options: destinations,
+  },
+  {
+    label: "",
+    separator: true,
     options: [
-      ...destinations,
       { value: "archive", label: "Archived workspace", disabled: true },
     ],
   },
@@ -83,6 +92,9 @@ export function InputExamples() {
 >
   <Input readOnly value="workspace-studio" />
 </Field>
+<Field label="Saving" aria-busy="true">
+  <Input readOnly aria-disabled="true" value="Design studio" />
+</Field>
 <Field label="Disabled">
   <Input disabled value="Managed by your organization" />
 </Field>
@@ -112,6 +124,9 @@ export function InputExamples() {
           description="You can focus and copy this value."
         >
           <Input readOnly value="workspace-studio" />
+        </Field>
+        <Field label="Saving" aria-busy="true">
+          <Input readOnly aria-disabled="true" value="Design studio" />
         </Field>
         <Field label="Disabled">
           <Input disabled value="Managed by your organization" />
@@ -234,6 +249,30 @@ export function SearchExamples() {
   const [invalid, setInvalid] = useState("unknown");
   return (
     <div className="component-specimen-stack">
+      <FormExample
+        title="Search with a trailing action"
+        description="Search and its filter action share one frame; Clear remains separate."
+        code={
+          '<SearchField value={query} onValueChange={setQuery} trailing={<IconButton aria-label="Filter" icon={<Filter2Icon />} />} />'
+        }
+      >
+        <SearchField
+          value={query}
+          onValueChange={setQuery}
+          trailing={
+            <IconButton aria-label="Filter" icon={<Filter2Icon size={16} />} />
+          }
+        />
+      </FormExample>
+      <FormExample
+        title="Search palette"
+        description="Composer surface, generous input spacing, and larger search text."
+        code={
+          '<SearchField variant="palette" value={query} onValueChange={setQuery} />'
+        }
+      >
+        <SearchField variant="palette" value={query} onValueChange={setQuery} />
+      </FormExample>
       <FormExample
         title="Search and clear"
         description="The accessible label stays present even when visually hidden. Clearing returns focus to the input; its action slot stays the same width."
@@ -374,6 +413,7 @@ export function SelectExamples() {
 <div style={{ maxWidth: 160 }}>
   <Select
     label="Row workspace"
+    leading={<CodeIcon size={20} />}
     variant="compact"
     align="end"
     value={inline}
@@ -425,9 +465,19 @@ export function SelectExamples() {
           groups={workspaceGroups}
         />
         <Select
+          label="Text link choice"
+          variant="compact"
+          appearance="link"
+          value={inline}
+          onValueChange={setInline}
+          groups={workspaceGroups}
+        />
+        <Select
           label="Input-height filter"
           variant="compact"
           size="md"
+          leading={<CodeIcon size={20} />}
+          align="end"
           value={inline}
           onValueChange={setInline}
           groups={workspaceGroups}
@@ -435,6 +485,7 @@ export function SelectExamples() {
         <div style={{ maxWidth: 160 }}>
           <Select
             label="Row workspace"
+            leading={<CodeIcon size={20} />}
             variant="compact"
             align="end"
             value={inline}
@@ -446,12 +497,43 @@ export function SelectExamples() {
           label="Card workspace"
           valueSuffix=" · Default"
           variant="compact"
-          appearance="subtle"
+          appearance="glass-ghost"
           leading={<CodeIcon size={16} aria-hidden="true" />}
           value={inline}
           onValueChange={setInline}
           groups={workspaceGroups}
         />
+      </FormExample>
+      <FormExample
+        title="Disabled choices"
+        description="Unavailable choices keep the same disabled text and caret whether showing a value or a placeholder."
+        code={`<Select label="Thinking" variant="preference" disabled
+  value="" placeholder="Unavailable" groups={workspaceGroups}
+  onValueChange={() => {}} />`}
+      >
+        {(["field", "inline", "compact", "preference"] as const).map(
+          (variant) => (
+            <div key={variant}>
+              <Select
+                label={`${variant} placeholder`}
+                variant={variant}
+                disabled
+                value=""
+                placeholder="Unavailable"
+                groups={workspaceGroups}
+                onValueChange={() => {}}
+              />
+              <Select
+                label={`${variant} value`}
+                variant={variant}
+                disabled
+                value="studio"
+                groups={workspaceGroups}
+                onValueChange={() => {}}
+              />
+            </div>
+          ),
+        )}
       </FormExample>
     </div>
   );
@@ -528,6 +610,38 @@ export function WorkspaceCombobox({
   );
 }
 
+function PopupSearchExample() {
+  const options = ["Anthropic", "Databricks", "OpenAI"];
+  const [value, setValue] = useState<string | null>("Databricks");
+  const [query, setQuery] = useState("");
+  return (
+    <Combobox.Root
+      items={options}
+      value={value}
+      onValueChange={setValue}
+      inputValue={query}
+      onInputValueChange={setQuery}
+      onOpenChange={(open) => {
+        if (open) setQuery("");
+      }}
+      autoHighlight
+    >
+      <Combobox.Trigger label="Provider">
+        {value ?? "Choose a provider"}
+      </Combobox.Trigger>
+      <Combobox.Popup search empty="No matching providers.">
+        <Combobox.List>
+          {(item: string) => (
+            <Combobox.Item key={item} value={item}>
+              {item}
+            </Combobox.Item>
+          )}
+        </Combobox.List>
+      </Combobox.Popup>
+    </Combobox.Root>
+  );
+}
+
 export function ComboboxExamples() {
   const [state, setState] = useState<ExampleState>("ready");
   return (
@@ -543,6 +657,7 @@ export function ComboboxExamples() {
 ${workspaceComboboxCode}`}
       >
         <WorkspaceCombobox />
+        <PopupSearchExample />
         <WorkspaceCombobox label="Compact row choice" compact />
         <WorkspaceCombobox label="Read-only choices" readOnly />
         <WorkspaceCombobox label="Disabled choices" disabled />
@@ -609,7 +724,9 @@ ${workspaceComboboxCode}`}
 }
 
 /** Full source for examples that compose the public Combobox parts. */
-export const workspaceComboboxCode = `const destinations = [
+export const workspaceComboboxCode = `import { IconButton } from "../../../../src/shared/design-system/ui/IconButton";
+
+const destinations = [
   {
     value: "studio",
     label: "Design studio",

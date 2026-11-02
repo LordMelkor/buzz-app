@@ -1,11 +1,21 @@
 import { parseOpenTarget, targetKey, type OpenTarget } from "./targets";
 
+export const HISTORY_CAPACITY = 100;
+
 /** Stable visit identity, distinct from the cancellable attempts to reveal it. */
 export type NavigationEntry = Readonly<{ id: string; target: OpenTarget }>;
+/** Match a logical dialog (including its sections), or exact content visits. */
+export type DismissedVisits =
+  | readonly string[]
+  | ((target: OpenTarget) => boolean);
 export type HistorySnapshot = Readonly<{
   current: NavigationEntry;
+  /** Managed, non-dismissed return window, including identities retained across reload. */
+  retainedVisits?: readonly string[] | undefined;
   canGoBack: boolean;
   canGoForward: boolean;
+  /** The preceding eligible visit, when known to this driver. */
+  previous?: NavigationEntry;
   /** Host-address parsing failed; retained target is not a successful destination. */
   invalidAddress?: boolean;
 }>;
@@ -18,8 +28,11 @@ export interface NavigationHistory {
   /** Normalize this visit's resolved destination without creating another visit. */
   resolve(target: OpenTarget): void;
   replace(target: OpenTarget): void;
+  /** Explicit dismissal retires visits; traversal alone never retires one. */
+  dismiss(visits: DismissedVisits, fallback: OpenTarget): void;
   back(): void;
   forward(): void;
+  returnTo(entryId: string): boolean;
   dispose(): void;
 }
 export const homeTarget = Object.freeze({ version: 1, kind: "home" } as const);
@@ -33,7 +46,7 @@ export function navigationEntry(target: OpenTarget): NavigationEntry {
 /** Non-browser host driver. Browser hosts supply actual session-history traversal. */
 export function createMemoryHistory(
   initial: OpenTarget = homeTarget,
-  capacity = 100,
+  capacity = HISTORY_CAPACITY,
 ): NavigationHistory {
   if (!Number.isSafeInteger(capacity) || capacity < 2 || capacity > 1000)
     throw new Error("Invalid navigation history capacity");
@@ -42,11 +55,22 @@ export function createMemoryHistory(
   let disposed = false;
   let attached = false;
   let controller: (() => void) | undefined;
+  const dismissed = new Set<string>();
+  const adjacent = (direction: -1 | 1) => {
+    let next = index + direction;
+    while (entries[next] && dismissed.has(entries[next]?.id ?? ""))
+      next += direction;
+    return entries[next] ? next : -1;
+  };
   const current = () =>
     Object.freeze({
       current: entries[index] as NavigationEntry,
-      canGoBack: index > 0,
-      canGoForward: index < entries.length - 1,
+      retainedVisits: entries
+        .filter((entry) => !dismissed.has(entry.id))
+        .map((entry) => entry.id),
+      canGoBack: adjacent(-1) !== -1,
+      canGoForward: adjacent(1) !== -1,
+      ...(adjacent(-1) !== -1 ? { previous: entries[adjacent(-1)] } : {}),
     });
   let snapshot = current();
   function emit() {
@@ -72,6 +96,8 @@ export function createMemoryHistory(
         -capacity,
       );
       index = entries.length - 1;
+      for (const id of dismissed)
+        if (!entries.some((entry) => entry.id === id)) dismissed.delete(id);
       emit();
     },
     resolve(target) {
@@ -87,15 +113,42 @@ export function createMemoryHistory(
       entries[index] = navigationEntry(target);
       emit();
     },
+    dismiss(visits, input) {
+      if (disposed || (typeof visits !== "function" && !visits.length)) return;
+      const fallback = parseOpenTarget(input);
+      const closing = entries.filter((entry) =>
+        typeof visits === "function"
+          ? visits(entry.target)
+          : visits.includes(entry.id),
+      );
+      for (const entry of closing) dismissed.add(entry.id);
+      if (dismissed.has(snapshot.current.id)) {
+        const previous = adjacent(-1);
+        const entry = entries[previous];
+        if (entry && targetKey(entry.target) === targetKey(fallback))
+          index = previous;
+        else entries[index] = navigationEntry(fallback);
+      }
+      emit();
+    },
     back() {
-      if (disposed || index === 0) return;
-      index--;
+      const next = adjacent(-1);
+      if (disposed || next === -1) return;
+      index = next;
       emit();
     },
     forward() {
-      if (disposed || index === entries.length - 1) return;
-      index++;
+      const next = adjacent(1);
+      if (disposed || next === -1) return;
+      index = next;
       emit();
+    },
+    returnTo(entryId) {
+      const found = entries.findIndex((entry) => entry.id === entryId);
+      if (disposed || found < 0 || dismissed.has(entryId)) return false;
+      index = found;
+      emit();
+      return true;
     },
     dispose() {
       disposed = true;

@@ -4,7 +4,7 @@ import type { RelaySession } from "../relay/session";
 
 type RemovalSession = Pick<
   RelaySession,
-  "outbox" | "channels" | "workSessions" | "archives"
+  "outbox" | "channels" | "channelWrites" | "archives"
 >;
 
 /** Remove a relay-only agent from this community: archive its identity when a
@@ -151,22 +151,23 @@ export async function deleteAgentRecord(
 }
 
 /** Base Buzz `removeAgentFromAllChannels` over the relay's rosters for this
- * agent plus the viewer's loaded channels. Resolves only once a fresh relay
- * read lists the agent in none of them; any refusal or unknown outcome throws
- * after every channel operation has settled. */
+ * agent plus the viewer's loaded channels, skipping archived ones. Resolves
+ * only once a fresh relay read lists the agent in none of them; any refusal or
+ * unknown outcome throws after every channel operation has settled. */
 export async function removeAgentFromChannels(
-  session: Pick<RelaySession, "outbox" | "channels" | "workSessions">,
+  session: Pick<RelaySession, "outbox" | "channels" | "channelWrites">,
   pubkey: string,
   signal: AbortSignal,
 ) {
-  const pending = new Set([
-    ...(await session.workSessions.memberChannels(pubkey, signal)),
-    ...session.channels
+  const pending = await session.channelWrites.memberChannels(
+    pubkey,
+    signal,
+    session.channels
       .list()
       .channels.filter((channel) => channel.members?.includes(pubkey))
       .map((channel) => channel.id),
-  ]);
-  if (!pending.size) return;
+  );
+  if (!pending.length) return;
   const outbox = session.outbox;
   if (!outbox?.supports(9001))
     throw new Error("This community cannot remove agents from channels.");
@@ -223,9 +224,7 @@ export async function removeAgentFromChannels(
   // Confirm each channel against its own fresh roster: a cached loaded roster
   // may still list the agent after the relay removed it.
   const listed = await Promise.all(
-    [...pending].map((id) =>
-      session.workSessions.listsMember(id, pubkey, signal),
-    ),
+    pending.map((id) => session.channelWrites.listsMember(id, pubkey, signal)),
   );
   const remaining = listed.filter(Boolean);
   if (remaining.length)
@@ -266,7 +265,9 @@ async function resumable(
   return undefined;
 }
 
-function delivered(
+/** Settles once the outbox reports the relay accepted `id`, or rejects with
+ * its refusal. */
+export function delivered(
   outbox: LocalEvents,
   id: string,
   signal: AbortSignal,

@@ -145,6 +145,11 @@ export function formatFullTimestamp(unixSeconds: number): string {
   return dateFormats().full.format(new Date(unixSeconds * 1_000));
 }
 
+/** The hour and minute, such as "3:05 PM". */
+export function formatTime(unixSeconds: number): string {
+  return dateFormats().time.format(new Date(unixSeconds * 1_000));
+}
+
 /** A continuation clock without the day period, sharing the full date's settings. */
 export function formatCompactTime(unixSeconds: number): string {
   return dateFormats()

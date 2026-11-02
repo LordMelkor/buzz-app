@@ -4,7 +4,11 @@ import type { ChannelQueries } from "./contracts";
 import { eventVisibility } from "./event-access";
 import type { ReadFilter, RelayEvent } from "./events";
 import { createReadState } from "./read-state";
-import { readJournal, type ReadJournal } from "./read-state-storage";
+import {
+  newReadJournal,
+  readJournal,
+  type ReadJournal,
+} from "./read-state-storage";
 import { createUnread } from "./unread";
 
 // Conversation lookups with thousands of events. Unread receives events the
@@ -41,7 +45,7 @@ afterEach(() => {
   for (const owner of owners.splice(0)) owner.dispose();
 });
 
-async function setup() {
+async function setup(initial?: ReadJournal) {
   // A relay whose channel sample holds only the 500 newest rows, so older
   // conversation membership is reachable only by parent lookup.
   const store: RelayEvent[] = [];
@@ -69,7 +73,7 @@ async function setup() {
       }),
     ),
   };
-  let journal: ReadJournal | undefined;
+  let journal: ReadJournal | undefined = initial;
   const reads = createReadState({
     floor: () => 0,
     viewer,
@@ -301,6 +305,72 @@ it("Inbox retains a relevant direct reply as thread activity when the root canno
       channelId: "c0",
       messageId: response.id,
     });
+  } finally {
+    stop();
+  }
+});
+
+it("Activity recovers the root of a joined thread the window dropped", async () => {
+  const { owner, store } = await setup();
+  const root = event(viewer, 9, 10, []);
+  const thread = (pubkey: string, time: number) =>
+    event(pubkey, 9, time, [
+      ["e", root.id, "", "root"],
+      ["e", root.id, "", "reply"],
+    ]);
+  const mine = thread(viewer, 20);
+  const answer = thread(peer, 30);
+  store.push(root);
+  // The sampled window kept the thread's replies but not its root.
+  owner.accept([mine, answer]);
+  const stop = owner.capability.subscribeActivity("c0", () => {});
+  try {
+    expect(owner.capability.attention("c0", answer.id)).toMatchObject({
+      category: "thread",
+      unread: true,
+    });
+    await vi.waitFor(() =>
+      expect(owner.capability.activity("c0").items).toEqual([
+        expect.objectContaining({ rootId: root.id, unreadCount: 1 }),
+      ]),
+    );
+  } finally {
+    stop();
+  }
+});
+
+it("Activity recovers the dropped root of a read reply marked unread", async () => {
+  const root = event(viewer, 9, 10, []);
+  const thread = (pubkey: string, time: number) =>
+    event(pubkey, 9, time, [
+      ["e", root.id, "", "root"],
+      ["e", root.id, "", "reply"],
+    ]);
+  const mine = thread(viewer, 20);
+  const answer = thread(peer, 30);
+  const prior = newReadJournal();
+  const { owner, store } = await setup({
+    ...prior,
+    state: { ...prior.state, frontiers: { [`msg:${answer.id}`]: 30 } },
+  });
+  store.push(root);
+  owner.accept([mine, answer]);
+  await owner.capability.markUnreadLocal({
+    kind: "message",
+    channelId: "c0",
+    messageId: answer.id,
+  });
+  const stop = owner.capability.subscribeActivity("c0", () => {});
+  try {
+    expect(owner.capability.attention("c0", answer.id)).toMatchObject({
+      category: "thread",
+      unread: true,
+    });
+    await vi.waitFor(() =>
+      expect(owner.capability.activity("c0").items).toEqual([
+        expect.objectContaining({ rootId: root.id, unreadCount: 1 }),
+      ]),
+    );
   } finally {
     stop();
   }

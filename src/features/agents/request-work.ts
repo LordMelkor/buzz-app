@@ -1,5 +1,5 @@
-import type { WorkStep } from "../agents/local-activity";
-import type { LocalWorkState } from "../agents/local-activity";
+import type { WorkStep } from "./local-activity";
+import type { LocalWorkState } from "./local-activity";
 import type { RelaySession } from "../relay/session";
 import { requestActivity, requestActivityState } from "./request-activity";
 
@@ -13,6 +13,8 @@ export type RequestWork = {
   lifecycle: boolean;
   /** A settled error the owner dismissed on this device. */
   dismissed?: boolean;
+  /** Its harness can stop the turn this local request is in. */
+  stoppable?: boolean;
   selected: ReturnType<typeof requestActivity>;
   turns: Snapshot["turns"];
   working: boolean;
@@ -24,7 +26,7 @@ export function requestWork(
   channelId: string,
   messageId: string | readonly string[],
 ) {
-  const records = snapshot.records.filter((record) => !record.historical);
+  const { records } = snapshot;
   const ids = new Set(typeof messageId === "string" ? [messageId] : messageId);
   const requests = (snapshot.local ?? []).filter(
     (request) => request.channelId === channelId && ids.has(request.messageId),
@@ -60,6 +62,7 @@ export function requestWork(
           working: chosen.state === "working",
           lifecycle: true,
           ...(chosen.dismissed ? { dismissed: true } : {}),
+          ...(chosen.stoppable ? { stoppable: true } : {}),
         },
       ];
     }

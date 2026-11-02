@@ -1,3 +1,4 @@
+import { openCommunityPicker } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 
 // Real font metrics, footer overflow and native focus scrolling require browsers.
@@ -15,17 +16,21 @@ test("community dialog keeps oversized actions intact, reachable and keyboard op
     route.fulfill({ json: { name: "Secondary", policy: null } }),
   );
   await page.goto(app.origin);
-  await page
-    .getByRole("button", { name: "Add a community", exact: true })
+  await (await openCommunityPicker(page))
+    .getByRole("button", { name: "Join a community", exact: true })
     .click();
-  await page
-    .getByRole("textbox", { name: "Relay URL", exact: true })
-    .fill("wss://secondary.example");
+  const url = page.getByRole("textbox", { name: "Community URL", exact: true });
+  await expect(url).toBeFocused();
+  await page.screenshot({ path: info.outputPath("community-url-focused.png") });
+  await url.fill("wss://secondary.example");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   const dialog = page.getByRole("dialog", {
     name: "Your profile in Secondary",
     exact: true,
   });
+  await expect(
+    dialog.getByRole("textbox", { name: "Display name", exact: true }),
+  ).toBeFocused();
   await dialog
     .getByRole("textbox", { name: "Display name", exact: true })
     .fill("Updated profile");
@@ -57,6 +62,12 @@ test("community dialog keeps oversized actions intact, reachable and keyboard op
     for (const width of [1280, 800, 320]) {
       await page.setViewportSize({ width, height: 900 });
       await expect(action).toHaveCSS("font-size", `${14 * scale}px`);
+      if ((scale === 1 && width === 1280) || (mode === "dark" && width === 320))
+        await page.screenshot({
+          path: info.outputPath(
+            `community-profile-${scale}-${mode}-${width}.png`,
+          ),
+        });
       await expect
         .poll(() =>
           action.evaluate((button) => {
@@ -152,6 +163,45 @@ test("community dialog keeps oversized actions intact, reachable and keyboard op
   expect((await published).ok()).toBe(true);
   await expect(dialog).toBeHidden();
   await expect(
-    page.getByRole("button", { name: "Switch to Secondary", exact: true }),
-  ).toHaveAttribute("aria-current", "true");
+    page.getByRole("button", {
+      name: "Community switcher: Secondary",
+      exact: true,
+    }),
+  ).toBeVisible();
+});
+
+test.describe("touch entry", () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
+
+  // Native focus and virtual-keyboard avoidance depend on the browser's pointer modality.
+  test("community entry waits for a deliberate field tap", async ({
+    page,
+    app,
+  }) => {
+    await page.route("**/api/relay/secondary/info", (route) =>
+      route.fulfill({ json: { name: "Secondary", policy: null } }),
+    );
+    await page.goto(app.origin);
+    await (await openCommunityPicker(page))
+      .getByRole("button", { name: "Join a community", exact: true })
+      .tap();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toHaveAccessibleName("Join a community");
+    await expect(dialog).toBeFocused();
+    const url = dialog.getByRole("textbox", {
+      name: "Community URL",
+      exact: true,
+    });
+    await url.tap();
+    await expect(url).toBeFocused();
+    await url.fill("wss://secondary.example");
+    await dialog.getByRole("button", { name: "Continue", exact: true }).tap();
+    await expect(dialog).toHaveAccessibleName("Your profile in Secondary");
+    const name = dialog.getByRole("textbox", {
+      name: "Display name",
+      exact: true,
+    });
+    await expect(name).toBeEnabled();
+    await expect(name).not.toBeFocused();
+  });
 });

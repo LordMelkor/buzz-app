@@ -13,12 +13,6 @@ const base: Snapshot = {
   records: [],
   turns: [],
   trimmed: 0,
-  history: "ready",
-  hasOlder: false,
-  historyOlder: false,
-  historySkipped: 0,
-  historyAgents: [],
-  capture: "off",
 };
 function snapshot(
   tool: object = {},
@@ -70,7 +64,6 @@ function snapshot(
         agent,
         createdAt: now / 1000,
         receivedAt: now + 100,
-        historical: false,
         kind: "batch",
         channelIds: ["channel"],
         plaintext: JSON.stringify({ kind: "batch", payload: { events } }),
@@ -91,12 +84,6 @@ it("projects safe brief tool status from exact current owner-visible work only",
   expect(project(live, otherRoot).size).toBe(0);
   expect(currentActivity(live, [], new Set(), "elsewhere").size).toBe(0);
   expect(project({ ...live, turns: [] }).size).toBe(0);
-  expect(
-    project({
-      ...live,
-      records: live.records.map((record) => ({ ...record, historical: true })),
-    }).get(agent),
-  ).toEqual({ label: "Working", roots: [undefined] });
   expect(project({ ...live, records: [] }, root).size).toBe(0);
 });
 

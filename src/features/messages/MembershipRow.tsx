@@ -46,7 +46,7 @@ export const MembershipRow = memo(function MembershipRow({
   return (
     <div data-message-id={row.id} data-membership-row="">
       {day && <DayDivider createdAt={row.createdAt} />}
-      <div className={styles.membership}>
+      <div className={styles.membership} data-highlight-surface="">
         <span className={styles.membershipAvatars} aria-hidden="true">
           {targets.slice(0, 3).map((id) => {
             const profile = profiles.get(id);
@@ -84,14 +84,13 @@ export const MembershipRow = memo(function MembershipRow({
             const target = part.id && profileTarget(part.id, { agent });
             if (!target || !canOpenLink?.(target))
               return <Fragment key={key}>{part.text}</Fragment>;
-            // The mention kind keeps link color under the channel host's
-            // button reset; no profile target, so copies stay plain prose.
+            // A system notice names people as quiet text, not mention chips.
+            // No profile target, so copies stay plain prose.
             return (
               <button
                 key={key}
                 type="button"
                 className={`${referenceStyles.link} ${styles.membershipName}`}
-                data-mention-kind={agent ? "agent" : "person"}
                 aria-label={
                   part.id === viewer
                     ? "View your profile"

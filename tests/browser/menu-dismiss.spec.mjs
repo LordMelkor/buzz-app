@@ -1,55 +1,8 @@
+import { openCommunityPicker } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
 
-// Browser-only boundary: Base UI restores focus when a popup's exit
-// transition ends. The test holds that transition, so the user's next focus
-// move lands while the old menu is still closing. The hold starts when Base UI
-// marks the popup as ending, before the next frame. A transitionrun listener
-// is too late under load: WebKit dispatches it at a later frame, after the
-// short exit transition can already have finished.
-async function holdMenuExit(page) {
-  await page.evaluate(() => {
-    new MutationObserver((records) => {
-      for (const { target } of records)
-        if (
-          target instanceof HTMLElement &&
-          target.matches(".buzz-menu-popup[data-ending-style]")
-        )
-          // getAnimations() flushes style, so the exit transition exists.
-          for (const animation of target.getAnimations()) animation.pause();
-    }).observe(document.body, {
-      attributes: true,
-      attributeFilter: ["data-ending-style"],
-      subtree: true,
-    });
-  });
-  return {
-    // Closing has started and cannot finish until release().
-    held: (popup) =>
-      expect
-        .poll(() =>
-          popup.evaluate((element) =>
-            element.getAnimations().some((a) => a.playState === "paused"),
-          ),
-        )
-        .toBe(true),
-    release: () =>
-      page.evaluate(() => {
-        for (const animation of document.getAnimations())
-          if (animation.playState === "paused") animation.finish();
-      }),
-  };
-}
-
-// The entrance has started and settled. Animations alone are not enough: an
-// Escape before the entrance transition starts closes without any transition.
-async function opened(popup) {
-  await expect(popup).toHaveAttribute("data-open", "");
-  await expect(popup).not.toHaveAttribute("data-starting-style");
-  await expect
-    .poll(() => popup.evaluate((element) => element.getAnimations().length))
-    .toBe(0);
-}
+import { holdMenuExit, opened } from "./menu-motion.mjs";
 
 test("closing a menu keeps focus where the user moved it", async ({
   page,
@@ -117,31 +70,30 @@ test("closing a menu keeps focus where the user moved it", async ({
   }
 });
 
-// Browser-only boundary: the right-click's mousedown focuses the rail button
-// before the contextmenu event opens the menu, so Base UI's own "previous
-// focus" is the button. jsdom moves no focus on a right-click, so only a real
-// engine shows the caret leaving the composer for the rail.
-test("dismissing a community menu opened by pointer returns focus to the interrupted composer", async ({
+// Browser-only boundary: right-click moves focus before the contextmenu event.
+// Dismissal must restore the interrupted picker row, while keyboard opening
+// returns to the row that opened the menu.
+test("dismissing a community menu restores pointer and keyboard focus within the picker", async ({
   page,
   app,
 }) => {
   await open(page, app);
-  const composer = page.getByRole("textbox", {
-    name: "Message #Alpha",
-    exact: true,
-  });
+  const interrupted = page
+    .getByRole("dialog", { name: "Switch community" })
+    .getByRole("button", { name: "Personal space", exact: true });
   const secondary = page
-    .getByRole("navigation", { name: "Communities" })
+    .getByRole("dialog", { name: "Switch community" })
     .getByRole("button", { name: "Switch to Secondary" });
   const menu = page.getByRole("menu", { name: "Actions for Secondary" });
 
-  await composer.click();
-  await expect(composer).toBeFocused();
+  await openCommunityPicker(page);
+  await interrupted.focus();
+  await expect(interrupted).toBeFocused();
   await secondary.click({ button: "right" });
   await opened(menu);
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
-  await expect(composer).toBeFocused();
+  await expect(interrupted).toBeFocused();
   await expect(secondary).not.toBeFocused();
 
   // A keyboard open came from the rail, so dismissing it returns focus there.

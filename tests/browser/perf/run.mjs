@@ -6,7 +6,24 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
-const scenarios = ["all", "channel-open", "scroll-short", "scroll-long"];
+const cases = [
+  "channel-open-cold",
+  "channel-open-hover",
+  "channel-open-cold-markdown",
+  "scroll-short",
+  "scroll-long",
+  "scroll-paging-fast",
+  "scroll-paging-delayed",
+  "scroll-paging-fast-keyboard",
+  "scroll-paging-fast-markdown",
+  "scroll-paging-fast-first-seen",
+  "thread-open-rich",
+  "thread-close-rich",
+  "thread-reopen-rich",
+];
+// A case name selects only that case; a group selects every case it prefixes.
+const groups = ["all", "channel-open", "scroll-paging", "thread"];
+const scenarios = [...groups, ...cases];
 try {
   const { values } = parseArgs({
     args: process.argv.slice(2).filter((arg, i) => i !== 0 || arg !== "--"),
@@ -29,6 +46,13 @@ See docs/performance.md for measurement definitions and limitations.`);
     const cpu = Number(values.cpu);
     if (!scenarios.includes(values.scenario))
       throw new Error(`Unknown scenario: ${values.scenario}`);
+    const selected = cases.filter(
+      (name) =>
+        values.scenario === "all" ||
+        name === values.scenario ||
+        (groups.includes(values.scenario) &&
+          name.startsWith(`${values.scenario}-`)),
+    );
     if (!Number.isSafeInteger(repeat) || repeat < 1)
       throw new Error("--repeat must be a positive integer");
     if (!Number.isFinite(cpu) || cpu < 1)
@@ -61,6 +85,7 @@ See docs/performance.md for measurement definitions and limitations.`);
         env: {
           ...process.env,
           PERF_SCENARIO: values.scenario,
+          PERF_CASES: selected.join(","),
           PERF_REPEAT: String(repeat),
           PERF_CPU: String(cpu),
           PERF_RUN_DIR: runDir,

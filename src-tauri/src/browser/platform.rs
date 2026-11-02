@@ -62,8 +62,80 @@ mod macos {
         Ok(delegate)
     }
 
+    /// Named website data stores exist from macOS 14. Earlier, Wry falls
+    /// back to the default store, which the app's own webview also uses.
+    pub fn named_stores() -> bool {
+        objc2_foundation::NSProcessInfo::processInfo()
+            .operatingSystemVersion()
+            .majorVersion
+            >= 14
+    }
+
+    fn builderlab_viewer_cookie(
+        bootstrap: &super::super::builderlab::Bootstrap,
+    ) -> Result<Retained<objc2_foundation::NSHTTPCookie>, String> {
+        use objc2_foundation::{ns_string, NSDictionary, NSHTTPCookie, NSString, NSURL};
+        let origin = NSURL::URLWithString(&NSString::from_str(&bootstrap.app_origin))
+            .ok_or("Invalid Builderlab app origin")?;
+        let headers = NSDictionary::from_slices(
+            &[ns_string!("Set-Cookie")],
+            &[&*NSString::from_str(&bootstrap.cookie)],
+        );
+        let cookies = NSHTTPCookie::cookiesWithResponseHeaderFields_forURL(&headers, &origin);
+        let cookie = cookies
+            .firstObject()
+            .ok_or("Builderlab viewer cookie is unavailable")?;
+        let host =
+            url::Url::parse(&bootstrap.app_origin).map_err(|_| "Invalid Builderlab app origin")?;
+        if cookies.count() != 1
+            || cookie.name().to_string() != "__Secure-bbidentity_hosted_site_session"
+            || !cookie.isHTTPOnly()
+            || !cookie.isSecure()
+            || cookie.expiresDate().is_none()
+            || cookie.domain().to_string().trim_start_matches('.') != bootstrap.cookie_domain
+            || !host
+                .host_str()
+                .is_some_and(|value| value.ends_with(&format!(".{}", bootstrap.cookie_domain)))
+            || cookie.path().to_string() != "/"
+        {
+            return Err("Builderlab viewer cookie is unavailable".into());
+        }
+        Ok(cookie)
+    }
+
+    /// Installs only the restricted native viewer cookie; never reads cookies or accepts caller cookie fields.
+    pub fn install_builderlab_cookie(
+        guest: &WebView,
+        bootstrap: &super::super::builderlab::Bootstrap,
+    ) -> Result<tokio::sync::mpsc::Receiver<()>, String> {
+        let cookie = builderlab_viewer_cookie(bootstrap)?;
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let complete = block2::RcBlock::new(move || {
+            let _ = sender.try_send(());
+        });
+        unsafe {
+            guest
+                .webview()
+                .configuration()
+                .websiteDataStore()
+                .httpCookieStore()
+                .setCookie_completionHandler(&cookie, Some(&complete));
+        }
+        Ok(receiver)
+    }
+
     pub fn loading(guest: &WebView) -> bool {
         unsafe { guest.webview().isLoading() }
+    }
+
+    pub fn focused(guest: &WebView) -> bool {
+        let view = guest.webview();
+        let Some(responder) = view.window().and_then(|window| window.firstResponder()) else {
+            return false;
+        };
+        responder
+            .downcast_ref::<objc2_app_kit::NSView>()
+            .is_some_and(|focused| focused.isDescendantOf(&view))
     }
 
     pub fn current_url(guest: &WebView) -> Result<Option<String>, String> {
@@ -89,6 +161,40 @@ mod macos {
             guest.webview().goForward();
         }
         Ok(())
+    }
+    #[cfg(test)]
+    mod binding_tests {
+        use super::*;
+        #[test]
+        fn viewer_cookie_matches_existing_domain_http_only_secure_and_expiry() {
+            // Foundation caps far-future cookies. Use a short future date while asserting exact parsing,
+            // rather than testing the engine's unrelated long-term cookie retention policy.
+            let expiry = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+                + 60;
+            let date = chrono::DateTime::<chrono::Utc>::from_timestamp(expiry, 0).unwrap();
+            let date = date.format("%a, %d %b %Y %H:%M:%S GMT");
+            let value = super::super::super::builderlab::Bootstrap {
+                app_origin: "https://counter--bpsites.apps.example".into(),
+                cookie_domain: "apps.example".into(),
+                cookie: zeroize::Zeroizing::new(format!("__Secure-bbidentity_hosted_site_session=viewer; Domain=apps.example; Path=/; Expires={date}; Secure; HttpOnly; SameSite=Lax")),
+            };
+            let cookie = builderlab_viewer_cookie(&value).unwrap();
+            assert_eq!(
+                cookie.domain().to_string().trim_start_matches('.'),
+                "apps.example"
+            );
+            assert_eq!(cookie.path().to_string(), "/");
+            assert!(cookie.isHTTPOnly());
+            assert!(cookie.isSecure());
+            assert!(!cookie.isSessionOnly());
+            assert_eq!(
+                cookie.expiresDate().unwrap().timeIntervalSince1970(),
+                expiry as f64
+            );
+        }
     }
 }
 
@@ -173,7 +279,9 @@ pub(super) fn resize_guest(
 }
 
 #[cfg(target_os = "macos")]
-pub(super) use macos::{back, current_url, deny_permissions, forward, loading};
+pub(super) use macos::{
+    back, current_url, deny_permissions, focused, forward, install_builderlab_cookie, loading,
+};
 #[cfg(target_os = "macos")]
 pub(super) type Permissions = objc2::rc::Retained<macos::PermissionDelegate>;
 
@@ -183,6 +291,30 @@ pub(super) struct Permissions;
 #[cfg(not(target_os = "macos"))]
 pub(super) fn current_url(guest: &WebView) -> Result<Option<String>, String> {
     guest.url().map(Some).map_err(|error| error.to_string())
+}
+
+/// Keeps the guest's website storage under `storage` between sessions where
+/// the platform can hold it apart from the app's; otherwise it stays private.
+#[cfg(target_os = "macos")]
+pub(super) fn with_storage(
+    builder: WebViewBuilder<'_>,
+    storage: Option<[u8; 16]>,
+) -> WebViewBuilder<'_> {
+    use wry::WebViewBuilderExtDarwin;
+    match storage {
+        Some(identifier) if macos::named_stores() => builder
+            .with_incognito(false)
+            .with_data_store_identifier(identifier),
+        _ => builder.with_incognito(true),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn with_storage(
+    builder: WebViewBuilder<'_>,
+    _storage: Option<[u8; 16]>,
+) -> WebViewBuilder<'_> {
+    builder.with_incognito(true)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -288,4 +420,12 @@ pub(super) fn forward(guest: &WebView) -> Result<(), String> {
             .GoForward()
             .map_err(|error| error.to_string())
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn install_builderlab_cookie(
+    _guest: &WebView,
+    _bootstrap: &super::builderlab::Bootstrap,
+) -> Result<tokio::sync::mpsc::Receiver<()>, String> {
+    Err("Builderlab viewer sign-in is supported only on macOS".into())
 }

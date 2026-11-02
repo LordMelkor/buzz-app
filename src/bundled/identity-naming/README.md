@@ -1,3 +1,13 @@
+# Identity Naming
+
+Helps you tell people and agents apart when they share a name, by adding a short label like “Sam’s Helper” or “(agent)”.
+
+## Getting started
+
+Names across Buzz are labeled automatically.
+
+---
+
 # Contextual identity names
 
 `version 1` · `client display contract` · `no wire changes`
@@ -259,7 +269,10 @@ candidate set.
 
 [profiles.ts](../../features/relay/profiles.ts) selects the latest kind-0 profile,
 uses non-blank `display_name` before `name`, and otherwise uses a short hex-key
-fallback. Agent hints come from `is_agent: true`, `isAgent: true`, or a
+fallback. The naming adapter excludes these synthetic names from public-name
+lookup and collision candidates, while preserving profile metadata for library,
+local, and explicit display aliases. Genuine names that resemble keys remain
+valid. Agent hints come from `is_agent: true`, `isAgent: true`, or a
 structurally recognized `auth` tag. That fold extracts an owner hint from the
 latter; the naming path does **not** verify the owner's attestation signature.
 Clients MUST NOT use this display hint as authorization. Missing owner names

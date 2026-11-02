@@ -37,13 +37,40 @@ describe("Canvas todo source edits", () => {
     );
     expect(readTodos("## Todos\n- [-] Other\n- [//] Mark\n").items).toEqual([]);
   });
-  it("recognizes actual Markdown structure, not examples or nested task lists", () => {
+  it("recognizes nested tasks but excludes examples, quotes and continuation prose", () => {
     const content =
       "```md\n## Todos\n- [ ] Fenced\n```\n\n## Todos\n\n- [ ] Real\n  - [ ] Nested\n\n    [ ] Continuation\n\n> - [ ] Quoted\n\n```\n- [ ] Code\n```\n\n### Details\n\n+ [x] Also real\n\n# Next\n\n- [ ] Other\n";
     expect(readTodos(content).items.map((i) => i.label)).toEqual([
       "Real",
+      "Nested",
       "Also real",
     ]);
+  });
+  it("reads nested task paths and edits only the selected source bytes", () => {
+    const content =
+      "## Todos\r\n\r\n- [ ] Ship\r\n    - [/] Build\r\n        - [X] Test\r\n    - [ ] Ship\r\n- Group\r\n  - [ ] Other\r\n\r\n## Keep\r\n- [ ] Outside\r\n";
+    const { items } = readTodos(content);
+    expect(items.map(({ label, parents }) => [label, parents])).toEqual([
+      ["Ship", []],
+      ["Build", ["Ship"]],
+      ["Test", ["Ship", "Build"]],
+      ["Ship", ["Ship"]],
+      ["Other", []],
+    ]);
+    const nested = items[2];
+    if (!nested) throw new Error("Expected grandchild todo");
+    expect(setStatus(content, nested.offset, "todo")).toBe(
+      content.replace("[X]", "[ ]"),
+    );
+    const assigned = assignTodo(content, nested.offset, alex);
+    expect(assigned).toBe(
+      content.replace(
+        "Test\r\n",
+        `Test · Assignee: [Alex](${profileTarget(alex.pubkey)})\r\n`,
+      ),
+    );
+    expect(assignTodo(assigned, nested.offset)).toBe(content);
+    expect(readTodos(addTodo(content, "New")).items).toHaveLength(6);
   });
   it("preserves prose, sections, markers and trailing whitespace when adding", () => {
     const before =
@@ -164,4 +191,28 @@ it("recognizes first-line assignment when continuation prose has another link", 
   expect(assignTodo(before, item.offset)).toBe(
     "## Todos\n- [ ] Task\n  See [docs](https://example.com).\n",
   );
+});
+
+it("recognizes a plain Canvas assignment and replaces or clears it without duplicating the suffix", () => {
+  const source = "## Todos\n\n- [ ] Ship · Assignee: John\n    - [ ] Child\n";
+  const item = first(source);
+  expect(item.label).toBe("Ship");
+  expect(item.namedAssignee?.name).toBe("John");
+  expect(assignTodo(source, item.offset)).toBe(
+    source.replace(" · Assignee: John", ""),
+  );
+  const assigned = assignTodo(source, item.offset, {
+    pubkey: "a".repeat(64),
+    name: "Alice",
+  });
+  expect(readTodos(assigned).items[0]?.assignee?.name).toBe("Alice");
+  expect(assigned).not.toContain("Assignee: John");
+});
+
+it("does not clear a named assignment lookalike inside multiline code", () => {
+  const before = "## Todos\n- [ ] Task ` · Assignee: John\n  continued`\n";
+  const item = first(before);
+  expect(item.namedAssignee).toBeUndefined();
+  expect(assignTodo(before, item.offset)).toBe(before);
+  expect(() => assignTodo(before, item.offset, sam)).toThrow(/safely/);
 });

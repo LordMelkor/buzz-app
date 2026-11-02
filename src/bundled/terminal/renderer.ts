@@ -124,7 +124,7 @@ export function createScreen(
       const appearance = new MutationObserver(update);
       appearance.observe(document.documentElement, {
         attributes: true,
-        attributeFilter: ["data-color-mode", "style", "class"],
+        attributeFilter: ["data-color-mode", "data-accent", "style", "class"],
       });
       element.addEventListener("keydown", splash.dismiss);
       update();
@@ -145,16 +145,26 @@ export function createScreen(
     },
     output(data) {
       if (disposed) return Promise.resolve();
+      // xterm parses each write in one task. A hidden screen writes slices so
+      // its output cannot hold the visible terminal's input for a whole read.
+      const size = element.isConnected ? data.length : 16384;
       return new Promise<void>((resolve) => {
         pending.add(resolve);
-        terminal.write(data, () => {
-          if (!disposed && data.length) {
-            receivedOutput = true;
-            splash.show();
-          }
-          pending.delete(resolve);
-          resolve();
-        });
+        const write = (from: number) => {
+          if (disposed) return;
+          terminal.write(data.subarray(from, from + size), () => {
+            // A write from inside the callback would join the same task.
+            if (from + size < data.length)
+              return queueMicrotask(() => write(from + size));
+            if (!disposed && data.length) {
+              receivedOutput = true;
+              splash.show();
+            }
+            pending.delete(resolve);
+            resolve();
+          });
+        };
+        write(0);
       });
     },
     dispose() {

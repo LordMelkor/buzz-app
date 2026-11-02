@@ -6,6 +6,7 @@ import {
   flush,
   keypair,
   message,
+  metadata,
   profile,
   roster,
   scriptedTransport,
@@ -49,8 +50,11 @@ it.each([{ search: "design" }, { feed_types: ["mentions", "activity"] }])(
     const newer = message(alice, "c", "design update", 20);
     const filters: ReadFilter[] = [{ kinds: [9], limit: 20, ...ranked }];
     // Ranked messages are admitted only after channel authority is known.
-    const membership = queries.read([{ kinds: [39002], limit: 1 }]);
-    next().respond([roster(relay, "c", [viewer.pubkey])]);
+    const membership = queries.read([{ kinds: [39002, 39000], limit: 2 }]);
+    next().respond([
+      roster(relay, "c", [viewer.pubkey]),
+      metadata(relay, "c", "Design"),
+    ]);
     await membership;
     const first = queries.read(filters);
     next().respond([older, newer]);

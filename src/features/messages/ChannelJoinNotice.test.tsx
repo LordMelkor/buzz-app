@@ -16,12 +16,63 @@ import { ChannelJoinNotice } from "./ChannelJoinNotice";
 
 afterEach(cleanup);
 
+it.each([false, true])(
+  "keeps Guest-default previews read-only with stored Guest membership %s",
+  (guest) => {
+    const run = vi.fn();
+    const started = vi.fn();
+    render(
+      <ChannelJoinNotice
+        channelId="open"
+        lifecycle={lifecycle(run)}
+        joinable
+        guest={guest}
+        joinRole="guest"
+        onJoin={started}
+      />,
+    );
+    expect(
+      screen.getByRole("region", { name: "Read-only channel" }),
+    ).toHaveTextContent(/^This channel is read-only$/);
+    expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+    expect(started).not.toHaveBeenCalled();
+  },
+);
+
 function lifecycle(
   run: ChannelLifecycleCapability["run"],
   available = true,
 ): ChannelLifecycleCapability {
   return { available, run } as ChannelLifecycleCapability;
 }
+
+it.each([
+  { guest: false, place: "channel" as const },
+  { guest: true, place: "channel" as const },
+  { guest: false, place: "chat" as const },
+  { guest: true, place: "chat" as const },
+])(
+  "prioritizes archived $place state over guest access $guest and Join",
+  ({ guest, place }) => {
+    render(
+      <ChannelJoinNotice
+        channelId="archived"
+        lifecycle={lifecycle(vi.fn())}
+        joinable
+        archived
+        place={place}
+        guest={guest}
+        joinRole={guest ? "guest" : "member"}
+        onJoin={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("region", { name: `Archived ${place}` }),
+    ).toHaveTextContent(new RegExp(`^This ${place} is archived$`));
+    expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
+  },
+);
 
 it("offers Join only for a joinable channel on a connection that can send it", () => {
   const run = vi.fn();
@@ -33,7 +84,9 @@ it("offers Join only for a joinable channel on a connection that can send it", (
       onJoin={() => {}}
     />,
   );
-  expect(screen.getByText(/You’re previewing this channel/)).toBeVisible();
+  expect(
+    screen.getByText("You’re previewing this channel", { exact: true }),
+  ).toBeVisible();
   expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
   rerender(
     <ChannelJoinNotice

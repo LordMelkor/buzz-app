@@ -1,5 +1,6 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { formatItemTimestamp } from "../../shared/datetime";
+import { ProfilePeek } from "../profiles/ProfilePeek";
 import { AgentAvatar } from "../agents/AgentAvatar";
 import {
   TypingPresentation,
@@ -10,7 +11,9 @@ import { Avatar } from "../../shared/design-system/ui/Avatar";
 import {
   ArrowRightIcon,
   LightningIcon,
+  RobotIcon,
 } from "../../shared/design-system/icons";
+import { useProfileOwner } from "../profiles/useProfileOwner";
 import { messagePreviewText } from "../conversation/message-preview-text";
 import { profileMentionParts } from "./profile-mentions";
 import { addressedMessage } from "./audience-address";
@@ -50,11 +53,12 @@ import type { UnreadCapability } from "../relay/unread";
 import { MediaAttachment, type MediaPlayback } from "./MediaAttachment";
 import { parseMediaTimeReply } from "./media-timecode";
 import { profileTarget, profileActivityViewTarget } from "../profiles/target";
-import { MessageBody } from "../conversation/MessageBody";
+import { MessageCard, useMessageRenderer } from "../conversation/MessageBody";
 import { TargetOpenerProvider, WithTargetOpener } from "../conversation/opener";
 import { InlineText } from "../conversation/InlineText";
 import type {
   ConversationExtensions,
+  MessageRenderer,
   MessageSummaryActivity,
 } from "../conversation/contracts";
 import {
@@ -66,14 +70,15 @@ import { AttachmentImage } from "./AttachmentImage";
 import { DeliveryNotice } from "./DeliveryNotice";
 import { AttachmentView } from "../conversation/AttachmentView";
 import { AudioAttachment } from "./AudioAttachment";
+import { AttachmentDownloadContext } from "./AttachmentDownloadContext";
 import { isNativeMediaSource, isProxySource } from "./attachment-source";
 import { FileAttachment } from "./FileAttachment";
 import { useReferenceDirectory } from "./ReferenceText";
-import { MessageMarkdown } from "./MessageMarkdown";
+import { EditedMarker, MessageMarkdown } from "./MessageMarkdown";
 import { safeMessageUrl } from "../relay/message-content";
 import styles from "./Messages.module.css";
 import { usesLargeEmojiPresentation } from "./emoji-size";
-import { separateSessionCards } from "./session-cards";
+import { separateChatCards } from "./chat-cards";
 import { MessageReactionControls, MessageReactions } from "./MessageReactions";
 
 import {
@@ -97,6 +102,9 @@ export type MessageRowProps = {
   row: ChannelMessage;
   getThreadRoot?: (() => ChannelMessage | undefined) | undefined;
   session?: RelaySession | undefined;
+  /** Resolves names, channels and mentions where the row is shown without
+   * `session`, which would also offer its controls. */
+  references?: RelaySession | undefined;
   scope?: string | undefined;
   unread?: UnreadCapability | undefined;
   extensions?: ConversationExtensions | undefined;
@@ -115,6 +123,8 @@ export type MessageRowProps = {
     | ((messageId: string, threadRootId: string, intent?: "reply") => void)
     | undefined;
   onReply?: ((messageId: string) => void) | undefined;
+  /** False: existing threads open, but the row offers none to start or reply in. */
+  startsThreads?: boolean;
   quickControls?: ReactNode;
   overflowItems?: ReactNode;
   layout?: "timeline" | "thread" | "continuation";
@@ -134,6 +144,7 @@ export type MessageRowProps = {
     attachment: ChannelMessage["attachments"][number],
     seconds: number,
     hasComments?: boolean,
+    attachments?: ChannelMessage["attachments"],
   ) => void;
 };
 
@@ -163,6 +174,7 @@ function MessageRowContent({
   renderMessage,
   getThreadRoot,
   session,
+  references = session,
   scope,
   unread,
   extensions,
@@ -175,6 +187,7 @@ function MessageRowContent({
   keepMounted,
   onOpenThread,
   onReply,
+  startsThreads = true,
   quickControls,
   overflowItems,
   participantProfiles,
@@ -194,8 +207,8 @@ function MessageRowContent({
   agentPubkeys,
 }: MessageContentProps) {
   const [avatarFocused, setAvatarFocused] = useState(false);
-  const resolveName = useChannelIdentityNames(session, row.channelId);
-  const directory = useReferenceDirectory(session, participantProfiles);
+  const resolveName = useChannelIdentityNames(references, row.channelId);
+  const directory = useReferenceDirectory(references, participantProfiles);
   const reactions = row.reactions;
   const threadUnread = useThreadUnread(
     row.replyCount > 0 && onOpenThread ? unread : undefined,
@@ -203,7 +216,7 @@ function MessageRowContent({
     row.threadRootId ?? row.id,
   );
   const { agents: threadAgents, waiting: threadWaiting } = useThreadAgents(
-    onOpenThread && (row.replyCount > 0 || !row.threadRootId)
+    onOpenThread && (row.replyCount > 0 || (startsThreads && !row.threadRootId))
       ? session
       : undefined,
     row.channelId,
@@ -302,18 +315,31 @@ function MessageRowContent({
       : undefined,
     row.authorId,
   );
+  const agentAuthor = !row.workflowOwnerId && avatarShape === "squircle";
+  const owner = useProfileOwner(
+    session,
+    agentAuthor && !stackPrevious ? row.authorId : undefined,
+  );
+  // The viewer's own agents carry only the agent mark.
+  const ownerLabel =
+    owner &&
+    owner.id !== viewer &&
+    owner.profile &&
+    !owner.profile.nameIsFallback
+      ? `${resolveName(owner.id, owner.profile.name)}’s agent`
+      : undefined;
   const presenceId = useId();
   const shown = shownRow ?? row;
   const timeReply = shown.diff ? undefined : parseMediaTimeReply(shown.content);
   const sourceRow = timeReply
     ? { ...shown, content: timeReply.content }
     : shown;
-  const { caption: displayRow, cards: sessionCards } = useMemo(
-    () => separateSessionCards(sourceRow, directory.channels),
+  const { caption: displayRow, cards: chatCards } = useMemo(
+    () => separateChatCards(sourceRow, directory.channels),
     [sourceRow, directory.channels],
   );
   const cardsOnly =
-    sessionCards.length > 0 && !displayRow.content.trim() && !timeReply;
+    chatCards.length > 0 && !displayRow.content.trim() && !timeReply;
   const attachmentOnly =
     !row.content.trim() &&
     !row.diff &&
@@ -321,7 +347,8 @@ function MessageRowContent({
     row.attachments.length > 0 &&
     row.attachments.every((attachment) => !!safeMessageUrl(attachment.url));
   // Own-message surface colours apply to a bubble, never to a shown thread root.
-  const ownBubble = !shownRow && !!viewer && row.authorId === viewer;
+  const ownBubble =
+    !shownRow && !row.workflowOwnerId && !!viewer && row.authorId === viewer;
   const emojiOnly = usesLargeEmojiPresentation(displayRow.content, row.emoji);
   const canReact = !!(
     extensions &&
@@ -372,6 +399,7 @@ function MessageRowContent({
   );
   const report =
     !row.membership &&
+    !row.huddle &&
     (!row.delivery || ["accepted", "seen"].includes(row.delivery))
       ? session?.messages.report
       : undefined;
@@ -389,26 +417,88 @@ function MessageRowContent({
       </MenuItem>
     </>
   );
-  const actionItems = actions.map((action) => (
-    <MenuItem key={action.key} onClick={() => setOpenAction(action)}>
-      {action.icon && (
-        <MenuIcon>
-          <ContributionBoundary key={contributionKey(action)} fallback={null}>
-            <action.icon />
-          </ContributionBoundary>
-        </MenuIcon>
-      )}
-      {action.title}
-    </MenuItem>
-  ));
-  // Keep mixed attachments in sender order; only adjacent images share a strip.
+  const actionItems = actions.map((action) =>
+    action.placement === "menu" && session && extensions?.actions ? (
+      <ContributionBoundary key={contributionKey(action)} fallback={null}>
+        <WithTargetOpener
+          component={action.component}
+          props={{
+            message: row,
+            session,
+            close: () => setOpenAction(undefined),
+          }}
+          registry={extensions.actions}
+          entry={action}
+        />
+      </ContributionBoundary>
+    ) : (
+      <MenuItem key={action.key} onClick={() => setOpenAction(action)}>
+        {action.icon && (
+          <MenuIcon>
+            <ContributionBoundary key={contributionKey(action)} fallback={null}>
+              <action.icon />
+            </ContributionBoundary>
+          </MenuIcon>
+        )}
+        {action.title}
+      </MenuItem>
+    ),
+  );
+  // A message renderer may draw some attachments itself. Its claims count only
+  // while its card is mounted, and they return to the host list while its
+  // fallback shows. A remounted card starts healthy and claims again.
+  const bodyShown = !attachmentOnly && !cardsOnly;
+  const messageRenderer = useMessageRenderer(extensions?.messages, row);
+  const [failedRenderer, setFailedRenderer] = useState<MessageRenderer>();
+  const claims =
+    bodyShown && messageRenderer !== failedRenderer
+      ? messageRenderer?.ownsAttachment
+      : undefined;
+  // The host's Markdown marks an edit after the caption's last line. Plugin
+  // cards are marked inside their bubble; diffs and captionless rows after the
+  // payload.
+  const editedInBody =
+    bodyShown &&
+    !row.diff &&
+    !!displayRow.content.trim() &&
+    (!messageRenderer || messageRenderer === failedRenderer);
+  const claimed = (attachment: ChannelMessage["attachments"][number]) => {
+    try {
+      return !!claims?.call(messageRenderer, row, attachment);
+    } catch {
+      return false;
+    }
+  };
+  // A plugin may draw an image itself, such as a shared agent's card; it
+  // stands alone rather than joining the gallery around it.
+  const attachmentRenderers = useSyncExternalStore(
+    extensions?.attachments?.subscribe ?? noSubscribe,
+    extensions?.attachments?.snapshot ?? noActions,
+    extensions?.attachments?.snapshot ?? noActions,
+  );
+  const drawn = (attachment: ChannelMessage["attachments"][number]) =>
+    attachment.kind === "image" &&
+    attachmentRenderers.some((renderer) => {
+      try {
+        return renderer.matches(attachment);
+      } catch {
+        return false;
+      }
+    });
+  // Gallery-backed images and videos share a group, preserving sender order.
   const attachmentGroups: ChannelMessage["attachments"][number][][] = [];
   for (const attachment of row.attachments) {
-    if (!safeMessageUrl(attachment.url)) continue;
+    if (!safeMessageUrl(attachment.url) || claimed(attachment)) continue;
     const previous = attachmentGroups.at(-1);
     if (
-      (attachment.kind === "image" || attachment.kind === "file") &&
-      previous?.[0]?.kind === attachment.kind
+      previous?.[0] &&
+      !drawn(attachment) &&
+      !drawn(previous[0]) &&
+      (((attachment.kind === "image" || attachment.kind === "file") &&
+        previous[0].kind === attachment.kind) ||
+        (onOpenMediaReview &&
+          (attachment.kind === "image" || attachment.kind === "video") &&
+          (previous[0].kind === "image" || previous[0].kind === "video")))
     )
       previous.push(attachment);
     else attachmentGroups.push([attachment]);
@@ -438,7 +528,7 @@ function MessageRowContent({
   ) : (
     <MessageMarkdown
       directory={directory}
-      session={session}
+      session={references}
       scope={scope}
       row={displayRow}
       extensions={extensions}
@@ -447,6 +537,7 @@ function MessageRowContent({
       canOpenLink={canOpenLink}
       participantProfiles={participantProfiles}
       largeEmoji={emojiOnly}
+      edited={editedInBody && displayRow.edited}
     />
   );
   const avatar = row.workflowOwnerId ? (
@@ -460,41 +551,42 @@ function MessageRowContent({
       }
     />
   ) : clickable ? (
-    <IconButton
-      size={layout === "timeline" ? "default" : "sm"}
-      shape="round"
-      aria-label={`View ${name} profile`}
-      onFocus={() => setAvatarFocused(true)}
-      onBlur={(event) => {
-        // A window blur keeps this element as the browser's return-focus target.
-        if (
-          event.relatedTarget === null &&
-          document.activeElement === event.currentTarget
-        )
-          return;
-        setAvatarFocused(false);
-      }}
-      aria-describedby={presence !== "unknown" ? presenceId : undefined}
-      onClick={(event) => {
-        event.currentTarget.focus();
-        openLink(target);
-      }}
-      icon={
-        <>
-          <Avatar
-            src={picture}
-            alt=""
-            fallback={name}
-            size={compactAvatar ? "small" : "fill"}
-            shape={avatarShape}
-            statusBadge={presence === "unknown" ? undefined : presence}
-          />
-          {presence !== "unknown" && (
-            <span className="sr-only select-none" id={presenceId}>
-              Presence: {presence}
-            </span>
-          )}
-        </>
+    <ProfilePeek
+      key={`${scope}:${viewer}:${row.authorId}`}
+      viewer={viewer}
+      name={name}
+      picture={picture}
+      pubkey={row.authorId}
+      agent={avatarShape === "squircle"}
+      session={session}
+      channelId={row.channelId}
+      target={target}
+      onOpen={openLink}
+      onFocusChange={setAvatarFocused}
+      trigger={
+        <IconButton
+          size={layout === "timeline" ? "default" : "sm"}
+          shape="round"
+          aria-label={`View ${name} profile`}
+          aria-describedby={presence !== "unknown" ? presenceId : undefined}
+          icon={
+            <>
+              <Avatar
+                src={picture}
+                alt=""
+                fallback={name}
+                size={compactAvatar ? "small" : "fill"}
+                shape={avatarShape}
+                statusBadge={presence === "unknown" ? undefined : presence}
+              />
+              {presence !== "unknown" && (
+                <span className="sr-only select-none" id={presenceId}>
+                  Presence: {presence}
+                </span>
+              )}
+            </>
+          }
+        />
       }
     />
   ) : (
@@ -524,7 +616,7 @@ function MessageRowContent({
       messageId={row.id}
       onReply={
         (onReply ? () => onReply(row.id) : undefined) ??
-        (onOpenThread
+        (onOpenThread && startsThreads
           ? () =>
               onOpenThread(
                 row.threadRootId ?? row.id,
@@ -639,6 +731,9 @@ function MessageRowContent({
       )}
     </>
   );
+  // Accessories may only point at a thread the row could open or start.
+  const summaryThread =
+    startsThreads || row.replyCount > 0 ? onOpenThread : undefined;
   const renderMessageSummary = (activity?: MessageSummaryActivity) => {
     const remainingThreadAgents = threadAgents.filter(
       (agent) => !activity?.participants.includes(agent.pubkey),
@@ -646,16 +741,18 @@ function MessageRowContent({
     const remainingWorkingLabel = remainingThreadAgents.length
       ? `${remainingThreadAgents.map(({ pubkey, name }) => resolveName(pubkey, name)).join(", ")} ${threadWaiting ? "waiting" : "working"}`
       : undefined;
+    const activityOnly = !!activity && row.replyCount === 0;
     return (
       ((row.replyCount > 0 ||
-        (!row.threadRootId && threadAgents.length > 0) ||
+        (startsThreads && !row.threadRootId && threadAgents.length > 0) ||
         activity) &&
         onOpenThread && (
           <Button
             ref={activity?.ref}
-            variant="ghost"
-            size="sm"
+            variant={activityOnly ? "subtle" : "ghost"}
+            size={activityOnly ? "xs" : "sm"}
             data-thread-summary=""
+            data-activity-summary={activityOnly ? "" : undefined}
             data-reply-connector={row.replyCount > 0 || undefined}
             data-first-participant-shape={
               agentPubkeys?.has(row.participants[0] ?? "")
@@ -674,6 +771,7 @@ function MessageRowContent({
             }}
           >
             <ReplySummary
+              hideEmptyLabel={activityOnly}
               count={row.replyCount}
               participants={row.participants}
               profiles={participantProfiles}
@@ -723,19 +821,90 @@ function MessageRowContent({
       null
     );
   };
+  const reactionsInBubble =
+    !attachmentOnly &&
+    !cardsOnly &&
+    !row.huddle &&
+    !shownRow &&
+    !emojiOnly &&
+    !row.diff;
+  // A plugin card keeps reactions in its bubble, so its mark goes above them.
+  const editedInBubble = !editedInBody && reactionsInBubble;
+  const reactionContent =
+    session && scope && extensions ? (
+      <MessageReactions
+        onFocusedRemoval={() =>
+          menuTrigger.current?.focus({ preventScroll: true })
+        }
+        row={row}
+        session={session}
+        scope={scope}
+        tools={extensions.tools}
+        inline={extensions.inline}
+        profiles={directory.profiles}
+        disabled={
+          !canReact ||
+          (!!row.delivery && !["accepted", "seen"].includes(row.delivery))
+        }
+      />
+    ) : (
+      reactions.length > 0 && (
+        <div
+          className={`${styles.reactions} ${styles.reactionFallback}`}
+          data-message-reactions
+        >
+          {reactions.flatMap((reaction) =>
+            [...new Set(reaction.events.map((event) => event.authorId))].map(
+              (authorId) => (
+                <span
+                  key={JSON.stringify([
+                    reaction.content,
+                    reaction.emoji?.url,
+                    authorId,
+                  ])}
+                >
+                  {extensions ? (
+                    <InlineText
+                      registry={extensions.inline}
+                      content={{
+                        text: reaction.content,
+                        message: row,
+                        reaction,
+                      }}
+                      media={media}
+                    />
+                  ) : (
+                    reaction.content
+                  )}
+                </span>
+              ),
+            ),
+          )}
+        </div>
+      )
+    );
   const message = (
-    <div data-message-id={renderMessage ? undefined : row.id}>
+    <div
+      data-message-id={renderMessage ? undefined : row.id}
+      data-huddle-row={row.huddle ? "" : undefined}
+    >
       {day && <DayDivider createdAt={row.createdAt} />}
       <div
         ref={rowRef}
         className={styles.message}
+        data-highlight-surface=""
         data-layout={layout}
         data-stack-previous={stackPrevious || undefined}
         data-stack-next={stackNext || undefined}
         data-viewer-message={
-          alignViewer && row.authorId === viewer ? "" : undefined
+          alignViewer && !row.workflowOwnerId && row.authorId === viewer
+            ? ""
+            : undefined
         }
-        data-own={(!attachmentOnly && !cardsOnly && ownBubble) || undefined}
+        data-own={
+          (!attachmentOnly && !cardsOnly && !row.huddle && ownBubble) ||
+          undefined
+        }
       >
         {!renderMessage && <span className={styles.messageGutter} />}
 
@@ -744,7 +913,8 @@ function MessageRowContent({
           <div
             className={styles.messageContent}
             data-bubble={
-              (!attachmentOnly && !cardsOnly && !shownRow) || undefined
+              (!attachmentOnly && !cardsOnly && !row.huddle && !shownRow) ||
+              undefined
             }
           >
             {/* A live append must not remove the reader's current focus target. */}
@@ -752,7 +922,10 @@ function MessageRowContent({
               <div className={styles.messageAvatar}>{avatar}</div>
             )}
             <div className={styles.messageHeader}>
-              {!row.membership && !renderMessage && messageActions()}
+              {!row.membership &&
+                !row.huddle &&
+                !renderMessage &&
+                messageActions()}
               {/* Screen-reader text stays out of selections: the clipboard carries
                 what the reader saw, so a continuation copies without a byline. */}
               <div
@@ -770,7 +943,16 @@ function MessageRowContent({
                   />
                 ) : (
                   <span className={styles.authorWithStatus}>
-                    <strong className={styles.author}>{name}</strong>
+                    <strong className={styles.author}>
+                      {/* Inside the name, so the byline keeps the text baseline. */}
+                      {agentAuthor && !stackPrevious && (
+                        <RobotIcon
+                          aria-hidden="true"
+                          className={styles.authorAgentIcon}
+                        />
+                      )}
+                      {name}
+                    </strong>
                     {session && !stackPrevious && (
                       <UserStatusDisplay
                         session={session}
@@ -779,6 +961,12 @@ function MessageRowContent({
                         focusable={false}
                       />
                     )}
+                  </span>
+                )}
+                {ownerLabel && (
+                  <span className={styles.authorOwner}>
+                    <span aria-hidden="true">· </span>
+                    {ownerLabel}
                   </span>
                 )}
                 {!stackPrevious && (
@@ -821,17 +1009,17 @@ function MessageRowContent({
               }
               attachments={attachmentGroups.length > 0}
             >
-              {sessionCards.length > 0 && (
+              {chatCards.length > 0 && (
                 <div
                   className={styles.messageAttachments}
-                  data-session-cards
+                  data-solo-cards
                   data-message-action-anchor
                 >
-                  {sessionCards.map((card) => (
+                  {chatCards.map((card) => (
                     <MessageMarkdown
                       key={card.start}
                       directory={directory}
-                      session={session}
+                      session={references}
                       scope={scope}
                       row={{
                         ...shown,
@@ -847,36 +1035,59 @@ function MessageRowContent({
                   ))}
                 </div>
               )}
-              {!attachmentOnly && !cardsOnly && (
+              {bodyShown && (
                 <div
-                  className={shownRow ? undefined : styles.messageBubble}
+                  className={
+                    shownRow || row.huddle ? undefined : styles.messageBubble
+                  }
                   data-message-action-anchor
                   data-emoji-only={emojiOnly || undefined}
                   data-diff-only={!!row.diff || undefined}
                   data-own={ownBubble || undefined}
                 >
                   {timeReply && (
-                    <span className={styles.mediaTimeLink}>
+                    <div className={styles.mediaTimeLink} data-media-timecode>
                       {onMediaTime ? (
                         <Button
-                          size="sm"
+                          variant="subtle"
+                          size="inline"
+                          title="Open video"
                           type="button"
                           onClick={() => onMediaTime(timeReply.anchor.seconds)}
                         >
-                          {timeReply.label}
+                          <span className={styles.mediaTimeDigits}>
+                            {timeReply.label}
+                          </span>
                         </Button>
                       ) : (
-                        <span>{timeReply.label}</span>
+                        <span className={styles.mediaTimeLabel}>
+                          {timeReply.label}
+                        </span>
                       )}
-                    </span>
+                    </div>
                   )}
                   {extensions?.messages ? (
-                    <MessageBody registry={extensions.messages} message={row}>
+                    <MessageCard
+                      registry={extensions.messages}
+                      renderer={messageRenderer}
+                      message={row}
+                      onFailedChange={(renderer, failed) =>
+                        setFailedRenderer((current) =>
+                          failed
+                            ? renderer
+                            : current === renderer
+                              ? undefined
+                              : current,
+                        )
+                      }
+                    >
                       {body}
-                    </MessageBody>
+                    </MessageCard>
                   ) : (
                     body
                   )}
+                  {editedInBubble && shown.edited && <EditedMarker />}
+                  {reactionsInBubble && reactionContent}
                 </div>
               )}
               {attachmentGroups.length > 0 && (
@@ -885,9 +1096,20 @@ function MessageRowContent({
                   data-message-attachments
                 >
                   {attachmentGroups.map((group) => {
-                    const images = group[0]?.kind === "image";
+                    const images =
+                      group[0]?.kind === "image" || group[0]?.kind === "video";
+                    const imageOnly = group.every(
+                      (item) => item.kind === "image",
+                    );
+                    const mediaLabel = imageOnly
+                      ? "images"
+                      : "photos and videos";
                     const files = group[0]?.kind === "file";
-                    const items = group.map((attachment, index) => {
+                    // Only collapse when the host can open the complete gallery.
+                    const collapsed =
+                      images && group.length > 4 && !!onOpenMediaReview;
+                    const previews = collapsed ? group.slice(0, 4) : group;
+                    const items = previews.map((attachment, index) => {
                       const url = safeMessageUrl(attachment.url);
                       if (!url) return null;
                       const source = media(url);
@@ -906,18 +1128,19 @@ function MessageRowContent({
                           (isProxySource(source) || isNativeMediaSource(source))
                         )
                           return extensions?.attachments ? (
-                            <AttachmentView
-                              key={url}
-                              registry={extensions.attachments}
-                              attachment={{ ...attachment, url }}
-                              source={source}
-                              fallback={
-                                <AudioAttachment
-                                  attachment={{ ...attachment, url }}
-                                  source={source}
-                                />
-                              }
-                            />
+                            <AttachmentDownloadContext key={url} value={true}>
+                              <AttachmentView
+                                registry={extensions.attachments}
+                                attachment={{ ...attachment, url }}
+                                source={source}
+                                fallback={
+                                  <AudioAttachment
+                                    attachment={{ ...attachment, url }}
+                                    source={source}
+                                  />
+                                }
+                              />
+                            </AttachmentDownloadContext>
                           ) : (
                             <AudioAttachment
                               key={url}
@@ -935,17 +1158,29 @@ function MessageRowContent({
                         );
                       }
                       if (attachment.kind === "image") {
-                        return (
+                        const image = (
                           <AttachmentImage
+                            onOpenLink={
+                              canOpenLink?.(attachment.url)
+                                ? openLink
+                                : undefined
+                            }
                             key={url}
+                            session={session}
                             attachment={{ ...attachment, url }}
                             source={source}
                             cached={cached}
+                            compact={group.length >= 4}
+                            overlayCount={
+                              collapsed && index === 3 ? group.length - 3 : 0
+                            }
                             keepMounted={keepRowMounted}
                             label={
-                              group.length > 1
-                                ? `Open image ${index + 1} of ${group.length}`
-                                : "Open image attachment"
+                              collapsed && index === 3
+                                ? `View all ${group.length} ${mediaLabel}, starting at ${imageOnly ? "image" : "item"} 4`
+                                : group.length > 1
+                                  ? `Open image ${index + 1} of ${group.length}`
+                                  : "Open image attachment"
                             }
                             {...(onOpenMediaReview
                               ? {
@@ -957,10 +1192,24 @@ function MessageRowContent({
                                       row.replyCount > 0 ||
                                         (!!row.threadRootId &&
                                           row.threadRootId !== row.id),
+                                      row.attachments,
                                     ),
                                 }
                               : {})}
                           />
+                        );
+                        return source &&
+                          extensions?.attachments &&
+                          drawn(attachment) ? (
+                          <AttachmentView
+                            key={url}
+                            registry={extensions.attachments}
+                            attachment={{ ...attachment, url }}
+                            source={source}
+                            fallback={image}
+                          />
+                        ) : (
+                          image
                         );
                       }
                       return (
@@ -968,6 +1217,17 @@ function MessageRowContent({
                           key={url}
                           attachment={{ ...attachment, url }}
                           media={media}
+                          compact={
+                            images && group.length >= 4 && !!onOpenMediaReview
+                          }
+                          overlayCount={
+                            collapsed && index === 3 ? group.length - 3 : 0
+                          }
+                          label={
+                            collapsed && index === 3
+                              ? `View all ${group.length} ${mediaLabel}, starting at item 4`
+                              : `Open video ${index + 1} of ${group.length}`
+                          }
                           mode={mediaMode}
                           {...(attachment.kind === "video" &&
                           mediaSeekTo !== undefined
@@ -991,19 +1251,23 @@ function MessageRowContent({
                                     row.replyCount > 0 ||
                                       (!!row.threadRootId &&
                                         row.threadRootId !== row.id),
+                                    row.attachments,
                                   ),
                               }
                             : {})}
                         />
                       );
                     });
-                    return images ? (
+                    return images &&
+                      !(group[0] && drawn(group[0])) &&
+                      (imageOnly || group.length >= 4) ? (
                       <div className={styles.imageGroup} key={group[0]?.url}>
                         {/* biome-ignore lint/a11y/useSemanticElements: This labels related media links, not a fieldset of form controls. */}
                         <div
-                          className={styles.imageList}
+                          className={`${styles.imageList} ${group.length >= 4 ? styles.imageGrid : ""}`}
+                          data-image-grid={group.length >= 4 || undefined}
                           role="group"
-                          aria-label={`${group.length} ${group.length === 1 ? "image" : "images"}`}
+                          aria-label={`${group.length} ${imageOnly ? (group.length === 1 ? "image" : "images") : "photos and videos"}`}
                         >
                           {items}
                         </div>
@@ -1018,61 +1282,18 @@ function MessageRowContent({
                   })}
                 </div>
               )}
+              {!editedInBody && !editedInBubble && shown.edited && (
+                <EditedMarker />
+              )}
             </MessageTimestampHint>
           </div>
-          {session && scope && extensions ? (
-            <MessageReactions
-              onFocusedRemoval={() => menuTrigger.current?.focus()}
-              row={row}
-              session={session}
-              scope={scope}
-              tools={extensions.tools}
-              inline={extensions.inline}
-              profiles={directory.profiles}
-              disabled={
-                !canReact ||
-                (!!row.delivery && !["accepted", "seen"].includes(row.delivery))
-              }
-            />
-          ) : (
-            reactions.length > 0 && (
-              <div className={`${styles.reactions} ${styles.reactionFallback}`}>
-                {reactions.flatMap((reaction) =>
-                  [
-                    ...new Set(reaction.events.map((event) => event.authorId)),
-                  ].map((authorId) => (
-                    <span
-                      key={JSON.stringify([
-                        reaction.content,
-                        reaction.emoji?.url,
-                        authorId,
-                      ])}
-                    >
-                      {extensions ? (
-                        <InlineText
-                          registry={extensions.inline}
-                          content={{
-                            text: reaction.content,
-                            message: row,
-                            reaction,
-                          }}
-                          media={media}
-                        />
-                      ) : (
-                        reaction.content
-                      )}
-                    </span>
-                  )),
-                )}
-              </div>
-            )
-          )}
+          {!reactionsInBubble && reactionContent}
           <DeliveryNotice row={row} retry={retry} />
           {active && session && scope && extensions?.accessories && (
             <ComposerAccessories
               registry={extensions.accessories}
               renderMessageSummary={
-                onOpenThread ? renderMessageSummary : undefined
+                summaryThread ? renderMessageSummary : undefined
               }
               session={session}
               scope={scope}
@@ -1083,9 +1304,9 @@ function MessageRowContent({
                 menuTrigger.current?.focus({ preventScroll: true })
               }
               openThread={
-                onOpenThread
+                summaryThread
                   ? () => {
-                      onOpenThread(row.id, row.threadRootId ?? row.id);
+                      summaryThread(row.id, row.threadRootId ?? row.id);
                       return true;
                     }
                   : undefined
@@ -1135,13 +1356,14 @@ export const MessageRow = memo(function AudienceMessageRow(
 
 function AgentsMessageRow(props: MessageRowProps) {
   const { row, session, media, participantProfiles, agentPubkeys } = props;
+  const references = props.references ?? session;
   const [open, setOpen] = useState(false);
   const keepMounted = props.keepMounted;
   useEffect(() => {
     if (open) return keepMounted?.(row.id);
   }, [open, keepMounted, row.id]);
-  const resolveName = useChannelIdentityNames(session, row.channelId);
-  const directory = useReferenceDirectory(session, participantProfiles);
+  const resolveName = useChannelIdentityNames(references, row.channelId);
+  const directory = useReferenceDirectory(references, participantProfiles);
   const { recipients, body } = useMemo(
     () =>
       addressedMessage(
@@ -1197,6 +1419,7 @@ function AgentsMessageRow(props: MessageRowProps) {
           data-audience="agents"
           data-viewer-message={
             (props.alignViewer ?? true) &&
+            !row.workflowOwnerId &&
             row.authorId === (props.viewer ?? session?.viewer)
               ? ""
               : undefined
@@ -1210,6 +1433,7 @@ function AgentsMessageRow(props: MessageRowProps) {
             open={open}
             onOpenChange={setOpen}
             className={styles.audienceEntry}
+            data-highlight-surface=""
             // One stable anchor survives both animation directions. Not the
             // button: revealing an anchor takes it out of the Tab order.
             data-message-id={row.id}
@@ -1233,13 +1457,9 @@ function AgentsMessageRow(props: MessageRowProps) {
               ref={trigger}
               data-buzz-ui=""
               className={styles.audienceLine}
-              aria-label={`${author.name}${to.length ? ` to ${to.map((who) => who.name).join(", ")}` : ""}: ${preview}`}
+              aria-label={`${author.name}${to.length ? ` to ${to.map((who) => who.name).join(", ")}` : ""}: ${preview}${row.edited ? " (edited)" : ""}`}
             >
-              {props.stackPrevious && !props.day && !open ? (
-                <span className={styles.audienceAvatar} aria-hidden="true" />
-              ) : (
-                avatar(author)
-              )}
+              {avatar(author)}
               {to.length > 0 && (
                 <>
                   <ArrowRightIcon
@@ -1253,6 +1473,7 @@ function AgentsMessageRow(props: MessageRowProps) {
               {!open && (
                 <span className={styles.audiencePreview}>{preview}</span>
               )}
+              {!open && row.edited && <EditedMarker />}
             </Collapsible.Trigger>
             <Collapsible.Panel
               className={`${styles.audiencePanel} ${styles.activityExpansion} ${styles.audienceBody}`}

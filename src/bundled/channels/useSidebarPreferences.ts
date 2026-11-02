@@ -20,10 +20,14 @@ export function useSidebarPreferences(
     assign: queries.assign,
     removeSection: queries.removeSection,
     removeSectionWritable: queries.removeSectionWritable,
+    renameSection: queries.renameSection,
+    sectionRenameWritable: queries.sectionRenameWritable,
     sectionOrderWritable: queries.sectionOrderWritable,
     reorderSections: queries.reorderSections,
     dismissOrderError: queries.dismissOrderError,
     createAndAssign: queries.createAndAssign,
+    createSection: queries.createSection,
+    sectionCreationWritable: queries.sectionCreationWritable,
     retryMove: queries.retryMove,
     dismissMoveError: queries.dismissMoveError,
     starWritable: queries.starWritable,
@@ -32,5 +36,8 @@ export function useSidebarPreferences(
     sortWritable: queries.sortWritable,
     setSort: queries.setSort,
     dismissSortError: queries.dismissSortError,
+    filterWritable: queries.filterWritable,
+    setFilter: queries.setFilter,
+    dismissFilterError: queries.dismissFilterError,
   };
 }

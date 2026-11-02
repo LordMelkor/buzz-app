@@ -7,11 +7,17 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { AvatarEditor } from "./AvatarEditor";
-import { uploadAvatar } from "./avatar-upload";
+import {
+  emojiAvatar,
+  emojiAvatarScale,
+  paintEmojiAvatar,
+  uploadAvatar,
+} from "./avatar-upload";
 import { stubAvatarBrowserApis } from "../agents/avatar-testing";
 
 stubAvatarBrowserApis();
@@ -19,6 +25,7 @@ stubAvatarBrowserApis();
 vi.mock("./avatar-upload", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./avatar-upload")>()),
   uploadAvatar: vi.fn(),
+  emojiAvatar: vi.fn(),
   paintEmojiAvatar: vi.fn(),
 }));
 afterEach(() => {
@@ -215,20 +222,28 @@ it("previews emoji colors without selecting a draft, and restores the image when
   fireEvent.click(
     screen.getByRole("button", { name: "Use #476CFF background" }),
   );
-  expect(screen.getByRole("img", { name: "Emoji avatar preview" })).toHaveStyle(
-    { backgroundColor: "#476CFF" },
-  );
+  expect(
+    screen
+      .getByRole("slider", { name: "Emoji position" })
+      .querySelector("[data-avatar-shape]"),
+  ).toHaveStyle({
+    backgroundColor: "#476CFF",
+  });
   expect(screen.getByLabelText("Draft picture")).toHaveTextContent(original);
   fireEvent.click(screen.getByRole("tab", { name: "Emoji" }));
-  expect(screen.getByRole("img", { name: "Emoji avatar preview" })).toHaveStyle(
-    { backgroundColor: "#476CFF" },
-  );
+  expect(
+    screen
+      .getByRole("slider", { name: "Emoji position" })
+      .querySelector("[data-avatar-shape]"),
+  ).toHaveStyle({
+    backgroundColor: "#476CFF",
+  });
   fireEvent.click(screen.getByRole("tab", { name: "Image" }));
   expect(screen.getByLabelText("Picture URL (optional)")).toHaveValue(original);
   close();
   await waitFor(() =>
     expect(
-      screen.queryByRole("img", { name: "Emoji avatar preview" }),
+      screen.queryByRole("slider", { name: "Emoji position" }),
     ).not.toBeInTheDocument(),
   );
   expect(screen.getByLabelText("Draft picture")).toHaveTextContent(original);
@@ -303,18 +318,25 @@ it("previews an inline agent emoji and its background with Done in the form foot
     />,
   );
   fireEvent.click(screen.getByRole("tab", { name: "Emoji" }));
-  expect(
-    screen.getByRole("img", { name: "Emoji avatar preview" }),
-  ).toBeVisible();
+  const position = screen.getByRole("slider", { name: "Emoji position" });
+  expect(position).toBeVisible();
+  // Only the artwork inside takes the avatar mask, which would clip focus.
+  expect(position).not.toHaveAttribute("data-avatar-shape");
+  expect(position.querySelector("[data-avatar-shape]")).toHaveAttribute(
+    "data-avatar-shape",
+    "squircle",
+  );
   fireEvent.click(screen.getByRole("tab", { name: "Background" }));
   fireEvent.click(
     screen.getByRole("button", { name: "Use #476CFF background" }),
   );
-  expect(screen.getByRole("img", { name: "Emoji avatar preview" })).toHaveStyle(
-    {
-      backgroundColor: "#476CFF",
-    },
-  );
+  expect(
+    screen
+      .getByRole("slider", { name: "Emoji position" })
+      .querySelector("[data-avatar-shape]"),
+  ).toHaveStyle({
+    backgroundColor: "#476CFF",
+  });
   expect(footer).toContainElement(screen.getByRole("button", { name: "Done" }));
   expect(
     screen.queryByRole("button", { name: "Remove avatar" }),
@@ -323,4 +345,58 @@ it("previews an inline agent emoji and its background with Done in the form foot
   expect(change).not.toHaveBeenCalled();
   view.unmount();
   footer.remove();
+});
+
+it("sizes and moves the emoji in its preview and its uploaded avatar", async () => {
+  vi.mocked(emojiAvatar).mockResolvedValue(
+    new File([], "avatar.png", { type: "image/png" }),
+  );
+  vi.mocked(uploadAvatar).mockResolvedValue(next);
+  const change = vi.fn();
+  render(
+    <AvatarEditor
+      triggerStyle="dotted-squircle"
+      inlinePicker
+      value=""
+      name="Agent"
+      community={community}
+      onChange={change}
+    />,
+  );
+  fireEvent.click(screen.getByRole("tab", { name: "Emoji" }));
+  const size = screen.getByRole("slider", { name: "Emoji size" });
+  expect(size).toHaveValue("1");
+  fireEvent.change(size, { target: { value: "1.5" } });
+  expect(paintEmojiAvatar).toHaveBeenLastCalledWith(
+    expect.any(HTMLCanvasElement),
+    "😀",
+    undefined,
+    emojiAvatarScale * 1.5,
+    0,
+  );
+  expect(
+    within(screen.getByRole("group", { name: "Avatar picker" })).queryByRole(
+      "slider",
+      { name: "Emoji size" },
+    ),
+  ).toBeNull();
+  const position = screen.getByRole("slider", { name: "Emoji position" });
+  for (let step = 0; step < 5; step++)
+    fireEvent.keyDown(position, { key: "ArrowDown" });
+  expect(position).toHaveAttribute("aria-valuetext", "10% down");
+  expect(paintEmojiAvatar).toHaveBeenLastCalledWith(
+    expect.any(HTMLCanvasElement),
+    "😀",
+    undefined,
+    emojiAvatarScale * 1.5,
+    0.1,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Done" }));
+  await waitFor(() => expect(change).toHaveBeenCalledWith(next));
+  expect(emojiAvatar).toHaveBeenCalledExactlyOnceWith(
+    "😀",
+    "#FFF4CC",
+    emojiAvatarScale * 1.5,
+    0.1,
+  );
 });

@@ -1,39 +1,51 @@
 [package]
-name = "buzz-foundation"
+name = "Buzz"
 version = "0.0.0"
 description = "Buzz application foundation"
+license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.90"
+
+[features]
+native-mcp = ["dep:tauri-plugin-mcp-bridge"]
 
 [lib]
 name = "buzz_foundation_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 url = "2"
 tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
+buzz-nsec-backup = { path = "../crates/nsec-backup" }
 buzz-pairing = { path = "../crates/pairing" }
 nostr-pairing = { package = "nostr", version = "0.44", features = ["nip44"] }
 tokio-util = "0.7"
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
-futures-util = "0.3"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
+futures-util = { version = "0.3", features = ["sink"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "aws_lc_rs", "std", "tls12"] }
 webpki-roots = "1"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
-tauri = { version = "=2.12.3", features = ["unstable"] }
+# Not "unstable": it builds the main webview as a child, and Wry then sends
+# Cmd shortcuts straight to the menu, so the page never sees Cmd+Z (tauri#9426).
+tauri = { version = "=2.12.4", features = [] }
 wry = { version = "=0.57.0", default-features = false, features = ["os-webview"] }
 buzzodz-plugins = { path = "../crates/plugin-manager" }
 buzz-credential-store = { path = "../crates/credential-store" }
 buzz-agent-controller = { path = "../crates/agent-controller" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+buzz-audio-client = { git = "https://github.com/block/buzz.git", rev = "7e6461242aa7d98f132919dd672f7cc5f4abbba6" }
+rustls-native-certs = "0.8"
 tokio = { version = "1", features = ["sync", "time", "macros", "process", "io-util", "net"] }
 sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
+dunce = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -43,7 +55,7 @@ url = "2"
 percent-encoding = "2"
 tauri-plugin-dialog = "2.8.3"
 tauri-plugin-opener = "2.7.2"
-tauri-plugin-updater = "~2.13.3"
+tauri-plugin-updater = "~2.14.1"
 tauri-plugin-deep-link = "2.6.2"
 tauri-plugin-single-instance = { version = "2.5.4", features = ["deep-link"] }
 tauri-plugin-window-state = "2.5.0"
@@ -66,24 +78,27 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 hex = "0.4"
 tokio = { version = "1", features = ["test-util"] }
 secp256k1 = { version = "0.31", features = ["std"] }
-tauri = { version = "=2.12.3", features = ["test"] }
+tauri = { version = "=2.12.4", features = ["test"] }
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["user"] }
 portable-pty = "0.9"
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Pin the small upstream Origin rejection fix; released versions accept browser clients.
+tauri-plugin-mcp-bridge = { git = "https://github.com/hypothesi/mcp-server-tauri", rev = "1d5105e72835b28ca05a75bcd612b9127c12fe94", optional = true }
 security-framework = "3.7"
 block2 = "=0.6.2"
 objc2 = "=0.6.4"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSScreen", "NSWindow", "NSEvent", "block2"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSObject", "NSThread", "NSBundle", "NSString", "NSError", "NSUserDefaults"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSResponder", "NSScreen", "NSWindow", "NSEvent", "NSWorkspace", "NSRunningApplication", "block2"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSObject", "NSThread", "NSBundle", "NSString", "NSURL", "NSError", "NSUserDefaults", "NSProcessInfo"] }
 objc2-user-notifications = { version = "=0.3.2", default-features = false, features = ["UNUserNotificationCenter", "UNNotificationSettings", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "block2"] }
 
-objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "objc2-app-kit", "block2", "WKWebView", "WKUIDelegate", "WKFrameInfo", "WKSecurityOrigin"] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "objc2-app-kit", "block2", "WKWebView", "WKUIDelegate", "WKFrameInfo", "WKSecurityOrigin", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKHTTPCookieStore"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 webview2-com = "=0.39.1"

@@ -13,7 +13,9 @@
   cursor: text;
   outline: none;
 }
-html[data-keyboard-navigation] .input:focus-visible {
+/* Sending can disable the focused editor briefly. It keeps focus, but a
+   non-editable focused element matches :focus-visible, so the ring would flash. */
+html[data-keyboard-navigation] .input:focus-visible:not([aria-disabled]) {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
@@ -32,12 +34,12 @@ html[data-keyboard-navigation] .input:focus-visible {
 }
 .input::selection,
 .input ::selection {
-  background-color: Highlight;
-  color: HighlightText;
+  background-color: var(--surface-text-selection);
+  color: var(--text-on-selection);
 }
 .input:focus .token[data-editor-selected] {
-  background-color: Highlight;
-  color: HighlightText;
+  background-color: var(--surface-text-selection);
+  color: var(--text-on-selection);
 }
 .input:focus .token[data-editor-selected] * {
   background-color: transparent;
@@ -158,4 +160,17 @@ html[data-keyboard-navigation] .input:focus-visible {
   box-decoration-break: clone;
   text-decoration: underline dotted;
   text-underline-offset: 3px;
+}
+
+@media (forced-colors: active) {
+  .input::selection,
+  .input ::selection,
+  .input:focus .token[data-editor-selected] {
+    background-color: Highlight;
+    color: HighlightText;
+  }
+  .input .token::selection,
+  .input .token *::selection {
+    background-color: transparent;
+  }
 }

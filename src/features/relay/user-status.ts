@@ -3,12 +3,18 @@ import { eventDto, type RelayEvent } from "./events";
 import type { RelayReader } from "./reader";
 import type { RelayWriter } from "./transport";
 
-import { USER_STATUS_KIND, validStatusText } from "./user-status-policy";
+import {
+  USER_STATUS_KIND,
+  validStatusEmojiUrl,
+  validStatusText,
+} from "./user-status-policy";
 export { USER_STATUS_KIND, STATUS_TEXT_LIMIT } from "./user-status-policy";
 export type UserStatus = Readonly<{
   userId: string;
   text: string;
   emoji: string;
+  /** Original image URL for a custom `:code:`; older statuses use the catalog. */
+  emojiUrl?: string;
   updatedAt: number;
   expiresAt?: number;
 }>;
@@ -22,7 +28,8 @@ function parse(event: RelayEvent): UserStatus | undefined {
     event.tags.some(([key]) => key === "h")
   )
     return;
-  const emoji = event.tags.find(([key]) => key === "emoji")?.[1] ?? "";
+  const [, emoji = "", url = ""] =
+    event.tags.find(([key]) => key === "emoji") ?? [];
   if (!validStatusText(event.content, emoji)) return;
   const expiration = event.tags.find(([key]) => key === "expiration")?.[1];
   const expiresAt = expiration === undefined ? undefined : Number(expiration);
@@ -35,6 +42,9 @@ function parse(event: RelayEvent): UserStatus | undefined {
     userId: event.pubkey,
     text: event.content.trim(),
     emoji: emoji.trim(),
+    ...(validStatusEmojiUrl(emoji.trim(), url.trim())
+      ? { emojiUrl: url.trim() }
+      : {}),
     updatedAt: event.created_at,
     ...(expiresAt === undefined ? {} : { expiresAt }),
   });
@@ -47,6 +57,7 @@ export function createUserStatuses(
   viewer?: string,
   writer?: RelayWriter,
   notify = (listener: () => void) => listener(),
+  emojiTags: (content: string) => string[][] = () => [],
 ) {
   const records = new Map<
     string,
@@ -249,6 +260,19 @@ export function createUserStatuses(
         now,
         (records.get(viewer)?.event.created_at ?? 0) + 1,
       );
+      const previous = records.get(viewer)?.status;
+      let resolved: string | undefined;
+      try {
+        resolved = emojiTags(emoji)[0]?.[2];
+      } catch {
+        // An unready catalog never blocks a status; viewers resolve the code.
+      }
+      // A re-save keeps the URL of a code the catalog cannot resolve now.
+      const url = [
+        resolved,
+        previous?.emoji === emoji ? previous.emojiUrl : undefined,
+      ].find((candidate) => candidate && validStatusEmojiUrl(emoji, candidate));
+      const emojiTag = url ? ["emoji", emoji, url] : ["emoji", emoji];
       if (createdAt > now + 300)
         throw new Error(
           "Your current status is dated too far in the future. Check your devices’ clocks and try again later.",
@@ -259,7 +283,7 @@ export function createUserStatuses(
         content: text,
         tags: [
           ["d", "general"],
-          ...(emoji ? [["emoji", emoji]] : []),
+          ...(emoji ? [emojiTag] : []),
           ...(expiresAt === undefined
             ? []
             : [["expiration", String(expiresAt)]]),

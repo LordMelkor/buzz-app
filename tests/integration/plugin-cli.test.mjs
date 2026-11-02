@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -25,8 +26,15 @@ const binary = path.join(
   "debug",
   process.platform === "win32" ? "buzzodz.exe" : "buzzodz",
 );
+// Without --home the CLI would open this machine's development app storage.
+const home = mkdtempSync(path.join(tmpdir(), "buzzodz-home-"));
+test.after(() => rmSync(home, { recursive: true, force: true }));
 function cli(...args) {
-  return spawnSync(binary, args, { cwd: root, encoding: "utf8" });
+  return spawnSync(binary, args, {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, BUZZODZ_HOME: home },
+  });
 }
 async function project(run) {
   const directory = await mkdtemp(path.join(tmpdir(), "buzzodz-build-"));

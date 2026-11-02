@@ -1,3 +1,4 @@
+import { sourceCompleted } from "./attention";
 // One-object reads and writes of an agent's attention, with Janet's scoped
 // object contract: a show returns the object and its expected-state token, and
 // every write must present the token of the object it replaces. A token is a
@@ -15,6 +16,7 @@ import {
   type EventWatch,
   type Interest,
   type TimerWatch,
+  type SourceWatch,
 } from "./attention";
 import { setAttention, type AgentRecord } from "./store";
 
@@ -26,22 +28,14 @@ export const AGENT_BYTES = 256 * 1024;
  * turn, so a faster timer only queues turns it cannot run. */
 export const MIN_INTERVAL_SECS = 60;
 export type ClassifierAvailability = "available" | "unavailable";
-/** What the app knows about the saved classifier key: still being read, saved,
- * not saved, unreadable (the store refused or failed the read), or saved but
- * refused by the service. */
-export type ClassifierKey =
-  | "checking"
-  | "saved"
-  | "missing"
-  | "unreadable"
-  | "refused";
 /** enabled/disabled for event watches; armed/inactive/spent for timers. */
 export type WatchStatus =
   | "enabled"
   | "disabled"
   | "armed"
   | "inactive"
-  | "spent";
+  | "spent"
+  | "completed";
 export type AttentionErrorCode =
   | "conflict"
   | "wrong-scope"
@@ -69,8 +63,14 @@ export type TimerObject = TimerWatch &
     used: number;
     next_due: number;
   }>;
-export type ShownObject = InterestObject | EventWatchObject | TimerObject;
+export type ShownObject =
+  | InterestObject
+  | EventWatchObject
+  | TimerObject
+  | (SourceWatch &
+      Readonly<{ id: string; status: "enabled" | "disabled" | "completed" }>);
 export type Shown = Readonly<{
+  delivery?: Readonly<{ status: "held" | "blocked"; reason: string }>;
   result: "found" | "not-found";
   object: ShownObject | null;
   expected_state: string;
@@ -79,14 +79,14 @@ export type WatchSummary = Readonly<{
   id: string;
   interest_id: string;
   name?: string;
-  type: "event" | "timer";
+  type: "event" | "timer" | "source";
   status: WatchStatus;
   /** Whether the watch has a classifier. */
   classified?: true;
 }>;
 export type WatchFilter = Readonly<{
   interest?: string;
-  type?: "event" | "timer";
+  type?: "event" | "timer" | "source";
   status?: WatchStatus;
   /** Case-sensitive, over ids and names. */
   search?: string;
@@ -122,6 +122,16 @@ export function objectAt(
   const value = record.attention[slug]?.value;
   if (!parsed || !value) return null;
   if (value.type === "interest") return { id: parsed.id, ...value };
+  if (value.type === "source")
+    return {
+      id: parsed.id,
+      ...value,
+      status: sourceCompleted(record.sourceRuns, record.attention[slug])
+        ? "completed"
+        : value.enabled
+          ? "enabled"
+          : "disabled",
+    };
   if (value.type === "event")
     return {
       id: parsed.id,
@@ -220,19 +230,21 @@ export function watchSummaries(
       const value = object.value;
       if (!id || value.type === "interest") return [];
       const status =
-        value.type === "event"
-          ? value.enabled
-            ? "enabled"
-            : "disabled"
-          : timerObject(record, id, value, now).status;
+        value.type === "source" && sourceCompleted(record.sourceRuns, object)
+          ? "completed"
+          : value.type !== "timer"
+            ? value.enabled
+              ? "enabled"
+              : "disabled"
+            : timerObject(record, id, value, now).status;
       return [
         {
           id,
           interest_id: value.interest_id,
-          ...(value.type === "event" && value.name ? { name: value.name } : {}),
+          ...(value.type !== "timer" && value.name ? { name: value.name } : {}),
           type: value.type,
           status,
-          ...(value.type === "event" && value.classifier
+          ...(value.type !== "timer" && value.classifier
             ? { classified: true as const }
             : {}),
         },

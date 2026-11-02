@@ -7,12 +7,16 @@ import type {
   SidebarSectionOrderMutator,
   SidebarGroups,
   SidebarSectionRemovalMutator,
+  SidebarSectionRenameMutator,
   SidebarSectionCreationMutator,
   SidebarStarMutator,
   SidebarMuteMutator,
   SidebarPreferences,
   SidebarSortMode,
   SidebarSortMutator,
+  SidebarFilterMode,
+  SidebarFilterMutator,
+  SidebarFilterSettings,
 } from "./sidebar-preferences";
 
 type MoveDestination =
@@ -29,6 +33,12 @@ type SortFailure = Readonly<{
   mode: SidebarSortMode;
   error: string;
 }>;
+type FilterFailure = Readonly<{
+  group: string;
+  mode: SidebarFilterMode;
+  activeWindowSeconds?: number | null;
+  error: string;
+}>;
 type OrderFailure = Readonly<{
   sectionId: string;
   sectionIds: readonly string[];
@@ -42,26 +52,49 @@ type Snapshot = Readonly<{
   transient?: true;
   cached?: true;
   sortErrors?: readonly SortFailure[];
+  filterErrors?: readonly FilterFailure[];
   moves?: readonly (MoveIntent & { pending: boolean; error?: string })[];
   orderError?: OrderFailure;
 }>;
 
 /** One bounded account-preference projection per relay session, not per page. */
-export function createSidebarPreferencesStore(
-  read: (signal?: AbortSignal) => Promise<SidebarPreferences>,
-  available: boolean,
-  write?: SidebarAssignmentMutator,
-  writeStar?: SidebarStarMutator,
+export function createSidebarPreferencesStore({
+  read,
+  readAfterWrite = read,
+  available,
+  write,
+  writeStar,
   notify = (listener: () => void) => listener(),
-  writeMute?: SidebarMuteMutator,
-  writeSort?: SidebarSortMutator,
-  persistence?: HeadPersistence,
-  removeSection?: SidebarSectionRemovalMutator,
-  /** Me groups have no Star coordinate; do not write Messages stars on moves. */
+  writeMute,
+  writeSort,
+  persistence,
+  removeSection,
+  renameSection,
   groupsOnly = false,
-  writeOrder?: SidebarSectionOrderMutator,
-  createSection?: SidebarSectionCreationMutator,
-) {
+  writeOrder,
+  createSection,
+  writeFilter,
+}: Readonly<{
+  read: (signal?: AbortSignal) => Promise<SidebarPreferences>;
+  /** Authoritative reconciliation after uncertain creation, including Retry. */
+  readAfterWrite?:
+    | ((signal?: AbortSignal) => Promise<SidebarPreferences>)
+    | undefined;
+  available: boolean;
+  write?: SidebarAssignmentMutator | undefined;
+  writeStar?: SidebarStarMutator | undefined;
+  notify?: ((listener: () => void) => void) | undefined;
+  writeMute?: SidebarMuteMutator | undefined;
+  writeSort?: SidebarSortMutator | undefined;
+  persistence?: HeadPersistence | undefined;
+  removeSection?: SidebarSectionRemovalMutator | undefined;
+  renameSection?: SidebarSectionRenameMutator | undefined;
+  /** Solo groups have no Star coordinate; do not write Messages stars on moves. */
+  groupsOnly?: boolean | undefined;
+  writeOrder?: SidebarSectionOrderMutator | undefined;
+  createSection?: SidebarSectionCreationMutator | undefined;
+  writeFilter?: SidebarFilterMutator | undefined;
+}>) {
   const listeners = new Set<() => void>();
   const empty = (): Snapshot =>
     Object.freeze({ status: available ? "idle" : "unsupported" });
@@ -76,6 +109,8 @@ export function createSidebarPreferencesStore(
   let confirmed: SidebarPreferences | undefined;
   let readFailure: string | undefined;
   let readTransient = false;
+  // Retain writer routing through failed reads and cache clears until reconciled.
+  let creationUncertain = false;
   const writable = () =>
     !closed &&
     !!confirmed &&
@@ -97,6 +132,12 @@ export function createSidebarPreferencesStore(
     readFailure === undefined &&
     !snapshot.cached &&
     !!writeOrder;
+  const renameWritable = () =>
+    !closed &&
+    !!confirmed &&
+    readFailure === undefined &&
+    !snapshot.cached &&
+    !!renameSection;
   const withPendingMoves = (data: SidebarPreferences): SidebarPreferences => {
     let sections = data.sections;
     const assignments = { ...data.assignments };
@@ -106,15 +147,20 @@ export function createSidebarPreferencesStore(
       else {
         starred.delete(channelId);
         const created = destination.createSection;
-        if (created && !sections.some(({ id }) => id === created.id))
-          sections = [
-            ...sections,
-            {
-              ...created,
-              name: created.name.trim(),
-              order: Math.max(-1, ...sections.map(({ order }) => order)) + 1,
-            },
-          ];
+        if (created && !sections.some(({ id }) => id === created.id)) {
+          const section = {
+            id: created.id,
+            name: created.name.trim(),
+            order:
+              created.position === "first"
+                ? Math.min(0, ...sections.map(({ order }) => order)) - 1
+                : Math.max(-1, ...sections.map(({ order }) => order)) + 1,
+          };
+          sections =
+            created.position === "first"
+              ? [section, ...sections]
+              : [...sections, section];
+        }
         const target = created?.id ?? destination.sectionId;
         if (target) assignments[channelId] = target;
         else delete assignments[channelId];
@@ -157,6 +203,46 @@ export function createSidebarPreferencesStore(
     return next;
   };
 
+  let nextFilterMutation = 0;
+  const latestFilter = new Map<string, number>();
+  const failedFilters = new Map<string, FilterFailure>();
+  const pendingFilters = new Map<
+    number,
+    {
+      group: string;
+      mode: SidebarFilterMode;
+      activeWindowSeconds?: number | null;
+    }
+  >();
+  const withFilter = (
+    filters: Readonly<Record<string, SidebarFilterMode>>,
+    group: string,
+    mode: SidebarFilterMode,
+  ) => {
+    const next = { ...filters };
+    if (mode === "all") delete next[group];
+    else next[group] = mode;
+    return next;
+  };
+  const withPendingFilters = (
+    filters: Readonly<Record<string, SidebarFilterMode>>,
+  ) => {
+    let next = filters;
+    for (const pending of pendingFilters.values())
+      next = withFilter(next, pending.group, pending.mode);
+    return next;
+  };
+
+  const withPendingWindows = () => {
+    const windows = { ...confirmed?.activeWindowSeconds };
+    for (const pending of pendingFilters.values()) {
+      if (pending.activeWindowSeconds === null) delete windows[pending.group];
+      else if (pending.activeWindowSeconds !== undefined)
+        windows[pending.group] = pending.activeWindowSeconds;
+    }
+    return windows;
+  };
+
   const retained = (data: SidebarPreferences): SidebarPreferences =>
     Object.freeze({
       sections: Object.freeze(
@@ -166,11 +252,18 @@ export function createSidebarPreferencesStore(
       starred: Object.freeze([...data.starred]),
       muted: Object.freeze([...data.muted]),
       ...(data.sort ? { sort: Object.freeze({ ...data.sort }) } : {}),
+      ...(data.filters ? { filters: Object.freeze({ ...data.filters }) } : {}),
+      ...(data.activeWindowSeconds
+        ? {
+            activeWindowSeconds: Object.freeze({ ...data.activeWindowSeconds }),
+          }
+        : {}),
     });
   const publish = (next: Snapshot) => {
     const {
       moves: _moves,
       sortErrors: _errors,
+      filterErrors: _filterErrors,
       orderError: _order,
       ...state
     } = next;
@@ -188,6 +281,9 @@ export function createSidebarPreferencesStore(
       ...state,
       ...(failedSorts.size
         ? { sortErrors: Object.freeze([...failedSorts.values()]) }
+        : {}),
+      ...(failedFilters.size
+        ? { filterErrors: Object.freeze([...failedFilters.values()]) }
         : {}),
       ...(moves.length ? { moves: Object.freeze(moves) } : {}),
       ...(failedOrder ? { orderError: failedOrder } : {}),
@@ -214,11 +310,18 @@ export function createSidebarPreferencesStore(
             ...(readTransient ? { transient: true as const } : {}),
           }),
       data: retained(
-        withPendingMoves(
-          pendingSorts.size
-            ? { ...confirmed, sort: withPendingSorts(confirmed.sort ?? {}) }
-            : confirmed,
-        ),
+        withPendingMoves({
+          ...confirmed,
+          ...(pendingSorts.size
+            ? { sort: withPendingSorts(confirmed.sort ?? {}) }
+            : {}),
+          ...(pendingFilters.size
+            ? {
+                filters: withPendingFilters(confirmed.filters ?? {}),
+                activeWindowSeconds: withPendingWindows(),
+              }
+            : {}),
+        }),
       ),
     });
   };
@@ -232,39 +335,54 @@ export function createSidebarPreferencesStore(
     }
     if (active) return active.promise;
     const controller = new AbortController();
-    const refreshMutation = mutation;
+    const requestedMutation = mutation;
     const job = { controller, promise: Promise.resolve() };
     active = job;
     job.promise = Promise.resolve().then(async () => {
       if (closed || controller.signal.aborted) return;
+      const current = () =>
+        !closed && !controller.signal.aborted && active === job;
       try {
-        const data = await read(controller.signal);
-        if (
-          closed ||
-          controller.signal.aborted ||
-          active !== job ||
-          mutation !== refreshMutation
-        )
-          return;
-        readFailure = undefined;
-        confirmed = data;
-        project();
-      } catch (error) {
-        if (
-          !closed &&
-          !controller.signal.aborted &&
-          active === job &&
-          mutation === refreshMutation
-        ) {
-          readFailure = error instanceof Error ? error.message : String(error);
-          readTransient = isTransientFailure(error);
-          const { transient: _transient, ...rest } = snapshot;
-          publish({
-            ...rest,
-            status: "error",
-            error: readFailure,
-            ...(readTransient ? { transient: true as const } : {}),
-          });
+        while (current()) {
+          // Other preference families share the queue. Read after they settle,
+          // and repeat if a write admitted during the read invalidates it.
+          if (creationUncertain) await writeQueue;
+          if (!current()) return;
+          const refreshMutation = creationUncertain
+            ? mutation
+            : requestedMutation;
+          try {
+            const data = await (creationUncertain ? readAfterWrite : read)(
+              controller.signal,
+            );
+            if (!current()) return;
+            if (mutation !== refreshMutation) {
+              if (creationUncertain) continue;
+              return;
+            }
+            readFailure = undefined;
+            creationUncertain = false;
+            confirmed = data;
+            project();
+            return;
+          } catch (error) {
+            if (!current()) return;
+            if (mutation !== refreshMutation) {
+              if (creationUncertain) continue;
+              return;
+            }
+            readFailure =
+              error instanceof Error ? error.message : String(error);
+            readTransient = isTransientFailure(error);
+            const { transient: _transient, ...rest } = snapshot;
+            publish({
+              ...rest,
+              status: "error",
+              error: readFailure,
+              ...(readTransient ? { transient: true as const } : {}),
+            });
+            return;
+          }
         }
       } finally {
         if (active === job) active = undefined;
@@ -295,6 +413,7 @@ export function createSidebarPreferencesStore(
   ): Promise<SidebarPreferences> {
     if (
       !writable() ||
+      (creationUncertain && "createSection" in destination) ||
       !snapshot.data ||
       !confirmed ||
       !write ||
@@ -326,6 +445,8 @@ export function createSidebarPreferencesStore(
       .then(async () => {
         try {
           check();
+          if (creationUncertain && "createSection" in destination)
+            throw new Error("Section creation is unavailable");
           const starring = "starred" in destination;
           // Always check the fresh assignment head on removal, even if cached
           // placement has no assignment. Another device may have changed it.
@@ -419,6 +540,19 @@ export function createSidebarPreferencesStore(
         if (!confirmed)
           throw new Error("Sidebar section removal is unavailable");
         confirmed = { ...confirmed, sort };
+        if (writeFilter) {
+          const settings = await writeFilter(
+            group,
+            "all",
+            confirmed.sections.map(({ id }) => id),
+            writeSignal,
+            null,
+          );
+          if (closed || generation !== writeGeneration || !confirmed)
+            throw new Error("Sidebar section removal is unavailable");
+          writeSignal.throwIfAborted();
+          confirmed = { ...confirmed, ...settings };
+        }
         mutation++;
         project();
         const next = await removeSection(sectionId, writeSignal);
@@ -431,6 +565,7 @@ export function createSidebarPreferencesStore(
           sections: next.sections,
           assignments: next.assignments,
         };
+        failedFilters.delete(group);
         project();
         return retained(confirmed);
       })
@@ -478,6 +613,14 @@ export function createSidebarPreferencesStore(
         rows(data.starred, "starred"),
         rows(data.muted, "muted"),
         { version: 1, groups: data.sort ?? {} },
+        undefined,
+        data.filters === undefined && data.activeWindowSeconds === undefined
+          ? undefined
+          : {
+              version: 1,
+              groups: data.filters ?? {},
+              activeWindowSeconds: data.activeWindowSeconds,
+            },
       );
       // Display-only: do not initialize the confirmed mutation base from disk.
       publish({
@@ -527,14 +670,52 @@ export function createSidebarPreferencesStore(
           removeSection(sectionId, signal),
         );
       },
+      get sectionRenameWritable() {
+        return renameWritable();
+      },
+      renameSection(sectionId: string, name: string) {
+        if (!renameWritable() || !renameSection)
+          return Promise.reject(new Error("Section rename is unavailable"));
+        return writeGroups("Section rename is unavailable", (signal) =>
+          renameSection({ sectionId, name }, signal),
+        );
+      },
       get sectionCreationWritable() {
-        return writable() && !snapshot.cached && !!createSection;
+        return (
+          writable() &&
+          !creationUncertain &&
+          !snapshot.cached &&
+          !!(createSection || write)
+        );
       },
       createSection(section: Readonly<{ id: string; name: string }>) {
-        if (!writable() || snapshot.cached || !createSection)
-          return Promise.reject(new Error("Projects are unavailable"));
-        return writeGroups("Projects are unavailable", (signal) =>
-          createSection(section, signal),
+        const failure = groupsOnly
+          ? "Workspaces are unavailable"
+          : "Section creation is unavailable";
+        const create =
+          createSection ??
+          (write
+            ? (
+                section: Readonly<{ id: string; name: string }>,
+                signal: AbortSignal,
+              ) => write({ createSection: section }, signal)
+            : undefined);
+        if (!writable() || creationUncertain || snapshot.cached || !create)
+          return Promise.reject(new Error(failure));
+        const writeGeneration = generation;
+        return writeGroups(failure, (signal) => create(section, signal)).catch(
+          async (error) => {
+            if (!closed && generation === writeGeneration) {
+              // The relay may have accepted the creation. Reconcile before
+              // the form can discard its ID, without replaying the write or
+              // joining a read that began before publication.
+              active?.controller.abort();
+              active = undefined;
+              creationUncertain = true;
+              await refresh();
+            }
+            throw error;
+          },
         );
       },
       get sectionOrderWritable() {
@@ -679,6 +860,105 @@ export function createSidebarPreferencesStore(
         );
         return run;
       },
+      dismissFilterError(group: string) {
+        failedFilters.delete(group);
+        publish(snapshot);
+      },
+      get filterWritable() {
+        return (
+          !closed &&
+          !!writeFilter &&
+          !!confirmed &&
+          readFailure === undefined &&
+          !snapshot.cached
+        );
+      },
+      setFilter(
+        group: string,
+        mode: SidebarFilterMode,
+        sectionIds: readonly string[],
+        signal?: AbortSignal,
+        activeWindowSeconds?: number | null,
+      ) {
+        if (
+          closed ||
+          !writeFilter ||
+          !confirmed ||
+          readFailure !== undefined ||
+          snapshot.cached
+        )
+          return Promise.reject(
+            new Error("Sidebar filtering is read-only in this host"),
+          );
+        const writeGeneration = generation;
+        const writeSignal = AbortSignal.any([
+          writeLifetime.signal,
+          ...(signal ? [signal] : []),
+        ]);
+        if (writeSignal.aborted) return Promise.reject(writeSignal.reason);
+        const id = ++nextFilterMutation;
+        pendingFilters.set(id, {
+          group,
+          mode,
+          ...(activeWindowSeconds === undefined ? {} : { activeWindowSeconds }),
+        });
+        latestFilter.set(group, id);
+        failedFilters.delete(group);
+        mutation++;
+        project();
+        const settle = (settings?: SidebarFilterSettings) => {
+          if (closed || generation !== writeGeneration || !confirmed) return;
+          confirmed = {
+            ...confirmed,
+            ...(settings ?? {}),
+          };
+          pendingFilters.delete(id);
+          project();
+        };
+        const run = writeQueue
+          .catch(() => {})
+          .then(async () => {
+            if (closed || generation !== writeGeneration)
+              throw new Error("Sidebar filtering is unavailable");
+            try {
+              writeSignal.throwIfAborted();
+              const settings = await writeFilter(
+                group,
+                mode,
+                sectionIds,
+                writeSignal,
+                activeWindowSeconds,
+              );
+              if (closed || generation !== writeGeneration)
+                throw new Error("Sidebar filtering is unavailable");
+              writeSignal.throwIfAborted();
+              mutation++;
+              settle(settings);
+              return settings;
+            } catch (error) {
+              if (!closed && generation === writeGeneration) {
+                mutation++;
+                if (!writeSignal.aborted && latestFilter.get(group) === id)
+                  failedFilters.set(group, {
+                    group,
+                    mode,
+                    ...(activeWindowSeconds === undefined
+                      ? {}
+                      : { activeWindowSeconds }),
+                    error:
+                      error instanceof Error ? error.message : String(error),
+                  });
+              }
+              settle();
+              throw error;
+            }
+          });
+        writeQueue = run.then(
+          () => undefined,
+          () => undefined,
+        );
+        return run;
+      },
       get muteWritable() {
         return !!writeMute && !snapshot.cached;
       },
@@ -734,7 +1014,7 @@ export function createSidebarPreferencesStore(
       },
       createAndAssign(
         channelId: string,
-        section: { id: string; name: string },
+        section: NonNullable<SidebarAssignmentIntent["createSection"]>,
         signal?: AbortSignal,
       ) {
         return move(channelId, { createSection: section }, signal);
@@ -783,6 +1063,9 @@ export function createSidebarPreferencesStore(
       pendingSorts.clear();
       latestSort.clear();
       failedSorts.clear();
+      pendingFilters.clear();
+      latestFilter.clear();
+      failedFilters.clear();
       readFailure = undefined;
       pendingMoves.clear();
       failedMoves.clear();
@@ -804,6 +1087,9 @@ export function createSidebarPreferencesStore(
       pendingSorts.clear();
       latestSort.clear();
       failedSorts.clear();
+      pendingFilters.clear();
+      latestFilter.clear();
+      failedFilters.clear();
       readFailure = undefined;
       pendingMoves.clear();
       failedMoves.clear();

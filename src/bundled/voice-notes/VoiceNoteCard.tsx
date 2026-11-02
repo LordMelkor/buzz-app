@@ -1,10 +1,12 @@
-import { useMediaCorners } from "../../features/messages/use-media-corners";
+import { useMediaReadRecovery } from "../../features/messages/use-media-read-recovery";
 import { useMediaElementSource } from "../../features/messages/use-media-element-source";
+import { MediaDownloadAction } from "../../features/messages/MediaDownloadAction";
+import { AttachmentDownloadContext } from "../../features/messages/AttachmentDownloadContext";
 import { Button } from "../../shared/design-system/ui/Button";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { claimAudio, releaseAudio } from "../../shared/audio-playback";
 import { useConversationPresentation } from "../../features/conversation/ConversationPresentation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import {
   WarningCircleIcon as AlertCircle,
   CircleNotchIcon as LoaderCircle,
@@ -24,6 +26,7 @@ import styles from "./VoiceNotes.module.css";
 const BAR_KEYS = Array.from({ length: 64 }, (_, index) => `bar-${index}`);
 type Props = {
   source: string;
+  downloadName?: string | undefined;
   duration?: number;
   waveform?: readonly number[];
   onRemove?: () => void;
@@ -31,11 +34,14 @@ type Props = {
 
 export function VoiceNoteCard(props: Props) {
   const media = useMediaElementSource(props.source);
+  const received = useContext(AttachmentDownloadContext);
   return (
     <Player
       key={props.source}
       {...props}
+      downloadName={received ? props.downloadName : undefined}
       source={media.src}
+      downloadSource={props.source}
       unavailable={media.unavailable}
     />
   );
@@ -44,16 +50,17 @@ export function VoiceNoteCard(props: Props) {
 /** Loads only after Play; metadata waveforms do not fetch or decode each chat clip. */
 function Player({
   source,
+  downloadSource,
+  downloadName,
   unavailable,
   duration: taggedDuration = 0,
   waveform,
   onRemove,
 }: Omit<Props, "source"> & {
   source: string | undefined;
+  downloadSource: string;
   unavailable: boolean;
 }) {
-  const corners = useMediaCorners();
-  const playCorners = useMediaCorners();
   const audio = useRef<HTMLAudioElement>(null);
   const active = useConversationPresentation();
   useEffect(() => {
@@ -74,6 +81,18 @@ function Player({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [rate, setRate] = useState(1);
+  const { recover: recoverMedia, cancel: cancelMedia } = useMediaReadRecovery(
+    active ? source : undefined,
+    () => {
+      setError(true);
+      setLoading(false);
+      setPlaying(false);
+    },
+    () => {
+      setError(false);
+      setLoading(false);
+    },
+  );
   const peaks = waveform?.length
     ? waveformPeaks(Float32Array.from(waveform.slice(0, 100)), count)
     : Array.from({ length: count }, () => 0);
@@ -133,11 +152,13 @@ function Player({
     if (!element || !source) return;
     const operation = ++attempt.current;
     if (loading || !element.paused) {
+      cancelMedia();
       element.pause();
       setLoading(false);
       return;
     }
     claimAudio(element, () => {
+      cancelMedia();
       attempt.current++;
       element.pause();
       setLoading(false);
@@ -149,7 +170,7 @@ function Player({
       await element.play();
       if (attempt.current === operation) setLoading(false);
     } catch {
-      if (attempt.current === operation) {
+      if (attempt.current === operation && !recoverMedia(element)) {
         setLoading(false);
         releaseAudio(element);
         setError(true);
@@ -157,19 +178,12 @@ function Player({
     }
   }
   return (
-    <fieldset ref={corners} className={styles.card}>
+    <fieldset className={styles.card}>
       <legend className="sr-only">Voice note</legend>
-      <svg
-        className={styles.cardSurface}
-        data-image-outline=""
-        aria-hidden="true"
-      >
-        <path />
-      </svg>
-      <span ref={playCorners} className={styles.play}>
+      <span className={styles.play}>
         <IconButton
           type="button"
-          variant="solid"
+          variant="bare"
           disabled={!source}
           size="compact"
           style={{ width: "100%", height: "100%", borderRadius: "inherit" }}
@@ -265,6 +279,17 @@ function Player({
             : "Audio unavailable. Retry playback."}
         </span>
       )}
+      {downloadName !== undefined && !onRemove && (
+        <span className={styles.download}>
+          <MediaDownloadAction
+            source={downloadSource}
+            name={downloadName}
+            kind="voice note"
+            compact
+            savedDuration={10000}
+          />
+        </span>
+      )}
       {onRemove && (
         <span className={styles.remove}>
           <IconButton
@@ -309,6 +334,7 @@ function Player({
           paintProgress(0, duration);
         }}
         onError={(event) => {
+          if (recoverMedia(event.currentTarget)) return;
           setMetadataReady(false);
           releaseAudio(event.currentTarget);
           attempt.current++;

@@ -1,6 +1,7 @@
 import { Accordion as BaseAccordion } from "@base-ui/react/accordion";
 import { CaretDownIcon } from "../icons/index";
 import type { ReactNode } from "react";
+import { motion, useReducedMotion } from "motion/react";
 
 /** Accessible disclosure groups. Base UI owns expansion and keyboard behavior. */
 export function Accordion({
@@ -11,6 +12,7 @@ export function Accordion({
   variant = "default",
   headingLevel = 3,
   keepMounted = false,
+  animate = false,
 }: {
   items: readonly {
     value: string;
@@ -30,12 +32,16 @@ export function Accordion({
   headingLevel?: 2 | 3;
   /** Preserve local form state while its panel is collapsed. */
   keepMounted?: boolean;
+  /** Animate supporting detail panels; keyboard and reduced motion stay immediate. */
+  animate?: boolean;
 }) {
+  const reducedMotion = useReducedMotion();
   return (
     <BaseAccordion.Root
       data-buzz-ui=""
       className="buzz-accordion"
       data-variant={variant}
+      data-animate={animate || undefined}
       defaultValue={defaultValue}
       value={value}
       onValueChange={onValueChange}
@@ -66,8 +72,38 @@ export function Accordion({
               <CaretDownIcon size={14} aria-hidden="true" />
             </BaseAccordion.Trigger>
           </BaseAccordion.Header>
-          <BaseAccordion.Panel className="buzz-accordion-panel">
-            {variant === "settings" ? (
+          <BaseAccordion.Panel
+            className="buzz-accordion-panel"
+            render={
+              animate
+                ? (props, state) => {
+                    // Modality is a document attribute, not React state; read
+                    // it as each panel changes so keyboard toggles stay instant.
+                    const instant =
+                      reducedMotion ||
+                      (typeof document !== "undefined" &&
+                        document.documentElement.hasAttribute(
+                          "data-keyboard-navigation",
+                        ));
+                    return (
+                      <div {...props}>
+                        <motion.div
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: state.open ? 1 : 0 }}
+                          transition={{
+                            duration: instant ? 0 : 0.22,
+                            ease: [0.645, 0.045, 0.355, 1],
+                          }}
+                        >
+                          {props.children}
+                        </motion.div>
+                      </div>
+                    );
+                  }
+                : undefined
+            }
+          >
+            {variant === "settings" || animate ? (
               <div className="buzz-accordion-content">{item.content}</div>
             ) : (
               item.content

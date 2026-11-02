@@ -4,12 +4,14 @@ import "./shared/styles/globals.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createServices } from "./app/services";
+import { loadAgentStorage } from "./features/agents/state";
 import { App } from "./app/App";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/inter/wght-italic.css";
 import "@fontsource/jetbrains-mono/400.css";
 import { useKeyboardFocusVisibility } from "./shared/design-system/useKeyboardFocusVisibility";
 import { useRejectUnclaimedDrops } from "./features/messages/use-file-drop";
+import { TooltipProvider } from "./shared/design-system/ui/Tooltip";
 
 const container = document.getElementById("root");
 
@@ -17,22 +19,30 @@ if (!container) {
   throw new Error('Missing <div id="root"> in index.html');
 }
 
-const services = createServices();
-const root = createRoot(container);
-function HostApp() {
-  useKeyboardFocusVisibility();
-  useRejectUnclaimedDrops();
-  return <App services={services} />;
-}
-root.render(
-  <StrictMode>
-    <HostApp />
-  </StrictMode>,
-);
+// Agent storage is read before any service, since its reads are synchronous.
+// It settles, with localStorage at worst, so the window always starts.
+void loadAgentStorage().finally(() => {
+  const services = createServices();
+  const root = createRoot(container);
+  function HostApp() {
+    useKeyboardFocusVisibility();
+    useRejectUnclaimedDrops();
+    return (
+      <TooltipProvider>
+        <App services={services} />
+      </TooltipProvider>
+    );
+  }
+  root.render(
+    <StrictMode>
+      <HostApp />
+    </StrictMode>,
+  );
 
-if (import.meta.hot) {
-  import.meta.hot.dispose(() => {
-    root.unmount();
-    void services.dispose().catch(console.error);
-  });
-}
+  if (import.meta.hot) {
+    import.meta.hot.dispose(() => {
+      root.unmount();
+      void services.dispose().catch(console.error);
+    });
+  }
+});

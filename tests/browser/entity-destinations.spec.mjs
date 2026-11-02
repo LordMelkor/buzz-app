@@ -7,7 +7,7 @@ test.use({ historyCounts: { alpha: 1, beta: 1 } });
 // Browser-only: rendered message links enter the actual plugin, focus the
 // destination, preserve history, and keep its tab/file controls usable when narrow.
 // Protocol matrices and real authenticated Git RPC live in colocated tests.
-test("entity links open real project content, history and responsive controls", async ({
+test("entity links open real repository content, history and responsive controls", async ({
   page,
   app,
   browserName,
@@ -23,19 +23,6 @@ test("entity links open real project content, history and responsive controls", 
         ["d", "reader"],
         ["name", "Reader"],
         ["buzz-related-channel", "alpha"],
-      ],
-    },
-    key,
-  );
-  const project = finalizeEvent(
-    {
-      kind: 30621,
-      created_at: 1,
-      content: "The Reader project",
-      tags: [
-        ["d", "reader-project"],
-        ["name", "Reader project"],
-        ["a", `30617:${owner}:reader`],
       ],
     },
     key,
@@ -102,14 +89,13 @@ test("entity links open real project content, history and responsive controls", 
       if (
         filters.some(
           (filter) =>
-            filter.kinds?.some((kind) => [30617, 30621].includes(kind)) ||
+            filter.kinds?.some((kind) => [30617].includes(kind)) ||
             filter["#a"]?.some((address) => address.includes(owner)) ||
-            filter["#e"]?.includes(repo.id) ||
-            filter["#e"]?.includes(project.id),
+            filter["#e"]?.includes(repo.id),
         )
       ) {
         return route.fulfill({
-          json: [repo, project].filter((event) =>
+          json: [repo].filter((event) =>
             filters.some(
               (filter) =>
                 (!filter.kinds || filter.kinds.includes(event.kind)) &&
@@ -126,13 +112,12 @@ test("entity links open real project content, history and responsive controls", 
     return route.fallback();
   });
   await open(page, app);
-  const href = `buzz://project?owner=${owner}&d=reader-project`;
-  app.append("primary", "alpha", `[Reader project](${href})`);
+  const href = `buzz://repo?owner=${owner}&d=reader`;
+  app.append("primary", "alpha", `[Reader](${href})`);
   await page.locator(`[data-channel-timeline] a[href="${href}"]`).click();
   await expect(
-    page.getByRole("heading", { name: "Reader project", exact: true }),
+    page.getByRole("heading", { name: "Reader", exact: true }),
   ).toBeFocused();
-  await page.getByRole("button", { name: "Reader", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Reader documentation" }),
   ).toBeVisible();
@@ -173,12 +158,12 @@ test("entity links open real project content, history and responsive controls", 
     ).toBeVisible();
     expect(
       await page
-        .locator(".projects-page")
+        .locator(".repos-page")
         .evaluate((el) => el.scrollWidth <= el.clientWidth),
     ).toBe(true);
     // The shared list owns horizontal scrolling. A second scroll container on
     // the strip would clip its focus-ring reservation and let tabs drift upward.
-    const list = page.getByRole("tablist", { name: "Project sections" });
+    const list = page.getByRole("tablist", { name: "Repository sections" });
     const strip = list.locator("..");
     await expect
       .poll(() =>

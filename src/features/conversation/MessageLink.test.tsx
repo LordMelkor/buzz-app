@@ -19,8 +19,8 @@ import { MessageLink, resolveLink } from "./MessageLink";
 import { createRelaySession } from "../relay/session";
 import { matchesEvent } from "../relay/projection";
 import { keypair, signed } from "../relay/testing";
-import { SESSION_NAMED_LABEL, sessionDescription } from "../sessions/metadata";
-import { sessionLinkMessage } from "../sessions/share";
+import { SOLO_NAMED_LABEL, SOLO_LABEL } from "../solo/labels";
+import { soloChatLinkMessage } from "../solo/share";
 import { MessageMarkdown } from "../messages/MessageMarkdown";
 import { ConversationPresentation } from "./ConversationPresentation";
 import { LinkThreadTabContext } from "./LinkLabelContext";
@@ -346,8 +346,8 @@ it("a signed chosen rename repaints the session card without changing authored l
     relay = keypair();
   let clock = 100,
     name = "First prompt",
-    labels: string[][] = [],
-    about = sessionDescription();
+    labels: string[][] = [["t", SOLO_LABEL]],
+    about = "";
   const record = (kind: number, tags: string[][]) =>
     signed(relay, {
       kind,
@@ -408,8 +408,9 @@ it("a signed chosen rename repaints the session card without changing authored l
         {label}
       </MessageLink>,
     );
+    // An unnamed chat shows its starting title, not the authored short ID.
     const anchor = screen.getByRole("link", {
-      name: `Open Session: ${id.slice(0, 8)}`,
+      name: "Open Chat: First prompt",
     });
     anchor.focus();
     const base = await owner.session.channelDetails.load(id);
@@ -421,12 +422,12 @@ it("a signed chosen rename repaints the session card without changing authored l
     );
     expect(
       await screen.findByRole("link", {
-        name: "Open Session: Accessible contrast",
+        name: "Open Chat: Accessible contrast",
       }),
     ).toBe(anchor);
     expect(anchor).toHaveFocus();
     expect(owner.session.channels.list().channels[0]?.labels).toContain(
-      SESSION_NAMED_LABEL,
+      SOLO_NAMED_LABEL,
     );
     expect(anchor).toHaveAttribute("data-link-label", label);
     expect(publish).not.toHaveBeenCalled();
@@ -436,7 +437,7 @@ it("a signed chosen rename repaints the session card without changing authored l
   }
 });
 
-it.each(["Session · 12345678", "Session: PR 45 fixes"])(
+it.each(["Session · 12345678", "Session: PR 45 fixes", "Chat: PR 45 fixes"])(
   "renders sent session labels as cards without membership: %s",
   (label) => {
     render(
@@ -450,10 +451,12 @@ it.each(["Session · 12345678", "Session: PR 45 fixes"])(
       </MessageLink>,
     );
     const link = screen.getByRole("link", {
-      name: `Open Session: ${label.replace(/^Session(?::| ·)\s+/, "")}`,
+      name: `Open Chat: ${label.replace(/^(?:Session|Chat)(?::| ·)\s+/, "")}`,
     });
-    expect(link.querySelector("svg.tabler-icon-file-text")).toBeInTheDocument();
-    expect(link).toHaveTextContent("Session:");
+    expect(
+      link.querySelector("svg.tabler-icon-message-circle"),
+    ).toBeInTheDocument();
+    expect(link).toHaveTextContent("Chat:");
   },
 );
 
@@ -465,7 +468,7 @@ it("shows escaped chosen names faithfully when only the sent label is available"
         id: "message",
         channelId: "channel",
         authorId: "author",
-        content: sessionLinkMessage("session", name),
+        content: soloChatLinkMessage("session", name),
         createdAt: 1,
         mentions: [],
         attachments: [],
@@ -478,6 +481,6 @@ it("shows escaped chosen names faithfully when only the sent label is available"
     />,
   );
   expect(
-    screen.getByRole("link", { name: `Open Session: ${name}` }),
+    screen.getByRole("link", { name: `Open Chat: ${name}` }),
   ).toHaveTextContent(name);
 });

@@ -16,6 +16,7 @@ import type { RelaySession } from "../relay/session";
 import type { ThreadSnapshot } from "../relay/threads";
 import type { MessageComposerProps } from "./MessageComposer";
 import type { MessageRowProps } from "./MessageRow";
+import { DayDivider } from "./MessageTimestamp";
 import { ThreadPanel } from "./ThreadPanel";
 
 vi.mock("./use-reading", () => ({
@@ -34,6 +35,7 @@ vi.mock("./MessageRow", () => ({
     compactAvatar,
     stackPrevious,
     stackNext,
+    day,
   }: MessageRowProps) => (
     <article
       data-message-id={row.id}
@@ -42,6 +44,7 @@ vi.mock("./MessageRow", () => ({
       data-stack-next={stackNext || undefined}
       data-compact-avatar={compactAvatar}
     >
+      {day && <DayDivider createdAt={row.createdAt} />}
       <span>{row.content}</span>
       <a href="https://example.com">Link in {row.content}</a>
       <button type="button" onClick={() => onReply?.(row.id)}>
@@ -100,6 +103,14 @@ function row(id: string, replyParentId?: string): ChannelMessage {
     participants: [],
     replyCount: 0,
   };
+}
+/** The top-level branch panel a displayed reply sits in. */
+function branchOf(text: string) {
+  const branch = screen
+    .getByText(text)
+    .closest('[data-depth="0"]') as HTMLElement | null;
+  if (!branch) throw new Error(`${text} is not in a branch`);
+  return branch;
 }
 function setup(messageId = "root") {
   let snapshot: ThreadSnapshot = {
@@ -163,7 +174,7 @@ function setup(messageId = "root") {
     },
   };
 }
-it("expands one level by keyboard, focuses the first child, and never offers re-collapse", async () => {
+it("expands a one-level branch by keyboard and focuses the first child", async () => {
   setup();
   const user = userEvent.setup();
   const expand = screen.getByRole("button", { name: "View 2 replies" });
@@ -171,13 +182,58 @@ it("expands one level by keyboard, focuses the first child, and never offers re-
   await user.keyboard("{Enter}");
   expect(screen.getByText("child").closest("article")).toHaveFocus();
   expect(expand).not.toBeInTheDocument();
-  expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
-  screen.getByRole("button", { name: "View 1 reply" }).focus();
-  await user.keyboard("{Enter}");
-  expect(screen.getByText("grandchild").closest("article")).toHaveFocus();
+  // A reply to a nested reply continues the branch instead of nesting again.
+  expect(screen.getByText("grandchild")).toBeInTheDocument();
   expect(
-    screen.queryByRole("button", { name: /Hide replies|Collapse/ }),
+    screen.queryByRole("button", { name: /^View \d+ repl/ }),
   ).not.toBeInTheDocument();
+});
+
+it("collapses an open branch from its thread line, reopens it and collapses again", async () => {
+  setup();
+  const user = userEvent.setup();
+  for (let pass = 0; pass < 2; pass++) {
+    await user.click(screen.getByRole("button", { name: "View 2 replies" }));
+    expect(screen.getByText("child")).toBeVisible();
+    const collapse = screen.getByRole("button", { name: "Collapse 2 replies" });
+    expect(collapse).toHaveAttribute("aria-expanded", "true");
+    await user.click(collapse);
+    expect(screen.queryByText("child")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "View 2 replies" }),
+    ).toHaveFocus();
+  }
+});
+
+it("collapsing one branch leaves its open sibling branch open", () => {
+  const h = setup();
+  h.update([
+    row("parent", "root"),
+    row("child", "parent"),
+    row("other", "root"),
+    row("nephew", "other"),
+  ]);
+  for (const view of screen.getAllByRole("button", { name: "View 1 reply" }))
+    fireEvent.click(view);
+  const [collapse] = screen.getAllByRole("button", {
+    name: "Collapse 1 reply",
+  });
+  if (collapse) fireEvent.click(collapse);
+  expect(screen.queryByText("child")).not.toBeInTheDocument();
+  expect(screen.getByText("nephew")).toBeVisible();
+});
+
+it("moves focus from a removed collapse control to its branch's message, then the history", async () => {
+  const h = setup();
+  fireEvent.click(screen.getByRole("button", { name: "View 2 replies" }));
+  screen.getByRole("button", { name: "Collapse 2 replies" }).focus();
+  await act(async () => h.update([row("parent", "root")]));
+  expect(screen.getByText("parent").closest("article")).toHaveFocus();
+
+  h.update([row("parent", "root"), row("child", "parent")]);
+  screen.getByRole("button", { name: "Collapse 1 reply" }).focus();
+  await act(async () => h.update([]));
+  expect(screen.getByLabelText("Thread messages")).toHaveFocus();
 });
 it("retains expansion and parent identity through live zero-to-one child transitions", () => {
   const h = setup();
@@ -199,6 +255,56 @@ it("retains expansion and parent identity through live zero-to-one child transit
     screen.queryByRole("button", { name: "View 1 reply" }),
   ).not.toBeInTheDocument();
 });
+it.each([
+  { childDay: 20, peerDay: 20, closedDays: [], openDays: [] },
+  {
+    childDay: 20,
+    peerDay: 21,
+    closedDays: ["2026-10-21"],
+    openDays: ["2026-10-21"],
+  },
+  {
+    childDay: 21,
+    peerDay: 20,
+    closedDays: [],
+    openDays: ["2026-10-21", "2026-10-20"],
+  },
+  {
+    childDay: 21,
+    peerDay: 21,
+    closedDays: ["2026-10-21"],
+    openDays: ["2026-10-21"],
+  },
+])(
+  "uses visible message dates around a reply branch (child $childDay, peer $peerDay)",
+  async ({ childDay, peerDay, closedDays, openDays }) => {
+    const h = setup();
+    const at = (day: number, minute: number) =>
+      new Date(2026, 9, day, 13, minute).getTime() / 1000;
+    h.setRoot({ ...row("root"), createdAt: at(20, 25) });
+    h.update([
+      { ...row("parent", "root"), createdAt: at(20, 28) },
+      { ...row("child", "parent"), createdAt: at(childDay, 29) },
+      { ...row("peer", "root"), createdAt: at(peerDay, 30) },
+    ]);
+    const days = () =>
+      Array.from(document.querySelectorAll("[data-day]"), (divider) =>
+        divider.getAttribute("data-day"),
+      );
+    expect(screen.queryByText("child")).not.toBeInTheDocument();
+    expect(days()).toEqual(closedDays);
+    // A reply summary still separates bubble groups, even within the same day.
+    expect(screen.getByText("peer").closest("article")).toHaveAttribute(
+      "data-layout",
+      "thread",
+    );
+    const expand = screen.getByRole("button", { name: "View 1 reply" });
+    expand.focus();
+    await userEvent.setup().keyboard("{Enter}");
+    expect(screen.getByText("child").closest("article")).toHaveFocus();
+    expect(days()).toEqual(openDays);
+  },
+);
 it("targets a child, cancels on repeated Reply, resets after send and reveals the own branch", () => {
   const h = setup();
   fireEvent.click(screen.getByRole("button", { name: "Reply to parent" }));
@@ -215,6 +321,37 @@ it("targets a child, cancels on repeated Reply, resets after send and reveals th
   expect(screen.getByText("new")).toBeVisible();
   expect(composer).not.toHaveAttribute("data-parent");
   expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+});
+it("continues a branch when replying to a nested reply", () => {
+  const h = setup();
+  fireEvent.click(screen.getByRole("button", { name: "View 2 replies" }));
+  fireEvent.click(screen.getByRole("button", { name: "Reply to child" }));
+  expect(screen.getByLabelText("Composer")).toHaveAttribute(
+    "data-parent",
+    "child",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Send fixture reply" }));
+  h.update([
+    row("parent", "root"),
+    row("child", "parent"),
+    row("grandchild", "child"),
+    row("new", "child"),
+  ]);
+  const branch = branchOf("new");
+  expect(branch).toBe(branchOf("child"));
+  for (const id of ["child", "grandchild", "new"])
+    expect(screen.getByText(id).closest("[data-depth]")).toHaveAttribute(
+      "data-depth",
+      "1",
+    );
+  expect(
+    [...branch.querySelectorAll<HTMLElement>("[data-message-id]")].map(
+      (row) => row.dataset.messageId,
+    ),
+  ).toEqual(["parent", "child", "grandchild", "new"]);
+  expect(
+    screen.queryByRole("button", { name: /^View \d+ repl/ }),
+  ).not.toBeInTheDocument();
 });
 it("keeps a reply target chosen while a background send is still publishing", () => {
   setup();
@@ -240,6 +377,18 @@ it("reveals all available ancestors for a selected descendant, including late hi
   expect(
     screen.queryByText("Earlier reply unavailable in loaded history."),
   ).not.toBeInTheDocument();
+  // A deep reply whose chain arrives late still lands in the top-level branch.
+  h.update([
+    row("missing", "root"),
+    row("grandchild", "missing"),
+    row("deeper", "grandchild"),
+  ]);
+  expect(screen.getByText("deeper")).toBeVisible();
+  expect(branchOf("deeper")).toBe(branchOf("grandchild"));
+  expect(screen.getByText("missing").closest("[data-depth]")).toHaveAttribute(
+    "data-depth",
+    "0",
+  );
 });
 it("does not silently retarget a deleted parent to the root", () => {
   const h = setup();

@@ -1,3 +1,9 @@
+import { ModelDiscoveryRecovery } from "../../features/agents/ModelDiscoveryRecovery";
+import activityStyles from "../../features/agents/ActivityLayout.module.css";
+import { formatItemTimestamp } from "../../shared/datetime";
+import { InlineHeader } from "../../shared/design-system/ui/Header";
+import { IconButton } from "../../shared/design-system/ui/IconButton";
+import { ArrowsClockwiseIcon } from "../../shared/design-system/icons";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
 import { AgentSaveButton } from "../../features/agents/AgentSaveButton";
 import { ProviderDialogActions } from "../../features/agents/ProviderDialogActions";
@@ -10,13 +16,13 @@ import {
   useSyncExternalStore,
 } from "react";
 import { ActivityTranscript } from "../../features/agents/ActivityTranscript";
-import type { Transcript } from "../../features/agents/activity-transcript";
 import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
 import { Accordion } from "../../shared/design-system/ui/Accordion";
 import { ModelPicker } from "../../features/agents/ModelPicker";
 import {
+  ConversationName,
   OpenedConversation,
   useOpenedSession,
   useOpenTranscript,
@@ -44,16 +50,16 @@ import {
 import type { ClaudeModel } from "./claude";
 import type { ClaudeSetup } from "./setup";
 import type { ClaudeDefaults } from "./defaults";
-import { TURN_LIMIT } from "./transcript";
+import { type ClaudeTranscript, TURN_LIMIT } from "./transcript";
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
 const label = ({ channelId, name, root }: SavedConversation) =>
-  `${name ? `#${name}` : channelId.slice(0, 8)} · ${root ? `thread ${root.slice(0, 8)}` : "channel"}`;
+  `${name || channelId.slice(0, 8)} · ${root ? `thread ${root.slice(0, 8)}` : "channel"}`;
 const CONVERSATION_LIMIT = 30;
 type Read =
-  | { status: "ready"; transcript: Transcript & { more: boolean } }
+  | { status: "ready"; transcript: ClaudeTranscript }
   | { status: "missing" }
   | { status: "error"; error: string };
 
@@ -282,6 +288,7 @@ function ClaudeSetupPanel({
                     description="If the browser shows a code to paste, enter it here."
                   >
                     <Input
+                      autoFocus
                       disabled={disabled}
                       value={code}
                       onValueChange={setCode}
@@ -398,16 +405,71 @@ export function createTabs({
   }
 
   /** Claude Code installation and account readiness on this computer. */
-  function ProviderDialogBody({ onClose }: { onClose(): void }) {
-    const defaultsForm = useId();
+  function DefaultControl({ onConfigure }: { onConfigure(): void }) {
     const state = useSetupCatalog();
-    const savedDefaults = useSyncExternalStore(
+    const saved = useSyncExternalStore(
       defaults.subscribe,
       defaults.snapshot,
       defaults.snapshot,
     );
-    const [draftDefault, setDraftDefault] = useState(savedDefaults.model);
-    const [defaultError, setDefaultError] = useState("");
+    const [error, setError] = useState("");
+    return (
+      <>
+        <ModelDiscoveryRecovery
+          error={state.modelsError}
+          loading={state.modelsChecking}
+          retry={() => void setup.loadModels(true)}
+        >
+          <ModelPicker
+            includeDefault={false}
+            resetLabel="Use Claude default"
+            compact
+            groupByFamily
+            label="Claude default model"
+            models={modelChoices(state.models).map((choice) => ({
+              ...choice,
+              efforts: (() => {
+                const model = state.models.find(
+                  (item) => item.value === choice.id,
+                );
+                const levels = model ? effortChoices(effortLevels(model)) : [];
+                return levels.length
+                  ? [{ id: "", label: "Automatic" }, ...levels]
+                  : [];
+              })(),
+            }))}
+            effort={saved.effort ?? ""}
+            effortLabel={saved.effort ? effortLabel(saved.effort) : "Automatic"}
+            onEffortChange={(model, effort) => {
+              defaults.save({ model, effort }).then(
+                () => setError(""),
+                (reason) => setError(String(reason)),
+              );
+            }}
+            value={
+              saved.model
+                ? (providerDefaultModel(saved.model, state.models) ??
+                  saved.model)
+                : ""
+            }
+            defaultModel={providerDefaultModel("", state.models)}
+            defaultLabel={providerDefaultLabel("", state.models)}
+            onConfigure={onConfigure}
+            onChange={(model) => {
+              defaults.save({ model }).then(
+                () => setError(""),
+                (reason) => setError(String(reason)),
+              );
+            }}
+          />
+        </ModelDiscoveryRecovery>
+        {error && <span role="alert">{error}</span>}
+      </>
+    );
+  }
+
+  function ProviderDialogBody({ onClose }: { onClose(): void }) {
+    const state = useSetupCatalog();
     const [code, setCode] = useState("");
     const status = state.status;
     const ready = status?.state === "ready" && !state.checking;
@@ -431,22 +493,6 @@ export function createTabs({
           : status?.state === "signed-out"
             ? ({ step: "login", label: "Sign in" } as const)
             : undefined;
-    const nativeModel = state.models.find(
-      (candidate) => candidate.value === "default",
-    );
-    const nativeName = nativeModel?.resolvedModel
-      ? resolvedModelName(nativeModel.resolvedModel)
-      : undefined;
-    const nativeLabel = nativeName ? `${nativeName} · Default` : "Default";
-    const listed = modelChoices(state.models);
-    // A saved default Claude has not listed (yet) stays selectable.
-    const defaultChoices =
-      draftDefault && !listed.some((choice) => choice.id === draftDefault)
-        ? [
-            ...listed,
-            { id: draftDefault, label: resolvedModelName(draftDefault) },
-          ]
-        : listed;
     const latestOutputLine = state.output
       .replaceAll("\r", "\n")
       .split("\n")
@@ -532,97 +578,18 @@ export function createTabs({
             </p>
           )}
         </div>
-        <form
-          id={defaultsForm}
-          className="grid gap-3"
-          hidden={!ready}
-          onSubmit={(event) => {
-            event.preventDefault();
-            setDefaultError("");
-            try {
-              defaults.save({ model: draftDefault });
-            } catch (error) {
-              setDefaultError(message(error));
-              return;
-            }
-            onClose();
-          }}
-        >
-          <Select
-            label="Default model"
-            variant="preference"
-            value={draftDefault}
-            groups={[
-              {
-                label: "",
-                options: [
-                  {
-                    value: "",
-                    label: nativeLabel,
-                    description: nativeModel
-                      ? "Following Claude Code's recommendation"
-                      : undefined,
-                  },
-                  ...defaultChoices.map(({ id, ...copy }) => ({
-                    value: id,
-                    ...copy,
-                  })),
-                ],
-              },
-            ]}
-            disabled={state.modelsChecking}
-            valueLabel={
-              state.modelsChecking
-                ? "Loading models…"
-                : draftDefault
-                  ? undefined
-                  : nativeName
-            }
-            valueSuffix={
-              !state.modelsChecking && !draftDefault && nativeName
-                ? " · Default"
-                : undefined
-            }
-            {...(state.modelsError
-              ? { error: `Couldn't load Claude's models: ${state.modelsError}` }
-              : {})}
-            onValueChange={setDraftDefault}
-          />
-          {state.modelsError && (
-            <div>
-              <Button
-                variant="ghost"
-                onClick={() => void setup.loadModels(true)}
-              >
-                Try again
-              </Button>
-            </div>
-          )}
-          {defaultError && (
-            <p role="alert" className="buzz-field-error">
-              {defaultError}
-            </p>
-          )}
-        </form>
+        {ready && (
+          <p className="m-0 text-body-sm text-subtle">Claude is signed in.</p>
+        )}
         <ProviderDialogActions>
           <Button
             onClick={() =>
               state.running && !ready ? void setup.cancel() : onClose()
             }
           >
-            Cancel
+            {ready ? "Done" : "Cancel"}
           </Button>
-          {ready ? (
-            <Button
-              type="submit"
-              form={defaultsForm}
-              variant="prominent"
-              disabled={draftDefault === savedDefaults.model}
-              focusableWhenDisabled
-            >
-              Save defaults
-            </Button>
-          ) : action && !state.running && !state.checking ? (
+          {!ready && action && !state.running && !state.checking && (
             <Button
               autoFocus
               variant="prominent"
@@ -630,7 +597,7 @@ export function createTabs({
             >
               {action.label}
             </Button>
-          ) : null}
+          )}
         </ProviderDialogActions>
       </div>
     );
@@ -673,17 +640,25 @@ export function createTabs({
       return () => abort.abort();
     }, [conversation, workspace, working, attempt]);
     return (
-      <div className="grid gap-4">
-        <div>
-          <Button
-            type="button"
-            variant="ghost"
-            loading={loading}
-            onClick={() => setAttempt((value) => value + 1)}
-          >
-            Refresh
-          </Button>
-        </div>
+      <div className={activityStyles.transcript}>
+        <InlineHeader
+          title="Transcript"
+          actions={
+            <IconButton
+              hint="familiar"
+              aria-label="Refresh transcript"
+              title="Refresh transcript"
+              loading={loading}
+              onClick={() => setAttempt((value) => value + 1)}
+              icon={<ArrowsClockwiseIcon size="1rem" aria-hidden="true" />}
+            />
+          }
+        />
+        {read && loading && (
+          <span role="status" className="sr-only">
+            Refreshing transcript…
+          </span>
+        )}
         {!read ? (
           <p role="status" className="m-0">
             Reading the Claude session…
@@ -703,11 +678,22 @@ export function createTabs({
             agentName={agent.name}
             state={() => (working ? "working" : undefined)}
             before={
-              read.transcript.more && (
-                <p className="m-0 text-body-sm text-subtle">
-                  Showing the latest {TURN_LIMIT} turns.
-                </p>
-              )
+              <>
+                {read.transcript.incomplete && (
+                  <p role="status" className="m-0 text-body-sm">
+                    Some of this conversation’s sessions may be missing. Refresh
+                    to try again.{" "}
+                    <span className="text-subtle">
+                      ({read.transcript.incomplete.split("\n")[0]})
+                    </span>
+                  </p>
+                )}
+                {read.transcript.more && (
+                  <p className="m-0 text-body-sm text-subtle">
+                    Showing the latest {TURN_LIMIT} turns.
+                  </p>
+                )}
+              </>
             }
           />
         )}
@@ -720,15 +706,19 @@ export function createTabs({
   function ActivityTab({
     agent,
     conversation,
+    initialTranscript,
+    close,
   }: {
     agent: AgentViewProps<Config>["agent"];
     conversation?: AgentViewProps<Config>["conversation"];
+    initialTranscript?: AgentViewProps<Config>["initialTranscript"];
+    close?: AgentViewProps<Config>["close"];
   }) {
     const sessions = useSyncExternalStore(
       (listener) => runtime.subscribe(listener),
-      () => runtime.sessions(agent.pubkey),
+      () => runtime.sessions(agent.key),
     );
-    const conversations = runtime.conversations(agent.pubkey);
+    const conversations = runtime.conversations(agent.key);
     const busy = new Map(
       sessions.map((session) => [session.key, session.busy]),
     );
@@ -737,8 +727,11 @@ export function createTabs({
       session: here,
       searching,
       error: lookupError,
-    } = useOpenedSession(conversations, conversation, (place, signal) =>
-      runtime.find(agent.pubkey, place, workspace, signal),
+    } = useOpenedSession(
+      conversations,
+      conversation,
+      (place, signal) => runtime.find(agent.key, place, workspace, signal),
+      (channelId) => runtime.channelLabel(agent.key, channelId),
     );
     const recent = conversations
       .filter((item) => item.key !== here?.key)
@@ -747,9 +740,14 @@ export function createTabs({
       const running = busy.get(key);
       return running === undefined ? undefined : running ? "Working" : "Idle";
     };
-    const { open, show, back } = useOpenTranscript(conversation, label);
+    const { open, show, back } = useOpenTranscript(
+      conversation,
+      label,
+      initialTranscript && { initial: here, searching, ...initialTranscript },
+      close,
+    );
     return (
-      <div className="grid gap-4">
+      <div className={activityStyles.activity}>
         {conversation && (
           <OpenedConversation
             conversation={conversation}
@@ -761,38 +759,53 @@ export function createTabs({
             onView={() => here && show(here)}
           />
         )}
-        <section className="grid gap-1">
-          <h3 className="m-0 text-body">Recent conversations</h3>
-          {recent.length ? (
-            <ul className="m-0 grid list-none gap-2 p-0">
-              {recent.map((item) => (
-                <li
-                  key={item.key}
-                  className="flex items-center justify-between gap-2"
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate">{label(item)}</span>
-                    <span className="block text-body-sm text-subtle">
-                      {[activity(item.key), new Date(item.at).toLocaleString()]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </span>
-                  </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => show(item)}
-                  >
-                    View transcript
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="m-0 text-body-sm text-subtle">
-              None. A conversation's session starts when the agent is mentioned.
-            </p>
-          )}
+        <section className={activityStyles.section}>
+          <InlineHeader title="Recent conversations" />
+          <SettingsGroup layout="form">
+            {recent.length ? (
+              <ul className={activityStyles.list}>
+                {recent.map((item) => (
+                  <li key={item.key} className={activityStyles.entry}>
+                    <div className={activityStyles.row}>
+                      <span className={activityStyles.copy}>
+                        <ConversationName
+                          session={item}
+                          title={label(item)}
+                          className="text-label-sm"
+                        />
+                        <span className="block text-body-sm text-subtle">
+                          {[
+                            item.root
+                              ? `Thread ${item.root.slice(0, 8)}`
+                              : "Channel",
+                            activity(item.key),
+                            formatItemTimestamp(item.at / 1000, {
+                              withTime: true,
+                            }),
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                      </span>
+                      <Button
+                        type="button"
+                        variant="subtle"
+                        size="sm"
+                        aria-label={`View transcript: ${label(item)}`}
+                        onClick={() => show(item)}
+                      >
+                        View transcript
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="m-0 text-body-sm text-subtle">
+                No other conversations saved in this app yet.
+              </p>
+            )}
+          </SettingsGroup>
         </section>
         {open && (
           <PanelSubview
@@ -801,6 +814,7 @@ export function createTabs({
             onBack={back}
           >
             <TranscriptView
+              key={open.key}
               agent={agent}
               conversation={open}
               working={busy.get(open.key) ?? false}
@@ -981,6 +995,7 @@ export function createTabs({
     CreateModel,
     Create,
     ProviderDialogBody,
+    DefaultControl,
     SettingsTab,
     ActivityTab,
   };

@@ -1,3 +1,8 @@
+/* Resolve control aliases on the same surface as its nested affordance roles. */
+[data-composer-surface] {
+  @apply interaction-panel;
+}
+
 .buzz-composer {
   box-sizing: border-box;
   display: flex;
@@ -10,7 +15,7 @@
   border: 1px solid var(--border-standard);
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow-xs);
-  background: var(--surface-panel);
+  background: var(--surface-composer);
   color: var(--text-standard);
 }
 

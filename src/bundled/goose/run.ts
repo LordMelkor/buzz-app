@@ -1,6 +1,6 @@
 // The part of the goose agent type that runs agents, without its views.
 import type { AgentType } from "../../features/agents/service";
-import type { Config, GooseRuntime } from "./runtime";
+import { type Config, config, type GooseRuntime } from "./runtime";
 import { syncedSettingsSchema, withSyncedSettings } from "./settings";
 
 /** A turn's run returns once goose has it, so this bounds only the hand-over. */
@@ -11,8 +11,19 @@ export const gooseRun = (
   runtime: GooseRuntime,
 ): Pick<
   AgentType<Config>,
-  "run" | "runOnce" | "timeoutMs" | "syncedSettings"
+  | "sessionControls"
+  | "run"
+  | "runOnce"
+  | "timeoutMs"
+  | "syncedSettings"
+  | "resumes"
 > => ({
+  sessionControls: {
+    scope: (agent) => config(agent.config).scope,
+    state: (agent, place) => runtime.sessionState(agent, place),
+    run: (agent, place, action) => runtime.session(agent, place, action),
+    subscribe: (listener) => runtime.subscribe(listener),
+  },
   run: (delivery) => runtime.run(delivery),
   runOnce: (turn) => runtime.runOnce(turn),
   timeoutMs: HANDOVER_MS,
@@ -20,4 +31,7 @@ export const gooseRun = (
     schema: syncedSettingsSchema,
     withSynced: withSyncedSettings,
   },
+  // Closing or reloading the app stops its turns; each resumed one carries on
+  // in a new session shown what it already did in the conversation.
+  resumes: true,
 });

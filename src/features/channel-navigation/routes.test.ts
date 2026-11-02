@@ -1,30 +1,58 @@
 import { expect, it } from "vitest";
-import { isChannelRoute, newSessionParent } from "./routes";
+import type { JsonValue, OpenTarget } from "../navigation/targets";
+import { isChannelRoute, soloDraft, soloDraftTarget } from "./routes";
 
-it("accepts empty destinations, new-message and explicit parent-only new-session routes", () => {
-  expect(isChannelRoute("empty")).toBe(true);
-  expect(newSessionParent("empty")).toBeUndefined();
-  expect(isChannelRoute("new-message")).toBe(true);
-  const params = { kind: "new-session", parentId: "parent" };
-  expect(isChannelRoute(params)).toBe(true);
-  expect(newSessionParent(params)).toBe("parent");
+const viewer = "c".repeat(64);
+const scope = { viewer, communityOrigin: "https://relay.test" };
+const partition = `https://relay.test:${viewer}`;
+const agent = "a".repeat(64);
+const page = (
+  pluginId: string,
+  pageId: string,
+  params?: JsonValue,
+): OpenTarget => ({
+  version: 1,
+  kind: "page",
+  pluginId,
+  pageId,
+  scope,
+  ...(params === undefined ? {} : { route: { version: 1, params } }),
 });
-it("rejects missing parents, foreign route kinds and draft payloads", () => {
+
+it("accepts empty, new-message and Solo draft destinations", () => {
+  expect(isChannelRoute("empty")).toBe(true);
+  expect(isChannelRoute("new-message")).toBe(true);
+  expect(soloDraft({ kind: "solo-draft" })).toEqual({});
+  expect(soloDraft({ kind: "solo-draft", project: "p", agent })).toEqual({
+    project: "p",
+    agent,
+  });
+});
+
+it("rejects foreign route kinds and draft payloads", () => {
   for (const params of [
     null,
     [],
-    "new-session",
+    "solo-draft",
     // Inbox and Bestie are pages of their own, not Channels placeholders.
     "Inbox",
     "Bestie",
     {},
-    { kind: "new-session" },
-    { kind: "new-session", parentId: " " },
-    { kind: "new-session", parentId: 1 },
-    { kind: "other", parentId: "parent" },
-    { kind: "new-session", parentId: "parent", text: "private draft" },
+    { kind: "other" },
+    { kind: "solo-draft", project: "" },
+    { kind: "solo-draft", project: 1 },
+    { kind: "solo-draft", agent: "not-a-key" },
+    { kind: "solo-draft", text: "private draft" },
+    { kind: "solo-draft", linked: "invalid" },
   ]) {
     expect(isChannelRoute(params)).toBe(false);
-    expect(newSessionParent(params)).toBeUndefined();
+    expect(soloDraft(params)).toBeUndefined();
   }
+});
+
+it("builds Solo draft destinations in the community", () => {
+  expect(soloDraftTarget(partition, { agent })).toEqual(
+    page("buzz.channels", "channels", { kind: "solo-draft", agent }),
+  );
+  expect(() => soloDraftTarget("bad")).toThrow();
 });

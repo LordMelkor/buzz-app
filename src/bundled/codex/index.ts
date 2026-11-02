@@ -1,12 +1,16 @@
+import { CODEX_HOOK_EVENTS } from "./hook-bridge";
+import { repositoriesContext } from "../../features/communities/repositories";
 import { isTauri } from "@tauri-apps/api/core";
+import { pubkeyOf } from "../../features/agents/membership";
 import { ownerReads } from "../../features/agents/reads";
 import type { PluginModule } from "../../plugins/api";
 import { CodexLogoIcon } from "../../shared/design-system/icons";
-import { config, defaults, validWorkspace } from "./config";
+import { type Config, config, defaults, validWorkspace } from "./config";
 import { codexRun, TYPE_ID } from "./run";
 import { CodexRuntime } from "./runtime";
 import { CodexSetup, withScript } from "./setup";
 import { CodexProvider, createTabs } from "./tabs";
+import { readUsage } from "./usage";
 /** How often Buzz's copy of Codex looks for a new release. */
 const UPDATE_MS = 6 * 60 * 60_000;
 export const inject = ["agents", "host"];
@@ -15,22 +19,48 @@ export const apply: PluginModule["apply"] = (ctx) => {
   // `bash` and `base64`, which stock Windows lacks; no unusable type elsewhere.
   if (!isTauri() || !/Mac|Linux/i.test(navigator.platform)) return;
   const spawn = ctx.host.spawn && withScript(ctx.host.spawn.bind(ctx.host));
+  const readFile = ctx.host.readFile?.bind(ctx.host);
   const setup = new CodexSetup(spawn, (input) => ctx.host.request(input));
   const start =
     spawn ??
     (async () => {
       throw new Error("Codex agents run only in the desktop app");
     });
-  const providerController = new CodexProvider(start, localStorage, setup);
-  const runtime = new CodexRuntime(
+  const providerController = new CodexProvider(
     start,
-    (pubkey) => ownerReads(ctx.agents.relay(pubkey), pubkey),
-    (pubkey, signal) => ctx.agents.core(pubkey, signal),
-    localStorage,
-    (raw) => providerController.resolve(raw),
-    () => ctx.agents.tools(),
+    ctx.agents.storage,
+    setup,
   );
   const typeKey = `${ctx.pluginOwner?.id ?? "buzz.codex"}/${TYPE_ID}`;
+  const runtime = new CodexRuntime(
+    start,
+    (key) => ownerReads(ctx.agents.relay(key), pubkeyOf(key)),
+    (key, signal) => ctx.agents.core(key, signal),
+    ctx.agents.storage,
+    (raw) => providerController.resolve(raw),
+    () => ctx.agents.tools(),
+    repositoriesContext,
+    ctx.host.serveMcp
+      ? {
+          serve: ctx.host.serveMcp.bind(ctx.host),
+          run: async (agent, session, event, input) => {
+            return ((await ctx.agents.dispatchHook(
+              typeKey,
+              event,
+              input,
+              { agent, session },
+              {
+                accepts: (output) =>
+                  !!output &&
+                  typeof output === "object" &&
+                  Object.keys(output).length > 0,
+                milliseconds: event === "Interrupt" ? 2500 : 25000,
+              },
+            )) ?? {}) as Record<string, unknown>;
+          },
+        }
+      : undefined,
+  );
   /** A Codex agent is running, so Buzz's copy is needed; unknown until the
    * agents have loaded. */
   let needed: boolean | undefined;
@@ -80,10 +110,17 @@ export const apply: PluginModule["apply"] = (ctx) => {
     runtime.dispose();
     setup.dispose();
   });
-  const { Create, CreateModel, ProviderDialogBody, SettingsTab, ActivityTab } =
-    createTabs(providerController, runtime, start, setup);
-  ctx.agents.register({
+  const {
+    Create,
+    CreateModel,
+    DefaultControl,
+    ProviderDialogBody,
+    SettingsTab,
+    ActivityTab,
+  } = createTabs(providerController, runtime, start, setup);
+  ctx.agents.register<Config>({
     id: TYPE_ID,
+    hooks: { events: CODEX_HOOK_EVENTS },
     title: "Codex",
     icon: CodexLogoIcon,
     description:
@@ -91,6 +128,12 @@ export const apply: PluginModule["apply"] = (ctx) => {
     defaults: () => ({ config: { ...defaults } }),
     Create,
     CreateModel,
+    importShared: (source) =>
+      source.runtime === "codex" &&
+      (!source.provider || source.provider === "openai")
+        ? { ...defaults, model: source.model }
+        : undefined,
+    exportShared: (saved) => ({ runtime: "codex", model: config(saved).model }),
     adopt: (carry, saved) => ({
       ...saved,
       instructions: carry.instructions ?? saved.instructions,
@@ -126,11 +169,36 @@ export const apply: PluginModule["apply"] = (ctx) => {
     },
     migrationWarning: "Any commands Codex left running will stop.",
     summary: (agent) => config(agent.config).model || "Codex",
+    ...(spawn &&
+      readFile && {
+        usage: (agent, { since, signal }) =>
+          readUsage({ spawn, readFile }, agent, since, signal),
+      }),
     provider: {
       snapshot: providerController.snapshot,
       subscribe: providerController.subscribe,
       check: () => providerController.check(),
       DialogBody: ProviderDialogBody,
+      DefaultControl,
+    },
+    sessions: {
+      list: (key) => {
+        const views = new Map(
+          runtime.sessions(key).map((view) => [view.key, view.status]),
+        );
+        return runtime
+          .conversations(key)
+          .map(({ key, channelId, root, at }) => {
+            const status = views.get(key);
+            return {
+              channelId,
+              ...(root && { root }),
+              ...(at !== undefined && { at }),
+              ...(status && { status }),
+            };
+          });
+      },
+      subscribe: runtime.subscribe,
     },
     tabs: [
       {

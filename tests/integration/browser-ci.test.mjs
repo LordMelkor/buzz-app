@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { parse } from "yaml";
 import { imageEngines } from "../../scripts/check-browser-image.mjs";
@@ -29,15 +30,61 @@ const job = (name) => {
   return body;
 };
 const browser = job("browser");
-const matrixValues = (key) => {
-  const values = browser.match(
-    new RegExp(`^ {8}${key}: \\[([^\\]]+)\\]$`, "m"),
-  )?.[1];
-  assert.ok(values, `literal ${key} matrix must exist`);
-  return values.split(",").map((value) => value.trim());
+// Expand the browser matrix the way Actions does: engine × shard, minus
+// exclusions, with each engine's include supplying its shard denominator.
+const browserJobs = () => {
+  const {
+    engine,
+    shard,
+    exclude = [],
+    include = [],
+  } = parse(workflow).jobs.browser.strategy.matrix;
+  return engine.flatMap((name) => {
+    const { shards } = include.find((entry) => entry.engine === name) ?? {};
+    assert.ok(Number.isInteger(shards), `${name} must declare its shard total`);
+    const selected = shard.filter(
+      (n) =>
+        !exclude.some((entry) => entry.engine === name && entry.shard === n),
+    );
+    assert.deepEqual(
+      selected,
+      Array.from({ length: shards }, (_, i) => i + 1),
+      `${name} must run shards 1..${shards}`,
+    );
+    return selected.map((n) => ({ engine: name, shard: n, shards }));
+  });
 };
 
-test("Linux shards and macOS recording discover every functional test/project exactly once", (t) => {
+test("native protection produces upload evidence and preserves a failed test status", (t) => {
+  if (process.platform === "win32") return t.skip("macOS shell step");
+  const step = parse(workflow).jobs.agent_protection.steps.find(
+    (step) => step.name === "Native approval-state containment",
+  );
+  const root = mkdtempSync(join(tmpdir(), "buzz-native-evidence-"));
+  try {
+    mkdirSync(join(root, "bin"));
+    writeFileSync(
+      join(root, "bin/cargo"),
+      '#!/bin/sh\nprintf "kernel stdout\\n"\nprintf "kernel stderr\\n" >&2\nexit "$FIXTURE_CARGO_STATUS"\n',
+      { mode: 0o755 },
+    );
+    for (const code of [0, 19]) {
+      const result = spawnSync("/bin/bash", ["-e", "-c", step.run], {
+        cwd: root,
+        env: { ...process.env, FIXTURE_CARGO_STATUS: String(code) },
+      });
+      assert.equal(result.status, code, result.stderr?.toString());
+      assert.equal(
+        readFileSync(join(root, "test-results/protection/native.log"), "utf8"),
+        "kernel stdout\nkernel stderr\n",
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Linux shards and macOS recording discover every CI functional test/project exactly once", (t) => {
   const command = browser.match(
     /^ {8}run: .+ -- (\.\/bin\/pnpm test:browser:ci .+)$/m,
   )?.[1];
@@ -69,23 +116,24 @@ test("Linux shards and macOS recording discover every functional test/project ex
     "--project",
     "webkit",
     "--no-deps",
+    "--grep-invert",
+    "@classic-scrollbars|@local-only",
   ]);
   assert.ok(expected.length > 0);
   const actual = [];
-  for (const engine of matrixValues("engine")) {
-    for (const shard of matrixValues("shard")) {
-      // Exercise the actual workflow command, including its shard denominator.
-      const expanded = command
-        .replaceAll(/\$\{\{ matrix\.engine \}\}/g, engine)
-        .replaceAll(/\$\{\{ matrix\.shard \}\}/g, shard);
-      const selected = discover(
-        expanded.replace(/^\.\/bin\/pnpm /, "").split(/\s+/),
-      );
-      assert.ok(selected.length > 0, `${engine}/${shard} must select tests`);
-      assert.ok(selected.every((id) => id.startsWith(`${engine}:`)));
-      actual.push(...selected);
-      t.diagnostic(`${engine}/${shard}: ${selected.length} functional tests`);
-    }
+  for (const { engine, shard, shards } of browserJobs()) {
+    // Exercise the actual workflow command, including its shard denominator.
+    const expanded = command
+      .replaceAll(/\$\{\{ matrix\.engine \}\}/g, engine)
+      .replaceAll(/\$\{\{ matrix\.shard \}\}/g, shard)
+      .replaceAll(/\$\{\{ matrix\.shards \}\}/g, shards);
+    const selected = discover(
+      expanded.replace(/^\.\/bin\/pnpm /, "").split(/\s+/),
+    );
+    assert.ok(selected.length > 0, `${engine}/${shard} must select tests`);
+    assert.ok(selected.every((id) => id.startsWith(`${engine}:`)));
+    actual.push(...selected);
+    t.diagnostic(`${engine}/${shard}: ${selected.length} functional tests`);
   }
   const recording = parse(workflow).jobs.media_recorder.steps.find(
     (step) => step.name === "Recording journeys",
@@ -111,7 +159,7 @@ test("Linux shards and macOS recording discover every functional test/project ex
   assert.deepEqual(
     actual.sort(),
     expected.sort(),
-    "Linux and macOS must cover full local functional discovery",
+    "Linux and macOS must cover functional discovery without local-only cases",
   );
 });
 
@@ -176,7 +224,7 @@ test("classic-scrollbar cases run exactly once, after the measurements, without 
       .split("\n")
       .map((line) => line.trim())
       .sort(),
-    [measurementDir, classicDir].sort(),
+    [measurementDir, classicDir, "test-results/perf"].sort(),
   );
   // The tagged cases belong to this project alone: the engine shards above
   // exclude the tag, and this project selects nothing else.
@@ -226,7 +274,7 @@ test("required gate executes its real shell and rejects every unsuccessful lane"
   assert.doesNotMatch(required, /^ {8}if:/m);
   assert.match(
     required,
-    /^ {4}needs: \[javascript, native, measurements, browser_fixture, browser, media_recorder\]$/m,
+    /^ {4}needs: \[javascript, native, measurements, browser_fixture, browser, media_recorder, agent_protection\]$/m,
   );
   assert.doesNotMatch(required, /continue-on-error/);
   const lanes = [
@@ -236,6 +284,7 @@ test("required gate executes its real shell and rejects every unsuccessful lane"
     "FIXTURE",
     "BROWSER",
     "MEDIA_RECORDER",
+    "AGENT_PROTECTION",
   ];
   for (const lane of lanes)
     assert.ok(
@@ -295,8 +344,10 @@ test("setup calls pinned entry points and fails before caching an empty pnpm pat
   );
   const store = steps.find((step) => step.id === "pnpm");
   assert.ok(steps.indexOf(verify) < steps.indexOf(store));
-  assert.match(verify.run, /\.\/bin\/node --version/);
-  assert.match(verify.run, /\.\/bin\/pnpm --version/);
+  assert.deepEqual(verify.run.trim().split("\n"), [
+    "scripts/ci-retry.sh 3 120 ./bin/node --version",
+    "scripts/ci-retry.sh 3 120 ./bin/pnpm --version",
+  ]);
   assert.doesNotMatch(
     read(".github/actions/setup/action.yml"),
     /GITHUB_PATH|HERMIT_PREPEND_PATH/,
@@ -330,4 +381,83 @@ test("setup calls pinned entry points and fails before caching an empty pnpm pat
   assert.equal(readFileSync(output, "utf8"), "");
   assert.equal(execute("", "7").status, 7);
   assert.equal(readFileSync(output, "utf8"), "");
+});
+
+test("tool fetch retry ends stalled tries, retries failures and keeps the last status", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "buzz-ci-retry-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // Each call of the fake fetch acts out the next line of its plan. A stall
+  // leaves a grandchild holding the output pipes, as Hermit's download would.
+  const fetch = join(dir, "fetch");
+  writeFileSync(
+    fetch,
+    `#!/bin/bash
+n=$(( $(cat "$DIR/count" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$DIR/count"
+case "$(sed -n "\${n}p" "$DIR/plan")" in
+  ok) echo fetched ;;
+  fail) exit 101 ;;
+  stall) sleep 60 & wait ;;
+  deaf) trap '' TERM; sleep 60 & wait ;;
+  orphan) (trap '' TERM; exec sleep 60) & wait ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  const run = (plan, ...args) => {
+    writeFileSync(join(dir, "plan"), `${plan.join("\n")}\n`);
+    rmSync(join(dir, "count"), { force: true });
+    // spawnSync returns only once every holder of its pipes has exited, so a
+    // stalled try's grandchild that outlived its deadline would time it out.
+    const result = spawnSync(
+      "bash",
+      [
+        fileURLToPath(new URL("../../scripts/ci-retry.sh", import.meta.url)),
+        ...args,
+      ],
+      { env: { ...process.env, DIR: dir }, encoding: "utf8", timeout: 30_000 },
+    );
+    assert.equal(result.error, undefined);
+    let calls = 0;
+    try {
+      calls = Number(readFileSync(join(dir, "count"), "utf8"));
+    } catch {}
+    const warnings = result.stdout.match(/^::warning::.*$/gm) ?? [];
+    return { ...result, calls, warnings };
+  };
+
+  const recovered = run(["fail", "stall", "ok"], "3", "1", fetch);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(recovered.calls, 3);
+  assert.match(recovered.stdout, /^fetched$/m);
+  assert.match(recovered.stderr, /did not finish within 1 s/);
+  assert.deepEqual(recovered.warnings, [
+    `::warning::${fetch} failed with exit 101; starting try 2 of 3`,
+    `::warning::${fetch} failed with exit 124; starting try 3 of 3`,
+  ]);
+
+  const first = run(["ok", "fail"], "3", "1", fetch);
+  assert.equal(first.status, 0);
+  assert.equal(first.calls, 1);
+  assert.deepEqual(first.warnings, []);
+
+  const exhausted = run(["fail", "fail", "fail", "ok"], "3", "1", fetch);
+  assert.equal(exhausted.status, 101);
+  assert.equal(exhausted.calls, 3);
+  assert.equal(exhausted.warnings.length, 2);
+
+  // A try that ignores TERM is killed after the grace period.
+  const deaf = run(["deaf"], "1", "1", fetch);
+  assert.equal(deaf.status, 124);
+  assert.equal(deaf.calls, 1);
+  // A grandchild that ignores TERM is killed once the command exits on it.
+  const orphan = run(["orphan"], "1", "1", fetch);
+  assert.equal(orphan.status, 124);
+  assert.equal(orphan.calls, 1);
+
+  for (const args of [[], ["3", "1"], ["0", "1", fetch], ["3", "1s", fetch]]) {
+    const usage = run(["ok"], ...args);
+    assert.equal(usage.status, 2);
+    assert.equal(usage.calls, 0);
+  }
 });

@@ -1,3 +1,5 @@
+import { SidebarNavigation } from "../../../../src/shared/design-system/ui/SidebarNavigation";
+import { LoadingRegion } from "../../../../src/shared/design-system/ui/LoadingRegion";
 import { SettingsGroup } from "../../../../src/shared/design-system/ui/SettingsGroup";
 import { EmptyState } from "../../../../src/shared/design-system/ui/EmptyState";
 import { ExamplePreview } from "./ExamplePreview";
@@ -27,7 +29,11 @@ import {
   ComboboxExamples,
 } from "./FormSpecimens";
 import { ToastSpecimens } from "./ToastSpecimens";
-import { ButtonSpecimen, IconButtonSpecimen } from "./ButtonSpecimens";
+import {
+  ButtonSpecimen,
+  IconButtonSpecimen,
+  SplitButtonSpecimen,
+} from "./ButtonSpecimens";
 import { AlertDialog } from "../../../../src/shared/design-system/ui/AlertDialog";
 import { DialogSpecimens } from "./DialogSpecimens";
 import { Tooltip } from "../../../../src/shared/design-system/ui/Tooltip";
@@ -51,6 +57,7 @@ import {
   PlusIcon,
   SmileyIcon,
   SquaresFourIcon,
+  GlobeIcon,
 } from "../../../../src/shared/design-system/icons/index";
 import type { ReactNode } from "react";
 import { useId, useState } from "react";
@@ -62,12 +69,11 @@ import { KeyboardShortcut } from "../../../../src/shared/design-system/ui/Keyboa
 
 function ThemePickerSpecimen() {
   const [value, setValue] = useState<ThemeMode>("system");
-  return (
-    <ThemePicker value={value} onValueChange={setValue} messageColor="blue" />
-  );
+  return <ThemePicker value={value} onValueChange={setValue} />;
 }
 import { Switch } from "../../../../src/shared/design-system/ui/Switch";
 import { PreferenceRow } from "../../../../src/shared/design-system/ui/PreferenceRow";
+import { Select } from "../../../../src/shared/design-system/ui/Select";
 import { SwitchPreferenceRow } from "../../../../src/shared/design-system/ui/SwitchPreferenceRow";
 import { Accordion } from "../../../../src/shared/design-system/ui/Accordion";
 
@@ -78,7 +84,10 @@ import { TypingDots } from "../../../../src/shared/design-system/ui/TypingDots";
 import { InlineChip } from "../../../../src/shared/design-system/ui/InlineChip";
 import { Button } from "../../../../src/shared/design-system/ui/Button";
 import { IconButton } from "../../../../src/shared/design-system/ui/IconButton";
-import { NavigationItem } from "../../../../src/shared/design-system/ui/NavigationItem";
+import {
+  NavigationCard,
+  NavigationItem,
+} from "../../../../src/shared/design-system/ui/NavigationItem";
 import { NavigationSection } from "../../../../src/shared/design-system/ui/NavigationSection";
 import {
   PanelHeader,
@@ -297,7 +306,7 @@ function AvatarStackSpecimen() {
         shape="control"
         aria-label="Small agent activity"
       >
-        <AvatarStack items={items.slice(1, 2)} size="mini" />
+        <AvatarStack items={items.slice(1, 3)} size="mini" />
         <TypingDots size="small" />
       </Button>
       <Button
@@ -306,6 +315,19 @@ function AvatarStackSpecimen() {
       >
         <AvatarStack items={items} size="small" /> 4 replies
       </Button>
+      <Button variant="ghost" aria-label="Seven agents to import">
+        <AvatarStack
+          items={[
+            ...items,
+            { id: "dana", name: "Dana", shape: "squircle" },
+            { id: "eli", name: "Eli", shape: "squircle" },
+            { id: "fern", name: "Fern", shape: "squircle" },
+          ]}
+          size="hero"
+          max={5}
+        />
+      </Button>
+      <AvatarStack items={items} size="hero-large" max={5} animateEntrance />
     </div>
   );
 }
@@ -693,6 +715,9 @@ function FullPageSurfaceSpecimen() {
 function PanelSpecimen() {
   return (
     <div className="component-specimen-stack">
+      <Panel as="div" shape="capsule" aria-label="Capsule surface">
+        <div className="p-2">Shell control group</div>
+      </Panel>
       <SpecimenGroup
         label="Panel — the surface by itself"
         code={`<div className="w-full h-64 p-workspace-inset rounded-panel bg-app">
@@ -788,6 +813,28 @@ function TabsSpecimen() {
   }));
   return (
     <div className="component-specimen-stack">
+      <Tabs
+        label="Segmented filters"
+        variant="segmented"
+        value={panelDestination}
+        onValueChange={setPanelDestination}
+        items={DESTINATIONS}
+      />
+      <Tabs
+        label="Small segmented filters"
+        variant="segmented"
+        size="sm"
+        value={panelDestination}
+        onValueChange={setPanelDestination}
+        items={DESTINATIONS}
+      />
+      <Tabs
+        label="Icon segmented filters"
+        variant="segmented-icons"
+        value={panelDestination}
+        onValueChange={setPanelDestination}
+        items={iconItems}
+      />
       <Button
         disabled={!closable.includes("Thread")}
         onClick={() => {
@@ -1094,6 +1141,20 @@ function PanelHeaderSpecimen() {
         />
       </SpecimenGroup>
       <SpecimenGroup
+        label="Floating card — truncating identity without a separator"
+        code={
+          '<PanelHeader variant="card" title={<PanelHeaderLabel title="Agent name" />} actions={actions} />'
+        }
+      >
+        <PanelHeader
+          variant="card"
+          title={
+            <PanelHeaderLabel title="An agent with a long descriptive name" />
+          }
+          actions={actions}
+        />
+      </SpecimenGroup>
+      <SpecimenGroup
         label="Compact — title and IconButton action"
         code={`<PanelHeader variant="compact" title="Thread" actions={actions} />`}
       >
@@ -1158,9 +1219,64 @@ function NavigationSectionSpecimen() {
   );
 }
 
+function SidebarNavigationSpecimen() {
+  return (
+    <div className="component-specimen-stack">
+      <SpecimenGroup
+        label="Main’s compact sidebar appearance — one composition in every host"
+        code={`<SidebarNavigation>
+  <NavigationSection>
+    <NavigationItem label="community.example" />
+  </NavigationSection>
+  <NavigationSection label="Community">
+    <NavigationItem label="Messages" selected />
+    <NavigationItem label="Agents" />
+    <NavigationItem label="Unavailable" disabled />
+  </NavigationSection>
+  <NavigationSection label="App">
+    <NavigationItem label="Appearance" />
+  </NavigationSection>
+</SidebarNavigation>`}
+      >
+        <div className="component-navigation-section-demo">
+          <SidebarNavigation>
+            <NavigationSection>
+              <NavigationItem
+                label="community.example"
+                aria-label="Copy community URL, community.example"
+                icon={<GlobeIcon size={18} aria-hidden="true" />}
+              />
+            </NavigationSection>
+            <NavigationSection label="Community">
+              <NavigationItem
+                label="Messages"
+                selected
+                icon={<HashIcon size={16} />}
+              />
+              <NavigationItem label="Agents" icon={<HashIcon size={16} />} />
+              <NavigationItem
+                label="Unavailable"
+                disabled
+                icon={<HashIcon size={16} />}
+              />
+            </NavigationSection>
+            <NavigationSection label="App">
+              <NavigationItem
+                label="Appearance"
+                icon={<HashIcon size={16} />}
+              />
+            </NavigationSection>
+          </SidebarNavigation>
+        </div>
+      </SpecimenGroup>
+    </div>
+  );
+}
+
 function NavigationItemSpecimen() {
   const [selected, setSelected] = useState("buzz-design");
   const [selectedPill, setSelectedPill] = useState("Notes");
+  const [dropTarget, setDropTarget] = useState(false);
   return (
     <div className="component-specimen-stack">
       {/* Interactive: clicking moves `selected`, so the selected fill and the
@@ -1197,6 +1313,82 @@ function NavigationItemSpecimen() {
             selected={selected === "desktop-new"}
             onClick={() => setSelected("desktop-new")}
           />
+        </div>
+      </SpecimenGroup>
+      <SpecimenGroup
+        label="Card — multiline destination and independent detail action"
+        code={`<NavigationCard tone="tonal" footer={<Button size="sm">View details</Button>}>
+  <NavigationItem label="A destination with supporting text" multiline selected />
+</NavigationCard>`}
+      >
+        <div className="component-navigation-section-demo">
+          <NavigationCard
+            tone="tonal"
+            footer={<Button size="sm">View details</Button>}
+          >
+            <NavigationItem
+              label={
+                <>
+                  Session interaction model
+                  <br />
+                  <span className="text-body-sm text-metadata">
+                    Waiting for your review
+                  </span>
+                </>
+              }
+              multiline
+              selected={selected === "card"}
+              onClick={() => setSelected("card")}
+            />
+          </NavigationCard>
+        </div>
+      </SpecimenGroup>
+      <SpecimenGroup
+        label="Nested cards — hover takes priority over selected shading"
+        code={`<SidebarNavigation>
+<NavigationCard tone="inset" body={<NavigationCard tone="tonal">…</NavigationCard>}>
+  <NavigationItem label="Project Lead" />
+</NavigationCard>
+</SidebarNavigation>`}
+      >
+        <Button
+          size="sm"
+          aria-pressed={dropTarget}
+          onClick={() => setDropTarget(!dropTarget)}
+        >
+          Toggle drop destination
+        </Button>
+        <div className="component-navigation-section-demo">
+          <SidebarNavigation>
+            <NavigationCard
+              tone="inset"
+              data-drop-target={dropTarget || undefined}
+              body={
+                <>
+                  <NavigationCard tone="tonal">
+                    <NavigationItem
+                      label="Member task"
+                      selected={selected === "member"}
+                      onClick={() => setSelected("member")}
+                    />
+                  </NavigationCard>
+                  <NavigationCard tone="tonal">
+                    <NavigationItem
+                      label="Sibling task"
+                      selected={selected === "sibling"}
+                      onClick={() => setSelected("sibling")}
+                    />
+                  </NavigationCard>
+                </>
+              }
+            >
+              <NavigationItem
+                label="Project Lead"
+                selected={selected === "lead"}
+                onClick={() => setSelected("lead")}
+              />
+            </NavigationCard>
+          </SidebarNavigation>
         </div>
       </SpecimenGroup>
       <SpecimenGroup
@@ -1509,6 +1701,35 @@ function InlineChipSpecimen() {
       </SpecimenGroup>
 
       <SpecimenGroup
+        label="Resolving mention"
+        code={`<p className="text-body text-primary">
+  Ask{" "}
+  <InlineChip
+    address={{ kind: "agent", id: "pending-1" }}
+    face={{ label: "Example", loading: true, resolved: false }}
+    interactive={false}
+  />{" "}
+  while the recipient is still being decided.
+</p>`}
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-body text-primary">
+            Ask{" "}
+            <InlineChip
+              address={{ kind: "agent", id: "pending-1" }}
+              face={{ label: "Example", loading: true, resolved: false }}
+              interactive={false}
+            />{" "}
+            while the recipient is still being decided.
+          </p>
+          <p className="max-w-md text-body-sm text-tertiary">
+            The spinner sits in the sigil&apos;s box, so the chip does not move
+            when it settles into a recipient or back into text.
+          </p>
+        </div>
+      </SpecimenGroup>
+
+      <SpecimenGroup
         label="Long label truncates"
         code={`<div className="flex flex-wrap items-center gap-4">
   <InlineChip address={CHIP_LONG} />
@@ -1559,6 +1780,9 @@ function InlineChipSpecimen() {
     </div>
   );
 }
+
+const LONG_MODEL =
+  "claude-sonnet-5-5-extended-context-thinking-preview-2026-10";
 
 function SwitchSpecimen() {
   const [checked, setChecked] = useState(false);
@@ -1614,6 +1838,18 @@ function SwitchSpecimen() {
     <PreferenceRow
       title="Channels"
       trailing={<span className="text-body-sm text-subtle">Required</span>}
+    />
+    <PreferenceRow
+      title="Model"
+      trailing={
+        <Select
+          variant="compact"
+          label="Model"
+          value="long"
+          groups={[{ label: "", options: [{ value: "long", label: LONG_MODEL }] }]}
+          onValueChange={() => {}}
+        />
+      }
     />
   </div>
   <Switch
@@ -1682,6 +1918,24 @@ function SwitchSpecimen() {
             title="Channels"
             trailing={
               <span className="text-body-sm text-subtle">Required</span>
+            }
+          />
+          {/* A long value ellipsizes before the title loses its words. */}
+          <PreferenceRow
+            title="Model"
+            trailing={
+              <Select
+                variant="compact"
+                label="Model"
+                value="long"
+                groups={[
+                  {
+                    label: "",
+                    options: [{ value: "long", label: LONG_MODEL }],
+                  },
+                ]}
+                onValueChange={() => {}}
+              />
             }
           />
         </div>
@@ -1754,6 +2008,42 @@ function RadioGroupSpecimen() {
   const [enabled, setEnabled] = useState(false);
   return (
     <>
+      <SpecimenGroup
+        label="Compact choices"
+        code={`<Field label="Status">
+  <RadioGroup size="sm" defaultValue="any">
+    <Radio size="sm" value="any" label="Any status" />
+    <Radio size="sm" value="enabled" label="Enabled" />
+    <Radio size="sm" value="disabled" label="Disabled" disabled />
+  </RadioGroup>
+</Field>`}
+      >
+        <Field label="Status">
+          <RadioGroup size="sm" defaultValue="any">
+            <Radio size="sm" value="any" label="Any status" />
+            <Radio size="sm" value="enabled" label="Enabled" />
+            <Radio size="sm" value="disabled" label="Disabled" disabled />
+          </RadioGroup>
+        </Field>
+      </SpecimenGroup>
+      <SpecimenGroup
+        label="Text-only tiles"
+        code={`<Field label="Delivery" nativeLabel={false}>
+  <RadioGroup defaultValue="all">
+    <Radio value="all" label="All updates" variant="tile" />
+    <Radio value="mentions" label="Mentions only" variant="tile" />
+    <Radio value="none" label="Unavailable" variant="tile" disabled />
+  </RadioGroup>
+</Field>`}
+      >
+        <Field label="Delivery" nativeLabel={false}>
+          <RadioGroup defaultValue="all">
+            <Radio value="all" label="All updates" variant="tile" />
+            <Radio value="mentions" label="Mentions only" variant="tile" />
+            <Radio value="none" label="Unavailable" variant="tile" disabled />
+          </RadioGroup>
+        </Field>
+      </SpecimenGroup>
       <SpecimenGroup
         label="Native form reset"
         code={`<form aria-label="Notification preferences">
@@ -1870,20 +2160,58 @@ function RadioGroupSpecimen() {
   );
 }
 
+function LoadingRegionSpecimen() {
+  const [pending, setPending] = useState(false);
+  return (
+    <SpecimenFrame
+      code={`<LoadingRegion pending={pending} label="Refreshing…">
+  <Input aria-label="Existing name" defaultValue="Saved name" />
+</LoadingRegion>`}
+    >
+      <Button onClick={() => setPending((value) => !value)}>
+        {pending ? "Complete read" : "Begin read"}
+      </Button>
+      <LoadingRegion pending={pending} label="Refreshing…">
+        <Input aria-label="Existing name" defaultValue="Saved name" />
+      </LoadingRegion>
+      <LoadingRegion
+        pending={pending}
+        label="Refreshing quiet name…"
+        statusVisibility="screen-reader"
+      >
+        <Input aria-label="Quiet name" defaultValue="Saved name" />
+      </LoadingRegion>
+    </SpecimenFrame>
+  );
+}
+
 export const COMPONENT_SPECIMENS: Record<string, () => ReactNode> = {
+  "loading-region": LoadingRegionSpecimen,
   "alert-dialog": AlertDialogSpecimen,
   dialog: DialogSpecimens,
   toast: ToastSpecimens,
   tooltip: () => (
-    <SpecimenFrame
-      code={`<Tooltip content="Create a note">
+    <div className="component-specimen-stack">
+      <SpecimenFrame
+        code={`<Tooltip content="Create a note">
   <IconButton aria-label="Create note" icon={<PlusIcon size={16} />} />
 </Tooltip>`}
-    >
-      <Tooltip content="Create a note">
-        <IconButton aria-label="Create note" icon={<PlusIcon size={16} />} />
-      </Tooltip>
-    </SpecimenFrame>
+      >
+        <Tooltip content="Create a note">
+          <IconButton aria-label="Create note" icon={<PlusIcon size={16} />} />
+        </Tooltip>
+      </SpecimenFrame>
+      <SpecimenGroup
+        label="Pointer-attached hint — keeps the native cursor"
+        code={`<Tooltip follow="pointer" content="Copy">
+  <Button variant="ghost">community.example</Button>
+</Tooltip>`}
+      >
+        <Tooltip follow="pointer" content="Copy">
+          <Button variant="ghost">community.example</Button>
+        </Tooltip>
+      </SpecimenGroup>
+    </div>
   ),
   field: () => (
     <SpecimenFrame
@@ -1919,11 +2247,17 @@ export const COMPONENT_SPECIMENS: Record<string, () => ReactNode> = {
     <SpecimenFrame
       code={`<Checkbox label="Include a summary" />
 <Checkbox label="Some selected" indeterminate />
-<Checkbox label="Unavailable" disabled />`}
+<Checkbox label="Unavailable" disabled />
+<Checkbox size="sm" label="Compact choice" />
+<Checkbox size="sm" label="Compact mixed" indeterminate />
+<Checkbox size="sm" label="Compact unavailable" disabled />`}
     >
       <Checkbox label="Include a summary" />
       <Checkbox label="Some selected" indeterminate />
       <Checkbox label="Unavailable" disabled />
+      <Checkbox size="sm" label="Compact choice" />
+      <Checkbox size="sm" label="Compact mixed" indeterminate />
+      <Checkbox size="sm" label="Compact unavailable" disabled />
     </SpecimenFrame>
   ),
   "swap-workspace": PanelSwapPlaygrounds,
@@ -1931,6 +2265,7 @@ export const COMPONENT_SPECIMENS: Record<string, () => ReactNode> = {
   workspace: BentoSpecimen,
   button: ButtonSpecimen,
   "icon-button": IconButtonSpecimen,
+  "split-button": SplitButtonSpecimen,
   avatar: AvatarSpecimen,
   "avatar-stack": AvatarStackSpecimen,
   "shimmer-text": ShimmerTextSpecimen,
@@ -1997,6 +2332,7 @@ export const COMPONENT_SPECIMENS: Record<string, () => ReactNode> = {
   accordion: () => (
     <SpecimenFrame
       code={`<Accordion
+  animate
   items={[
     {
       value: "purpose",
@@ -2049,6 +2385,7 @@ export const COMPONENT_SPECIMENS: Record<string, () => ReactNode> = {
     >
       <InlineHeader title="Active section" />
       <Accordion
+        animate
         variant="section"
         items={[
           {
@@ -2183,6 +2520,7 @@ export const COMPONENT_SPECIMENS: Record<string, () => ReactNode> = {
   "panel-header": PanelHeaderSpecimen,
   "search-field": SearchExamples,
   composer: ComposerSpecimen,
+  "sidebar-navigation": SidebarNavigationSpecimen,
   "navigation-section": NavigationSectionSpecimen,
   "navigation-item": NavigationItemSpecimen,
 };

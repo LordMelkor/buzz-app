@@ -289,12 +289,16 @@ fn home_child() {
 #[test]
 fn human_identity_slots_stay_separate() {
     assert_eq!(HUMAN_ACCOUNT, "human");
+    assert_eq!(human_service(true), "xyz.block.buzz.desktop.identity.debug");
+    assert_eq!(human_service(false), "xyz.block.buzz.desktop.identity");
+    assert_eq!(HUMAN_SERVICE, human_service(cfg!(debug_assertions)));
     assert_eq!(
-        human_service(true),
+        human_store(true),
         "dev.local.buzz.foundation.identity.debug"
     );
-    assert_eq!(human_service(false), "dev.local.buzz.foundation.identity");
-    assert_eq!(HUMAN_SERVICE, human_service(cfg!(debug_assertions)));
+    assert_eq!(human_store(false), "dev.local.buzz.foundation.identity");
+    assert_eq!(HUMAN_STORE, human_store(cfg!(debug_assertions)));
+    assert_eq!(PREVIOUS_HUMAN_SERVICE, HUMAN_STORE);
 }
 
 #[test]
@@ -310,4 +314,85 @@ fn replace_overwrites_or_creates_under_the_shared_lock() {
         Err(Error::Busy)
     );
     assert_eq!(store.read().unwrap().as_slice(), b"second");
+}
+
+#[test]
+fn read_or_copy_copies_only_when_absent_and_returns_what_is_saved() {
+    use std::cell::RefCell;
+    let saved = RefCell::new(None);
+    let current = || Ok::<_, Error>(*saved.borrow());
+    // Nothing to copy: absence, never a stale value.
+    assert_eq!(read_or_copy(current, || Ok(())), Ok(None));
+    let copy = || {
+        *saved.borrow_mut() = Some("old");
+        Ok(())
+    };
+    assert_eq!(read_or_copy(current, copy), Ok(Some("old")));
+    // Saved under the current service: nothing is copied again.
+    *saved.borrow_mut() = Some("new");
+    assert_eq!(read_or_copy(current, || panic!("copied")), Ok(Some("new")));
+}
+
+#[test]
+fn read_or_copy_returns_failures_and_accepts_a_copy_another_app_made() {
+    let none = || Ok::<Option<&str>, Error>(None);
+    assert_eq!(
+        read_or_copy(
+            || Err::<Option<&str>, _>(Error::Denied),
+            || panic!("copied")
+        ),
+        Err(Error::Denied)
+    );
+    assert_eq!(
+        read_or_copy(none, || Err(Error::Denied)),
+        Err(Error::Denied)
+    );
+    // Another app saved it while this copy was refused: its key is read back.
+    let saved = std::cell::RefCell::new(None);
+    let raced = || {
+        *saved.borrow_mut() = Some("old");
+        Err(Error::Busy)
+    };
+    assert_eq!(read_or_copy(|| Ok(*saved.borrow()), raced), Ok(Some("old")));
+}
+
+#[test]
+fn copy_holds_the_previous_items_lock_so_deleting_it_waits() {
+    let root = tempfile::tempdir().unwrap();
+    let previous = Memory::default();
+    *previous.value.lock().unwrap() = Some(b"key".to_vec());
+    let added = Mutex::new(None);
+    copy_with(
+        root.path(),
+        SERVICE,
+        ACCOUNT,
+        || {
+            // A delete between the read and the write is refused, not lost.
+            assert_eq!(
+                delete_entry(&previous, root.path(), SERVICE, ACCOUNT),
+                Err(Error::Busy)
+            );
+            previous.read()
+        },
+        |value| {
+            *added.lock().unwrap() = Some(value.to_vec());
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(added.lock().unwrap().as_deref(), Some(&b"key"[..]));
+    // After the copy, the delete goes through.
+    delete_entry(&previous, root.path(), SERVICE, ACCOUNT).unwrap();
+    // Absent: nothing to add. Saved first by another copy: nothing to do.
+    let absent = || Err(Error::Absent);
+    copy_with(root.path(), SERVICE, ACCOUNT, absent, |_| panic!("added")).unwrap();
+    let saved = || Ok(Zeroizing::new(b"key".to_vec()));
+    copy_with(root.path(), SERVICE, ACCOUNT, saved, |_| {
+        Err(Error::Occupied)
+    })
+    .unwrap();
+    assert_eq!(
+        copy_with(root.path(), SERVICE, ACCOUNT, saved, |_| Err(Error::Denied)),
+        Err(Error::Denied)
+    );
 }

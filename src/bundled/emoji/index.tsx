@@ -1,3 +1,4 @@
+import { createGifShortcut } from "./gif-shortcut";
 import { EmojiCompletion } from "./EmojiCompletion";
 import { emojiQuery } from "./emoji-query";
 import type { PluginModule } from "../../plugins/api";
@@ -21,6 +22,17 @@ const entries = (content: InlineContent) =>
       : []
     : (content.message.emoji ?? []);
 export const apply: PluginModule["apply"] = (ctx) => {
+  const gifShortcut = createGifShortcut();
+  ctx.inject(["shortcuts"], (scope) => {
+    scope.shortcuts.register({
+      id: "gif-picker",
+      title: "Open GIF picker",
+      binding: { key: "g", mod: true },
+      allowInEditable: true,
+      when: gifShortcut.available,
+      run: gifShortcut.run,
+    });
+  });
   // Authoring needs a relay host; conversation-only hosts still get the palette.
   ctx.inject(["relay", "settingsCards"], (scope) => {
     const relay = scope.relay;
@@ -56,6 +68,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
       insertText,
     }: ComposerToolProps) => (
       <EmojiPicker
+        gifShortcut={gifShortcut}
         session={session}
         scope={scope}
         disabled={disabled}

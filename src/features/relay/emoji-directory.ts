@@ -1,18 +1,18 @@
+import { retryRead } from "./read-retry";
 import type { UploadedAttachment } from "./attachments";
 import { byteSize } from "./budget";
 import {
   EMOJI_SET,
   EMOJI_SET_KIND,
+  communityEmoji,
+  contentEmojiTags,
   emojiTags,
-  emojiMatches,
-  linkPart,
-  messageParts,
   normalizeShortcode,
   referencedEmoji,
   type CustomEmoji,
 } from "./emoji";
 import { eventDto, newer, type RelayEvent } from "./events";
-import type { RelayReader } from "./reader";
+import type { Priority, RelayReader } from "./reader";
 import type { RelayWriter } from "./transport";
 
 export type EmojiSnapshot = Readonly<{
@@ -24,7 +24,7 @@ export type EmojiSnapshot = Readonly<{
 }>;
 export type EmojiAuthoring = Readonly<{
   writer: RelayWriter;
-  upload(file: File, signal: AbortSignal): Promise<UploadedAttachment>;
+  upload?(file: File, signal: AbortSignal): Promise<UploadedAttachment>;
 }>;
 const LIMIT = 500;
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -44,8 +44,9 @@ export function createEmojiDirectory(
     limited = false;
   let controller: AbortController | undefined;
   let pending: Promise<void> | undefined;
+  let pendingPriority: Priority = "background";
   const lifetime = new AbortController();
-  let adding: Promise<unknown> = Promise.resolve();
+  let editing: Promise<unknown> = Promise.resolve();
   let snapshot: EmojiSnapshot = Object.freeze({
     status: "idle",
     entries: Object.freeze([]),
@@ -86,32 +87,25 @@ export function createEmojiDirectory(
       changed = true;
     }
     if (!changed) return;
-    const winners = new Map<string, { emoji: CustomEmoji; time: number }>();
-    for (const { event } of sets.values())
-      for (const emoji of emojiTags(event)) {
-        const old = winners.get(emoji.shortcode);
-        if (
-          !old ||
-          event.created_at > old.time ||
-          (event.created_at === old.time && emoji.url < old.emoji.url)
-        )
-          winners.set(emoji.shortcode, { emoji, time: event.created_at });
-      }
     publish({
       entries: Object.freeze(
-        [...winners.values()]
-          .map(({ emoji }) => emoji)
-          .sort((a, b) => a.shortcode.localeCompare(b.shortcode)),
+        communityEmoji([...sets.values()].map(({ event }) => event)),
       ),
       mine: viewer
         ? emojiTags(sets.get(viewer)?.event ?? { tags: [] })
         : snapshot.mine,
     });
   }
-  function refresh(): Promise<void> {
+  /** Passive demand yields to other reads. An explicit retry runs in the
+   * foreground and supersedes a passive load, which can spend its whole deadline
+   * queued behind background profile reads without reaching the relay. */
+  function load(priority: Priority): Promise<void> {
     if (closed) return Promise.resolve();
     requested = true;
-    if (pending) return pending;
+    if (pending && (priority === "background" || pendingPriority === priority))
+      return pending;
+    controller?.abort();
+    pendingPriority = priority;
     // Explicit recovery starts a new bounded read after overflow. Never expose a
     // partially retained set as ready; live replacements during this read still win.
     if (limited) {
@@ -121,24 +115,40 @@ export function createEmojiDirectory(
     }
     const owned = new AbortController();
     controller = owned;
-    publish({ status: "loading", error: undefined });
+    // A loaded catalog stays ready while it revalidates: sends keep their tags
+    // and pickers their custom category. Only a cold catalog shows loading.
+    if (snapshot.status !== "ready")
+      publish({ status: "loading", error: undefined });
+    else if (snapshot.error) publish({ error: undefined });
     pending = (async () => {
       try {
-        const events = await reader.read(
-          [{ kinds: [30030], "#d": [EMOJI_SET], limit: LIMIT }],
-          { signal: owned.signal, priority: "background" },
+        const events = await retryRead(
+          (signal) =>
+            reader.read([{ kinds: [30030], "#d": [EMOJI_SET], limit: LIMIT }], {
+              signal,
+              priority,
+            }),
+          owned.signal,
         );
         if (closed || owned.signal.aborted) return;
         accept(events);
         if (closed || owned.signal.aborted || limited) return;
-        if (events.length >= LIMIT)
-          throw new Error(
-            "Community emoji catalog may be incomplete (500-set read limit). Retry after reducing the catalog.",
-          );
-        publish({ status: "ready", error: undefined });
+        // NIP-01 relays return the newest events first under a limit, so a
+        // capped read holds the latest sets and still resolves their shortcodes.
+        publish({
+          status: "ready",
+          error:
+            events.length >= LIMIT
+              ? "Community emoji catalog may be incomplete (500-set read limit). Retry after reducing the catalog."
+              : undefined,
+        });
       } catch (error) {
+        // A failed revalidation keeps the loaded catalog, with its error.
         if (!closed && !owned.signal.aborted)
-          publish({ status: "error", error: String(error) });
+          publish({
+            status: snapshot.status === "ready" ? "ready" : "error",
+            error: String(error),
+          });
       } finally {
         if (controller === owned) {
           controller = undefined;
@@ -148,17 +158,29 @@ export function createEmojiDirectory(
     })();
     return pending;
   }
-  function ensure() {
-    if (snapshot.status === "idle") return refresh();
+  const refresh = () => load("foreground");
+  function ensure(priority: Priority = "background") {
+    // Active controls may remount on every keystroke. Promote passive demand
+    // once; after an active failure, keep the error and explicit Retry stable.
+    if (
+      !limited &&
+      (snapshot.status === "idle" ||
+        (priority === "foreground" &&
+          pendingPriority === "background" &&
+          snapshot.status !== "ready"))
+    )
+      return load(priority);
     return pending ?? Promise.resolve();
   }
-  /** Read-modify-write of the viewer's own set, like Desktop's `setCustomEmoji`. */
-  async function publishAdd(
+  /** Read-modify-write of the viewer's own set; an absent URL removes the shortcode. */
+  async function publishEdit(
     writer: RelayWriter,
     shortcode: string,
-    url: string,
+    url?: string,
   ): Promise<string> {
-    if (!viewer) throw new Error("Failed to add emoji.");
+    const failure =
+      url === undefined ? "Failed to remove emoji." : "Failed to add emoji.";
+    if (!viewer) throw new Error(failure);
     const timeout = AbortSignal.timeout(12_000);
     const signal = AbortSignal.any([lifetime.signal, timeout]);
     try {
@@ -184,9 +206,13 @@ export function createEmojiDirectory(
           event.tags.find(([name]) => name === "d")?.[1] === EMOJI_SET
         )
           current = newer(current, event);
-      const entries = emojiTags(current ?? { tags: [] }).filter(
+      const ownEntries = emojiTags(current ?? { tags: [] });
+      const entries = ownEntries.filter(
         (entry) => entry.shortcode !== shortcode,
       );
+      if (url === undefined && entries.length === ownEntries.length)
+        return shortcode;
+      if (url !== undefined) entries.push({ shortcode, url });
       const template = {
         kind: EMOJI_SET_KIND,
         created_at: Math.max(
@@ -196,11 +222,7 @@ export function createEmojiDirectory(
         content: "",
         tags: [
           ["d", EMOJI_SET],
-          ...[...entries, { shortcode, url }].map((entry) => [
-            "emoji",
-            entry.shortcode,
-            entry.url,
-          ]),
+          ...entries.map((entry) => ["emoji", entry.shortcode, entry.url]),
         ],
       };
       const event = eventDto(await writer.sign(template, signal));
@@ -211,7 +233,7 @@ export function createEmojiDirectory(
         event.content !== template.content ||
         JSON.stringify(event.tags) !== JSON.stringify(template.tags)
       )
-        throw new Error("Failed to add emoji.");
+        throw new Error(failure);
       signal.throwIfAborted();
       await writer.publish(event, signal);
       signal.throwIfAborted();
@@ -220,8 +242,10 @@ export function createEmojiDirectory(
     } catch {
       throw new Error(
         timeout.aborted
-          ? "Timed out while adding emoji."
-          : "Failed to add emoji.",
+          ? url === undefined
+            ? "Timed out while removing emoji."
+            : "Timed out while adding emoji."
+          : failure,
       );
     }
   }
@@ -237,6 +261,22 @@ export function createEmojiDirectory(
     refresh,
     ...(authoring
       ? {
+          /** Removes only from the viewer's set; absent or invalid names are no-ops. */
+          remove(name: string): Promise<void> {
+            const shortcode = normalizeShortcode(name);
+            if (!shortcode) return Promise.resolve();
+            if (closed)
+              return Promise.reject(new Error("Failed to remove emoji."));
+            const run = editing.then(() =>
+              publishEdit(authoring.writer, shortcode),
+            );
+            editing = run.catch(() => undefined);
+            return run.then(() => undefined);
+          },
+        }
+      : {}),
+    ...(authoring?.upload
+      ? {
           upload: authoring.upload,
           /** Adds or replaces one shortcode; returns the normalized shortcode. */
           add(name: string, url: string): Promise<string> {
@@ -249,11 +289,11 @@ export function createEmojiDirectory(
               );
             if (closed)
               return Promise.reject(new Error("Failed to add emoji."));
-            // Serialize local writers so concurrent adds cannot drop each other.
-            const run = adding.then(() =>
-              publishAdd(authoring.writer, shortcode, url),
+            // Serialize edits so a stale relay read cannot undo an earlier edit.
+            const run = editing.then(() =>
+              publishEdit(authoring.writer, shortcode, url),
             );
-            adding = run.catch(() => undefined);
+            editing = run.catch(() => undefined);
             return run;
           },
         }
@@ -287,27 +327,25 @@ export function createEmojiDirectory(
       controller?.abort();
       controller = undefined;
       pending = undefined;
-      void refresh();
+      void load("background");
     },
     tags(content: string): string[][] {
       const codes = referencedEmoji(content);
       if (!codes.length) return [];
       if (closed) throw new Error("Community session is closed");
       if (snapshot.status !== "ready") {
-        void ensure();
+        // A send retries a cold failure, but passive mounts cannot repeat
+        // reads; refresh() shares a pending one. Overflow would repeat on every
+        // read, so it waits for an explicit retry. The composer keeps this text
+        // after the read settles, so it must not claim the read is still running.
+        void (snapshot.status === "error" && !limited ? refresh() : ensure());
         throw new Error(
           snapshot.status === "error"
             ? `Community emoji unavailable. Retry message preparation or open the emoji picker. ${snapshot.error ?? ""}`
-            : "Community emoji is loading. Your draft is kept; try sending again shortly.",
+            : "Community emoji isn't ready. Your draft is kept; try sending again shortly.",
         );
       }
-      const used = new Map<string, string>();
-      for (const part of messageParts(content)) {
-        if (linkPart(part)) continue;
-        for (const { emoji } of emojiMatches(part, snapshot.entries))
-          used.set(emoji.shortcode, emoji.url);
-      }
-      return [...used].map(([code, url]) => ["emoji", code, url]);
+      return contentEmojiTags(content, snapshot.entries);
     },
     dispose() {
       closed = true;

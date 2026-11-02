@@ -1,9 +1,10 @@
 // What one agent session gets of the Buzz tools, whatever harness runs it:
-// the tools to list, the guidance for its system prompt, a note for the end of
+// the tools to list, each loaded up front or on search, a note for the end of
 // each turn, and the handler for every call. The attention tools are among
-// them, and so are any tools plugins add. A harness passes all of this
-// on without knowing what is in it.
+// them, and so are any tools plugins add. A harness passes all of this on
+// without knowing what is in it.
 import {
+  ATTENTION_NONE,
   ATTENTION_OFF,
   ATTENTION_REVIEW,
 } from "../features/agent-harness/attention-prompt";
@@ -13,10 +14,17 @@ import {
   isAttentionTool,
 } from "./attention";
 import type { BuzzClient, Context } from "./client";
-import { callTool, type Reply, TOOLS, type Tool } from "./tools";
+import {
+  callTool,
+  captureToolBody,
+  type Reply,
+  TOOLS,
+  type Tool,
+} from "./tools";
 
-/** A tool a plugin adds to every agent session in the app, listed
- * after the Buzz tools under the same server. */
+/** A tool a plugin adds to every agent session in the app, listed after
+ * the Buzz tools under the same server and loaded on search. Its name should
+ * start with its plugin's, as `notes_get` does; no two tools share one. */
 export type AddedTool = Readonly<{
   name: string;
   description: string;
@@ -30,6 +38,15 @@ export type AddedTool = Readonly<{
   ): Promise<Reply>;
 }>;
 type Listed = Pick<AddedTool, "name" | "description" | "inputSchema">;
+
+/** The Buzz tools that post a message, and so take `final`. Each harness
+ * strips its own prefix from a tool's name before asking. */
+export const MESSAGE_TOOLS = ["send", "reply_in_subthread"] as const;
+export const isMessageTool = (name: unknown) =>
+  (MESSAGE_TOOLS as readonly unknown[]).includes(name);
+/** Whether a call posts a message marked final, which can end the turn. */
+export const isFinalMessage = (name: unknown, args: unknown) =>
+  isMessageTool(name) && (args as { final?: unknown } | null)?.final === true;
 
 export type BuzzSession = Readonly<{ tools: readonly Tool[] }>;
 
@@ -47,10 +64,30 @@ const listed = ({ name, description, inputSchema }: AddedTool): Listed => ({
   inputSchema,
 });
 
+/** A tool as a session lists it. `search` means a harness that can load
+ * tools on demand lists it by name only, and the model loads it when it
+ * needs it; `always` means it is listed in full up front. Only the Buzz tools
+ * choose: those plugins add always load on search, so installing plugins
+ * never grows what every turn carries. */
+export type SessionTool = Listed & Readonly<{ load: "always" | "search" }>;
+
 /** The tools a session lists: the Buzz tools, then those plugins add. */
 export const sessionTools = (
   added: readonly AddedTool[] = [],
-): readonly Listed[] => [...BUZZ_SESSION.tools, ...added.map(listed)];
+): readonly SessionTool[] => [
+  ...TOOLS.map((tool) => ({ ...tool, load: "always" as const })),
+  ...ATTENTION_TOOLS.map((tool) => ({ ...tool, load: "search" as const })),
+  ...added.map((tool) => ({ ...listed(tool), load: "search" as const })),
+];
+
+/** What the server (Claude) or namespace (Codex) with the tools says up
+ * front, so the model knows what it can search for. */
+export function sessionHint(added: readonly AddedTool[] = []) {
+  const plugins = added.length
+    ? ` and tools plugins add (${added.map((tool) => tool.name).join(", ")})`
+    : "";
+  return `Read and act in Buzz as this agent. Search for the rest when you need them: your attention (Interests, event watches and timers; interest_set and watch_add say how they work)${plugins}.`;
+}
 
 /** Changes when the added tools change, so a session that keeps the list it
  * started with can be replaced; empty while plugins add none. A short hash,
@@ -68,13 +105,15 @@ export function addedKey(added: readonly AddedTool[]) {
   return (hash >>> 0).toString(36);
 }
 
-/** Text for the end of a turn's prompt, as the agent's attention is now. */
-export const turnNote = (client?: Pick<BuzzClient, "attention">) =>
-  client?.attention
-    ? client.attention.enabled()
-      ? ATTENTION_REVIEW
-      : ATTENTION_OFF
-    : undefined;
+/** Text for the end of a turn's prompt, as the agent's attention is now.
+ * An agent with no Interests has nothing to review, so it need not load the
+ * attention tools to find that out. */
+export function turnNote(client?: Pick<BuzzClient, "attention">) {
+  const attention = client?.attention;
+  if (!attention) return undefined;
+  if (!attention.enabled()) return ATTENTION_OFF;
+  return attention.interests().length ? ATTENTION_REVIEW : ATTENTION_NONE;
+}
 
 /** Answers one tool call. Throws when the tool cannot run now; the message
  * is for the agent. Without a client, no tool can be called yet. `added`
@@ -87,6 +126,53 @@ export async function callSessionTool(
   added: readonly AddedTool[] = [],
 ): Promise<Reply> {
   if (!client) throw new Error("Buzz is not ready yet. Try again.");
+  // Hold the reviewed destination and arguments while the checker waits.
+  if (client.protect) {
+    context = structuredClone(context);
+    args = structuredClone(args);
+  }
+  const session = JSON.stringify(context);
+  // Plugin tools own their argument semantics, even when shadowing a builtin.
+  if (client.protect && !added.some((tool) => tool.name === name))
+    await captureToolBody(client, name, args).catch((error) =>
+      checkedToolError(client, session, error),
+    );
+  await client.protect?.({
+    kind: "tool",
+    session,
+    content: { title: name, arguments: args },
+    ...(typeof args.command === "string" ? { command: args.command } : {}),
+  });
+  let reply: Reply;
+  try {
+    reply = await dispatchSessionTool(client, context, name, args, added);
+  } catch (error) {
+    return checkedToolError(client, session, error);
+  }
+  await client.protect?.({ kind: "tool-result", session, content: reply });
+  return reply;
+}
+
+/** File capture and dispatch errors cross the same tool-result boundary. */
+async function checkedToolError(
+  client: BuzzClient,
+  session: string,
+  error: unknown,
+): Promise<never> {
+  await client.protect?.({
+    kind: "tool-result",
+    session,
+    content: { error: error instanceof Error ? error.message : String(error) },
+  });
+  throw error;
+}
+async function dispatchSessionTool(
+  client: BuzzClient,
+  context: Context,
+  name: string,
+  args: Record<string, unknown>,
+  added: readonly AddedTool[],
+): Promise<Reply> {
   const tool = added.find((tool) => tool.name === name);
   if (tool) return tool.call(client, context, args);
   if (!isAttentionTool(name)) return callTool(client, context, name, args);
@@ -95,7 +181,7 @@ export async function callSessionTool(
   // The owner can turn attention off while the session runs.
   if (!attention.enabled())
     throw new Error(
-      `Attention is off for you: your owner turned it off, so these tools do nothing now.\n(classifier: ${attention.classifier()})`,
+      `Attention is off for you on this device, so these tools do nothing now.\n(classifier: ${attention.classifier()})`,
     );
   return callAttentionTool(attention, name, args);
 }

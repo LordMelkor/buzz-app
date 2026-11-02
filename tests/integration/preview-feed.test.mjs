@@ -107,8 +107,9 @@ function fixture(dir, version = "0.0.0-preview.22.1") {
   };
 }
 
-test("preview candidate requires verified archive and updater-enabled binary with CLI 2.11.x signatures", () => {
+test("preview candidate requires verified archive and updater-enabled binary with CLI 2.11.x signatures", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "preview-feed-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { assetDir, archive, binary, sig, manifest, sign, execute } =
     fixture(dir);
   const archiveBytes = readFileSync(archive);
@@ -166,8 +167,9 @@ test("preview candidate requires verified archive and updater-enabled binary wit
   assert.match(execute("verify").stderr, /updater public key/);
 });
 
-test("preview feed signs every desktop installer into its updater target", () => {
+test("preview feed signs every desktop installer into its updater target", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "preview-platforms-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { installers, manifest, execute } = fixture(dir);
   assert.equal(execute("generate").status, 0, execute("generate").stderr);
   const { platforms } = JSON.parse(readFileSync(manifest, "utf8"));
@@ -197,8 +199,9 @@ test("preview feed signs every desktop installer into its updater target", () =>
   assert.match(execute("generate").stderr, /ENOENT/);
 });
 
-test("preview rollback compares the complete canonical SemVer without number rounding", () => {
+test("preview rollback compares the complete canonical SemVer without number rounding", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "preview-versions-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { manifest, execute } = fixture(dir);
   assert.equal(execute("generate").status, 0);
   const current = join(dir, "current.json");

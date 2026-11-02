@@ -1,5 +1,9 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { createTitleBarDragHandlers } from "./title-bar";
+import {
+  createModalWindowDragHandlers,
+  createTitleBarDragHandlers,
+} from "./title-bar";
 
 function mouseEvent(
   detail: number,
@@ -72,5 +76,45 @@ describe("macOS title bar dragging", () => {
 
     expect(actions.startDragging).not.toHaveBeenCalled();
     expect(actions.doubleClick).not.toHaveBeenCalled();
+  });
+});
+
+describe("window dragging through modal backdrops", () => {
+  it("recognizes an empty title bar without starting a drag on press", () => {
+    const bar = document.createElement("header");
+    bar.setAttribute("data-buzz-window-drag", "");
+    bar.setAttribute("data-base-ui-inert", "");
+    const backdrop = document.createElement("div");
+    const startDragging = vi.fn();
+    const handlers = createModalWindowDragHandlers({ startDragging }, () => [
+      backdrop,
+      bar,
+    ]);
+    const down = {
+      ...mouseEvent(1),
+      currentTarget: backdrop,
+      target: backdrop,
+    } as unknown as Parameters<typeof handlers.canDrag>[0];
+    expect(handlers.canDrag(down)).toBe(true);
+    expect(startDragging).not.toHaveBeenCalled();
+    handlers.startDragging();
+    expect(startDragging).toHaveBeenCalledOnce();
+  });
+  it("keeps underlying buttons out of the native drag region", () => {
+    const bar = document.createElement("header");
+    bar.setAttribute("data-buzz-window-drag", "");
+    const button = document.createElement("button");
+    bar.append(button);
+    const startDragging = vi.fn();
+    const handlers = createModalWindowDragHandlers({ startDragging }, () => [
+      button,
+      bar,
+    ]);
+    expect(
+      handlers.canDrag(
+        mouseEvent(1) as unknown as Parameters<typeof handlers.canDrag>[0],
+      ),
+    ).toBe(false);
+    expect(startDragging).not.toHaveBeenCalled();
   });
 });

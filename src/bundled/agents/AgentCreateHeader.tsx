@@ -1,5 +1,5 @@
-// The New agent card: the avatar, chosen from packs or an image, and the name,
-// with a details area the agent type fills in.
+// The New agent card: the avatar, chosen from packs or made custom from an
+// image or an emoji, and the name, with a details area the agent type fills in.
 import { Field } from "../../shared/design-system/ui/Field";
 import { Input } from "../../shared/design-system/ui/Input";
 import {
@@ -17,9 +17,10 @@ import { AvatarEditor } from "../../features/profiles/AvatarEditor";
 import { agentAvatars, avatarPacks } from "../../features/agents/avatar-packs";
 import { Button } from "../../shared/design-system/ui/Button";
 import { SurfaceButton } from "../../shared/design-system/ui/SurfaceButton";
-import { CloudUploadIcon } from "../../shared/design-system/icons";
+import { PlusIcon } from "../../shared/design-system/icons";
 import { PackedAgentAvatar } from "./PackedAgentAvatar";
 import styles from "./AgentCreate.module.css";
+import { useShake } from "./useNamePrompt";
 
 export function AgentCreateHeader({
   name,
@@ -34,6 +35,7 @@ export function AgentCreateHeader({
   avatarActionTarget,
   onAvatarActiveChange,
   nameRef,
+  nameError,
   initialAvatarPicker = false,
 }: {
   name: string;
@@ -50,6 +52,8 @@ export function AgentCreateHeader({
   avatarActionTarget?: HTMLElement | null;
   onAvatarActiveChange?: (active: boolean, view: string) => void;
   nameRef?: Ref<HTMLInputElement>;
+  /** Why the name can't be used yet. Each attempt shakes the name. */
+  nameError?: { message: string; attempt: number } | undefined;
   initialAvatarPicker?: boolean;
 }) {
   // The header shares AvatarEditor's full-size frame, so it requests the
@@ -73,6 +77,8 @@ export function AgentCreateHeader({
   }));
   const [keyboard, setKeyboard] = useState(false);
   const reducedMotion = useReducedMotion();
+  const nameControl = useRef<HTMLDivElement>(null);
+  useShake(nameControl, nameError?.attempt);
   const root = useRef<HTMLFieldSetElement>(null);
   const previousView = useRef(view);
   const options = useRef<HTMLFieldSetElement>(null);
@@ -98,7 +104,7 @@ export function AgentCreateHeader({
   }, [view]);
   const [gridSize, setGridSize] = useState({ width: 768, height: 432, gap: 8 });
   useLayoutEffect(() => {
-    if (view === "selected" || view === "collections" || view === "image")
+    if (view === "selected" || view === "collections" || view === "custom")
       return;
     const element = options.current;
     if (!element) return;
@@ -226,23 +232,22 @@ export function AgentCreateHeader({
                 <SurfaceButton
                   className={styles.collection}
                   disabled={disabled}
-                  onClick={() => setView("image")}
+                  onClick={() => setView("custom")}
                 >
                   <span
-                    className={`${styles.artwork} ${styles.uploadIcon}`}
+                    className={`${styles.artwork} ${styles.customIcon}`}
                     aria-hidden="true"
                   >
-                    <CloudUploadIcon size={48} />
+                    <PlusIcon size={48} />
                   </span>
-                  <span>Use image</span>
+                  <span>Use custom</span>
                 </SurfaceButton>
               </div>
-            ) : view === "image" ? (
-              <div className={styles.imageEditor}>
+            ) : view === "custom" ? (
+              <div className={styles.customEditor}>
                 <AvatarEditor
                   triggerStyle="dotted-squircle"
                   inlinePicker
-                  imageOnly
                   actionTarget={avatarActionTarget}
                   shape="squircle"
                   value={selected ? "" : (picture ?? "")}
@@ -303,15 +308,21 @@ export function AgentCreateHeader({
           inert={view !== "selected" || (editing && !name.trim())}
           aria-hidden={view !== "selected" || (editing && !name.trim())}
         >
-          <Field label="Name" labelVisibility="hidden">
-            <Input
-              ref={nameRef}
-              appearance="title"
-              disabled={disabled}
-              placeholder="Agent name"
-              value={name}
-              onChange={(event) => onChange({ name: event.target.value })}
-            />
+          <Field
+            label="Name"
+            labelVisibility="hidden"
+            error={nameError?.message}
+          >
+            <div ref={nameControl}>
+              <Input
+                ref={nameRef}
+                appearance="title"
+                disabled={disabled}
+                placeholder="Name your agent"
+                value={name}
+                onChange={(event) => onChange({ name: event.target.value })}
+              />
+            </div>
           </Field>
         </motion.div>
         <div className={styles.details} hidden={view !== "selected"}>

@@ -2,8 +2,12 @@ import { expect, it } from "vitest";
 import { createLocalAgents } from "./local";
 import { localAgentsFixture } from "./local-testing";
 import { createAgentLibrary } from "./library";
-import { createAgentChoices, templateAgentChoices } from "./choices";
-import { sessionRecipients } from "../sessions/recipients";
+import {
+  canMessageAgent,
+  createAgentChoices,
+  templateAgentChoices,
+} from "./choices";
+import { soloRecipients } from "../solo/recipients";
 import type { IdentityArchiveSnapshot } from "../relay/identity-archives";
 
 const viewer = "aa".repeat(32);
@@ -15,13 +19,110 @@ const agent = {
   owner: viewer,
 };
 
+it("allows hosted DMs only with current owned source evidence, without local management", async () => {
+  const source = localAgentsFixture();
+  const lifetime = new AbortController();
+  const library = createAgentLibrary(undefined);
+  const archived = ["cd".repeat(32)];
+  const archives = archiveFixture(archived);
+  source.set({
+    hosted: [
+      agent,
+      { ...agent, pubkey: "bc".repeat(32), owner: "ee".repeat(32) },
+      { ...agent, pubkey: "de".repeat(32), relayUrl: "https://elsewhere.test" },
+      { ...agent, pubkey: "cd".repeat(32) },
+    ],
+  });
+  const choices = createAgentChoices({
+    scope,
+    library: library.queries,
+    native: source,
+    archives,
+    signal: lifetime.signal,
+  });
+  expect(choices.snapshot().identities).toEqual([
+    {
+      pubkey: agent.pubkey,
+      name: agent.name,
+      managed: false,
+      messageable: true,
+    },
+    {
+      pubkey: "cd".repeat(32),
+      name: agent.name,
+      managed: false,
+      messageable: true,
+    },
+  ]);
+  expect(choices.snapshot().selectable.filter(canMessageAgent)).toHaveLength(1);
+  expect(choices.snapshot().templates.identities).toEqual([]);
+  archived.push(agent.pubkey);
+  await archives.refresh();
+  expect(choices.snapshot().identities.filter(canMessageAgent)).toHaveLength(2);
+  expect(choices.snapshot().selectable.filter(canMessageAgent)).toEqual([]);
+  archived.pop();
+  await archives.refresh();
+  expect(choices.snapshot().selectable.filter(canMessageAgent)).toHaveLength(1);
+  source.set({ status: "error", error: "Cannot read agents" });
+  expect(choices.snapshot().identities.filter(canMessageAgent)).toEqual([]);
+  source.set({ status: "ready", hosted: [] });
+  expect(choices.snapshot().identities).toEqual([]);
+  source.set({ hosted: [agent] });
+  expect(choices.snapshot().identities.filter(canMessageAgent)).toHaveLength(1);
+  lifetime.abort();
+  expect(choices.snapshot().identities).toEqual([]);
+});
+
+it("preserves library names and artwork when hosted evidence makes the same key messageable", async () => {
+  const source = localAgentsFixture();
+  source.set({
+    hosted: [
+      {
+        ...agent,
+        name: "Hosted name",
+        picture: "https://cdn.example/hosted.png",
+      },
+    ],
+  });
+  const library = createAgentLibrary(async () => ({
+    definitions: [],
+    identities: [
+      {
+        pubkey: agent.pubkey,
+        name: "Library name",
+        avatar: "https://cdn.example/library.png",
+      },
+    ],
+  }));
+  const choices = createAgentChoices({
+    scope,
+    library: library.queries,
+    native: source,
+    signal: new AbortController().signal,
+  });
+  await choices.refresh();
+  expect(choices.snapshot().identities).toEqual([
+    {
+      pubkey: agent.pubkey,
+      name: "Library name",
+      avatar: "https://cdn.example/library.png",
+      managed: false,
+      messageable: true,
+    },
+  ]);
+});
+
 /** Finite archive evidence with the real lazy-read lifecycle. */
 function archiveFixture(
   archived: string[] = [],
   initial: IdentityArchiveSnapshot["status"] = "ready",
 ) {
   const listeners = new Set<() => void>();
-  let snapshot: IdentityArchiveSnapshot = { status: initial, archived };
+  // Like the store, nothing is known before the first read.
+  let snapshot: IdentityArchiveSnapshot = {
+    status: initial,
+    archived: initial === "ready" ? archived : [],
+  };
   const reads: string[] = [];
   const read = async () => {
     reads.push(snapshot.status);
@@ -121,9 +222,9 @@ it.each(["loading", "failed", "partial"])(
     const state = choices.snapshot();
     const unknownLegacy = "cd".repeat(32);
     const channel = {
-      id: "session",
+      id: "chat",
       name: "Work",
-      channelType: "session" as const,
+      channelType: "solo" as const,
       members: [viewer, agent.pubkey, unknownLegacy],
     };
     const profiles = new Map([[unknownLegacy, { name: "Legacy B" }]]);
@@ -135,11 +236,11 @@ it.each(["loading", "failed", "partial"])(
       pending: false,
     });
     expect(state.templates.error).toBeUndefined();
-    expect(() =>
-      sessionRecipients(channel, profiles, state, viewer, []),
-    ).toThrow(/still loading/);
+    expect(() => soloRecipients(channel, profiles, state, viewer, [])).toThrow(
+      /still loading/,
+    );
     expect(
-      sessionRecipients(channel, profiles, state, viewer, [agent.pubkey]),
+      soloRecipients(channel, profiles, state, viewer, [agent.pubkey]),
     ).toEqual([agent.pubkey]);
     expect(
       templateAgentChoices(state, { status: "ready", channels: [] }).map(

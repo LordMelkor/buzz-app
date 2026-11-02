@@ -1,3 +1,4 @@
+import { useMediaReadRecovery } from "./use-media-read-recovery";
 import { useVideoGestures } from "./use-video-gestures";
 import { useMediaControls } from "./use-media-controls";
 import { useMediaCorners } from "./use-media-corners";
@@ -35,6 +36,7 @@ import { Avatar } from "../../shared/design-system/ui/Avatar";
 import { formatMediaTime } from "./media-timecode";
 import styles from "./VideoPlayer.module.css";
 import { useMediaElementSource } from "./use-media-element-source";
+import { MediaDownloadAction } from "./MediaDownloadAction";
 
 export type VideoMarker = {
   id: string;
@@ -197,9 +199,7 @@ export function VideoControls({
         {!inline && playButton}
         <PopoverRoot>
           <PopoverTrigger
-            openOnHover
-            delay={100}
-            closeDelay={100}
+            openOnHover="control"
             render={
               <IconButton
                 size="sm"
@@ -364,9 +364,7 @@ export function VideoControls({
         <div className={styles.speed}>
           <MenuRoot modal={false}>
             <MenuTrigger
-              openOnHover
-              delay={100}
-              closeDelay={100}
+              openOnHover="control"
               render={
                 <Button variant="ghost" size="sm">
                   {rate}x
@@ -420,6 +418,7 @@ export function VideoControls({
 
 export function VideoPlayer({
   source,
+  downloadName,
   poster,
   videoRef,
   initialTime = 0,
@@ -430,6 +429,8 @@ export function VideoPlayer({
   children,
 }: {
   source: string;
+  /** Supplied only by received-attachment owners, never unsent previews. */
+  downloadName?: string | undefined;
   poster?: string | undefined;
   videoRef: RefObject<HTMLVideoElement | null>;
   initialTime?: number;
@@ -440,17 +441,23 @@ export function VideoPlayer({
   children?: ReactNode;
 }) {
   const stage = useRef<HTMLDivElement>(null);
-  const idle = useMediaControls(stage, source);
+  const [downloadFeedback, setDownloadFeedback] = useState(false);
+  const idle = useMediaControls(stage, source, downloadFeedback);
   const { handlers: gestures, feedback } = useVideoGestures(videoRef, source);
   // Callers render their unavailable state instead of a player when
   // `useMediaElementSource(source).unavailable`.
   const { src: elementSource } = useMediaElementSource(source);
+  const { recover: recoverMedia } = useMediaReadRecovery(
+    elementSource,
+    onError,
+  );
   return (
     <div
       ref={stage}
       className={`${styles.player} dark`}
       data-color-mode="dark"
       data-controls-idle={idle || undefined}
+      data-controls-revealed={downloadFeedback || undefined}
     >
       <video
         ref={videoRef}
@@ -480,7 +487,9 @@ export function VideoPlayer({
           onTime(element.currentTime);
         }}
         onTimeUpdate={(event) => onTime(event.currentTarget.currentTime)}
-        onError={onError}
+        onError={(event) => {
+          if (!recoverMedia(event.currentTarget)) onError();
+        }}
       />
       {feedback && (
         <div
@@ -514,6 +523,14 @@ export function VideoPlayer({
           {...(markers ? { markers } : {})}
           {...(onMarker ? { onMarker } : {})}
         />
+        {downloadName !== undefined && (
+          <MediaDownloadAction
+            source={source}
+            name={downloadName}
+            kind="video"
+            onFeedbackVisible={setDownloadFeedback}
+          />
+        )}
         {children}
       </div>
     </div>

@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, assert, expect, it, vi } from "vitest";
 import { connectSignedTransport } from "./transport";
-import { createOutbox, PublishRejected } from "./outbox";
+import { createOutbox, PublishNotSent, PublishRejected } from "./outbox";
 import { hostSigner } from "./testing";
 
 const filters = [{ kinds: [0], limit: 1 }];
@@ -48,9 +48,10 @@ it("signed reads/writes share cooldown across constructor recreation; viewer/com
     tags: [["h", "c"]],
   });
   assert.exists(second.writer);
+  // Held back here, not refused by the relay: definitely unsent, retryable.
   await expect(
     second.writer.publish(event, new AbortController().signal),
-  ).rejects.toBeInstanceOf(PublishRejected);
+  ).rejects.toBeInstanceOf(PublishNotSent);
   await expect(second.query(filters)).rejects.toMatchObject({
     status: 429,
     retryAfterMs: expect.any(Number),
@@ -98,7 +99,7 @@ it("explicit quota rejection is retryable; missing response stays unknown with n
   vi.stubGlobal("fetch", fetcher);
   await expect(
     transport.writer.publish(event, new AbortController().signal),
-  ).rejects.toBeInstanceOf(PublishRejected);
+  ).rejects.toBeInstanceOf(PublishNotSent);
   expect(fetcher).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(1000);
   fetcher.mockImplementation(async () => {

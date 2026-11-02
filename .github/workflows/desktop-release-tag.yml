@@ -1,0 +1,58 @@
+name: Desktop release tag
+run-name: Publish desktop-v${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (X.Y.Z, or X.Y.Z-beta.N for a beta)
+        required: true
+        type: string
+      target_sha:
+        description: Full commit SHA in main history
+        required: true
+        type: string
+
+concurrency:
+  group: desktop-release-tag-${{ inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'block/buzz-app'
+    runs-on: ubuntu-latest
+    # Holds the App key; restricted to main so other workflows cannot mint tag tokens.
+    environment: desktop-release-tag
+    timeout-minutes: 5
+    steps:
+      - name: Require the reviewed workflow from main
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != "refs/heads/main" ]; then
+            echo "::error::Release tags must be dispatched from main, not $DISPATCH_REF"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Create release tagger token
+        id: release-tagger
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.BUZZ_RELEASE_TAGGER_CLIENT_ID }}
+          private-key: ${{ secrets.BUZZ_RELEASE_TAGGER_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Publish annotated release tag
+        env:
+          GH_TOKEN: ${{ steps.release-tagger.outputs.token }}
+          VERSION: ${{ inputs.version }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: scripts/publish-desktop-release-tag.sh "$VERSION" "$TARGET_SHA"

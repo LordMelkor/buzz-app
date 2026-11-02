@@ -60,6 +60,15 @@
     stroke-width: 2;
     stroke-linecap: round;
   }
+  /* Light selection is the brand fill; dark selection carries it as ink. */
+  .buzz-theme-preview-selected {
+    stroke: var(--affordance-navigation-selected);
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+  .buzz-theme-preview[data-tone="dark"] .buzz-theme-preview-selected {
+    stroke: var(--text-row-selected);
+  }
   .buzz-theme-preview-divider {
     stroke: var(--border-standard);
   }

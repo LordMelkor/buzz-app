@@ -29,7 +29,9 @@ const pasteInto = (input, payload) =>
 // Browser-only contract: an engine-native pointer selection copied from the
 // timeline reaches the composer through real clipboard flavors, DOMParser and
 // the live session's mention candidates, then round-trips composer → composer.
-// Serializer and promotion cases live in the colocated Vitest files.
+// A `> ` typed with native keys then quotes the line with its link-renderer
+// chips. Serializer, promotion and marker cases live in the colocated Vitest
+// files.
 test("pasting copied messages into the composer restores chips, the recipient and links", async ({
   page,
   app,
@@ -131,21 +133,34 @@ test("pasting copied messages into the composer restores chips, the recipient an
   await expect(input).toHaveJSProperty("value", source);
   await expect(recipients).toBeVisible();
 
+  // Native `> ` typed before the pasted line quotes it, chips and all.
+  await input.evaluate((element) => element.setSelectionRange(0, 0));
+  await input.pressSequentially("> ");
+  const quote = input.locator(":scope > blockquote");
+  await expect(quote.locator("[data-source]")).toHaveCount(4);
+  await expect(quote.locator("[data-link-renderer]").first()).toBeVisible();
+  await expect(input).toHaveJSProperty("value", source);
+  await expect(recipients).toBeVisible();
+
   await input.press("Enter");
   await expect.poll(() => app.report.publications.length).toBe(1);
   const published = app.report.publications[0].event;
-  expect(published.content).toBe(source);
+  expect(published.content).toBe(`> ${source}`);
   expect(published.tags).toContainEqual(["p", app.viewer]);
 
   // One representative renderer → clipboard → editor → signed-send round trip.
   // The detailed syntax matrix belongs to the colocated component tests.
   const blocks =
-    "- one\n- two\n\n3. first\n\n> quoted\n\n```sh\necho hi\n```\n\n| a | b |\n| - | - |\n| 1 | 2 |";
+    "- one\n- two\n\n3. first\n\n> quoted\n\na ||secret|| b\n\n```sh\necho hi\n```\n\n| a | b |\n| - | - |\n| 1 | 2 |";
   const structured = app.append("primary", "alpha", blocks);
   const structuredRow = page.locator(
     `[data-channel-timeline] [data-message-id="${structured.id}"]`,
   );
   await expect(structuredRow.locator("table")).toBeVisible();
+  // The spoiler stays masked: its inert content must still copy.
+  await expect(
+    structuredRow.getByRole("button", { name: "Reveal spoiler" }),
+  ).toBeVisible();
   const payload = await structuredRow.locator("ul").evaluate((list) => {
     const content = list.parentElement;
     const range = document.createRange();
@@ -167,10 +182,16 @@ test("pasting copied messages into the composer restores chips, the recipient an
     };
   });
   expect(payload.text).toBe(
-    "one\ntwo\n\nfirst\n\nquoted\n\necho hi\n\na\tb\n1\t2",
+    "one\ntwo\n\nfirst\n\nquoted\n\na ||secret|| b\n\necho hi\n\na\tb\n1\t2",
   );
   await expect(input).toHaveJSProperty("value", "");
   await pasteInto(input, payload);
+  // The engine's DOMParser hands the composer its own blocks, not their source.
+  await expect(input.locator("ul li")).toHaveCount(2);
+  await expect(input.locator('ol[start="3"] li, blockquote, pre')).toHaveCount(
+    3,
+  );
+  await expect(input.locator("[data-spoiler]")).toHaveText("secret");
   await input.press("Enter");
   await expect.poll(() => app.report.publications.length).toBe(2);
   expect(app.report.publications[1].event.content).toBe(
@@ -210,6 +231,60 @@ test("pasting copied messages into the composer restores chips, the recipient an
   );
 });
 
+// Browser-only contract: each engine's native triple-click range. On a
+// one-heading message it ends in the next row, past the empty reaction row,
+// yet copies the heading alone, which pastes into the current line. The range
+// shapes this crosses are modelled in selection-copy.test.tsx.
+test("a triple-clicked heading message pastes into the current line", async ({
+  page,
+  app,
+  browserName,
+}) => {
+  await open(page, app);
+  const event = app.append("primary", "alpha", "## Title");
+  app.append("primary", "alpha", "next");
+  const heading = page
+    .locator(`[data-channel-timeline] [data-message-id="${event.id}"]`)
+    .getByRole("heading", { name: "Title" });
+  await expect(page.getByText("next", { exact: true })).toBeVisible();
+  await heading.click({ clickCount: 3 });
+  await expect
+    .poll(() => page.evaluate(() => window.getSelection()?.toString()))
+    .toContain("Title");
+  await page.evaluate(() => {
+    window.__copyPayload = undefined;
+    document.addEventListener(
+      "copy",
+      (event) => {
+        window.__copyPayload = {
+          text: event.clipboardData?.getData("text/plain"),
+          html: event.clipboardData?.getData("text/html"),
+        };
+      },
+      { once: true },
+    );
+  });
+  // See timeline-copy.spec.mjs for the WebKit copy command.
+  if (browserName === "webkit")
+    expect(await page.evaluate(() => document.execCommand("copy"))).toBe(true);
+  else await page.keyboard.press("ControlOrMeta+c");
+  const copied = {
+    text: "Title",
+    html: '<div data-buzz-copy="timeline"><h2>Title</h2></div>',
+  };
+  await expect
+    .poll(() => page.evaluate(() => window.__copyPayload))
+    .toEqual(copied);
+  const input = page.getByRole("textbox", {
+    name: "Message #Alpha",
+    exact: true,
+  });
+  await input.click();
+  await input.pressSequentially("foo");
+  await pasteInto(input, copied);
+  await expect(input).toHaveJSProperty("value", "foo## Title");
+});
+
 // Browser integration: external clipboard HTML paints a labelled link in the
 // actual composer and survives publication through the session.
 test("external linked text stays linked in the composer and sent message", async ({
@@ -236,4 +311,109 @@ test("external linked text stays linked in the composer and sent message", async
   expect(app.report.publications[0].event.content).toBe(
     "Read [the guide](https://example.com/guide)",
   );
+});
+
+// Browser integration: a native paste event over a selection reaches
+// the editor's link path, renders the anchor and publishes the linked label.
+test("pasting a URL over selected text links it in the composer and sent message", async ({
+  page,
+  app,
+}) => {
+  await open(page, app);
+  const input = page.getByRole("textbox", {
+    name: "Message #Alpha",
+    exact: true,
+  });
+  await input.click();
+  await input.pressSequentially("Check the release notes before Friday");
+  await input.evaluate((element) => element.setSelectionRange(10, 23));
+  await expect
+    .poll(() =>
+      input.evaluate((element) =>
+        element.value.slice(element.selectionStart, element.selectionEnd),
+      ),
+    )
+    .toBe("release notes");
+  await pasteInto(input, {
+    text: "https://example.com/release-notes",
+    html: "",
+  });
+  // The link is an editor mark on the selected words, so the label stays text
+  // and the composer renders the anchor itself rather than a source chip.
+  await expect(
+    input.getByRole("link", { name: "release notes" }),
+  ).toHaveAttribute("href", "https://example.com/release-notes");
+  await expect(input).toHaveJSProperty(
+    "value",
+    "Check the release notes before Friday",
+  );
+  await input.press("Enter");
+  await expect.poll(() => app.report.publications.length).toBe(1);
+  expect(app.report.publications[0].event.content).toBe(
+    "Check the [release notes](https://example.com/release-notes) before Friday",
+  );
+  const row = page.locator(
+    `[data-channel-timeline] [data-message-id="${app.report.publications[0].event.id}"]`,
+  );
+  await expect(row.getByRole("link", { name: "release notes" })).toBeVisible();
+});
+
+// Browser-only: the engine's own Ctrl+Shift+V command (Chromium's
+// PasteAndMatchStyle, WebKitGTK's PasteAsPlainText) fires a text/plain-only
+// paste after the real keydown, which must replace the selection verbatim
+// rather than link it, and must not send. macOS engines bind no such key; the
+// desktop app's Edit menu supplies it there. The flavor/selection matrix lives
+// in EditableInput.test.tsx.
+test("Ctrl+Shift+V pastes plain text over the selection without sending", async ({
+  page,
+  app,
+  browserName,
+}) => {
+  test.skip(
+    process.platform === "darwin",
+    "macOS engines bind no native Ctrl/Cmd+Shift+V command",
+  );
+  await open(page, app);
+  const input = page.getByRole("textbox", {
+    name: "Message #Alpha",
+    exact: true,
+  });
+  await input.click();
+  await input.pressSequentially("Check the release notes before Friday");
+  await input.evaluate((element) => element.setSelectionRange(10, 23));
+  // Ordinary paste would link the selection with this URL and drop the break.
+  const text = "https://example.com/release-notes\n";
+  // Put both flavors on the engine's clipboard through a native copy command.
+  await page.evaluate((text) => {
+    document.addEventListener(
+      "copy",
+      (event) => {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        event.clipboardData?.setData("text/plain", text);
+        event.clipboardData?.setData(
+          "text/html",
+          '<div data-buzz-copy="timeline"><p><strong>Read</strong> <a href="https://example.com/release-notes">notes</a></p><ul><li><p>first</p></li></ul></div>',
+        );
+      },
+      { once: true, capture: true },
+    );
+  }, text);
+  // See timeline-copy.spec.mjs for the WebKit copy command.
+  if (browserName === "webkit")
+    expect(await page.evaluate(() => document.execCommand("copy"))).toBe(true);
+  else await page.keyboard.press("Control+c");
+  const original = "Check the release notes before Friday";
+  const pasted = `Check the ${text} before Friday`;
+  await page.keyboard.press("Control+Shift+V");
+  await expect(input).toHaveJSProperty("value", pasted);
+  await expect(input.locator("strong, ul")).toHaveCount(0);
+  expect(app.report.publications).toHaveLength(0);
+  await page.keyboard.press("Control+z");
+  await expect(input).toHaveJSProperty("value", original);
+  await page.keyboard.press("Control+Shift+z");
+  await expect(input).toHaveJSProperty("value", pasted);
+  await input.press("Enter");
+  await expect.poll(() => app.report.publications.length).toBe(1);
+  expect(app.report.publications[0].event.content).toBe(pasted);
 });

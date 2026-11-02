@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { chmod, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { bytesToHex } from "nostr-tools/utils";
 import { keypair, signed } from "../features/relay/testing";
 import { nodeClient } from "./node";
+import { callTool, memoryVersion } from "./tools";
 
 const agent = keypair();
 const owner = keypair();
@@ -85,14 +89,59 @@ it("reads back its memory and rejects a tampered entry", async () => {
   await expect(buzz.memories()).rejects.toThrow(/invalidly signed/);
 });
 
-it("fetches only its community's media, signed for a get", async () => {
+it("deletes a memory entry and recreates it after its tombstone", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(1_800_000_000_000);
+    const buzz = client();
+    // An entry dated ahead of this clock, as a writer with a fast clock leaves.
+    await buzz.remember("mem/notes", "keep this", 1_800_000_100);
+    await expect(
+      callTool(buzz, {}, "mem_rm", {
+        slug: "notes",
+        expected: await memoryVersion("keep this"),
+      }),
+    ).resolves.toBe("deleted mem/notes");
+    expect(await buzz.memories()).toEqual({
+      entries: [],
+      deleted: [{ slug: "mem/notes", createdAt: 1_800_000_102 }],
+      partial: false,
+    });
+    // In the same second, the new entry must still outrank the tombstone.
+    await callTool(buzz, {}, "mem_set", { slug: "notes", text: "again" });
+    expect(stored).toHaveLength(3);
+    await expect(
+      callTool(buzz, {}, "mem_get", { slug: "notes" }),
+    ).resolves.toBe(`version: ${await memoryVersion("again")}\n\nagain`);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("saves only its community's media, signed for a get, and shows images", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "buzz-media-"));
+  const buzz = nodeClient({
+    relay: "wss://relay.test",
+    key: bytesToHex(agent.secret),
+    root: "/",
+    media: dir,
+  });
   const bytes = new Uint8Array([1, 2, 3]);
   const sha = createHash("sha256").update(bytes).digest("hex");
   const fetch = vi.mocked(globalThis.fetch);
-  fetch.mockResolvedValueOnce(new Response(bytes));
+  const serve = (body: BodyInit, type: string, status = 200) =>
+    fetch.mockResolvedValueOnce(
+      new Response(body, { status, headers: { "content-type": type } }),
+    );
+  serve(bytes, "image/png");
   await expect(
-    client().media(`https://relay.test/media/${sha}.png`),
-  ).resolves.toBe(btoa("\x01\x02\x03"));
+    buzz.media(`https://relay.test/media/${sha}.png`),
+  ).resolves.toEqual({
+    path: join(dir, `${sha}.png`),
+    type: "image/png",
+    size: 3,
+    data: btoa("\x01\x02\x03"),
+  });
   const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
   expect(url).toBe(`https://relay.test/media/${sha}.png`);
   const header = (init.headers as Record<string, string>).authorization ?? "";
@@ -107,30 +156,69 @@ it("fetches only its community's media, signed for a get", async () => {
     `${sha}/../x`,
     "not-a-hash",
   ])
-    await expect(client().media(input)).rejects.toThrow(
+    await expect(buzz.media(input)).rejects.toThrow(
       "only their community's media",
     );
   expect(fetch).toHaveBeenCalledTimes(1);
-  // The largest body whose base64 fits Claude's 5 MiB is past the size check.
-  fetch.mockResolvedValueOnce(new Response(new Uint8Array(3_932_160)));
-  await expect(client().media(sha)).rejects.toThrow("match its SHA-256");
-  fetch.mockResolvedValueOnce(new Response(new Uint8Array(3_932_161)));
-  await expect(client().media(sha)).rejects.toThrow("over 3.75 MiB");
-  fetch.mockResolvedValueOnce(
-    new Response(new Uint8Array(3_932_161), { status: 500 }),
+
+  // Any other type is saved, named with its type, and not shown.
+  serve(bytes, "video/mp4");
+  await expect(buzz.media(sha)).resolves.toEqual({
+    path: join(dir, `${sha}.mp4`),
+    type: "video/mp4",
+    size: 3,
+  });
+  expect(new Uint8Array(await readFile(join(dir, `${sha}.mp4`)))).toEqual(
+    bytes,
   );
-  await expect(client().media(sha)).rejects.toThrow("over 3.75 MiB");
-  fetch.mockResolvedValueOnce(new Response("denied", { status: 401 }));
-  await expect(client().media(sha)).rejects.toThrow("Media failed: 401 denied");
+  // An image too big to show is still saved.
+  const big = new Uint8Array(3_932_161);
+  const bigSha = createHash("sha256").update(big).digest("hex");
+  serve(big, "image/png");
+  await expect(buzz.media(bigSha)).resolves.toEqual({
+    path: join(dir, `${bigSha}.png`),
+    type: "image/png",
+    size: big.length,
+  });
+
+  serve("denied", "text/plain", 401);
+  await expect(buzz.media(sha)).rejects.toThrow("Media failed: 401 denied");
   const wrongHash = "a".repeat(64);
-  fetch.mockResolvedValueOnce(new Response(bytes));
-  await expect(client().media(wrongHash)).rejects.toThrow(
+  serve(bytes, "video/mp4");
+  await expect(buzz.media(wrongHash)).rejects.toThrow(
     "Media did not match its SHA-256",
   );
-  fetch.mockResolvedValueOnce(new Response(bytes));
-  await expect(client().media(`${wrongHash}.thumb.jpg`)).resolves.toBe(
-    btoa("\x01\x02\x03"),
+  // Nothing is left behind for a refused blob.
+  expect((await readdir(dir)).sort()).toEqual(
+    [`${sha}.png`, `${sha}.mp4`, `${bigSha}.png`].sort(),
   );
+  serve(bytes, "image/jpeg");
+  await expect(buzz.media(`${wrongHash}.thumb.jpg`)).resolves.toMatchObject({
+    type: "image/jpeg",
+    data: btoa("\x01\x02\x03"),
+  });
+  await rm(dir, { recursive: true });
+});
+
+it("reports a media folder it cannot write as a tool error", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "buzz-media-"));
+  await chmod(dir, 0o500);
+  const buzz = nodeClient({
+    relay: "wss://relay.test",
+    key: bytesToHex(agent.secret),
+    root: "/",
+    media: dir,
+  });
+  const bytes = new Uint8Array([1, 2, 3]);
+  const sha = createHash("sha256").update(bytes).digest("hex");
+  vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+    new Response(bytes, { headers: { "content-type": "video/mp4" } }),
+  );
+  // An unhandled stream error would end the MCP server instead.
+  await expect(buzz.media(sha)).rejects.toThrow(/EACCES/);
+  await chmod(dir, 0o700);
+  expect(await readdir(dir)).toEqual([]);
+  await rm(dir, { recursive: true });
 });
 
 it("searches profile names, signed, and reports a community without the search", async () => {

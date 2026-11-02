@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createRelaySession } from "../../features/relay/session";
 import type { ChannelDetailsCapability } from "../../features/relay/channel-details";
 import { readView, writeView } from "../../shared/view-state";
-import { ChannelDetailsEditor } from "./ChannelDetailsEditor";
+import { ChannelGeneralAccess } from "./ChannelGeneralAccess";
 import { CreateChannelDialog } from "./CreateChannelDialog";
 import {
   skipPrivacyConfirmation,
@@ -21,7 +21,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-function editor(visibility: "public" | "private", currentScope = scope) {
+function access(visibility: "public" | "private") {
   const channel = { id: "alpha", name: "Alpha", description: "", visibility };
   const base = {
     ...channel,
@@ -41,17 +41,13 @@ function editor(visibility: "public" | "private", currentScope = scope) {
   return {
     save,
     element: (
-      <ChannelDetailsEditor
-        scope={currentScope}
-        channel={channel}
-        capability={capability}
-      />
+      <ChannelGeneralAccess channelId={channel.id} capability={capability} />
     ),
   };
 }
 
 it.each(["private", "public"] as const)(
-  "opting out from %s skips both directions across Create, reopening, and Edit; writes remain explicit",
+  "opting out from %s skips Create warnings after reopening; General access still confirms immediate writes",
   async (choice) => {
     const user = userEvent.setup();
     const onCreate = vi.fn(async () => {});
@@ -112,83 +108,72 @@ it.each(["private", "public"] as const)(
     });
     reopened.unmount();
 
-    const edit = editor(opposite);
+    const edit = access(opposite);
     render(edit.element);
+    const control = await screen.findByRole("combobox", {
+      name: "General access",
+    });
+    await vi.waitFor(() => expect(control).toBeEnabled());
+    await user.click(control);
     await user.click(
-      await screen.findByRole("button", { name: "Edit details" }),
+      await screen.findByRole("option", {
+        name: choice === "private" ? "Private" : "Public",
+      }),
     );
-    await user.click(screen.getByRole("switch", { name: "Private" }));
-    expect(screen.getByRole("dialog")).toHaveAccessibleName(
-      "Edit channel details",
-    );
-    expect(screen.getByRole("switch", { name: "Private" })).toHaveAttribute(
-      "aria-checked",
-      String(choice === "private"),
-    );
-    await user.click(screen.getByRole("switch", { name: "Private" }));
-    expect(screen.getByRole("dialog")).toHaveAccessibleName(
-      "Edit channel details",
-    );
-    expect(screen.getByRole("switch", { name: "Private" })).toHaveAttribute(
-      "aria-checked",
-      String(opposite === "private"),
-    );
-    await user.click(screen.getByRole("switch", { name: "Private" }));
-    expect(edit.save).not.toHaveBeenCalled();
-    // Opting out of privacy warnings does not opt out of unsaved-draft protection.
-    await user.keyboard("{Escape}");
-    expect(screen.getByRole("dialog")).toHaveAccessibleName("Discard changes?");
+    expect(
+      screen.getByRole("alertdialog", { name: "Change general access?" }),
+    ).toBeVisible();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Keep editing" }));
-    await user.click(screen.getByRole("button", { name: "Save changes" }));
-    expect(edit.save).toHaveBeenCalledExactlyOnceWith(
-      expect.anything(),
-      expect.objectContaining({ visibility: choice }),
-      expect.any(AbortSignal),
-    );
+    expect(edit.save).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await vi.waitFor(() => expect(control).toHaveFocus());
+    expect(edit.save).not.toHaveBeenCalled();
   },
 );
 
 it.each(["private", "public"] as const)(
-  "remembers an Edit %s confirmation only after Continue and isolates community/viewer scope",
+  "remembers a Create %s warning only after Continue and isolates community/viewer scope",
   async (choice) => {
     const user = userEvent.setup();
-    const opposite = choice === "private" ? "public" : "private";
-    const edit = editor(opposite);
-    const view = render(edit.element);
-    await user.click(
-      await screen.findByRole("button", { name: "Edit details" }),
+    const create = (currentScope: string) => (
+      <CreateChannelDialog
+        open
+        onOpenChange={() => {}}
+        onCreate={async () => {}}
+        session={{ ...store.session, scope: currentScope }}
+        destinations={[]}
+        initialGroup=""
+        groupsReady
+      />
     );
+    const view = render(create(scope));
+    if (choice === "public") {
+      await user.click(screen.getByRole("switch", { name: "Private" }));
+      await user.click(screen.getByRole("button", { name: "Continue" }));
+    }
     await user.click(screen.getByRole("switch", { name: "Private" }));
     await user.click(
       screen.getByRole("checkbox", { name: "Don’t show me this again" }),
     );
     expect(skipPrivacyConfirmation(scope)).toBe(false);
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await user.click(screen.getByRole("switch", { name: "Private" }));
-    expect(screen.getByRole("dialog")).toHaveAccessibleName(
-      "Edit channel details",
-    );
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    await user.click(screen.getByRole("button", { name: "Edit details" }));
+    expect(skipPrivacyConfirmation(scope)).toBe(false);
     await user.click(screen.getByRole("switch", { name: "Private" }));
-    expect(screen.getByRole("dialog")).toHaveAccessibleName(
-      "Edit channel details",
+    await user.click(
+      screen.getByRole("checkbox", { name: "Don’t show me this again" }),
     );
-    expect(edit.save).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(skipPrivacyConfirmation(scope)).toBe(true);
     view.unmount();
     for (const otherScope of [
       "other-community:viewer",
       "community:other-viewer",
     ]) {
-      const other = render(editor(opposite, otherScope).element);
-      await user.click(
-        await screen.findByRole("button", { name: "Edit details" }),
-      );
+      const other = render(create(otherScope));
       await user.click(screen.getByRole("switch", { name: "Private" }));
-      expect(screen.getByRole("dialog")).toHaveAccessibleName(
-        `Make channel ${choice}?`,
-      );
+      expect(
+        screen.getByRole("dialog", { name: "Make channel private?" }),
+      ).toBeVisible();
       other.unmount();
     }
   },

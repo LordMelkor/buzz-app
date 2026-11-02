@@ -4,6 +4,7 @@ import { ToastProvider } from "../../src/shared/design-system/ui/Toast";
 import { createRoot } from "react-dom/client";
 import { ChannelMembersButton } from "../../src/bundled/channels/ChannelMembersDialog";
 import { createRelaySession } from "../../src/features/relay/session";
+import { localAgentsFixture } from "../../src/features/agents/local-testing";
 import { PublishRejected } from "../../src/features/relay/outbox";
 import { matchesEvent } from "../../src/features/relay/projection";
 import { bindNames } from "../../src/features/identity-names/service";
@@ -17,9 +18,9 @@ import {
 } from "../../src/features/relay/testing";
 import "../../src/shared/styles/globals.css";
 
-const administration = new URLSearchParams(location.search).has(
-  "administration",
-);
+const solo = new URLSearchParams(location.search).has("solo");
+const administration =
+  new URLSearchParams(location.search).has("administration") || solo;
 const rejectRemoval = new URLSearchParams(location.search).has(
   "reject-removal",
 );
@@ -54,19 +55,27 @@ const scrollMembers = new URLSearchParams(location.search).has("scroll")
 const invitationScale = new URLSearchParams(location.search).has(
   "invitation-scale",
 );
-const inventory = invitationScale
-  ? Array.from({ length: 240 }, (_, index) => ({
-      pubkey: keypair().pubkey,
-      name: `Helper ${String(index + 1).padStart(3, "0")}`,
-    }))
-  : [];
+const invitationFocus = new URLSearchParams(location.search).has(
+  "invitation-focus",
+);
+const inventory =
+  invitationScale || invitationFocus
+    ? Array.from({ length: invitationScale ? 240 : 10 }, (_, index) => ({
+        pubkey: keypair().pubkey,
+        name: `Helper ${String(index + 1).padStart(3, "0")}`,
+      }))
+    : solo
+      ? [{ pubkey: person.pubkey, name: "Morgan" }]
+      : [];
 const searchScale = new URLSearchParams(location.search).has("search-scale");
-const managed = searchScale
-  ? Array.from({ length: 60 }, (_, index) => ({
-      key: keypair(),
-      name: `Agent ${index + 1}`,
-    }))
-  : [];
+const idleOverlap = new URLSearchParams(location.search).has("idle-overlap");
+const managed =
+  searchScale || idleOverlap
+    ? Array.from({ length: idleOverlap ? 2 : 60 }, (_, index) => ({
+        key: keypair(),
+        name: `Agent ${index + 1}`,
+      }))
+    : [];
 const managedProfiles = await Promise.all(
   managed.map(async ({ key, name }) => {
     const digest = await crypto.subtle.digest(
@@ -91,11 +100,12 @@ const managedProfiles = await Promise.all(
     });
   }),
 );
+const visitor = new URLSearchParams(location.search).has("visitor");
 const members = [
-  viewer.pubkey,
-  ...(administration ? [person.pubkey] : []),
+  ...(visitor ? [] : [viewer.pubkey]),
+  ...(administration && !solo ? [person.pubkey] : []),
   ...scrollMembers.map(({ key }) => key.pubkey),
-  ...managed.map(({ key }) => key.pubkey),
+  ...(idleOverlap ? [] : managed.map(({ key }) => key.pubkey)),
 ];
 const scrollProfiles = scrollMembers.map(({ key, name }) =>
   profile(key, { name }),
@@ -109,6 +119,7 @@ const published = new Promise<void>((resolve) => {
 const held = new Promise<void>((resolve) => {
   releasePublish = resolve;
 });
+const pendingAdditions = new Map<string, { confirm(): void; reject(): void }>();
 const searchWork = { images: 0, observations: 0 };
 const provider = createNameProvider({
   id: "fixture",
@@ -171,6 +182,12 @@ const { session: sharedSession } = createRelaySession(
             ["t", "stream"],
             ["private"],
             ["name", "Design"],
+            ...(solo
+              ? [
+                  ["t", "buzz.solo"],
+                  ["P", viewer.pubkey],
+                ]
+              : []),
           ],
         }),
         profile(viewer, { name: "Carl" }),
@@ -198,14 +215,21 @@ const { session: sharedSession } = createRelaySession(
         }
       : {}),
     writer: {
-      kinds: [9000],
+      kinds: solo ? [9000, 9007] : [9000],
       sign: async (template) => signed(viewer, template),
       publish: async (event) => {
         const key = event.tags.find(([tag]) => tag === "p")?.[1];
         if (!key) throw new Error("Missing added identity");
         additions.push(key);
         publishStarted();
-        await held;
+        if (idleOverlap)
+          await new Promise<void>((resolve, reject) => {
+            pendingAdditions.set(key, {
+              confirm: resolve,
+              reject: () => reject(new PublishRejected("Addition rejected")),
+            });
+          });
+        else await held;
         members.push(key);
         clock++;
       },
@@ -213,6 +237,18 @@ const { session: sharedSession } = createRelaySession(
   },
   {
     outboxStorage: { load: () => [], save: () => {} },
+    ...(idleOverlap
+      ? {
+          agentChoices: localAgentsFixture(
+            managed.map(({ key, name }) => ({
+              pubkey: key.pubkey,
+              name,
+              owner: viewer.pubkey,
+              relayUrl: "https://relay.example.test",
+            })),
+          ),
+        }
+      : {}),
     identityNames: {
       register() {},
       bind(source) {
@@ -266,5 +302,13 @@ Object.assign(window, {
     releaseNames: () => releaseNames(),
     additions,
     confirm: () => releasePublish(),
+    settleAddition: (index: number, rejected = false) => {
+      const key = additions[index];
+      const pending = key && pendingAdditions.get(key);
+      if (!key || !pending) throw new Error("No pending addition");
+      pendingAdditions.delete(key);
+      if (rejected) pending.reject();
+      else pending.confirm();
+    },
   },
 });

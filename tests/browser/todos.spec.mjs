@@ -1,7 +1,9 @@
+import { pluginAction } from "./plugin-settings.mjs";
 import {
+  closeSettings,
   openPage,
+  openSettings,
   selectSettingsSection,
-  settleShellToggle,
 } from "./navigation.mjs";
 import { npubEncode } from "nostr-tools/nip19";
 import { verifyEvent } from "nostr-tools";
@@ -21,7 +23,7 @@ test.beforeEach(async ({ page }) => {
 
 // Configure the modeled session at its HTTP owner instead of proxying it through
 // route.fetch(), so session setup needs only the browser's original request.
-test.use({ sessionWriteKinds: [9, 9007, 40100] });
+test.use({ channelWriteKinds: [9, 9007, 40100] });
 
 // Browser-only boundary: real plugin Settings/launcher/panel wiring, Canvas
 // outbox -> signed HTTP receipt -> readback, native focus and drawer geometry.
@@ -31,7 +33,7 @@ test("opt-in Todos saves ordinary Canvas and disabling leaves it editable", asyn
   app,
 }) => {
   const original =
-    "# Notes\nKeep this prose.\n\n## Todos\n\n- [ ] First\n\n## Decisions\nKeep these too.\n";
+    "# Notes\nKeep this prose.\n\n## Todos\n\n- [ ] First\n    - [ ] Build\n        - [/] Review\n    - [ ] **Read** [guide](https://example.com) [Beta](buzz://channel/beta)\n- [ ] Legacy · Assignee: John\n\n## Decisions\nKeep these too.\n";
   let head = app.sign({
     kind: 40100,
     content: original,
@@ -64,14 +66,10 @@ test("opt-in Todos saves ordinary Canvas and disabling leaves it editable", asyn
   });
   const button = (name) => page.getByRole("button", { name, exact: true });
   const plugins = async () => {
-    await button("Your profile").click();
-    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-    await selectSettingsSection(page, "Plugins");
+    await openSettings(page);
+    await selectSettingsSection(page, "Manage plugins");
   };
   const messages = async () => {
-    await settleShellToggle(page);
-    const disclosure = button("Show navigation");
-    if (await disclosure.isVisible()) await disclosure.click();
     await openPage(page, "Messages");
     await expect(
       page
@@ -84,13 +82,11 @@ test("opt-in Todos saves ordinary Canvas and disabling leaves it editable", asyn
   const launcher = button("Toggle channel todos");
   await expect(launcher).toHaveCount(0);
   await plugins();
-  const enabled = page.getByRole("switch", {
-    name: "Enable Todos",
-    exact: true,
-  });
-  await expect(enabled).not.toBeChecked();
+  const enabled = pluginAction(page, "Todos");
+  await expect(enabled).toHaveAccessibleName(/^Enable /);
   await enabled.click();
-  await expect(enabled).toBeChecked();
+  await expect(enabled).toHaveAccessibleName(/^Disable /);
+  await closeSettings(page);
   await messages();
   await launcher.click();
   const drawer = page.getByRole("region", {
@@ -98,6 +94,45 @@ test("opt-in Todos saves ordinary Canvas and disabling leaves it editable", asyn
     exact: true,
   });
   const input = drawer.getByRole("textbox", { name: "New todo" });
+  const nested = drawer.getByRole("checkbox", { name: "Review", exact: true });
+  await expect(nested).toBeVisible();
+  const first = drawer.getByRole("checkbox", { name: "First", exact: true });
+  const build = drawer.getByRole("checkbox", { name: "Build", exact: true });
+  // The drawer can still be moving. Compare indentation in one layout sample.
+  const positions = await page.evaluate(
+    (elements) => elements.map((element) => element.getBoundingClientRect().x),
+    [
+      await first.elementHandle(),
+      await build.elementHandle(),
+      await nested.elementHandle(),
+    ],
+  );
+  expect(positions[1]).toBeGreaterThan(positions[0]);
+  expect(positions[2]).toBeGreaterThan(positions[1]);
+  await expect(drawer.getByText("First / Build", { exact: true })).toHaveCount(
+    0,
+  );
+  await drawer
+    .getByRole("button", { name: "Collapse First", exact: true })
+    .click();
+  await expect(nested).toBeHidden();
+  await drawer
+    .getByRole("button", { name: "Expand First", exact: true })
+    .click();
+  await expect(nested).toBeVisible();
+  await expect(
+    drawer.getByRole("link", { name: "guide", exact: true }),
+  ).toHaveAttribute("href", "https://example.com/");
+  await expect(drawer.locator("strong", { hasText: "Read" })).toBeVisible();
+  await expect(
+    drawer.getByRole("button", {
+      name: "Assignee for Legacy: John",
+      exact: true,
+    }),
+  ).toHaveAttribute(
+    "aria-description",
+    "John (from Canvas; choose a member to link)",
+  );
   await input.fill("Ship it");
   await input.press("Enter");
   await expect(drawer.getByRole("status")).toHaveText("Saved in Canvas");
@@ -123,6 +158,14 @@ test("opt-in Todos saves ordinary Canvas and disabling leaves it editable", asyn
       `## Todos\n\n- [x] Ship it · Assignee: [Fixture Reader](nostr:${npubEncode(app.viewer)})\n`,
     ),
   );
+  const beforeChildEdit = head.content;
+  const child = drawer.getByRole("checkbox", { name: "Build", exact: true });
+  await child.focus();
+  await child.press("Space");
+  await expect(child).toBeChecked();
+  await expect(drawer.getByRole("status")).toHaveText("Saved in Canvas");
+  expect(writes).toHaveLength(4);
+  expect(head.content).toBe(beforeChildEdit.replace("[ ] Build", "[x] Build"));
   const conversation = await page
     .getByRole("article", { name: "Conversation", exact: true })
     .boundingBox();
@@ -137,6 +180,7 @@ test("opt-in Todos saves ordinary Canvas and disabling leaves it editable", asyn
   // clicking the launcher, which moves when the conversation expands.
   await expect(dock).toHaveCount(0);
   await launcher.click();
+  await expect(child).toBeChecked();
   await expect(assignee).toHaveAttribute("aria-description", /Fixture Reader/);
   await assignee.click();
   await page
@@ -153,11 +197,42 @@ test("opt-in Todos saves ordinary Canvas and disabling leaves it editable", asyn
   await launcher.click();
   await expect(assignee).toHaveAttribute("aria-description", /Fixture Reader/);
   const expectCompactRow = async () => {
+    // Reopening and resizing animate both the dock and its parent grid.
+    await dock.evaluate(async (element) => {
+      await Promise.all(
+        [
+          ...element.getAnimations(),
+          ...element.parentElement.getAnimations(),
+        ].map((animation) => animation.finished),
+      );
+    });
     const row = assignee.locator("xpath=ancestor::li");
     const label = row.getByRole("checkbox").locator("..");
-    const rowBounds = await row.boundingBox();
-    const labelBounds = await label.boundingBox();
-    const triggerBounds = await assignee.boundingBox();
+    // Opening the dock moves every row. Observe the completed animation, then
+    // sample all geometry in one browser task so coordinates share a frame.
+    await dock.evaluate(async (element) => {
+      await Promise.all(
+        [element, element.parentElement]
+          .flatMap((node) => node?.getAnimations() ?? [])
+          .map((animation) => animation.finished),
+      );
+    });
+    const status = row.getByRole("button", { name: "Status for Ship it" });
+    const { rowBounds, labelBounds, triggerBounds, statusBounds, fits } =
+      await row.evaluate(
+        (element, { label, trigger, status }) => ({
+          rowBounds: element.getBoundingClientRect().toJSON(),
+          labelBounds: label.getBoundingClientRect().toJSON(),
+          triggerBounds: trigger.getBoundingClientRect().toJSON(),
+          statusBounds: status.getBoundingClientRect().toJSON(),
+          fits: element.scrollWidth <= element.clientWidth,
+        }),
+        {
+          label: await label.elementHandle(),
+          trigger: await assignee.elementHandle(),
+          status: await status.elementHandle(),
+        },
+      );
     expect(triggerBounds.x).toBeGreaterThanOrEqual(
       labelBounds.x + labelBounds.width,
     );
@@ -167,24 +242,22 @@ test("opt-in Todos saves ordinary Canvas and disabling leaves it editable", asyn
     expect(triggerBounds.y + triggerBounds.height / 2).toBeLessThanOrEqual(
       labelBounds.y + labelBounds.height,
     );
-    const statusBounds = await row
-      .getByRole("button", { name: "Status for Ship it" })
-      .boundingBox();
     expect(triggerBounds.x).toBeGreaterThanOrEqual(
       statusBounds.x + statusBounds.width,
     );
     expect(triggerBounds.x + triggerBounds.width).toBeLessThanOrEqual(
       rowBounds.x + rowBounds.width + 1,
     );
-    expect(await row.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
-      true,
-    );
+    expect(fits).toBe(true);
     await expect(assignee).toHaveAttribute("data-size", "sm");
-    await expect(assignee).toHaveAttribute("data-icon-variant", "avatar");
+    await expect(assignee).toContainText("Fixture Reader");
   };
   // Channel-specific drawers stay off other pages, but returning to the same
   // channel can reopen its Canvas-backed content with a live launcher.
-  const sidebar = page.getByRole("complementary", { name: "Channel sidebar" });
+  const sidebar = page.getByRole("complementary", {
+    name: "Sidebar",
+    exact: true,
+  });
   const pages = sidebar.getByRole("navigation", { name: "Pages" });
   for (const destination of ["Inbox", "Bestie"]) {
     await pages.getByRole("button", { name: destination, exact: true }).click();
@@ -242,9 +315,22 @@ test("opt-in Todos saves ordinary Canvas and disabling leaves it editable", asyn
   await expect(
     drawer.getByRole("checkbox", { name: "Ship it", exact: true }),
   ).toBeChecked();
+  await drawer.getByRole("link", { name: "Beta", exact: true }).click();
+  await expect(
+    page
+      .getByRole("article", { name: "Conversation" })
+      .getByRole("tab", { name: "Beta", exact: true }),
+  ).toBeVisible();
+  await sidebar.getByRole("button", { name: "Alpha", exact: true }).click();
+  await expect(
+    page
+      .getByRole("article", { name: "Conversation" })
+      .getByRole("tab", { name: "Alpha", exact: true }),
+  ).toBeVisible();
   await plugins();
   await enabled.click();
-  await expect(enabled).not.toBeChecked();
+  await expect(enabled).toHaveAccessibleName(/^Enable /);
+  await closeSettings(page);
   await messages();
   await expect(launcher).toHaveCount(0);
   await expect(drawer).toHaveCount(0);

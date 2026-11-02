@@ -13,8 +13,10 @@ import { profileTarget } from "../profiles/target";
 import { MessageMarkdown } from "./MessageMarkdown";
 import {
   type CopyFormat,
+  copyDocument,
   serializeNode,
   serializeSelection,
+  spoilerDelimiter,
   useMessageSelectionCopy,
 } from "./selection-copy";
 
@@ -357,6 +359,48 @@ describe("serializeNode", () => {
         "- one\n- two **b**\n\n3. first\n   \n   - sub\n\n> quoted\n>\n> > deep\n\n```sh\nls\n```",
       html: '<ul><li>one</li><li>two <strong>b</strong></li></ul><ol start="3"><li><p>first</p><ul><li>sub</li></ul></li></ol><blockquote><p>quoted</p><blockquote><p>deep</p></blockquote></blockquote><pre><code class="language-sh">ls</code></pre>',
     });
+    // The paste side inserts this document's nodes; `markdown` serializes it.
+    const paragraph = (...content: object[]) => ({
+      type: "paragraph",
+      content,
+    });
+    const text = (text: string, marks?: object[]) =>
+      marks ? { type: "text", text, marks } : { type: "text", text };
+    const item = (...content: object[]) => ({ type: "list_item", content });
+    expect(copyDocument(query("[data-message-id]", body)).toJSON()).toEqual({
+      type: "doc",
+      content: [
+        {
+          type: "bullet_list",
+          content: [
+            item(paragraph(text("one"))),
+            item(paragraph(text("two "), text("b", [{ type: "bold" }]))),
+          ],
+        },
+        {
+          type: "ordered_list",
+          attrs: { order: 3 },
+          content: [
+            item(paragraph(text("first")), {
+              type: "bullet_list",
+              content: [item(paragraph(text("sub")))],
+            }),
+          ],
+        },
+        {
+          type: "blockquote",
+          content: [
+            paragraph(text("quoted")),
+            { type: "blockquote", content: [paragraph(text("deep"))] },
+          ],
+        },
+        {
+          type: "code_block",
+          attrs: { language: "sh" },
+          content: [text("ls")],
+        },
+      ],
+    });
     // A partial selection keeps each item's own number.
     const { range } = select(
       lastText(query("ol li p", body)),
@@ -367,6 +411,273 @@ describe("serializeNode", () => {
     expect(
       serializeNode(query("[data-message-id]", body), "markdown", range),
     ).toBe("3. rst\n   \n   - sub\n\n> quo");
+  });
+
+  // MessageSpoiler's shape: a mask button, then content that reveal toggles.
+  const spoiler = (revealed: boolean, inner: string) =>
+    `<span data-spoiler="" data-revealed="${revealed}"><button type="button" aria-label="Reveal spoiler"></button><span aria-hidden="${!revealed}">${inner}</span></span>`;
+  const spoilerHtml = (inner: string) =>
+    `<span data-spoiler="">${spoilerDelimiter}${inner}${spoilerDelimiter}</span>`;
+
+  it("copies a spoiler as the composer's mark in HTML and delimited elsewhere", () => {
+    const body = mount(
+      row(
+        `<p>a ${spoiler(false, "secret")} b ${spoiler(true, "<strong>shown</strong>")}</p>`,
+      ),
+    );
+    const paragraph = query("p", body);
+    const flavors = {
+      text: "a ||secret|| b ||shown||",
+      markdown: "a ||secret|| b ||**shown**||",
+      html: `<p>a ${spoilerHtml("secret")} b ${spoilerHtml("<strong>shown</strong>")}</p>`,
+    };
+    expect(each(paragraph)).toEqual(flavors);
+    const parsed = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "a " },
+            { type: "text", text: "secret", marks: [{ type: "spoiler" }] },
+            { type: "text", text: " b " },
+            {
+              type: "text",
+              text: "shown",
+              marks: [{ type: "spoiler" }, { type: "bold" }],
+            },
+          ],
+        },
+      ],
+    };
+    expect(copyDocument(paragraph).toJSON()).toEqual(parsed);
+    // Part of a spoiler stays a spoiler, including a word selected wholly
+    // inside its text, whose range never reaches the spoiler element itself;
+    // a selection ending at its start adds nothing.
+    const secret = lastText(query("[data-spoiler] span", paragraph));
+    const after = paragraph.childNodes[2] as Text;
+    expect(
+      serializeSelection(select(secret, 2, after, 2).selection, "text"),
+    ).toBe("||cret|| b");
+    const inside = select(secret, 2, secret, 4).selection;
+    expect(serializeSelection(inside, "text")).toBe("||cr||");
+    expect(serializeSelection(inside, "markdown")).toBe("||cr||");
+    expect(serializeSelection(inside, "html")).toBe(spoilerHtml("cr"));
+    expect(
+      serializeSelection(select(paragraph, 0, secret, 0).selection, "html"),
+    ).toBe("<p>a </p>");
+    // A chip inside a spoiler copies as the spoiler's, whole label or not.
+    const chip = query(
+      "[data-spoiler] a",
+      mount(
+        row(
+          `<p>${spoiler(true, `ask <a href="${profileTarget("c".repeat(64))}">@Mic</a>`)}</p>`,
+        ),
+      ),
+    );
+    const label = lastText(chip);
+    expect(
+      serializeSelection(select(label, 0, label, 4).selection, "markdown"),
+    ).toBe(`||[@Mic](${profileTarget("c".repeat(64))})||`);
+    expect(
+      serializeSelection(select(label, 1, label, 3).selection, "markdown"),
+    ).toBe("||Mi||");
+    // Read back from the clipboard, the delimiters are the mark's, not text,
+    // and copying that HTML again does not double them.
+    const copied = mount(
+      `<div data-buzz-copy="timeline">${flavors.html}</div>`,
+    );
+    expect(each(query("p", copied))).toEqual(flavors);
+    expect(copyDocument(query("[data-buzz-copy]", copied)).toJSON()).toEqual(
+      parsed,
+    );
+  });
+
+  it("keeps pipe pairs authored inside a spoiler apart from its delimiters", () => {
+    // `||\|\|secret\|\| \`||x||\`||` renders literal pipes inside the spoiler.
+    const body = mount(
+      row(`<p>a ${spoiler(false, "||secret|| <code>||x||</code>")}</p>`),
+    );
+    const paragraph = query("p", body);
+    const flavors = {
+      text: "a ||||secret|| ||x||||",
+      markdown: "a ||\\|\\|secret\\|\\| `||x||`||",
+      html: `<p>a ${spoilerHtml("||secret|| <code>||x||</code>")}</p>`,
+    };
+    expect(each(paragraph)).toEqual(flavors);
+    const parsed = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "a " },
+            { type: "text", text: "||secret|| ", marks: [{ type: "spoiler" }] },
+            {
+              type: "text",
+              text: "||x||",
+              marks: [{ type: "code" }, { type: "spoiler" }],
+            },
+          ],
+        },
+      ],
+    };
+    expect(copyDocument(paragraph).toJSON()).toEqual(parsed);
+    const copied = mount(
+      `<div data-buzz-copy="timeline">${flavors.html}</div>`,
+    );
+    expect(each(query("p", copied))).toEqual(flavors);
+    expect(copyDocument(query("[data-buzz-copy]", copied)).toJSON()).toEqual(
+      parsed,
+    );
+  });
+
+  it("copies headings, task states and rules as semantic HTML the composer reads as source", () => {
+    const body = mount(
+      `<div data-buzz-copy="timeline">${row(
+        '<h2>Title <strong>b</strong></h2>\n<ul class="contains-task-list">\n<li class="task-list-item"><input disabled="" type="checkbox"> todo</li>\n<li class="task-list-item"><input disabled="" type="checkbox" checked=""> done</li>\n<li>plain</li>\n</ul>\n<p>above</p>\n<hr>\n<p>below</p>',
+      )}</div>`,
+    );
+    const message = query("[data-message-id]", body);
+    expect(each(message)).toEqual({
+      text: "Title b\n\n[ ] todo\n[x] done\nplain\n\nabove\n\n---\n\nbelow",
+      markdown:
+        "## Title **b**\n\n- [ ] todo\n- [x] done\n- plain\n\nabove\n\n***\n\nbelow",
+      html: '<h2>Title <strong>b</strong></h2><ul><li><input type="checkbox"> todo</li><li><input type="checkbox" checked> done</li><li>plain</li></ul><p>above</p><hr><p>below</p>',
+    });
+    // Source text joins the paragraphs and items; no new block kinds appear.
+    expect(
+      copyDocument(message)
+        .toJSON()
+        .content.map((block: { type: string }) => block.type),
+    ).toEqual([
+      "paragraph",
+      "bullet_list",
+      "paragraph",
+      "paragraph",
+      "paragraph",
+      "paragraph",
+      "paragraph",
+    ]);
+    // A selection starting inside a heading keeps its level; one starting
+    // after a checkbox omits it, while one from the item's start keeps it.
+    const done = lastText(query("li + li", body));
+    const partial = (start: Node, offset: number) =>
+      serializeNode(message, "markdown", select(start, offset, done, 5).range);
+    expect(partial(query("h2", body).firstChild as Text, 2)).toBe(
+      "## tle **b**\n\n- [ ] todo\n- [x] done",
+    );
+    expect(partial(lastText(query("li", body)), 2)).toBe("- odo\n- [x] done");
+    expect(partial(query("li", body), 0)).toBe("- [ ] todo\n- [x] done");
+  });
+
+  it("spells a copied rule `***`, which no line above can make a heading", () => {
+    const body = mount(
+      `<div data-buzz-copy="timeline">${row("<p>text</p>\n<hr>")}</div>`,
+    );
+    const message = query("[data-message-id]", body);
+    expect(serializeNode(message, "html")).toBe("<p>text</p><hr>");
+    expect(serializeNode(message, "text")).toBe("text\n\n---");
+    expect(serializeNode(message, "markdown")).toBe("text\n\n***");
+    expect(copyDocument(message).toJSON()).toEqual({
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "text" }] },
+        { type: "paragraph" },
+        { type: "paragraph", content: [{ type: "text", text: "***" }] },
+      ],
+    });
+  });
+
+  it.each([
+    ["<h2>Title</h2>\n<p>body</p>", "p", "Title", "## Title", "<h2>Title</h2>"],
+    [
+      "<p>first</p>\n<blockquote>\n<p>quoted</p>\n</blockquote>",
+      "blockquote p",
+      "first",
+      "first",
+      "<p>first</p>",
+    ],
+    [
+      "<p>first</p>\n<pre><code>code\n</code></pre>",
+      "pre",
+      "first",
+      "first",
+      "<p>first</p>",
+    ],
+    [
+      "<ul>\n<li>\n<p>one</p>\n</li>\n<li>\n<p>two</p>\n</li>\n</ul>",
+      "li + li p",
+      "one",
+      "- one",
+      "<ul><li><p>one</p></li></ul>",
+    ],
+  ])(
+    "leaves out the block after %j that a triple-click's range ends at",
+    (html, next, text, markdown, copied) => {
+      // Chromium and WebKit end it at offset 0 of the next block element.
+      const body = mount(row(html));
+      const message = query("[data-message-id]", body);
+      const first = query("h2, p", message).firstChild as Text;
+      const { range } = select(first, 0, query(next, body), 0);
+      expect(each(message, range)).toEqual({ text, markdown, html: copied });
+    },
+  );
+
+  it("leaves out the next row and an empty reaction row when a triple-click crosses into it", () => {
+    // The real shape: a message's last paragraph to offset 0 of the next row's
+    // first element, past the first row's empty reaction row.
+    const body = mount(
+      row(
+        '<div><p>only</p><div role="group" aria-label="Reactions"></div></div>',
+      ) + row("<div><span>Name</span><p>next</p></div>", "m2"),
+    );
+    const { range } = select(
+      query("p", body).firstChild as Text,
+      0,
+      query('[data-message-id="m2"] span', body),
+      0,
+    );
+    expect(each(body, range)).toEqual({
+      text: "only",
+      markdown: "only",
+      html: "<p>only</p>",
+    });
+  });
+
+  it("numbers a list from its first item a selection holds, keeping a whole empty item", () => {
+    const body = mount(
+      row('<ol start="3">\n<li>one</li>\n<li></li>\n<li>three</li>\n</ol>'),
+    );
+    const message = query("[data-message-id]", body);
+    // A drag from the end of the first item's text holds none of it.
+    const { range } = select(
+      lastText(query("li", message)),
+      3,
+      lastText(query("li:last-child", message)),
+      5,
+    );
+    expect(serializeNode(message, "html", range)).toBe(
+      '<ol start="4"><li></li><li>three</li></ol>',
+    );
+    expect(serializeNode(message, "markdown", range)).toBe("4. \n5. three");
+  });
+
+  it("serializes each element of deeply nested ordered lists once", () => {
+    // The shape `"1. ".repeat(16) + "x"` renders: numbering an ordered list
+    // must not serialize its items again at every level.
+    const nested = `${"<ol><li>".repeat(16)}x${"</li></ol>".repeat(16)}`;
+    const message = query("[data-message-id]", mount(row(nested)));
+    const { range } = select(lastText(message), 0, lastText(message), 1);
+    const styles = vi.spyOn(window, "getComputedStyle");
+    try {
+      expect(serializeNode(message, "html", range)).toBe(nested);
+      expect(styles).toHaveBeenCalledTimes(
+        message.querySelectorAll("*").length + 1,
+      );
+    } finally {
+      styles.mockRestore();
+    }
   });
 
   it("degrades unknown elements to text and escapes HTML", () => {
@@ -440,6 +751,10 @@ describe("useMessageSelectionCopy", () => {
   }
 
   it("writes both flavors for a rendered message and nothing for an editor", () => {
+    const joined = [
+      { id: "design", name: "design", channelType: "forum" },
+      { id: "general", name: "General", channelType: "forum" },
+    ] as const;
     const view = render(
       <StrictMode>
         <Surface />
@@ -464,10 +779,8 @@ describe("useMessageSelectionCopy", () => {
             directory={{
               profiles: new Map(),
               agents: [],
-              channels: [
-                { id: "design", name: "design", channelType: "forum" },
-                { id: "general", name: "General", channelType: "forum" },
-              ],
+              channels: joined,
+              named: joined,
             }}
           />
         </div>

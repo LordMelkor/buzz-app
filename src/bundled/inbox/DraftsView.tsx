@@ -5,6 +5,7 @@ import {
 } from "../../features/conversation/Conversation";
 import {
   type ReactNode,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -20,8 +21,15 @@ import type { Navigation } from "../../features/navigation/controller";
 import type { NavigationScope } from "../../features/navigation/targets";
 import { selectProfiles } from "../../features/relay/profile-selection";
 import { useIdentityNames } from "../../features/identity-names/react";
-import { mentionDraft } from "../../features/messages/mention-draft";
-import { clearAttachmentDraft } from "../../features/messages/attachment-draft";
+import {
+  hasDraftContent,
+  mentionDraft,
+} from "../../features/messages/mention-draft";
+import {
+  attachmentDraftCount,
+  clearAttachmentDraft,
+  subscribeAttachmentDraftCounts,
+} from "../../features/messages/attachment-draft";
 import {
   clearView,
   draftCoordinates,
@@ -42,11 +50,11 @@ import {
   ArrowSquareOutIcon,
   ChatCircleIcon,
   TrashIcon,
-  HashIcon,
   XIcon,
 } from "../../shared/design-system/icons/index";
 import styles from "./Inbox.module.css";
 import { dmLabel } from "./dm-label";
+import { channelIcon, channelText } from "../../features/channels/channel-icon";
 import { avatarMedia } from "../../shared/avatar-source";
 
 export function DraftsView({
@@ -69,15 +77,36 @@ export function DraftsView({
   resizeHandle?: ReactNode;
 }) {
   const [revision, update] = useState(0);
-  useEffect(
-    () => subscribeView(session.scope, () => update((value) => value + 1)),
-    [session],
-  );
+  useEffect(() => {
+    const refresh = () => update((value) => value + 1);
+    const stopViews = subscribeView(session.scope, refresh);
+    const stopFiles = subscribeAttachmentDraftCounts(session, refresh);
+    return () => {
+      stopViews();
+      stopFiles();
+    };
+  }, [session]);
   const [selected, setSelected] = useState<string>();
-  const invoking = useRef<{ key: string; row: HTMLButtonElement }>(undefined);
+  const invoking = useRef<{
+    key: string;
+    row: HTMLButtonElement;
+    focus: { current: HTMLElement | null };
+  }>(undefined);
   const fallbackRow = useRef<HTMLButtonElement>(null);
   const restoreFocus = useRef<HTMLButtonElement>(null);
   const visit = invoking.current;
+  const coarse = !!window.matchMedia?.("(pointer: coarse)").matches;
+  const autoFocus = coarse ? false : (visit?.focus ?? false);
+  const detailRef = useCallback((node: HTMLElement | null) => {
+    if (!node) return;
+    // Ref cleanup runs before removal, while focus ownership is still observable.
+    return () => {
+      if (invoking.current)
+        restoreFocus.current = node.contains(document.activeElement)
+          ? invoking.current.row
+          : null;
+    };
+  }, []);
   useLayoutEffect(() => {
     if (selected || !restoreFocus.current) return;
     const row = restoreFocus.current.isConnected
@@ -91,18 +120,13 @@ export function DraftsView({
   // The composer owns draft contents and storage; Inbox only enumerates its scope.
   const saved = listDraftViews(
     session.scope,
-    (value) => {
-      const draft = mentionDraft(value);
-      return !!draft.text.trim() || !!draft.sessionCards?.length;
-    },
+    (value, key) =>
+      hasDraftContent(
+        mentionDraft(value),
+        attachmentDraftCount(session, `${session.scope}:${key}`),
+      ),
     selected,
   );
-  const entries = saved.entries.flatMap(({ key, value }) => {
-    const coordinates = draftCoordinates(key);
-    return coordinates
-      ? [{ key, draft: mentionDraft(value), coordinates }]
-      : [];
-  });
   void revision;
   const list = useSyncExternalStore(
     session.channels.subscribeList,
@@ -110,22 +134,54 @@ export function DraftsView({
     session.channels.list,
   );
   const channels = list.channels;
+  // Keep private-room drafts stored for their Huddle composer, outside Inbox.
+  const excluded = (channelId: string) =>
+    channels.some(
+      (item) => item.id === channelId && (item.huddle || item.metadataPending),
+    );
+  const entries = saved.entries.flatMap(({ key, value }) => {
+    const coordinates = draftCoordinates(key);
+    return coordinates && !excluded(coordinates.channelId)
+      ? [{ key, draft: mentionDraft(value), coordinates }]
+      : [];
+  });
   const [limit, setLimit] = useState(50);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const closeControl = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (selected) closeControl.current?.focus({ preventScroll: true });
-  }, [selected]);
   const deleteTrigger = useRef<HTMLButtonElement>(null);
+  const cancelDelete = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    const entry = invoking.current;
+    if (!selected || !entry) return;
+    // The visit owns cancellation before a delayed root can mount its editor.
+    const moved = (event: FocusEvent) => {
+      if (event.target !== entry.focus.current) entry.focus.current = null;
+    };
+    document.addEventListener("focusin", moved, true);
+    if (coarse && entry.focus.current === entry.row)
+      closeControl.current?.focus({ preventScroll: true });
+    return () => document.removeEventListener("focusin", moved, true);
+  }, [selected, coarse]);
   const [error, setError] = useState<string>();
   // Selection owns editor lifetime, not the bounded list summary's eligibility.
   const coordinates = selected && draftCoordinates(selected);
   const active =
-    selected && coordinates ? { key: selected, coordinates } : undefined;
+    selected && coordinates && !excluded(coordinates.channelId)
+      ? { key: selected, coordinates }
+      : undefined;
+  useLayoutEffect(() => {
+    if (!selected || active) return;
+    invoking.current = undefined;
+    setSelected(undefined);
+    setConfirmDelete(false);
+    setError(undefined);
+  }, [selected, active]);
   const channelFor = (channelId: string) =>
     channels.find(
       (item) =>
         item.id === channelId &&
+        !item.huddle &&
+        !item.metadataPending &&
         !item.cached &&
         !item.archived &&
         !item.readOnly &&
@@ -172,12 +228,17 @@ export function DraftsView({
   }, [session, profileIds, list.status, list.asOf]);
   const destination = (channel: ChannelSummary | undefined) => {
     if (!channel) return "Unavailable conversation";
-    if (channel.channelType !== "dm") return `#${channel.name}`;
+    if (channel.channelType !== "dm") return channelText(channel);
     return dmLabel(channel.participants, profiles, name);
   };
   const activeChannel = active
     ? channelFor(active.coordinates.channelId)
     : undefined;
+  useEffect(() => {
+    if (selected && !activeChannel)
+      closeControl.current?.focus({ preventScroll: true });
+  }, [selected, activeChannel]);
+  const ActiveIcon = channelIcon(activeChannel);
   const title = !activeChannel
     ? "Unavailable conversation"
     : activeChannel.channelType === "dm"
@@ -260,6 +321,7 @@ export function DraftsView({
             const channel = channelFor(entry.coordinates.channelId);
             const label = destination(channel);
             const dm = channel?.channelType === "dm";
+            const Icon = channelIcon(channel);
             const first = dm ? channel.participants?.[0] : undefined;
             const artwork = first && profiles.get(first)?.picture;
             return (
@@ -284,7 +346,7 @@ export function DraftsView({
                         }
                       />
                     ) : (
-                      <HashIcon size={20} aria-hidden="true" />
+                      <Icon size={20} aria-hidden="true" />
                     )
                   }
                   label={
@@ -312,7 +374,10 @@ export function DraftsView({
                       >
                         {entry.draft.text.trim()
                           ? entry.draft.text
-                          : "Session attachment"}
+                          : entry.draft.gifs?.length &&
+                              !entry.draft.chatCards?.length
+                            ? "GIF"
+                            : "Chat attachment"}
                       </span>
                     </span>
                   }
@@ -321,6 +386,7 @@ export function DraftsView({
                       invoking.current = {
                         key: entry.key,
                         row: event.currentTarget,
+                        focus: { current: event.currentTarget },
                       };
                     setSelected(entry.key);
                     setConfirmDelete(false);
@@ -353,6 +419,7 @@ export function DraftsView({
       </div>
       {active && (
         <section
+          ref={detailRef}
           aria-label="Draft detail"
           className={styles.detail}
           onKeyDown={(event) => {
@@ -371,18 +438,13 @@ export function DraftsView({
             title={
               <PanelHeaderLabel
                 title={title}
-                icon={
-                  activeChannel?.channelType === "dm" ? (
-                    <ChatCircleIcon size="1rem" />
-                  ) : (
-                    <HashIcon size="1rem" />
-                  )
-                }
+                icon={<ActiveIcon size="1rem" />}
               />
             }
             actions={
               <>
                 <IconButton
+                  hint="familiar"
                   size="sm"
                   ref={deleteTrigger}
                   aria-label="Delete draft…"
@@ -424,6 +486,7 @@ export function DraftsView({
                     <ConversationThread
                       messageId={active.coordinates.threadRootId}
                       requireReadyRoot
+                      autoFocus={autoFocus}
                       onDraftSaved={retire}
                     />
                   ) : (
@@ -434,6 +497,7 @@ export function DraftsView({
                           : activeChannel.name
                       }
                       draft
+                      autoFocus={autoFocus}
                       onDraftSaved={retire}
                     />
                   )}
@@ -447,6 +511,7 @@ export function DraftsView({
             {confirmDelete && (
               <AlertDialog
                 title="Delete draft?"
+                initialFocus={cancelDelete}
                 description="Delete this saved draft and its attachments on this device? This cannot be undone."
                 onClose={() => setConfirmDelete(false)}
                 // On deletion, retirement restores the surviving list control.
@@ -461,6 +526,7 @@ export function DraftsView({
                     </Button>
                     <Button
                       size="sm"
+                      ref={cancelDelete}
                       variant="ghost"
                       onClick={() => setConfirmDelete(false)}
                     >

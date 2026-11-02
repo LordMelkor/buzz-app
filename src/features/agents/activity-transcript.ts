@@ -9,8 +9,6 @@ type Source = Readonly<{
 export type TranscriptScope = Readonly<{
   agent: string;
   channelId?: string | undefined;
-  /** Exact NIP-10 root. Omit for the whole channel, threads included. */
-  threadRootId?: string | undefined;
 }>;
 export type PromptSection = Readonly<{ tag: string; body: string }>;
 type Base = { id: string; at: number };
@@ -31,6 +29,8 @@ export type ToolItem = Base & {
   completedAt?: number;
   truncated: boolean;
   permission?: { options: string[]; outcome?: string };
+  /** Calls recorded while this script was executing, in recorded order. */
+  children?: TranscriptItem[];
 };
 export type TranscriptItem =
   | (Base & { type: "system"; sections: PromptSection[] })
@@ -73,8 +73,6 @@ export type TranscriptTurn = {
 };
 export type Transcript = Readonly<{
   turns: readonly TranscriptTurn[];
-  /** Turns hidden from a thread scope because their thread is unknown. */
-  unknownThread: number;
 }>;
 
 type Json = { [key: string]: unknown };
@@ -530,24 +528,19 @@ export function activityTranscript(
     else draft.config = configs.get(draft.sessionId) ?? [];
   }
 
-  let unknownThread = 0;
-  const visible: TranscriptTurn[] = [];
-  for (const draft of drafts) {
-    const {
-      tools: _tools,
-      plan: _plan,
-      piStartup: _piStartup,
-      payloadThread,
-      promptThread: prompt,
-      ...turn
-    } = draft;
-    // Older harnesses omit threadRootEventId; the prompt context still names it.
-    turn.threadRootId = payloadThread ?? prompt;
-    if (scope.threadRootId && turn.threadRootId !== scope.threadRootId) {
-      if (turn.threadRootId === undefined) unknownThread++;
-      continue;
-    }
-    visible.push(turn);
-  }
-  return { turns: visible, unknownThread };
+  return {
+    turns: drafts.map((draft) => {
+      const {
+        tools: _tools,
+        plan: _plan,
+        piStartup: _piStartup,
+        payloadThread,
+        promptThread: prompt,
+        ...turn
+      } = draft;
+      // Older harnesses omit threadRootEventId; the prompt context still names it.
+      turn.threadRootId = payloadThread ?? prompt;
+      return turn;
+    }),
+  };
 }

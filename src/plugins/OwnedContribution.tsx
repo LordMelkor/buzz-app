@@ -14,14 +14,20 @@ export function OwnedContribution<T extends object>({
       remain available.
     </p>
   ),
+  resetIdentity,
 }: {
   entry: T;
   registry: { snapshot(): readonly T[] };
   children(entry: T, active: () => boolean): ReactNode;
   fallback?: ReactNode;
+  resetIdentity?: unknown;
 }) {
   return (
-    <ContributionBoundary key={contributionKey(entry)} fallback={fallback}>
+    <ContributionBoundary
+      key={contributionKey(entry)}
+      fallback={fallback}
+      resetIdentity={resetIdentity}
+    >
       <Owned key={contributionKey(entry)} entry={entry} registry={registry}>
         {children}
       </Owned>

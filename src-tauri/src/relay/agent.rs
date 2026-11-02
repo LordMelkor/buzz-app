@@ -1,7 +1,9 @@
 //! Purpose-bound agent operations. Never return key material or unscoped plaintext.
 use super::{origin, send, Result};
+use crate::federated_identity::FederatedIdentity;
 use crate::identity::IdentityHost;
 use base64::{engine::general_purpose::STANDARD, Engine};
+use buzz_agent_controller::AppAgents;
 use hmac::{Hmac, Mac};
 use nostr::key::{PublicKey as NostrPublicKey, SecretKey as NostrSecretKey};
 use nostr::nips::nip44::{self, v2::ConversationKey};
@@ -9,11 +11,7 @@ use secp256k1::{schnorr::Signature, Keypair, Secp256k1, XOnlyPublicKey};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::{BTreeMap, HashSet},
-    path::PathBuf,
-};
-use tauri::Manager;
+use std::collections::{BTreeMap, HashSet};
 
 const HEX: &str = "0123456789abcdef";
 fn key(value: &str) -> bool {
@@ -381,6 +379,7 @@ fn memory_address(conversation: &ConversationKey, name: &str) -> Result<String> 
 #[tauri::command]
 pub(crate) async fn relay_agent_memories_read(
     host: tauri::State<'_, IdentityHost>,
+    fi: tauri::State<'_, FederatedIdentity>,
     community: String,
     agent: String,
     slug: Option<String>,
@@ -435,32 +434,7 @@ pub(crate) async fn relay_agent_memories_read(
                 page["until"] = json!(until);
                 page["before_id"] = json!(before_id);
             }
-            let url = url.clone();
-            let host = host.inner();
-            async move {
-                let response = send(
-                    host,
-                    url,
-                    "POST",
-                    Some(json!([page]).to_string()),
-                    true,
-                    MEMORY_RESPONSE_BYTES,
-                )
-                .await?;
-                if response.status == 429 {
-                    return Ok(MemoryPage::Limited);
-                }
-                if response.status == 401 || response.status == 403 {
-                    return Err("MemoryDenied".into());
-                }
-                if response.status != 200 || response.body.len() > MEMORY_RESPONSE_BYTES {
-                    return Err("Memory read failed".into());
-                }
-                Ok(MemoryPage::Records(
-                    memory_wire_records(&response.body)?,
-                    response.body.len(),
-                ))
-            }
+            memory_page(host.inner(), fi.inner(), url.clone(), page)
         },
         decode,
     )
@@ -471,6 +445,39 @@ pub(crate) async fn relay_agent_memories_read(
         }
     }
     Ok(listing)
+}
+
+/// One page of the memory listing at `url`, sent with the community's
+/// assertion when it requires NIP-FI.
+async fn memory_page(
+    host: &IdentityHost,
+    fi: &FederatedIdentity,
+    url: url::Url,
+    page: Value,
+) -> Result<MemoryPage> {
+    let response = send(
+        host,
+        Some(fi),
+        url,
+        "POST",
+        Some(json!([page]).to_string()),
+        true,
+        MEMORY_RESPONSE_BYTES,
+    )
+    .await?;
+    if response.status == 429 {
+        return Ok(MemoryPage::Limited);
+    }
+    if response.status == 401 || response.status == 403 {
+        return Err("MemoryDenied".into());
+    }
+    if response.status != 200 || response.body.len() > MEMORY_RESPONSE_BYTES {
+        return Err("Memory read failed".into());
+    }
+    Ok(MemoryPage::Records(
+        memory_wire_records(&response.body)?,
+        response.body.len(),
+    ))
 }
 
 type MemoryDecoding = std::sync::Arc<std::sync::Mutex<MemoryDecoder>>;
@@ -608,13 +615,20 @@ struct MemoryDecoder {
 
 impl MemoryDecoder {
     fn listing(&self) -> Value {
-        let entries: Vec<_> = self
+        let (deleted, entries): (Vec<_>, Vec<_>) = self
             .heads
             .values()
             .map(|(_, _, entry)| entry)
-            .filter(|entry| !entry["body"].is_null())
-            .collect();
-        json!({"entries": entries, "partial": self.partial})
+            .partition(|entry| entry["body"].is_null());
+        let mut listing = json!({"entries": entries, "partial": self.partial});
+        // A write that recreates a deleted slug must be dated after its tombstone.
+        if !deleted.is_empty() {
+            listing["deleted"] = deleted
+                .into_iter()
+                .map(|entry| json!({"slug": entry["slug"], "createdAt": entry["createdAt"]}))
+                .collect();
+        }
+        listing
     }
 }
 
@@ -775,148 +789,125 @@ fn decode_memory_events(
     Ok(())
 }
 
-fn library_field(row: &Value, name: &str, max: usize) -> Result<String> {
-    let value = row
-        .get(name)
-        .and_then(Value::as_str)
-        .ok_or("Current Buzz library unavailable")?;
-    if value.encode_utf16().count() > max {
-        return Err("Current Buzz library unavailable".into());
-    }
-    Ok(value.to_owned())
-}
-
 #[tauri::command]
-pub(crate) async fn relay_agent_library<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+pub(crate) async fn relay_agent_library(
+    state: tauri::State<'_, crate::app_agents::AppAgentHost>,
 ) -> Result<Value> {
-    let parent = app
-        .path()
-        .data_dir()
+    let agents = state
+        .agents()
         .map_err(|_| "Current Buzz library unavailable")?;
-    let path = parent.join("xyz.block.buzz.app/agents/managed-agents.json");
-    tauri::async_runtime::spawn_blocking(move || read_agent_library(path))
+    tauri::async_runtime::spawn_blocking(move || read_agent_library(&agents))
         .await
         .map_err(|_| "Current Buzz library unavailable".to_owned())?
 }
 
-fn read_agent_library(path: PathBuf) -> Result<Value> {
-    use std::{fs::OpenOptions, io::Read};
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = options
-        .open(path)
+/// Public display metadata for the identities Agents saved, read through their
+/// owner so both share one schema.
+fn read_agent_library(agents: &AppAgents) -> Result<Value> {
+    let rows = agents
+        .list()
         .map_err(|_| "Current Buzz library unavailable")?;
-    let meta = file
-        .metadata()
-        .map_err(|_| "Current Buzz library unavailable")?;
-    if !meta.is_file() || meta.len() > 8 * 1024 * 1024 {
-        return Err("Current Buzz library unavailable".into());
-    }
-    let mut bytes = Vec::new();
-    file.take(8 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Current Buzz library unavailable")?;
-    if bytes.len() > 8 * 1024 * 1024 {
-        return Err("Current Buzz library unavailable".into());
-    }
-    let rows: Vec<Value> =
-        serde_json::from_slice(&bytes).map_err(|_| "Current Buzz library unavailable")?;
-    if rows.len() > 2000 {
-        return Err("Current Buzz library unavailable".into());
-    }
-    let mut definitions = Vec::new();
     let mut identities = Vec::new();
-    let mut slugs = HashSet::new();
     let mut keys = HashSet::new();
-    for row in rows {
-        let pubkey = library_field(&row, "pubkey", 64)?;
-        let name = library_field(&row, "name", 256)?;
-        let avatar = row
-            .get("avatar_url")
-            .and_then(Value::as_str)
-            .and_then(|source| {
-                let source = source.trim();
-                let data_image = ["png", "jpeg", "webp", "gif"].iter().any(|format| {
-                    source
-                        .strip_prefix(&format!("data:image/{format};base64,"))
-                        .is_some_and(|encoded| {
-                            let unpadded = encoded.trim_end_matches('=');
-                            !unpadded.is_empty()
-                                && unpadded
-                                    .bytes()
-                                    .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
-                        })
-                });
-                if source.len() <= 512 * 1024 && data_image {
-                    return Some(source.to_owned());
-                }
-                if source.len() > 2048 {
-                    return None;
-                }
-                let url = url::Url::parse(source).ok()?;
-                if url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
-                {
-                    Some(url.to_string())
-                } else {
-                    None
-                }
-            });
-        if pubkey.is_empty() {
-            if row.get("slug").is_none_or(Value::is_null) {
-                continue;
-            }
-            let id = library_field(&row, "slug", 256)?;
-            if id.is_empty() || !slugs.insert(id.clone()) {
-                return Err("Current Buzz library unavailable".into());
-            }
-            if row.get("is_active") == Some(&Value::Bool(false)) {
-                continue;
-            }
-            if row.get("is_active").is_some_and(|v| !v.is_boolean()) {
-                return Err("Current Buzz library unavailable".into());
-            }
-            let display = row
-                .get("display_name")
-                .filter(|v| !v.is_null())
-                .map(|_| library_field(&row, "display_name", 256))
-                .transpose()?
-                .unwrap_or(name);
-            let mut item = json!({"id":id,"name":display});
-            if let Some(avatar) = avatar {
-                item["avatar"] = json!(avatar);
-            }
-            definitions.push(item);
-        } else {
-            if !key(&pubkey) || !keys.insert(pubkey.clone()) {
-                return Err("Current Buzz library unavailable".into());
-            }
-            let definition_id = row
-                .get("persona_id")
-                .filter(|v| !v.is_null())
-                .map(|_| library_field(&row, "persona_id", 256))
-                .transpose()?;
-            let mut item = json!({"pubkey":pubkey,"name":name});
-            if let Some(avatar) = avatar {
-                item["avatar"] = json!(avatar);
-            }
-            if let Some(id) = definition_id.filter(|s| !s.is_empty()) {
-                item["definitionId"] = json!(id);
-            }
-            identities.push(item);
+    for agent in rows
+        .into_iter()
+        .filter(|agent| !agent.deleted && !agent.joining)
+    {
+        if !key(&agent.pubkey) || agent.name.encode_utf16().count() > 256 {
+            return Err("Current Buzz library unavailable".into());
         }
+        let avatar = agent.picture.as_deref().and_then(|source| {
+            let source = source.trim();
+            let data_image = ["png", "jpeg", "webp", "gif"].iter().any(|format| {
+                source
+                    .strip_prefix(&format!("data:image/{format};base64,"))
+                    .is_some_and(|encoded| {
+                        let unpadded = encoded.trim_end_matches('=');
+                        !unpadded.is_empty()
+                            && unpadded
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+                    })
+            });
+            if source.len() <= 512 * 1024 && data_image {
+                return Some(source.to_owned());
+            }
+            if source.len() > 2048 {
+                return None;
+            }
+            let url = url::Url::parse(source).ok()?;
+            if url.scheme() == "https" && url.username().is_empty() && url.password().is_none() {
+                Some(url.to_string())
+            } else {
+                None
+            }
+        });
+        // One identity may be configured in several communities.
+        if !keys.insert(agent.pubkey.clone()) {
+            continue;
+        }
+        let mut item = json!({"pubkey":agent.pubkey,"name":agent.name});
+        if let Some(avatar) = avatar {
+            item["avatar"] = json!(avatar);
+        }
+        identities.push(item);
     }
-    Ok(json!({"definitions":definitions,"identities":identities}))
+    Ok(json!({"definitions":[],"identities":identities}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_identity_library_contract() {
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/agent-identity-library.json"
+        ))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identities.json");
+        let agents = AppAgents::open(path.clone());
+        assert_eq!(
+            read_agent_library(&agents).unwrap(),
+            json!({"definitions": [], "identities": []})
+        );
+        for case in cases {
+            let bytes = serde_json::to_vec(&case["rows"]).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            let result = read_agent_library(&agents);
+            if let Some(expected) = case.get("expected") {
+                assert_eq!(&result.unwrap(), expected, "{}", case["name"]);
+            } else {
+                assert!(result.is_err(), "{}", case["name"]);
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    /// A memory page sends exactly the issued assertion to a community that
+    /// requires NIP-FI, and nothing to one that does not.
+    async fn memory(required: bool) {
+        use crate::federated_identity::testing::{community, reply};
+        let community = community(required).await;
+        let server = community.serve(vec![reply("200 OK", "[]")]);
+        let _ = memory_page(
+            &community.host,
+            &community.fi,
+            community.origin.join("/query").unwrap(),
+            json!({"kinds": [30078], "limit": 1}),
+        )
+        .await;
+        community.assert_carried(&server.heads().await[0]);
+    }
+    #[tokio::test]
+    async fn memory_page_attaches_for_required_discovery() {
+        memory(true).await;
+    }
+    #[tokio::test]
+    async fn memory_page_omits_for_ordinary_discovery() {
+        memory(false).await;
+    }
 
     fn fixture() -> ([u8; 32], String) {
         let secret = [1; 32];
@@ -999,7 +990,7 @@ mod tests {
         .map(|(slug, body)| {
             Some(
                 agent_key
-                    .memory_event(&owner, slug, body, 1_700_000_001)
+                    .memory_event(&owner, slug, Some(body), 1_700_000_001)
                     .unwrap(),
             )
         })
@@ -1010,7 +1001,44 @@ mod tests {
         assert_eq!(listing["partial"], false);
         assert_eq!(listing["entries"][0]["body"], "private fixture core");
         assert_eq!(listing["entries"][1]["body"], "private fixture entry");
+        assert!(listing.get("deleted").is_none());
         assert_ne!(agent, owner);
+    }
+
+    #[test]
+    fn a_deleted_entry_reports_its_tombstone_so_a_recreation_can_follow_it() {
+        let agent_key = buzz_agent_controller::Secret::generate().unwrap();
+        let agent = agent_key.pubkey().to_owned();
+        let owner_bytes = [2; 32];
+        let owner = signed_event(&owner_bytes, 1, vec![], String::new()).pubkey;
+        let event = |body, created_at| {
+            Some(
+                agent_key
+                    .memory_event(&owner, "mem/one", body, created_at)
+                    .unwrap(),
+            )
+        };
+        let read = |events: &[Option<Value>]| {
+            decode_memories_with_key(&owner_bytes, &owner, &owner, &agent, events, || false)
+                .unwrap()
+        };
+        // An entry dated ahead of the clock, then the tombstone that follows it.
+        let mut events = vec![
+            event(Some("kept"), 4_000_000_000),
+            event(None, 4_000_000_001),
+        ];
+        let listing = read(&events);
+        assert_eq!(listing["entries"], json!([]));
+        assert_eq!(
+            listing["deleted"],
+            json!([{"slug": "mem/one", "createdAt": 4_000_000_001u64}])
+        );
+        // A recreation dated after the reported tombstone is the entry again.
+        let after = listing["deleted"][0]["createdAt"].as_u64().unwrap();
+        events.push(event(Some("again"), after + 1));
+        let listing = read(&events);
+        assert_eq!(listing["entries"][0]["body"], "again");
+        assert!(listing.get("deleted").is_none());
     }
 
     #[test]
@@ -1084,8 +1112,6 @@ mod tests {
             assert_eq!(decoded["entries"][0]["body"], "remember this");
             assert_eq!(decoded["partial"], true);
         }
-        assert!(library_field(&json!({"name": "é".repeat(256)}), "name", 256).is_ok());
-        assert!(library_field(&json!({"name": "é".repeat(257)}), "name", 256).is_err());
         let listing_wire = format!("[{},{{\"unknown\":\"\\ud800\"}}]", json!(memory));
         let wire = memory_wire_records(&listing_wire).unwrap();
         assert!(wire[1].is_none());

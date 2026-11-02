@@ -158,6 +158,32 @@ describe.each(cases)("%s directory", (mode, text) => {
       }
     },
   );
+  it("retries a lasting transient failure quietly at most three times", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const h = setup(mode);
+    try {
+      const pending = h.owner.session.directMessages.people(
+        text,
+        1,
+        new AbortController().signal,
+      );
+      const rejected = expect(pending).rejects.toMatchObject({ status: 502 });
+      // Equal jitter at 0.5 waits 750 ms, 1.5 s and 3 s between attempts.
+      for (const wait of [750, 1_500, 3_000, 0]) {
+        h.wire.next().fail(new ReadError("unavailable", "Bad gateway", 502));
+        await vi.advanceTimersByTimeAsync(wait);
+      }
+      await rejected;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(h.query).toHaveBeenCalledTimes(4);
+      expect(h.wire.pending).toHaveLength(0);
+    } finally {
+      h.owner.dispose();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("endpoint profile search under session ownership", () => {

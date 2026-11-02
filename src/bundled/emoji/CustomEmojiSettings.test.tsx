@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RelayEvent } from "../../features/relay/events";
@@ -31,11 +31,20 @@ function relayStore() {
     (!filter.kinds || filter.kinds.includes(event.kind)) &&
     (!filter.authors || filter.authors.includes(event.pubkey));
   const failures: Error[] = [];
+  const readFailures: Error[] = [];
+  let publicationGate: Promise<void> | undefined;
   return {
     stored,
     /** Queue a relay rejection for the next publish. */
     rejectNext(error: Error) {
       failures.push(error);
+    },
+    /** Queue a relay failure for the next kind-30030 read. */
+    failNextRead(error: Error) {
+      readFailures.push(error);
+    },
+    holdNextPublication(gate: Promise<void>) {
+      publicationGate = gate;
     },
     connect(
       upload: AttachmentUpload | null = vi.fn(),
@@ -48,6 +57,12 @@ function relayStore() {
           scope: origin,
           media: (url) => url,
           async query(filters) {
+            const failure = filters.some((filter) =>
+              filter.kinds?.includes(30030),
+            )
+              ? readFailures.shift()
+              : undefined;
+            if (failure) throw failure;
             return stored.filter((event) =>
               filters.some((filter) => matches(event, filter)),
             );
@@ -57,10 +72,18 @@ function relayStore() {
             ...(kinds ? { kinds } : {}),
             sign: async (template) => signed(viewer, template),
             async publish(event) {
+              const gate = publicationGate;
+              publicationGate = undefined;
+              await gate;
               const failure = failures.shift();
               if (failure) throw failure;
               // NIP-33: the relay keeps only the latest set per coordinate.
-              stored.splice(0, stored.length, event);
+              const old = stored.findIndex(
+                (item) =>
+                  item.kind === event.kind && item.pubkey === event.pubkey,
+              );
+              if (old >= 0) stored.splice(old, 1);
+              stored.push(event);
             },
           },
         },
@@ -78,9 +101,12 @@ function relayStore() {
         snapshot: () => value,
         subscribe: () => () => {},
       } as unknown as RelayData;
-      return render(<CustomEmojiSettings relay={relay} active={() => true} />, {
-        wrapper: ToastProvider,
-      });
+      return Object.assign(
+        render(<CustomEmojiSettings relay={relay} active={() => true} />, {
+          wrapper: ToastProvider,
+        }),
+        { session: owner.session },
+      );
     },
   };
 }
@@ -339,6 +365,7 @@ it("shows the viewer's emoji but hides authoring without upload or kind-30030 wr
   };
   const view = store.connect(vi.fn(), [9]);
   await settled();
+  expect(screen.queryByRole("button", { name: /Remove/ })).toBeNull();
   expect(screen.queryByText("Add emoji")).toBeNull();
   expect(screen.queryByText(UPLOAD_FAILURES.unavailable)).toBeNull();
   view.unmount();
@@ -355,4 +382,111 @@ it("shows an informational empty state when emoji authoring is unavailable", asy
   ).toBeVisible();
   expect(screen.queryByRole("button", { name: "Add emoji" })).toBeNull();
   expect(screen.queryByRole("tab", { name: "Add emoji" })).toBeNull();
+});
+
+function emojiSet(key = viewer, names = ["mine"]) {
+  return signed(key, {
+    kind: 30030,
+    created_at: 1,
+    content: "",
+    tags: [
+      ["d", "buzz:custom-emoji"],
+      ...names.map((name) => ["emoji", name, `${origin}/media/${name}.png`]),
+    ],
+  });
+}
+it("removes owned emoji without an uploader, preserves other sets and stays removed after reload", async () => {
+  const user = userEvent.setup();
+  const store = relayStore();
+  const other = emojiSet(keypair(), ["community"]);
+  store.stored.push(emojiSet(), other);
+  const view = store.connect(null);
+  const remove = await screen.findByRole("button", { name: "Remove :mine:" });
+  await user.click(remove);
+  expect(await screen.findByText("Removed :mine:")).toBeVisible();
+  expect(screen.getByRole("heading", { name: "No emojis yet" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Remove :mine:" })).toBeNull();
+  expect(store.stored).toContainEqual(other);
+  expect(store.stored.find((e) => e.pubkey === viewer.pubkey)?.tags).toEqual([
+    ["d", "buzz:custom-emoji"],
+  ]);
+  view.unmount();
+  store.connect(null);
+  expect(
+    await screen.findByRole("heading", { name: "No emojis yet" }),
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: /Remove/ })).toBeNull();
+});
+it("disables removal while pending, keeps rejected emoji and permits retry", async () => {
+  const user = userEvent.setup();
+  const store = relayStore();
+  store.stored.push(emojiSet(viewer, ["mine", "keep"]));
+  store.connect(null);
+  const gate = deferred<void>();
+  store.holdNextPublication(gate.promise);
+  store.rejectNext(new PublishRejected("blocked: no"));
+  const remove = await screen.findByRole("button", { name: "Remove :mine:" });
+  await user.click(remove);
+  try {
+    await waitFor(() => expect(remove).toHaveAttribute("aria-busy", "true"));
+    expect(remove).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Remove :keep:" }),
+    ).toBeDisabled();
+  } finally {
+    gate.resolve();
+  }
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Failed to remove emoji.",
+  );
+  expect(screen.getByRole("img", { name: ":mine:" })).toBeVisible();
+  expect(remove).toBeEnabled();
+  await user.click(remove);
+  expect(await screen.findByText("Removed :mine:")).toBeVisible();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("img", { name: ":keep:" })).toBeVisible();
+});
+it("keeps a loaded collection listed beside a failed refresh until Retry recovers it", async () => {
+  const user = userEvent.setup();
+  const store = relayStore();
+  store.stored.push(emojiSet(keypair(), ["party_bee", "wave"]));
+  const view = store.connect(null);
+  await user.click(
+    await screen.findByRole("tab", { name: "Community emoji (2)" }),
+  );
+  store.failNextRead(new Error("relay offline"));
+  await act(() => view.session.emoji.refresh());
+  expect(screen.getByRole("alert")).toHaveTextContent("relay offline");
+  expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  await user.click(screen.getByRole("button", { name: "Retry emoji" }));
+  // ensure() returns the retry's read while it is pending.
+  await act(() => view.session.emoji.ensure());
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getAllByRole("listitem")).toHaveLength(2);
+});
+it("searches the read-only community collection, clears the query and handles no matches", async () => {
+  const user = userEvent.setup();
+  const store = relayStore();
+  store.stored.push(
+    emojiSet(),
+    emojiSet(keypair(), ["party_bee", "wave", "mine"]),
+  );
+  store.connect(null);
+  await user.click(
+    await screen.findByRole("tab", { name: "Community emoji (2)" }),
+  );
+  expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  expect(screen.queryByRole("button", { name: /Remove/ })).toBeNull();
+  const search = screen.getByRole("searchbox", { name: "Search" });
+  await user.type(search, " :PARTY: ");
+  expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  expect(screen.getByRole("img", { name: ":party_bee:" })).toBeVisible();
+  await user.clear(search);
+  await user.type(search, "unmatched");
+  expect(screen.getByRole("heading", { name: "No results" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Clear search" }));
+  expect(search).toHaveValue("");
+  expect(search).toHaveFocus();
+  expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  expect(store.stored).toHaveLength(2);
 });

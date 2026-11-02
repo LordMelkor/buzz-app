@@ -1,3 +1,4 @@
+import { hoverMessage } from "./message-actions.mjs";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
@@ -33,7 +34,7 @@ test("channel thread hands off to a stable video viewer", async ({
   const row = page
     .getByRole("region", { name: "Channel message history" })
     .locator(`[data-message-id="${event.id}"]`);
-  await row.hover();
+  await hoverMessage(row);
   await row.getByRole("button", { name: "Reply", exact: true }).click();
   const thread = page.getByRole("complementary", {
     name: "Thread",
@@ -145,7 +146,7 @@ test.describe("public channel preview", () => {
     ).toBeVisible();
     await expect(
       page
-        .getByRole("complementary", { name: "Channel sidebar" })
+        .getByRole("complementary", { name: "Sidebar", exact: true })
         .getByRole("button", { name: "open", exact: true }),
     ).toHaveCount(0);
   });

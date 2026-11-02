@@ -153,6 +153,8 @@ it("one bottom dwell in a DM reads only through the newest message it saw", asyn
     release = resolve;
   });
   list.dispatchEvent(new Event("scroll"));
+  // A scroll measures rows in the next frame.
+  vi.advanceTimersToNextFrame();
   // Exactly one dwell: catchUp takes the cutoff and holds at commit.
   await vi.advanceTimersByTimeAsync(300);
   await reached;

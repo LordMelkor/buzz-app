@@ -31,7 +31,8 @@ const AGENT_STOPPING: &str =
     "Erasing didn't finish because an agent is still stopping; nothing was removed. Open Buzz again to retry.";
 const ALREADY: &str = "Buzz is already signing out.";
 const LINKED: &str = "Erasing is unavailable because a Buzz storage folder is a link or couldn't be checked; nothing was removed";
-const DEV_WIPE: &str = "Erasing is unavailable in development builds because they share agent keys and plugin storage with the installed Buzz";
+const DEV_WIPE: &str = "Erasing is unavailable in development builds because they share agent keys with the installed Buzz";
+pub(crate) mod legacy_identifier;
 // TEMPORARY agents rename: remove after 2026-10-18; see the migration module.
 pub(crate) mod migrate_agents;
 /// App data folder holding the current Agents identities.
@@ -45,15 +46,23 @@ pub(crate) const AGENT_OWNERSHIP: &str = "dev.local.buzz.agent-ownership";
 /// Their keys live in the keychain. Anything else in these folders (hosting
 /// locks, saved logins, logs, run folders, and whatever is added later) is wiped.
 const KEPT: Kept = &[
-    (AGENTS, &["identities.json"]),
+    (
+        AGENTS,
+        &[
+            "identities.json",
+            buzz_agent_controller::JOINED,
+            "protection.json",
+        ],
+    ),
     (migrate_agents::LEGACY, &["identities.json"]),
     (OLD_AGENTS, &["agents.json", "defaults.json"]),
 ];
 /// The children a wiped folder keeps, each with the files it keeps.
 type Kept = &'static [(&'static str, &'static [&'static str])];
-/// Held shared by every Buzz and alone only to wipe. Named for the storage every
-/// Buzz shares whatever its identifier: the default plugin folder and the fixed
-/// agent key service. It is the release app's name too.
+/// Held shared by every Buzz and alone only to wipe or move legacy storage.
+/// Named for the storage every Buzz shares whatever its identifier: the default
+/// plugin folder and the fixed agent key service. It keeps the legacy identifier
+/// so builds from before 1.0 and later ones exclude each other.
 const LOCK: &str = ".dev.local.buzz.foundation.instance.lock";
 /// How long a launch waits for an exiting or signing-out instance to let go.
 const WAIT: Duration = if cfg!(test) {
@@ -82,8 +91,13 @@ pub(crate) struct Paths {
     /// Agent ownership locks; an erase waits until none is held.
     ownership: PathBuf,
     app_data: PathBuf,
+    backups: PathBuf,
     /// Other app-owned folders: local data and WebView storage, caches.
     others: Vec<PathBuf>,
+    /// Storage the legacy identifier left, each with where it goes.
+    moves: Vec<(PathBuf, PathBuf)>,
+    /// Where a first development launch copies the installed app's folders, app data last.
+    seeds: Vec<PathBuf>,
 }
 /// One marker per key store, so a debug launch never acts on a release sign-out.
 fn marker_name(identifier: &str, service: &str) -> String {
@@ -116,16 +130,16 @@ impl Paths {
         others.retain(|path| *path != app_data);
         others.dedup();
         Some(Self {
-            marker: data.join(marker_name(
-                identifier,
-                buzz_credential_store::HUMAN_SERVICE,
-            )),
-            finished: data.join(finished_name(buzz_credential_store::HUMAN_SERVICE)),
+            marker: data.join(marker_name(identifier, buzz_credential_store::HUMAN_STORE)),
+            finished: data.join(finished_name(buzz_credential_store::HUMAN_STORE)),
             lock: data.join(LOCK),
-            key_lock: data.join(key_lock_name(buzz_credential_store::HUMAN_SERVICE)),
+            key_lock: data.join(key_lock_name(buzz_credential_store::HUMAN_STORE)),
             ownership: data.join(AGENT_OWNERSHIP),
             app_data,
+            backups: crate::nsec_backup_choice::root()?,
             others,
+            moves: legacy_identifier::moves(identifier)?,
+            seeds: legacy_identifier::seeds(identifier)?,
         })
     }
     /// Each wiped folder, and the children it keeps (the agent registries) unless agents go too.
@@ -133,6 +147,7 @@ impl Paths {
         let kept = if choices.remove_agents { &[] } else { KEPT };
         std::iter::once((self.app_data.as_path(), kept))
             .chain(self.others.iter().map(|path| (path.as_path(), &[] as Kept)))
+            .chain(std::iter::once((self.backups.as_path(), &[] as Kept)))
             .collect()
     }
     /// The wipe never deletes through a link: every folder it moves, opens or
@@ -145,6 +160,10 @@ impl Paths {
         }
         if !choices.wipe {
             return Ok(());
+        }
+        // This target is outside app data; refuse links in its shared parents too.
+        for parent in self.backups.ancestors().take(3) {
+            real_dir(parent)?;
         }
         for (path, kept) in self.targets(choices) {
             for path in [path.to_owned(), trash(path)] {
@@ -321,6 +340,8 @@ pub(crate) fn boot(
         eprintln!("buzz: instance lock: {error}");
         FAILED.to_owned()
     };
+    // Before looking for a marker: a pending sign-out may be the legacy one.
+    legacy_identifier::migrate(&paths.moves, &paths.seeds, &locks.all, &paths.ownership)?;
     // Shared first, then look: a sign-out that commits after this sees our locks.
     // Every time they are taken again, look again.
     loop {
@@ -390,6 +411,78 @@ pub(crate) fn boot(
         seen: finished(&paths.finished).map_err(failed)?,
         started: AtomicBool::new(false),
     })
+}
+
+/// Builds from before 1.0 sign out by deleting the human key under its previous
+/// service only, so the copy reads made under the current one outlives it. A
+/// record beside the finished one keeps the count this function last saw: when
+/// a sign-out finished since, the current key goes too. Runs after `boot`,
+/// before any identity read; on failure it records nothing and Buzz exits.
+/// Copies launching together share the key lock, so each decides holding the
+/// record's own lock alone: one that waited sees the count another recorded,
+/// and never deletes a key saved since.
+pub(crate) fn forget_signed_out_key(
+    instance: &Instance,
+    remove_current_key: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    // std can't sync a folder on Windows.
+    reconcile_sign_outs(instance, remove_current_key, |folder| {
+        if cfg!(unix) {
+            File::open(folder)?.sync_all()
+        } else {
+            Ok(())
+        }
+    })
+}
+
+#[allow(clippy::incompatible_msrv)] // `File` locking; see `Instance`.
+fn reconcile_sign_outs(
+    instance: &Instance,
+    remove_current_key: impl FnOnce() -> Result<(), String>,
+    sync_folder: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    use std::io::Write;
+    let failed = |error: String| {
+        eprintln!("buzz: sign out did not finish: {error}");
+        FAILED.to_owned()
+    };
+    let name = format!(".{}.sign-outs-seen", buzz_credential_store::HUMAN_STORE);
+    let [path, lock, staged] = ["", ".lock", ".staged"]
+        .map(|suffix| instance.finished.with_file_name(format!("{name}{suffix}")));
+    let io = |error: std::io::Error| failed(format!("{}: {error}", path.display()));
+    // A separate lock file, never replaced, so a waiter holds the same one.
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock)
+        .map_err(io)?;
+    lock.lock().map_err(io)?;
+    // Absent, empty or unreadable as a count: start counting from now.
+    let recorded = match fs::read(&path) {
+        Ok(bytes) => std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok()),
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => return Err(io(error)),
+    };
+    if recorded.is_some_and(|recorded| recorded < instance.seen) {
+        remove_current_key().map_err(failed)?;
+    }
+    if recorded != Some(instance.seen) {
+        // Replaced whole, so an interrupted write leaves the old count.
+        File::create(&staged)
+            .and_then(|mut file| {
+                file.write_all(instance.seen.to_string().as_bytes())?;
+                file.sync_all()
+            })
+            .and_then(|()| fs::rename(&staged, &path))
+            .map_err(io)?;
+    }
+    // Durable before any key is saved, as a lost rename would replay this
+    // deletion on a newer key. Synced on every launch: a count read back may
+    // be one whose sync failed.
+    path.parent().map_or(Ok(()), sync_folder).map_err(io)
 }
 
 /// An erase deletes storage agents use, so it waits until no supervisor holds an
@@ -738,8 +831,8 @@ fn refusal(
     } else if remove_agents && !wipe {
         Some("Removing agents is part of erasing this device")
     } else if wipe && debug {
-        // Debug builds have their own human key, but share agent keys and plugin
-        // storage with the installed app, so only plain sign-out is safe.
+        // Debug builds have their own human key, but share agent keys with the
+        // installed app, so only plain sign-out is safe.
         Some(DEV_WIPE)
     } else if wipe && plugin_home {
         Some("Erasing is unavailable while BUZZODZ_HOME moves plugin storage")
@@ -791,8 +884,15 @@ pub(crate) async fn sign_out<R: tauri::Runtime>(
     let shutdown = || async { Ok(()) };
     let identity = app.state::<crate::identity::IdentityHost>().inner().clone();
     let pairing = app.state::<crate::pairing::Pairing>().inner().clone();
+    let backup = app
+        .state::<crate::nsec_backup::NsecBackupHost>()
+        .inner()
+        .clone();
     // Close the signer and any pairing that already holds a copy of the key.
     let close = || {
+        backup.close();
+        app.state::<crate::federated_identity::FederatedIdentity>()
+            .close();
         identity.close();
         pairing.close();
     };
@@ -800,7 +900,7 @@ pub(crate) async fn sign_out<R: tauri::Runtime>(
         exit_fenced(app.clone())
     })
     .await?;
-    app.request_restart();
+    crate::relaunch::request(&app);
     Ok(())
 }
 

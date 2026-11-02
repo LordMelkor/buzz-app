@@ -13,7 +13,7 @@ export function PanelHeader({
   icon?: ReactNode;
   navigation?: ReactNode;
   actions?: ReactNode;
-  variant?: "default" | "compact";
+  variant?: "default" | "compact" | "card";
 }) {
   return (
     <header data-buzz-ui="" className="panel-header" data-variant={variant}>

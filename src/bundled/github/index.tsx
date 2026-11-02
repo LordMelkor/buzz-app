@@ -1,41 +1,296 @@
+import { ResolvePull } from "./ResolvePull";
+import type { PullChecklist as Checklist } from "./pull";
 import { Button } from "../../shared/design-system/ui/Button";
-import { useEffect, useId, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import {
   ArrowSquareOutIcon,
   GitPullRequestIcon,
-  CircleDashedIcon,
-  XCircleIcon,
-  GitMergeIcon,
   GitHubIssueIcon,
   GitCommitIcon,
   FolderSimpleIcon,
+  GithubLogoIcon,
 } from "../../shared/design-system/icons/index";
 import type { PluginModule } from "../../plugins/api";
 import type { PanelProps } from "../../features/panels/service";
-import {
-  gitHubAnchorUrl,
-  parseGitHubReference,
-  type GitHubAnchor,
-  type GitHubReference,
-} from "./references";
-import { loadGitHubDetails, type GitHubDetails } from "./data";
-import { Tabs } from "../../shared/design-system/ui/Tabs";
-import { GitHubChecks } from "./GitHubChecks";
+import { parseGitHubReference, type GitHubReference } from "./references";
+import { gitHubCli, GitHubError, type GitHubCli } from "./gh";
+import { loadGitHubObject, readable, type GitHubObject } from "./object";
+import { PublicChecklist, PullChecklist } from "./PullChecklist";
 import styles from "./GitHub.module.css";
 import inlineStyles from "../../shared/InlineReference.module.css";
 import { GitHubBody } from "./GitHubBody";
-import { GitHubConversation } from "./GitHubConversation";
 import { relativeTimestamp } from "../../shared/relative-timestamp";
+import type { RelaySession } from "../../features/relay/session";
+import { ownSolo } from "../../features/solo/labels";
+import { createSoloPulls, writeLink, type SoloPulls } from "./solo-pull";
+import {
+  createPullStates,
+  PANEL_REFRESH_MS,
+  type PullDetails,
+  type PullStates,
+} from "./pull-states";
+import { addPullStateTool } from "./pull-state-tool";
+import { isRetryableRead, retryRead } from "../../features/relay/read-retry";
+import { stateIcons } from "./pull-state-view";
+import { PullLink } from "./PullLink";
+import {
+  SoloPullIcon,
+  SoloPullLink,
+  SoloPullMenu,
+  SoloPullLauncher,
+} from "./SoloPull";
+import { watchPulls } from "./watcher";
+import { presentPull } from "./attention";
+import { SubmitReview } from "./SubmitReview";
+import { AuthorSettings } from "./AuthorSettings";
 
-export const inject = ["panels"];
+/** How often an open pull request panel reads GitHub again. */
+export const REFRESH_MS = PANEL_REFRESH_MS;
+
+export const inject = ["panels", "host", "conversation", "relay", "agents"];
 export const apply: PluginModule["apply"] = (ctx) => {
+  const gh = gitHubCli(ctx.host);
+  // A pull request's state is nobody's community's: one store serves every
+  // session's sidebar, every link in messages, the panel and agents, so one
+  // shown in several places costs one read.
+  const states = createPullStates(gh);
+  const pulls = new WeakMap<RelaySession, SoloPulls>();
+  const pullsFor = (session: RelaySession) => {
+    let found = pulls.get(session);
+    if (!found) {
+      found = createSoloPulls(session, states);
+      pulls.set(session, found);
+    }
+    return found;
+  };
   ctx.panels.register({
     id: "object",
     title: "GitHub",
+    channelLauncher: (props) => (
+      <SoloPullLauncher {...props} relay={ctx.relay} pullsFor={pullsFor} />
+    ),
+    deferUntilShown: true,
     matches: (target) => !!parseGitHubReference(target),
-    component: GitHubPanel,
+    component: (props: PanelProps) => {
+      const channelId = props.context?.channelId;
+      return (
+        <GitHubPanel
+          {...props}
+          gh={gh}
+          states={states}
+          {...(channelId && {
+            resolveActions: (
+              url: string,
+              pull: Checklist,
+              action: "failures" | "conflicts",
+            ) => (
+              <ResolvePull
+                relay={ctx.relay}
+                channelId={channelId}
+                rootId={props.context?.rootId}
+                url={url}
+                pull={pull}
+                action={action}
+              />
+            ),
+            chatLink: (url: string) => (
+              <SoloPullLink
+                relay={ctx.relay}
+                pullsFor={pullsFor}
+                channelId={channelId}
+                url={url}
+              />
+            ),
+          })}
+        />
+      );
+    },
+  });
+  ctx.conversation.registerLink({
+    id: "pull",
+    title: "Pull request state",
+    matches: (url) =>
+      parseGitHubReference(url, { pullSubtargets: true })?.kind === "pull",
+    // Links claims GitHub at the default band, 0, and a tie falls to the
+    // contribution key; only a lower order makes this the pull request
+    // renderer whichever plugin registered first. Repositories, issues and
+    // commits stay with Links.
+    order: -1,
+    className: inlineStyles.link,
+    component: ({ url }) => <PullLink url={url} states={states} />,
+  });
+  ctx.conversation.registerChatMenu(({ session, channelId }) => (
+    <SoloPullMenu
+      session={session}
+      pulls={pullsFor(session)}
+      channelId={channelId}
+    />
+  ));
+  ctx.conversation.registerChatIcon(({ session, channelId, fallback }) => (
+    <SoloPullIcon
+      pulls={pullsFor(session)}
+      channelId={channelId}
+      fallback={fallback}
+    />
+  ));
+  ctx.agents.addTool({
+    name: "github_link_pr",
+    description:
+      "Links a GitHub pull request to this Solo chat, so the owner's sidebar shows its state (draft, checks, merged) in place of the chat's icon. A chat has one; linking another replaces it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "The pull request's https://github.com/… URL",
+        },
+        unlink: {
+          type: "boolean",
+          description: "Unlink the chat's pull request instead",
+        },
+      },
+      additionalProperties: false,
+    },
+    async call(client, context, args) {
+      const url =
+        args.unlink === true
+          ? null
+          : typeof args.url === "string"
+            ? parseGitHubReference(args.url)
+            : undefined;
+      if (url !== null && url?.kind !== "pull")
+        throw new Error("url must be a GitHub pull request URL");
+      const relay = ctx.agents.relay(client.key)?.snapshot();
+      const channel = context.channel;
+      const session = relay?.status === "ready" ? relay.session : undefined;
+      if (!session || !channel)
+        throw new Error("github_link_pr needs this conversation's community");
+      if (
+        !ownSolo(
+          session.channels.list().channels.find((item) => item.id === channel),
+          session.viewer,
+        )
+      )
+        throw new Error("Only a Solo chat can be linked to a pull request");
+      const link = url === null ? null : url.url;
+      await writeLink(session, channel, link);
+      pullsFor(session).linked(channel, link);
+      // The sidebar reads the selected community through its own session.
+      const shown = ctx.relay.snapshot();
+      if (shown.status === "ready" && shown.scope === relay?.scope)
+        pullsFor(shown.session).linked(channel, link);
+      return link
+        ? `Linked ${link}. The sidebar shows its state for this chat.`
+        : "Unlinked this chat's pull request.";
+    },
+  });
+  addPullStateTool(ctx.agents, states);
+  // Agents can watch pull requests where the app runs them.
+  ctx.inject(["agents", "host", "navigation"], (scope) =>
+    watchPulls(scope, states, gh, presentPull(scope.navigation)),
+  );
+  // Whose comments and reviews wake them.
+  ctx.inject(["settingsCards"], (scope) => {
+    scope.settingsCards.register({
+      id: "authors",
+      title: "GitHub comment authors",
+      group: "Plugins",
+      icon: GithubLogoIcon,
+      component: ({ active }) => <AuthorSettings active={active} />,
+    });
   });
 };
+/** A repository, issue or commit, read when the panel opens. */
+function useGitHubObject(
+  reference: GitHubReference,
+  gh: GitHubCli | undefined,
+  enabled: boolean,
+) {
+  const [loaded, setLoaded] = useState<GitHubObject | string>();
+  const live = useRef<AbortController>(undefined);
+  const load = useCallback(async () => {
+    live.current?.abort();
+    const controller = new AbortController();
+    live.current = controller;
+    try {
+      const next = await loadGitHubObject(
+        reference,
+        AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]),
+        gh,
+      );
+      if (!controller.signal.aborted) setLoaded(next);
+    } catch (error) {
+      if (!controller.signal.aborted)
+        setLoaded(error instanceof Error ? error.message : String(error));
+    }
+  }, [reference, gh]);
+  useEffect(() => {
+    if (!enabled) return;
+    void load();
+    return () => live.current?.abort();
+  }, [enabled, load]);
+  return { loaded, load };
+}
+
+/** A pull request's details from the store, kept current while shown:
+ * always the latest the store has. Opening it reads GitHub; that read
+ * retries transient failures quietly, and shows an error only while nothing
+ * is held. */
+function usePullPanel(states: PullStates, url: string, enabled: boolean) {
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      enabled ? states.watch(url, listener, "details") : () => {},
+    [states, url, enabled],
+  );
+  const state = useSyncExternalStore(subscribe, () =>
+    enabled ? states.get(url) : undefined,
+  );
+  const held = typeof state === "object" ? state.details : undefined;
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    if (!enabled) return;
+    const controller = new AbortController();
+    // Opening the panel reads GitHub, as it always has.
+    retryRead(
+      async () => {
+        const read = await states.read(url, {
+          maxAge: 0,
+          level: "details",
+          interactive: true,
+        });
+        if (typeof read.state !== "object" || !read.state.details)
+          throw read.error ?? new Error("GitHub did not answer");
+        return read;
+      },
+      controller.signal,
+      (failure) =>
+        isRetryableRead(failure) ||
+        (failure instanceof GitHubError &&
+          (failure.type === "INTERNAL" ||
+            failure.type === "SERVICE_UNAVAILABLE")),
+    ).catch((failure: unknown) => {
+      if (!controller.signal.aborted) setError(readable(failure).message);
+    });
+    return () => controller.abort();
+  }, [states, url, enabled]);
+  const load = useCallback(async () => {
+    // What changed is shown once read; a failed read keeps what is shown.
+    await states
+      .read(url, { maxAge: 0, level: "details", interactive: true })
+      .catch(() => {});
+  }, [states, url]);
+  const loaded: GitHubObject | string | undefined = held ?? error;
+  return { loaded, load };
+}
+
 const labels = {
   repository: "Repository",
   pull: "Pull request",
@@ -49,28 +304,42 @@ const icons = {
   commit: GitCommitIcon,
 };
 
-const stateIcons = {
-  open: GitPullRequestIcon,
-  draft: CircleDashedIcon,
-  closed: XCircleIcon,
-  merged: GitMergeIcon,
-};
-
-export function GitHubPanel({ target }: PanelProps) {
+export function GitHubPanel({
+  target,
+  gh,
+  states: shared,
+  chatLink,
+  resolveActions,
+}: PanelProps & {
+  resolveActions?:
+    | ((
+        url: string,
+        pull: Checklist,
+        action: "failures" | "conflicts",
+      ) => ReactNode)
+    | undefined;
+  /** The person's `gh`, where the app can run it. */
+  gh?: GitHubCli | undefined;
+  /** The plugin's pull request store; a panel alone keeps its own. */
+  states?: PullStates | undefined;
+  /** Links a pull request to the chat the panel was opened from. */
+  chatLink?: ((url: string) => ReactNode) | undefined;
+}) {
   const [attempt, retry] = useState(0);
-  const parsed = useMemo(() => parseGitHubReference(target), [target]);
-  const identity = parsed?.url;
-  // An anchor-only target change keeps the object's reference, request and
-  // loaded content; only the revealed comment moves.
-  const reference = useMemo(
-    () => (identity ? parseGitHubReference(identity) : undefined),
-    [identity],
+  const reference = useMemo(() => parseGitHubReference(target), [target]);
+  const own = useMemo(
+    () => (shared ? undefined : createPullStates(gh)),
+    [shared, gh],
   );
-  return reference ? (
+  const states = shared ?? own;
+  return reference && states ? (
     <ObjectPanel
       key={`${reference.url}:${attempt}`}
       reference={reference}
-      anchor={parsed?.anchor}
+      gh={gh}
+      states={states}
+      chatLink={chatLink}
+      resolveActions={resolveActions}
       retry={() => retry(attempt + 1)}
     />
   ) : (
@@ -80,31 +349,32 @@ export function GitHubPanel({ target }: PanelProps) {
 
 function ObjectPanel({
   reference,
-  anchor,
+  gh,
+  states,
+  chatLink,
+  resolveActions,
   retry,
 }: {
   reference: GitHubReference;
-  anchor: GitHubAnchor | undefined;
+  gh: GitHubCli | undefined;
+  states: PullStates;
+  chatLink: ((url: string) => ReactNode) | undefined;
+  resolveActions:
+    | ((
+        url: string,
+        pull: Checklist,
+        action: "failures" | "conflicts",
+      ) => ReactNode)
+    | undefined;
   retry(): void;
 }) {
-  const [result, setResult] = useState<GitHubDetails | string>();
-  const link = anchor ? gitHubAnchorUrl(reference.url, anchor) : reference.url;
-  useEffect(() => {
-    const controller = new AbortController();
-    setResult(undefined);
-    void loadGitHubDetails(
-      reference,
-      AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
-    )
-      .then((details) => {
-        if (!controller.signal.aborted) setResult(details);
-      })
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted)
-          setResult(error instanceof Error ? error.message : String(error));
-      });
-    return () => controller.abort();
-  }, [reference]);
+  const isPull = reference.kind === "pull";
+  const pull = usePullPanel(states, reference.url, isPull);
+  const other = useGitHubObject(reference, gh, !isPull);
+  const loaded = isPull ? pull.loaded : other.loaded;
+  const load = isPull ? pull.load : other.load;
+  const link = reference.url;
+  const result = typeof loaded === "object" ? loaded.details : loaded;
   const Icon = icons[reference.kind];
   const state = typeof result === "object" ? result.state.toLowerCase() : "";
   const StateIcon =
@@ -168,6 +438,15 @@ function ObjectPanel({
             </>
           )}
         </div>
+        {/* Pull requests someone else opened take reviews. */}
+        {gh &&
+          typeof loaded === "object" &&
+          loaded.checklist &&
+          !loaded.checklist.authored && (
+            <span className={styles.identityAction}>
+              <SubmitReview pull={loaded.checklist} gh={gh} refresh={load} />
+            </span>
+          )}
       </div>
       {reference.kind !== "pull" && (
         <a
@@ -316,11 +595,46 @@ function ObjectPanel({
             </dl>
           )}
           {reference.kind === "pull" ? (
-            <PullContent
-              details={result}
-              reference={reference}
-              anchor={anchor}
-            />
+            <>
+              {typeof loaded === "object" && loaded.checklist && gh ? (
+                <PullChecklist
+                  url={reference.url}
+                  details={result}
+                  checklist={loaded.checklist}
+                  gh={gh}
+                  refresh={load}
+                  resolveAction={(action) =>
+                    loaded.checklist
+                      ? resolveActions?.(
+                          reference.url,
+                          loaded.checklist,
+                          action,
+                        )
+                      : undefined
+                  }
+                />
+              ) : (
+                <PublicChecklist
+                  url={reference.url}
+                  sha={result.headSha}
+                  checks={
+                    typeof loaded === "object" && "publicChecks" in loaded
+                      ? (loaded as PullDetails).publicChecks
+                      : undefined
+                  }
+                />
+              )}
+              {chatLink?.(reference.url)}
+              {result.body && (
+                <div className={styles.description}>
+                  <GitHubBody
+                    body={result.body}
+                    bodyHtml={result.bodyHtml}
+                    url={reference.url}
+                  />
+                </div>
+              )}
+            </>
           ) : (
             result.body && (
               <GitHubBody
@@ -332,81 +646,13 @@ function ObjectPanel({
           )}
         </>
       )}
-      <p className={styles.note}>
-        Public GitHub data · Open on GitHub for private repositories and
-        actions.
-      </p>
+      {typeof loaded === "object" && (
+        <p className={styles.note}>
+          {loaded.signedIn
+            ? "Read with your gh sign-in."
+            : "Public GitHub data · Sign in to the gh CLI to see private repositories and merge from here."}
+        </p>
+      )}
     </div>
-  );
-}
-
-function PullContent({
-  details,
-  reference,
-  anchor,
-}: {
-  details: GitHubDetails;
-  reference: GitHubReference;
-  anchor: GitHubAnchor | undefined;
-}) {
-  const id = useId();
-  const [tab, setTab] = useState<"discussion" | "checks">("discussion");
-  const [checksOpened, setChecksOpened] = useState(false);
-  // A newly linked comment lives in Discussion, whichever tab was showing.
-  useEffect(() => {
-    if (anchor) setTab("discussion");
-  }, [anchor]);
-  return (
-    <>
-      <div className={styles.pullTabs}>
-        <Tabs
-          variant="panel"
-          label="Pull request content"
-          value={tab}
-          items={[
-            {
-              value: "discussion",
-              label: "Discussion",
-              panelId: `${id}-discussion`,
-            },
-            { value: "checks", label: "Checks", panelId: `${id}-checks` },
-          ]}
-          onValueChange={(next) => {
-            setTab(next);
-            if (next === "checks") setChecksOpened(true);
-          }}
-        />
-      </div>
-      {/* Retain loaded content and disclosures across tab switches, but mount checks only on demand. */}
-      <div
-        role="tabpanel"
-        id={`${id}-discussion`}
-        aria-labelledby={`${id}-discussion-tab`}
-        hidden={tab !== "discussion"}
-        // biome-ignore lint/a11y/noNoninteractiveTabindex: tab panels are keyboard destinations linked by the shared tabs.
-        tabIndex={0}
-      >
-        <GitHubConversation
-          details={details}
-          url={reference.url}
-          anchor={anchor}
-        />
-      </div>
-      <div
-        role="tabpanel"
-        id={`${id}-checks`}
-        aria-labelledby={`${id}-checks-tab`}
-        hidden={tab !== "checks"}
-        // biome-ignore lint/a11y/noNoninteractiveTabindex: tab panels are keyboard destinations linked by the shared tabs.
-        tabIndex={0}
-      >
-        {checksOpened && (
-          <GitHubChecks
-            repository={reference.repository}
-            sha={details.headSha}
-          />
-        )}
-      </div>
-    </>
   );
 }

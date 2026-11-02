@@ -1,12 +1,17 @@
+import { BuilderlabLogoIcon } from "../../../shared/design-system/icons";
+import { createActivityTab } from "./Activity";
 import { createSettingsTab } from "./Instructions";
+import { createProfileActions, createSignInFooter } from "./SignInFooter";
+import { creationConfig, createCreationFields, EMPTY_CREATION } from "./Create";
 import type { AgentType } from "../../../features/agents/service";
+import type { RelayData } from "../../../features/relay/service";
 import type { AgentClient } from "../agents/client";
 import {
   clearRegistration,
   type RegistrationIntent,
 } from "../agents/registration";
 import { oauthTarget } from "../oauth/browser";
-import type { OAuthSession } from "../oauth/session";
+import type { BuilderlabSession } from "../session";
 
 const PREFIX = "buzz.builderlab.adapter-identity.v1:";
 type Identity = {
@@ -19,7 +24,9 @@ type Identity = {
 /** Bridge Agents' lifecycle and provider settings to Beekeeper. */
 export function builderlabType(
   client: AgentClient,
-  session: OAuthSession,
+  session: BuilderlabSession,
+  relay: RelayData,
+  openIdentity?: () => void,
 ): AgentType {
   const scope = () => ({
     target: oauthTarget(),
@@ -56,54 +63,100 @@ export function builderlabType(
       );
     return value;
   }
+  /** The agent's saved identity, else the signed-in account's listing of it. */
+  async function resolve(pubkey: string, signal: AbortSignal) {
+    const saved = identity(pubkey);
+    if (saved) return saved;
+    const credential = session.credential();
+    const agent = (await client.list(signal)).find(
+      (row) => row.pubkey === pubkey,
+    );
+    if (session.credential() !== credential)
+      throw new DOMException("Builderlab session changed.", "AbortError");
+    if (!agent) throw new Error("Agent not found in this Builderlab account.");
+    return remember(pubkey, agent.id);
+  }
+  async function validateCreation(config: unknown, signal: AbortSignal) {
+    await session.ensureSignedIn(signal);
+    const catalog = await client.modelCatalog(signal);
+    const draft = creationConfig(config);
+    if (draft.subject !== session.credential().account.subject)
+      throw new Error(
+        "Sign in to the Builderlab account that selected these model settings.",
+      );
+    if (
+      !catalog
+        .find((model) => model.id === draft.modelId)
+        ?.supportedReasoningEfforts.includes(draft.reasoningEffort)
+    )
+      throw new Error(
+        "Choose a model and thinking level offered in the model catalog.",
+      );
+    return draft;
+  }
   return {
     id: "builderlab",
     title: "Builderlab",
+    icon: BuilderlabLogoIcon,
     description: "Sign in to Builderlab when creating an agent.",
-    defaults: () => ({ config: {} }),
+    defaults: () => ({ config: { ...EMPTY_CREATION } }),
+    Create: createCreationFields(client, session),
+    PanelFooter: createSignInFooter(session),
+    ProfileActions: createProfileActions(session),
     tabs: [
       {
         id: "settings",
         title: "Settings",
         role: "settings",
         splitSettings: true,
-        component: createSettingsTab(client, session),
+        component: createSettingsTab(client, session, openIdentity),
+      },
+      {
+        id: "activity",
+        title: "Activity",
+        role: "activity",
+        component: createActivityTab(relay),
       },
     ],
     remote: {
-      async provision({ name, signal }) {
-        await session.ensureSignedIn(signal);
-        return client.register(name, signal, ({ pubkey, id }, intent) =>
-          remember(pubkey, id, intent),
+      async provision({ name, picture, config, signal }) {
+        await validateCreation(config, signal);
+        const agent = await client.register(
+          name,
+          signal,
+          ({ pubkey, id }, intent) => remember(pubkey, id, intent),
+          picture,
         );
+        return {
+          pubkey: agent.pubkey,
+          ...(agent.picture ? { picture: agent.picture } : {}),
+        };
       },
-      async activate({ pubkey, auth, community, signal }) {
+      async activate({ pubkey, auth, community, config, signal }) {
+        await session.ensureSignedIn(signal);
         const saved = identity(pubkey);
+        const draft =
+          config === undefined
+            ? undefined
+            : await validateCreation(config, signal);
         // Agents persisted unfinished setup before invoking activation. Until
         // here, a failed setup write must still replay the original provision.
         if (saved?.registration) clearRegistration(saved.registration);
         await client.activate(pubkey, auth, community, signal);
+        if (draft) await client.configure(pubkey, draft, signal);
       },
-      async profile() {
-        // TODO: publish name and picture changes through Beekeeper.
-        throw new Error(
-          "Builderlab agent profile updates are not supported yet.",
-        );
+      async profile({ signal, ...profile }) {
+        await session.ensureSignedIn(signal);
+        await client.updateProfile(profile, signal);
+      },
+      async interrupt({ pubkey, signal, ...place }) {
+        // A stop is urgent: it never waits on an interactive sign-in.
+        session.credential();
+        return client.cancelTurn(await resolve(pubkey, signal), place, signal);
       },
       async remove({ pubkey, signal }) {
         await session.ensureSignedIn(signal);
-        let saved = identity(pubkey);
-        if (!saved) {
-          const credential = session.credential();
-          const agent = (await client.list(signal)).find(
-            (row) => row.pubkey === pubkey,
-          );
-          if (session.credential() !== credential)
-            throw new DOMException("Builderlab session changed.", "AbortError");
-          if (!agent)
-            throw new Error("Agent not found in this Builderlab account.");
-          saved = remember(pubkey, agent.id);
-        }
+        const saved = await resolve(pubkey, signal);
         await client.delete(saved, signal);
         if (saved.registration) clearRegistration(saved.registration);
       },

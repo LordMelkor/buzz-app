@@ -7,9 +7,10 @@ mod tests;
 mod unix;
 
 pub(crate) use context::TerminalContext;
-use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "macos")]
+pub(crate) use unix::resolve_shell;
 use uuid::Uuid;
 
 const MAX_OWNERS: usize = 32;
@@ -19,10 +20,19 @@ const MAX_SESSIONS: usize = 20;
 pub(super) const MAX_BYTES: usize = 64 * 1024;
 pub(super) const MAX_PENDING_INPUT: usize = 1024 * 1024;
 
-#[derive(Serialize)]
+#[cfg(unix)]
 pub(crate) struct ReadResult {
     data: Vec<u8>,
     exited: bool,
+}
+#[cfg(unix)]
+impl ReadResult {
+    /// Raw IPC body: output bytes, then one exit flag byte. JSON would encode
+    /// every output byte as a decimal number in an array.
+    fn into_body(mut self) -> Vec<u8> {
+        self.data.push(u8::from(self.exited));
+        self.data
+    }
 }
 
 #[cfg(unix)]
@@ -39,7 +49,7 @@ struct Registry {
 #[derive(Default)]
 struct Owner {
     closed: bool,
-    sessions: HashMap<String, Session>,
+    sessions: HashMap<String, Arc<Mutex<Session>>>,
 }
 
 #[derive(Clone, Default)]
@@ -100,7 +110,7 @@ impl Terminals {
         // return before an admitted spawn is accounted for and terminated, and
         // an already revoked owner cannot create another process.
         let mut state = self.lock()?;
-        if !state.owners.get(owner).is_some_and(|owner| !owner.closed) {
+        if state.owners.get(owner).is_none_or(|owner| owner.closed) {
             return Err("Terminal owner has closed".into());
         }
         if state
@@ -119,7 +129,7 @@ impl Terminals {
             .get_mut(owner)
             .ok_or("Terminal owner has closed")?
             .sessions
-            .insert(id.clone(), session);
+            .insert(id.clone(), Arc::new(Mutex::new(session)));
         Ok(id)
     }
 
@@ -130,75 +140,106 @@ impl Terminals {
         id: &str,
         run: impl FnOnce(&mut Session) -> Result<T, String>,
     ) -> Result<T, String> {
-        let mut state = self.lock()?;
-        let session = state
+        let session = self
+            .lock()?
             .owners
-            .get_mut(owner)
+            .get(owner)
             .filter(|owner| !owner.closed)
-            .and_then(|owner| owner.sessions.get_mut(id))
+            .and_then(|owner| owner.sessions.get(id))
+            .cloned()
             .ok_or("Terminal session is unavailable for this owner")?;
-        run(session)
+        // Only this session stays locked, so one draining terminal cannot
+        // delay input, output or resize in another.
+        let mut session = session.lock().map_err(|_| "Terminal session unavailable")?;
+        run(&mut session)
     }
 
     fn close(&self, owner: &str, id: &str) -> Result<(), String> {
-        let mut state = self.lock()?;
-        if let Some(owner) = state.owners.get_mut(owner) {
-            // Keep the handle on failure so an explicit retry still owns cleanup.
-            if let Some(session) = owner.sessions.get_mut(id) {
-                stop(session)?;
-            }
-            owner.sessions.remove(id);
-        }
-        Ok(())
+        let session = self
+            .lock()?
+            .owners
+            .get(owner)
+            .and_then(|entry| entry.sessions.get(id))
+            .map(|session| (owner.to_owned(), id.to_owned(), session.clone()));
+        self.stop_sessions(session.into_iter().collect())
     }
 
     fn close_owner(&self, owner: &str) -> Result<(), String> {
-        let mut state = self.lock()?;
-        if let Some(entry) = state.owners.get_mut(owner) {
+        let sessions = {
+            let mut state = self.lock()?;
+            let Some(entry) = state.owners.get_mut(owner) else {
+                return Ok(());
+            };
             entry.closed = true; // revoke before cleanup, even when cleanup fails
-            shutdown_sessions(&mut entry.sessions)?;
-            state.owners.remove(owner);
-        }
-        Ok(())
+            handles(owner, entry)
+        };
+        self.stop_sessions(sessions)
     }
 
     pub(crate) fn shutdown(&self) -> Result<(), String> {
-        let mut state = self.lock()?;
-        state.stopped = true;
+        let sessions = {
+            let mut state = self.lock()?;
+            state.stopped = true;
+            let mut sessions = Vec::new();
+            for (id, owner) in &mut state.owners {
+                owner.closed = true;
+                sessions.extend(handles(id, owner));
+            }
+            sessions
+        };
+        self.stop_sessions(sessions)
+    }
+
+    /// Stops sessions without holding the registry lock, so waiting on a busy
+    /// session never stalls another. Handles stay registered until stopped:
+    /// a failed stop leaves cleanup to an explicit retry. Owners revoked before
+    /// this call cannot admit new sessions, so the handle list is complete.
+    fn stop_sessions(&self, sessions: Vec<Handle>) -> Result<(), String> {
         let mut result = Ok(());
-        for owner in state.owners.values_mut() {
-            owner.closed = true;
-            if let Err(error) = shutdown_sessions(&mut owner.sessions) {
-                result = Err(error);
+        let mut stopped = Vec::new();
+        for (owner, id, session) in sessions {
+            match stop(&session) {
+                Ok(()) => stopped.push((owner, id)),
+                Err(error) => result = Err(error),
             }
         }
-        state.owners.retain(|_, owner| !owner.sessions.is_empty());
+        let mut state = self.lock()?;
+        for (owner, id) in stopped {
+            if let Some(entry) = state.owners.get_mut(&owner) {
+                entry.sessions.remove(&id);
+            }
+        }
+        state
+            .owners
+            .retain(|_, owner| !owner.closed || !owner.sessions.is_empty());
         result
     }
 }
 
-fn stop(session: &mut Session) -> Result<(), String> {
+/// Owner ID, session ID and the session's own lock.
+type Handle = (String, String, Arc<Mutex<Session>>);
+
+fn handles(owner: &str, entry: &Owner) -> Vec<Handle> {
+    entry
+        .sessions
+        .iter()
+        .map(|(id, session)| (owner.to_owned(), id.clone(), session.clone()))
+        .collect()
+}
+
+fn stop(session: &Mutex<Session>) -> Result<(), String> {
     #[cfg(unix)]
     {
-        session.shutdown()
+        session
+            .lock()
+            .map_err(|_| "Terminal session unavailable")?
+            .shutdown()
     }
     #[cfg(not(unix))]
     {
         let _ = session;
         Ok(())
     }
-}
-
-fn shutdown_sessions(sessions: &mut HashMap<String, Session>) -> Result<(), String> {
-    let mut result = Ok(());
-    sessions.retain(|_, session| match stop(session) {
-        Ok(()) => false,
-        Err(error) => {
-            result = Err(error);
-            true
-        }
-    });
-    result
 }
 
 fn dimensions(cols: u16, rows: u16) -> Result<(), String> {
@@ -236,12 +277,14 @@ pub(crate) async fn terminal_read(
     state: tauri::State<'_, Terminals>,
     owner: String,
     id: String,
-) -> Result<ReadResult, String> {
+) -> Result<tauri::ipc::Response, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(unix)]
         {
-            state.with_session(&owner, &id, Session::read)
+            state
+                .with_session(&owner, &id, Session::read)
+                .map(|result| tauri::ipc::Response::new(result.into_body()))
         }
         #[cfg(not(unix))]
         {

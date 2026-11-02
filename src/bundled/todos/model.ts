@@ -1,4 +1,7 @@
+import type { Root, RootContent, ListItem } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfmStrikethrough } from "micromark-extension-gfm-strikethrough";
+import { gfmStrikethroughFromMarkdown } from "mdast-util-gfm-strikethrough";
 import { profileKey, profileTarget } from "../../features/profiles/target";
 
 export type Assignee = { pubkey: string; name: string };
@@ -8,8 +11,10 @@ const marks = { todo: " ", doing: "/", done: "x" } as const;
 export type Todo = {
   offset: number;
   label: string;
+  parents: string[];
   status: Status;
   end: number;
+  namedAssignee?: { name: string; start: number };
   assignee?: (Assignee & { start: number }) | undefined;
 };
 const assignment = " · Assignee: ";
@@ -36,60 +41,88 @@ export function readTodos(content: string) {
   );
   const section = boundary < 0 ? following : following.slice(0, boundary);
   const items: Todo[] = [];
-  for (const node of section) {
-    if (node.type !== "list" || node.ordered) continue;
-    for (const item of node.children) {
+  function visit(children: ListItem[], parents: string[]) {
+    for (const item of children) {
+      const before = items.length;
       const offset = item.position?.start.offset;
       if (offset === undefined) continue;
       const match = /^([-+*][ \t]+\[)([ xX/])\][ \t]+([^\r\n]+)/.exec(
         content.slice(offset),
       );
-      if (!match?.[1] || !match[3]) continue;
-      const end = offset + match[0].trimEnd().length;
-      const paragraph = item.children[0];
-      const link =
-        paragraph?.type === "paragraph"
-          ? paragraph.children.find(
-              (child) =>
-                child.type === "link" && child.position?.end.offset === end,
+      if (match?.[1] && match[3]) {
+        const end = offset + match[0].trimEnd().length;
+        const paragraph = item.children[0];
+        const link =
+          paragraph?.type === "paragraph"
+            ? paragraph.children.find(
+                (child) =>
+                  child.type === "link" && child.position?.end.offset === end,
+              )
+            : undefined;
+        const linkStart = link?.position?.start.offset;
+        const linkEnd = link?.position?.end.offset;
+        const pubkey = link?.type === "link" ? profileKey(link.url) : undefined;
+        const name =
+          link?.type === "link" &&
+          link.children.length === 1 &&
+          link.children[0]?.type === "text"
+            ? link.children[0].value
+            : undefined;
+        const assignee =
+          pubkey &&
+          name &&
+          linkStart !== undefined &&
+          linkEnd === end &&
+          link?.type === "link" &&
+          !link.title &&
+          content
+            .slice(linkStart, linkEnd)
+            .endsWith(`](${profileTarget(pubkey)})`) &&
+          content.slice(linkStart - assignment.length, linkStart) === assignment
+            ? { pubkey, name, start: linkStart - assignment.length }
+            : undefined;
+        const named = assignee
+          ? null
+          : / · Assignee: ([\p{L}\p{N}][\p{L}\p{N} .’'_-]*)$/u.exec(
+              content.slice(offset, end),
+            );
+        const namedText =
+          paragraph?.type === "paragraph" &&
+          paragraph.children.some(
+            (child) =>
+              child.type === "text" &&
+              (child.position?.start.offset ?? Infinity) <=
+                offset + (named?.index ?? 0) &&
+              (child.position?.end.offset ?? -1) >= end,
+          );
+        const namedAssignee =
+          named?.[1] && namedText
+            ? { name: named[1].trim(), start: offset + named.index }
+            : undefined;
+        items.push({
+          offset: offset + match[1].length,
+          label: content
+            .slice(
+              offset + match[0].length - match[3].length,
+              assignee?.start ?? namedAssignee?.start ?? end,
             )
-          : undefined;
-      const linkStart = link?.position?.start.offset;
-      const linkEnd = link?.position?.end.offset;
-      const pubkey = link?.type === "link" ? profileKey(link.url) : undefined;
-      const name =
-        link?.type === "link" &&
-        link.children.length === 1 &&
-        link.children[0]?.type === "text"
-          ? link.children[0].value
-          : undefined;
-      const assignee =
-        pubkey &&
-        name &&
-        linkStart !== undefined &&
-        linkEnd === end &&
-        link?.type === "link" &&
-        !link.title &&
-        content
-          .slice(linkStart, linkEnd)
-          .endsWith(`](${profileTarget(pubkey)})`) &&
-        content.slice(linkStart - assignment.length, linkStart) === assignment
-          ? { pubkey, name, start: linkStart - assignment.length }
-          : undefined;
-      items.push({
-        offset: offset + match[1].length,
-        label: content
-          .slice(
-            offset + match[0].length - match[3].length,
-            assignee?.start ?? end,
-          )
-          .trim(),
-        status: match[2] === " " ? "todo" : match[2] === "/" ? "doing" : "done",
-        end,
-        assignee,
-      });
+            .trim(),
+          status:
+            match[2] === " " ? "todo" : match[2] === "/" ? "doing" : "done",
+          end,
+          assignee,
+          ...(namedAssignee ? { namedAssignee } : {}),
+          parents,
+        });
+      }
+      const todo = items.length > before ? items[items.length - 1] : undefined;
+      for (const child of item.children)
+        if (child.type === "list" && !child.ordered)
+          visit(child.children, todo ? [...parents, todo.label] : parents);
     }
   }
+  for (const node of section)
+    if (node.type === "list" && !node.ordered) visit(node.children, []);
   return { items, start };
 }
 
@@ -133,7 +166,7 @@ export function assignTodo(
     assignee?.name.replace(/\s+/g, " ").trim() || assignee?.pubkey || "";
   const escaped = name.replace(/[\\`*_{}[\]()#+\-.!<>|&]/g, "\\$&");
   const suffix = assignee ? `${assignment}[${escaped}](${target})` : "";
-  const start = item.assignee?.start ?? item.end;
+  const start = item.assignee?.start ?? item.namedAssignee?.start ?? item.end;
   const next = content.slice(0, start) + suffix + content.slice(item.end);
   const parsed = readTodos(next);
   const edited = parsed.items.find((value) => value.offset === offset);
@@ -146,4 +179,24 @@ export function assignTodo(
       "Could not assign safely. Check this todo’s Markdown in Canvas.",
     );
   return next;
+}
+
+/** Match the inline title renderer without exposing Markdown syntax in control names. */
+export function todoLabelText(label: string): string {
+  const text = (node: Root | RootContent): string =>
+    "children" in node
+      ? node.children.map(text).join("")
+      : node.type === "text" || node.type === "inlineCode"
+        ? node.value
+        : node.type === "image"
+          ? (node.alt ?? "")
+          : node.type === "break"
+            ? " "
+            : "";
+  return text(
+    fromMarkdown(label, {
+      extensions: [gfmStrikethrough()],
+      mdastExtensions: [gfmStrikethroughFromMarkdown()],
+    }),
+  );
 }

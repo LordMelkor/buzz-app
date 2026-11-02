@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "huddle-window",
+  "description": "Presentation-only Huddle controls; no identity, microphone or relay authority.",
+  "webviews": ["huddle"],
+  "permissions": [
+    "allow-huddle-window-watch",
+    "allow-huddle-window-action",
+    "allow-media-download",
+    "allow-clipboard-write-text",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://*"
+        },
+        {
+          "url": "http://*"
+        }
+      ]
+    }
+  ]
+}

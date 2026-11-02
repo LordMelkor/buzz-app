@@ -3,5 +3,8 @@
   "name": "Channels",
   "apiVersion": 1,
   "description": "Navigate channels and hold conversations in Buzz.",
-  "discovery": { "category": "communication", "tags": ["Essentials"] }
+  "discovery": {
+    "category": "communication",
+    "tags": ["Core", "Essentials", "messaging"]
+  }
 }

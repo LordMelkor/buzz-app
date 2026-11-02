@@ -1,5 +1,5 @@
 import { useEffect, useRef, type RefObject } from "react";
-import styles from "./Messages.module.css";
+import { highlightWhenSettled } from "./message-highlight";
 
 /** A close-time orientation cue, not a reveal request or a scroll owner. */
 export function useReturnHighlight(
@@ -12,16 +12,9 @@ export function useReturnHighlight(
   return (messageId: string | undefined) => {
     pending.current();
     if (!messageId) return;
-    let row: HTMLElement | undefined;
-    const clear = () => {
-      row?.classList.remove(styles.returnHighlight ?? "");
-      row?.removeEventListener("animationend", finish);
-    };
-    const finish = (event: AnimationEvent) => {
-      if (event.target === row && event.pseudoElement === "::after") clear();
-    };
+    let clear = () => {};
     // Let tab selection and the current close/navigation commit settle first.
-    // Check once: hidden, unloaded and offscreen roots get no deferred cue.
+    // Check once: hidden and unloaded roots get no deferred cue.
     const frame = requestAnimationFrame(() => {
       const container = conversation.current;
       if (
@@ -33,26 +26,7 @@ export function useReturnHighlight(
         "[data-channel-timeline]",
       );
       if (!scroller || scroller.dataset.channelTimeline !== channelId) return;
-      const item = [
-        ...scroller.querySelectorAll<HTMLElement>("[data-message-id]"),
-      ].find((element) => element.dataset.messageId === messageId);
-      // Paint the message itself, never its day divider.
-      row =
-        item?.querySelector<HTMLElement>(":scope > [data-layout]") ?? undefined;
-      if (!row) return;
-      const box = row.getBoundingClientRect();
-      const viewport = scroller.getBoundingClientRect();
-      if (
-        !box.width ||
-        !box.height ||
-        box.bottom <= Math.max(viewport.top, 0) ||
-        box.top >= Math.min(viewport.bottom, window.innerHeight) ||
-        box.right <= Math.max(viewport.left, 0) ||
-        box.left >= Math.min(viewport.right, window.innerWidth)
-      )
-        return;
-      row.classList.add(styles.returnHighlight ?? "");
-      row.addEventListener("animationend", finish);
+      clear = highlightWhenSettled(scroller, messageId);
     });
     pending.current = () => {
       cancelAnimationFrame(frame);

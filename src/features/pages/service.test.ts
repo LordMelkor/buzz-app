@@ -150,4 +150,38 @@ describe("page decoration validation", () => {
     expect(Object.keys(snapshot[0] ?? {})).not.toContain("icon");
     expect(warn).not.toHaveBeenCalled();
   });
+
+  it("requires a callable page sidebar and disposes its scoped contribution", async () => {
+    const root = new Context();
+    root.provide("pluginStatus", {
+      isActive: () => true,
+      subscribe: () => () => {},
+    });
+    const pages = new PagesService(root);
+    const scope = root.extend({
+      pluginOwner: { id: "example", revision: "one" },
+    });
+    const sidebar = () => null;
+    const fiber = scope.plugin((ctx) => {
+      expect(() =>
+        ctx.pages.register({
+          id: "invalid",
+          title: "Invalid",
+          component: () => null,
+          sidebar: "not a component",
+        } as never),
+      ).toThrow("A page needs an id, a title, and a React component function");
+      ctx.pages.register({
+        id: "main",
+        title: "Main",
+        component: () => null,
+        sidebar,
+      });
+    });
+    await fiber.await();
+    expect(typeof pages.snapshot()[0]?.sidebar).toBe("function");
+    await fiber.dispose();
+    expect(pages.snapshot()).toEqual([]);
+    await root.fiber.dispose();
+  });
 });

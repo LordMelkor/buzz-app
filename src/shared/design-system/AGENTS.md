@@ -18,6 +18,14 @@ flexible props do not enforce the composition rules.
 - Keep features, plugins, native adapters, and app startup out of the system and core viewer. The viewer at `tests/fixtures/design-system` renders real shared components.
 - Integrate global styles through the host entry point with one reset. The host owns appearance; `theme/useColorScheme.ts` belongs to the standalone viewer.
 
+For dialogs, use `Dialog` / `AlertDialog` and the guide's
+[modal composition](DESIGN.md#modal-composition). Put introductory copy in
+`description`, not a separate body paragraph. Omit an absent body; use shared
+size, inset, footer-gutter, Close, and motion recipes rather than local overrides.
+Shared insets are 2rem, reducing to 1rem at viewport widths up to 30rem; keep
+this responsive rule in the shared recipe. The standard viewer specimens show
+these compositions.
+
 ## Preserve interaction contracts
 
 Keep keyboard focus, Tab order, selection, dismissal, and focus restoration intact.

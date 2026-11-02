@@ -3,5 +3,5 @@
   "name": "Bestie",
   "apiVersion": 1,
   "description": "Open the experimental Bestie companion workspace.",
-  "discovery": { "category": "agents" }
+  "discovery": { "category": "agent-tools" }
 }

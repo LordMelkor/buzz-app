@@ -303,6 +303,45 @@ it("applies viewer and owner metadata through the shared view and follows owner 
   names.dispose();
 });
 
+it("preserves agent ownership for an authored alias when the public name is synthetic", () => {
+  const agent = "a".repeat(64),
+    human = "b".repeat(64),
+    owner = "c".repeat(64);
+  const source: NameSource = {
+    profiles: {
+      snapshot: () =>
+        new Map([
+          [
+            agent,
+            {
+              name: agent.slice(0, 10),
+              nameIsFallback: true as const,
+              isAgent: true as const,
+              ownerPubkey: owner,
+            },
+          ],
+          [human, { name: "Honey" }],
+          [owner, { name: "Salman" }],
+        ]),
+      subscribe: () => () => {},
+      ensure: async () => {},
+    },
+    agentLibrary: {
+      snapshot: () => ({ status: "ready", definitions: [], identities: [] }),
+      subscribe: () => () => {},
+      refresh: async () => {},
+      retain: () => () => {},
+    },
+  };
+  const label = createAgentDirectory().scope(
+    source,
+    [agent, human],
+    [{ pubkey: agent, name: "Honey" }],
+  );
+  expect(label(human)?.name).toBe("Honey");
+  expect(label(agent)?.name).toBe("Salman’s Honey");
+});
+
 it("reuses one policy run per candidate scope across mixed case, outside keys, and updates", () => {
   const [a, b, c, d] = ["a", "b", "c", "d"].map((key) => key.repeat(64));
   if (!a || !b || !c || !d) throw new Error("Missing fixture keys");
@@ -365,21 +404,39 @@ it("reuses one policy run per candidate scope across mixed case, outside keys, a
     expect(scoped(a)?.name).toBe(suffixed(a));
   }
   expect(resolve).toHaveBeenCalledTimes(12);
+  // Equal candidate sets share outside labels.
+  expect(scoped(c)?.name).toBe(suffixed(c));
+  expect(names.scope([d, b, a])(c)?.name).toBe(suffixed(c));
+  expect(resolve).toHaveBeenCalledTimes(13);
+  // One scope keeps many historical authors' labels at once.
+  const authors = [..."0123456789"].map((digit) => digit.repeat(64));
+  for (const author of [...authors, ...authors]) scoped(author);
+  expect(resolve).toHaveBeenCalledTimes(23);
+  // Membership churn keeps only recent scopes' outside labels.
+  for (const digit of "01234567") names.scope([a, b, d, digit.repeat(64)])(c);
+  expect(resolve).toHaveBeenCalledTimes(31);
+  expect(scoped(c)?.name).toBe(suffixed(c));
+  expect(resolve).toHaveBeenCalledTimes(32);
   profiles = new Map([...profiles, [b, { name: "Blake" }]]);
   for (const listener of listeners) listener();
   expect(scoped(a)?.name).toBe("Alex");
   expect(scoped(b)?.name).toBe("Blake");
-  expect(resolve).toHaveBeenCalledTimes(13);
+  expect(scoped(c)?.name).toBe(suffixed(c));
+  expect(resolve).toHaveBeenCalledTimes(34);
 });
 
-it.each([
-  '{"about":"Artwork-only agent"}',
-  '{"name":" ","display_name":""}',
-  "malformed",
-  '{"name":"aaaaaaaaaa"}',
-])(
-  "uses saved aliases for unnamed public profiles but respects an explicit key-like name (%s)",
-  (content) => {
+it.each(
+  [
+    '{"about":"Artwork-only agent"}',
+    '{"name":" ","display_name":""}',
+    "malformed",
+    '{"name":"aaaaaaaaaa"}',
+  ].flatMap((content) =>
+    ["Saved Luna", ""].map((alias) => ({ content, alias })),
+  ),
+)(
+  "uses saved aliases for unnamed public profiles but respects an explicit key-like name (%j)",
+  ({ content, alias }) => {
     const key = "a".repeat(64);
     const profiles = foldProfiles([
       {
@@ -401,7 +458,7 @@ it.each([
         snapshot: () => ({
           status: "ready",
           definitions: [],
-          identities: [{ pubkey: key, name: "Saved Luna" }],
+          identities: [{ pubkey: key, name: alias }],
         }),
         subscribe: () => () => {},
         refresh: async () => {},
@@ -409,7 +466,7 @@ it.each([
       },
     };
     expect(agentDirectory.scope(source)(key)?.name).toBe(
-      content === '{"name":"aaaaaaaaaa"}' ? "aaaaaaaaaa" : "Saved Luna",
+      content === '{"name":"aaaaaaaaaa"}' ? "aaaaaaaaaa" : alias || "Agent",
     );
   },
 );

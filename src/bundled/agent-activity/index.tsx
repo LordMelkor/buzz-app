@@ -4,7 +4,7 @@ import {
   ActivityAccessory,
   ActivityTypingReplacement,
 } from "./ActivityAccessory";
-export const inject = ["relay", "conversation"];
+export const inject = ["relay", "conversation", "agents"];
 export const apply: PluginModule["apply"] = (ctx) => {
   const relay = ctx.relay;
   ctx.effect(() => {
@@ -29,7 +29,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
   ctx.conversation.registerAccessory({
     id: "activity",
     title: "Agent Activity",
-    component: ActivityAccessory,
+    component: (props) => <ActivityAccessory {...props} agents={ctx.agents} />,
     placement: "message",
     decoratesMessageSummary: true,
   });

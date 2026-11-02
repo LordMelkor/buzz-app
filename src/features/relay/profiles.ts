@@ -3,6 +3,9 @@ import { newer } from "./events";
 import type { EventData } from "./events";
 import type { Profile } from "./contracts";
 
+// Events are immutable; the directory refolds every retained profile per change.
+const projected = new WeakMap<EventData, Profile>();
+
 /** Kind 0 metadata. Only the author's own latest event counts. */
 export function foldProfiles(
   events: readonly EventData[],
@@ -15,6 +18,11 @@ export function foldProfiles(
   }
   const profiles = new Map<string, Profile>();
   for (const [pubkey, event] of latest) {
+    const cached = projected.get(event);
+    if (cached) {
+      profiles.set(pubkey, cached);
+      continue;
+    }
     const auth = event.tags.find(
       (tag) =>
         tag.length === 4 &&
@@ -39,12 +47,15 @@ export function foldProfiles(
         (value): value is string =>
           typeof value === "string" && value.trim().length > 0,
       );
+      const handle =
+        typeof body.name === "string" ? body.name.trim() : undefined;
       const picture = avatarSource(body.picture);
       profiles.set(
         pubkey,
         Object.freeze({
           name: name ?? pubkey.slice(0, 10),
           ...(!name ? { nameIsFallback: true as const } : {}),
+          ...(handle && handle !== name?.trim() ? { username: handle } : {}),
           ...agent,
           ...(picture ? { picture } : {}),
           ...(typeof body.about === "string" && body.about.trim()
@@ -68,6 +79,7 @@ export function foldProfiles(
         }),
       );
     }
+    projected.set(event, profiles.get(pubkey) as Profile);
   }
   return profiles;
 }

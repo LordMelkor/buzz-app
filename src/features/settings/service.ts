@@ -19,6 +19,8 @@ export type SettingsCard = {
   group?: string;
   /** Separate permission-gated controls from ordinary settings for the selected community. */
   section?: "administration";
+  /** Also offer this community card in Personal space, where no community is selected. */
+  personal?: boolean;
   /** Reactive verified authorization for permission-gated navigation. */
   visibility?: {
     snapshot(): boolean | "pending" | "error";
@@ -103,6 +105,11 @@ export class SettingsCardsService extends Service implements SettingsCards {
         (typeof card.group !== "string" || !card.group.trim())) ||
       (card.section !== undefined && card.section !== "administration") ||
       (card.group !== undefined && card.section !== undefined) ||
+      // Personal space extends an ungrouped, non-administration community card.
+      (card.personal !== undefined &&
+        (typeof card.personal !== "boolean" ||
+          (card.personal &&
+            (card.group !== undefined || card.section !== undefined)))) ||
       (card.visibility !== undefined &&
         (typeof card.visibility.snapshot !== "function" ||
           typeof card.visibility.subscribe !== "function" ||

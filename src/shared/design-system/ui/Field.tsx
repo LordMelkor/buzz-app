@@ -59,9 +59,11 @@ export function Field({
         </BaseField.Description>
       )}
       {error && (
-        <BaseField.Error match role="alert" className="buzz-field-error">
-          {error}
-        </BaseField.Error>
+        <div className="buzz-field-error-track">
+          <BaseField.Error match role="alert" className="buzz-field-error">
+            {error}
+          </BaseField.Error>
+        </div>
       )}
     </BaseField.Root>
   );

@@ -1,20 +1,7 @@
+import { SidebarNavigation } from "../../shared/design-system/ui/SidebarNavigation";
 import type { ReactNode } from "react";
 import { Panel } from "../../shared/design-system/ui/Panel";
 import styles from "../../bundled/channels/Channels.module.css";
-
-/** The mark at the top of a primary sidebar. Me pays homage to Berd. */
-export function SidebarBrand({ mark = "buzz" }: { mark?: "buzz" | "berd" }) {
-  return (
-    <div className={styles.sidebarBrand}>
-      <span
-        className={styles.sidebarBrandMark}
-        data-mark={mark}
-        role="img"
-        aria-label={mark === "berd" ? "Berd" : "Buzz"}
-      />
-    </div>
-  );
-}
 
 /** Shared sidebar surface; callers own its contents, data and scroll behavior. */
 export function SidebarFrame({
@@ -22,8 +9,12 @@ export function SidebarFrame({
   busy,
   launchPending,
   children,
+  header,
+  panelId,
 }: {
   label: string;
+  header?: ReactNode;
+  panelId?: string | undefined;
   busy?: boolean | undefined;
   launchPending?: "required" | "settling" | undefined;
   children?: ReactNode;
@@ -35,7 +26,20 @@ export function SidebarFrame({
       aria-busy={busy}
       data-buzz-launch-pending={launchPending}
     >
-      <div className={styles.sidebar}>{children}</div>
+      <div className={styles.sidebar}>
+        <SidebarNavigation>
+          {header && <div className={styles.sidebarFilter}>{header}</div>}
+          <div
+            className={styles.sidebarBody}
+            id={panelId}
+            {...(panelId
+              ? { role: "tabpanel", "aria-labelledby": `${panelId}-tab` }
+              : {})}
+          >
+            {children}
+          </div>
+        </SidebarNavigation>
+      </div>
     </Panel>
   );
 }

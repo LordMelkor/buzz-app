@@ -9,6 +9,13 @@ export type WindowPage = Readonly<{
   hasMore: boolean;
 }>;
 export const WINDOW_PAGE_SIZE = 20;
+/** Row kinds a window page reads. Membership notices (40099) are read apart by
+ * `noticeFilter`: a page counts every row kind against its limit, so a burst
+ * of joins would otherwise fill pages and hold the messages back. */
+export const WINDOW_KINDS: readonly number[] = CHANNEL_ROW_KINDS.filter(
+  (kind) => kind !== 40099,
+);
+export const NOTICE_PAGE_SIZE = 500;
 
 /** NIP-CW window request: top-level rows plus aux closure and thread summaries, paged by the relay's composite cursor. */
 export function windowFilter(
@@ -17,12 +24,27 @@ export function windowFilter(
   limit = WINDOW_PAGE_SIZE,
 ): ReadFilter {
   return {
-    kinds: [...CHANNEL_ROW_KINDS],
+    kinds: [...WINDOW_KINDS],
     "#h": [channelId],
     limit: Math.max(1, Math.min(200, limit)),
     top_level: true,
     include_aux: true,
     include_summaries: true,
+    ...(cursor ? { until: cursor.createdAt, before_id: cursor.eventId } : {}),
+  };
+}
+/** The relay's membership notices in a channel, newest first, below `cursor`
+ * by the same composite keyset the window pages use. */
+export function noticeFilter(
+  channelId: string,
+  relayAuthor: string,
+  cursor: WindowCursor | null,
+): ReadFilter {
+  return {
+    kinds: [40099],
+    "#h": [channelId],
+    authors: [relayAuthor],
+    limit: NOTICE_PAGE_SIZE,
     ...(cursor ? { until: cursor.createdAt, before_id: cursor.eventId } : {}),
   };
 }

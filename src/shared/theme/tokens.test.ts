@@ -1,4 +1,4 @@
-import { BUBBLE_COLORS, type BubbleColor } from "./bubble-color";
+import { ACCENTS, DEFAULT_ACCENT, type Accent } from "./accent";
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 
@@ -16,7 +16,8 @@ const blocks = [...css.matchAll(/:root[^{}]*\{([^}]+)\}/g)].map((match) =>
 // no longer owns literal colors; a missing or cyclic alias must fail the test.
 function resolvedPalette(
   mode: "light" | "dark",
-  bubbleColor: BubbleColor = "neutral",
+  accent: Accent = DEFAULT_ACCENT,
+  contrastMode: "low" | "high" = "low",
 ) {
   const source = (
     readFileSync("src/shared/design-system/styles/tokens.css", "utf8") +
@@ -29,8 +30,15 @@ function resolvedPalette(
   )) {
     if (!selector.includes(":root") && !selector.includes(".dark")) continue;
     if (
-      selector.includes("data-bubble-color") &&
-      !selector.includes(`data-bubble-color="${bubbleColor}"`)
+      selector.includes('data-accent="') &&
+      !selector.includes(`data-accent="${accent}"`)
+    )
+      continue;
+    if (
+      selector.includes('data-color-level="') &&
+      !selector.includes(
+        `data-color-level="${contrastMode === "low" ? "touch" : contrastMode}"`,
+      )
     )
       continue;
     const dark =
@@ -68,6 +76,22 @@ function luminance(hex: string | undefined) {
     (sum, value, i) => sum + value * ([0.2126, 0.7152, 0.0722][i] ?? 0),
     0,
   );
+}
+/** A see-through `rgb(r g b / a%)` fill as the flat colour it makes on `base`. */
+function over(fill: string | undefined, base: string | undefined) {
+  const overlay = /^rgb\((\d+) (\d+) (\d+) \/ ([\d.]+)%\)$/.exec(fill ?? "");
+  if (!overlay || !base) return fill;
+  const alpha = Number(overlay[4]) / 100;
+  return `#${[1, 2, 3]
+    .map((i) =>
+      Math.round(
+        Number(overlay[i]) * alpha +
+          Number.parseInt(base.slice(i * 2 - 1, i * 2 + 1), 16) * (1 - alpha),
+      )
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
 }
 function contrast(a: string | undefined, b: string | undefined) {
   const x = luminance(a);
@@ -171,7 +195,7 @@ it.each(["light", "dark"] as const)(
   "message text and links contrast with both bubble fills in %s",
   (mode) => {
     const palette = resolvedPalette(mode);
-    // Default own bubbles retain normal text and link colors.
+    // Own bubbles carry the accent's paired ink; received keep normal text.
     for (const surface of ["--surface-message", "--surface-message-own"]) {
       for (const text of surface === "--surface-message-own"
         ? ["--text-message-own", "--text-message-link-own"]
@@ -182,51 +206,172 @@ it.each(["light", "dark"] as const)(
         ).toBeGreaterThanOrEqual(4.5);
       }
     }
-    // Received and neutral own fills are independent authored pairs.
+    // Received bubbles stay neutral; own bubbles use the soft accent pair.
     expect(palette["--surface-message"]).toBe(palette["--bubble-received"]);
-    expect(palette["--surface-message-own"]).toBe(palette["--bubble-neutral"]);
-    expect(palette["--surface-message"]).not.toBe(
-      palette["--surface-message-own"],
-    );
-    expect(palette["--text-message-own"]).toBe(palette["--text-standard"]);
+    expect(palette["--surface-message-own"]).toBe(palette["--accent-4"]);
+    expect(palette["--text-message-own"]).toBe(palette["--accent-12"]);
   },
 );
 
-it.each(BUBBLE_COLORS)(
+it.each(ACCENTS)(
   "%s message fill keeps text and send icons readable in both modes",
   (color) => {
-    for (const mode of ["light", "dark"] as const) {
-      const palette = resolvedPalette(mode, color);
-      expect(palette["--text-message-own"]).toBe(
-        color === "neutral" ? palette["--text-standard"] : "#ffffff",
-      );
-      expect(palette["--text-message-link-own"]).toBe(
-        color === "neutral" ? palette["--text-link"] : "#ffffff",
-      );
-      expect(palette["--text-message-action"]).toBe(
-        color === "neutral" ? palette["--neutral-1"] : "#ffffff",
-      );
-      expect(
-        contrast(
-          palette["--text-message-link-own"],
-          palette["--surface-message-own"],
-        ),
-        `${color} links in ${mode}`,
-      ).toBeGreaterThanOrEqual(4.5);
-      expect(
-        contrast(
-          palette["--text-message-action"],
-          palette["--surface-message-action"],
-        ),
-        `${color} send icon in ${mode}`,
-      ).toBeGreaterThanOrEqual(4.5);
-      expect(
-        contrast(
-          palette["--text-message-own"],
-          palette["--surface-message-own"],
-        ),
-        `${color} in ${mode}`,
-      ).toBeGreaterThanOrEqual(4.5);
+    for (const mode of ["light", "dark"] as const)
+      for (const contrastMode of ["low", "high"] as const) {
+        const palette = resolvedPalette(mode, color, contrastMode);
+        const where = `${color}/${mode}`;
+        // Highlights come from the family's tint, never a mixed bubble color.
+        expect(palette["--surface-message-highlight"], where).toBe(
+          palette["--accent-3"],
+        );
+        for (const [text, fill] of [
+          ["--text-row-selected-detail", "--surface-row-selected-detail"],
+          ["--text-message-own", "--surface-message-own"],
+          ["--text-message-link-own", "--surface-message-own"],
+          ["--text-on-prominent", "--affordance-prominent"],
+          ["--text-navigation-selected", "--surface-navigation-selected"],
+          ["--text-sidebar-selected", "--surface-sidebar-selected"],
+          ["--text-sidebar-hover", "--affordance-sidebar-hover"],
+          ["--text-on-accent", "--affordance-accent-prominent"],
+          ["--text-control-selected", "--surface-control-selected"],
+          ["--text-navigation-selected", "--bg-chrome-selected"],
+          // Supported legacy/plugin markup must keep the same paired ink.
+          ["--on-primary", "--primary"],
+          ["--text-standard", "--surface-message"],
+          ["--text-message-link", "--surface-message"],
+        ] as const)
+          expect(
+            contrast(palette[text], palette[fill]),
+            `${text} on ${fill} in ${where}`,
+          ).toBeGreaterThanOrEqual(4.5);
+      }
+  },
+);
+
+it("the default Citrus accent keeps its strong fill and paired black ink", () => {
+  for (const mode of ["light", "dark"] as const) {
+    const palette = resolvedPalette(mode);
+    expect(palette["--affordance-accent-prominent"]).toBe("#beda36");
+    expect(palette["--text-on-accent"]).toBe("#000000");
+  }
+});
+
+it.each(["light", "dark"] as const)(
+  "%s reading surfaces stay neutral across accents",
+  (mode) => {
+    const baseline = resolvedPalette(mode);
+    for (const accent of ACCENTS) {
+      const palette = resolvedPalette(mode, accent, "high");
+      for (const role of [
+        "--bg-app",
+        "--surface-panel",
+        "--surface-popover",
+        "--surface-message",
+        "--text-standard",
+        "--text-subtle",
+        "--border-standard",
+      ]) {
+        expect(palette[role], `${accent}: ${role}`).toBe(baseline[role]);
+      }
     }
+  },
+);
+
+it.each(ACCENTS)(
+  "%s vibe changes bubbles while controls and sidebar states stay consistent",
+  (accent) => {
+    for (const mode of ["light", "dark"] as const) {
+      const high = resolvedPalette(mode, accent, "high");
+      const low = resolvedPalette(mode, accent, "low");
+      expect(high["--surface-message-own"]).toBe(high["--accent-9"]);
+      expect(high["--surface-message"]).toBe(high["--bubble-received"]);
+      expect(low["--surface-message"]).toBe(low["--bubble-received"]);
+      expect(low["--surface-message-own"]).toBe(low["--accent-4"]);
+      expect(high["--surface-sidebar-selected"]).toBe(high["--accent-9"]);
+      expect(high["--text-sidebar-selected"]).toBe(high["--accent-contrast"]);
+      const mono = resolvedPalette(mode, "mono");
+      for (const role of [
+        "--affordance-prominent",
+        "--affordance-prominent-hover",
+        "--affordance-prominent-pressed",
+        "--text-on-prominent",
+        "--surface-control-selected",
+        "--text-control-selected",
+        "--surface-navigation-selected",
+        "--text-navigation-selected",
+        "--bg-chrome-selected",
+        "--affordance-floating-hover",
+        "--affordance-floating-selected",
+        "--affordance-popover-selected",
+        "--affordance-panel-hover",
+        "--text-link",
+        "--affordance-link-hover",
+        "--text-accent",
+        "--border-accent",
+        "--affordance-accent",
+      ]) {
+        expect(high[role], `${mode}/${role}`).toBe(mono[role]);
+        expect(low[role], `${mode}/${role}`).toBe(mono[role]);
+      }
+      for (const role of [
+        "--surface-sidebar-selected",
+        "--text-sidebar-selected",
+        "--affordance-sidebar-hover",
+        "--affordance-accent-prominent",
+      ])
+        expect(high[role], role).toBe(low[role]);
+    }
+  },
+);
+
+it.each(ACCENTS)(
+  "%s mention chips stay readable and apart from every bubble",
+  (color) => {
+    for (const level of ["low", "high"] as const)
+      for (const mode of ["light", "dark"] as const) {
+        const palette = resolvedPalette(mode, color, level);
+        const where = `${color}/${level}/${mode}`;
+        // A chip is the colour its overlay makes on the bubble beneath it.
+        const chip = (fill: string) =>
+          over(
+            palette[fill],
+            palette[
+              fill.includes("-own")
+                ? "--surface-message-own"
+                : "--surface-message"
+            ],
+          );
+        for (const [text, fill] of [
+          ["--text-mention", "--affordance-mention"],
+          ["--text-mention", "--affordance-mention-hover"],
+          ["--text-mention-own", "--affordance-mention-own"],
+          ["--text-mention-own", "--affordance-mention-own-hover"],
+          ["--text-mention-self", "--affordance-mention-self"],
+          ["--text-mention-self", "--affordance-mention-self-hover"],
+        ] as const)
+          expect(
+            contrast(palette[text], chip(fill)),
+            `${text} on ${fill} in ${where}`,
+          ).toBeGreaterThanOrEqual(4.5);
+        // The own chip never repaints the bubble it sits on.
+        expect(chip("--affordance-mention-own"), where).not.toBe(
+          palette["--surface-message-own"],
+        );
+        // Hovering a chip in your own bubble always shows a change.
+        expect(chip("--affordance-mention-own-hover"), where).not.toBe(
+          chip("--affordance-mention-own"),
+        );
+        // Ordinary mentions stay neutral at every level; a mention of you
+        // takes the strong fill in both modes.
+        expect(palette["--affordance-mention"], where).toBe(
+          resolvedPalette(mode, color, "low")["--affordance-mention"],
+        );
+        expect(palette["--affordance-mention-self"], where).toBe(
+          palette["--affordance-accent-prominent"],
+        );
+        expect(palette["--text-mention-self"], where).toBe(
+          palette["--text-on-accent"],
+        );
+      }
   },
 );

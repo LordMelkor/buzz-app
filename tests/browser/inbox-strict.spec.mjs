@@ -13,8 +13,9 @@ test.use({
 });
 
 // Browser-only: the production build can opt into development React. Effects
-// replay there; an inline reveal must retain a live signal and focus the target.
-test("focuses an in-head DM after effect cleanup and setup replay", async ({
+// replay there; an inline reveal must retain a live signal and reveal the
+// exact target in a newly opened tab.
+test("reveals an exact thread target after effect cleanup and setup replay", async ({
   page,
   app,
 }) => {
@@ -22,20 +23,15 @@ test("focuses an in-head DM after effect cleanup and setup replay", async ({
   await openPage(page, "Inbox");
   const inbox = page.getByRole("region", { name: "Inbox", exact: true });
   await expect(inbox.getByText("Checking recent activity…")).toHaveCount(0);
-  await inbox
-    .getByRole("button", { name: "Inbox filters", exact: true })
-    .click();
-  await page.getByRole("menuitemradio", { name: "DMs", exact: true }).click();
-  await inbox
+  const opener = inbox
     .getByRole("list", { name: "Inbox conversations" })
     .getByRole("listitem")
-    .first()
-    .getByRole("button", { name: /^Open / })
-    .click();
+    .filter({ hasText: "Unread reply 1" })
+    .getByRole("button", { name: /^Open / });
+  await opener.click();
   const target = inbox
-    .getByRole("region", { name: "Inbox detail" })
+    .getByRole("region", { name: "Conversation in Alpha", exact: true })
     .locator("[data-message-id]")
-    .filter({ hasText: "Inbox DM fixture reply" });
+    .filter({ hasText: "Unread reply 1" });
   await expect(target).toBeInViewport();
-  await expect(target).toBeFocused();
 });

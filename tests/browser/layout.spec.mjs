@@ -1,9 +1,16 @@
+import { pluginAction } from "./plugin-settings.mjs";
+import { selectCommunity, openCommunityPicker } from "./navigation.mjs";
 import { openChannelDetails } from "./channel-details.mjs";
 import {
+  closeSettings,
   openPage,
+  openSettings,
   pageChoices,
-  selectPage,
+  pageChoice,
   selectSettingsSection,
+  settingsDialog,
+  settingsSections,
+  settleDialogMotion,
   settleShellToggle,
 } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
@@ -12,6 +19,7 @@ import { finalizeEvent, generateSecretKey } from "nostr-tools";
 import {
   wheel,
   anchor,
+  frames,
   settle,
   upper,
   expectAnchor,
@@ -54,18 +62,11 @@ const button = (page, name) => page.getByRole("button", { name, exact: true });
 const companionLauncher = (page, name) =>
   button(page, name).and(page.locator("button[aria-expanded]"));
 // The fixture's active plugin pages, in shell order, lead the channel sidebar.
-// Sidebar rows exclude header pages; Me and Messages remain available through search.
-const destinationTitles = [
-  "Inbox",
-  "Reminders",
-  "Bestie",
-  "Projects",
-  "Agents",
-  "Workflows",
-];
+// Sidebar rows exclude header pages; Messages remains available through search.
+const destinationTitles = ["Inbox", "Bestie"];
 const sidebarDestinations = (page, options = {}) =>
   page
-    .getByRole("complementary", { name: "Channel sidebar", ...options })
+    .getByRole("complementary", { name: "Sidebar", exact: true, ...options })
     .getByRole("navigation", { name: "Pages", ...options })
     .getByRole("button", options);
 const companionReadingTest = readingTest.extend({ companionFixture: true });
@@ -91,17 +92,13 @@ const panel = (page) =>
 
 async function open(page, app) {
   await page.goto(app.origin);
-  await openPage(page, "Multiplayer");
+  await openPage(page, "Messages");
   await page
     .getByRole("textbox", { name: "Message #Alpha", exact: true })
     .waitFor();
   await expect(page.locator("[data-message-id]").first()).toBeVisible();
 }
 async function link(page, app, target) {
-  await page.route(
-    /https:\/\/api\.github\.com\/repos\/block\/buzz\/(?:issues\/\d+\/comments|pulls\/\d+\/reviews)\?/,
-    (route) => route.fulfill({ json: [] }),
-  );
   await page.route("https://api.github.com/repos/block/buzz/pulls/*", (route) =>
     route.fulfill({
       json: {
@@ -142,26 +139,18 @@ async function link(page, app, target) {
   });
 }
 async function shellFits(page, width) {
-  // The Projects page renders no toggle at wide widths, so settle only when
+  // The Workflows page renders no toggle at wide widths, so settle only when
   // the drawer is in play.
   if (width <= 650) await settleShellToggle(page);
   const disclosure = button(page, "Show navigation");
   const collapsed = await disclosure.isVisible();
   if (collapsed) await disclosure.click();
-  const inSettings = await page
-    .getByRole("region", { name: "Settings", exact: true })
-    .isVisible();
-  const destinations = inSettings
-    ? page
-        .getByRole("navigation", { name: "Settings sections" })
-        .getByRole("button")
-    : sidebarDestinations(page);
-  if (inSettings) await expect(destinations.first()).toBeVisible();
-  else await expect(destinations).toHaveText(destinationTitles);
+  // Settings is a modal with its own navigation; the shell is measured with
+  // Settings closed.
+  const destinations = sidebarDestinations(page);
+  await expect(destinations).toHaveText(destinationTitles);
   const sidebar = await box(
-    page.getByRole("complementary", {
-      name: inSettings ? "Settings sidebar" : "Channel sidebar",
-    }),
+    page.getByRole("complementary", { name: "Sidebar", exact: true }),
   );
   const first = await box(destinations.first());
   const last = await box(destinations.last());
@@ -202,14 +191,12 @@ async function shellFits(page, width) {
     page.getByRole("navigation", { name: "Communities", exact: true }),
   );
   expect(actions.x + actions.width).toBeLessThanOrEqual(width);
-  expect(communities.x + communities.width).toBeLessThan(actions.x);
+  expect(communities.x).toBeGreaterThanOrEqual(actions.x);
+  const profile = await box(button(page, "Your profile"));
+  expect(communities.x + communities.width).toBeLessThanOrEqual(profile.x);
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
     .toBe(width);
-  if (width > 700) {
-    // The compact rail meets the sidebar edge without overlapping it.
-    expect(communities.x + communities.width).toBeLessThanOrEqual(sidebar.x);
-  }
   if (collapsed) await button(page, "Hide navigation").click();
 }
 
@@ -235,9 +222,9 @@ scroll(
     await settle(page);
     expect(await box(shell)).toEqual(bounds);
 
-    // Projects has no overflowing content: gestures must leave the shell in place.
-    await openPage(page, "Projects");
-    await page.getByRole("heading", { name: "Projects", exact: true }).hover();
+    // Workflows has no overflowing content: gestures must leave the shell in place.
+    await openPage(page, "Workflows");
+    await page.getByRole("heading", { name: "Workflows", exact: true }).hover();
     for (const [x, y] of [
       [0, -600],
       [0, 600],
@@ -262,7 +249,7 @@ test("separate sidebar and workspace surfaces, real link panel and compact commu
   await open(page, app);
   await shellFits(page, 1280);
   const sidebar = await box(
-    page.getByRole("complementary", { name: "Channel sidebar" }),
+    page.getByRole("complementary", { name: "Sidebar", exact: true }),
   );
   const conversation = page.getByRole("article", {
     name: "Conversation",
@@ -272,16 +259,17 @@ test("separate sidebar and workspace surfaces, real link panel and compact commu
   // conversation regions still join the main panel.
   const mainPanel = page.locator("#main-content > [data-joined]");
   await expect(mainPanel).toHaveCSS("border-top-width", "1px");
-  await expect(mainPanel).toHaveCSS("border-radius", "16px");
+  await expect(mainPanel).toHaveCSS("border-radius", "24px");
   await expect(page.locator(".shell-content")).toHaveCSS(
     "background-color",
     "rgba(0, 0, 0, 0)",
   );
   const navigation = page.getByRole("complementary", {
-    name: "Channel sidebar",
+    name: "Sidebar",
+    exact: true,
   });
   await expect(navigation).toHaveCSS("background-color", "rgb(255, 255, 255)");
-  await expect(navigation).toHaveCSS("border-radius", "16px");
+  await expect(navigation).toHaveCSS("border-radius", "24px");
   await expect(navigation).toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
   await expect(mainPanel).toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
   expect(
@@ -324,11 +312,13 @@ test("separate sidebar and workspace surfaces, real link panel and compact commu
   const rail = await box(
     page.getByRole("navigation", { name: "Communities", exact: true }),
   );
-  near(rail.width, 48);
-  near(sidebar.x, rail.x + rail.width);
+  near(rail.width, 32);
+  near(sidebar.x, gap);
+  const profile = await box(button(page, "Your profile"));
+  near(rail.x + rail.width, profile.x);
   // The conversation starts inside the main panel's reserved 1px border.
   near(before.x - sidebar.x - sidebar.width, gap + 1);
-  near(before.y, 49);
+  near(before.y, 57);
   near(before.height, 766);
   const background = await page
     .locator(".shell-background")
@@ -359,7 +349,7 @@ test("separate sidebar and workspace surfaces, real link panel and compact commu
   near(dock.y, main.y);
   near(dock.height, main.height);
   near(dock.x - main.x - main.width, 1);
-  near(dock.x + dock.width, 1264);
+  near(dock.x + dock.width, page.viewportSize().width - gap - 1);
   await expect(composer).toHaveJSProperty("value", "Layout draft");
   await expect(composer).toBeInViewport();
   await page.screenshot({ path: testInfo.outputPath("joined-one-panel.png") });
@@ -367,14 +357,14 @@ test("separate sidebar and workspace surfaces, real link panel and compact commu
     name: "Channel message history",
   });
   const offset = await timeline.evaluate((el) => el.scrollTop);
-  // This scroll-ownership journey needs overflowing content; descriptions now
-  // start collapsed, so open the real disclosure before sending wheel input.
-  const description = panel(page).getByRole("button", {
-    name: "Expand Description",
-    exact: true,
-  });
-  await description.click();
-  await expect(description).toHaveAttribute("aria-expanded", "true");
+  // Wait for the description to overflow before testing scroll ownership.
+  await expect
+    .poll(() =>
+      panel(page)
+        .locator("[class*='root']")
+        .evaluate((el) => el.scrollHeight - el.clientHeight),
+    )
+    .toBeGreaterThan(1000);
   await panel(page)
     .getByRole("heading", { name: "A useful change #1" })
     .hover();
@@ -401,26 +391,27 @@ test("separate sidebar and workspace surfaces, real link panel and compact commu
   await expect(panel(page)).toHaveCount(0);
   await button(page, "Alpha").click();
   await expect(composer).toHaveJSProperty("value", "Layout draft");
-  const railButtons = page.getByRole("navigation", {
-    name: "Communities",
-    exact: true,
-  });
+  const picker = await openCommunityPicker(page);
   await expect(
-    railButtons.getByRole("button", { name: "Personal space" }),
+    picker.getByRole("button", { name: "Personal space", exact: true }),
   ).toBeVisible();
-  const add = railButtons.getByRole("button", { name: "Add a community" });
-  await add.click();
+  await picker
+    .getByRole("button", { name: "Join a community", exact: true })
+    .click();
   await expect(
-    page.getByRole("heading", { name: "Add a community", exact: true }),
+    page.getByRole("heading", { name: "Join a community", exact: true }),
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(add).toBeFocused();
-  await railButtons
-    .getByRole("button", { name: "Switch to Secondary" })
-    .click();
+  await expect(
+    page.getByRole("button", {
+      name: "Community switcher: Primary",
+      exact: true,
+    }),
+  ).toBeFocused();
+  await selectCommunity(page, "Secondary");
   await expect(composer).toHaveJSProperty("value", "");
-  await railButtons.getByRole("button", { name: "Switch to Primary" }).click();
+  await selectCommunity(page, "Primary");
   await expect(composer).toHaveJSProperty("value", "Layout draft");
   for (const [width, height] of [
     [1200, 800],
@@ -431,13 +422,14 @@ test("separate sidebar and workspace surfaces, real link panel and compact commu
     await page.setViewportSize({ width, height });
     await shellFits(page, width);
     await expect(composer).toBeInViewport();
-    await button(page, "Your profile").click();
-    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-    await expect(
-      page.getByRole("region", { name: "Settings", exact: true }),
-    ).toBeVisible();
-    if (width <= 650) await button(page, "Show navigation").click();
-    await openPage(page, "Multiplayer");
+    // Settings is a modal over the retained conversation at every width; narrow
+    // modals stack their own navigation above the detail.
+    await openSettings(page);
+    const modal = await box(settingsDialog(page));
+    expect(modal.x).toBeGreaterThanOrEqual(0);
+    expect(modal.x + modal.width).toBeLessThanOrEqual(width);
+    await expect(settingsSections(page)).toBeInViewport();
+    await closeSettings(page);
     await expect(composer).toHaveJSProperty("value", "Layout draft");
     await expect(page.locator("[data-message-id]").last()).toBeInViewport();
   }
@@ -465,48 +457,55 @@ test("separate sidebar and workspace surfaces, real link panel and compact commu
     )
     .click();
   await expect(composer).toBeInViewport();
-  await openPage(page, "Projects");
-  // Search selection and the sidebar share page state, so Projects is current.
-  // Projects moves focus to its heading once the directory opens.
-  await expect(
-    page.getByRole("heading", { name: "Projects", exact: true }),
-  ).toBeFocused();
+  await openPage(page, "Workflows");
+  // Search selection and the header share page state, so Workflows is current.
+  // The host focuses main when the independent page opens.
+  await expect(page.getByRole("main")).toBeFocused();
   const hiddenDestinations = sidebarDestinations(page, { includeHidden: true });
   await expect(hiddenDestinations).toHaveText(destinationTitles);
   await expect(
     hiddenDestinations.and(page.locator("[aria-current]")),
-  ).toHaveText(["Projects"]);
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+  ).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("navigation", { name: "Topbar pages", includeHidden: true })
+      .getByRole("tab", {
+        name: "Workflows",
+        exact: true,
+        includeHidden: true,
+      }),
+  ).toHaveAttribute("aria-selected", "true");
+  await openSettings(page);
   await expect(
     page.getByRole("textbox", { name: "Display name", exact: true }),
   ).toHaveValue("Fixture Reader");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await selectSettingsSection(page, "Plugins");
-  // Channels has no off switch; use another page to exercise UI activation.
-  const projects = page.getByRole("switch", {
-    name: "Enable Projects",
-    exact: true,
-  });
+  // Settings is the only open dialog.
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  await selectSettingsSection(page, "Manage plugins");
+  // Channels is required; use another page to exercise UI activation.
+  const projects = pluginAction(page, "Workflows");
   const search = page.getByRole("dialog", { name: "Search Buzz", exact: true });
-  const expectProjectsChoice = async (count) => {
-    const choices = await pageChoices(page);
-    // Messages proves the Pages group rendered before counting Projects.
-    await expect(
-      choices.getByRole("option", { name: "Multiplayer", exact: true }),
-    ).toBeVisible();
-    await expect(
-      choices.getByRole("option", { name: "Projects", exact: true }),
-    ).toHaveCount(count);
+  // Header search is inert behind Settings; close it to read the palette.
+  const expectWorkflowsChoice = async (count) => {
+    await closeSettings(page);
+    const choices = await pageChoices(page, "Messages");
+    // Messages proves the Pages group rendered before counting Workflows.
+    await expect(pageChoice(choices, "Messages")).toBeVisible();
+    await page
+      .getByRole("combobox", { name: "Search Buzz", exact: true })
+      .fill("Workflows");
+    await expect(pageChoice(choices, "Workflows")).toHaveCount(count);
     await page.keyboard.press("Escape");
     await expect(search).toHaveCount(0);
   };
   await projects.click();
-  await expect(projects).toHaveAttribute("aria-checked", "false");
-  await expectProjectsChoice(0);
+  await expect(projects).toHaveAccessibleName(/^Enable /);
+  await expectWorkflowsChoice(0);
+  await openSettings(page);
+  await selectSettingsSection(page, "Manage plugins");
   await projects.click();
-  await expect(projects).toHaveAttribute("aria-checked", "true");
-  await expectProjectsChoice(1);
+  await expect(projects).toHaveAccessibleName(/^Disable /);
+  await expectWorkflowsChoice(1);
 });
 
 test("narrow link panels begin after the rendered sidebar", async ({
@@ -520,7 +519,7 @@ test("narrow link panels begin after the rendered sidebar", async ({
   await link(page, app, "https://github.com/block/buzz/pull/7");
 
   const sidebar = await box(
-    page.getByRole("complementary", { name: "Channel sidebar" }),
+    page.getByRole("complementary", { name: "Sidebar", exact: true }),
   );
   const conversation = await box(
     page.getByRole("article", { name: "Conversation", exact: true }),
@@ -582,6 +581,8 @@ test("composer stays docked while a cold channel loads", async ({
 // observable state plus settled geometry replaces a fake clock, which would
 // also reorder requestAnimationFrame against the rendering update.
 async function virtuaIdle(page) {
+  // The scroll event must have reached Virtua before its idle state is read.
+  await frames(page);
   await expect(
     page.getByRole("region", { name: "Channel message history" }).locator("ol"),
   ).toHaveCSS("pointer-events", "auto");
@@ -604,24 +605,34 @@ readingTest(
           ),
         )
         .toBeLessThan(4);
-    await settle(page);
+    // Opening at the bottom ends in a downward scroll. Until Virtua's idle, its
+    // buffer covers only the side below, so no row above the viewport is mounted.
+    await virtuaIdle(page);
     await expectBottom();
-    const rows = await history.evaluate((element) => {
-      const top = element.getBoundingClientRect().top;
-      const mounted = [...element.querySelectorAll("[data-message-id]")];
-      const above = mounted.findLast(
-        (row) => row.getBoundingClientRect().bottom <= top,
-      );
-      const newest = mounted.at(-1);
-      if (!above || !newest || above === newest) return null;
-      above.style.paddingBottom = "100px";
-      return {
-        above: above.dataset.messageId,
-        newest: newest.dataset.messageId,
-      };
-    });
-    expect(rows).not.toBeNull();
-    await settle(page);
+    // Pointer events and stable geometry can precede React's buffered-row
+    // commit. Wait for the offscreen row this scenario needs before resizing it.
+    let rows;
+    await expect
+      .poll(
+        async () =>
+          (rows = await history.evaluate((element) => {
+            const top = element.getBoundingClientRect().top;
+            const mounted = [...element.querySelectorAll("[data-message-id]")];
+            const above = mounted.findLast(
+              (row) => row.getBoundingClientRect().bottom <= top,
+            );
+            const newest = mounted.at(-1);
+            if (!above || !newest || above === newest) return null;
+            above.style.paddingBottom = "100px";
+            return {
+              above: above.dataset.messageId,
+              newest: newest.dataset.messageId,
+            };
+          })),
+        { message: "an offscreen row is mounted above the bottom viewport" },
+      )
+      .not.toBeNull();
+    await virtuaIdle(page);
     await expectBottom();
     await history.evaluate((element, ids) => {
       const row = (id) =>
@@ -814,26 +825,40 @@ companionTest(
     await button(page, "Close Companion fixture panel").click();
     await expect(launch).toBeFocused();
     await launch.click();
-    await button(page, "Your profile").click();
-    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-    await selectSettingsSection(page, "Plugins");
-    await expect(companion).toHaveCount(1);
-    const enabled = page.getByRole("switch", {
-      name: "Enable Companion fixture",
+    // Settings is a modal over the retained workspace: the companion and its
+    // launcher stay mounted behind it, hidden from assistive technology.
+    const retainedCompanion = page.getByRole("complementary", {
+      name: "Companion fixture",
       exact: true,
+      includeHidden: true,
     });
-    await enabled.click();
-    await expect(launch).toHaveCount(0);
+    const retainedLaunch = page
+      .getByRole("button", {
+        name: "Companion fixture",
+        exact: true,
+        includeHidden: true,
+      })
+      .and(page.locator("button[aria-expanded]"));
+    await openSettings(page);
+    await selectSettingsSection(page, "Manage plugins");
     await expect(companion).toHaveCount(0);
+    await expect(retainedCompanion).toHaveCount(1);
+    await expect(retainedLaunch).toHaveCount(1);
+    const enabled = pluginAction(page, "Companion fixture");
+    await enabled.click();
+    await expect(retainedLaunch).toHaveCount(0);
+    await expect(retainedCompanion).toHaveCount(0);
     await expect(enabled).toBeFocused();
-    // The closing dock is already aria-hidden, but still narrows Settings.
-    // Wait for its removal before the next click can race the layout expansion.
+    // Wait for the closing dock's removal before the next click.
     await expect(page.locator("[data-panel-dock]")).toHaveCount(0);
     await enabled.click();
+    await expect(retainedLaunch).toHaveCount(1);
+    await expect(retainedCompanion).toHaveCount(0);
+    await closeSettings(page);
     await expect(launch).toBeVisible();
     await expect(companion).toHaveCount(0);
     await launch.click();
-    await openPage(page, "Multiplayer");
+    await openPage(page, "Messages");
     const composer = page.getByRole("textbox", {
       name: "Message #Alpha",
       exact: true,
@@ -897,17 +922,13 @@ companionTest(
     await expect(companion).toHaveCount(1);
     await button(page, "Alpha").click();
     await expect(composer).toHaveJSProperty("value", "Companion draft");
-    await button(page, "Personal space").click();
+    await selectCommunity(page, "Personal space");
     await expect(
       page.getByRole("heading", { name: "Your channels, one conversation." }),
     ).toBeVisible();
     await expect(companion).toHaveCount(1);
     await button(page, "Close Companion fixture panel").click();
     await launch.click();
-    await expect(companion).toHaveCount(1);
-    await button(page, "Your profile").click();
-    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-    await selectSettingsSection(page, "Plugins");
     await expect(companion).toHaveCount(1);
     for (const [width, height] of [
       [800, 600],
@@ -920,18 +941,35 @@ companionTest(
       await expect(
         button(page, "Close Companion fixture panel"),
       ).toBeInViewport();
+      // The Settings modal fits each width over the retained, inert companion.
+      await openSettings(page);
+      // Observe the settled frame, not its upward entrance motion.
+      await settleDialogMotion(settingsDialog(page));
+      const modal = await box(settingsDialog(page));
+      expect(modal.x).toBeGreaterThanOrEqual(0);
+      expect(modal.y).toBeGreaterThanOrEqual(0);
+      expect(modal.x + modal.width).toBeLessThanOrEqual(width);
+      expect(modal.y + modal.height).toBeLessThanOrEqual(height);
+      await expect(companion).toHaveCount(0);
+      await expect(retainedCompanion).toHaveCount(1);
+      await closeSettings(page);
+      await expect(
+        button(page, "Close Companion fixture panel"),
+      ).toBeInViewport();
     }
     await button(page, "Close Companion fixture panel").click();
     await expect(companion).toHaveCount(0);
     await expect(launch).toHaveAttribute("aria-expanded", "false");
     await expect(launch).toBeFocused();
 
-    // Plugin catalogs can outgrow the viewport. Closing restores the launcher,
-    // not a Settings row: reach the toggle with real input, not scrollIntoView.
-    // Settings details own scrolling independently of the sidebar.
-    const settingsPage = page
-      .getByRole("region", { name: "Settings", exact: true })
-      .locator(":scope > div");
+    // Plugin catalogs can outgrow the viewport: reach the toggle with real
+    // input, not scrollIntoView. Narrow modals scroll their stacked navigation
+    // and detail together.
+    await openSettings(page);
+    await selectSettingsSection(page, "Manage plugins");
+    const settingsPage = settingsDialog(page).locator(
+      ".buzz-dialog-navigation-layout",
+    );
     await expect(enabled).not.toBeInViewport();
     const viewport = await box(settingsPage);
     await page.mouse.move(
@@ -966,8 +1004,10 @@ companionTest(
     }
     await expect(enabled).toBeInViewport({ ratio: 1 });
     await enabled.click();
-    await expect(enabled).toHaveAttribute("aria-checked", "false");
+    await expect(enabled).toHaveAccessibleName(/^Enable /);
     await expect(enabled).toBeFocused();
+    await expect(retainedLaunch).toHaveCount(0);
+    await closeSettings(page);
     await expect(launch).toHaveCount(0);
   },
 );
@@ -982,13 +1022,11 @@ todosOverlapTest(
   async ({ page, app }) => {
     await page.setViewportSize({ width: 1440, height: 950 });
     await open(page, app);
-    await button(page, "Your profile").click();
-    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-    await selectSettingsSection(page, "Plugins");
-    await page
-      .getByRole("switch", { name: "Enable Todos", exact: true })
-      .click();
-    await openPage(page, "Multiplayer");
+    await openSettings(page);
+    await selectSettingsSection(page, "Manage plugins");
+    await pluginAction(page, "Todos").click();
+    await closeSettings(page);
+    await openPage(page, "Messages");
     const todos = page.getByRole("region", {
       name: "Todos panel",
       exact: true,
@@ -1117,15 +1155,21 @@ companionReadingTest(
       [390, 844],
     ]) {
       await page.setViewportSize({ width, height });
-      const top = await box(page.locator("[data-panel-workspace]"));
-      const bottom = await box(
-        page.getByRole("complementary", {
-          name: "Companion fixture",
-          exact: true,
-        }),
-      );
-      near(top.height, bottom.height);
-      near(bottom.y - top.y - top.height, 1);
+      let top;
+      let bottom;
+      // The resize observer applies panel allocation after viewport resize resolves.
+      // Capture the baseline only once both cards have their matching layout.
+      await expect(async () => {
+        top = await box(page.locator("[data-panel-workspace]"));
+        bottom = await box(
+          page.getByRole("complementary", {
+            name: "Companion fixture",
+            exact: true,
+          }),
+        );
+        near(top.height, bottom.height);
+        near(bottom.y - top.y - top.height, 1);
+      }).toPass({ timeout: 10_000 });
       await expect(
         page.locator(
           '.buzz-tabs-item:not(:has([data-tab-value^="thread:"])) > button:not([role="tab"])',
@@ -1215,122 +1259,6 @@ companionReadingTest(
   },
 );
 
-test("Projects directory fits the workspace and page navigation survives plugin re-enable order", async ({
-  page,
-  app,
-}, testInfo) => {
-  await page.setViewportSize({ width: 1280, height: 832 });
-  await page.goto(app.origin);
-  // Header search owns page navigation, including while narrow Settings
-  // collapses the sidebar; its Pages group must preserve plugin ordering.
-  const search = page.getByRole("dialog", { name: "Search Buzz", exact: true });
-  const titles = [
-    "Solo",
-    "Multiplayer",
-    "Inbox",
-    "Reminders",
-    "Bestie",
-    "Projects",
-    "Agents",
-    "Sessions (now in Solo)",
-    "Workflows",
-  ];
-  const expectPageOrder = async (expected) => {
-    const choices = await pageChoices(page);
-    await expect(choices.getByRole("option")).toHaveText([
-      ...expected,
-      "Settings",
-    ]);
-    return choices;
-  };
-  const closeSearch = async () => {
-    await page.keyboard.press("Escape");
-    await expect(search).toHaveCount(0);
-  };
-  await expectPageOrder(titles);
-  await selectPage(page, "Projects");
-  const surface = page.getByRole("region", { name: "Projects", exact: true });
-  const title = surface.getByRole("heading", {
-    name: "Projects",
-    level: 1,
-    exact: true,
-  });
-  await expect(title).toBeVisible();
-  const directory = surface.locator(".projects-page");
-  const subtitle = surface.getByText("Recent projects and repositories", {
-    exact: true,
-  });
-  const empty = surface.getByText("No recent projects or repositories found.", {
-    exact: true,
-  });
-  await expect(subtitle).toBeVisible();
-  await expect(empty).toBeVisible();
-  await expect(title).toBeFocused();
-  for (const [width, height] of [
-    [1280, 832],
-    [390, 844],
-  ]) {
-    await page.setViewportSize({ width, height });
-    const bounds = await box(surface);
-    const workspace = await box(surface.locator("..").locator(".."));
-    const heading = await box(title);
-    near(bounds.x, workspace.x);
-    near(bounds.y, workspace.y);
-    near(bounds.width, workspace.width);
-    near(bounds.height, workspace.height);
-    const padding = await directory.evaluate((element) => ({
-      left: Number.parseFloat(getComputedStyle(element).paddingLeft),
-      top: Number.parseFloat(getComputedStyle(element).paddingTop),
-    }));
-    near(heading.x, bounds.x + padding.left);
-    near(heading.y, bounds.y + padding.top);
-    const description = await box(subtitle);
-    const emptyState = await box(empty);
-    expect(description.y).toBeGreaterThanOrEqual(heading.y + heading.height);
-    expect(emptyState.y).toBeGreaterThanOrEqual(
-      description.y + description.height,
-    );
-    await expect(empty).toBeInViewport();
-    await expect(directory).toHaveCSS("overflow", "auto");
-    await expect(surface).toHaveCSS("overflow", "hidden");
-    await shellFits(page, width);
-    await page.screenshot({
-      path: testInfo.outputPath(`projects-${width}.png`),
-    });
-  }
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await selectSettingsSection(page, "Plugins");
-  const projects = page.getByRole("switch", {
-    name: "Enable Projects",
-    exact: true,
-  });
-  await projects.click();
-  await expect(projects).toHaveAttribute("aria-checked", "false");
-  await expectPageOrder([
-    "Solo",
-    "Multiplayer",
-    "Inbox",
-    "Reminders",
-    "Bestie",
-    "Agents",
-    "Sessions (now in Solo)",
-    "Workflows",
-  ]);
-  await closeSearch();
-  await projects.click();
-  await expect(projects).toHaveAttribute("aria-checked", "true");
-  // Re-enabled Projects registered last; navigation surfaces must still sort it.
-  await expectPageOrder(titles);
-  await selectPage(page, "Projects");
-  await expect(title).toBeVisible();
-  // The narrow drawer is closed here, but the sidebar keeps the same order
-  // for its primary rows.
-  await expect(sidebarDestinations(page, { includeHidden: true })).toHaveText(
-    destinationTitles,
-  );
-});
-
 // Real App navigation must retire page-local targets, without closing the
 // independently owned companion intent. Each return stays in Channels.
 const sidebarActions = companionTest.extend({
@@ -1342,7 +1270,7 @@ const sidebarActions = companionTest.extend({
   historyCounts: { alpha: 20, beta: 1 },
 });
 sidebarActions(
-  "sidebar activity retains channel tabs while compose routes retire them and preserve companion intent",
+  "sidebar activity and compose routes restore content history and preserve companion intent",
   async ({ page, app }) => {
     await open(page, app);
     const companion = page.getByRole("complementary", {
@@ -1380,7 +1308,10 @@ sidebarActions(
           page.getByRole("region", { name: "New message", exact: true }),
         ).toBeVisible();
       }
-      await expect(panel(page)).toHaveCount(0);
+      // Visiting another tab retains the inactive GitHub tab; compose routes
+      // withdraw the workspace. Neither presents the GitHub content here.
+      if (action === "activity") await expect(panel(page)).toBeHidden();
+      else await expect(panel(page)).toHaveCount(0);
       await expect(
         companionLauncher(page, "Companion fixture"),
       ).toHaveAttribute("aria-expanded", "true");
@@ -1388,13 +1319,14 @@ sidebarActions(
       await expect(
         page.getByRole("textbox", { name: "Message #Alpha", exact: true }),
       ).toBeVisible();
-      await expect(panel(page)).toHaveCount(action === "activity" ? 1 : 0);
-      if (action === "activity")
-        await page
-          .locator(
-            '.buzz-tabs-item:not(:has([data-tab-value^="thread:"])) > button:not([role="tab"])',
-          )
-          .click();
+      // Back restores the pre-navigation content address even when New message
+      // temporarily withdrew its workspace. Only X retires that return path.
+      await expect(panel(page)).toBeVisible();
+      await page
+        .locator(
+          '.buzz-tabs-item:not(:has([data-tab-value^="thread:"])) > button:not([role="tab"])',
+        )
+        .click();
       await expect(companion).toBeVisible();
     }
   },

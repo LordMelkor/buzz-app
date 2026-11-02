@@ -1,8 +1,76 @@
 import { openChannelDetails } from "./channel-details.mjs";
 import { test, expect } from "./fixture.mjs";
+import { openPage } from "./navigation.mjs";
 import { open } from "./timeline.mjs";
+import { createHash } from "node:crypto";
 
 test.use({ productionBroker: true, dmLabels: true, developmentReact: true });
+
+// Browser boundary: the real file chooser and ProseMirror selection must allow
+// typing immediately at the retained caret after a successful picker upload.
+test("a successful picker image upload returns focus with the existing caret", async ({
+  page,
+  app,
+}) => {
+  // A metadata-free GIF keeps the upload bytes identical in both engines.
+  const bytes = Buffer.from(
+    "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+    "base64",
+  );
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  let release;
+  let started;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  const uploading = new Promise((resolve) => {
+    started = resolve;
+  });
+  await page.route("**/api/relay/**/upload", async (route) => {
+    started();
+    await held;
+    await route.fulfill({
+      json: {
+        name: "pixel.gif",
+        url: `https://primary.example/media/${sha256}.gif`,
+        sha256,
+        type: "image/gif",
+        size: bytes.length,
+      },
+    });
+  });
+  await page.route("**/api/relay/**/media?**", (route) =>
+    route.fulfill({ contentType: "image/gif", body: bytes }),
+  );
+  try {
+    await open(page, app);
+    const form = page.getByRole("form", {
+      name: "Send a message to Alpha",
+      exact: true,
+    });
+    const input = form.getByRole("textbox");
+    await input.fill("hello world");
+    await input.press("End");
+    for (let i = 0; i < 5; i++) await input.press("ArrowLeft");
+    const choosing = page.waitForEvent("filechooser");
+    await form
+      .getByRole("button", { name: "Attach files", exact: true })
+      .click();
+    await (await choosing).setFiles({
+      name: "pixel.gif",
+      mimeType: "image/gif",
+      buffer: bytes,
+    });
+    await uploading;
+    release();
+    await expect(form.getByText(/Ready$/)).toHaveCount(1);
+    await expect(input).toBeFocused();
+    await page.keyboard.type("picked ");
+    await expect(input).toHaveText("hello picked world");
+  } finally {
+    release();
+  }
+});
 
 // Browser boundary: real sidebar navigation must hand focus to the mounted
 // ProseMirror editor, including after a warm return; typing must need no click.
@@ -37,6 +105,36 @@ test("selecting a channel or DM focuses its composer and retains drafts", async 
   ).toBeFocused();
 });
 
+// The host can focus the editor while a typed character is in the DOM but not
+// yet read by ProseMirror (native typing that refocuses the window does). The
+// focus must not restore the caret from before that character.
+test("a focus between a keystroke and its read keeps the caret after the typed text", async ({
+  page,
+  app,
+}) => {
+  await open(page, app);
+  const input = page.getByRole("textbox", {
+    name: "Message #Alpha",
+    exact: true,
+  });
+  await input.click();
+  await page.keyboard.type("hello ");
+  await expect(input).toHaveText("hello");
+  await input.evaluate((element) => {
+    window.addEventListener(
+      "input",
+      () => {
+        element.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+        element.dispatchEvent(new FocusEvent("focus"));
+      },
+      { capture: true, once: true },
+    );
+  });
+  await page.keyboard.type("any");
+  await expect(input).toHaveText("hello any");
+  await expect(input).toBeFocused();
+});
+
 // Real Base UI menus close when focus leaves them. A conversation that mounts
 // while a menu is open, as at startup, must leave focus with that menu.
 test("a conversation mounting behind an open menu keeps the menu open", async ({
@@ -48,16 +146,9 @@ test("a conversation mounting behind an open menu keeps the menu open", async ({
     name: "Message #Alpha",
     exact: true,
   });
-  await page.evaluate(() => {
-    location.hash =
-      "#buzz=" +
-      encodeURIComponent(
-        JSON.stringify({ version: 1, kind: "settings", section: "appearance" }),
-      );
-  });
-  await expect(
-    page.getByRole("heading", { name: "Appearance", exact: true }),
-  ).toBeVisible();
+  // Settings is a modal over the retained conversation, so leave through a
+  // page that replaces the conversation instead.
+  await openPage(page, "Repository");
   await expect(input).toHaveCount(0);
   const trigger = page.getByRole("button", {
     name: "Your profile",
@@ -169,7 +260,7 @@ test.describe("text field focus appearance", () => {
   test.use({
     historyCounts: { alpha: 1, beta: 0 },
     productionBroker: false,
-    sessionWriteKinds: [9, 9000, 9007],
+    channelWriteKinds: [9, 9000, 9007],
   });
 
   for (const mode of ["light", "dark"]) {

@@ -1,3 +1,4 @@
+import type { VerifiedProfile } from "./verified-profile";
 import type { ReadFilter } from "./events";
 import type { CustomEmoji } from "./emoji";
 import type { ReadOptions } from "./reader";
@@ -18,24 +19,38 @@ export type ChannelSummary = Readonly<{
   name: string;
   /** Ordinary channel prose; session machine metadata is not a description. */
   description?: string | undefined;
+  /** Initial classification is unresolved until the metadata read completes. */
+  metadataPending?: boolean | undefined;
   /** Explicit signed visibility; absent means unknown, not public. */
   visibility?: "public" | "private" | undefined;
+  /** Default for future participants; never an existing participant's role. */
+  joinRole?: "member" | "guest" | undefined;
+  /** Viewer role from the relay-signed roster, independent of admission defaults. */
+  viewerRole?: "owner" | "admin" | "member" | "guest" | "bot" | undefined;
   preview?: string | undefined;
-  /** Newest verified user-visible activity for sidebar ordering, in Unix seconds. */
+  /** Newest verified user-visible activity for sidebar ordering, in Unix
+   * seconds. An own send counts once the relay accepts it. */
   lastActivityAt?: number | undefined;
-  /** Readable public nonmember channel; not part of the joined roster. */
+  /** Activity has been observed or read successfully, including an empty result. */
+  activityKnown?: true;
+  /** Writing unavailable: public preview, cached membership, or a guest. */
   readOnly?: true;
   /** Downloaded membership is display-only pending current relay confirmation. */
   cached?: true;
+  /** A Solo chat this device is starting; the relay has not confirmed it yet. */
+  pending?: true;
   /** Members-only channel omitted from directories (NIP-29 `hidden`), such as a DM. */
   hidden?: true;
   /** Relay-authored metadata; absent while metadata is unavailable. */
-  /** `system` (NIP-CL): access control for app data; never in list(). */
-  channelType?: "stream" | "forum" | "dm" | "session" | "system";
+  /** `system` (NIP-CL): access control for app data; never in list().
+   * `session`: a private stream with the Solo label (`SOLO_LABEL`). */
+  channelType?: "stream" | "forum" | "dm" | "solo" | "system";
   /** Relay-authored channel visibility; private channels use restricted presentation. */
   private?: true;
   /** Presentation-only parent from signed channel metadata; never grants access. */
   parentChannelId?: string | undefined;
+  /** Marked Huddle room; presented through its parent conversation, not the sidebar. */
+  huddle?: true;
   /** Metadata update time used for stable work-history ordering. */
   updatedAt?: number;
   archived?: true;
@@ -53,9 +68,13 @@ export type ChannelSummary = Readonly<{
   participants?: readonly string[];
 }>;
 export type Profile = Readonly<{
+  /** Relay-signed name assertion; display only, never account access. */
+  verified?: VerifiedProfile;
   name: string;
   /** The name is an identity fragment, not a name supplied by kind-0 content. */
   nameIsFallback?: true;
+  /** The kind-0 `name` (handle), when `name` above is a different display name. */
+  username?: string;
   picture?: string;
   about?: string;
   /** Self-declared NIP-05 identifier; not proof of DNS verification. */
@@ -119,6 +138,11 @@ export type ChannelMessage = Readonly<{
     truncated: boolean;
   }>;
   membership?: MembershipChange;
+  huddle?: Readonly<{
+    room: string;
+    state: "started" | "ended";
+    endedAt?: number;
+  }>;
   /** Current body came from a replacement edit; original recipients do not bind its prose. */
   edited?: true;
   /** Offsets in `content` where attachment removal joined once-separate text; a
@@ -141,10 +165,16 @@ export type ChannelMessage = Readonly<{
   sentFromThread?:
     | Readonly<{ rootId: string; excerpt?: string | undefined }>
     | undefined;
-  /** Relay-signed whole-thread reply total (including nested replies).
+  /** Relay-signed whole-thread reply total (including nested replies), plus this
+   * client's own non-deleted reply sends that no summary has counted yet (so an
+   * own reply counts before the relay's summary arrives; stored and other users'
+   * replies wait for the relay's summary).
    * Falls back to direct replies when the summary lacks a valid descendant total. */
   replyCount: number;
-  /** Pubkeys the relay reports as thread participants (may be empty even with replies). */
+  /** Authors of this client's own reply sends no summary has counted yet, even
+   * when the relay already lists them (so an own reply's avatar shows, first,
+   * before the relay's summary arrives), followed by the other pubkeys the relay
+   * reports as thread participants (may be empty even with replies). */
   participants: readonly string[];
 }>;
 export type ListStatus = "unavailable" | "idle" | "loading" | "ready" | "error";
@@ -171,6 +201,8 @@ export type ChannelWindow = Readonly<{
   /** Cached rows are immediately readable, but not claimed fresh until revalidated. */
   freshness?: "cached" | "verified";
   historyLimited?: boolean;
+  /** A head read is in flight for these rows; older pages wait for it. */
+  refreshing?: boolean | undefined;
 }>;
 /** Post-write discovery opts into writer reads; browsing keeps the default. */
 export type ChannelReadOptions = ReadOptions & Pick<ReadFilter, "consistency">;
@@ -209,10 +241,15 @@ export interface ChannelQueries {
     options?: ChannelReadOptions,
   ): Promise<void>;
   /** Name lookup for active public channels the viewer has not joined. Matches
-   * become readable through `get`; they never enter list(). */
+   * become readable through `get`; they never enter list(). `progress`
+   * receives the matches so far each time another metadata page lands. */
   searchPublic?(
     query: string,
-    options?: ReadOptions & { limit?: number; exact?: boolean },
+    options?: ReadOptions & {
+      limit?: number;
+      exact?: boolean;
+      progress?: ((found: PublicChannelSearch) => void) | undefined;
+    },
   ): Promise<PublicChannelSearch>;
   /** NIP-CL lookup of the channels `creator` made with `label`, oldest first.
    * Includes the system channels the viewer can read, since `#P` asks for them.
@@ -221,13 +258,22 @@ export interface ChannelQueries {
     query: Readonly<{ creator: string; label: string }>,
     options?: ChannelReadOptions,
   ): Promise<readonly ChannelSummary[]>;
-  /** Synchronous: the last `searchPublic` answer's channels that still match
-   * `query` and are still open previews. Keeps rows while the next search
-   * runs, even across a remount. */
+  /** Synchronous: the last `searchPublic` answer's channels, or its latest
+   * `progress` rows while its read goes on, that still match `query` and are
+   * still open previews. Keeps rows while the next search runs, even across
+   * a remount. */
   matchPublic?(
     query: string,
     options?: { exact?: boolean },
   ): readonly ChannelSummary[];
+  /** Every open channel the last completed public directory read named, for
+   * display-only name references (`#name` in prose) until a later read or a
+   * cache clear replaces it. Never reads and never grants access: a match
+   * resolves through `refer`. Empty while the directory is cold or in flight. */
+  openDirectory?(): readonly Pick<
+    ChannelSummary,
+    "id" | "name" | "channelType" | "archived"
+  >[];
   /** Current reference state from local evidence; never reads. */
   describe?(channelId: string): ChannelReference;
   /** Demand a background lookup for a reference that isn't `found`, until the
@@ -244,6 +290,20 @@ export interface ChannelQueries {
     channelId: string,
     options?: ChannelReadOptions,
   ): Promise<boolean>;
+  /** Lists a Solo chat this device is creating, as `pending`, until the
+   * relay's signed metadata and roster for it arrive. It has no history to
+   * read meanwhile. Local display and intent only; never saved. */
+  start?(
+    channel: Readonly<{
+      id: string;
+      name: string;
+      members: readonly string[];
+      labels: readonly string[];
+      ttlSeconds?: number | undefined;
+    }>,
+  ): void;
+  /** Drops a started chat the relay did not confirm. */
+  abandon?(channelId: string): void;
   subscribeList(listener: () => void): () => void;
   window(channelId: string): ChannelWindow;
   subscribeWindow(channelId: string, listener: () => void): () => void;

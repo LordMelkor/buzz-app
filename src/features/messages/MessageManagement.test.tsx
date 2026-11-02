@@ -45,7 +45,7 @@ import {
   signReadState,
   // @ts-expect-error Exercise the production codec with disposable identities.
 } from "../../../browser-host/read-state.mjs";
-import type { RelayEvent } from "../relay/events";
+import { eventDto, type RelayEvent } from "../relay/events";
 
 composerDOMFixture();
 const owners: ReturnType<typeof createRelaySession>[] = [];
@@ -69,9 +69,12 @@ async function fixture(
   originalAttachment = false,
   originalMention = false,
   agentOwner: "viewer" | "other" | undefined = undefined,
-  sessionCard = false,
+  chatCard = false,
   shareRead?: Promise<RelayEvent[]>,
+  viewerRole: "member" | "guest" = "member",
 ) {
+  let role = viewerRole,
+    rosterTime = 1700000000;
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -93,7 +96,7 @@ async function fixture(
   const original = message(
     own ? viewer : (agent ?? peer),
     "room",
-    sessionCard
+    chatCard
       ? "[Session: Saved work](buzz://channel/source)"
       : originalAttachment
         ? "Original message\n\n[original.pdf](https://fixture.test/media/original.pdf)"
@@ -114,32 +117,34 @@ async function fixture(
       ...(originalMention ? [["p", peer.pubkey]] : []),
     ],
   );
-  const agentProfile =
+  let agentProfile =
     agent && agentOwnerKey
-      ? signed(agent, {
-          kind: 0,
-          content: JSON.stringify({ name: "Test agent" }),
-          tags: [
-            [
-              "auth",
-              agentOwnerKey.pubkey,
-              "kind=0&created_at<1700000001",
-              bytesToHex(
-                schnorr.sign(
-                  new Uint8Array(
-                    await crypto.subtle.digest(
-                      "SHA-256",
-                      new TextEncoder().encode(
-                        `nostr:agent-auth:${agent.pubkey}:kind=0&created_at<1700000001`,
+      ? eventDto(
+          signed(agent, {
+            kind: 0,
+            content: JSON.stringify({ name: "Test agent" }),
+            tags: [
+              [
+                "auth",
+                agentOwnerKey.pubkey,
+                "kind=0&created_at<1700000001",
+                bytesToHex(
+                  schnorr.sign(
+                    new Uint8Array(
+                      await crypto.subtle.digest(
+                        "SHA-256",
+                        new TextEncoder().encode(
+                          `nostr:agent-auth:${agent.pubkey}:kind=0&created_at<1700000001`,
+                        ),
                       ),
                     ),
+                    agentOwnerKey.secret,
                   ),
-                  agentOwnerKey.secret,
                 ),
-              ),
+              ],
             ],
-          ],
-        })
+          }),
+        )
       : undefined;
   const publications: {
     event: RelayEvent;
@@ -180,7 +185,15 @@ async function fixture(
         if (filter.kinds?.includes(39000) || filter.kinds?.includes(39002))
           return [
             metadata(relay, "room", "Room"),
-            roster(relay, "room", [viewer.pubkey, peer.pubkey]),
+            signed(relay, {
+              ...roster(relay, "room", [viewer.pubkey, peer.pubkey]),
+              created_at: rosterTime,
+              tags: [
+                ["d", "room"],
+                ["p", viewer.pubkey, "", role],
+                ["p", peer.pubkey, "", "member"],
+              ],
+            }),
           ];
         if (filter.kinds?.includes(0))
           return [
@@ -243,7 +256,13 @@ async function fixture(
       ),
     );
   }
-  function Surface({ presented = true }: { presented?: boolean }) {
+  function Surface({
+    presented = true,
+    composer = true,
+  }: {
+    presented?: boolean;
+    composer?: boolean;
+  }) {
     const snapshot = useSyncExternalStore(
       (listener) => owner.session.channels.subscribeWindow("room", listener),
       () => owner.session.channels.window("room"),
@@ -264,12 +283,14 @@ async function fixture(
               </MenuRoot>
             </div>
           ))}
-          <MessageComposer
-            session={owner.session}
-            scope="management-test"
-            channelId="room"
-            channelName="Room"
-          />
+          {composer && (
+            <MessageComposer
+              session={owner.session}
+              scope="management-test"
+              channelId="room"
+              channelName="Room"
+            />
+          )}
         </MessageManagement>
       </ConversationPresentation>
     );
@@ -280,6 +301,26 @@ async function fixture(
     owner,
     original,
     publications,
+    async setRole(next: "member" | "guest") {
+      role = next;
+      rosterTime++;
+      await owner.session.read([{ kinds: [39002], "#d": ["room"], limit: 1 }]);
+    },
+    async revokeOwner() {
+      assert.exists(agent);
+      agentProfile = eventDto(
+        signed(agent, {
+          kind: 0,
+          created_at: 1700000001,
+          tags: [],
+          content: JSON.stringify({ name: "Test agent" }),
+        }),
+      );
+      await owner.session.read([
+        { kinds: [0], authors: [agent.pubkey], limit: 1 },
+      ]);
+    },
+    preview: () => view.rerender(<Surface composer={false} />),
     present: (presented: boolean) =>
       view.rerender(<Surface presented={presented} />),
     publication(index: number) {
@@ -340,32 +381,78 @@ it("edits in the composer, retains a rejected change and retries the same operat
   );
 });
 
-it("offers a confirmed NIP-09 deletion for an agent owned by the viewer", async () => {
-  const h = await fixture(false, false, false, false, false, "viewer");
-  const item = await screen.findByRole("menuitem", { name: "Delete message" });
-  expect(item).toBeVisible();
-  fireEvent.click(item);
-  const confirmation = await screen.findByRole("alertdialog", {
-    name: "Delete message?",
-  });
-  expect(confirmation).toHaveTextContent(
-    "This requests removal of this message from Buzz’s relay.",
-  );
-  expect(confirmation).toHaveTextContent("People may still have copies.");
-  expect(h.publications).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-  await waitFor(() => expect(h.publications).toHaveLength(1));
-  expect(h.publication(0).event.kind).toBe(5);
-  expect(h.publication(0).event.pubkey).toBe(h.owner.session.viewer);
-  expect(h.publication(0).event.tags).toContainEqual(["e", h.original.id]);
-  await act(async () => h.publication(0).result.resolve());
-});
+it.each(["member", "guest"] as const)(
+  "offers confirmed owner-agent deletion and retry to a joined %s",
+  async (role) => {
+    const h = await fixture(
+      false,
+      false,
+      false,
+      false,
+      false,
+      "viewer",
+      false,
+      undefined,
+      role,
+    );
+    const item = await screen.findByRole("menuitem", {
+      name: "Delete message",
+    });
+    await waitFor(() =>
+      expect(h.owner.session.profiles.owner?.(h.original.pubkey)).toBe(
+        h.owner.session.viewer,
+      ),
+    );
+    expect(item).toBeVisible();
+    fireEvent.click(item);
+    const confirmation = await screen.findByRole("alertdialog", {
+      name: "Delete message?",
+    });
+    expect(confirmation).toHaveTextContent(
+      "This requests removal of this message from Buzz’s relay.",
+    );
+    expect(confirmation).toHaveTextContent("People may still have copies.");
+    expect(h.publications).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(h.publications).toHaveLength(1));
+    expect(h.publication(0).event.kind).toBe(5);
+    expect(h.publication(0).event.pubkey).toBe(h.owner.session.viewer);
+    expect(h.publication(0).event.tags).toContainEqual(["e", h.original.id]);
+    if (role === "guest") {
+      await act(async () =>
+        h.publication(0).result.reject(new PublishRejected("Deletion refused")),
+      );
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Deletion refused",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      await waitFor(() => expect(h.publications).toHaveLength(2));
+      expect(h.publication(1).event.id).toBe(h.publication(0).event.id);
+      await act(async () => h.publication(1).result.resolve());
+    } else await act(async () => h.publication(0).result.resolve());
+  },
+);
 
-it("does not offer agent-message deletion to a non-owner", async () => {
-  await fixture(false, false, false, false, false, "other");
-  await screen.findByRole("menuitem", { name: /Mark (unread|read)/ });
-  expect(screen.queryByRole("menuitem", { name: "Delete message" })).toBeNull();
-});
+it.each(["member", "guest"] as const)(
+  "does not offer agent-message deletion to a %s non-owner",
+  async (role) => {
+    await fixture(
+      false,
+      false,
+      false,
+      false,
+      false,
+      "other",
+      false,
+      undefined,
+      role,
+    );
+    await screen.findByRole("menuitem", { name: /Mark (unread|read)/ });
+    expect(
+      screen.queryByRole("menuitem", { name: "Delete message" }),
+    ).toBeNull();
+  },
+);
 
 it("does not expose edit or delete for another person's message", async () => {
   await fixture(false);
@@ -556,32 +643,78 @@ it("reverses an own message force from its menu without changing notification el
   expect(h.publications).toHaveLength(0);
 });
 
-it("toggles actual unread state immediately without a dialog", async () => {
-  const h = await fixture(false, true);
-  const target = {
-    kind: "message" as const,
-    channelId: "room",
-    messageId: h.original.id,
-  };
-  expect(h.owner.session.unread.attention("room", h.original.id).unread).toBe(
-    true,
-  );
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Mark read" }));
-  await waitFor(() =>
-    expect(h.owner.session.unread.attention("room", h.original.id).unread).toBe(
+it.each(["member", "guest"] as const)(
+  "lets a joined %s toggle actual unread state and follow without writing",
+  async (role) => {
+    const h = await fixture(
       false,
-    ),
-  );
-  expect(screen.queryByRole("dialog")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Mark unread" }));
-  await waitFor(() =>
+      true,
+      false,
+      false,
+      false,
+      undefined,
+      false,
+      undefined,
+      role,
+    );
+    const target = {
+      kind: "message" as const,
+      channelId: "room",
+      messageId: h.original.id,
+    };
     expect(h.owner.session.unread.attention("room", h.original.id).unread).toBe(
       true,
-    ),
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Mark read" }));
+    await waitFor(() =>
+      expect(
+        h.owner.session.unread.attention("room", h.original.id).unread,
+      ).toBe(false),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Mark unread" }),
+    );
+    await waitFor(() =>
+      expect(
+        h.owner.session.unread.attention("room", h.original.id).unread,
+      ).toBe(true),
+    );
+    expect(h.owner.session.unread.snapshot(target).observedCount).toBe(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
+    expect(screen.queryByRole("menuitem", { name: "Edit message" })).toBeNull();
+    expect(
+      screen.queryByRole("menuitem", { name: "Delete message" }),
+    ).toBeNull();
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Follow thread" }),
+    );
+    await waitFor(() =>
+      expect(h.owner.session.unread.following("room", h.original.id)).toBe(
+        true,
+      ),
+    );
+    expect(h.publications).toHaveLength(0);
+  },
+);
+
+it("keeps editing and ordinary deletion hidden from a Guest who authored an earlier message", async () => {
+  const h = await fixture(
+    true,
+    false,
+    false,
+    false,
+    false,
+    undefined,
+    false,
+    undefined,
+    "guest",
   );
-  expect(h.owner.session.unread.snapshot(target).observedCount).toBe(1);
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(h.owner.session.channels.get?.("room")?.viewerRole).toBe("guest");
+  expect(screen.queryByRole("menuitem", { name: "Edit message" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Delete message" })).toBeNull();
   expect(h.publications).toHaveLength(0);
 });
 
@@ -762,13 +895,86 @@ it("recovers an uncertain deletion after the row and dialog disappear", async ()
   await act(async () =>
     h.publication(0).result.reject(new Error("Connection lost")),
   );
-  fireEvent.click(await screen.findByRole("button", { name: "Close" }));
+  fireEvent.click(await screen.findByText("Close", { exact: true }));
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   expect(screen.queryByRole("button", { name: "Message actions" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Retry message update" }));
   await waitFor(() => expect(h.publications).toHaveLength(2));
   expect(h.publication(1).event.id).toBe(h.publication(0).event.id);
   await act(async () => h.publication(1).result.resolve());
+});
+
+it.each(["failed", "unknown"] as const)(
+  "disables %s own-message deletion retry after demotion to Guest",
+  async (delivery) => {
+    const h = await fixture();
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Delete message" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(h.publications).toHaveLength(1));
+    await act(async () =>
+      h
+        .publication(0)
+        .result.reject(
+          delivery === "failed"
+            ? new PublishRejected("Deletion refused")
+            : new Error("Connection lost"),
+        ),
+    );
+    fireEvent.click(await screen.findByText("Close", { exact: true }));
+    const retry = await screen.findByRole("button", {
+      name: "Retry message update",
+    });
+    expect(retry).toBeEnabled();
+    await act(async () => h.setRole("guest"));
+    expect(h.owner.session.channels.get?.("room")?.viewerRole).toBe("guest");
+    await waitFor(() => expect(retry).toBeDisabled());
+    fireEvent.click(retry);
+    expect(h.publications).toHaveLength(1);
+  },
+);
+
+it("retries an owned-agent deletion without its row and disables retry when ownership is revoked", async () => {
+  const h = await fixture(
+    false,
+    false,
+    false,
+    false,
+    false,
+    "viewer",
+    false,
+    undefined,
+    "guest",
+  );
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Delete message" }),
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(h.publications).toHaveLength(1));
+  await act(async () =>
+    h.publication(0).result.reject(new Error("Connection lost")),
+  );
+  fireEvent.click(await screen.findByText("Close", { exact: true }));
+  expect(h.owner.session.channels.window("room").rows).toHaveLength(0);
+  const retry = await screen.findByRole("button", {
+    name: "Retry message update",
+  });
+  expect(retry).toBeEnabled();
+  fireEvent.click(retry);
+  await waitFor(() => expect(h.publications).toHaveLength(2));
+  expect(h.publication(1).event.id).toBe(h.publication(0).event.id);
+  await act(async () =>
+    h.publication(1).result.reject(new PublishRejected("Deletion refused")),
+  );
+  const revokedRetry = await screen.findByRole("button", {
+    name: "Retry message update",
+  });
+  expect(revokedRetry).toBeEnabled();
+  await act(async () => h.revokeOwner());
+  await waitFor(() => expect(revokedRetry).toBeDisabled());
+  fireEvent.click(revokedRetry);
+  expect(h.publications).toHaveLength(2);
 });
 
 it("waits for confirmed membership before entering a restored channel visit", async () => {
@@ -1034,39 +1240,21 @@ it("keeps a withheld empty-edit deletion recoverable and restores the draft only
   expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 
-it("keeps the delete description stable while announcing the resolved share note", async () => {
-  const gate = deferred<RelayEvent[]>();
-  const h = await fixture(
-    true,
-    false,
-    false,
-    false,
-    false,
-    undefined,
-    true,
-    gate.promise,
-  );
-  fireEvent.click(
-    await screen.findByRole("menuitem", { name: "Delete message" }),
-  );
-  const dialog = await screen.findByRole("alertdialog", {
-    name: "Delete message?",
+it("does not offer Edit message in a preview without a composer", async () => {
+  const t = await fixture();
+  expect(
+    await screen.findByRole("menuitem", { name: "Edit message" }),
+  ).toBeVisible();
+  fireEvent.keyDown(screen.getByRole("menuitem", { name: "Edit message" }), {
+    key: "Escape",
   });
-  const description = dialog.getAttribute("aria-describedby");
-  const text = document.getElementById(description ?? "")?.textContent;
-  try {
-    expect(text).toContain("People may still have copies.");
-    expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
-    expect(dialog).not.toHaveTextContent("This share will leave");
-  } finally {
-    await act(async () => gate.resolve([h.original]));
-  }
-  await waitFor(() =>
-    expect(dialog).toHaveTextContent("This share will leave Shared sessions"),
-  );
-  expect(document.getElementById(description ?? "")?.textContent).toBe(text);
-  expect(screen.getByText(/This share will leave/)).toHaveAttribute(
-    "role",
-    "status",
-  );
+  t.preview();
+  fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  expect(
+    await screen.findByRole("menuitem", { name: "Delete message" }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("menuitem", { name: "Edit message" }),
+  ).not.toBeInTheDocument();
+  expect(t.publications).toHaveLength(0);
 });

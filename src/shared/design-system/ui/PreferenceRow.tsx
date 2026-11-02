@@ -7,6 +7,8 @@ type ControlLabel = {
 
 /** Shared settings layout. The trailing control owns interaction and state. */
 export function PreferenceRow({
+  id: rowId,
+  variant = "default",
   icon,
   title,
   subtitle,
@@ -15,6 +17,8 @@ export function PreferenceRow({
   accessibleTitle,
   disabled = false,
 }: {
+  id?: string;
+  variant?: "default" | "search";
   icon?: ReactNode;
   title: ReactNode;
   subtitle?: ReactNode;
@@ -27,11 +31,13 @@ export function PreferenceRow({
   const id = useId();
   const titleId = `${id}-title`;
   const subtitleId = subtitle ? `${id}-subtitle` : undefined;
-  const Title = controlId ? "label" : "div";
+  const Title = controlId && variant !== "search" ? "label" : "div";
   return (
     <div
+      id={rowId}
       data-buzz-ui=""
       className="buzz-preference-row"
+      data-variant={variant}
       data-disabled={disabled || undefined}
       data-has-icon={icon ? "" : undefined}
     >

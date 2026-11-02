@@ -232,11 +232,11 @@ it("resolves DM participants once per label pass through one scope per channel",
     expect(labels[0]).toBe(first);
     expect(resolve).toHaveBeenCalledTimes(2);
     // A replaced list with unchanged channels (one per incoming message)
-    // re-resolves each participant but reuses the channel's candidate scope.
+    // reuses their labels without resolving again.
     roster = [...roster];
     await act(async () => root.render(createElement(Probe)));
     expect(labels[0]).toBe(first);
-    expect(resolve).toHaveBeenCalledTimes(4);
+    expect(resolve).toHaveBeenCalledTimes(2);
     expect(provider.scope).toHaveBeenCalledTimes(1);
   } finally {
     await act(async () => root.unmount());
@@ -297,6 +297,44 @@ it("retains a labelled DM across roster and profile recomputations until its sou
     await act(async () => root.render(createElement(Probe)));
     expect(labels[0]).not.toBe(renamed);
     expect(labels[0]?.updatedAt).toBe(1);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it("names group DMs with participants in alphabetical order", async () => {
+  const kenny = "k".repeat(64),
+    baxen = "b".repeat(64),
+    cynthia = "c".repeat(64);
+  const profiles = new Map([
+    [kenny, { name: "Kenny Lopez" }],
+    [baxen, { name: "baxen" }],
+    [cynthia, { name: "Cynthia" }],
+  ]);
+  const queries = {
+    snapshot: () => profiles,
+    subscribe: () => () => {},
+    ensure: async () => {},
+  } as unknown as Parameters<typeof useChannelLabels>[1];
+  let label: string | undefined;
+  function Probe() {
+    label = useChannelLabels(
+      [
+        {
+          id: "group",
+          name: "",
+          channelType: "dm",
+          participants: [kenny, cynthia, baxen],
+        },
+      ],
+      queries,
+    ).channels[0]?.name;
+    return null;
+  }
+  const root = createRoot(container());
+  try {
+    await act(async () => root.render(createElement(Probe)));
+    expect(label).toBe("baxen, Cynthia, Kenny Lopez");
   } finally {
     await act(async () => root.unmount());
   }

@@ -41,6 +41,21 @@ below the viewport are excluded, so a newly buffered row there that resizes (a
 video loading, say) cannot move the reading position. Rows above and in the
 viewport, including prepended history, are still corrected.
 
+A flushed correction holds the mounted range until that correction's own scroll
+event arrives. A correction that moves nothing, or that another write undoes in
+the same task, raises no such event, so the held range outlived idle. In CI run
+41120162311 (`history-loading.spec.mjs` "a held pointer keeps its place after
+the page's reader row unmounts") Linux WebKit went idle after a 91px correction
+with no buffer below the viewport, and a row just below it did not remount
+before the test failed; the trace does not show which write left the
+correction without its event. Scroll-end now releases the held range and
+re-renders, so idle buffers both sides as above. Before that release, the
+driver's scroll-end reads the native offset, as the viewport resize path does:
+a jump whose scroll event trails the 150ms timer is consumed as its own event,
+and the range is not re-rendered at the stale pre-jump offset. A correction
+flushed after scroll-end with no later scroll event still holds its range until
+the next one.
+
 In an isolated WKWebView over real channel history (images, video, live relay),
 fast alternating flicks were measured per frame. In two instrumented runs, all 46
 DOM-coverage gap frames moved downward while shift mode held an upward direction.
@@ -183,9 +198,10 @@ no pending jump cost a few milliseconds.
 The store moves the held range by the shift's item delta, so the rows it kept
 mounted stay mounted and the scroll event's live range is computed as before.
 A shift can also remove rows from the head, since the timeline reports one
-whenever the first row changes and the last does not; a removal past the held
-range's start would move the range above the list, so it then holds the same
-number of rows from the top instead. A partial removal holds a range wider
+whenever rows above the reader change and the rows from their first visible
+row to the end do not; a removal past the held range's start would move the
+range above the list, so it then holds the same number of rows from the top
+instead. A partial removal holds a range wider
 than the live one for that frame; a removal of every held row, which would
 otherwise leave an inverted range that renders no row, lands with the
 corrected offset at the top. Nothing changes when no jump is pending, for
@@ -298,3 +314,16 @@ bin/pnpm install --frozen-lockfile
 bin/pnpm exec vitest run src/shared/design-system/ui/controls.test.tsx
 bin/pnpm design:test:browser
 ```
+
+## Base UI 1.9.0: preview cards wait for a resting pointer
+
+The same patch makes PreviewCard.Trigger's hover open delay a rest delay, as
+Base UI's Tooltip.Trigger already does: the timer starts when the pointer stops
+on the trigger and restarts whenever it moves, so a pointer crossing an avatar
+on its way elsewhere opens nothing. Focus opens at once, as it does for
+Tooltip, so the delay is only the pointer's rest; a zero delay still opens on
+entry. Close timing is unchanged. The shared value lives in
+`src/shared/design-system/ui/hoverIntent.ts`.
+
+Remove this part when a pinned Base UI release rests before opening a preview
+card; `src/shared/design-system/ui/Tooltip.test.tsx` covers it.

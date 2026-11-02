@@ -2,10 +2,15 @@ import { isTauri } from "@tauri-apps/api/core";
 import { isApplePlatform } from "../features/shortcuts/format";
 import type { ShortcutsService } from "../features/shortcuts/service";
 import type { Appearance } from "../shared/theme/service";
+import {
+  composerFocusTarget,
+  focusKeyboardTarget,
+  paneFocusTarget,
+} from "./focus-navigation";
 
 /** Host actions use the same binding/dispatch rules as plugins, without fake plugin ownership. */
 // Settings presents the host category in functional sections: navigation,
-// interface sizing, search/settings, then app reload.
+// interface sizing, search/settings, tab/focus actions, then app reload.
 export const HOST_SHORTCUT_ORDER = {
   home: 10,
   navigationBack: 20,
@@ -18,6 +23,7 @@ export const HOST_SHORTCUT_ORDER = {
   nextTab: 82,
   previousTab: 84,
   close: 85,
+  focus: 86,
   reload: 90,
 } as const;
 
@@ -27,7 +33,35 @@ export function registerAppShortcuts(
   openSettings: () => void,
   ready: boolean,
 ) {
+  const apple = isApplePlatform(navigator.platform);
   const remove = [
+    shortcuts.registerHost({
+      id: "focus-composer",
+      title: "Focus message box",
+      binding: { key: "l", mod: true },
+      order: HOST_SHORTCUT_ORDER.focus,
+      allowInEditable: true,
+      when: () =>
+        !document.activeElement?.closest(".xterm") && !!composerFocusTarget(),
+      run: () => focusKeyboardTarget(composerFocusTarget()),
+    }),
+    ...(apple ? (["main", "side"] as const) : [undefined]).map((pane) =>
+      shortcuts.registerHost({
+        id: pane ? `focus-${pane}-pane` : "focus-pane",
+        title: pane ? `Focus ${pane} pane` : "Focus next pane",
+        binding: pane
+          ? {
+              key: { main: "h", side: "l" }[pane],
+              mod: true,
+              shift: true,
+            }
+          : [{ key: "F8" }, { key: "F8", shift: true }],
+        order: HOST_SHORTCUT_ORDER.focus,
+        allowInEditable: true,
+        when: () => !!paneFocusTarget(pane),
+        run: () => focusKeyboardTarget(paneFocusTarget(pane)),
+      }),
+    ),
     shortcuts.registerHost({
       id: "settings",
       title: "Open Settings",

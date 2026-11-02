@@ -253,10 +253,7 @@ function Preview() {
         </fieldset>
       </header>
       <div className="nav-thinking-workspace">
-        <aside
-          className="nav-thinking-sidebar"
-          aria-label="Channel sidebar preview"
-        >
+        <aside className="nav-thinking-sidebar" aria-label="Sidebar preview">
           <h2 className="text-label text-subtle">Channels</h2>
           {channels.slice(0, 2).map((channel) => (
             <ChannelSidebarItem
@@ -265,13 +262,7 @@ function Preview() {
               session={session}
               working={!!active[channel.id]?.length}
               selected={selected}
-              collapsed
-              onToggle={() => {}}
-              draft={false}
-              draftSelected={false}
-              sessions={[]}
               onSelect={selectChannel}
-              onNewSession={() => {}}
               onOpenThread={() => {}}
               onOpenWorkingAgent={(channelId, agent) => {
                 selectChannel(channelId);
@@ -296,13 +287,7 @@ function Preview() {
               session={session}
               working={!!active[channel.id]?.length}
               selected={selected}
-              collapsed
-              onToggle={() => {}}
-              draft={false}
-              draftSelected={false}
-              sessions={[]}
               onSelect={selectChannel}
-              onNewSession={() => {}}
               onOpenThread={() => {}}
               onOpenWorkingAgent={(channelId, agent) => {
                 selectChannel(channelId);

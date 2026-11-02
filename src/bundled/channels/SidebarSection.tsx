@@ -1,3 +1,5 @@
+import { RenameSidebarSection } from "./RenameSidebarSection";
+import { SidebarActiveDialog, activeWindowLabel } from "./SidebarActiveDialog";
 import { FadingLabel } from "./FadingLabel";
 import {
   useId,
@@ -8,6 +10,8 @@ import {
   type Ref,
 } from "react";
 import {
+  MenuGroup,
+  MenuGroupLabel,
   MenuIcon,
   MenuItem,
   MenuPopup,
@@ -19,14 +23,18 @@ import {
   MenuSubmenuPopup,
   MenuSubmenuTrigger,
   MenuTrigger,
+  MenuTrailing,
 } from "../../shared/design-system/ui/Menu";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
   ArrowsDownUpIcon,
   CaretDownIcon,
-  CaretUpIcon,
+  ChatsCircleIcon,
+  ChatUnreadIcon,
   DotsThreeIcon,
+  Filter2Icon,
+  PencilSimpleIcon,
   PlusIcon,
   TextAaIcon,
   TimerIcon,
@@ -36,8 +44,11 @@ import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { Button } from "../../shared/design-system/ui/Button";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
 import type { RelaySession } from "../../features/relay/session";
+import type { ChannelSummary } from "../../features/relay/contracts";
+import type { SidebarFilter } from "./useSidebarFilters";
 import { SidebarGroupIcon } from "./SidebarGroupIcon";
 import { SidebarStarIcon } from "./SidebarStarIcon";
+import { ChannelSidebarMenuItem } from "./ChannelSidebarMenuItem";
 import styles from "./Channels.module.css";
 
 export function SidebarSection({
@@ -48,9 +59,15 @@ export function SidebarSection({
   session,
   open,
   onToggle,
+  headerActions,
+  headerNotice,
+  hideMoreActions = false,
   createChannel,
+  createSection,
   newMessage,
   sort,
+  filter,
+  channels,
   dropRef,
   dropTarget = false,
   dropEdge,
@@ -58,6 +75,7 @@ export function SidebarSection({
   dragging = false,
   move,
   onRemove,
+  onRename,
   channelCount,
   removalFocus,
   children,
@@ -65,21 +83,44 @@ export function SidebarSection({
   sectionKey: string;
   title: string;
   hideTitle?: boolean;
-  icon?: string | undefined;
+  icon?: ReactNode;
   session?: RelaySession | undefined;
   open: boolean;
   onToggle: (open: boolean) => void;
+  headerActions?: ReactNode;
+  headerNotice?: ReactNode;
   onRemove?: (() => unknown) | undefined;
+  onRename?: ((name: string) => unknown) | undefined;
+  hideMoreActions?: boolean;
   channelCount?: number | undefined;
   removalFocus?: (() => HTMLElement | null | undefined) | undefined;
   createChannel?:
     | { available: boolean; open: (trigger: HTMLButtonElement) => void }
     | undefined;
   newMessage?: (() => void) | undefined;
+  createSection?:
+    | { available: boolean; open: (trigger: HTMLButtonElement) => void }
+    | undefined;
   sort?:
     | {
         value: "alpha" | "recent";
         change: (mode: "alpha" | "recent") => void;
+      }
+    | undefined;
+  filter?:
+    | {
+        value: SidebarFilter;
+        disabled?: boolean;
+        activeWindowSeconds?: number | undefined;
+        change: (mode: SidebarFilter, seconds?: number) => unknown;
+        dismissError?: () => void;
+      }
+    | undefined;
+  channels?:
+    | {
+        rows: readonly ChannelSummary[];
+        selected?: string | undefined;
+        select: (id: string) => void;
       }
     | undefined;
   dropRef?: Ref<HTMLDivElement> | undefined;
@@ -104,9 +145,12 @@ export function SidebarSection({
   const actionsTrigger = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [activeOpen, setActiveOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState("");
   const canRemove = !!onRemove && sectionKey.startsWith("group:");
+  const canRename = !!onRename && sectionKey.startsWith("group:");
   const remove = async () => {
     if (!onRemove || removing) return;
     setRemoving(true);
@@ -132,6 +176,7 @@ export function SidebarSection({
         <div className={styles.sectionActions}>
           {newMessage && (
             <IconButton
+              hint="familiar"
               size="compact"
               aria-label="New message"
               title="New message"
@@ -168,9 +213,11 @@ export function SidebarSection({
             <span className={styles.sectionLabel}>
               {sectionKey === "starred" ? (
                 <SidebarStarIcon />
-              ) : icon && session ? (
+              ) : typeof icon === "string" && session ? (
                 <SidebarGroupIcon icon={icon} session={session} />
-              ) : null}
+              ) : (
+                icon
+              )}
               <FadingLabel className={styles.sectionTitle}>{title}</FadingLabel>
             </span>
             <span className={`${styles.sidebarIcon} ${styles.sectionChevron}`}>
@@ -185,6 +232,7 @@ export function SidebarSection({
               render={(props) => (
                 <IconButton
                   {...props}
+                  hidden={hideMoreActions}
                   size="compact"
                   aria-label={`More actions for ${title}`}
                   icon={<DotsThreeIcon strokeWidth={2.5} size={15} />}
@@ -192,6 +240,113 @@ export function SidebarSection({
               )}
             />
             <MenuPopup align="end" aria-label={`More actions for ${title}`}>
+              {filter && (
+                <MenuSubmenu>
+                  <MenuSubmenuTrigger>
+                    <MenuIcon>
+                      <Filter2Icon size={14} />
+                    </MenuIcon>
+                    Filter
+                  </MenuSubmenuTrigger>
+                  <MenuSubmenuPopup
+                    aria-label={`Filter ${title}`}
+                    finalFocus={false}
+                  >
+                    <MenuRadioGroup
+                      value={filter.value}
+                      onValueChange={(mode) => {
+                        if (mode === "active") return;
+                        void Promise.resolve(
+                          filter.change(mode as SidebarFilter),
+                        ).catch(() => {});
+                        setMenuOpen(false);
+                      }}
+                    >
+                      <MenuRadioItem
+                        disabled={filter.disabled}
+                        closeOnClick={false}
+                        value="all"
+                      >
+                        <MenuIcon>
+                          <ChatsCircleIcon size={14} />
+                        </MenuIcon>
+                        All
+                      </MenuRadioItem>
+                      <MenuRadioItem
+                        disabled={filter.disabled}
+                        closeOnClick={false}
+                        value="unreads"
+                      >
+                        <MenuIcon>
+                          <ChatUnreadIcon size={14} />
+                        </MenuIcon>
+                        Unreads
+                      </MenuRadioItem>
+                      <MenuRadioItem
+                        disabled={filter.disabled}
+                        closeOnClick={false}
+                        value="active"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          setActiveOpen(true);
+                        }}
+                      >
+                        <MenuIcon>
+                          <TimerIcon size={14} />
+                        </MenuIcon>
+                        Active in the last
+                        {filter.value === "active" && (
+                          <MenuTrailing>
+                            {activeWindowLabel(filter.activeWindowSeconds)}
+                          </MenuTrailing>
+                        )}
+                      </MenuRadioItem>
+                    </MenuRadioGroup>
+                    {channels &&
+                      filter.value !== "all" &&
+                      channels.rows.length > 0 && (
+                        <>
+                          <MenuSeparator />
+                          <MenuGroup>
+                            <MenuGroupLabel emphasis="quiet">
+                              {filter.value === "unreads"
+                                ? "No unread messages"
+                                : `No activity in the last ${activeWindowLabel(filter.activeWindowSeconds)}`}
+                            </MenuGroupLabel>
+                            {channels.rows.map((channel) => {
+                              const select = () => {
+                                onToggle(true);
+                                channels.select(channel.id);
+                                setMenuOpen(false);
+                              };
+                              return session ? (
+                                <ChannelSidebarMenuItem
+                                  key={channel.id}
+                                  channel={channel}
+                                  session={session}
+                                  selected={channels.selected === channel.id}
+                                  onSelect={select}
+                                />
+                              ) : (
+                                <MenuItem
+                                  key={channel.id}
+                                  aria-current={
+                                    channels.selected === channel.id
+                                      ? "page"
+                                      : undefined
+                                  }
+                                  onClick={select}
+                                >
+                                  {channel.name}
+                                </MenuItem>
+                              );
+                            })}
+                          </MenuGroup>
+                        </>
+                      )}
+                  </MenuSubmenuPopup>
+                </MenuSubmenu>
+              )}
               {sort && (
                 <MenuSubmenu>
                   <MenuSubmenuTrigger>
@@ -227,21 +382,24 @@ export function SidebarSection({
                   </MenuSubmenuPopup>
                 </MenuSubmenu>
               )}
-              <MenuItem
-                onClick={() => {
-                  onToggle(!open);
-                  setMenuOpen(false);
-                }}
-              >
-                <MenuIcon>
-                  {open ? (
-                    <CaretUpIcon size={14} />
-                  ) : (
-                    <CaretDownIcon size={14} />
-                  )}
-                </MenuIcon>
-                {open ? "Collapse section" : "Expand section"}
-              </MenuItem>
+              {createSection && (
+                <>
+                  {(filter || sort) && <MenuSeparator />}
+                  <MenuItem
+                    disabled={!createSection.available}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      if (actionsTrigger.current)
+                        createSection.open(actionsTrigger.current);
+                    }}
+                  >
+                    <MenuIcon>
+                      <PlusIcon size={14} />
+                    </MenuIcon>
+                    Create section
+                  </MenuItem>
+                </>
+              )}
               {move && (
                 <>
                   <MenuItem
@@ -270,6 +428,19 @@ export function SidebarSection({
                   </MenuItem>
                 </>
               )}
+              {canRename && (
+                <MenuItem
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setRenameOpen(true);
+                  }}
+                >
+                  <MenuIcon>
+                    <PencilSimpleIcon size={14} />
+                  </MenuIcon>
+                  Rename section
+                </MenuItem>
+              )}
               {canRemove && (
                 <>
                   <MenuSeparator />
@@ -290,8 +461,10 @@ export function SidebarSection({
               )}
             </MenuPopup>
           </MenuRoot>
+          {headerActions}
           {newMessage && (
             <IconButton
+              hint="familiar"
               size="compact"
               aria-label="New message"
               title="New message"
@@ -299,8 +472,28 @@ export function SidebarSection({
               icon={<PlusIcon strokeWidth={2.5} size={15} />}
             />
           )}
+          {activeOpen && filter && (
+            <SidebarActiveDialog
+              seconds={filter.activeWindowSeconds}
+              apply={(seconds) => filter.change("active", seconds)}
+              close={() => {
+                filter.dismissError?.();
+                setActiveOpen(false);
+              }}
+              finalFocus={actionsTrigger}
+            />
+          )}
+          {renameOpen && onRename && (
+            <RenameSidebarSection
+              title={title}
+              rename={onRename}
+              close={() => setRenameOpen(false)}
+              finalFocus={actionsTrigger}
+            />
+          )}
           {canRemove && (
             <Dialog
+              size="compact"
               open={removeOpen}
               onOpenChange={setRemoveOpen}
               dismissOnOutsideClick
@@ -358,6 +551,7 @@ export function SidebarSection({
           )}
         </div>
       </div>
+      {headerNotice}
       <div
         id={id}
         className={styles.sectionContent}

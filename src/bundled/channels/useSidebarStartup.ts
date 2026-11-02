@@ -20,7 +20,7 @@ export function useSidebarStartup(
   list: ChannelList,
   preferences: ReturnType<RelaySession["sidebarPreferences"]["snapshot"]>,
 ) {
-  // ChannelSidebar is keyed by scope and connection generation; the hook is
+  // The primary sidebar is keyed by scope and connection generation; the hook is
   // remounted for a replacement session, while same-session remounts reuse latches.
   const [retained] = useState(() => {
     const state = startupSessions.get(session) ?? {
@@ -33,10 +33,12 @@ export function useSidebarStartup(
   const [revealed, setRevealed] = useState(retained.revealed);
   const [unreadDone, setUnreadDone] = useState(retained.unreadDone);
   const [expired, setExpired] = useState(false);
-  const live = useSyncExternalStore(
+  // Only the roster state: live heads change on every message and prefetch.
+  const readRosterState = () => session.live.snapshot().roster.state;
+  const rosterState = useSyncExternalStore(
     session.live.subscribe,
-    session.live.snapshot,
-    session.live.snapshot,
+    readRosterState,
+    readRosterState,
   );
   const rosterAvailable = list.status === "ready" || list.status === "error";
   useEffect(() => {
@@ -64,8 +66,7 @@ export function useSidebarStartup(
     !!preferences.data ||
     preferences.status === "error" ||
     preferences.status === "unsupported";
-  const namesReady =
-    live.roster.state !== "pending" && live.roster.state !== "idle";
+  const namesReady = rosterState !== "pending" && rosterState !== "idle";
   const recent = Object.values(preferences.data?.sort ?? {}).includes("recent");
   const activityReady =
     !recent ||

@@ -1,5 +1,9 @@
 import { test, expect } from "./fixture.mjs";
-import { open } from "./timeline.mjs";
+import {
+  expectMessageActionsHidden,
+  hoverMessage,
+} from "./message-actions.mjs";
+import { open, end, wheel, settle } from "./timeline.mjs";
 import { generateSecretKey, finalizeEvent, getPublicKey } from "nostr-tools";
 
 test.use({
@@ -8,6 +12,44 @@ test.use({
   threadUnread: true,
   historyCounts: { alpha: 2, beta: 1 },
   developmentReact: true,
+});
+
+// Native focus and virtual-list scroll anchoring need the real conversation.
+test("removing a reaction from a tall message preserves the reading position", async ({
+  page,
+  app,
+}) => {
+  await open(page, app);
+  const event = app.append("primary", "alpha", "Reaction scroll target");
+  const row = page.locator(
+    `[data-channel-timeline] [data-message-id="${event.id}"]`,
+  );
+  await expect(row).toBeVisible();
+  await hoverMessage(row);
+  await row.getByRole("button", { name: "React with 👍", exact: true }).click();
+  const reaction = row.locator('button[data-reaction="👍"]');
+  await expect(reaction).toHaveAttribute("aria-pressed", "true");
+  app.edit(
+    "primary",
+    "alpha",
+    event,
+    "This long message keeps its reaction below the visible start.\n\n".repeat(
+      60,
+    ),
+  );
+  for (let i = 0; i < 6; i++)
+    app.append("primary", "alpha", `Message after the reaction ${i}`);
+  await end(page);
+  await wheel(page, -120);
+  await reaction.scrollIntoViewIfNeeded();
+  await settle(page);
+  const history = page.getByRole("region", { name: "Channel message history" });
+  const before = await history.evaluate((el) => el.scrollTop);
+  expect(before).toBeGreaterThan(500);
+  await reaction.click();
+  await expect(reaction).toHaveCount(0);
+  await settle(page);
+  expect(await history.evaluate((el) => el.scrollTop)).toBe(before);
 });
 
 // Browser-only boundary: real popup focus/geometry and existing tab navigation
@@ -166,13 +208,15 @@ test("message activity opens a grouped preview and the agent's profile without l
   });
   await expect(requestRow.locator('[data-reaction="✅"]')).toBeVisible();
   const eyes = requestRow.locator('[data-reaction="👀"]');
-  await expect(eyes).toHaveCount(2);
-  await expect(
-    eyes.and(page.locator(`[data-reaction-author="${getPublicKey(keys[0])}"]`)),
-  ).toHaveAccessibleName("👀: Agent 1");
-  await expect(
-    eyes.and(page.locator(`[data-reaction-author="${getPublicKey(human)}"]`)),
-  ).toHaveAccessibleName(`👀: ${getPublicKey(human).slice(0, 10)}`);
+  await expect(eyes).toHaveCount(1);
+  await expect(eyes).toHaveAccessibleName("👀: 2 people");
+  await eyes.hover();
+  const reactionPreview = page.locator(
+    '.buzz-preview-card[role="tooltip"][data-open]',
+  );
+  await expect(reactionPreview).toContainText("Agent 1");
+  await expect(reactionPreview).toContainText(getPublicKey(human).slice(0, 10));
+  await page.mouse.move(0, 0);
   await expect(requestRow.locator('[data-reaction="💬"]')).toBeVisible();
   const typingTags = [
     ["h", "alpha"],
@@ -194,7 +238,7 @@ test("message activity opens a grouped preview and the agent's profile without l
       // Resize with the channel toolbar revealed: the overlay thread pane
       // must cover it, even if the pointer has not moved off its old row.
       await page.setViewportSize({ width: 1440, height: 950 });
-      await row.hover();
+      await hoverMessage(row);
       await page.setViewportSize({ width, height: 950 });
       await expect(bubble).toBeVisible();
       const groupBox = await region.boundingBox();
@@ -203,10 +247,20 @@ test("message activity opens a grouped preview and the agent's profile without l
         .boundingBox();
       expect(groupBox.y + groupBox.height).toBeLessThanOrEqual(formBox.y);
       await expect(bubble).toHaveAttribute("data-size", "xs");
-      await expect(region).toHaveCSS("margin-top", "8px");
+      // Channel and thread activity use the same gap below their message.
+      const channelGap = await row
+        .locator("[data-thread-summary]")
+        .evaluate((element) => getComputedStyle(element).marginTop);
+      await expect(region).toHaveCSS("margin-top", channelGap);
       const buttonBox = await bubble.boundingBox();
-      // 16px mini avatar + 4px badge inset + 8px xs button inset.
-      expect(buttonBox.height).toBe(28);
+      const artworkBox = await bubble
+        .locator(".buzz-avatar")
+        .first()
+        .boundingBox();
+      expect(artworkBox.y).toBeGreaterThan(buttonBox.y);
+      expect(artworkBox.y + artworkBox.height).toBeLessThan(
+        buttonBox.y + buttonBox.height,
+      );
       expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(width);
       await bubble.focus();
       await page.keyboard.press("Enter");
@@ -218,11 +272,7 @@ test("message activity opens a grouped preview and the agent's profile without l
       await bubble.focus();
       // Native top-layer message actions must step aside for the activity
       // portal, including when its trigger retains keyboard focus.
-      await expect
-        .poll(() =>
-          messageActions.evaluate((bar) => bar.matches(":popover-open")),
-        )
-        .toBe(false);
+      await expectMessageActionsHidden(messageActions);
       await expect(
         popup.getByRole("button", { name: /^View activity for/ }),
       ).toHaveCount(2);

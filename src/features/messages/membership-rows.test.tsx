@@ -5,7 +5,11 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { profileTarget } from "../profiles/target";
 import type { ChannelMessage, MembershipChange } from "../relay/contracts";
-import { membershipRows, membershipDescription } from "./membership-rows";
+import {
+  membershipRows,
+  membershipDescription,
+  withoutStartingAgents,
+} from "./membership-rows";
 import { MembershipRow } from "./MembershipRow";
 import { geometrySignature } from "./geometry";
 const wes = "a".repeat(64),
@@ -269,7 +273,8 @@ it("member names open the subject's and the actor's profiles when the host can",
   fireEvent.click(screen.getByRole("button", { name: "View your profile" }));
   expect(open).toHaveBeenLastCalledWith(profileTarget(wes));
   const agent = screen.getByRole("button", { name: "View Brain profile" });
-  expect(agent).toHaveAttribute("data-mention-kind", "agent");
+  // System notices name people as quiet text, never as mention chips.
+  expect(agent).not.toHaveAttribute("data-mention-kind");
   fireEvent.click(agent);
   expect(open).toHaveBeenLastCalledWith(profileTarget(brain, { agent: true }));
   expect(screen.getAllByRole("button")).toHaveLength(3);
@@ -299,8 +304,47 @@ it("member names open the subject's and the actor's profiles when the host can",
   );
   fireEvent.click(screen.getByRole("button", { name: "View Pinky profile" }));
   expect(open).toHaveBeenLastCalledWith(profileTarget(pinky));
-  expect(
-    screen.getByRole("button", { name: "View Brain profile" }),
-  ).toHaveAttribute("data-mention-kind", "person");
+  // Without agent evidence, Brain opens as a person.
+  fireEvent.click(screen.getByRole("button", { name: "View Brain profile" }));
+  expect(open).toHaveBeenLastCalledWith(profileTarget(brain));
   expect(document.querySelector("[data-profile-target]")).toBeNull();
+});
+
+it("omits only the owner's starting agents once history reaches the start", () => {
+  const added = (id: string, actor: string, target: string) =>
+    row(id, { type: "member_joined", actor, target });
+  const message = { ...row("message"), authorId: wes, content: "Hi" };
+  const agents = new Set([pinky, brain]);
+  const rows = [
+    added("starting", wes, pinky),
+    added("person", wes, "d".repeat(64)),
+    added("by-agent", pinky, brain),
+    message,
+    added("later", wes, brain),
+  ];
+  expect(
+    withoutStartingAgents(rows, wes, agents, true).map((row) => row.id),
+  ).toEqual(["person", "by-agent", "message", "later"]);
+  // Partial history cannot prove a leading arrival started the chat.
+  expect(withoutStartingAgents(rows, wes, agents, false)).toBe(rows);
+  expect(withoutStartingAgents(rows, undefined, agents, true)).toBe(rows);
+  // A chat with no messages yet still started with its agents.
+  expect(
+    withoutStartingAgents([added("only", wes, pinky)], wes, agents, true),
+  ).toEqual([]);
+  // Setup churn hides as a whole, so no removal outlives its hidden addition.
+  expect(
+    withoutStartingAgents(
+      [
+        added("first", wes, pinky),
+        row("removed", removed(wes, pinky)),
+        row("left", left(brain)),
+        added("again", wes, pinky),
+        message,
+      ],
+      wes,
+      agents,
+      true,
+    ).map((row) => row.id),
+  ).toEqual(["left", "message"]);
 });

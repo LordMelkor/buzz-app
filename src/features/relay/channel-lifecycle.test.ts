@@ -1,7 +1,18 @@
+import { followUpQueue } from "../messages/follow-up-queue";
+import type { RelaySession } from "./session";
 import { createHash } from "node:crypto";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "nostr-tools/utils";
-import { assert, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  assert,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { ReadError } from "./errors";
 import { finalizeEvent, getPublicKey, type EventTemplate } from "nostr-tools";
 import { PublishRejected } from "./outbox";
 import {
@@ -151,6 +162,174 @@ function harness(role = "owner", type = "stream", owners = 1) {
     },
   };
 }
+
+describe("bounded visibility recovery", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("keeps loaded visibility quiet through a transient failure and success", async () => {
+    const h = harness();
+    h.setVisible([
+      h.record(30622, [
+        ["d", viewer],
+        ["p", viewer],
+        ["h", id],
+      ]),
+    ]);
+    await h.owner.capability.refreshVisibility();
+    h.read.mockClear();
+    h.read.mockRejectedValueOnce(new TypeError("fetch failed"));
+    const pending = h.owner.capability.refreshVisibility();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.owner.capability.snapshot()).toEqual({
+      status: "loading",
+      hidden: [id],
+    });
+    await vi.advanceTimersByTimeAsync(749);
+    expect(h.read).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(h.read).toHaveBeenCalledTimes(2);
+    expect(h.owner.capability.snapshot()).toEqual({
+      status: "ready",
+      hidden: [id],
+    });
+    h.owner.dispose();
+  });
+
+  it("exhausts four reads, then surfaces an error a manual retry can clear", async () => {
+    const h = harness();
+    const lifecycle = h.owner.capability;
+    h.read.mockRejectedValue(new ReadError("unavailable", "offline", 503));
+    const pending = lifecycle.refreshVisibility();
+    await vi.advanceTimersByTimeAsync(0);
+    for (const [index, delay] of [750, 1500, 3000].entries()) {
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(h.read).toHaveBeenCalledTimes(index + 1);
+      expect(lifecycle.snapshot().status).toBe("loading");
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    await pending;
+    expect(lifecycle.snapshot()).toEqual({
+      status: "error",
+      hidden: [],
+      error: "offline",
+    });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.read).toHaveBeenCalledTimes(4);
+    h.read.mockResolvedValue([]);
+    await lifecycle.refreshVisibility();
+    expect(lifecycle.snapshot().status).toBe("ready");
+    h.owner.dispose();
+  });
+
+  it.each([
+    new ReadError("denied", "denied", 403),
+    new Error("Invalid DM visibility snapshot"),
+  ])("surfaces permanent failure immediately: %s", async (error) => {
+    const h = harness();
+    h.read.mockRejectedValue(error);
+    await h.owner.capability.refreshVisibility();
+    expect(h.owner.capability.snapshot()).toMatchObject({
+      status: "error",
+      error: error.message,
+    });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.read).toHaveBeenCalledOnce();
+    h.owner.dispose();
+  });
+
+  it("coalesces concurrent triggers during reads and backoff", async () => {
+    const h = harness();
+    const gate = deferred<RelayEvent[]>();
+    h.read.mockImplementationOnce(() => gate.promise);
+    const first = h.owner.capability.refreshVisibility();
+    const concurrent = h.owner.capability.refreshVisibility();
+    expect(concurrent).toBe(first);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.read).toHaveBeenCalledOnce();
+    gate.reject(new TypeError("offline"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.owner.capability.refreshVisibility()).toBe(first);
+    await vi.advanceTimersByTimeAsync(750);
+    await first;
+    expect(h.read).toHaveBeenCalledTimes(2);
+    h.owner.dispose();
+  });
+
+  it.each(["caller", "cancel", "clear", "dispose"] as const)(
+    "%s cancels backoff without a terminal error or another read",
+    async (action) => {
+      const h = harness();
+      const caller = new AbortController();
+      h.read.mockRejectedValue(new TypeError("offline"));
+      const pending = h.owner.capability.refreshVisibility(caller.signal);
+      await vi.advanceTimersByTimeAsync(0);
+      if (action === "caller") caller.abort();
+      else h.owner[action]();
+      await pending;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(h.read).toHaveBeenCalledOnce();
+      expect(h.owner.capability.snapshot()).not.toHaveProperty("error");
+      h.owner.dispose();
+    },
+  );
+
+  it("aborts an obsolete read and rejects its late response after a superseding request", async () => {
+    const h = harness();
+    const gate = deferred<RelayEvent[]>();
+    const caller = new AbortController();
+    h.read.mockImplementationOnce(() => gate.promise);
+    const old = h.owner.capability.refreshVisibility(caller.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    const signal = h.read.mock.calls[0]?.[1]?.signal;
+    caller.abort();
+    expect(signal?.aborted).toBe(true);
+    await h.owner.capability.refreshVisibility();
+    gate.resolve([
+      h.record(30622, [
+        ["d", viewer],
+        ["p", viewer],
+        ["h", id],
+      ]),
+    ]);
+    await old;
+    expect(h.owner.capability.snapshot()).toEqual({
+      status: "ready",
+      hidden: [],
+    });
+    h.owner.dispose();
+  });
+
+  it("retries a visibility read invalidated by an unrelated channel denial", async () => {
+    const h = harness();
+    h.read.mockImplementationOnce(
+      (_filters, options) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(cancelled()),
+            { once: true },
+          );
+        }),
+    );
+    const pending = h.owner.capability.refreshVisibility();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.read).toHaveBeenCalledOnce();
+    h.owner.cancel([id]);
+    await vi.advanceTimersByTimeAsync(750);
+    await pending;
+    expect(h.read).toHaveBeenCalledTimes(2);
+    expect(h.owner.capability.snapshot().status).toBe("ready");
+    h.owner.dispose();
+  });
+});
 
 it.each(["archive", "delete", "leave", "hide"] as const)(
   "confirms %s while ordinary reads still see pre-write state",
@@ -1519,6 +1698,61 @@ describe("Unarchive", () => {
   });
 });
 
+describe("caller publication guard", () => {
+  function setup(action: "archive" | "unarchive") {
+    const h = harness();
+    if (action === "unarchive")
+      h.setEvents([h.metadata(true), ...h.getEvents().slice(1)]);
+    return h;
+  }
+  it.each(["archive", "unarchive"] as const)(
+    "publishes no %s once the caller's guard turns false during signing",
+    async (action) => {
+      const h = setup(action);
+      let eligible = true;
+      const active = vi.fn(() => eligible);
+      const sign = h.sign.getMockImplementation();
+      assert(sign);
+      h.sign.mockImplementationOnce(async (event) => {
+        eligible = false;
+        return sign(event);
+      });
+      try {
+        const error = await h.owner.capability
+          .run(action, id, undefined, active)
+          .catch((error: unknown) => error);
+        expect(error).toMatchObject({ name: "AbortError" });
+        expect(error).not.toBeInstanceOf(ChannelLifecycleUnconfirmed);
+        expect(active).toHaveBeenCalled();
+        expect(h.publish).not.toHaveBeenCalled();
+        // Nothing reached the relay, so a later eligible run is not blocked.
+        await h.owner.capability.run(action, id);
+        expect(h.publish).toHaveBeenCalledOnce();
+      } finally {
+        h.owner.dispose();
+      }
+    },
+  );
+  it("checks a true guard after re-authorization and publishes as before", async () => {
+    const h = setup("archive");
+    const active = vi.fn(() => true);
+    try {
+      await h.owner.capability.run("archive", id, undefined, active);
+      expect(active).toHaveBeenCalledOnce();
+      const [checked = 0] = active.mock.invocationCallOrder;
+      const [published = 0] = h.publish.mock.invocationCallOrder;
+      const reads = h.read.mock.invocationCallOrder.filter(
+        (at) => at < published,
+      );
+      expect(checked).toBeGreaterThan(Math.max(...reads));
+      expect(checked).toBeLessThan(published);
+      expect(h.acceptDiscovery).toHaveBeenCalledOnce();
+    } finally {
+      h.owner.dispose();
+    }
+  });
+});
+
 describe("join from a public preview", () => {
   function preview(tags: string[][] = [["public"]]) {
     const h = harness("member");
@@ -1590,4 +1824,47 @@ describe("join from a public preview", () => {
       h.owner.dispose();
     }
   });
+});
+
+it("retires queued entries and waits only after confirmed removal, including pending validation", async () => {
+  const h = harness();
+  const deactivate = vi.fn();
+  const gate = deferred<void>();
+  const queue = followUpQueue({
+    channels: {
+      list: () => ({ channels: h.removed.mock.calls.length ? [] : [{ id }] }),
+    },
+    channelLifecycle: h.owner.capability,
+    agentActivity: {
+      activate: () => deactivate,
+      subscribe: () => () => {},
+      snapshot: () => ({ status: "unavailable", turns: [], local: [] }),
+    },
+  } as unknown as RelaySession);
+  const publish = vi.fn(() => "queued");
+  try {
+    queue.submit({
+      channelId: id,
+      text: "first",
+      recipients: [other],
+      publish: () => "first",
+    });
+    queue.submit({
+      channelId: id,
+      text: "queued",
+      recipients: [other],
+      publish,
+      beforeRelease: () => gate.promise,
+    });
+    queue.sendNow(queue.snapshot()[0]?.id ?? "missing");
+    await h.owner.capability.run("delete", id);
+    expect(queue.snapshot()).toEqual([]);
+    expect(deactivate).toHaveBeenCalledOnce();
+    gate.resolve();
+    await gate.promise;
+    expect(publish).not.toHaveBeenCalled();
+  } finally {
+    gate.resolve();
+    h.owner.dispose();
+  }
 });

@@ -1,21 +1,33 @@
 import { Button as BaseButton } from "@base-ui/react/button";
 import { CircleNotchIcon } from "../icons/index";
 import type { ComponentProps, ReactNode } from "react";
-import { Tooltip } from "./Tooltip";
+import { Tooltip, type HintTiming } from "./Tooltip";
 
 type ButtonVariant =
   | "prominent"
   | "subtle"
+  | "glass"
+  | "subtle-muted"
   | "ghost"
   | "destructive"
   | "outline"
   | "attention"
+  | "glass"
+  | "glass-ghost"
   | "inverted"
   | "link"
   | "plain"
   | "primary"
   | "quiet";
-type ButtonSize = "inline" | "xs" | "sm" | "md" | "lg" | "compact" | "default";
+type ButtonSize =
+  | "caption"
+  | "inline"
+  | "xs"
+  | "sm"
+  | "md"
+  | "lg"
+  | "compact"
+  | "default";
 
 export type ButtonProps = Omit<
   ComponentProps<typeof BaseButton>,
@@ -24,9 +36,14 @@ export type ButtonProps = Omit<
   children: ReactNode;
   variant?: ButtonVariant;
   size?: ButtonSize;
-  shape?: "capsule" | "control";
   loading?: boolean;
-};
+  /** How long the `title` hint waits; see DESIGN.md "Hover timing". */
+  hint?: HintTiming;
+} & (
+    | { shape?: "capsule" | "control" }
+    // Icon geometry has no visible label, so it requires an accessible name.
+    | { shape: "icon"; "aria-label": string }
+  );
 
 /** Base UI owns activation. Legacy variant/size names remain during migration. */
 export function Button({
@@ -39,11 +56,19 @@ export function Button({
   disabled,
   onClick,
   title,
+  hint,
   ...props
 }: ButtonProps) {
   const control = (
     <BaseButton
       {...props}
+      {...(shape === "icon"
+        ? {
+            "data-icon-variant": variant,
+            "data-icon-shape": "control",
+            "data-icon-size": size,
+          }
+        : {})}
       type={type}
       disabled={disabled || loading}
       focusableWhenDisabled={
@@ -62,10 +87,11 @@ export function Button({
       data-variant={
         variant === "primary"
           ? "prominent"
-          : variant === "quiet"
+          : variant === "quiet" || variant === "subtle-muted"
             ? "subtle"
             : variant
       }
+      data-muted={variant === "subtle-muted" || undefined}
       data-size={size === "compact" ? "sm" : size === "default" ? "md" : size}
       data-button-shape={shape}
       data-loading={loading || undefined}
@@ -92,7 +118,7 @@ export function Button({
   // Keep the native title API at call sites, but share the hint's appearance
   // and dismissal behavior. Content titles on non-controls remain native.
   return title ? (
-    <Tooltip content={title} disableHoverablePopup>
+    <Tooltip content={title} hint={hint} disableHoverablePopup>
       {control}
     </Tooltip>
   ) : (

@@ -191,6 +191,56 @@ describe("persistence", () => {
     expect(reloaded.state(subject).state).toBe("unavailable");
     expect(reloaded.hadVersion(subject)).toBe(true);
   });
+
+  it.each([
+    ["a null container", null],
+    ["a list container", []],
+    ["a text container", "entries"],
+  ])("loads %s as never synced", (_, entries) => {
+    const storage = memoryStorage();
+    storage.setItem(
+      CONFIG_STORAGE_KEY,
+      JSON.stringify({ version: 1, entries, hadVersion: {} }),
+    );
+    const store = new AgentConfigStore(storage);
+    expect(store.state(subject).state).toBe("unavailable");
+  });
+
+  it.each([
+    ["a null entry", null],
+    ["an unknown state", { state: "stale", generation: 0, sequence: 0 }],
+    [
+      "a negative generation",
+      { state: "unavailable", generation: -1, sequence: 0 },
+    ],
+    [
+      "a fractional generation",
+      { state: "unavailable", generation: 1.5, sequence: 0 },
+    ],
+    ["a text sequence", { state: "unavailable", generation: 0, sequence: "1" }],
+    ["a missing sequence", { state: "unavailable", generation: 0 }],
+  ])("loads %s as never synced and keeps valid entries", (_, bad) => {
+    const storage = memoryStorage();
+    const store = new AgentConfigStore(storage);
+    store.applyRead(subject, store.capture(subject), {
+      kind: "head",
+      event: revision("A"),
+    });
+    const other = { ...subject, channel: "other" };
+    const stored = JSON.parse(storage.getItem(CONFIG_STORAGE_KEY) ?? "null");
+    stored.entries[`${other.owner}:${other.community}:other:${other.type}`] =
+      bad;
+    storage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(stored));
+    const reloaded = new AgentConfigStore(storage);
+    const { state, generation, sequence } = reloaded.state(other);
+    expect(state).toBe("unavailable");
+    expect(Number.isSafeInteger(generation) && generation >= 0).toBe(true);
+    expect(Number.isSafeInteger(sequence) && sequence >= 0).toBe(true);
+    // Fences still advance from the reloaded entry.
+    reloaded.rebind(other);
+    expect(reloaded.capture(other).generation).toBe(generation + 1);
+    expect(reloaded.instructions(subject)).toEqual({ ok: true, text: "A" });
+  });
 });
 
 describe("synced settings", () => {
@@ -228,5 +278,13 @@ describe("synced settings", () => {
       problem: expect.any(String),
     });
     expect(syncedSettings(content, "codex", schema)).toEqual({ settings: {} });
+    // Settings naming no type are the agent's own.
+    expect(
+      syncedSettings(
+        JSON.stringify({ version: 1, settings: {} }),
+        "goose",
+        schema,
+      ),
+    ).toEqual({ settings: {} });
   });
 });

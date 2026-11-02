@@ -1,22 +1,78 @@
+import { hoverMessage } from "./message-actions.mjs";
+import { settleDialogMotion } from "./navigation.mjs";
 import { test, expect } from "./source-fixture.mjs";
 import { settle } from "./timeline.mjs";
 
-// Real paint order and clipping cannot be established by DOM component tests.
-test("reaction previews paint above floating message actions", async ({
+// Browser-only: real nested hover, deferred toolbar mounting, and top-layer
+// visibility must agree with the production reaction row and preview wiring.
+test("reaction previews and the inline picker do not reveal message hover actions", async ({
   page,
 }) => {
+  await page.route("**/emoji-media/**", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22"/>',
+    }),
+  );
   await page.goto("/tests/fixtures/emoji.html?reactions&wrap&narrow");
   const row = page.locator("[data-message-id]").first();
+  // Failed emoji retries rewrap the prose and move reactions off a still pointer.
+  await expect(
+    row.locator('p img[data-copy-emoji=":party:"]'),
+  ).toHaveJSProperty("naturalWidth", 22);
   const reaction = row.locator('button[data-reaction="👍"]');
+  const actions = row.getByRole("group", { name: "Message actions" });
+  const body = row.locator("[data-message-action-anchor]").first();
+  const expectActionsClosed = async () => {
+    // Closed controls stay in DOM/tab order; opacity, hit testing, and native
+    // top-layer state establish that they neither paint nor intercept input.
+    await expect(actions).toHaveCSS("opacity", "0");
+    await expect(actions).toHaveCSS("pointer-events", "none");
+    await expect
+      .poll(() => actions.evaluate((bar) => bar.matches(":popover-open")))
+      .toBe(false);
+  };
+  const plus = row.getByTestId("reaction-row").getByRole("button", {
+    name: "Add reaction",
+    exact: true,
+  });
+  // Enter an untouched row directly through its reactions, not its body.
   await reaction.hover();
   const preview = page.locator('.buzz-preview-card[role="tooltip"][data-open]');
   await expect(preview).toBeVisible();
-  const actions = row.getByRole("group", { name: "Message actions" });
-  await expect
-    .poll(() => actions.evaluate((el) => el.matches(":popover-open")))
-    .toBe(true);
-  // Force the real toolbar into the preview's footprint to probe paint order
-  // independently of content length and font geometry. Keep its top-layer order.
+  await expect(preview).toContainText("Fixture Member");
+  await expectActionsClosed();
+  // Enter prose below the toolbar overlap, away from the nested reactions.
+  await body.hover({ position: { x: 8, y: 32 } });
+  await expect(actions).toHaveCSS("opacity", "1");
+  // Finish the previous preview's exit before testing a fresh hover entry.
+  await expect(page.locator(".buzz-preview-card")).toHaveCount(0);
+  await reaction.hover();
+  await expect(preview).toBeVisible();
+  await expectActionsClosed();
+  await plus.hover();
+  await expectActionsClosed();
+  await plus.click();
+  const picker = page.locator('em-emoji-picker input[type="search"]');
+  await expect(picker).toBeVisible();
+  await expectActionsClosed();
+  await picker.press("Escape");
+  await expect(picker).toHaveCount(0);
+  await body.hover({ position: { x: 8, y: 32 } });
+  await expect(actions).toHaveCSS("opacity", "1");
+  await actions.getByRole("button", { name: "More message actions" }).hover();
+  await expect(actions).toHaveCSS("opacity", "1");
+  // Moving the pointer alone does not end keyboard focus restored by Escape.
+  await page.mouse.click(0, 0);
+  await expectActionsClosed();
+
+  // Keyboard focus still reveals message actions, so retain the paint-order
+  // contract when the reactor preview and toolbar can legitimately coexist.
+  await page.keyboard.press("Tab");
+  await reaction.focus();
+  await reaction.hover();
+  await expect(preview).toBeVisible();
+  await expect(actions).toHaveCSS("opacity", "1");
   await actions.evaluate((bar) => {
     const card = document.querySelector(".buzz-preview-card[data-open]");
     const rect = card.getBoundingClientRect();
@@ -28,8 +84,6 @@ test("reaction previews paint above floating message actions", async ({
     .poll(() =>
       preview.evaluate((card) => {
         const rect = card.getBoundingClientRect();
-        // Supplemental cards ignore pointer input. Temporarily enable it solely
-        // for this paint probe, restoring the real interaction policy afterwards.
         card.style.pointerEvents = "auto";
         const hit = document.elementFromPoint(rect.left + 10, rect.top + 10);
         card.style.pointerEvents = "";
@@ -37,10 +91,6 @@ test("reaction previews paint above floating message actions", async ({
       }),
     )
     .toBe(true);
-  await page.mouse.move(0, 0);
-  await expect(page.locator(".buzz-preview-card")).toHaveCount(0);
-  await reaction.hover();
-  await expect(preview).toBeVisible();
 });
 
 test("video speed options escape the thread and restore focus after selection and Escape", async ({
@@ -293,7 +343,7 @@ test("focused actions follow sibling growth and shrinkage without scrolling", as
     name: "Message actions",
     includeHidden: true,
   });
-  await row.hover();
+  await hoverMessage(row);
   await expect
     .poll(() => actions.evaluate((bar) => bar.matches(":popover-open")))
     .toBe(true);
@@ -418,6 +468,8 @@ test("destination previews yield to modals they are outside", async ({
   // A trigger inside the active modal keeps its preview above the backdrop.
   await page.mouse.move(0, 0);
   await page.getByRole("button", { name: "Open modal" }).click();
+  // A pointer-opened modal animates in; hover once the trigger stops moving.
+  await settleDialogMotion(dialog);
   await dialog.getByRole("link", { name: "Open Inside" }).hover();
   const inside = preview("Inside");
   await expect(inside).toBeVisible();
@@ -604,7 +656,7 @@ test("comment actions revealed while the drawer slides realign when it settles",
     .getByRole("button", { name: "Show comments", exact: true })
     .click();
   await page.evaluate(() => window.drawerHeld);
-  await row.getByText("Alex", { exact: true }).hover();
+  await hoverMessage(row);
   await shown();
   const anchoring = () =>
     actions.evaluate((bar) => {
@@ -613,23 +665,18 @@ test("comment actions revealed while the drawer slides realign when it settles",
         .querySelector("[data-message-action-anchor]")
         .getBoundingClientRect();
       const rect = bar.getBoundingClientRect();
-      const beside = bar.dataset.placement === "beside";
       return {
         right: Math.round(bubble.right),
-        anchored: beside
-          ? Math.abs(rect.left - bubble.right - 8) < 1 &&
-            Math.abs(
-              rect.top + rect.height / 2 - bubble.top - bubble.height / 2,
-            ) < 1
-          : Math.abs(bubble.top + 8 - rect.bottom) < 1 &&
-            Math.abs(
-              Math.min(
-                bubble.right + 8,
-                bar.closest("[data-message-scroller]").getBoundingClientRect()
-                  .right - 12,
-                document.documentElement.clientWidth - 12,
-              ) - rect.right,
-            ) < 1,
+        anchored:
+          Math.abs(bubble.top + 8 - rect.bottom) < 1 &&
+          Math.abs(
+            Math.min(
+              bubble.right + 8,
+              bar.closest("[data-message-scroller]").getBoundingClientRect()
+                .right - 12,
+              document.documentElement.clientWidth - 12,
+            ) - rect.right,
+          ) < 1,
       };
     });
   // Keep the drawer held while the toolbar's own entrance settles.
@@ -656,52 +703,52 @@ test("comment actions revealed while the drawer slides realign when it settles",
 });
 
 // Real pointer hit testing and preview transitions cannot be proved in jsdom.
-test("every repeated reaction toggles my reaction while its preview is open", async ({
+test("a grouped reaction toggles my contribution while its preview is open", async ({
   page,
 }) => {
   await page.goto("/tests/fixtures/emoji.html?reactions&repeated");
   const row = page.locator("[data-message-id]").first();
-  const buttons = row.locator('button[data-reaction="😂"]');
-  await expect(buttons).toHaveCount(2);
-  const authors = await buttons.evaluateAll((nodes) =>
-    nodes.map((node) => node.dataset.reactionAuthor),
-  );
-  for (const author of authors) {
-    const button = row.locator(
-      `button[data-reaction="😂"][data-reaction-author="${author}"]`,
-    );
+  const button = row.locator('button[data-reaction="😂"]');
+  const matching = row.locator('button[data-reaction="😂"]');
+  await expect(button).toHaveCount(1);
+  await expect(matching).toHaveCount(1);
+  await expect(button).toHaveAccessibleName("😂: 2 people");
+  for (let cycle = 0; cycle < 2; cycle++) {
+    await page.mouse.move(0, 0);
     await button.hover();
-    await expect(page.locator(".buzz-preview-card[data-open]")).toBeVisible();
+    const preview = page.locator(".buzz-preview-card[data-open]");
+    await expect(preview).toBeVisible();
+    await expect(preview).toContainText("Fixture Member");
     await button.click();
-    const mine = row.getByRole("button", { name: "😂: You", exact: true });
-    await expect(mine).toBeVisible();
+    await expect(button).toHaveAttribute("aria-pressed", "true");
+    await expect(matching).toHaveCount(1);
+    await expect(button).toHaveAccessibleName("😂: 3 people");
     await expect(button).toHaveAttribute("aria-disabled", "false");
     await button.click();
-    await expect(mine).toHaveCount(0);
-    await expect(buttons).toHaveCount(2);
-    await button.click();
-    await expect(mine).toBeVisible();
-    await expect(mine).toHaveAttribute("aria-disabled", "false");
-    await mine.hover();
-    await expect(page.locator(".buzz-preview-card[data-open]")).toBeVisible();
-    await mine.click();
-    await expect(mine).toHaveCount(0);
+    await expect(button).toHaveAttribute("aria-pressed", "false");
+    await expect(matching).toHaveCount(1);
+    await expect(button).toHaveAccessibleName("😂: 2 people");
+    await expect(button).toHaveCount(1);
+    await expect(button).toHaveAttribute("aria-disabled", "false");
   }
 });
 
 // A direct pointer click does not wait for preview handoff animations to settle.
-test("clicking the second reaction during preview handoff toggles it", async ({
+test("clicking a grouped reaction during preview handoff toggles it", async ({
   page,
 }) => {
-  await page.goto("/tests/fixtures/emoji.html?reactions&repeated&narrow");
+  await page.goto("/tests/fixtures/emoji.html?reactions&wrap&repeated&narrow");
   const row = page.locator("[data-message-id]").first();
-  const buttons = row.locator('button[data-reaction="😂"]');
-  await expect(buttons).toHaveCount(2);
-  await buttons.first().hover();
+  const button = row.locator('button[data-reaction="😂"]');
+  const matching = row.locator('button[data-reaction="😂"]');
+  await expect(button).toHaveCount(1);
+  await expect(matching).toHaveCount(1);
+  await expect(button).toHaveAccessibleName("😂: 2 people");
+  await row.locator('button[data-reaction="👍"]').hover();
   await expect(page.locator(".buzz-preview-card[data-open]")).toBeVisible();
-  const box = await buttons.nth(1).boundingBox();
+  const box = await button.boundingBox();
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-  await expect(
-    row.getByRole("button", { name: "😂: You", exact: true }),
-  ).toBeVisible();
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  await expect(matching).toHaveCount(1);
+  await expect(button).toHaveAccessibleName("😂: 3 people");
 });

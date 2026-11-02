@@ -114,7 +114,7 @@ it("preserves one server ranking above 128 joined channels and opens a public ex
             filter.kinds?.includes(39000) && !filter["#d"]?.includes("open"),
         )
       )
-        return Promise.resolve([]);
+        return Promise.resolve([publicMetadata(relay, "joined-0")]);
       return wire.transport.query(filters, signal);
     },
   });
@@ -141,17 +141,17 @@ it("preserves one server ranking above 128 joined channels and opens a public ex
       name: "Open open",
     });
     expect(() => owner.session.messages.send("open", "not joined")).toThrow(
-      "Join the conversation",
+      "You don’t have write access to this conversation.",
     );
     expect(() =>
       owner.session.messages.reply("open", root.id, "not joined"),
-    ).toThrow("Join the conversation");
+    ).toThrow("You don’t have write access to this conversation.");
     expect(() => owner.session.messages.react(reply.id, "👍")).toThrow(
-      "Join the conversation",
+      "You don’t have write access to this conversation.",
     );
     expect(() =>
       owner.session.messages.edit(reply.id, "not joined", reply.id),
-    ).toThrow("Join the conversation");
+    ).toThrow("You don’t have write access to this conversation.");
     const thread = owner.session.thread("open", reply.id, { exact: true });
     const opening = thread.refresh();
     // Exact target, overlays, ancestry, traversal: all use the existing owner.
@@ -297,6 +297,8 @@ it("rejects missing/forged/private evidence and purges prior public content on a
 });
 
 it("surfaces bounded metadata failures instead of silently returning an empty page", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
   const viewer = keypair(),
     relay = keypair();
   const owner = createRelaySession({
@@ -310,11 +312,15 @@ it("surfaces bounded metadata failures instead of silently returning an empty pa
     },
   });
   try {
-    await expect(owner.session.read(search)).rejects.toThrow(
+    const rejected = expect(owner.session.read(search)).rejects.toThrow(
       "metadata unavailable",
     );
+    await vi.advanceTimersByTimeAsync(5250);
+    await rejected;
   } finally {
     owner.dispose();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
   }
 });
 

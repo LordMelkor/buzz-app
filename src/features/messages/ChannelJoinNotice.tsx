@@ -4,7 +4,8 @@ import { ChannelLifecycleUnconfirmed } from "../relay/channel-lifecycle";
 import { Button } from "../../shared/design-system/ui/Button";
 import styles from "./Messages.module.css";
 
-/** A public preview offers Join; the membership roster, not this notice, enables the composer.
+/** Archived and read-only channels share the public preview's lower notice.
+ * Member-default public previews offer Join; confirmed membership enables composition.
  * Confirmed membership can unmount this notice before its run settles, so the
  * page records the join intent when the run starts, not when it resolves. */
 export function ChannelJoinNotice({
@@ -12,6 +13,10 @@ export function ChannelJoinNotice({
   ready = true,
   lifecycle,
   joinable,
+  guest = false,
+  archived = false,
+  place = "channel",
+  joinRole,
   onJoin,
   onHeightChange,
 }: {
@@ -19,6 +24,10 @@ export function ChannelJoinNotice({
   ready?: boolean;
   lifecycle?: ChannelLifecycleCapability | undefined;
   joinable: boolean;
+  guest?: boolean;
+  archived?: boolean;
+  place?: "chat" | "channel";
+  joinRole?: "member" | "guest" | undefined;
   onJoin(): void;
   onHeightChange?(height: number): void;
 }) {
@@ -68,11 +77,18 @@ export function ChannelJoinNotice({
       },
     );
   };
-  const canJoin = joinable && !!lifecycle?.available;
+  const readOnly = guest || joinRole === "guest";
+  const canJoin = !archived && !readOnly && joinable && !!lifecycle?.available;
   return (
     <section
       ref={notice}
-      aria-label="Channel preview"
+      aria-label={
+        archived
+          ? `Archived ${place}`
+          : readOnly
+            ? "Read-only channel"
+            : "Channel preview"
+      }
       aria-hidden={!visible}
       inert={!visible}
       className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center p-3"
@@ -82,10 +98,16 @@ export function ChannelJoinNotice({
         data-ready={visible}
         className={`${styles.channelJoinSurface} pointer-events-auto flex w-fit max-w-full flex-wrap items-center justify-center gap-2 p-1.5`}
       >
-        <p className="px-2 text-body-sm text-subtle">
-          {canJoin
-            ? "Join channel to send messages"
-            : "You’re previewing this channel."}
+        <p className="max-w-md px-2 text-center text-body-sm text-subtle">
+          {archived
+            ? `This ${place} is archived`
+            : readOnly
+              ? joinRole === "guest"
+                ? "This channel is read-only"
+                : "Read-only access"
+              : canJoin
+                ? "Join channel to send messages"
+                : "You’re previewing this channel"}
         </p>
         {canJoin && (
           <Button

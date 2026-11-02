@@ -1,4 +1,10 @@
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import {
+  type FocusEvent,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { RelaySession } from "../../features/relay/session";
 import {
   RECOVERY_TITLE,
@@ -30,15 +36,7 @@ export function LiveStatus({
   const { recovering: retrying, shown } = useInlineRecovery(
     diagnostics ? undefined : recovery,
   );
-  // A removed element does not always report blur, so check where focus
-  // landed once the notice is gone.
   const focused = useRef(false);
-  useEffect(() => {
-    if (shown || !focused.current) return;
-    focused.current = false;
-    const active = document.activeElement;
-    if (!active || active === document.body) onRecovered?.();
-  }, [shown, onRecovered]);
   const snapshot = useSyncExternalStore(
     live.subscribe,
     live.snapshot,
@@ -69,12 +67,20 @@ export function LiveStatus({
     snapshot.error ?? snapshot.roster.error ?? head?.error ?? routeError;
   const incompleteRoster =
     partialRoster && snapshot.roster.state === "verified";
-  const issue =
+  // An issue that is not one of the passive notices (capacity, partial roster).
+  const blocking =
     ["unavailable", "retrying", "error"].includes(snapshot.status) ||
-    error !== undefined ||
-    actionable.some((route) => ["error", "limited"].includes(route.status)) ||
+    (snapshot.error ?? snapshot.roster.error ?? head?.error) !== undefined ||
+    actionable.some(
+      (route) =>
+        route.status === "error" ||
+        (route.status !== "limited" && route.error !== undefined),
+    ) ||
     head?.state === "error" ||
-    ["error", "deferred"].includes(snapshot.roster.state) ||
+    ["error", "deferred"].includes(snapshot.roster.state);
+  const issue =
+    blocking ||
+    actionable.some((route) => route.status === "limited") ||
     incompleteRoster;
   const reason = error?.includes("rate-limited: quota exceeded")
     ? "A relay request was rate-limited; recovery needs attention."
@@ -84,6 +90,73 @@ export function LiveStatus({
         : ["error", "deferred"].includes(snapshot.roster.state)
           ? "Channel list needs refreshing."
           : "Live updates are unavailable."));
+  const settled = liveRecoveryStatus(snapshot) === "settled";
+  // Startup, bounded automatic quota recovery and recovery before its notice
+  // delay do not need user attention.
+  const quiet = !issue || (retrying && !settled);
+  // What automatic recovery cannot change: capacity, a partial roster, a
+  // denial or a sign-in failure. Capacity and a partial roster stay passive.
+  // A failure that recovery skips keeps an explicit retry.
+  const failed =
+    !quiet &&
+    settled &&
+    (snapshot.status === "error" ||
+      actionable.some((route) => route.status === "error") ||
+      head?.state === "error" ||
+      snapshot.roster.state === "error");
+  // The live layer retries such a failure slowly on its own. Keep the notice,
+  // its reason and its Retry while an attempt runs, so they do not vanish and
+  // come back with every attempt or a routine roster or head refresh. The
+  // hold ends once live state settles, or once this channel has neither a
+  // blocking issue nor work in flight: unrelated work elsewhere must not keep
+  // it, and a passive notice never offers Retry.
+  const [held, setHeld] = useState<{ channelId?: string; reason: string }>();
+  const attempting =
+    snapshot.status === "connecting" ||
+    snapshot.roster.state === "pending" ||
+    head?.state === "pending" ||
+    relevant.some((route) => route.status === "pending");
+  const holding =
+    !failed &&
+    !settled &&
+    (blocking || attempting) &&
+    held !== undefined &&
+    held.channelId === channelId;
+  const keep = failed
+    ? { ...(channelId ? { channelId } : {}), reason }
+    : holding
+      ? held
+      : undefined;
+  if (keep?.reason !== held?.reason || keep?.channelId !== held?.channelId)
+    setHeld(keep);
+  const manual = failed || holding;
+  const control = diagnostics
+    ? undefined
+    : recovery && shown
+      ? "recovery"
+      : manual
+        ? "manual"
+        : undefined;
+  // Either control can go away while focused, by recovery or by an automatic
+  // retry. A removed element does not always report blur, so check where
+  // focus landed once the control changed.
+  useEffect(() => {
+    if (!focused.current) return;
+    const active = document.activeElement;
+    if (control && active && active !== document.body) return;
+    focused.current = false;
+    if (!active || active === document.body) onRecovered?.();
+  }, [control, onRecovered]);
+  const track = {
+    onFocus: () => {
+      focused.current = true;
+    },
+    onBlur: (event: FocusEvent<HTMLElement>) => {
+      focused.current = event.currentTarget.contains(
+        event.relatedTarget as Node | null,
+      );
+    },
+  };
   if (diagnostics) {
     const connecting =
       snapshot.status === "connecting" ||
@@ -113,14 +186,7 @@ export function LiveStatus({
         role="status"
         aria-label={RECOVERY_TITLE}
         className={styles.recovery}
-        onFocus={() => {
-          focused.current = true;
-        }}
-        onBlur={(event) => {
-          focused.current = event.currentTarget.contains(
-            event.relatedTarget as Node | null,
-          );
-        }}
+        {...track}
       >
         <div className={styles.message}>
           <p className="text-label-sm text-warning">{RECOVERY_TITLE}</p>
@@ -128,41 +194,27 @@ export function LiveStatus({
         <RetryNowButton recovery={recovery} />
       </section>
     );
-  // Startup, bounded automatic quota recovery and the first automatic retry do
-  // not need user attention.
-  if (!issue || (retrying && liveRecoveryStatus(snapshot) !== "settled"))
-    return null;
-  // What automatic recovery cannot change: capacity, a partial roster, a
-  // denial or a sign-in failure. Capacity and a partial roster stay passive.
-  // A failure the user can fix (signer, access) keeps an explicit retry,
-  // because recovery and wake signals skip it.
-  const manual =
-    liveRecoveryStatus(snapshot) === "settled" &&
-    (snapshot.status === "error" ||
-      actionable.some((route) => route.status === "error") ||
-      head?.state === "error" ||
-      snapshot.roster.state === "error");
+  if (quiet && !holding) return null;
   return (
     <section
       role="status"
       aria-label="Live updates limited"
       className={styles.recovery}
+      {...track}
     >
       <div className={styles.message}>
         <p className="text-label-sm text-warning">Live updates limited</p>
         <p className="text-body-sm text-subtle">
-          {reason} Only currently accessible messages remain readable.
+          {issue ? reason : held?.reason} Only currently accessible messages
+          remain readable.
         </p>
       </div>
       {manual && (
         <Button
           type="button"
           size="sm"
-          onClick={() => {
-            live.retry();
-            // Retry removes this focused control; hand focus on explicitly.
-            onRecovered?.();
-          }}
+          // The notice and this control stay until the attempt succeeds.
+          onClick={() => live.retry()}
         >
           Retry live updates
         </Button>

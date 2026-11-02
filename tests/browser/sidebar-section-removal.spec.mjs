@@ -61,11 +61,15 @@ test.describe("section removal", () => {
     await expect(row).toHaveCount(1);
     await expect
       .poll(() => app.report.sidebarPublications?.length ?? 0)
-      .toBe(2);
+      .toBe(3);
     const reset = app.report.sidebarPublications[0];
     expect(reset.coordinate).toBe("channel-sort");
     expect(reset.blob.meta.g[`section:${id}`][2]).toBeNull();
     expect(reset.blob.groups).toEqual({ channels: "recent" });
+    const filterReset = app.report.sidebarPublications[1];
+    expect(filterReset.coordinate).toBe("channel-filter");
+    expect(filterReset.blob.meta.g[`section:${id}`][2]).toBeNull();
+    expect(filterReset.blob.groups).toEqual({});
     const { coordinate, blob } = app.report.sidebarPublications.at(-1);
     expect(coordinate).toBe("channel-sections");
     expect(blob.meta.s.work.live[2]).toBe(false);

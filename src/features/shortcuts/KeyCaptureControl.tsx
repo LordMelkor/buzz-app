@@ -7,6 +7,8 @@ export type CapturedChord = Readonly<{
   binding: KeyBinding;
   /** The Windows/Command key off Apple platforms: the dispatcher never matches it. */
   otherPrimary: boolean;
+  /** Physical key, for chords whose `key` varies by layout. */
+  code: string;
 }>;
 
 const MODIFIER_KEYS = new Set([
@@ -101,6 +103,7 @@ export function KeyCaptureControl({
               ...(event.altKey && { alt: true }),
             },
             otherPrimary: !apple && event.metaKey,
+            code: event.code,
           });
         }}
       />

@@ -36,6 +36,8 @@ export type ChannelPanelContext = Readonly<{
 export type ChannelLauncherProps = {
   context: ChannelPanelContext;
   pressed: boolean;
+  /** Open the current conversation’s host-owned member picker. */
+  openMembers?: (() => void) | undefined;
   /** Toggles this exact contribution in the page-owned channel panel. */
   toggle(target: string): void;
   /** False after this page binding or exact contribution is retired. */
@@ -61,6 +63,8 @@ export type Panel = Readonly<{
   order?: MatchOrder | undefined;
   // Optional host launcher; placement stays with the current page or host fallback.
   launcher?: Readonly<{ icon: string; target: string }>;
+  /** Optional live controls beside shell search; lifetime remains plugin-owned. */
+  toolbar?: ComponentType;
   // Optional channel-header launcher. The page supplies context and owns placement.
   channelLauncher?: ComponentType<ChannelLauncherProps>;
   /** Optional Channels menu placement; eligibility is presentation-only, not access. */
@@ -73,6 +77,12 @@ export type Panel = Readonly<{
    * column; tab opens a tab in the channel's side pane beside its threads.
    */
   channelPlacement?: "bottom" | "side" | "tab";
+  /** Tabs opened from links stay until closed, like a channel tool's, instead
+   * of giving way to the next link or thread. */
+  keepOpen?: boolean;
+  /** Mount tab content on first selection, then retain it for the workspace visit.
+   * Component-provided titles and local detail tabs are also deferred. */
+  deferUntilShown?: boolean;
   component: ComponentType<PanelProps>;
 }>;
 export type RegisteredPanel = Contribution<Panel>;
@@ -94,11 +104,26 @@ export const panelOpening = (
   const panel = panels.resolve(target);
   return panel && { channelId, ...(rootId && { rootId }), panel, target };
 };
+/** A target to open beside a conversation, as if the viewer clicked a link
+ * to it there. */
+export type PanelOpenRequest = Readonly<{
+  target: string;
+  channelId: string;
+  /** The thread it is opened from, absent at the channel's top level. */
+  rootId?: string;
+}>;
 export type Panels = {
   register(panel: Panel): void;
   resolve(target: string): RegisteredPanel | undefined;
   snapshot(): readonly RegisteredPanel[];
   subscribe(listener: () => void): () => void;
+  /** Opens `request.target` beside its conversation if a page shows that
+   * channel now; false when none does or no panel handles the target. */
+  requestOpen(request: PanelOpenRequest): boolean;
+  /** A page showing conversations answers open requests while it does. */
+  handleOpenRequests(
+    handler: (request: PanelOpenRequest) => boolean,
+  ): () => void;
 };
 declare module "@deepseek-ai/cordis" {
   interface Context {
@@ -111,8 +136,22 @@ export class PanelsService extends Service implements Panels {
     super(ctx, "panels");
     this.panels = createContributions<Panel>(ctx);
   }
+  private readonly openHandlers = new Set<
+    (request: PanelOpenRequest) => boolean
+  >();
   snapshot = () => this.panels.snapshot();
   subscribe = (listener: () => void) => this.panels.subscribe(listener);
+  requestOpen = (request: PanelOpenRequest) => {
+    if (!this.resolve(request.target)) return false;
+    for (const handler of this.openHandlers) if (handler(request)) return true;
+    return false;
+  };
+  handleOpenRequests = (handler: (request: PanelOpenRequest) => boolean) => {
+    this.openHandlers.add(handler);
+    return () => {
+      this.openHandlers.delete(handler);
+    };
+  };
   resolve = (target: string) => resolveMatch(this.panels.snapshot(), target);
   register(panel: Panel) {
     if (
@@ -141,6 +180,8 @@ export class PanelsService extends Service implements Panels {
     ) {
       throw new Error("A panel launcher needs an icon and target string");
     }
+    if (panel.toolbar !== undefined && typeof panel.toolbar !== "function")
+      throw new Error("A panel toolbar needs a component");
     if (
       panel.channelLauncher !== undefined &&
       typeof panel.channelLauncher !== "function"
@@ -163,6 +204,13 @@ export class PanelsService extends Service implements Panels {
       panel.channelPlacement !== "tab"
     )
       throw new Error("A channel placement must be bottom, side or tab");
+    if (panel.keepOpen !== undefined && typeof panel.keepOpen !== "boolean")
+      throw new Error("A panel's keepOpen must be a boolean");
+    if (
+      panel.deferUntilShown !== undefined &&
+      typeof panel.deferUntilShown !== "boolean"
+    )
+      throw new Error("A panel's deferUntilShown must be a boolean");
     this.panels.register(this.ctx, {
       ...panel,
       ...(panel.launcher && { launcher: Object.freeze({ ...panel.launcher }) }),

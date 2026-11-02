@@ -169,3 +169,40 @@ it("every library snapshot carries definition art to identities without their ow
     undefined,
   ]);
 });
+
+it("a fresh refresh supersedes a read in flight, and its waiters wait for the new one", async () => {
+  const reads: ((rows: string[]) => void)[] = [];
+  const library = createAgentLibrary(
+    (signal) =>
+      new Promise((resolve) => {
+        reads.push((rows) => {
+          if (!signal.aborted)
+            resolve({
+              definitions: [],
+              identities: rows.map((pubkey) => ({ pubkey, name: pubkey })),
+            });
+          else resolve({ definitions: [], identities: [] });
+        });
+      }),
+  );
+  let joinedDone = false;
+  const joined = library.queries.refresh().then(() => {
+    joinedDone = true;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  const fresh = library.queries.refresh({ fresh: true });
+  await Promise.resolve();
+  await Promise.resolve();
+  // The stale read settles first; it publishes nothing and its waiter waits.
+  reads[0]?.(["stale"]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(joinedDone).toBe(false);
+  expect(library.queries.snapshot().status).toBe("loading");
+  reads[1]?.(["current"]);
+  await Promise.all([joined, fresh]);
+  expect(library.queries.snapshot()).toMatchObject({
+    status: "ready",
+    identities: [{ pubkey: "current" }],
+  });
+});

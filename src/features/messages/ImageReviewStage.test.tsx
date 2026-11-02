@@ -8,8 +8,14 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  invoke: vi.fn(async () => {}),
+}));
 import * as imageCopy from "./image-copy";
 import * as nativeImageCopy from "./native-image-copy";
 import { ImageReviewStage } from "./ImageReviewStage";
@@ -560,7 +566,10 @@ it("offers native copy independently of browser clipboard support", async () => 
     "buzz-media://localhost/https%3A%2F%2Ffixture.test%2Fmedia%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   );
   expect(broker).not.toHaveBeenCalled();
-  expect(await screen.findByRole("status")).toHaveTextContent("Image copied");
+  expect(await screen.findByText("Image copied")).toHaveAttribute(
+    "role",
+    "status",
+  );
 
   native.mockRejectedValueOnce(new Error("clipboard denied"));
   fireEvent.click(button);
@@ -832,3 +841,141 @@ it.each(["pointerCancel", "lostPointerCapture"] as const)(
     expect(percent()).toBe("200%");
   },
 );
+
+it("sends the selected image filename with its authenticated native download source", async () => {
+  const url = `https://relay.example/media/${"a".repeat(64)}.png`;
+  const source = `http://buzz-media.localhost/${encodeURIComponent(url)}`;
+  render(
+    <ImageReviewStage
+      attachments={[{ url, kind: "image", name: "photo.png" }]}
+      selectedUrl={url}
+      media={() => source}
+      select={() => {}}
+      onOpenLink={() => false}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Download image" }));
+  expect(invoke).toHaveBeenCalledWith("media_download", {
+    source,
+    name: "photo.png",
+  });
+  // The live region is always mounted and already reads "Downloading…", so an
+  // existence query resolves before the mocked download settles.
+  await waitFor(() =>
+    expect(screen.getByRole("status")).toHaveTextContent("Saved to Downloads"),
+  );
+});
+
+function nativeDownloadGallery() {
+  const photos = ["a", "b"].map((id) => ({
+    url: `https://relay.test/media/${id.repeat(64)}.png`,
+    name: `${id}.png`,
+    kind: "image" as const,
+  }));
+  function Gallery() {
+    const [selectedUrl, select] = useState(
+      `https://relay.test/media/${"a".repeat(64)}.png`,
+    );
+    return (
+      <ImageReviewStage
+        attachments={photos}
+        selectedUrl={selectedUrl}
+        select={select}
+        media={(url) => `buzz-media://localhost/${encodeURIComponent(url)}`}
+        onOpenLink={() => false}
+        allowCopy={false}
+      />
+    );
+  }
+  return render(<Gallery />);
+}
+
+it("keeps image download controls visible and focused while blocking pending repeats", async () => {
+  vi.useFakeTimers();
+  const gate = deferred<void>();
+  vi.mocked(invoke).mockClear().mockReturnValueOnce(gate.promise);
+  nativeDownloadGallery();
+  const button = screen.getByRole("button", { name: "Download image" });
+  button.focus();
+  fireEvent.click(button);
+  fireEvent.click(button);
+  expect(invoke).toHaveBeenCalledTimes(1);
+  expect(button).toHaveFocus();
+  expect(button).toHaveAttribute("aria-busy", "true");
+  expect(screen.getByRole("status")).toHaveTextContent("Downloading…");
+  const stage = screen.getByRole("group", { name: "Image gallery" });
+  act(() => vi.advanceTimersByTime(2200));
+  expect(stage).toHaveAttribute("data-controls-revealed");
+  expect(stage).not.toHaveAttribute("data-controls-idle");
+  await act(async () => gate.resolve());
+  expect(screen.getByRole("status")).toHaveTextContent("Saved to Downloads");
+  act(() => vi.advanceTimersByTime(3999));
+  expect(stage).toHaveAttribute("data-controls-revealed");
+  act(() => vi.advanceTimersByTime(1));
+  expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  expect(stage).not.toHaveAttribute("data-controls-revealed");
+});
+
+it("keeps failed image downloads retryable and recovers on success", async () => {
+  const gate = deferred<void>();
+  vi.mocked(invoke)
+    .mockClear()
+    .mockRejectedValueOnce(new Error("unavailable"))
+    .mockReturnValueOnce(gate.promise);
+  nativeDownloadGallery();
+  fireEvent.click(screen.getByRole("button", { name: "Download image" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Couldn’t download. Try again.",
+  );
+  expect(screen.getByRole("group", { name: "Image gallery" })).toHaveAttribute(
+    "data-controls-revealed",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry download image" }));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await act(async () => gate.resolve());
+  expect(screen.getByRole("status")).toHaveTextContent("Saved to Downloads");
+  expect(invoke).toHaveBeenCalledTimes(2);
+});
+
+it.each(["success", "failure"])(
+  "retires an image download's old %s after navigating away and back",
+  async (result) => {
+    const gate = deferred<void>();
+    vi.mocked(invoke).mockClear().mockReturnValueOnce(gate.promise);
+    nativeDownloadGallery();
+    fireEvent.click(screen.getByRole("button", { name: "Download image" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next image" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previous image" }));
+    await act(async () =>
+      result === "success"
+        ? gate.resolve()
+        : gate.reject(new Error("old failure")),
+    );
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Download image" }),
+    ).not.toHaveAttribute("aria-busy", "true");
+    expect(
+      screen.getByRole("group", { name: "Image gallery" }),
+    ).not.toHaveAttribute("data-controls-revealed");
+  },
+);
+
+it("hides Copy when the host does not provide image clipboard access", () => {
+  stubImageCopy();
+  render(
+    <ImageReviewStage
+      attachments={[{ url: "https://fixture.test/photo.png", kind: "image" }]}
+      selectedUrl="https://fixture.test/photo.png"
+      media={(url) => url}
+      select={() => {}}
+      onOpenLink={() => false}
+      allowCopy={false}
+    />,
+  );
+  expect(screen.getByRole("img")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Copy image" }),
+  ).not.toBeInTheDocument();
+});

@@ -1,14 +1,19 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { ReadFilter } from "../relay/events";
 import {
   CATCH_UP_KEY,
   CATCH_UP_PAGE,
   CATCH_UP_PAGES,
+  catchUpKey,
   readCheckpoints,
   readWindow,
+  splitLegacyCheckpoints,
+  streamKey,
+  writeCheckpoints,
   type Stream,
 } from "./catch-up";
-import { memoryStorage } from "./test-fakes";
+import { fileStore } from "./state";
+import { memoryStorage, sharedFiles } from "./test-fakes";
 
 type Stored = { id: string; created_at: number; content: string };
 const id = (i: number) => i.toString(16).padStart(64, "0");
@@ -119,12 +124,13 @@ it("goes on after the last event delivered when a window was cut short", async (
 
 it("keeps only valid live events heard past a saved checkpoint, and skips them", async () => {
   const storage = memoryStorage();
+  const k = streamKey(id(9), "watch/all");
   storage.setItem(
-    CATCH_UP_KEY,
+    catchUpKey(id(9)),
     JSON.stringify({
       version: 1,
       streams: {
-        k: {
+        [k]: {
           through: 10,
           heard: [
             { created_at: 11, id: id(1) },
@@ -137,7 +143,7 @@ it("keeps only valid live events heard past a saved checkpoint, and skips them",
       },
     }),
   );
-  const saved = readCheckpoints(storage).k;
+  const saved = readCheckpoints(storage)[k];
   expect(saved).toEqual({
     through: 10,
     heard: [{ created_at: 11, id: id(1) }],
@@ -148,4 +154,96 @@ it("keeps only valid live events heard past a saved checkpoint, and skips them",
   ]);
   const window = await readWindow(all, saved, 20, read);
   expect(window?.events.map(({ content }) => content)).toEqual(["missed"]);
+});
+
+const a = streamKey(id(10), "watch/chat");
+const b = streamKey(id(11), "watch/chat");
+
+it("keeps the progress each program saves for its own agents", async () => {
+  const { disk, open } = sharedFiles();
+  const setup = open();
+  await writeCheckpoints(
+    setup,
+    { [a]: { through: 100 }, [b]: { through: 100 } },
+    {},
+  );
+  // Two programs start from the same files, each running one agent, and each
+  // keeps its own copy of every agent's progress.
+  const first = open();
+  const second = open();
+  const firstCopy = readCheckpoints(first);
+  const secondCopy = readCheckpoints(second);
+  await writeCheckpoints(
+    first,
+    { ...firstCopy, [a]: { through: 200 } },
+    firstCopy,
+  );
+  await writeCheckpoints(
+    second,
+    { ...secondCopy, [b]: { through: 300 } },
+    secondCopy,
+  );
+  // Neither wrote over the other's agent.
+  expect(readCheckpoints(open())).toEqual({
+    [a]: { through: 200 },
+    [b]: { through: 300 },
+  });
+  expect([...disk.keys()].sort()).toEqual(
+    [catchUpKey(id(10)), catchUpKey(id(11))].sort(),
+  );
+});
+
+it("moves the old shared progress into each agent's key, and a late move keeps newer progress", async () => {
+  const { disk, open } = sharedFiles({
+    [CATCH_UP_KEY]: JSON.stringify({
+      version: 1,
+      streams: { [a]: { through: 100 }, [b]: { through: 100 } },
+    }),
+  });
+  // Both programs start from the old value. The second's saves wait.
+  let release = () => {};
+  const first = open();
+  const second = open(new Promise((resolve) => (release = resolve)));
+  const moved = splitLegacyCheckpoints(first);
+  const firstCopy = readCheckpoints(first);
+  const late = splitLegacyCheckpoints(second);
+  const secondCopy = readCheckpoints(second);
+  await moved;
+  expect(disk.has(CATCH_UP_KEY)).toBe(false);
+  // The first runs its agent on before the second's move is saved.
+  await writeCheckpoints(
+    first,
+    { ...firstCopy, [a]: { through: 200 } },
+    firstCopy,
+  );
+  release();
+  await late;
+  // The late move kept the newer progress, and the second's copy has it too.
+  expect(readCheckpoints(open())[a]).toEqual({ through: 200 });
+  expect(readCheckpoints(second)[a]).toEqual({ through: 200 });
+  // The second saves only its own agent, from its older copy.
+  await writeCheckpoints(
+    second,
+    { ...secondCopy, [b]: { through: 300 } },
+    secondCopy,
+  );
+  expect(readCheckpoints(open())).toEqual({
+    [a]: { through: 200 },
+    [b]: { through: 300 },
+  });
+});
+
+it("keeps the old shared progress when the move cannot be saved", async () => {
+  const shared = JSON.stringify({
+    version: 1,
+    streams: { [a]: { through: 100 } },
+  });
+  const storage = fileStore(new Map([[CATCH_UP_KEY, shared]]), async () => {
+    throw new Error("disk full");
+  });
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  await splitLegacyCheckpoints(storage);
+  error.mockRestore();
+  expect(storage.get(CATCH_UP_KEY)).toBe(shared);
+  expect(readCheckpoints(storage)).toEqual({ [a]: { through: 100 } });
 });

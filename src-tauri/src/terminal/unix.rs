@@ -54,7 +54,7 @@ fn executable(path: &str) -> bool {
     unsafe { libc::access(path.as_ptr(), libc::X_OK) == 0 }
 }
 
-pub(super) fn resolve_shell(candidate: Option<&str>) -> String {
+pub(crate) fn resolve_shell(candidate: Option<&str>) -> String {
     candidate
         .filter(|shell| executable(shell))
         .map(str::to_owned)
@@ -152,8 +152,14 @@ impl Session {
             return Ok(data);
         }
         let fd = self.fd()?;
+        let deadline = Instant::now() + COALESCE_BUDGET;
         let mut buffer = [0u8; 8192];
         while data.len() < MAX_BYTES {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            // The budget ends a read with partial output, even while more is readable.
+            if !data.is_empty() && remaining.is_zero() {
+                break;
+            }
             let amount = buffer.len().min(MAX_BYTES - data.len());
             // SAFETY: live owned fd, writable buffer with amount <= its length.
             let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), amount) };
@@ -165,7 +171,10 @@ impl Session {
             } else {
                 let err = io::Error::last_os_error();
                 if err.kind() == io::ErrorKind::WouldBlock {
-                    break;
+                    if data.is_empty() || !readable_within(fd, COALESCE_GAP.min(remaining)) {
+                        break;
+                    }
+                    continue;
                 }
                 if err.kind() == io::ErrorKind::Interrupted {
                     continue;
@@ -225,6 +234,10 @@ impl Session {
     }
 
     pub(super) fn read(&mut self) -> Result<ReadResult, String> {
+        // A read that looked the session up before close must not poll a reaped PID.
+        if self.reaped {
+            return Err("Terminal has exited".into());
+        }
         // Flush before consuming output, so an input error cannot discard a
         // successfully read output chunk. A shell exiting mid-paste cancels the
         // remaining input but still has its final output drained normally.
@@ -313,6 +326,39 @@ impl Drop for Session {
         if let Err(error) = self.shutdown() {
             eprintln!("Terminal cleanup failed: {error}");
         }
+    }
+}
+
+// Darwin's tty output queue holds about 1 KiB, so a producer that is still
+// writing yields one tiny chunk per nonblocking pass and per IPC round trip.
+// Once output is flowing, wait briefly for more before returning. The budget is
+// cooperative: it limits how long a read keeps draining under its session
+// lock, though scheduling delays can exceed it.
+const COALESCE_GAP: Duration = Duration::from_micros(500);
+pub(super) const COALESCE_BUDGET: Duration = Duration::from_millis(4);
+
+fn readable_within(fd: i32, timeout: Duration) -> bool {
+    if timeout.is_zero() || fd as usize >= libc::FD_SETSIZE {
+        return false;
+    }
+    // select, not poll: Darwin's poll does not support tty devices.
+    // SAFETY: fd is a live owned descriptor below FD_SETSIZE; set and timeout
+    // are initialized and writable for the call.
+    unsafe {
+        let mut set = std::mem::zeroed::<libc::fd_set>();
+        libc::FD_ZERO(&mut set);
+        libc::FD_SET(fd, &mut set);
+        let mut timeout = libc::timeval {
+            tv_sec: timeout.as_secs() as libc::time_t,
+            tv_usec: timeout.subsec_micros() as libc::suseconds_t,
+        };
+        libc::select(
+            fd + 1,
+            &mut set,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut timeout,
+        ) > 0
     }
 }
 

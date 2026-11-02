@@ -53,6 +53,8 @@ export function createInboxFeed({
     incomplete: [],
   });
   const listeners = new Set<() => void>();
+  // Metadata can hide a row without revoking access. Settle its overlays before
+  // later ordinary metadata can reveal the retained mention.
   const admitted = (event: RelayEvent) => {
     if (!event.tags.some(([name, value]) => name === "p" && value === viewer))
       return false;
@@ -65,6 +67,7 @@ export function createInboxFeed({
           .channels.some(
             (channel) =>
               channel.id === hs[0]?.[1] &&
+              !channel.huddle &&
               !channel.cached &&
               channel.members?.includes(viewer),
           ))

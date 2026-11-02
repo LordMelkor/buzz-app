@@ -3,5 +3,5 @@
   "name": "Todos",
   "apiVersion": 1,
   "description": "Track channel tasks and assignees from Canvas.",
-  "discovery": { "category": "productivity" }
+  "discovery": { "category": "productivity", "tags": ["tasks"] }
 }

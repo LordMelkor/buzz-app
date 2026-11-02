@@ -9,6 +9,7 @@ export type FixtureChoice = {
   aliases?: string[];
   member: boolean;
   agent?: boolean;
+  elsewhere?: string;
   owned?: boolean;
   managed?: boolean;
 };
@@ -78,6 +79,7 @@ export function fixtureChoice(choice: FixtureChoice): MentionChoice {
     aliases: choice.aliases ?? [choice.name],
     member: choice.member,
     agent: !!choice.agent,
+    ...(choice.elsewhere ? { elsewhere: choice.elsewhere } : {}),
     owned: !!choice.owned,
     managed: !!choice.managed,
   };

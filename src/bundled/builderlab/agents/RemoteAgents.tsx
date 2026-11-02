@@ -4,11 +4,15 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { RobotIcon } from "../../../shared/design-system/icons";
+import {
+  ArrowsClockwiseIcon,
+  RobotIcon,
+} from "../../../shared/design-system/icons";
 import { Button } from "../../../shared/design-system/ui/Button";
 import { EmptyState } from "../../../shared/design-system/ui/EmptyState";
 import { InlineHeader } from "../../../shared/design-system/ui/Header";
-import type { OAuthSession } from "../oauth/session";
+import { SettingsGroup } from "../../../shared/design-system/ui/SettingsGroup";
+import type { BuilderlabSession } from "../session";
 import type { AgentClient, RemoteAgent } from "./client";
 
 export function RemoteAgents({
@@ -17,11 +21,19 @@ export function RemoteAgents({
   active,
 }: {
   client: AgentClient;
-  session: OAuthSession;
+  session: BuilderlabSession;
   active(): boolean;
 }) {
   const login = useSyncExternalStore(session.subscribe, session.snapshot);
   const [revision, setRevision] = useState(0);
+  if (login.status === "signed-in" && !login.account?.canUseRemoteAgents)
+    return (
+      <EmptyState
+        icon={<RobotIcon />}
+        title="Coming soon"
+        description="Builderlab remote agents are not available for your account yet."
+      />
+    );
   return login.status === "signed-in" ? (
     <AgentList
       key={`${login.account?.subject}:${revision}`}
@@ -74,12 +86,18 @@ function AgentList({
   return (
     <section
       data-buzz-ui=""
-      className="mt-6 flex flex-col gap-3"
+      className="mt-section-gap flex flex-col gap-3"
       aria-label="Remote agents"
     >
       <InlineHeader
         title="Remote agents"
         subtitle="Create, edit and delete agents in the Agents tab."
+        actions={
+          <Button variant="ghost" size="sm" loading={loading} onClick={refresh}>
+            <ArrowsClockwiseIcon aria-hidden="true" />{" "}
+            {error ? "Retry" : "Refresh agents"}
+          </Button>
+        }
       />
       {loading && (
         <p role="status" className="text-body-sm text-secondary">
@@ -100,24 +118,24 @@ function AgentList({
         />
       )}
       {agents && agents.length > 0 && (
-        <ul className="flex flex-col gap-3">
-          {agents.map((agent) => (
-            <li key={agent.id} className="flex flex-col gap-1">
-              <div className="text-body-sm text-primary">
-                {agent.name} · {agent.status}
-              </div>
-              <span className="break-all text-mono text-secondary">
-                {agent.pubkey}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <SettingsGroup>
+          <ul className="m-0 list-none p-0">
+            {agents.map((agent) => (
+              <li
+                key={agent.id}
+                className="flex min-w-0 flex-col gap-1 border-b border-line py-4"
+              >
+                <p className="m-0 text-label">
+                  {agent.name} · {agent.status}
+                </p>
+                <span className="break-all text-mono text-muted">
+                  {agent.pubkey}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </SettingsGroup>
       )}
-      <div>
-        <Button variant="outline" loading={loading} onClick={refresh}>
-          {error ? "Retry" : "Refresh agents"}
-        </Button>
-      </div>
     </section>
   );
 }

@@ -22,9 +22,12 @@ import {
 import {
   SidebarIcon,
   ChatCircleIcon,
+  CaretLeftIcon,
+  CaretRightIcon,
 } from "../../shared/design-system/icons/index";
 import type { ConversationExtensions } from "../conversation/contracts";
 import type { Attachment, ChannelMessage } from "../relay/contracts";
+import { safeMessageUrl } from "../relay/message-content";
 import type { RelaySession } from "../relay/session";
 import type { ThreadView } from "../relay/threads";
 import { compareMessages } from "../relay/message-order";
@@ -43,6 +46,7 @@ import { LinkThreadTabContext } from "../conversation/LinkLabelContext";
 
 type MediaReviewViewerProps = {
   attachment: Attachment;
+  initialAttachments?: readonly Attachment[] | undefined;
   extensions?: ConversationExtensions | undefined;
   session: RelaySession;
   scope: string;
@@ -128,14 +132,60 @@ function ResolvedReview({
     if (snapshot?.status === "ready" && snapshot.canLoadMore)
       void view?.loadMore();
   }, [view, snapshot?.status, snapshot?.canLoadMore]);
-  if (threadError) return <ReviewShell {...props} error={threadError} />;
-  if (!view || !snapshot) return <ReviewShell {...props} loading />;
+  const knownRows = [
+    snapshot?.root,
+    snapshot?.target,
+    ...(snapshot?.replies ?? []),
+  ].filter((row): row is ChannelMessage => !!row);
+  const attachmentAvailable = knownRows.some((row) =>
+    row.attachments.some((item) => item.url === props.attachment.url),
+  );
+  const resolved = snapshot?.status === "ready" && !snapshot.error;
+  const invalidated =
+    snapshot?.targetStatus === "unavailable" ||
+    (resolved && (!snapshot.root || !attachmentAvailable)) ||
+    (!!snapshot?.error &&
+      (snapshot.status === "idle" || (snapshot.limited && !knownRows.length)));
+  const authoritative =
+    resolved &&
+    !!snapshot.root &&
+    attachmentAvailable &&
+    snapshot.targetStatus === "ready";
+  // A retry clears the thread's error before it has fresh evidence. Keep an
+  // invalidated viewer closed to its opener's stale media until re-admitted.
+  const [blockedView, setBlockedView] = useState<ThreadView>();
+  if (view && invalidated && blockedView !== view) setBlockedView(view);
+  else if (authoritative && blockedView === view) setBlockedView(undefined);
+  const galleryAttachments = attachmentAvailable
+    ? knownRows.flatMap((row) => row.attachments)
+    : props.initialAttachments;
+  const pendingProps = { ...props, galleryAttachments };
+  if (threadError) return <ReviewShell {...pendingProps} error={threadError} />;
+  if (!view || !snapshot) return <ReviewShell {...pendingProps} loading />;
+  if (invalidated || (blockedView === view && !authoritative))
+    return (
+      <ReviewShell
+        {...props}
+        error={
+          snapshot.error ??
+          (snapshot.root
+            ? "Attachment unavailable."
+            : "Original message unavailable.")
+        }
+        unavailable
+        retry={view.refresh}
+      />
+    );
   if (snapshot.error)
     return (
-      <ReviewShell {...props} error={snapshot.error} retry={view.refresh} />
+      <ReviewShell
+        {...pendingProps}
+        error={snapshot.error}
+        retry={view.refresh}
+      />
     );
   if (snapshot.status === "loading" || snapshot.status === "idle")
-    return <ReviewShell {...props} loading />;
+    return <ReviewShell {...pendingProps} loading />;
   if (!snapshot.root)
     return (
       <ReviewShell
@@ -156,13 +206,6 @@ function ResolvedReview({
     )
     .sort(compareMessages);
   const threadRows = [snapshot.root, ...replies];
-  const attachmentAvailable = threadRows.some((row) =>
-    row.attachments.some((item) => item.url === props.attachment.url),
-  );
-  if (!attachmentAvailable)
-    return (
-      <ReviewShell {...props} error="Attachment unavailable." unavailable />
-    );
   return (
     <ReviewShell
       {...props}
@@ -177,6 +220,7 @@ function ResolvedReview({
 
 function ReviewShell({
   attachment,
+  galleryAttachments = [],
   extensions,
   session,
   scope,
@@ -200,6 +244,7 @@ function ReviewShell({
   selectAttachment,
   selectionRequest,
 }: ActiveReviewProps & {
+  galleryAttachments?: readonly Attachment[] | undefined;
   rootId?: string;
   editMessages?: readonly ChannelMessage[];
   replies?: ReturnType<ThreadView["snapshot"]>["replies"];
@@ -215,9 +260,12 @@ function ReviewShell({
   const sourceUnavailable = useMediaElementSource(
     attachment.kind === "video" ? source : undefined,
   ).unavailable;
-  const mediaTitle =
-    attachment.kind === "video" ? (attachment.name ?? "Video") : "Image";
   const frame = useRef<HTMLElement>(null);
+  const retryThread = () => {
+    // Refresh removes Retry while loading; keep keyboard input in the viewer.
+    frame.current?.focus({ preventScroll: true });
+    void retry?.();
+  };
   const video = useRef<HTMLVideoElement>(null);
   const [commentsChoice, setCommentsOpen] = useState<boolean>();
   const [selectedImageUrl, setSelectedImageUrl] = useState(attachment.url);
@@ -254,16 +302,44 @@ function ReviewShell({
     : [];
   const [currentTime, setCurrentTime] = useState(initialTime);
   const [includeTime, setIncludeTime] = useState(true);
-  const imageAttachments = useMemo(() => {
+  const mediaAttachments = useMemo(() => {
     const seen = new Set<string>();
     return [
+      ...galleryAttachments,
       ...editMessages.flatMap((row) => row.attachments),
       attachment,
     ].filter(
       (item) =>
-        item.kind === "image" && !seen.has(item.url) && !!seen.add(item.url),
+        (item.kind === "image" || item.kind === "video") &&
+        !!safeMessageUrl(item.url) &&
+        !seen.has(item.url) &&
+        !!seen.add(item.url),
     );
-  }, [attachment, editMessages]);
+  }, [attachment, editMessages, galleryAttachments]);
+  const mixedGallery =
+    mediaAttachments.length > 1 &&
+    mediaAttachments.some((item) => item.kind === "video");
+  const displayedAttachment =
+    !mixedGallery && attachment.kind === "image"
+      ? (mediaAttachments.find((item) => item.url === selectedImageUrl) ??
+        attachment)
+      : attachment;
+  const mediaTitle =
+    displayedAttachment.name?.trim() ||
+    (displayedAttachment.kind === "video" ? "Video" : "Image");
+  const mediaIndex = mediaAttachments.findIndex(
+    (item) => item.url === attachment.url,
+  );
+  const navigateMedia = (direction: -1 | 1) => {
+    const next = mediaAttachments[mediaIndex + direction];
+    if (next) {
+      video.current?.pause();
+      // The stage may unmount and an end-arrow may become disabled.
+      // Keep subsequent keyboard events inside the surviving dialog.
+      frame.current?.focus({ preventScroll: true });
+      selectAttachment(next, 0);
+    }
+  };
   const [mediaFailed, setMediaFailed] = useState(false);
   // selectionRequest intentionally re-applies a seek when the same URL/time is selected again.
   useEffect(() => {
@@ -311,18 +387,42 @@ function ReviewShell({
       commentsMotion={commentsMotion}
       restoreFocus={restoreFocus}
       close={close}
+      navigate={mixedGallery ? navigateMedia : undefined}
       actions={
-        <IconButton
-          size="compact"
-          aria-label={commentsOpen ? "Hide comments" : "Show comments"}
-          aria-pressed={commentsOpen}
-          onClick={(event) => {
-            prepareSidebarMotion(event.detail > 0);
-            setCommentsMotion(event.detail > 0);
-            setCommentsOpen(!commentsOpen);
-          }}
-          icon={<SidebarIcon size={20} />}
-        />
+        <>
+          {mixedGallery && (
+            <div className={styles.imageReviewSwitcher}>
+              <IconButton
+                size="compact"
+                aria-label="Previous media"
+                disabled={mediaIndex <= 0}
+                onClick={() => navigateMedia(-1)}
+                icon={<CaretLeftIcon size={20} />}
+              />
+              <span aria-live="polite" aria-atomic="true">
+                {mediaIndex + 1} / {mediaAttachments.length}
+              </span>
+              <IconButton
+                size="compact"
+                aria-label="Next media"
+                disabled={mediaIndex >= mediaAttachments.length - 1}
+                onClick={() => navigateMedia(1)}
+                icon={<CaretRightIcon size={20} />}
+              />
+            </div>
+          )}
+          <IconButton
+            size="compact"
+            aria-label={commentsOpen ? "Hide comments" : "Show comments"}
+            aria-pressed={commentsOpen}
+            onClick={(event) => {
+              prepareSidebarMotion(event.detail > 0);
+              setCommentsMotion(event.detail > 0);
+              setCommentsOpen(!commentsOpen);
+            }}
+            icon={<SidebarIcon size={20} />}
+          />
+        </>
       }
       sidebar={
         <aside
@@ -400,27 +500,37 @@ function ReviewShell({
             ) : (
               <p className={styles.empty} role={error ? "alert" : "status"}>
                 {error ?? "Loading comments…"}
+                {retry && !unavailable && (
+                  <Button size="sm" type="button" onClick={retryThread}>
+                    Retry
+                  </Button>
+                )}
               </p>
             )}
           </div>
         </aside>
       }
     >
-      {!source || unavailable || sourceUnavailable || mediaFailed ? (
+      {(!source &&
+        (attachment.kind === "video" || mediaAttachments.length < 2)) ||
+      unavailable ||
+      sourceUnavailable ||
+      mediaFailed ? (
         <p
           className={styles.mediaReviewUnavailable}
           role={error ? "alert" : "status"}
         >
           {error ?? (loading ? "Loading media…" : "Media unavailable")}
-          {retry && (
-            <Button size="sm" type="button" onClick={() => void retry()}>
+          {retry && unavailable && (
+            <Button size="sm" type="button" onClick={retryThread}>
               Retry
             </Button>
           )}
         </p>
-      ) : attachment.kind === "video" ? (
+      ) : attachment.kind === "video" && source ? (
         <VideoPlayer
           key={source}
+          downloadName={attachment.name ?? ""}
           videoRef={video}
           source={source}
           poster={
@@ -451,8 +561,13 @@ function ReviewShell({
         </VideoPlayer>
       ) : (
         <ImageReviewStage
-          attachments={imageAttachments}
-          selectedUrl={selectedImageUrl}
+          key={mixedGallery ? attachment.url : "images"}
+          attachments={
+            mixedGallery
+              ? [attachment]
+              : mediaAttachments.filter((item) => item.kind === "image")
+          }
+          selectedUrl={mixedGallery ? attachment.url : selectedImageUrl}
           select={setSelectedImageUrl}
           media={session.media}
           onOpenLink={onOpenLink}
@@ -497,7 +612,8 @@ function ReviewComments({
         .ensure(authors.split(":"), "background")
         .catch(() => {});
   }, [session.profiles, authors]);
-  // Comment links stay inert: no host tab opener reaches them behind the review.
+  // Comment links stay inert: no host tab opener reaches them behind the review,
+  // so mentions render as static names.
   return (
     <LinkThreadTabContext value={undefined}>
       <section

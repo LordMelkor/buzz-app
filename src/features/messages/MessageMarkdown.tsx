@@ -7,10 +7,13 @@ import {
   useContext,
   useMemo,
   useState,
+  useSyncExternalStore,
   type ComponentPropsWithoutRef,
+  type ReactElement,
   type ReactNode,
 } from "react";
 import type { RelaySession } from "../relay/session";
+import type { ComposerSession } from "./composer-session";
 import { MessageLink } from "../conversation/MessageLink";
 import { parseBuzzLink } from "../navigation/buzz-links";
 import { messageLinkParts } from "./message-link-parts";
@@ -37,7 +40,16 @@ import Markdown, {
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { remarkSpoilers } from "./remark-spoilers";
-import type { ConversationExtensions } from "../conversation/contracts";
+import type {
+  CodeBlockRenderer,
+  ContributionReader,
+  ConversationExtensions,
+} from "../conversation/contracts";
+import {
+  ContributionBoundary,
+  contributionKey,
+} from "../conversation/ContributionBoundary";
+import { resolveMatch } from "../../plugins/contributions";
 import { InlineText } from "../conversation/InlineText";
 import type { ChannelMessage, Profile } from "../relay/contracts";
 import { emojiMatches, linkPart, messageParts } from "../relay/emoji";
@@ -48,7 +60,9 @@ import {
   isLiteralMarkdownContext,
   prepareMarkdown,
   type LiteralRange,
+  type PreparedMarkdown,
 } from "./markdown-preparation";
+import { writeClipboardText } from "../../shared/clipboard";
 
 type MarkdownNode = {
   type: string;
@@ -289,6 +303,44 @@ function remarkLiteralHtml() {
   };
 }
 
+type HtmlNode = {
+  type: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: HtmlNode[];
+};
+/** Lists and quotes the slot descends into, so their last line keeps it. */
+const editedSlotContainers = new Set(["ul", "ol", "li", "blockquote"]);
+/** Leave a slot after the body's last rendered line for the edited marker:
+ * inside a closing paragraph, list item or quote line, else after the last
+ * block, including generated footnotes. Parses are cached by content alone, so
+ * every body has the slot and rendering decides whether to fill it. */
+function rehypeEditedSlot() {
+  return (tree: HtmlNode) => {
+    let parent = tree;
+    for (;;) {
+      const last = parent.children
+        ?.filter((child) => child.type === "element")
+        .at(-1);
+      if (last?.tagName === "p") parent = last;
+      else if (last && editedSlotContainers.has(last.tagName ?? "")) {
+        parent = last;
+        continue;
+      }
+      break;
+    }
+    parent.children = [
+      ...(parent.children ?? []),
+      {
+        type: "element",
+        tagName: "span",
+        properties: { dataEditedSlot: "" },
+        children: [],
+      },
+    ];
+  };
+}
+
 /** Offer only Markdown prose to profile controls and inline plugins. */
 function remarkInlineContent(protectedContent: ProtectedContent) {
   const restore = (value: string) =>
@@ -389,7 +441,38 @@ const markdownComponents: Components = {
   img: (props) => useMessageComponents().img(props),
   span: (props) => useMessageComponents().span(props),
   pre: (props) => useMessageComponents().pre(props),
+  table: ({ node: _node, ...props }) => (
+    <table ref={observeTableOverflow} {...props} />
+  ),
 };
+
+/** WebKit adds an `overflow-x: auto` scrollbar after flex and grid ancestors
+ * have taken their heights, then lays out only the table again. A scrollbar
+ * that takes space then overlaps the next row, or leaves a gap when removed.
+ * CSS chooses the scrollbar from measured overflow so it is laid out with
+ * the ancestors. Observe content too: edits can change scrollWidth without
+ * resizing a table at its width cap. Measure on mount because the resize
+ * observer's first report arrives after the row's. */
+function observeTableOverflow(table: HTMLTableElement | null) {
+  if (!table || typeof ResizeObserver === "undefined") return;
+  const update = () => {
+    const overflow = String(table.scrollWidth > table.clientWidth);
+    if (table.dataset.overflow !== overflow) table.dataset.overflow = overflow;
+  };
+  update();
+  const observer = new ResizeObserver(update);
+  observer.observe(table);
+  const contentObserver = new MutationObserver(update);
+  contentObserver.observe(table, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+  return () => {
+    observer.disconnect();
+    contentObserver.disconnect();
+  };
+}
 
 export function MessageMarkdown({
   row,
@@ -403,10 +486,11 @@ export function MessageMarkdown({
   participantProfiles,
   largeEmoji = false,
   interactive = true,
+  edited = false,
 }: {
   row: ChannelMessage;
   directory?: typeof emptyReferenceDirectory;
-  session?: RelaySession | undefined;
+  session?: RelaySession | ComposerSession | undefined;
   scope?: string | undefined;
   extensions?: ConversationExtensions | undefined;
   media(url: string): string | undefined;
@@ -415,11 +499,21 @@ export function MessageMarkdown({
   participantProfiles?: ReadonlyMap<string, Profile> | undefined;
   largeEmoji?: boolean | undefined;
   interactive?: boolean;
+  /** Mark the body as replaced by an edit, after its last line. */
+  edited?: boolean | undefined;
 }) {
   const resolveName = useChannelIdentityNames(session, row.channelId);
-  const prepared = useMemo(() => prepareMarkdown(row.content), [row.content]);
+  const prepared = useMemo(
+    () => preparedBodies(row.content, () => prepareMarkdown(row.content)),
+    [row.content],
+  );
   if (prepared.kind === "plain")
-    return <div className={styles.plainText}>{prepared.content}</div>;
+    return (
+      <div className={styles.plainText}>
+        {prepared.content}
+        {edited && <EditedMarker />}
+      </div>
+    );
   return (
     <PreparedMessageMarkdown
       row={row}
@@ -435,8 +529,14 @@ export function MessageMarkdown({
       resolveName={resolveName}
       largeEmoji={largeEmoji}
       interactive={interactive}
+      edited={edited}
     />
   );
+}
+
+/** Metadata, not prose: selection copy omits it like the byline's clock. */
+export function EditedMarker() {
+  return <span className={`${styles.edited} select-none`}> (edited)</span>;
 }
 
 function PreparedMessageMarkdown({
@@ -453,6 +553,7 @@ function PreparedMessageMarkdown({
   resolveName,
   largeEmoji = false,
   interactive = true,
+  edited = false,
 }: Parameters<typeof MessageMarkdown>[0] & {
   prepared: Extract<ReturnType<typeof prepareMarkdown>, { kind: "markdown" }>;
   resolveName: (pubkey: string, fallback: string) => string;
@@ -562,11 +663,7 @@ function PreparedMessageMarkdown({
         (participantProfiles ?? directory.profiles).get(key)?.isAgent);
     const clickable =
       interactive && typeof target === "string" && !!canOpenLink?.(target);
-    if (
-      typeof text === "string" &&
-      typeof target === "string" &&
-      (!interactive || clickable || agent)
-    ) {
+    if (typeof text === "string" && typeof target === "string") {
       const label = key ? resolveName(key, text.slice(1)) : text.slice(1);
       const Icon = agent ? RobotIcon : AtIcon;
       const Mention = clickable ? "button" : "span";
@@ -576,6 +673,7 @@ function PreparedMessageMarkdown({
           type={clickable ? "button" : undefined}
           className={referenceStyles.link}
           data-mention-kind={agent ? "agent" : "person"}
+          data-mention-self={key && key === session?.viewer ? "" : undefined}
           data-profile-target={target}
           data-mention-name={label}
           aria-label={clickable ? `View ${label} profile` : undefined}
@@ -596,13 +694,26 @@ function PreparedMessageMarkdown({
     return undefined;
   };
   const components: MessageComponents = {
-    p: ({ node: _node, ...props }) => (
-      <p
-        {...props}
-        className={largeEmoji ? styles.text : undefined}
-        data-single-emoji={largeEmoji || undefined}
-      />
-    ),
+    p: ({ node, ...props }) => {
+      const first = node?.children[0];
+      const element = first?.type === "element" ? first : undefined;
+      const href = element?.properties.href;
+      const leadingMention =
+        typeof element?.properties["data-profile-target"] === "string" ||
+        (element?.tagName === "a" &&
+          typeof href === "string" &&
+          !!profileKey(href) &&
+          interactive &&
+          !!canOpenLink?.(href));
+      return (
+        <p
+          {...props}
+          className={largeEmoji ? styles.text : undefined}
+          data-single-emoji={largeEmoji || undefined}
+          data-leading-mention={leadingMention || undefined}
+        />
+      );
+    },
     a: ({ href, children }) => {
       if (href && profileKey(href)) {
         const label = labelText(children);
@@ -627,6 +738,7 @@ function PreparedMessageMarkdown({
     img: ({ node: _node, alt }) =>
       alt ? <span className={styles.imageAlt}>{alt}</span> : null,
     span: ({ node: _node, children, ...props }) => {
+      if ("data-edited-slot" in props) return edited ? <EditedMarker /> : null;
       if ((props as Record<string, unknown>)["data-spoiler"] === "true")
         return (
           <MessageSpoiler key={row.content} interactive={interactive}>
@@ -654,14 +766,27 @@ function PreparedMessageMarkdown({
         <span {...props}>{children}</span>
       );
     },
-    pre: ({ node: _node, children, ...props }) => (
-      <pre {...props}>
-        {children}
-        {interactive && (
-          <CopyCodeButton code={labelText(children).replace(/\n$/, "")} />
-        )}
-      </pre>
-    ),
+    pre: ({ node, children, ...props }) => {
+      const code = labelText(children).replace(/\n$/, "");
+      const plain = (
+        <pre {...props}>
+          {children}
+          {interactive && <CodeActions code={code} />}
+        </pre>
+      );
+      const language = codeLanguage(node);
+      // Previews are not interactive, so they keep the plain code.
+      return interactive && language && extensions?.codeBlocks ? (
+        <CodeBlock
+          registry={extensions.codeBlocks}
+          language={language}
+          code={code}
+          fallback={plain}
+        />
+      ) : (
+        plain
+      );
+    },
   };
 
   const markdown = (
@@ -672,26 +797,81 @@ function PreparedMessageMarkdown({
   return largeEmoji ? markdown : <div className={styles.text}>{markdown}</div>;
 }
 
+/** Switching channels remounts every row. Keep recent results so a revisit
+ * does not prepare and parse unchanged bodies again. */
+function recentResults<T>(
+  budget: number,
+  weigh: (key: string, value: T) => number,
+) {
+  const results = new Map<string, Readonly<{ value: T; weight: number }>>();
+  let total = 0;
+  return (key: string, make: () => T) => {
+    let entry = results.get(key);
+    if (entry) results.delete(key);
+    else {
+      const value = make();
+      entry = { value, weight: weigh(key, value) };
+      // Keeping a result heavier than the budget would evict all the others.
+      if (entry.weight > budget) return value;
+      total += entry.weight;
+    }
+    results.set(key, entry);
+    for (const [oldest, { weight }] of results) {
+      if (total <= budget) break;
+      results.delete(oldest);
+      total -= weight;
+    }
+    return entry.value;
+  };
+}
+function elementCount(node: ReactNode): number {
+  if (Array.isArray(node))
+    return node.reduce<number>((sum, child) => sum + elementCount(child), 0);
+  return isValidElement<{ children?: ReactNode }>(node)
+    ? 1 + elementCount(node.props.children)
+    : 0;
+}
+// A prepared body keeps its content and literal ranges: ~200k characters.
+const preparedBodies = recentResults<PreparedMarkdown>(
+  200_000,
+  (content) => 100 + content.length,
+);
+// A parsed body keeps ~2 KB, ~1 KB per element and ~2 bytes per character of
+// its key and text. Dense markup has an element every few characters, so weigh
+// both: ~4 MB in all. The elements depend only on the protected content; their
+// components still read the rendering row's context.
+const parsedBodies = recentResults<ReactElement>(
+  4_000,
+  (key, body) => 2 + elementCount(body) + Math.ceil(key.length / 500),
+);
+
 const MarkdownBody = memo(function MarkdownBody({
   protectedContent,
 }: {
   protectedContent: ProtectedContent;
 }) {
-  return (
-    <Markdown
-      remarkPlugins={[
-        remarkGfm,
-        remarkBreaks,
-        [remarkSpoilers, `<${protectedContent.prefix}spoiler\uE002>`],
-        [remarkInlineContent, protectedContent],
-        remarkLiteralHtml,
-      ]}
-      components={markdownComponents}
-      skipHtml
-      urlTransform={transformUrl}
-    >
-      {protectedContent.content}
-    </Markdown>
+  return parsedBodies(
+    JSON.stringify([
+      protectedContent.content,
+      protectedContent.prefix,
+      protectedContent.parts,
+    ]),
+    // The default export is a hook-free function: calling it keeps its result.
+    () =>
+      Markdown({
+        remarkPlugins: [
+          remarkGfm,
+          remarkBreaks,
+          [remarkSpoilers, `<${protectedContent.prefix}spoiler\uE002>`],
+          [remarkInlineContent, protectedContent],
+          remarkLiteralHtml,
+        ],
+        rehypePlugins: [rehypeEditedSlot],
+        components: markdownComponents,
+        skipHtml: true,
+        urlTransform: transformUrl,
+        children: protectedContent.content,
+      }),
   );
 });
 
@@ -704,7 +884,8 @@ function MessageSpoiler({
 }) {
   const [revealed, setRevealed] = useState(false);
   return (
-    <span className={styles.spoiler} data-revealed={revealed}>
+    // `data-spoiler` is the mark the composer parses; selection copy reads it.
+    <span className={styles.spoiler} data-spoiler="" data-revealed={revealed}>
       {interactive ? (
         <button
           type="button"
@@ -730,12 +911,75 @@ function MessageSpoiler({
   );
 }
 
-function CopyCodeButton({ code }: { code: string }) {
+/** The fence's info-string language, as remark records it on the inner `code`. */
+function codeLanguage(pre: ExtraProps["node"]) {
+  const code = pre?.children[0];
+  if (code?.type !== "element" || code.tagName !== "code") return undefined;
+  const classes = code.properties.className;
+  return Array.isArray(classes)
+    ? classes
+        .map(String)
+        .find((name) => name.startsWith("language-"))
+        ?.slice("language-".length)
+    : undefined;
+}
+
+/** A plugin presents the block and may add an action; the host keeps the frame,
+ * action placement and copy, and restores the plain code when the plugin fails
+ * or is removed. */
+function CodeBlock({
+  registry,
+  language,
+  code,
+  fallback,
+}: {
+  registry: ContributionReader<CodeBlockRenderer>;
+  language: string;
+  code: string;
+  fallback: ReactNode;
+}) {
+  const renderers = useSyncExternalStore(
+    registry.subscribe,
+    registry.snapshot,
+    registry.snapshot,
+  );
+  const renderer = resolveMatch(renderers, language);
+  if (!renderer) return fallback;
+  const { component: Renderer, action: Action } = renderer;
+  return (
+    <ContributionBoundary
+      key={`${contributionKey(renderer)}:${language}:${code}`}
+      fallback={fallback}
+    >
+      {/* Selection copy reads the source here (selection-copy.ts). */}
+      <div
+        className={styles.codeBlock}
+        data-copy-code={code}
+        data-copy-language={language}
+      >
+        <Renderer code={code} language={language} />
+        <CodeActions code={code}>
+          {Action && <Action code={code} language={language} />}
+        </CodeActions>
+      </div>
+    </ContributionBoundary>
+  );
+}
+
+function CodeActions({
+  code,
+  children,
+}: {
+  code: string;
+  children?: ReactNode;
+}) {
   const notify = useToastNotification();
   const [copying, setCopying] = useState(false);
   return (
-    <span className={styles.codeCopy}>
+    <span className={styles.codeActions}>
+      {children}
       <IconButton
+        hint="familiar"
         aria-label="Copy code block"
         title="Copy code block"
         disabled={copying}
@@ -744,7 +988,7 @@ function CopyCodeButton({ code }: { code: string }) {
         onClick={() => {
           setCopying(true);
           void Promise.resolve()
-            .then(() => navigator.clipboard.writeText(code))
+            .then(() => writeClipboardText(code))
             .then(
               () => notify("Copied code to clipboard", "success"),
               () => notify("Failed to copy code", "error"),

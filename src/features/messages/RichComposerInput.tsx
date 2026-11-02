@@ -1,14 +1,15 @@
+import { useGifDraftPreview } from "../../bundled/emoji/GifDraftPreview";
 import { useMentionArchives } from "./use-mention-archives";
-import { useContext } from "react";
+import { useContext, type ReactNode } from "react";
 import { DraftMentionRoster } from "./draft-mention-roster";
 import { archivedMention } from "./mention-admission";
 import { useLayoutEffect, useMemo, useRef } from "react";
-import { useIdentityNames } from "../identity-names/react";
+import { useNamesRevision } from "../identity-names/react";
 import { useListedChannel } from "../relay/listed-channel";
 import { InlineChip } from "../../shared/design-system/ui/InlineChip";
 import type { ConversationExtensions } from "../conversation/contracts";
 import type { CustomEmoji } from "../relay/emoji";
-import type { RelaySession } from "../relay/session";
+import type { ComposerSession } from "./composer-session";
 import { profileKey } from "../profiles/target";
 import { scanMarkdown } from "../relay/message-content";
 import { MessageMarkdown } from "./MessageMarkdown";
@@ -33,56 +34,78 @@ export function RichComposerInput({
   ...input
 }: EditableInputProps & {
   draft: MentionDraft;
-  session: RelaySession;
+  session: ComposerSession;
   scope: string;
   channelId: string;
   extensions: ConversationExtensions | undefined;
   emoji: readonly CustomEmoji[];
 }) {
+  const gifDraftPreview = useGifDraftPreview(extensions?.tools);
   const directory = useReferenceDirectory(session);
   const members = useListedChannel(
     session.channels,
     channelId,
     (channel) => channel?.members,
   );
-  useMentionArchives(session);
-  const roster = useContext(DraftMentionRoster);
-  const profiles = new Map(directory.profiles);
-  for (const recipient of draft.recipients)
-    profiles.set(recipient.pubkey, {
-      ...profiles.get(recipient.pubkey),
-      name: recipient.name,
-    });
-  const resolveName = useIdentityNames(session.names);
-  // Chips name selections among the people who read this destination. Draft
-  // recipients stay in even when archived, so their chips keep a name.
-  const candidates = [
-    ...new Set([
-      ...(roster?.map((p) => p.pubkey) ?? members ?? []).filter(
-        (pubkey) => !archivedMention(session, pubkey),
+  const archives = useMentionArchives(session);
+  const roster = useContext(DraftMentionRoster)?.recipients;
+  // Recipients, not keystrokes, change chip names: typing prose must not
+  // copy every profile or scan every member of a large channel.
+  const recipientKey = JSON.stringify(
+    draft.recipients.map(({ pubkey, name }) => [pubkey, name]),
+  );
+  // Chip labels and facts come from names.lookup.
+  const names = useNamesRevision(session.names, recipientKey !== "[]");
+  const { profiles, qualifiers, labels } = useMemo(() => {
+    void archives;
+    void names;
+    const recipients = JSON.parse(recipientKey) as [string, string][];
+    const profiles = new Map(directory.profiles);
+    for (const [pubkey, name] of recipients)
+      profiles.set(pubkey, { ...profiles.get(pubkey), name });
+    if (!recipients.length)
+      return {
+        profiles,
+        qualifiers: new Map<string, string | undefined>(),
+        labels: new Map<string, string>(),
+      };
+    // Chips name selections among the people who read this destination. Draft
+    // recipients stay in even when archived, so their chips keep a name.
+    const candidates = [
+      ...new Set([
+        ...(roster?.map((p) => p.pubkey) ?? members ?? []).filter(
+          (pubkey) => !archivedMention(session, pubkey),
+        ),
+        ...recipients.map(([pubkey]) => pubkey),
+      ]),
+    ];
+    const displayFacts = recipients
+      .filter(([pubkey]) => !session.names?.lookup(pubkey, candidates))
+      .map(([pubkey, name]) => ({ pubkey, name }));
+    return {
+      profiles,
+      qualifiers: new Map(
+        recipients.map(([pubkey]) => [
+          pubkey,
+          session.names?.lookup(pubkey, candidates, displayFacts)?.qualifier,
+        ]),
       ),
-      ...draft.recipients.map((p) => p.pubkey),
-    ]),
-  ];
-  const displayFacts = draft.recipients
-    .filter((recipient) => !session.names?.lookup(recipient.pubkey, candidates))
-    .map((recipient) => ({
-      pubkey: recipient.pubkey,
-      name: recipient.name,
-    }));
-  const qualifiers = new Map(
-    draft.recipients.map((recipient) => [
-      recipient.pubkey,
-      session.names?.lookup(recipient.pubkey, candidates, displayFacts)
-        ?.qualifier,
-    ]),
-  );
-  const labels = new Map(
-    draft.recipients.map((recipient) => [
-      recipient.pubkey,
-      resolveName(recipient.pubkey, recipient.name, candidates, displayFacts),
-    ]),
-  );
+      labels: new Map(
+        recipients.map(([pubkey, name]) => [
+          pubkey,
+          session.names?.lookup(pubkey, candidates, displayFacts)?.name ?? name,
+        ]),
+      ),
+    };
+  }, [
+    session,
+    directory.profiles,
+    recipientKey,
+    roster,
+    members,
+    archives,
+    names,
+  ]);
   const previous = useRef(labels);
   const revealed = useRef(
     new Set([...qualifiers].filter(([, suffix]) => suffix).map(([key]) => key)),
@@ -118,10 +141,25 @@ export function RichComposerInput({
       : { text: draft.text, protected: [] };
     const { tree, links, tooDeep } = scanMarkdown(context.text);
     const literals: { start: number; end: number }[] = [...context.protected];
+    const gifPreviews = new Map<number, { end: number; content: ReactNode }>();
     const pending = [tree];
     while (pending.length) {
       const node = pending.pop();
       if (!node) continue;
+      if (node.type === "image" && !tooDeep) {
+        const start = node.position?.start.offset;
+        const end = node.position?.end.offset;
+        const content = gifDraftPreview?.(node.url, node.alt, session.media);
+        if (
+          content &&
+          start !== undefined &&
+          end !== undefined &&
+          !context.protected.some(
+            (range) => start < range.end && end > range.start,
+          )
+        )
+          gifPreviews.set(start, { end, content });
+      }
       if (
         [
           "code",
@@ -193,7 +231,7 @@ export function RichComposerInput({
       context.text,
       [],
       profiles,
-      directory.channels,
+      directory.named,
       directory.agents,
     ))
       add(reference.start, reference.end, undefined, true);
@@ -204,9 +242,15 @@ export function RichComposerInput({
     for (const match of context.text.matchAll(/:([a-z0-9_-]{1,64}):/gi))
       if (shortcodes.has(match[1]?.toLowerCase() ?? ""))
         add(match.index, match.index + match[0].length);
+    for (const [start, { end }] of gifPreviews)
+      if (!ranges.some((range) => start < range.end && end > range.start))
+        ranges.push({ start, end });
     const decorations = ranges
       .sort((a, b) => a.start - b.start)
       .map(({ start, end, mention, editAsText }) => {
+        const preview = gifPreviews.get(start);
+        if (preview && preview.end === end && !mention)
+          return { start, end, editAsText: false, content: preview.content };
         const profile = mention ? undefined : profileLinks.get(start);
         const identity = mention ?? profile?.pubkey;
         const label = profile?.label ?? draft.text.slice(start + 1, end);

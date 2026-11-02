@@ -13,6 +13,7 @@ export function NavigationControls({ navigation }: { navigation: Navigation }) {
       aria-label="Navigation history"
     >
       <IconButton
+        hint="familiar"
         type="button"
         variant="ghost"
         aria-label="Go back"
@@ -22,6 +23,7 @@ export function NavigationControls({ navigation }: { navigation: Navigation }) {
         icon={<ArrowLeftIcon size={16} aria-hidden="true" />}
       />
       <IconButton
+        hint="familiar"
         type="button"
         variant="ghost"
         aria-label="Go forward"

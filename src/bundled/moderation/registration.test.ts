@@ -1,9 +1,12 @@
 import { Context } from "@deepseek-ai/cordis";
 import { expect, it, vi } from "vitest";
-import { MEMBERSHIP_SECTION } from "../../features/communities/CommunityRailItem";
+import { MEMBERSHIP_SECTION } from "../../features/communities/CommunityPickerItem";
 import type { RelayData } from "../../features/relay/service";
 import { flush } from "../../features/relay/testing";
 import { SettingsCardsService } from "../../features/settings/service";
+import { createAdminAccess } from "../admin-access";
+import type { CommunityReader } from "../../features/communities/service";
+import type { RelayStaffBackend } from "../../features/relay-staff/contract";
 import { apply, inject } from "./index";
 import manifest from "./manifest.json";
 
@@ -50,7 +53,21 @@ it("registers the Membership card under the key the community rail opens", async
     isActive: () => true,
     subscribe: () => () => {},
   });
-  root.provide("relay", relay());
+  const data = relay();
+  root.provide("relay", data);
+  const access = createAdminAccess(
+    data,
+    {
+      snapshot: () => ({
+        status: "ready",
+        selected: "https://primary.example",
+        viewer: owner,
+      }),
+      subscribe: () => () => {},
+    } as unknown as CommunityReader,
+    { available: false } as RelayStaffBackend,
+  );
+  root.provide("adminAccess", access);
   const cards = new SettingsCardsService(root);
   const releaseVisibility = cards.retainVisibility();
   const fiber = root
@@ -75,4 +92,5 @@ it("registers the Membership card under the key the community rail opens", async
   await fiber.dispose();
   releaseVisibility();
   await root.fiber.dispose();
+  access.dispose();
 });

@@ -1,7 +1,0 @@
-{
-  "id": "buzz.projects",
-  "name": "Projects",
-  "apiVersion": 1,
-  "description": "Browse project work and share issues or pull requests.",
-  "discovery": { "category": "productivity" }
-}

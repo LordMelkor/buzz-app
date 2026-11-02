@@ -58,6 +58,10 @@ test("dragging a group header moves the whole group, keeps its state, and persis
   // A cancelled drag shows its landing edge, then leaves everything unchanged.
   await pull(page, "laptop", "work");
   await expect(laptop).toHaveAttribute("data-section-dragging");
+  await expect(page.locator('[class*="channelDragOverlay"]')).toHaveCSS(
+    "translate",
+    "none",
+  );
   await expect(work).toHaveAttribute("data-drop-edge", "before");
   await expect(work).not.toHaveAttribute("data-drop-target");
   await page.keyboard.press("Escape");
@@ -75,7 +79,29 @@ test("dragging a group header moves the whole group, keeps its state, and persis
   await page.mouse.down();
   await page.mouse.move(x, y - 40, { steps: 4 });
   await expect(laptop).toHaveAttribute("data-section-dragging");
+  await expect(
+    page.locator('[data-sidebar-section="group:missing"]'),
+  ).toHaveAttribute("data-drop-edge", "before");
   await page.mouse.move(x, y, { steps: 4 });
+  // Deliver a click in the drop's event turn, before dnd-kit can remove its
+  // document guard. stopPropagation alone must not toggle the native summary.
+  await header(page, "laptop").evaluate((element) => {
+    element.ownerDocument.addEventListener(
+      "pointerup",
+      () =>
+        element.dispatchEvent(
+          new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            detail: 1,
+          }),
+        ),
+      { once: true },
+    );
+  });
+  // Returning the pointer does not mean dnd-kit has rendered its new target.
+  // Release only after the old neighbour's insertion edge is gone.
+  await expect(page.locator("[data-drop-edge]")).toHaveCount(0);
   await page.mouse.up();
   await expect(page.locator("[data-section-dragging]")).toHaveCount(0);
   await expect(laptop.locator("details")).not.toHaveAttribute("open");
@@ -320,6 +346,10 @@ test("group landing edge follows list order when text size changes during a drag
   await page.evaluate(() => {
     document.documentElement.style.fontSize = "16px";
   });
+  // The pointer is still below the resized groups. Wait for collision geometry
+  // to catch up, or the old marker could satisfy the next assertion before the
+  // move is processed and let the drop race against remeasurement.
+  await expect(missing).not.toHaveAttribute("data-drop-edge");
   const target = await header(page, "missing").boundingBox();
   // The stale initial pixel comparison would now put the line on the wrong side.
   expect(initial.y).toBeGreaterThan(target.y);

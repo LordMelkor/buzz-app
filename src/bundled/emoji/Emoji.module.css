@@ -164,3 +164,28 @@
   height: 3.5rem;
   object-fit: contain;
 }
+
+.emojiBrowseControls {
+  display: grid;
+  gap: var(--space-2);
+  padding-inline: var(--settings-content-inset);
+}
+
+/* Media geometry belongs to the GIF renderer, separate from inline emoji sizes.
+   A GIF is media, not a glyph: it takes its own row, as it does once sent, so
+   surrounding prose and the caret (which WebKit sizes from the line) stay at
+   text height instead of stretching to the GIF. */
+.gifDraftPreview {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-block: var(--space-1);
+}
+.gifDraftPreview > img[data-gif-preview] {
+  display: block;
+  width: auto;
+  height: 8rem;
+  max-width: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-control);
+}

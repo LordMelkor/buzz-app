@@ -1,22 +1,35 @@
 const isWordChar = (char: string | undefined) =>
   /[\p{L}\p{N}]/u.test(char ?? "");
 
-/** How well a label matches typed text: exact, then prefix, then word start,
- * then any substring, then a fuzzy match whose letters each continue a run
- * that began at a word start ("bgp" in "buzz-github-prs"), then any fuzzy
- * match (the letters appear in order). Lower is better; undefined means no
- * match. Ranks are whole numbers, so callers can add fractional tie-breaks.
- * `positions` are the matched code points of the label, for underlining. */
+/** How well a label matches typed text, best first. Ranks are whole numbers,
+ * so callers can order them and add fractional tie-breaks. */
+export const MatchRank = {
+  exact: 0,
+  prefix: 1,
+  /** The text starts a later word. */
+  wordStart: 2,
+  substring: 3,
+  /** Each letter continues a run that began at a word start ("tlp" in
+   * "team-launch-planning"). */
+  wordRuns: 4,
+  /** The letters appear in order. */
+  inOrder: 5,
+} as const;
+export type MatchRank = (typeof MatchRank)[keyof typeof MatchRank];
+
+/** How well a label matches typed text (`MatchRank`), or undefined for no
+ * match. `positions` are the matched code points of the label, for
+ * underlining. */
 export function matchName(
   label: string,
   needle: string,
-): { rank: number; positions: number[] } | undefined {
+): { rank: MatchRank; positions: number[] } | undefined {
   const text = label.toLowerCase();
   const chars = [...text];
   // Lowercasing can change a label's length (İ → i̇). Rank it, but do not
   // underline positions that would land on the wrong letters.
   const aligned = chars.length === [...label].length;
-  const found = (rank: number, positions: number[]) => ({
+  const found = (rank: MatchRank, positions: number[]) => ({
     rank,
     positions: aligned ? positions : [],
   });
@@ -24,21 +37,29 @@ export function matchName(
     const from = [...text.slice(0, at)].length;
     return Array.from({ length: [...needle].length }, (_, n) => from + n);
   };
-  if (text === needle) return found(0, run(0));
+  if (text === needle) return found(MatchRank.exact, run(0));
   let substring: number | undefined;
   for (
     let at = text.indexOf(needle);
     at >= 0;
     at = text.indexOf(needle, at + 1)
   ) {
-    if (at === 0) return found(1, run(0));
-    if (!isWordChar(text[at - 1])) return found(2, run(at));
+    if (at === 0) return found(MatchRank.prefix, run(0));
+    if (!isWordChar(text[at - 1])) return found(MatchRank.wordStart, run(at));
     substring ??= at;
   }
-  if (substring !== undefined) return found(3, run(substring));
+  if (substring !== undefined)
+    return found(MatchRank.substring, run(substring));
   // Spaces in typed text only separate words; they need not match.
   const letters = [...needle.replace(/\s+/g, "")];
   if (!letters.length) return undefined;
+  // Letters in order, the loosest rank. Without them nothing below matches,
+  // so a name that misses skips the word-run search.
+  const inOrder: number[] = [];
+  chars.forEach((char, j) => {
+    if (char === letters[inOrder.length]) inOrder.push(j);
+  });
+  if (inOrder.length < letters.length) return undefined;
   // Can letters[i..] match chars[j..] with every run starting at a word start?
   // `inRun` means the previous letter matched chars[j - 1].
   const memo = new Map<number, boolean>();
@@ -67,13 +88,9 @@ export function matchName(
         i += 1;
       }
     }
-    return found(4, positions);
+    return found(MatchRank.wordRuns, positions);
   }
-  const positions: number[] = [];
-  chars.forEach((char, j) => {
-    if (char === letters[positions.length]) positions.push(j);
-  });
-  return positions.length === letters.length ? found(5, positions) : undefined;
+  return found(MatchRank.inOrder, inOrder);
 }
 
 export const matchRank = (label: string, needle: string) =>

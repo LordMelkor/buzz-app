@@ -50,6 +50,32 @@
     @apply text-body-sm;
     color: var(--text-danger);
   }
+  /* A Field's error opens in place of the field gap: its row grows from
+     nothing as the gap returns, so the container grows and content below
+     slides while the text fades in, the arrive-grow recipe's settle timing. */
+  .buzz-field-error-track {
+    display: grid;
+    grid-template-rows: 1fr;
+  }
+  .buzz-field-error-track > .buzz-field-error {
+    min-height: 0;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .buzz-field-error-track {
+      animation: buzz-field-error-open var(--duration-settle)
+        var(--easing-settle);
+    }
+    .buzz-field-error-track > .buzz-field-error {
+      animation: buzz-arrive-reveal var(--duration-settle) var(--easing-settle);
+    }
+  }
+  @keyframes buzz-field-error-open {
+    from {
+      grid-template-rows: 0fr;
+      margin-top: calc(-1 * var(--space-2));
+      opacity: 0;
+    }
+  }
   .buzz-input,
   .buzz-textarea {
     @apply text-body;
@@ -111,7 +137,16 @@
   .buzz-textarea:is([data-invalid], [aria-invalid="true"]) {
     --border: var(--border-danger);
   }
+  /* Borderless titles have no perimeter to stroke; their message carries
+     validation. Keyboard focus still draws its cue. */
+  .buzz-input:is([data-appearance="title"], [data-appearance="heading"]):is(
+    [data-invalid],
+    [aria-invalid="true"]
+  ) {
+    --border: transparent;
+  }
   .buzz-input:disabled,
+  .buzz-input[aria-disabled="true"],
   .buzz-textarea:disabled {
     color: var(--text-unavailable);
     background: var(--affordance-disabled);
@@ -121,6 +156,9 @@
     display: grid;
     gap: var(--space-3);
   }
+  .buzz-radio-group[data-size="sm"] {
+    gap: 0;
+  }
   .buzz-choice {
     display: flex;
     align-items: center;
@@ -128,12 +166,22 @@
     min-height: var(--size-control);
     cursor: pointer;
   }
-  .buzz-choice[data-variant="card"] {
+  .buzz-choice > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .buzz-choice[data-size="sm"] {
+    min-height: var(--size-control-sm);
+    gap: var(--space-2);
+  }
+  .buzz-choice:is([data-variant="card"], [data-variant="tile"]) {
     padding: var(--space-4);
     border: 1px solid var(--border-standard);
     border-radius: var(--radius-control);
   }
-  .buzz-choice[data-variant="card"]:has([data-checked]) {
+  .buzz-choice:is([data-variant="card"], [data-variant="tile"]):has(
+    [data-checked]
+  ) {
     border-color: var(--interaction-border);
     --text-subtle: var(--interaction-selected-text);
     background: var(--interaction-selected);
@@ -154,13 +202,18 @@
     flex-shrink: 0;
     border: 1px solid var(--interaction-border);
     background: var(--surface-panel);
-    color: var(--text-inverse);
+    color: var(--text-on-prominent);
   }
   .buzz-radio {
     border-radius: var(--radius-pill);
   }
   .buzz-checkbox {
     border-radius: var(--space-1);
+  }
+  .buzz-radio[data-size="sm"],
+  .buzz-checkbox[data-size="sm"] {
+    width: var(--space-4);
+    height: var(--space-4);
   }
   .buzz-radio[data-checked],
   .buzz-checkbox:is([data-checked], [data-indeterminate]) {
@@ -171,12 +224,31 @@
     width: var(--space-2);
     height: var(--space-2);
     border-radius: var(--radius-pill);
-    background: var(--text-inverse);
+    background: var(--text-on-prominent);
   }
   .buzz-radio[data-disabled],
   .buzz-checkbox[data-disabled] {
     background: var(--affordance-disabled);
     color: var(--text-unavailable);
+  }
+  /* Text-only choices retain a full-tile radio hit target and focus ring. */
+  .buzz-choice[data-variant="tile"] {
+    min-height: var(--size-control-lg);
+    padding-block: max(
+      var(--space-1),
+      calc((var(--size-control-lg) - 1lh - 2px) / 2)
+    );
+    position: relative;
+    justify-content: center;
+  }
+  .buzz-radio[data-variant="tile"] {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
   }
   html[data-keyboard-navigation]
     :is(
@@ -224,6 +296,26 @@
   .buzz-select-leading {
     display: flex;
     flex: none;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--space-5);
+    block-size: var(--space-5);
+  }
+  .buzz-select[data-appearance="link"] .buzz-button {
+    @apply text-body-sm;
+    align-items: flex-end;
+    min-height: var(--space-6);
+    padding: 0;
+  }
+  /* Artwork provides its own visual inset; keep its edge closer to the frame. */
+  .buzz-select .buzz-button:has(.buzz-select-leading),
+  .buzz-select .buzz-select-trigger:has(.buzz-select-leading) {
+    padding-inline-start: var(--space-2);
+  }
+  /* Give the trailing caret more breathing room than the leading artwork. */
+  .buzz-select[data-variant="compact"]:not([data-appearance="link"])
+  .buzz-button:has(.buzz-select-leading) {
+    padding-inline-end: var(--space-3);
   }
   .buzz-select-value {
     min-width: 0;
@@ -252,7 +344,8 @@
     max-width: 100%;
     color: var(--text-standard);
   }
-  .buzz-select[data-variant="compact"] .buzz-button:disabled {
+  .buzz-select[data-variant="compact"]
+    .buzz-button:is(:disabled, [data-disabled]):not([data-loading]) {
     color: var(--text-unavailable);
   }
   .buzz-select[data-variant="compact"] .buzz-button-label {
@@ -333,6 +426,11 @@
   .buzz-select-value[data-placeholder] {
     color: var(--text-metadata);
   }
+  .buzz-select
+    :is(:disabled, [data-disabled])
+    .buzz-select-value[data-placeholder] {
+    color: inherit;
+  }
 
   .buzz-input-group {
     display: flex;
@@ -370,7 +468,7 @@
   }
   .buzz-input-trailing {
     display: flex;
-    width: var(--size-control-sm);
+    min-width: var(--size-control-sm);
     flex-shrink: 0;
   }
   .buzz-input-group:has(input:is([data-invalid], [aria-invalid="true"])) {
@@ -521,7 +619,7 @@
   }
   .buzz-calendar .rdp-selected .rdp-day_button {
     background: var(--affordance-prominent);
-    color: var(--text-inverse);
+    color: var(--text-on-prominent);
   }
   .buzz-calendar button:disabled {
     color: var(--text-unavailable);

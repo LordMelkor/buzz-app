@@ -102,6 +102,7 @@ export function ComposerFormattingTools({
   const faded = { opacity: 0, scale: instant ? 1 : 0.95 };
   const formatToggle = (
     <IconButton
+      hint="familiar"
       ref={closedToggle}
       size="sm"
       variant="ghost"
@@ -138,6 +139,7 @@ export function ComposerFormattingTools({
               transition={transition}
             >
               <IconButton
+                hint="familiar"
                 ref={openToggle}
                 size="sm"
                 variant="subtle"
@@ -175,6 +177,7 @@ export function ComposerFormattingTools({
                   const apple = isApplePlatform(navigator.platform);
                   return (
                     <IconButton
+                      hint={binding ? "familiar" : "helpful"}
                       key={label}
                       size="sm"
                       aria-label={label}
@@ -226,10 +229,10 @@ export function ComposerFormattingTools({
             >
               {formatToggle}
             </motion.div>
+            {trailing}
           </ToolGroup>
         )}
       </AnimatePresence>
-      {trailing && !open && <div className={styles.trailing}>{trailing}</div>}
     </div>
   );
 }

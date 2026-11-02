@@ -3,22 +3,34 @@ import { schnorr } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "nostr-tools/utils";
 import { afterEach, expect, it, vi } from "vitest";
 import type { BuzzClient } from "../../buzz-mcp/client";
+import { appClient } from "../../buzz-mcp/app-client";
 import { callTool } from "../../buzz-mcp/tools";
 import { createAgentMemories } from "../../features/agents/memory";
+import { pubkeyOf } from "../../features/agents/membership";
 import { ownerReads } from "../../features/agents/reads";
-import type { Agent, Delivery } from "../../features/agents/service";
+import { localStore } from "../../features/agents/state";
+import type {
+  Agent,
+  AgentHandle,
+  Delivery,
+} from "../../features/agents/service";
 import type { Host } from "../../features/host/service";
-import type { EventData, RelayEvent } from "../../features/relay/events";
+import type {
+  EventData,
+  RelayEvent,
+  ReadFilter,
+} from "../../features/relay/events";
 import { eventDto } from "../../features/relay/events";
 import { keypair, signed } from "../../features/relay/testing";
 import type { RelayData } from "../../features/relay/service";
 import type { MemoryEntry } from "../../features/agents/memory";
 import { type FakeClaude, fakeSpawn, flush } from "./claude-testing";
-import { TOP_LEVEL_PROMPT } from "../../buzz-mcp/prompt";
+import { RESUMED_PROMPT, TOP_LEVEL_PROMPT } from "../../buzz-mcp/prompt";
 import { ClaudeRuntime, config, DEFAULT_CONFIG, modelName } from "./runtime";
 import type { AddedTool } from "../../buzz-mcp/session-tools";
-import { localSessions } from "./sessions";
+import { AgentSessions, localSessions } from "./sessions";
 import { wake } from "../../features/agent-harness/wakes";
+import { workspaceCanvas } from "../../features/solo/workspace";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -50,11 +62,15 @@ function setup(
     starting?: Promise<void>;
     workflowAuthority?: string;
     signal?: AbortSignal;
-    /** Channels filed in the owner's Me; the owner is the viewer. */
-    me?: Set<string>;
-    channelType?: "stream" | "session";
+    /** Channels that are the owner's own Solo chats; the owner is the viewer. */
+    solo?: Set<string>;
+    /** Solo chats the owner's device is still creating. */
+    pending?: Set<string>;
     named?: Delivery["named"];
     title?: string;
+    /** The channel's Canvas, as it reads now. */
+    canvas?: { content: string; pubkey?: string };
+    repositories?: (scope: string | undefined) => string;
   }> = {},
 ) {
   const fake = fakeSpawn();
@@ -80,7 +96,7 @@ function setup(
     return process;
   };
   const host = { spawn, request: vi.fn() } as unknown as Host;
-  const read = vi.fn(async () => thread);
+  const read = vi.fn(async (_filters: readonly ReadFilter[]) => thread);
   const memoryRead = vi.fn(async () => ({
     entries: [] as readonly MemoryEntry[],
     partial: false,
@@ -95,9 +111,9 @@ function setup(
           {
             id: channel,
             name: "general",
-            channelType:
-              options.channelType ?? (options.me ? "session" : "stream"),
+            channelType: options.solo?.has(channel) ? "solo" : "stream",
             members: [],
+            ...(options.pending?.has(channel) ? { pending: true } : {}),
           },
         ],
       }),
@@ -110,25 +126,39 @@ function setup(
       snapshot: () => new Map(),
       event: vi.fn((_key: string): RelayEvent | undefined => undefined),
     },
-    mePlacement: {
-      state: { status: "ready" } as { status: string; error?: string },
-      snapshot: () => session.mePlacement.state,
-      refresh: vi.fn(async () => {}),
-      has: (id: string) => !!options.me?.has(id),
+    channelWrites: { startingCanvas: () => undefined },
+    canvas: {
+      available: !!options.canvas,
+      read: vi.fn(
+        async () =>
+          options.canvas && {
+            pubkey: alice,
+            kind: 40100,
+            created_at: 100,
+            tags: [["h", channel]],
+            ...options.canvas,
+          },
+      ),
     },
   };
   const relay = {
-    snapshot: () => ({ status: "ready", session, viewer: alice }),
+    snapshot: () => ({
+      status: "ready",
+      session,
+      viewer: alice,
+      scope: `https://agent.example:${alice}`,
+    }),
   } as unknown as RelayData;
   const data = new Map<string, string>();
-  const storage = {
+  const storage = localStore({
     getItem: (key: string) => data.get(key) ?? null,
     setItem: (key: string, value: string) => void data.set(key, value),
-  } as Storage;
+    removeItem: (key: string) => void data.delete(key),
+  } as Storage);
   // The host's copy of `core` memory, which needs no relay read.
   const core = vi.fn(
     async (
-      _pubkey: string,
+      _key: string,
       _signal?: AbortSignal,
     ): Promise<string | null | undefined> => null,
   );
@@ -136,11 +166,12 @@ function setup(
   const added: AddedTool[] = [];
   const runtime = new ClaudeRuntime(
     host,
-    (pubkey) => ownerReads(relay, pubkey),
+    (key) => ownerReads(relay, pubkeyOf(key)),
     core,
     storage,
     config,
     () => added,
+    options.repositories,
   );
   const published: { kind: number; content: string; tags: string[][] }[] = [];
   const publish = vi.fn(async (template: (typeof published)[number]) => {
@@ -152,6 +183,7 @@ function setup(
   });
   const query = vi.fn(async () => [] as RelayEvent[]);
   const agent = {
+    key: self,
     pubkey: self,
     name: "Claude",
     owner: alice,
@@ -177,13 +209,21 @@ function setup(
     },
   };
   const workingUntil = vi.fn<Delivery["workingUntil"]>();
+  const interruptible = vi.fn<NonNullable<Delivery["interruptible"]>>();
   const attention = { on: true };
   // Slugs the host would no longer run, as when a watch was tightened.
   const stale = new Set<string>();
   // What the host holds: a delivered watch or timer, and its Interest.
   const objects = new Map<string, Record<string, unknown>>();
-  const deliver = (trigger: Delivery["trigger"]) => {
-    if (trigger.type !== "mention") {
+  const deliver = (
+    trigger: Delivery["trigger"],
+    picks: Partial<Delivery> = {},
+  ) => {
+    if (
+      trigger.type !== "mention" &&
+      trigger.type !== "plugin" &&
+      trigger.type !== "attention"
+    ) {
       const value = trigger.type === "timer" ? trigger.timer : trigger.watch;
       objects.set(trigger.slug, {
         ...value,
@@ -201,15 +241,24 @@ function setup(
       config: DEFAULT_CONFIG,
       signal,
       workingUntil,
+      interruptible,
       ...(options.named ? { named: options.named } : {}),
+      ...picks,
       // The host's answer, as it is when asked.
       current: () =>
         trigger.type === "mention" ||
+        trigger.type === "plugin" ||
+        trigger.type === "attention" ||
         (attention.on &&
           objects.get(trigger.slug)?.enabled === true &&
           !stale.has(trigger.slug)),
     } as unknown as Delivery;
-    if (trigger.type === "mention") return runtime.run(delivery);
+    if (
+      trigger.type === "mention" ||
+      trigger.type === "plugin" ||
+      trigger.type === "attention"
+    )
+      return runtime.run(delivery);
     // A watch or timer, as the agent runner hands it over: a standalone turn
     // in its Interest's lane, which the runner holds.
     workingUntil(
@@ -228,7 +277,6 @@ function setup(
     runtime,
     added,
     deliver,
-    placement: session.mePlacement,
     published,
     claudes,
     fake,
@@ -238,6 +286,7 @@ function setup(
     data,
     agent,
     workingUntil,
+    interruptible,
     attention,
     objects,
     stale,
@@ -248,11 +297,11 @@ function setup(
 it("names each saved session's channel as the community lists it", () => {
   const { runtime, data } = setup();
   const saved = localSessions(
-    {
+    localStore({
       getItem: (key: string) => data.get(key) ?? null,
       setItem: (key: string, value: string) => void data.set(key, value),
       removeItem: (key: string) => void data.delete(key),
-    } as Storage,
+    } as Storage),
     self,
   );
   saved.set(channel, { id: "s1", seen: 100, at: 5 });
@@ -264,6 +313,7 @@ it("names each saved session's channel as the community lists it", () => {
       sessionId: "s1",
       channelId: channel,
       name: "general",
+      channelType: "stream",
       at: 5,
     },
     {
@@ -298,11 +348,182 @@ it("hands a mention to its thread's session", async () => {
     `Alice (${alice}) (1970-01-01T00:01:40.000Z): Build is red`,
   );
   expect(prompt).toContain("Content: @Claude can you look?");
+  expect(prompt).not.toContain(RESUMED_PROMPT);
   // The process holds no key: it acts through the tools.
   expect(claude?.options).not.toHaveProperty("agent");
   expect(claude?.options.args).toContain("--mcp-config");
   expect(claude?.options.cwd).toBe("~/.buzz");
   expect(published).toEqual([]);
+});
+
+it("tells a subscriber when a new conversation's first turn starts working", async () => {
+  const { runtime, deliver, claudes } = setup([], { hold: true });
+  // As a view does: each notification reads the snapshot again.
+  runtime.subscribe(() => void runtime.sessions(self));
+  expect(runtime.sessions(self)).toEqual([]);
+  await deliver({ type: "mention", event: message("1", "@Claude hi") });
+  await flush(10);
+  const claude = claudes().find((process) => process.prompts.length);
+  expect(claude?.prompts).toHaveLength(1);
+  expect(runtime.sessions(self)).toMatchObject([{ busy: true }]);
+  claude?.finish();
+  await flush(10);
+  expect(runtime.sessions(self)).toMatchObject([{ busy: false }]);
+});
+
+it("keeps one agent's memberships in two communities apart", async () => {
+  const other = `${self}@other.example`;
+  const { runtime, deliver, claudes, agent } = setup([], { hold: true });
+  runtime.sync([
+    { key: self, pubkey: self, config: DEFAULT_CONFIG },
+    { key: other, pubkey: self, config: DEFAULT_CONFIG },
+  ] as Agent[]);
+  await deliver({ type: "mention", event: message("1", "@Claude hi") });
+  await deliver(
+    { type: "mention", event: message("2", "@Claude hi") },
+    { agent: { ...agent, key: other } as unknown as Delivery["agent"] },
+  );
+  await flush(10);
+  expect(runtime.sessions(self)).toMatchObject([{ busy: true }]);
+  expect(runtime.sessions(other)).toMatchObject([{ busy: true }]);
+  const prompts = claudes().flatMap((process) => process.prompts);
+  expect(prompts).toHaveLength(2);
+  expect(
+    prompts.filter((text) => text.includes(`Agent: ${self}\n`)),
+  ).toHaveLength(1);
+  expect(
+    prompts.filter((text) => text.includes(`Agent: ${other}\n`)),
+  ).toHaveLength(1);
+  // Leaving one community stops only that membership's session.
+  runtime.sync([
+    { key: self, pubkey: self, config: DEFAULT_CONFIG },
+  ] as Agent[]);
+  expect(runtime.sessions(other)).toEqual([]);
+  expect(runtime.sessions(self)).toMatchObject([{ busy: true }]);
+});
+
+it("hands the host a stopper that interrupts the mention's running turn", async () => {
+  const { deliver, claudes, interruptible } = setup([], { hold: true });
+  await deliver({ type: "mention", event: message("1", "@Claude hi") });
+  await flush(10);
+  const claude = claudes().find((process) => process.prompts.length);
+  expect(interruptible).toHaveBeenCalledTimes(1);
+  const stop = interruptible.mock.calls[0]?.[0];
+  if (!stop) throw new Error("no stopper");
+  const interrupts = () =>
+    claude?.received.filter(
+      (item) =>
+        item.type === "control_request" &&
+        (item.request as { subtype?: string }).subtype === "interrupt",
+    );
+  expect(interrupts()).toEqual([]);
+  await stop();
+  expect(interrupts()).toHaveLength(1);
+  claude?.finish();
+  await flush(10);
+});
+
+it("tells a turn a reload stopped to carry on where it left off", async () => {
+  const mention = message("2", "@Claude fix the build", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const { deliver, claudes } = setup([mention]);
+  await deliver({ type: "mention", event: mention, resumed: true });
+  await flush(10);
+  const prompt =
+    claudes().find((process) => process.prompts.length)?.prompts[0] ?? "";
+  expect(prompt).toContain("Content: @Claude fix the build");
+  expect(prompt).toContain(RESUMED_PROMPT);
+});
+
+it("ends a turn's prompt with the notes plugins left for it in its channel", async () => {
+  const mention = message("2", "@Claude go on", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const { deliver, claudes, agent } = setup([mention]);
+  const notes = vi.fn((at: string) =>
+    at === channel ? ["(I interrupted your reply)"] : [],
+  );
+  await deliver({ type: "mention", event: mention }, {
+    agent: { ...agent, notes },
+  } as unknown as Partial<Delivery>);
+  await flush(10);
+  const prompt =
+    claudes().find((process) => process.prompts.length)?.prompts[0] ?? "";
+  expect(prompt).toMatch(/\n\n\(I interrupted your reply\)\n\n<attention>/);
+  expect(notes).toHaveBeenCalledOnce();
+  expect(notes).toHaveBeenCalledWith(channel, mention.id);
+});
+
+it("keeps the notes of a turn Claude never started for the next, ahead of newer ones", async () => {
+  const mention = message("2", "@Claude go on", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const { deliver, agent } = setup([mention]);
+  const pending: Record<string, string[]> = {
+    [channel]: ["(I interrupted your reply)"],
+  };
+  const notes = vi.fn((at: string) => (pending[at] ?? []).splice(0));
+  const restoreNotes = vi.fn((at: string, kept: readonly string[]) => {
+    pending[at] = [...kept, ...(pending[at] ?? [])];
+  });
+  vi.spyOn(AgentSessions.prototype, "deliver").mockImplementationOnce(
+    async () => {
+      pending[channel] = ["(newer)"];
+      return { ok: false, error: "Claude could not start", undelivered: true };
+    },
+  );
+  await deliver({ type: "mention", event: mention }, {
+    agent: { ...agent, notes, restoreNotes },
+  } as unknown as Partial<Delivery>);
+  await flush(10);
+  expect(pending[channel]).toEqual(["(I interrupted your reply)", "(newer)"]);
+});
+
+it("hands a turn the notes plugins left while it was being prepared", async () => {
+  const mention = message("2", "@Claude go on", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+      ["e", "d".repeat(64), "", "reply"],
+    ],
+  });
+  const { deliver, claudes, agent, read } = setup([mention]);
+  const pending: Record<string, string[]> = {};
+  const notes = vi.fn((at: string) => (pending[at] ?? []).splice(0));
+  let release!: () => void;
+  const reading = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  read.mockImplementationOnce(async () => {
+    await reading;
+    return [mention];
+  });
+  const done = deliver({ type: "mention", event: mention }, {
+    agent: { ...agent, notes },
+  } as unknown as Partial<Delivery>);
+  await vi.waitFor(() => expect(read).toHaveBeenCalled());
+  pending[channel] = ["(I interrupted your reply)"];
+  pending.elsewhere = ["(not for this turn)"];
+  release();
+  await done;
+  await flush(10);
+  const prompt =
+    claudes().find((process) => process.prompts.length)?.prompts[0] ?? "";
+  expect(prompt).toMatch(/\n\n\(I interrupted your reply\)\n\n<attention>/);
+  expect(pending).toEqual({
+    [channel]: [],
+    elsewhere: ["(not for this turn)"],
+  });
 });
 
 const EFFORTS = [
@@ -330,7 +551,7 @@ it("knows the agent's own model once one of its sessions has begun", async () =>
 });
 it("discovers models and effort without a turn or retaining a per-agent spare", async () => {
   const { runtime, claudes } = setup();
-  runtime.sync([{ pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
   try {
     expect(await runtime.models(self)).toEqual({
       current: "opus",
@@ -356,7 +577,7 @@ it("discovers models and effort without a turn or retaining a per-agent spare", 
 it("still offers a configured model Claude does not list", async () => {
   const { runtime } = setup();
   const config = { ...DEFAULT_CONFIG, model: "claude-sonnet-9-9" };
-  runtime.sync([{ pubkey: self, config } as Agent]);
+  runtime.sync([{ key: self, pubkey: self, config } as Agent]);
   try {
     const { current, models } = await runtime.models(self);
     expect(current).toBe("claude-sonnet-9-9");
@@ -380,7 +601,7 @@ it("runs a mention on the model and effort its delivery picked", async () => {
     ],
   });
   const { runtime, claudes, agent } = setup([mention]);
-  runtime.sync([{ pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
   expect((await runtime.models(self)).current).toBe("opus");
   await runtime.run({
     trigger: { type: "mention", event: mention },
@@ -397,6 +618,175 @@ it("runs a mention on the model and effort its delivery picked", async () => {
   expect(claude?.models).toEqual(["haiku"]);
   expect(claude?.efforts).toEqual(["low"]);
   expect((await runtime.models(self)).current).toBe("opus");
+  runtime.dispose();
+});
+it("refuses a synced effort its model lacks, but lets a busy turn take a steer", async () => {
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const reply = message("3", "@Claude also", {
+    tags: [
+      ["h", channel],
+      ["e", root.id, "", "reply"],
+      ["p", self],
+    ],
+  });
+  const { runtime, claudes, agent } = setup([root, reply], { hold: true });
+  const config = { ...DEFAULT_CONFIG, model: "haiku", effort: "medium" };
+  runtime.sync([{ pubkey: self, config } as Agent]);
+  const settled: Promise<unknown>[] = [];
+  const run = (event: typeof root, synced?: Record<string, string>) =>
+    runtime.run({
+      trigger: { type: "mention", event },
+      channelId: channel,
+      agent,
+      config,
+      ...(synced ? { synced } : {}),
+      signal: new AbortController().signal,
+      workingUntil: (done: Promise<unknown>) => settled.push(done),
+    } as unknown as Delivery);
+  const prompts = () =>
+    claudes().reduce((sum, process) => sum + process.prompts.length, 0);
+  await run(root, { effort: "medium" });
+  await flush(10);
+  expect(prompts()).toBe(0);
+  await expect(settled[0]).resolves.toMatchObject({
+    ok: false,
+    error:
+      "This agent's synced effort \"medium\" isn't offered by Haiku 5.5. Change it in Settings.",
+  });
+  // A local effort runs; a synced follow-up then steers the busy process,
+  // which keeps the settings it started on.
+  await run(root);
+  await flush(10);
+  expect(prompts()).toBe(1);
+  await run(reply, { effort: "medium" });
+  await flush(10);
+  expect(prompts()).toBe(2);
+  runtime.dispose();
+});
+it("checks a synced effort when a saved session resumes or a folder change relaunches it", async () => {
+  const mention = (id: string, resumed?: boolean) => ({
+    type: "mention" as const,
+    event: message(id, "@Claude go", {
+      tags: [
+        ["h", channel],
+        ["p", self],
+      ],
+    }),
+    ...(resumed ? { resumed } : {}),
+  });
+  const canvas = { content: workspaceCanvas({ folders: ["~/a"], canvas: "" }) };
+  const { deliver, claudes, runtime, workingUntil } = setup([], {
+    solo: new Set([channel]),
+    canvas,
+  });
+  const config = { ...DEFAULT_CONFIG, model: "haiku", effort: "medium" };
+  runtime.sync([{ pubkey: self, config } as Agent]);
+  const synced = { config, synced: { effort: "medium" } };
+  const prompts = () =>
+    claudes().reduce((sum, process) => sum + process.prompts.length, 0);
+  const refused = async (index: number) =>
+    expect(workingUntil.mock.calls[index]?.[0]).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('synced effort "medium"'),
+    });
+  // A turn a reload stopped resumes its saved session only if admitted.
+  await deliver(mention("1", true), synced);
+  await flush(10);
+  await refused(0);
+  expect(prompts()).toBe(0);
+  await deliver(mention("2"), { config });
+  await flush(10);
+  expect(prompts()).toBe(1);
+  // New folders relaunch the idle session, which is checked like a start.
+  canvas.content = workspaceCanvas({ folders: ["~/b"], canvas: "" });
+  await deliver(mention("3"), synced);
+  await flush(10);
+  await refused(2);
+  expect(prompts()).toBe(1);
+  runtime.dispose();
+});
+it("refuses a synced effort it can't confirm, keeping the saved session for the next turn", async () => {
+  const event = (id: string) =>
+    message(id, "@Claude go", {
+      tags: [
+        ["h", channel],
+        ["p", self],
+      ],
+    });
+  const { runtime, claudes, agent } = setup([], { solo: new Set([channel]) });
+  const settled: Promise<unknown>[] = [];
+  const run = (id: string, model: string, synced?: string) => {
+    const config = { ...DEFAULT_CONFIG, model, effort: synced ?? "" };
+    runtime.sync([{ pubkey: self, config } as Agent]);
+    return runtime.run({
+      trigger: { type: "mention", event: event(id) },
+      channelId: channel,
+      agent,
+      config,
+      ...(synced ? { synced: { effort: synced } } : {}),
+      signal: new AbortController().signal,
+      workingUntil: (done: Promise<unknown>) => settled.push(done),
+    } as unknown as Delivery);
+  };
+  const prompted = () => claudes().filter((process) => process.prompts.length);
+  await run("1", "opus");
+  await flush(10);
+  expect(prompted()).toHaveLength(1);
+  // A model that takes no effort, and one Claude doesn't list, are refused.
+  await run("2", "legacy", "low");
+  await flush(10);
+  await expect(settled[1]).resolves.toMatchObject({
+    ok: false,
+    error: expect.stringContaining("isn't offered by Legacy 1"),
+  });
+  await run("3", "claude-sonnet-9-9", "low");
+  await flush(10);
+  await expect(settled[2]).resolves.toMatchObject({
+    ok: false,
+    error: expect.stringContaining("Couldn't check that Sonnet 9.9 offers"),
+  });
+  expect(prompted()).toHaveLength(1);
+  // The next valid turn resumes the conversation the refusals left alone.
+  await run("4", "haiku", "low");
+  await flush(10);
+  expect(prompted()).toHaveLength(2);
+  const arg = (
+    process: ReturnType<typeof claudes>[number] | undefined,
+    flag: string,
+  ) => {
+    const args = process?.options.args ?? [];
+    return args[args.indexOf(flag) + 1];
+  };
+  expect(arg(prompted()[1], "--resume")).toBe(
+    arg(prompted()[0], "--session-id"),
+  );
+  runtime.dispose();
+});
+it("refuses a watch's standalone turn on a synced effort its model lacks", async () => {
+  const { runtime, claudes, agent } = setup();
+  const config = { ...DEFAULT_CONFIG, model: "haiku", effort: "medium" };
+  runtime.sync([{ pubkey: self, config } as Agent]);
+  const prompt = vi.fn(() => "check the build");
+  const turn = (synced?: Record<string, string>) =>
+    runtime.runOnce({
+      delivery: { agent, config, ...(synced ? { synced } : {}) },
+      key: "watch",
+      signal: new AbortController().signal,
+      prompt,
+    } as unknown as Parameters<typeof runtime.runOnce>[0]);
+  await expect(turn({ effort: "medium" })).resolves.toEqual({
+    ok: false,
+    error:
+      "This agent's synced effort \"medium\" isn't offered by Haiku 5.5. Change it in Settings.",
+  });
+  expect(prompt).not.toHaveBeenCalled();
+  await expect(turn()).resolves.toMatchObject({ ok: true });
+  expect(claudes().some((process) => process.prompts.length)).toBe(true);
   runtime.dispose();
 });
 it("puts the agent's teams in its system prompt, resuming idle sessions when they change", async () => {
@@ -499,7 +889,9 @@ it("names the agent in its system prompt, resuming idle sessions when it is rena
   const { runtime, claudes, agent } = setup([root, reply]);
   const run = (id: string, name: string) => {
     // A rename reaches the runtime as a changed agent list.
-    runtime.sync([{ pubkey: self, name, config: DEFAULT_CONFIG } as Agent]);
+    runtime.sync([
+      { key: self, pubkey: self, name, config: DEFAULT_CONFIG } as Agent,
+    ]);
     return runtime.run({
       trigger: { type: "mention", event: mention(id) },
       channelId: channel,
@@ -549,7 +941,7 @@ it("resumes an idle session at a newly saved effort", async () => {
   const { runtime, claudes, agent } = setup([root, reply]);
   const run = (event: typeof root, effort: string) => {
     const config = { ...DEFAULT_CONFIG, effort };
-    runtime.sync([{ pubkey: self, config } as Agent]);
+    runtime.sync([{ key: self, pubkey: self, config } as Agent]);
     return runtime.run({
       trigger: { type: "mention", event },
       channelId: channel,
@@ -641,7 +1033,7 @@ it("reads a busy turn's files from the workspace it started in", async () => {
     ],
   });
   const { runtime, deliver, claudes, fake } = setup();
-  runtime.sync([{ pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
   await flush(10);
   const [spare] = claudes();
   if (!spare) throw new Error("no spare");
@@ -650,7 +1042,11 @@ it("reads a busy turn's files from the workspace it started in", async () => {
   await flush(10);
   // Saved mid-turn: the busy process keeps working where it started.
   runtime.sync([
-    { pubkey: self, config: { ...DEFAULT_CONFIG, workspace: "/new" } } as Agent,
+    {
+      key: self,
+      pubkey: self,
+      config: { ...DEFAULT_CONFIG, workspace: "/new" },
+    } as Agent,
   ]);
   await flush(10);
   expect(spare.killed).toBe(false);
@@ -677,6 +1073,97 @@ it("reads a busy turn's files from the workspace it started in", async () => {
     [["report.md"], DEFAULT_CONFIG.workspace],
   ]);
 });
+
+it.each(["live", "reload", "legacy"])(
+  "keeps each thread's unseen context in a channel session (%s)",
+  async (mode) => {
+    const first = message("1", "@Claude work on A", { created_at: 110 });
+    const other = message("2", "Task B", { created_at: 90 });
+    const reply = (id: string, root: EventData, content: string, at: number) =>
+      message(id, content, {
+        created_at: at,
+        tags: [
+          ["h", channel],
+          ["e", root.id, "", "reply"],
+        ],
+      });
+    const bNote = reply("3", other, "B must use staging only", 100);
+    const aNote = reply("4", first, "A must include refunds", 115);
+    const history = [first, other, bNote, aNote];
+    let f = setup();
+    const reads = () =>
+      f.read.mockImplementation(async (filters) =>
+        history.filter((event) =>
+          filters.some(
+            (filter) =>
+              filter.ids?.includes(event.id) ||
+              event.tags.some(
+                (tag) => tag[0] === "e" && filter["#e"]?.includes(tag[1] ?? ""),
+              ),
+          ),
+        ),
+      );
+    const deliver = async (event: RelayEvent) => {
+      const before = f.workingUntil.mock.calls.length;
+      await f.deliver(
+        { type: "mention", event },
+        {
+          config: { ...DEFAULT_CONFIG, scope: "channel" },
+        },
+      );
+      await vi.waitFor(() =>
+        expect(f.workingUntil).toHaveBeenCalledTimes(before + 1),
+      );
+      await f.workingUntil.mock.calls[before]?.[0];
+      return (
+        f
+          .claudes()
+          .find((process) => process.prompts.length)
+          ?.prompts.at(-1) ?? ""
+      );
+    };
+    const reopen = () => {
+      const previous = f;
+      f = setup();
+      for (const [key, value] of previous.data) {
+        const saved = JSON.parse(value);
+        // Older versions saved only the channel's single `seen` timestamp.
+        if (mode === "legacy")
+          for (const session of Object.values(saved) as { threads?: unknown }[])
+            delete session.threads;
+        f.data.set(key, JSON.stringify(saved));
+      }
+      for (const id of previous.fake.known) f.fake.known.add(id);
+      previous.runtime.dispose();
+      reads();
+    };
+    reads();
+    try {
+      await deliver(first);
+      if (mode === "legacy") reopen();
+      expect(
+        await deliver(reply("5", other, "@Claude do B now", 120)),
+      ).toContain(bNote.content);
+      if (mode === "reload") reopen();
+      expect(
+        await deliver(reply("6", other, "@Claude continue B", 130)),
+      ).not.toContain(bNote.content);
+      expect(
+        await deliver(reply("7", first, "@Claude continue A", 140)),
+      ).toContain(aNote.content);
+      expect(
+        await deliver(reply("8", other, "@Claude finish B", 150)),
+      ).not.toContain(bNote.content);
+      expect(
+        f.claudes().filter((process) => process.prompts.length),
+      ).toHaveLength(1);
+      if (mode !== "live")
+        expect(f.claudes()[0]?.options.args).toContain("--resume");
+    } finally {
+      f.runtime.dispose();
+    }
+  },
+);
 
 it("shows a thread's later turns only what the session has not seen", async () => {
   const root = message("1", "first", {
@@ -723,7 +1210,7 @@ it("says so in the thread when a turn fails", async () => {
     ],
   });
   const { runtime, deliver, published, claudes, workingUntil } = setup();
-  runtime.sync([{ pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
   await flush(10);
   const [spare] = claudes();
   if (!spare) throw new Error("no spare");
@@ -756,29 +1243,175 @@ it("says so in the thread when a turn fails", async () => {
   ]);
 });
 
-it("shows the whole thread to a session started over from a lost one", async () => {
-  const root = message("1", "Build is red");
-  const mention = message("2", "@Claude again?", {
-    created_at: 300,
+/** A plugin's wake; its id is its own, which nothing may publish. */
+const WAKE_ID = "9".repeat(64);
+const pluginWake = (root?: string) => ({
+  type: "plugin" as const,
+  plugin: "github",
+  channel,
+  ...(root ? { root } : {}),
+  text: "CI failed: lint",
+  id: WAKE_ID,
+  at: 200_000,
+});
+
+it("takes a plugin's wake in its thread's session, as the plugin's and not a message", async () => {
+  const root = message("1", "@Claude watch my PR", {
     tags: [
       ["h", channel],
-      ["e", root.id, "", "reply"],
+      ["p", self],
     ],
   });
-  const { deliver, claudes, data } = setup([root, mention]);
+  const { deliver, claudes, read } = setup();
+  await deliver({ type: "mention", event: root });
+  await flush(10);
+  read.mockResolvedValue([root]);
+  await deliver(pluginWake(root.id));
+  await flush(10);
+  const used = claudes().filter((process) => process.prompts.length);
+  expect(used).toHaveLength(1);
+  const prompt = used[0]?.prompts[1] ?? "";
+  expect(prompt).toContain('<plugin-wake plugin="github">');
+  expect(prompt).toContain("neither your owner nor anyone in the channel");
+  expect(prompt).toContain("CI failed: lint");
+  expect(prompt).toContain(`Thread root: ${root.id}`);
+  expect(prompt).not.toContain("<buzz-event");
+  expect(prompt).not.toContain(WAKE_ID);
+});
+
+it("reports a failed wake at its thread's root, never at the wake's own id", async () => {
+  const root = "1".repeat(64);
+  const { runtime, deliver, published, claudes } = setup();
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  await flush(10);
+  const [spare] = claudes();
+  if (!spare) throw new Error("no spare");
+  spare.hold = true;
+  await deliver(pluginWake(root));
+  await flush(10);
+  expect(spare.prompts).toHaveLength(1);
+  spare.exit(1, "Error: Invalid API key\n");
+  await flush(10);
+  expect(published.find((event) => event.kind === 9)?.tags).toEqual([
+    ["h", channel],
+    ["e", root, "", "reply"],
+    ["p", alice],
+  ]);
+  expect(JSON.stringify(published)).not.toContain(WAKE_ID);
+});
+
+it("takes a wake with no thread only in a Solo chat", async () => {
+  const ignored = vi.fn();
+  const stream = setup();
+  await stream.deliver(pluginWake(), { ignored });
+  await flush(10);
+  expect(ignored).toHaveBeenCalled();
+  expect(stream.claudes().some((process) => process.prompts.length)).toBe(
+    false,
+  );
+  const solo = setup([], { solo: new Set([channel]) });
+  await solo.deliver(pluginWake());
+  await flush(10);
+  const prompt =
+    solo.claudes().find((process) => process.prompts.length)?.prompts[0] ?? "";
+  expect(prompt).toContain('<plugin-wake plugin="github">');
+  expect(prompt).toContain(TOP_LEVEL_PROMPT);
+  expect(prompt).not.toContain(WAKE_ID);
+});
+
+it.each(["thread", "channel"] as const)(
+  "shows the whole thread after a lost %s session",
+  async (scope) => {
+    const root = message("1", "Build is red");
+    const mention = message("2", "@Claude again?", {
+      created_at: 300,
+      tags: [
+        ["h", channel],
+        ["e", root.id, "", "reply"],
+      ],
+    });
+    const { deliver, claudes, data, workingUntil } = setup([root, mention]);
+    data.set(
+      "buzz.claude-code.sessions.v1",
+      JSON.stringify({
+        [self]: {
+          [scope === "channel" ? channel : `${channel}/${root.id}`]: {
+            id: "lost",
+            seen: 200,
+            at: 1,
+            ...(scope === "channel" ? { threads: { [root.id]: 200 } } : {}),
+          },
+        },
+      }),
+    );
+    await deliver(
+      { type: "mention", event: mention },
+      { config: { ...DEFAULT_CONFIG, scope } },
+    );
+    await vi.waitFor(() => expect(workingUntil).toHaveBeenCalledOnce());
+    await workingUntil.mock.calls[0]?.[0];
+    const [lost] = claudes();
+    const fresh = claudes().find((process) => process.prompts.length);
+    expect(lost?.options.args).toContain("lost");
+    expect(lost?.prompts).toEqual([]);
+    expect(fresh?.prompts[0]).toContain(
+      '<thread-context included="1" total="2"',
+    );
+  },
+);
+
+it("keeps a turn's notes for the next when starting over from a lost session fails", async () => {
+  const root = message("1", "Build is red");
+  const reply = (id: string) =>
+    message(id, "@Claude again?", {
+      created_at: 300 + Number(id),
+      tags: [
+        ["h", channel],
+        ["e", root.id, "", "reply"],
+      ],
+    });
+  const { deliver, claudes, data, agent } = setup([root, reply("2")]);
   data.set(
     "buzz.claude-code.sessions.v1",
     JSON.stringify({
       [self]: { [`${channel}/${root.id}`]: { id: "lost", seen: 200, at: 1 } },
     }),
   );
-  await deliver({ type: "mention", event: mention });
+  const pending: Record<string, string[]> = {
+    [channel]: ["(I interrupted your reply)"],
+  };
+  const notes = vi.fn((at: string) => (pending[at] ?? []).splice(0));
+  const restoreNotes = vi.fn((at: string, kept: readonly string[]) => {
+    pending[at] = [...kept, ...(pending[at] ?? [])];
+  });
+  // The first write forgetting the lost session fails.
+  const set = data.set.bind(data);
+  let failed = false;
+  vi.spyOn(data, "set").mockImplementation((key, value) => {
+    if (
+      !failed &&
+      key.startsWith("buzz.claude-code.sessions") &&
+      !value.includes('"lost"')
+    ) {
+      failed = true;
+      throw new Error("Disk full");
+    }
+    return set(key, value);
+  });
+  const handle = { ...agent, notes, restoreNotes };
+  await deliver({ type: "mention", event: reply("2") }, {
+    agent: handle,
+  } as unknown as Partial<Delivery>);
   await flush(20);
-  const [lost] = claudes();
+  expect(failed).toBe(true);
+  expect(pending[channel]).toEqual(["(I interrupted your reply)"]);
+  await deliver({ type: "mention", event: reply("3") }, {
+    agent: handle,
+  } as unknown as Partial<Delivery>);
+  await flush(20);
   const fresh = claudes().find((process) => process.prompts.length);
-  expect(lost?.options.args).toContain("lost");
-  expect(lost?.prompts).toEqual([]);
-  expect(fresh?.prompts[0]).toContain('<thread-context included="1" total="2"');
+  expect(fresh?.prompts[0]).toContain("(I interrupted your reply)");
+  expect(pending[channel]).toEqual([]);
 });
 
 it("acts only on messages from its owner and the owner's agents", async () => {
@@ -997,7 +1630,7 @@ it("runs a timer as a one-off turn that is never saved", async () => {
   expect(prompt).toMatch(/<attention>\nHandle the work that caused this turn/);
   // Its process stops once the turn is done, and no session is kept for it.
   expect(claude?.killed).toBe(true);
-  expect(data.get("buzz.claude-code.sessions.v1") ?? "{}").toBe("{}");
+  expect(data.get(`buzz.claude-code.sessions.v1:${self}`) ?? "{}").toBe("{}");
   expect(runtime.sessions(self)).toEqual([]);
 });
 
@@ -1058,24 +1691,29 @@ it("asks again whether a wake should run once it has a process", async () => {
   ).toBe(false);
 });
 
-it("gives up a one-off turn that runs past its deadline", async () => {
-  vi.useFakeTimers();
-  try {
-    const { deliver, claudes } = setup([], { hold: true });
-    await deliver(timer("slow", "ops"));
-    await vi.advanceTimersByTimeAsync(10);
-    const claude = claudes().find((process) => process.prompts.length);
-    expect(claude?.killed).toBe(false);
-    await vi.advanceTimersByTimeAsync(5 * 60_000);
-    expect(claude?.killed).toBe(true);
-  } finally {
-    vi.useRealTimers();
-  }
+it("stops a one-off turn when its turn signal aborts", async () => {
+  const turn = new AbortController();
+  const { deliver, claudes, workingUntil } = setup([], {
+    hold: true,
+    signal: turn.signal,
+  });
+  await deliver(timer("slow", "ops"));
+  await flush(10);
+  const claude = claudes().find((process) => process.prompts.length);
+  expect(claude?.killed).toBe(false);
+  // The runner's deadline, as `standalone()` aborts it.
+  turn.abort(new Error("The turn ran past its deadline"));
+  await expect(workingUntil.mock.calls[0]?.[0]).resolves.toEqual({
+    ok: false,
+    error: "The turn ran past its deadline",
+  });
+  expect(claude?.killed).toBe(true);
 });
 
-it("always offers attention tools and guidance, and says in each turn whether attention is on", async () => {
+it("always offers attention tools, on search, and says in each turn whether attention is on", async () => {
   const { runtime, claudes, deliver, attention } = setup();
   const agent = {
+    key: self,
     pubkey: self,
     config: DEFAULT_CONFIG,
     attentionEnabled: true,
@@ -1094,18 +1732,32 @@ it("always offers attention tools and guidance, and says in each turn whether at
     claudes().find((process) =>
       process.prompts[0]?.includes(`Content: @Claude ${id}`),
     );
-  const names = async (claude: FakeClaude | undefined, id: number) =>
+  const tools = async (claude: FakeClaude | undefined, id: number) =>
     (
       ((await mcp(claude, id, "tools/list")) as unknown as {
-        tools: { name: string }[];
+        tools: { name: string; _meta?: unknown }[];
       }) ?? { tools: [] }
-    ).tools.map((tool) => tool.name);
+    ).tools;
+  const names = async (claude: FakeClaude | undefined, id: number) =>
+    (await tools(claude, id)).map((tool) => tool.name);
   runtime.sync([agent as Agent]);
   await mention("6");
   await flush(10);
   const on = asked("6");
-  expect(await names(on, 1)).toContain("watch_add");
-  expect(systemPromptOf(on)).toContain("## Attention");
+  // Listed, but loaded only when the model searches for them, with their
+  // guidance in their descriptions rather than the system prompt.
+  const listed = await tools(on, 1);
+  const watchAdd = listed.find((tool) => tool.name === "watch_add");
+  expect(watchAdd).toBeDefined();
+  expect(watchAdd?._meta).toBe(undefined);
+  expect(listed.find((tool) => tool.name === "send")?._meta).toEqual({
+    "anthropic/alwaysLoad": true,
+  });
+  const initialized = (await mcp(on, 8, "initialize")) as unknown as {
+    instructions?: string;
+  };
+  expect(initialized?.instructions).toContain("your attention");
+  expect(systemPromptOf(on)).not.toContain("## Attention");
   expect(on?.prompts[0]).toMatch(/<attention>\nHandle the work/);
   // Turned off, the session keeps its tools and prompt: nothing restarts.
   attention.on = false;
@@ -1116,9 +1768,11 @@ it("always offers attention tools and guidance, and says in each turn whether at
   await flush(10);
   const off = asked("7");
   expect(await names(off, 2)).toContain("watch_add");
-  expect(systemPromptOf(off)).toContain("## Attention");
+  expect(systemPromptOf(off)).toBe(systemPromptOf(on));
   // Only the turn says that attention is off, and the tools refuse.
-  expect(off?.prompts[0]).toMatch(/<attention>\nYour owner has attention off/);
+  expect(off?.prompts[0]).toMatch(
+    /<attention>\nAttention is off on this device/,
+  );
   expect(off?.prompts[0]).not.toContain("Handle the work");
   const refused = (await mcp(off, 3, "tools/call", {
     name: "interest_list",
@@ -1162,7 +1816,7 @@ it("offers the tools plugins add, runs them as the agent, and replaces an idle s
         tools: { name: string }[];
       }) ?? { tools: [] }
     ).tools.map((tool) => tool.name);
-  runtime.sync([{ pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
   await mention("6");
   await flush(10);
   const first = asked("6");
@@ -1192,7 +1846,7 @@ it("offers the tools plugins add, runs them as the agent, and replaces an idle s
 it("keeps one spare for all its agents, and none once they are gone", async () => {
   const { runtime, claudes } = setup();
   const agent = (pubkey: string) =>
-    ({ pubkey, config: DEFAULT_CONFIG }) as Agent;
+    ({ key: pubkey, pubkey, config: DEFAULT_CONFIG }) as Agent;
   runtime.sync([agent(self), agent(alice)]);
   await flush(10);
   expect(claudes()).toHaveLength(1);
@@ -1204,10 +1858,14 @@ it("keeps one spare for all its agents, and none once they are gone", async () =
 
 it("replaces the spare when no agent runs where it was started", async () => {
   const { runtime, claudes } = setup();
-  runtime.sync([{ pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
   await flush(10);
   runtime.sync([
-    { pubkey: self, config: { ...DEFAULT_CONFIG, model: "sonnet" } } as Agent,
+    {
+      key: self,
+      pubkey: self,
+      config: { ...DEFAULT_CONFIG, model: "sonnet" },
+    } as Agent,
   ]);
   await flush(10);
   const [old, next] = claudes();
@@ -1218,6 +1876,7 @@ it("replaces the spare when no agent runs where it was started", async () => {
   expect(claudes()).toHaveLength(2);
   runtime.sync([
     {
+      key: self,
       pubkey: self,
       config: { ...DEFAULT_CONFIG, model: "sonnet", effort: "low" },
     } as Agent,
@@ -1248,7 +1907,7 @@ it("tells the owner, not the asking sibling, when a sibling's turn fails", async
     ],
   });
   const { runtime, published, claudes, agent } = setup();
-  runtime.sync([{ pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
   await flush(10);
   const [spare] = claudes();
   if (!spare) throw new Error("no spare");
@@ -1301,39 +1960,7 @@ async function send(claude: FakeClaude | undefined, id: string, args: object) {
   )?.response?.mcp_response?.result;
 }
 
-it("fails a session mention it cannot place until the placement can be read", async () => {
-  const mention = (id: string) =>
-    message(id, `@Claude ${id}`, {
-      created_at: 100 + Number(id),
-      tags: [
-        ["h", channel],
-        ["p", self],
-      ],
-    });
-  const { deliver, placement, published, claudes, workingUntil } = setup([], {
-    channelType: "session",
-  });
-  placement.state = { status: "error", error: "Recipe read failed" };
-  await expect(
-    deliver({ type: "mention", event: mention("1") }),
-  ).rejects.toThrow(
-    "Couldn't read your Solo chats to tell where to answer (Recipe read failed). Try again.",
-  );
-  await flush(10);
-  expect(placement.refresh).toHaveBeenCalledOnce();
-  expect(claudes().flatMap((process) => process.prompts)).toEqual([]);
-  expect(workingUntil).not.toHaveBeenCalled();
-  expect(published).toEqual([]);
-  placement.state = { status: "ready" };
-  await deliver({ type: "mention", event: mention("2") });
-  await flush(10);
-  const prompts = claudes().flatMap((process) => process.prompts);
-  expect(prompts).toHaveLength(1);
-  expect(prompts[0]).not.toContain(TOP_LEVEL_PROMPT);
-  expect(workingUntil).toHaveBeenCalledOnce();
-});
-
-it("continues an owner's Me chat as one channel session posted at the top level", async () => {
+it("continues an owner's Solo chat as one channel session posted at the top level", async () => {
   const earlier = message("1", "Earlier in the chat");
   const first = message("2", "@Claude first", {
     created_at: 110,
@@ -1353,7 +1980,7 @@ it("continues an owner's Me chat as one channel session posted at the top level"
   });
   const { deliver, published, claudes, agent, read } = setup([earlier, first], {
     hold: true,
-    me: new Set([channel]),
+    solo: new Set([channel]),
   });
   agent.query.mockImplementation(async () => [first]);
   await deliver({ type: "mention", event: first });
@@ -1400,7 +2027,32 @@ it("continues an owner's Me chat as one channel session posted at the top level"
   ]);
 });
 
-it("finishes a Me turn under its policy when the chat is shared mid-turn, and keeps the next turn's conversation while it waits", async () => {
+it("starts a turn in a chat its owner is still creating without reading its history", async () => {
+  const first = message("2", "@Claude first", {
+    created_at: 110,
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const { deliver, claudes, read } = setup([first], {
+    hold: true,
+    solo: new Set([channel]),
+    pending: new Set([channel]),
+  });
+  await deliver({ type: "mention", event: first });
+  await flush(10);
+  const prompt =
+    claudes().find((process) => process.prompts.length)?.prompts[0] ?? "";
+  expect(prompt).toContain("@Claude first");
+  expect(read).not.toHaveBeenCalledWith(
+    [{ kinds: [9, 40002], "#h": [channel], limit: 13 }],
+    expect.anything(),
+  );
+  expect(prompt).not.toContain("<conversation-context");
+});
+
+it("finishes a Solo turn under its policy when the chat is converted mid-turn, and keeps the next turn's conversation while it waits", async () => {
   const mention = (id: string) =>
     message(id, `@Claude ${id}`, {
       created_at: 100 + Number(id),
@@ -1409,11 +2061,14 @@ it("finishes a Me turn under its policy when the chat is shared mid-turn, and ke
         ["p", self],
       ],
     });
-  const me = new Set([channel]);
-  const { runtime, published, claudes, agent } = setup([], { hold: true, me });
+  const solo = new Set([channel]);
+  const { runtime, published, claudes, agent } = setup([], {
+    hold: true,
+    solo,
+  });
   agent.query.mockImplementation(async () => [mention("2")]);
   const config = { ...DEFAULT_CONFIG, scope: "channel" };
-  runtime.sync([{ pubkey: self, config } as Agent]);
+  runtime.sync([{ key: self, pubkey: self, config } as Agent]);
   await flush(10);
   const run = (event: RelayEvent) =>
     runtime.run({
@@ -1427,14 +2082,14 @@ it("finishes a Me turn under its policy when the chat is shared mid-turn, and ke
   await run(mention("1"));
   await flush(10);
   const claude = claudes().find((process) => process.prompts.length);
-  me.delete(channel);
+  solo.delete(channel);
   await run(mention("2"));
   await flush(10);
-  // It waits for the Me turn rather than steering into it.
+  // It waits for the Solo turn rather than steering into it.
   expect(claude?.prompts).toHaveLength(1);
   // Admitted to the channel's conversation, it is told so even if the agent
   // is moved to thread scope meanwhile.
-  runtime.sync([{ pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
   await send(claude, "call-1", { text: "Still top level" });
   claude?.finish();
   await flush(10);
@@ -1453,34 +2108,6 @@ it("finishes a Me turn under its policy when the chat is shared mid-turn, and ke
     ],
   ]);
   runtime.dispose();
-});
-
-it("a converted stream uses threaded replies despite an agent owner's retained Me entry", async () => {
-  const event = message("7", "@Claude converted", {
-    tags: [
-      ["h", channel],
-      ["p", self],
-    ],
-  });
-  const { deliver, published, claudes, runtime } = setup([], {
-    hold: true,
-    me: new Set([channel]),
-    channelType: "stream",
-  });
-  try {
-    await deliver({ type: "mention", event });
-    await flush(10);
-    const process = claudes().find((item) => item.prompts.length);
-    expect(process?.prompts[0]).not.toContain(TOP_LEVEL_PROMPT);
-    expect(process?.prompts[0]).toContain(event.id);
-    await send(process, "converted-reply", {
-      text: "Threaded",
-      reply: event.id,
-    });
-    expect(published[0]?.tags).toContainEqual(["e", event.id, "", "reply"]);
-  } finally {
-    runtime.dispose();
-  }
 });
 
 it("gives a tool the partial listing a slow native read answers", async () => {
@@ -1524,7 +2151,7 @@ it("gives a tool the partial listing a slow native read answers", async () => {
     } as unknown as RelayData;
     const runtime = new ClaudeRuntime(
       {} as Host,
-      (pubkey) => ownerReads(relay, pubkey),
+      (key) => ownerReads(relay, pubkeyOf(key)),
       async () => null,
     ) as unknown as {
       memories(
@@ -1546,6 +2173,42 @@ it("gives a tool the partial listing a slow native read answers", async () => {
   }
 });
 
+it("dates a recreated memory entry after the tombstone the native read reports", async () => {
+  // The in-app path end to end: the host's listing, the session's memory
+  // reads, the runtime's shared reads and the app client, into mem_set.
+  const agentMemories = createAgentMemories(
+    async () => ({
+      entries: [],
+      deleted: [{ slug: "mem/gone", createdAt: 4_000_000_001 }],
+      partial: false,
+    }),
+    alice,
+    () => true,
+  ).capability;
+  const relay = {
+    snapshot: () => ({ status: "ready", session: { agentMemories } }),
+  } as unknown as RelayData;
+  const runtime = new ClaudeRuntime(
+    {} as Host,
+    (key) => ownerReads(relay, pubkeyOf(key)),
+    async () => null,
+  ) as unknown as {
+    memories(pubkey: string, slug?: string): ReturnType<BuzzClient["memories"]>;
+  };
+  const remember = vi.fn<AgentHandle["remember"]>();
+  const client = appClient(
+    { pubkey: self, remember } as unknown as AgentHandle,
+    {
+      read: vi.fn(),
+      memories: (slug) => runtime.memories(self, slug),
+    },
+  );
+  await expect(
+    callTool(client, {}, "mem_set", { slug: "gone", text: "back" }),
+  ).resolves.toMatch(/^saved; version /);
+  expect(remember).toHaveBeenCalledWith("mem/gone", "back", 4_000_000_001);
+});
+
 it("method calls: a session launch makes no config call on the relay session; only the conversation name lookup (launch-boundary.test.ts runs the real service path)", async () => {
   const f = setup();
   // Every relay-facing call the runtime can make, by name.
@@ -1553,7 +2216,6 @@ it("method calls: a session launch makes no config call on the relay session; on
     "session.read": f.read,
     "agentMemories.read": f.memoryRead,
     "profiles.ensure": f.session.profiles.ensure,
-    "mePlacement.refresh": f.session.mePlacement.refresh,
     publish: f.agent.publish,
     query: f.agent.query,
     upload: f.agent.upload,
@@ -1587,11 +2249,11 @@ it("method calls: a session launch makes no config call on the relay session; on
   });
 });
 
-it("a failed first Me turn releases naming so a successful retry can offer Claude's title", async () => {
+it("a failed first Solo chat turn releases naming so a successful retry can offer Claude's title", async () => {
   const named = vi.fn();
   const f = setup([], {
     hold: true,
-    me: new Set([channel]),
+    solo: new Set([channel]),
     named,
     title: "A useful title",
   });
@@ -1616,4 +2278,405 @@ it("a failed first Me turn releases naming so a successful retry can offer Claud
   await flush();
   expect(named).toHaveBeenCalledExactlyOnceWith("A useful title");
   f.runtime.dispose();
+});
+
+it("hands a Solo chat's Canvas to each turn and lets its session stay in the workspace's folders", async () => {
+  const mention = (id: string) =>
+    message(id, "@Claude go", {
+      tags: [
+        ["h", channel],
+        ["p", self],
+      ],
+    });
+  const canvasValue = {
+    content: workspaceCanvas({
+      folders: ["~/Development/app"],
+      worktree: { location: "~/Development/app-trees", baseBranch: "main" },
+      canvas: "Use the design system.",
+    }),
+  };
+  const { deliver, claudes, runtime, session } = setup([], {
+    solo: new Set([channel]),
+    canvas: canvasValue,
+  });
+  await deliver({ type: "mention", event: mention("1") });
+  await flush(10);
+  const first = claudes().find((process) => process.prompts.length);
+  expect(first?.options.cwd).toBe("~/.buzz");
+  expect(first?.options.args).toEqual(
+    expect.arrayContaining([
+      "--add-dir",
+      "~/Development/app",
+      "--add-dir",
+      "~/Development/app-trees",
+    ]),
+  );
+  expect(first?.prompts[0]).toContain("<workspace-canvas>");
+  expect(first?.prompts[0]).toContain(
+    "not your own workspace: `~/Development/app`, `~/Development/app-trees`",
+  );
+  expect(first?.prompts[0]).toContain("Use the design system.");
+
+  // A Canvas that cannot be read keeps the session and its folders.
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  session.canvas.read.mockRejectedValueOnce(new Error("offline"));
+  await deliver({ type: "mention", event: mention("3") });
+  await flush(10);
+  expect(first?.killed).toBe(false);
+  expect(first?.prompts).toHaveLength(2);
+  expect(first?.prompts[1]).not.toContain("<workspace-canvas>");
+
+  // New folders restart the idle session, resumed where it was.
+  const canvas: { content: string; pubkey?: string } = canvasValue;
+  canvas.content = workspaceCanvas({
+    folders: ["~/Development/other"],
+    canvas: "",
+  });
+  await deliver({ type: "mention", event: mention("2") });
+  await flush(10);
+  const second = claudes().filter((process) => process.prompts.length)[1];
+  expect(first?.killed).toBe(true);
+  expect(second?.options.args).toContain("--resume");
+  expect(second?.options.args).toContain("~/Development/other");
+  expect(second?.options.args).not.toContain("~/Development/app");
+  expect(second?.prompts[0]).toContain("`~/Development/other`");
+
+  // Someone else's edit, as in a shared Solo chat, is not handed over: the
+  // session is told to drop the earlier Canvas and loses its folders.
+  canvas.pubkey = "b".repeat(64);
+  canvas.content = workspaceCanvas({ folders: ["~/elsewhere"], canvas: "x" });
+  await deliver({ type: "mention", event: mention("4") });
+  await flush(10);
+  const third = claudes().filter((process) => process.prompts.length)[2];
+  expect(second?.killed).toBe(true);
+  expect(third?.options.args).not.toContain("--add-dir");
+  expect(third?.prompts[0]).not.toContain("~/elsewhere");
+  expect(third?.prompts[0]).toContain("Disregard any earlier workspace Canvas");
+
+  // So is a Canvas its owner cleared.
+  delete canvas.pubkey;
+  canvas.content = "";
+  await deliver({ type: "mention", event: mention("5") });
+  await flush(10);
+  expect(third?.prompts[1]).toContain("Disregard any earlier workspace Canvas");
+  runtime.dispose();
+});
+
+it("hands no Canvas to a shared channel's turns", async () => {
+  const event = message("1", "@Claude go", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const { deliver, claudes, runtime, session } = setup([], {
+    canvas: {
+      content: workspaceCanvas({ folders: ["~/repo"], canvas: "Steer me" }),
+    },
+  });
+  await deliver({ type: "mention", event });
+  await flush(10);
+  const claude = claudes().find((process) => process.prompts.length);
+  expect(session.canvas.read).not.toHaveBeenCalled();
+  expect(claude?.options.args).not.toContain("--add-dir");
+  expect(claude?.prompts[0]).not.toContain("workspace-canvas");
+  runtime.dispose();
+});
+
+it("controls an idle Claude session without sending a message, and rejects reset while active", async () => {
+  const f = setup([], { hold: true });
+  const root = message("1", "hello");
+  const place = { channelId: channel, root: root.id };
+  const agent = { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent;
+  try {
+    await f.deliver({ type: "mention", event: root });
+    const process = f.claudes()[0];
+    if (!process) throw new Error("Expected Claude process");
+    await vi.waitFor(() => expect(process.prompts).toHaveLength(1));
+    expect(f.runtime.sessionState(agent, place)).toBe("active");
+    await expect(f.runtime.session(agent, place, "new")).rejects.toThrow(
+      "active turn",
+    );
+    process.finish();
+    await vi.waitFor(() =>
+      expect(f.runtime.sessionState(agent, place)).toBe("idle"),
+    );
+    const compacted = f.runtime.session(agent, place, "compact");
+    await vi.waitFor(() =>
+      expect(process.prompts).toEqual([expect.any(String), "/compact"]),
+    );
+    expect(f.runtime.sessionState(agent, place)).toBe("compacting");
+    process.finish();
+    await compacted;
+    await f.runtime.session(agent, place, "new");
+    expect(process.killed).toBe(true);
+    expect(f.claudes()).toHaveLength(1);
+    await f.deliver({
+      type: "mention",
+      event: message("2", "hello again", {
+        tags: [
+          ["h", channel],
+          ["e", root.id, "", "reply"],
+        ],
+      }),
+    });
+    expect(f.claudes()).toHaveLength(2);
+    expect(f.claudes()[1]?.options.args).not.toContain("--resume");
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it("interrupts a turn still loading its prompt before Claude receives it", async () => {
+  const f = setup();
+  let release!: (events: readonly EventData[]) => void;
+  const history = new Promise<readonly EventData[]>((resolve) => {
+    release = resolve;
+  });
+  f.read.mockImplementationOnce(async () => history);
+  const root = message("1", "hello");
+  const place = { channelId: channel, root: root.id };
+  const agent = { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent;
+  const delivered = f.deliver({
+    type: "mention",
+    event: message("2", "followup", {
+      tags: [
+        ["h", channel],
+        ["e", root.id, "", "reply"],
+      ],
+    }),
+  });
+  try {
+    await vi.waitFor(() => expect(f.read).toHaveBeenCalled());
+    expect(f.runtime.sessionState(agent, place)).toBe("active");
+    await f.runtime.session(agent, place, "interrupt");
+  } finally {
+    release([]);
+  }
+  try {
+    await delivered;
+    await Promise.all(f.workingUntil.mock.calls.map(([done]) => done));
+    expect(f.claudes().flatMap((process) => process.prompts)).toEqual([]);
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it("hands a session its own community repositories without changing its workspace", async () => {
+  const repositories = vi.fn(
+    () => "<community-repositories>/code/own</community-repositories>",
+  );
+  const { runtime, deliver, claudes } = setup([], { repositories });
+  try {
+    await deliver({ type: "mention", event: message("1", "@Claude work") });
+    await flush(10);
+    const process = claudes().find((item) => item.prompts.length);
+    expect(repositories).toHaveBeenCalledWith(`https://agent.example:${alice}`);
+    expect(JSON.stringify(process?.received)).toContain("/code/own");
+    expect(process?.options.cwd).toBe("~/.buzz");
+  } finally {
+    runtime.dispose();
+  }
+});
+
+it("keeps an accepted Claude handoff past its deadline while compaction runs", async () => {
+  const f = setup([], { hold: true });
+  const root = message("1", "hello");
+  const place = { channelId: channel, root: root.id };
+  const agent = { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent;
+  const handover = new AbortController();
+  let finishCompaction: (() => void) | undefined;
+  try {
+    await f.deliver({ type: "mention", event: root });
+    const process = f.claudes()[0];
+    if (!process) throw new Error("Expected Claude process");
+    await vi.waitFor(() => expect(process.prompts).toHaveLength(1));
+    process.finish();
+    await vi.waitFor(() =>
+      expect(f.runtime.sessionState(agent, place)).toBe("idle"),
+    );
+    const compacted = f.runtime.session(agent, place, "compact");
+    await vi.waitFor(() => expect(process.prompts.at(-1)).toBe("/compact"));
+    finishCompaction = () => process.finish();
+    const reply = message("2", "queued after compact", {
+      tags: [
+        ["h", channel],
+        ["e", root.id, "", "reply"],
+      ],
+    });
+    let returned = false;
+    const admitted = Promise.resolve(
+      f.deliver({ type: "mention", event: reply }, { signal: handover.signal }),
+    ).then(() => {
+      returned = true;
+    });
+    try {
+      await vi.waitFor(() => expect(returned).toBe(true));
+      handover.abort(new Error("Handover expired"));
+    } finally {
+      process.finish();
+      finishCompaction = undefined;
+      await compacted;
+      await admitted;
+    }
+    await vi.waitFor(() => expect(process.prompts).toHaveLength(3));
+    expect(process.prompts[2]).toContain("queued after compact");
+    process.finish();
+    await Promise.all(f.workingUntil.mock.calls.map(([done]) => done));
+  } finally {
+    finishCompaction?.();
+    f.runtime.dispose();
+  }
+});
+
+it("delivers a rootless subscription to its channel without publishing its anchor", async () => {
+  const f = setup([], {
+    hold: true,
+    canvas: { content: "Only Solo chats supply this" },
+  });
+  await f.deliver({ ...pluginWake(), type: "attention", topLevel: true });
+  await flush(10);
+  const prompt =
+    f.claudes().find((process) => process.prompts.length)?.prompts[0] ?? "";
+  expect(prompt).not.toContain("<plugin-wake");
+  expect(prompt).not.toContain(TOP_LEVEL_PROMPT);
+  expect(prompt).toContain("unless the Interest instructions");
+  expect(prompt).not.toContain(WAKE_ID);
+  expect(prompt).not.toContain("Only Solo chats supply this");
+  f.claudes()
+    .find((process) => process.prompts.length)
+    ?.exit(1, "Error: boom\n");
+  await vi.waitFor(() =>
+    expect(f.published.some((event) => event.kind === 9)).toBe(true),
+  );
+  for (const event of f.published.filter(({ kind }) => kind === 9))
+    expect(event.tags.some((tag) => tag[0] === "e")).toBe(false);
+  expect(JSON.stringify(f.published)).not.toContain(WAKE_ID);
+});
+
+it("refreshes Attention instructions after Claude starts", async () => {
+  let release!: () => void;
+  const starting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const f = setup([], { hold: true, starting });
+  let instructions = "Old Interest instructions";
+  const wakeText = vi.fn(async () => instructions);
+  try {
+    await f.deliver(
+      {
+        ...pluginWake(),
+        type: "attention",
+        topLevel: true,
+        text: instructions,
+      },
+      { wakeText },
+    );
+    await vi.waitFor(() => expect(wakeText).toHaveBeenCalled());
+    instructions = "Updated Interest instructions";
+    release();
+    await vi.waitFor(() =>
+      expect(f.claudes().some((p) => p.prompts.length)).toBe(true),
+    );
+    const prompt = f.claudes().find((p) => p.prompts.length)?.prompts[0];
+    expect(prompt).toContain(instructions);
+    expect(prompt).not.toContain("Old Interest instructions");
+  } finally {
+    release();
+    f.runtime.dispose();
+  }
+});
+
+it("drops an Attention wake stopped while its final prompt refresh waits", async () => {
+  const f = setup();
+  let release!: () => void;
+  let refreshing!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    refreshing = resolve;
+  });
+  let builds = 0;
+  const wakeText = async () => {
+    if (++builds === 2) {
+      refreshing();
+      await gate;
+    }
+    return "Attention work";
+  };
+  const interruptible = vi.fn();
+  const workingUntil = vi.fn<Delivery["workingUntil"]>();
+  try {
+    await f.deliver(
+      { ...pluginWake(), type: "attention", topLevel: true },
+      { wakeText, interruptible, workingUntil },
+    );
+    await started;
+    await vi.waitFor(() => expect(interruptible).toHaveBeenCalled());
+    await interruptible.mock.calls[0]?.[0]();
+    release();
+    await Promise.all(workingUntil.mock.calls.map(([done]) => done));
+    expect(f.claudes().flatMap((p) => p.prompts)).toEqual([]);
+  } finally {
+    release();
+    f.runtime.dispose();
+  }
+});
+
+it("keeps foreign-channel roots out of conversation context", async () => {
+  const root = message("1", "Private root", {
+    tags: [["h", "another-channel"]],
+  });
+  const mention = message("2", "@Claude look", {
+    tags: [
+      ["h", channel],
+      ["e", root.id, "", "reply"],
+    ],
+  });
+  const f = setup([root]);
+  await f.deliver({ type: "mention", event: mention });
+  await flush(10);
+  const text = f.claudes().find((process) => process.prompts.length)
+    ?.prompts[0];
+  expect(text).toContain("@Claude look");
+  expect(text).not.toContain("Private root");
+});
+
+it("drops a mention stopped while queued behind an Attention refresh", async () => {
+  const f = setup([], { solo: new Set([channel]) });
+  const handovers = vi.spyOn(AgentSessions.prototype, "deliver");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let ready!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  let builds = 0;
+  const wakeText = async () => {
+    if (++builds === 2) {
+      ready();
+      await gate;
+    }
+    return "Attention work";
+  };
+  try {
+    await f.deliver(
+      { ...pluginWake(), type: "attention", topLevel: true },
+      { wakeText },
+    );
+    await entered;
+    await f.deliver({ type: "mention", event: message("2", "queued mention") });
+    await vi.waitFor(() => expect(handovers).toHaveBeenCalledTimes(2));
+    const agent = { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent;
+    await f.runtime.session(agent, { channelId: channel }, "interrupt");
+    release();
+    await Promise.all(f.workingUntil.mock.calls.map(([done]) => done));
+    expect(f.claudes().flatMap((process) => process.prompts)).toEqual([]);
+  } finally {
+    release();
+    f.runtime.dispose();
+  }
 });

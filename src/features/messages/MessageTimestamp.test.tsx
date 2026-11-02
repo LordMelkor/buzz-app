@@ -128,42 +128,17 @@ it("updates the visible clock, accessible date and datetime when a mounted row c
   );
   expect(container.querySelector("time")).toHaveClass("sr-only");
 });
-it("reveals the grouped date only after a long hover and dismisses on leaving", async () => {
+it("keeps grouped messages free of a hover date", async () => {
   const createdAt = new Date(2026, 8, 24, 9, 5).getTime() / 1000;
   render(timestamp(createdAt, true));
-  const trigger = screen.getByText("Message body").parentElement;
-  if (!trigger) throw new Error("Expected timestamp trigger");
-  fireEvent.mouseEnter(trigger);
-  fireEvent.mouseMove(trigger);
-  await act(async () => {
-    vi.advanceTimersByTime(999);
-  });
-  expect(screen.queryByRole("tooltip")).toBeNull();
-  await act(async () => {
-    vi.advanceTimersByTime(1);
-  });
-  expect(screen.getByRole("tooltip")).toHaveTextContent("2026");
-  fireEvent.mouseLeave(trigger);
+  const payload = screen.getByText("Message body").parentElement;
+  if (!payload) throw new Error("Expected message payload");
+  fireEvent.mouseEnter(payload);
+  fireEvent.mouseMove(payload);
   await act(async () => {
     vi.runOnlyPendingTimers();
   });
   expect(screen.queryByRole("tooltip")).toBeNull();
-});
-
-it("does not open a timestamp when focus returns to a message control", async () => {
-  render(
-    <MessageTimestampHint
-      createdAt={new Date(2026, 8, 24, 9, 5).getTime() / 1000}
-    >
-      <button type="button">Open video fullscreen</button>
-    </MessageTimestampHint>,
-  );
-  act(() => screen.getByRole("button").focus());
-  await act(async () => {
-    vi.advanceTimersByTime(1000);
-  });
-  expect(screen.queryByRole("tooltip")).toBeNull();
-  expect(screen.getByRole("button")).toHaveFocus();
 });
 
 // Either side of local midnight; formatDayGroupLabel's ladder is tested in

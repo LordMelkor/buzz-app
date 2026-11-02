@@ -166,6 +166,7 @@ function TemplateDialog({
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
+      dismissOnOutsideClick={false}
       title={template ? "Edit template" : "New template"}
       closeLabel="Close template"
       actions={

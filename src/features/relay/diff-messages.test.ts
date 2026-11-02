@@ -50,7 +50,7 @@ it("reads diff history, live roots/replies and exact targets through the real se
                   f["#e"]?.includes(value),
               )),
         );
-        return f.kinds?.includes(40099) && f["#h"]
+        return f.top_level && f["#h"]
           ? [
               ...matched,
               bounds(relay, "a", "head", {

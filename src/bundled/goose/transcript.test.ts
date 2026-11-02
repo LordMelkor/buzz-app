@@ -154,6 +154,32 @@ describe("gooseTurns", () => {
     });
   });
 
+  it("shows a reply in a subthread as a message, posted or not", () => {
+    const nested = (id: string) =>
+      assistant([
+        call(id, "buzz__reply_in_subthread", { parent: CHANNEL, text: id }),
+      ]);
+    const [turn] = gooseTurns(
+      [
+        user([text(ask())]),
+        nested("n1"),
+        user([answer("n1", "sent")]),
+        nested("n2"),
+        user([answer("n2", "relay closed", true)]),
+      ],
+      { sessionId: "s1", channelId: CHANNEL },
+      false,
+    );
+    expect(turn?.items.slice(1)).toEqual([
+      expect.objectContaining({ type: "message", text: "n1", posted: true }),
+      expect.not.objectContaining({ posted: true }),
+      expect.objectContaining({
+        type: "status",
+        text: "The message above was not posted: relay closed",
+      }),
+    ]);
+  });
+
   it("shows a turn that failed with goose's error, and its lasting notices", () => {
     const [turn] = gooseTurns(
       [
@@ -218,9 +244,7 @@ describe("GooseHistory", () => {
     conversation: messages,
   });
   const history = (sessions: FakeSession[]) =>
-    new GooseHistory(
-      fakeSpawn({ history: sessions, home: "/home/test" }).spawn,
-    );
+    new GooseHistory(fakeSpawn({ history: sessions, home: "/home/test" }));
   const signal = new AbortController().signal;
 
   it("lists the sessions in its workspace that its first prompt names it in", async () => {

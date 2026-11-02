@@ -1,8 +1,12 @@
-// A stand-in for the `claude` binary's stream-json protocol, for tests.
+// A stand-in for the `claude` binary's stream-json protocol, and the
+// manifest's other processes run for real, for tests.
+import { execFile } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import type {
   HostProcess,
   HostProcessOptions,
 } from "../../features/host/service";
+import manifest from "./manifest.json";
 
 export type FakeClaude = {
   id: string;
@@ -22,6 +26,8 @@ export type FakeClaude = {
   /** When set, a turn stays open until `finish()`. */
   hold: boolean;
   killed: boolean;
+  /** When set, an `interrupt` request is answered with this error. */
+  interruptError?: string;
   /** When false, a kill is only a request; the test calls `exit()`. */
   exitOnKill: boolean;
   emit(message: Record<string, unknown>): void;
@@ -128,6 +134,17 @@ export function fakeSpawn(known = new Set<string>()) {
           typeof request.model === "string"
         )
           fake.model = request.model;
+        if (request.subtype === "interrupt" && fake.interruptError) {
+          fake.emit({
+            type: "control_response",
+            response: {
+              subtype: "error",
+              request_id: message.request_id,
+              error: fake.interruptError,
+            },
+          });
+          return;
+        }
         fake.emit({
           type: "control_response",
           response: {
@@ -200,7 +217,64 @@ export function fakeSpawn(known = new Set<string>()) {
 }
 
 /** Lets queued promise callbacks run. */
+/** Claude's full list of live background tasks, as it sends one on each change. */
+export const backgroundTasks = (
+  fake: FakeClaude | undefined,
+  ...tasks: Readonly<{ ambient?: boolean }>[]
+) =>
+  fake?.emit({
+    type: "system",
+    subtype: "background_tasks_changed",
+    tasks: tasks.map((task, index) => ({
+      task_id: `task-${index}`,
+      task_type: "local_bash",
+      description: "sleep",
+      ...task,
+    })),
+  });
+/** Claude reporting whether it is in a turn, its own ones included. */
+export const sessionState = (fake: FakeClaude | undefined, state: string) =>
+  fake?.emit({ type: "system", subtype: "session_state_changed", state });
+
 export const flush = async (times = 5) => {
   for (let index = 0; index < times; index++) await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
+
+/** Runs the manifest's processes for real, `~` being `home`; the workspace
+ * resolves to /Users/me/.buzz. */
+export function manifestProcesses(home: string) {
+  return async (id: string, options: HostProcessOptions = {}) => {
+    const declared = manifest.host.processes.find(
+      (process) => process.id === id,
+    );
+    if (!declared) throw new Error(`undeclared process ${id}`);
+    if (id === "workspace") options.onStdout?.("/Users/me/.buzz\n");
+    // As the app's host does, a missing directory is created.
+    const cwd = options.cwd?.replace(/^~/, home);
+    if (cwd && id !== "workspace") mkdirSync(cwd, { recursive: true });
+    const exited =
+      id === "workspace"
+        ? Promise.resolve(0)
+        : new Promise<number>((resolve) => {
+            const child = execFile(
+              declared.program,
+              [...(declared.args ?? []), ...(options.args ?? [])],
+              { cwd, maxBuffer: 1 << 26 },
+              (error) => resolve(error ? Number(error.code) || 1 : 0),
+            );
+            child.stdout?.on("data", (data) =>
+              options.onStdout?.(String(data)),
+            );
+            child.stderr?.on("data", (data) =>
+              options.onStderr?.(String(data)),
+            );
+          });
+    return {
+      write: async () => undefined,
+      end: async () => undefined,
+      kill: async () => undefined,
+      exited,
+    };
+  };
+}

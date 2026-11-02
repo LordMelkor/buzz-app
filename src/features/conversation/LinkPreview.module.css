@@ -1,4 +1,4 @@
-.sessionLink {
+.soloLink {
   display: inline-flex;
   align-items: center;
   max-width: min(100%, 24rem);
@@ -9,16 +9,16 @@
   text-decoration: none;
   vertical-align: baseline;
 }
-a.sessionLink:hover {
+a.soloLink:hover {
   background: var(--affordance-subtle-hover);
   color: var(--text-standard);
   text-decoration: none;
 }
-html[data-keyboard-navigation] .sessionLink:focus-visible {
+html[data-keyboard-navigation] .soloLink:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
-.sessionChip {
+.soloChip {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1h);
@@ -29,7 +29,7 @@ html[data-keyboard-navigation] .sessionLink:focus-visible {
   letter-spacing: var(--text-body-sm--letter-spacing);
   font-weight: var(--text-body-sm--font-weight);
 }
-.sessionIcon {
+.soloIcon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -40,29 +40,29 @@ html[data-keyboard-navigation] .sessionLink:focus-visible {
   border-radius: var(--radius-row);
   background: var(--affordance-subtle-pressed);
 }
-.sessionPrefix {
+.soloPrefix {
   flex-shrink: 0;
   color: var(--text-subtle);
 }
-.sessionName {
+.soloName {
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sessionLock {
+.soloLock {
   flex-shrink: 0;
   color: var(--text-subtle);
 }
 @container message-row (max-width: 16.25rem) {
-  .sessionChip {
+  .soloChip {
     flex-wrap: wrap;
   }
-  .sessionName {
+  .soloName {
     flex-basis: 100%;
   }
-  .sessionPrefix {
+  .soloPrefix {
     max-width: 100%;
     white-space: normal;
     overflow-wrap: anywhere;

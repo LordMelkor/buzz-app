@@ -1,6 +1,11 @@
 import { expect, it } from "vitest";
 import { isTransientFailure, ReadError } from "./errors";
-import { liveRecoveryStatus, type LiveRecoveryView } from "./live-recovery";
+import {
+  headRecovering,
+  liveRecoveryStatus,
+  rosterRecovering,
+  type LiveRecoveryView,
+} from "./live-recovery";
 
 const healthy: LiveRecoveryView = {
   status: "connected",
@@ -105,12 +110,9 @@ it("lets recovery own transient live failures and leaves the rest visible", () =
     "failed",
   );
   expect(liveRecoveryStatus({ ...healthy, previews: "checking" })).toBe("busy");
-  // Denials, terminal sign-in errors and deterministic failures need someone
-  // to act; retrying them forever would hide their message.
+  // Denials, sign-in errors and deterministic failures need someone to act:
+  // recovery leaves them to the live layer's own slow retry.
   expect(liveRecoveryStatus(route("restricted: not a channel member"))).toBe(
-    "settled",
-  );
-  expect(liveRecoveryStatus(route("Relay supplied invalid live traffic"))).toBe(
     "settled",
   );
   expect(
@@ -141,4 +143,57 @@ it("lets recovery own transient live failures and leaves the rest visible", () =
   expect(liveRecoveryStatus({ ...healthy, heads: [{ state: "error" }] })).toBe(
     "settled",
   );
+});
+
+it("owns a surface's read exactly when recovery counts it failed or busy", () => {
+  const reads = [
+    { state: "verified" },
+    { state: "pending" },
+    { state: "deferred" },
+    { state: "error", transient: true },
+    { state: "error" },
+  ] as const;
+  for (const roster of reads)
+    expect(rosterRecovering(roster)).toBe(
+      liveRecoveryStatus({ ...healthy, roster }) !== "settled",
+    );
+  // A channel's timeline follows the live source for that channel alone.
+  const other = { ...healthy, heads: [{ channelId: "b", state: "pending" }] };
+  expect(headRecovering(other, "a")).toBe(false);
+  for (const head of reads)
+    expect(
+      headRecovering({ ...healthy, heads: [{ ...head, channelId: "a" }] }, "a"),
+    ).toBe(liveRecoveryStatus({ ...healthy, heads: [head] }) !== "settled");
+  // After a dropped stream, catch-up entries return only once the channel's
+  // route re-establishes; recovery owns the head through that handoff.
+  for (const status of ["connecting", "retrying"] as const)
+    expect(headRecovering({ ...healthy, status, heads: [] }, "a")).toBe(true);
+  const routeA = {
+    id: "channel:a",
+    channelId: "a",
+    replay: "unknown",
+  } as const;
+  const reconnected = (status: "pending" | "live") => ({
+    ...healthy,
+    routes: [{ ...routeA, status }],
+  });
+  expect(headRecovering(reconnected("pending"), "a")).toBe(true);
+  expect(headRecovering(reconnected("live"), "a")).toBe(false);
+  expect(headRecovering(reconnected("pending"), "b")).toBe(false);
+  // A terminal connection error retries nothing, even with the channel's
+  // route left pending, and a session without a live stream has no routes:
+  // the timeline's own error shows.
+  expect(
+    headRecovering({ ...reconnected("pending"), status: "error" }, "a"),
+  ).toBe(false);
+  expect(
+    headRecovering({ ...healthy, status: "unavailable", heads: [] }, "a"),
+  ).toBe(false);
+  // A connected stream whose channel route failed: an outage still owns it.
+  const failedRoute = (error: string) => ({
+    ...healthy,
+    routes: [{ ...routeA, status: "error" as const, error }],
+  });
+  expect(headRecovering(failedRoute("error: interrupted"), "a")).toBe(true);
+  expect(headRecovering(failedRoute("restricted: no access"), "a")).toBe(false);
 });

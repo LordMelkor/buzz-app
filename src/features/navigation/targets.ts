@@ -17,6 +17,8 @@ export type OpenTarget =
       version: 1;
       kind: "settings";
       section?: string;
+      /** Nested provider controls within Agent setup; presentation only. */
+      provider?: string;
       scope?: NavigationScope | null;
     }>
   | Readonly<{
@@ -30,6 +32,17 @@ export type OpenTarget =
     }>
   | Readonly<{
       version: 1;
+      kind: "plugin";
+      pluginId: string;
+      /** Omitted: the plugin's primary page, else its first. */
+      pageId?: string;
+      /** String route data from a link. The resolved page's own validator
+       * decides whether it applies; the page opens without it otherwise. */
+      params?: Readonly<Record<string, string>>;
+      scope?: NavigationScope | null;
+    }>
+  | Readonly<{
+      version: 1;
       kind: "conversation";
       scope: NavigationScope;
       channelId: string;
@@ -37,14 +50,20 @@ export type OpenTarget =
       /** Hint only. Resolve the actual root from verified message evidence. */
       threadRootId?: string;
       /** Presentation within this conversation; never mutation or confirmation state. */
-      panel?: "members" | "shared-sessions";
+      panel?: "members";
+      /** Read-only content selected beside this conversation; never an action. */
+      detail?: Readonly<{ target: string; rootId?: string }>;
     }>;
 
 const MAX_BYTES = 8192;
 const token = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 // Built-in section, or a grouped plugin card's contribution key (`plugin/card`).
 const section = /^[a-z0-9][a-z0-9._-]{0,127}(?:\/[a-z0-9][a-z0-9._-]{0,127})?$/;
+const provider = /^[a-z0-9][a-z0-9._-]{0,127}\/[a-z0-9][a-z0-9._-]{0,127}$/;
 const hex = /^[a-f0-9]{64}$/i;
+const paramKey = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+const MAX_PARAMS = 16;
+const MAX_PARAM_LENGTH = 1024;
 const invalid = () => new Error("Invalid or unsupported navigation target");
 function record(value: unknown): Record<string, unknown> {
   if (
@@ -77,6 +96,20 @@ function boundScope(input: unknown): NavigationScope {
     viewer: text(value.viewer, hex).toLowerCase(),
     communityOrigin: relayOrigin(value.communityOrigin),
   });
+}
+
+function stringParams(input: unknown): Readonly<Record<string, string>> {
+  const value = record(input);
+  const keys = Object.keys(value).sort();
+  if (keys.length > MAX_PARAMS) throw invalid();
+  const result: Record<string, string> = Object.create(null);
+  for (const key of keys) {
+    const item = value[key];
+    if (typeof item !== "string" || item.length > MAX_PARAM_LENGTH)
+      throw invalid();
+    result[text(key, paramKey)] = item;
+  }
+  return Object.freeze(result);
 }
 
 /** Copy, bound and sort JSON before retaining plugin-supplied state. No references survive. */
@@ -125,12 +158,17 @@ export function parseOpenTarget(input: unknown): OpenTarget {
         target = { version: 1, kind: "home" };
         break;
       case "settings":
-        fields(value, ["version", "kind", "section", "scope"]);
+        fields(value, ["version", "kind", "section", "provider", "scope"]);
+        if (value.provider !== undefined && value.section !== "agents")
+          throw invalid();
         target = {
           version: 1,
           kind: "settings",
           ...(value.section !== undefined
             ? { section: text(value.section, section) }
+            : {}),
+          ...(value.provider !== undefined
+            ? { provider: text(value.provider, provider) }
             : {}),
           ...(value.scope !== undefined
             ? { scope: value.scope === null ? null : boundScope(value.scope) }
@@ -169,7 +207,29 @@ export function parseOpenTarget(input: unknown): OpenTarget {
         };
         break;
       }
-      case "conversation":
+      case "plugin":
+        fields(value, [
+          "version",
+          "kind",
+          "pluginId",
+          "pageId",
+          "params",
+          "scope",
+        ]);
+        target = {
+          version: 1,
+          kind: "plugin",
+          pluginId: text(value.pluginId),
+          ...(value.pageId !== undefined ? { pageId: text(value.pageId) } : {}),
+          ...(value.params !== undefined
+            ? { params: stringParams(value.params) }
+            : {}),
+          ...(value.scope !== undefined
+            ? { scope: value.scope === null ? null : boundScope(value.scope) }
+            : {}),
+        };
+        break;
+      case "conversation": {
         fields(value, [
           "version",
           "kind",
@@ -178,15 +238,28 @@ export function parseOpenTarget(input: unknown): OpenTarget {
           "messageId",
           "threadRootId",
           "panel",
+          "detail",
         ]);
         if (value.threadRootId !== undefined && value.messageId === undefined)
           throw invalid();
         if (
           value.panel !== undefined &&
           value.panel !== "members" &&
+          // Retired Shared sessions tab: saved targets still open the conversation.
           value.panel !== "shared-sessions"
         )
           throw invalid();
+        let detail: { target: string; rootId?: string } | undefined;
+        if (value.detail !== undefined) {
+          const input = record(value.detail);
+          fields(input, ["target", "rootId"]);
+          detail = Object.freeze({
+            target: text(input.target, /^[!-~]{1,4096}$/),
+            ...(input.rootId !== undefined
+              ? { rootId: text(input.rootId, hex).toLowerCase() }
+              : {}),
+          });
+        }
         target = {
           version: 1,
           kind: "conversation",
@@ -201,11 +274,11 @@ export function parseOpenTarget(input: unknown): OpenTarget {
           ...(value.threadRootId !== undefined
             ? { threadRootId: text(value.threadRootId, hex).toLowerCase() }
             : {}),
-          ...(value.panel === "members" || value.panel === "shared-sessions"
-            ? { panel: value.panel }
-            : {}),
+          ...(value.panel === "members" ? { panel: value.panel } : {}),
+          ...(detail ? { detail } : {}),
         };
         break;
+      }
       default:
         throw invalid();
     }

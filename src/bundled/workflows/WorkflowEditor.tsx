@@ -2,22 +2,15 @@ import { Field } from "../../shared/design-system/ui/Field";
 import { Input } from "../../shared/design-system/ui/Input";
 import { Textarea } from "../../shared/design-system/ui/Textarea";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import {
-  DotsThreeIcon,
-  LightningIcon,
-  PencilSimpleIcon,
-} from "../../shared/design-system/icons";
+import { DotsThreeIcon } from "../../shared/design-system/icons";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
-import { Accordion } from "../../shared/design-system/ui/Accordion";
 import { Button } from "../../shared/design-system/ui/Button";
 import {
   MenuRoot,
   MenuTrigger,
   MenuPopup,
-  MenuCheckboxItem,
-  MenuIcon,
 } from "../../shared/design-system/ui/Menu";
-import { Switch } from "../../shared/design-system/ui/Switch";
+import { SwitchPreferenceRow } from "../../shared/design-system/ui/SwitchPreferenceRow";
 import { Tabs } from "../../shared/design-system/ui/Tabs";
 import { ConfirmAction } from "./ConfirmAction";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
@@ -49,6 +42,8 @@ export function WorkflowEditor({
   onCancel,
   scope,
   actions,
+  run,
+  runs,
   details,
   status,
   children,
@@ -66,7 +61,9 @@ export function WorkflowEditor({
   locked?: boolean;
   onCancel?: () => void;
   scope?: ReactNode;
-  actions?: (enable: ReactNode) => ReactNode;
+  actions?: ReactNode;
+  run?: ReactNode;
+  runs?: ReactNode;
   details?: ReactNode;
   status?: ReactNode;
   children?: ReactNode;
@@ -74,25 +71,16 @@ export function WorkflowEditor({
   chooseChannel?: boolean;
 }) {
   const id = useId();
+  const heading = useRef<HTMLSpanElement>(null);
   const [selection, setSelection] = useState<WorkflowSelection>(
     create && !chooseChannel ? { type: "trigger" } : null,
   );
-  const [mode, setMode] = useState<"form" | "yaml">(() =>
+  const [mode, setMode] = useState<"form" | "yaml" | "runs">(() =>
     yamlToFormState(yaml).ok ? "form" : "yaml",
   );
   const [formDraft, setFormDraft] = useState<WorkflowFormState | null>(null);
   const [formYaml, setFormYaml] = useState(yaml);
   const [activating, setActivating] = useState(false);
-  const [editingName, setEditingName] = useState(false);
-  const nameButton = useRef<HTMLButtonElement>(null);
-  const restoreNameFocus = useRef(false);
-  useEffect(() => {
-    if (!editingName && restoreNameFocus.current) {
-      nameButton.current?.focus();
-      restoreNameFocus.current = false;
-    }
-  }, [editingName]);
-  const [nameDraft, setNameDraft] = useState("");
   const [modeError, setModeError] = useState<string | null>(null);
   const fields = readWorkflowDocumentFields(yaml);
   const parsed = yamlToFormState(yaml);
@@ -163,34 +151,70 @@ export function WorkflowEditor({
           : !fields.editable
             ? "Correct the YAML before changing the name or configuration."
             : undefined));
-  const enableControl = (
-    <MenuCheckboxItem
-      checked={fields.enabled !== false && fields.editable}
-      disabled={disabled || !fields.editable}
-      aria-describedby={controlReason ? `${id}-control-reason` : undefined}
-      closeOnClick={false}
+  const enableSwitch = fields.editable ? (
+    <SwitchPreferenceRow
+      label="Enabled in configuration"
+      description={
+        // In YAML view the status line directly below already shows the reason.
+        (mode === "form" || readOnly ? controlReason : undefined) ??
+        "Configuration changes apply on save. Turning off does not confirm runs have stopped or cancel active runs."
+      }
+      checked={fields.enabled !== false}
+      disabled={disabled}
       onCheckedChange={(enabled) =>
         changeHeader(yamlWithWorkflowEnabled(yaml, enabled), { enabled })
       }
-    >
-      <MenuIcon>
-        <LightningIcon size={14} />
-      </MenuIcon>
-      Enable
-    </MenuCheckboxItem>
+    />
+  ) : (
+    <span className="text-body-sm text-secondary">
+      Unreadable configuration
+    </span>
+  );
+  const modeTabs = (
+    <Tabs
+      variant="panel"
+      label="Editor mode"
+      value={mode}
+      items={[
+        { value: "form", label: "Form" },
+        { value: "yaml", label: "YAML" },
+        ...(runs ? [{ value: "runs" as const, label: "Runs" }] : []),
+      ]}
+      onValueChange={(next) => {
+        if (next === "runs") {
+          setModeError(null);
+          setSelection(null);
+          setMode(next);
+          return;
+        }
+        if (next === "yaml" && (conditionError || headerError)) {
+          setModeError(
+            "Correct the invalid condition or duplicate header before switching views.",
+          );
+          return;
+        }
+        if (next === "form" && !form) {
+          setModeError(parsed.ok ? null : parsed.error);
+          return;
+        }
+        setModeError(null);
+        setSelection(null);
+        setMode(next);
+      }}
+    />
   );
   return (
     <Dialog
       open
+      initialFocus={heading}
       title={
-        create
-          ? "Create workflow"
-          : readOnly
-            ? "View workflow"
-            : "Edit workflow"
+        <span ref={heading} tabIndex={-1}>
+          {create ? "Create workflow" : fields.name || "Untitled workflow"}
+        </span>
       }
       closeLabel="Close editor"
-      size="expanded"
+      size="wide"
+      height="stable-tall"
       onOpenChange={(open) => {
         if (!open) onCancel?.();
       }}
@@ -201,46 +225,23 @@ export function WorkflowEditor({
       }}
       headerActions={
         !create && (
-          <MenuRoot>
-            <MenuTrigger
-              render={
-                <IconButton
-                  aria-label="Workflow actions"
-                  icon={<DotsThreeIcon size={20} aria-hidden="true" />}
+          <>
+            {run}
+            {actions && (
+              <MenuRoot>
+                <MenuTrigger
+                  render={
+                    <IconButton
+                      aria-label="Workflow actions"
+                      icon={<DotsThreeIcon size={20} aria-hidden="true" />}
+                    />
+                  }
                 />
-              }
-            />
-            <MenuPopup align="end">
-              {actions ? actions(enableControl) : enableControl}
-            </MenuPopup>
-          </MenuRoot>
+                <MenuPopup align="end">{actions}</MenuPopup>
+              </MenuRoot>
+            )}
+          </>
         )
-      }
-      leadingActions={
-        <Tabs
-          variant="panel"
-          label="Editor mode"
-          value={mode}
-          items={[
-            { value: "form", label: "Form" },
-            { value: "yaml", label: "YAML" },
-          ]}
-          onValueChange={(next) => {
-            if (next === "yaml" && (conditionError || headerError)) {
-              setModeError(
-                "Correct the invalid condition or duplicate header before switching views.",
-              );
-              return;
-            }
-            if (next === "form" && !form) {
-              setModeError(parsed.ok ? null : parsed.error);
-              return;
-            }
-            setModeError(null);
-            setSelection(null);
-            setMode(next);
-          }}
-        />
       }
       actions={
         !readOnly && (
@@ -279,109 +280,14 @@ export function WorkflowEditor({
       }
     >
       <section aria-label="Workflow editor" className="workflow-editor">
-        <div className="workflow-toolbar">
-          <div className="workflow-name">
-            {editingName ? (
-              <Field
-                label="Workflow name"
-                error={
-                  showingForm && issue?.field === "name" ? error : undefined
-                }
-              >
-                <Input
-                  id={`${id}-1`}
-                  value={nameDraft}
-                  autoFocus
-                  onFocus={(event) => event.currentTarget.select()}
-                  disabled={disabled || !fields.editable}
-                  autoCapitalize="off"
-                  onValueChange={setNameDraft}
-                  onBlur={() => {
-                    changeHeader(yamlWithWorkflowName(yaml, nameDraft), {
-                      name: nameDraft,
-                    });
-                    setEditingName(false);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      restoreNameFocus.current = true;
-                      setEditingName(false);
-                    }
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      restoreNameFocus.current = true;
-                      changeHeader(yamlWithWorkflowName(yaml, nameDraft), {
-                        name: nameDraft,
-                      });
-                      setEditingName(false);
-                    }
-                  }}
-                />
-              </Field>
-            ) : (
-              <div className="workflow-name-display">
-                <span className="text-mono-sm">
-                  {fields.name || "Untitled workflow"}
-                </span>
-                <IconButton
-                  ref={nameButton}
-                  aria-label="Edit workflow name"
-                  title="Edit workflow name"
-                  aria-describedby={
-                    [
-                      controlReason && `${id}-control-reason`,
-                      issue?.field === "name" && `${id}-name-error`,
-                    ]
-                      .filter(Boolean)
-                      .join(" ") || undefined
-                  }
-                  icon={<PencilSimpleIcon size={16} aria-hidden="true" />}
-                  size="sm"
-                  disabled={disabled || !fields.editable}
-                  onClick={() => {
-                    setNameDraft(fields.name ?? "");
-                    setEditingName(true);
-                  }}
-                />
-              </div>
-            )}
-            {!editingName && issue?.field === "name" && (
-              <p
-                id={`${id}-name-error`}
-                role="status"
-                className="text-body-sm text-danger"
-              >
-                {issue.message}
-              </p>
-            )}
-          </div>
-          {readOnly && (
-            <span id={`${id}-control-reason`} hidden>
-              {controlReason}
-            </span>
-          )}
-          {create && fields.editable ? (
-            <Switch
-              label="Enabled in configuration"
-              aria-describedby={
-                controlReason ? `${id}-control-reason` : undefined
-              }
-              checked={fields.enabled !== false}
-              disabled={disabled}
-              onCheckedChange={(enabled) =>
-                changeHeader(yamlWithWorkflowEnabled(yaml, enabled), {
-                  enabled,
-                })
-              }
-            />
-          ) : !fields.editable ? (
-            <span className="text-body-sm text-secondary">
-              Unreadable configuration
-            </span>
-          ) : null}
-        </div>
+        {!chooseChannel && (
+          <div className="workflow-editor-tabs">{modeTabs}</div>
+        )}
+        {readOnly && (
+          <span id={`${id}-control-reason`} hidden>
+            {controlReason}
+          </span>
+        )}
         <div className="workflow-editor-body">
           {modeError && (
             <p role="alert" className="text-danger">
@@ -390,42 +296,96 @@ export function WorkflowEditor({
           )}
           {chooseChannel ? (
             scope
+          ) : mode === "runs" ? (
+            runs
           ) : mode === "form" && form ? (
             <WorkflowForm
               state={form}
               issue={issue}
               onChange={mutateForm}
               disabled={disabled}
-              scope={scope}
               selection={selection}
               onSelect={setSelection}
+              overview={
+                <div className="workflow-form">
+                  <Field
+                    label="Workflow name"
+                    error={issue?.field === "name" ? error : undefined}
+                  >
+                    <Input
+                      id={`${id}-1`}
+                      value={fields.name ?? ""}
+                      disabled={disabled || !fields.editable}
+                      autoCapitalize="off"
+                      aria-describedby={
+                        controlReason ? `${id}-control-reason` : undefined
+                      }
+                      onValueChange={(name) =>
+                        changeHeader(yamlWithWorkflowName(yaml, name), {
+                          name,
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Description">
+                    <Textarea
+                      value={form.description}
+                      rows={2}
+                      placeholder="What does this workflow do?"
+                      disabled={disabled}
+                      onChange={(event) =>
+                        mutateForm({
+                          ...form,
+                          description: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </Field>
+                  {scope && (
+                    <Field label="Channel">
+                      <span className="text-body">{scope}</span>
+                    </Field>
+                  )}
+                  {enableSwitch}
+                  {details}
+                </div>
+              }
             />
           ) : (
-            <Field
-              label="Workflow YAML"
-              error={error}
-              description="Original text is kept until you edit. Form changes may reformat YAML. Schedules use UTC."
-            >
-              <Textarea
-                id={`${id}-yaml`}
-                variant="code"
-                rows={18}
-                spellCheck={false}
-                autoCapitalize="off"
-                readOnly={disabled}
-                value={yaml}
-                onChange={(event) => {
-                  setFormDraft(null);
-                  setModeError(null);
-                  onChange(event.currentTarget.value);
-                }}
-              />
-            </Field>
+            <div className="workflow-form">
+              <Field
+                label="Workflow YAML"
+                error={error}
+                description="Original text is kept until you edit. Form changes may reformat YAML. Schedules use UTC."
+              >
+                <Textarea
+                  id={`${id}-yaml`}
+                  variant="code"
+                  rows={18}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  readOnly={disabled}
+                  value={yaml}
+                  onChange={(event) => {
+                    setFormDraft(null);
+                    setModeError(null);
+                    onChange(event.currentTarget.value);
+                  }}
+                />
+              </Field>
+              {enableSwitch}
+              {details}
+            </div>
           )}
-          {showingForm &&
-            error &&
-            (!issue?.field || conditionError || headerError) &&
-            !!form?.steps.length && (
+          {error &&
+            // Runs and step settings hide the field an error belongs to.
+            (mode === "runs" ||
+              (showingForm &&
+                !!form?.steps.length &&
+                (!issue?.field ||
+                  conditionError ||
+                  headerError ||
+                  (!!selection && issue.field === "name")))) && (
               <p role="status" className="text-danger">
                 {error}
               </p>
@@ -443,33 +403,6 @@ export function WorkflowEditor({
           )}
           {status}
         </div>
-        {!chooseChannel && (
-          <Accordion
-            variant="form"
-            items={[
-              {
-                value: "settings",
-                title: "Workflow settings & activity",
-                content: (
-                  <div className="workflow-options">
-                    {form && (
-                      <Field label="Description">
-                        <Input
-                          value={form.description}
-                          disabled={disabled}
-                          onValueChange={(description) =>
-                            mutateForm({ ...form, description })
-                          }
-                        />
-                      </Field>
-                    )}
-                    {details}
-                  </div>
-                ),
-              },
-            ]}
-          />
-        )}
         {activating && (
           <ConfirmAction
             title={warning?.title ?? "Save this workflow enabled?"}

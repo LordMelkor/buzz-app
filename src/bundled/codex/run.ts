@@ -2,7 +2,7 @@
 // desktop app registers it with its tabs, and a standalone host runs it alone.
 import { syncedSettingsSchema, withSyncedSettings } from "./settings";
 import type { AgentType } from "../../features/agents/service";
-import type { Config } from "./config";
+import { type Config, config } from "./config";
 import type { CodexRuntime } from "./runtime";
 
 export const TYPE_ID = "codex";
@@ -17,9 +17,21 @@ export const codexRun = (
   ready?: (signal: AbortSignal) => Promise<void>,
 ): Pick<
   AgentType<Config>,
-  "models" | "run" | "runOnce" | "timeoutMs" | "syncedSettings"
+  | "models"
+  | "sessionControls"
+  | "run"
+  | "runOnce"
+  | "timeoutMs"
+  | "syncedSettings"
+  | "resumes"
 > => ({
   models: (agent) => runtime.preview(agent),
+  sessionControls: {
+    scope: (agent) => config(agent.config).scope,
+    state: (agent, place) => runtime.sessionState(agent, place),
+    run: (agent, place, action) => runtime.session(agent, place, action),
+    subscribe: (listener) => runtime.subscribe(listener),
+  },
   run: async (delivery) => {
     await ready?.(delivery.signal);
     return runtime.run(delivery);
@@ -33,4 +45,7 @@ export const codexRun = (
     schema: syncedSettingsSchema,
     withSynced: withSyncedSettings,
   },
+  // Closing or reloading the app stops its turns; each resumed one carries on
+  // in its saved session.
+  resumes: true,
 });

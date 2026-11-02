@@ -13,6 +13,7 @@ import {
   MenuSeparator,
 } from "../../shared/design-system/ui/Menu";
 import type { ChannelLifecycleCapability } from "../../features/relay/channel-lifecycle";
+import type { LifecycleNoun } from "./ChannelLifecycleDialog";
 import type {
   ChannelLifecycleAction,
   ChannelLifecycleSettings,
@@ -25,6 +26,7 @@ export function ChannelLifecycleMenu({
   choose,
   disabled,
   separator,
+  noun = "channel",
   open = true,
   render = (items) => items,
 }: {
@@ -33,6 +35,7 @@ export function ChannelLifecycleMenu({
   choose(action: ChannelLifecycleAction): void;
   disabled: boolean;
   separator: boolean;
+  noun?: LifecycleNoun;
   open?: boolean;
   render?(items: ReactNode): ReactNode;
 }) {
@@ -113,7 +116,7 @@ export function ChannelLifecycleMenu({
               <MenuIcon>
                 <SignOutIcon size={14} />
               </MenuIcon>
-              Leave channel
+              Leave {noun}
             </MenuItem>
           )}
           {(state.canArchive || state.canUnarchive) && (
@@ -126,7 +129,7 @@ export function ChannelLifecycleMenu({
               <MenuIcon>
                 <ArchiveIcon size={14} />
               </MenuIcon>
-              {state.canUnarchive ? "Unarchive channel" : "Archive channel"}
+              {state.canUnarchive ? `Unarchive ${noun}` : `Archive ${noun}`}
             </MenuItem>
           )}
           {state.deleteUnavailable && (
@@ -158,7 +161,7 @@ export function ChannelLifecycleMenu({
               <MenuIcon>
                 <TrashIcon size={14} />
               </MenuIcon>
-              Delete channel
+              Delete {noun}
             </MenuItem>
           )}
         </>

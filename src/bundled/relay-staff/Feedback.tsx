@@ -21,7 +21,13 @@ import type {
   StaffFailure,
   StaffRequest,
 } from "../../features/relay-staff/contract";
-import { describe, useRead, useSession, useWrite } from "./session";
+import {
+  describe,
+  retryStaffRead,
+  useRead,
+  useSession,
+  useWrite,
+} from "./session";
 import {
   CommunityBadge,
   Failure,
@@ -289,8 +295,12 @@ function AttachmentView({ attachment }: { attachment: AttachmentRef }) {
     if (!image) return;
     let url: string | null = null;
     let current = true;
-    void session.attachment(attachment).then((outcome) => {
-      if (!current) return;
+    const controller = new AbortController();
+    void retryStaffRead(
+      () => session.attachment(attachment),
+      controller.signal,
+    ).then((outcome) => {
+      if (!outcome || !current) return;
       setRetrying(false);
       if (!outcome.ok) return setPreview({ failure: outcome.failure });
       url = URL.createObjectURL(
@@ -301,6 +311,7 @@ function AttachmentView({ attachment }: { attachment: AttachmentRef }) {
     // The object URL is released when the attachment closes or unmounts.
     return () => {
       current = false;
+      controller.abort();
       if (url) URL.revokeObjectURL(url);
     };
   }, [session, attachment.feedbackId, attachment.sha256, image, attempt]);

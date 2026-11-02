@@ -1,3 +1,4 @@
+import { RecommendationCount } from "../RecommendationCount";
 import { formatPublicKey } from "../../shared/identity/public-key";
 import { usePresenceStatus } from "../../features/presence/react";
 import { useRelayConnection } from "../../features/relay/react";
@@ -65,19 +66,20 @@ const colorModes = {
   ColorModePreference,
   { label: string; Icon: typeof SunIcon }
 >;
-const noLiveSnapshot = () => undefined;
 
 export function ProfileButton({
   communities,
   accountActions,
   appearance,
   settingsSelected,
+  pluginRecommendations = 0,
   onSettings,
 }: {
   communities: Communities;
   accountActions: AccountActionsService;
   appearance: Appearance;
   settingsSelected: boolean;
+  pluginRecommendations?: number;
   /** Opens Settings, optionally at one of its own sections. */
   onSettings(section?: "profile" | "plugins"): void;
 }) {
@@ -151,13 +153,19 @@ export function ProfileButton({
     readProfile,
     readProfile,
   );
-  const live = useSyncExternalStore(
+  // Only the refresh inputs: live heads change on every message and prefetch.
+  const readRoster = () => session?.live.snapshot()?.roster;
+  const readLiveStatus = () => session?.live.snapshot()?.status;
+  const roster = useSyncExternalStore(
     session?.live.subscribe ?? noSubscription,
-    session?.live.snapshot ?? noLiveSnapshot,
-    session?.live.snapshot ?? noLiveSnapshot,
+    readRoster,
+    readRoster,
   );
-  const roster = live?.roster;
-  const liveStatus = live?.status;
+  const liveStatus = useSyncExternalStore(
+    session?.live.subscribe ?? noSubscription,
+    readLiveStatus,
+    readLiveStatus,
+  );
   useEffect(() => {
     if (
       !profiles ||
@@ -235,8 +243,13 @@ export function ProfileButton({
           // the page. Other dismissals retain the shared menu's focus behavior.
           if (!open && handoff.current) {
             const main = document.getElementById("main-content");
-            // A user may already be editing Settings while the menu animates out.
-            if (!main?.contains(document.activeElement)) main?.focus();
+            // A user may already be editing Settings, or the profile panel may
+            // have focused itself, while the menu animates out.
+            if (
+              !document.querySelector('[aria-modal="true"]') &&
+              !main?.contains(document.activeElement)
+            )
+              main?.focus();
           }
         }}
       >
@@ -401,7 +414,11 @@ export function ProfileButton({
               >
                 {status ? (
                   <>
-                    <StatusEmoji session={session} value={status.emoji} />
+                    <StatusEmoji
+                      session={session}
+                      value={status.emoji}
+                      url={status.emojiUrl}
+                    />
                     <span className="min-w-0 truncate text-body-sm">
                       {status.text}
                     </span>
@@ -434,7 +451,6 @@ export function ProfileButton({
               Appearance
             </MenuSubmenuTrigger>
             <MenuSubmenuPopup
-              size="compact"
               aria-label="Appearance"
               finalFocus={appearanceTrigger}
             >
@@ -480,6 +496,11 @@ export function ProfileButton({
               <SquaresFourIcon aria-hidden="true" size={16} />
             </MenuIcon>
             Plugins
+            {pluginRecommendations > 0 && (
+              <MenuTrailing>
+                <RecommendationCount count={pluginRecommendations} />
+              </MenuTrailing>
+            )}
           </MenuItem>
           <MenuItem
             aria-current={settingsSelected ? "page" : undefined}

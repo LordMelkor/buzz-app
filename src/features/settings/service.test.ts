@@ -102,3 +102,24 @@ it("notifies route readers when hidden visibility settles without changing visib
   expect(cards.has("moderation/membership")).toBe(false);
   await root.fiber.dispose();
 });
+
+it("refuses a Personal-space card that also claims a group or section", () => {
+  const root = new Context();
+  root.provide("pluginStatus", {
+    isActive: () => true,
+    subscribe: () => () => {},
+  });
+  const cards = new SettingsCardsService(root);
+  const card = {
+    id: "mobile",
+    title: "Pair mobile",
+    personal: true,
+    component: () => null,
+  };
+  expect(() => cards.register({ ...card, group: "Plugins" })).toThrow(
+    "Settings cards need an id, title and component",
+  );
+  expect(() => cards.register({ ...card, section: "administration" })).toThrow(
+    "Settings cards need an id, title and component",
+  );
+});

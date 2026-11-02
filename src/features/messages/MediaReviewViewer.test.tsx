@@ -141,6 +141,68 @@ it("keeps fullscreen comment avatar hints in sync without loading the agent libr
   expect(readAgentLibrary).toHaveBeenCalledTimes(2);
 });
 
+it("renders comment mentions as names even though comment links stay inert", async () => {
+  const viewer = keypair(),
+    tyler = keypair();
+  const attachment = {
+    url: "https://fixture.test/image.png",
+    kind: "image" as const,
+  };
+  const root = message(viewer, "one", "Image", 1, [
+    ["imeta", `url ${attachment.url}`, "m image/png"],
+  ]);
+  const reply = message(viewer, "one", "I think @Tyler is looking at that", 2, [
+    ["e", root.id, "", "reply"],
+    ["p", tyler.pubkey],
+  ]);
+  const profiles = [
+    profile(viewer, { name: "Human" }),
+    profile(tyler, { name: "Tyler" }),
+  ];
+  const owner = createRelaySession({
+    viewer: viewer.pubkey,
+    relayAuthor: keypair().pubkey,
+    media: (url) => url,
+    async query(filters) {
+      return filters.flatMap((filter) => {
+        if (filter.kinds?.includes(0))
+          return profiles.filter((event) =>
+            filter.authors?.includes(event.pubkey),
+          );
+        if (filter.ids)
+          return [root, reply].filter((event) =>
+            filter.ids?.includes(event.id),
+          );
+        if (filter.depth_limit)
+          return filter.thread_cursor === undefined ||
+            reply.created_at > filter.thread_cursor
+            ? [reply]
+            : [];
+        return [];
+      });
+    },
+  });
+  owners.push(owner);
+  render(
+    <MediaReviewViewer
+      attachment={attachment}
+      session={owner.session}
+      scope="mention-test"
+      channelId="one"
+      channelName="One"
+      messageId={root.id}
+      initialTime={0}
+      onOpenLink={() => false}
+      close={() => {}}
+    />,
+  );
+  const mention = await screen.findByText("Tyler", {
+    selector: "[data-mention-kind]",
+  });
+  expect(mention).toHaveAttribute("data-mention-kind", "person");
+  expect(mention.tagName).toBe("SPAN");
+});
+
 it("wires image review links to the viewer host opener", async () => {
   const viewer = keypair();
   const image = {

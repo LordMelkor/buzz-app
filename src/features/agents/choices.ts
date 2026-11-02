@@ -31,7 +31,15 @@ export function sameCommunityAgents(
 type Choice = AgentLibrarySnapshot["identities"][number] & {
   managed: boolean;
   managedName?: string;
+  /** Additional DM eligibility from completed owned hosted-agent records. */
+  messageable?: true;
 };
+
+export function canMessageAgent(
+  agent: Pick<Choice, "managed" | "messageable">,
+) {
+  return agent.managed || agent.messageable === true;
+}
 type SelectionSource = boolean | "templates";
 type TemplateChoices = Pick<AgentLibrarySnapshot, "status" | "error"> & {
   identities: readonly Choice[];
@@ -116,6 +124,17 @@ export function createAgentChoices({
     if (legacy.status === "ready")
       for (const row of legacy.identities)
         choices.set(row.pubkey, { ...row, managed: false });
+    if (local?.status === "ready")
+      for (const row of sameCommunityAgents(local.hosted ?? [], scope)) {
+        choices.set(row.pubkey, {
+          pubkey: row.pubkey,
+          name: row.name,
+          ...(row.picture ? { avatar: row.picture } : {}),
+          ...choices.get(row.pubkey),
+          managed: false,
+          messageable: true,
+        });
+      }
     if (local?.status === "ready")
       for (const row of sameCommunityAgents(local.agents, scope)) {
         // Keep existing source names in serialized mentions; the shared name
@@ -213,10 +232,12 @@ export function createAgentChoices({
       if (archive && archives?.snapshot().status === "idle")
         void archives.ensure();
     },
-    async refresh(source: SelectionSource = true) {
+    /** `fresh` rereads inventory even over a read already in flight, as after
+     * a change that read may predate. */
+    async refresh(source: SelectionSource = true, { fresh = false } = {}) {
       if (signal.aborted) return;
       await Promise.all([
-        usesLegacy(source) ? library.refresh() : undefined,
+        usesLegacy(source) ? library.refresh({ fresh }) : undefined,
         usesLocal(source) ? native?.refresh() : undefined,
         // Archive reads stay lazy; templates always need fresh evidence.
         source === "templates" || archives?.snapshot().status !== "idle"

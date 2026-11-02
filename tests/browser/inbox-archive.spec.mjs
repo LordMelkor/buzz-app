@@ -3,12 +3,21 @@ import { openPage } from "./navigation.mjs";
 import { readJournal } from "./reading.mjs";
 
 const channel = "f12918e7-88d0-4ddd-aa6b-d4888ff6d3bd";
+// The Archive shortcut acts on the last opened conversation.
+const archiveShortcut = (page) =>
+  page.keyboard.press(
+    process.platform === "darwin" ? "Meta+Control+A" : "Control+Shift+E",
+  );
+const conversations = (inbox) =>
+  inbox.getByRole("region", { name: /^Conversation in / });
+const sideTabs = (inbox) =>
+  inbox.getByRole("tablist", { name: "Panel tabs" }).getByRole("tab");
 test.use({
   productionBroker: true,
   readState: true,
   inboxThreadWindow: true,
   agentPeers: true,
-  inboxSessionAgent: true,
+  inboxSoloAgent: true,
   pluginFixtures: true,
   channelIds: ["alpha", channel],
   channelNames: { [channel]: "Archive room" },
@@ -117,9 +126,7 @@ test("Inbox status choices combine with attention filters and preserve them", as
   await expect(
     inbox.getByRole("button", { name: "Unread only" }),
   ).toHaveAttribute("aria-pressed", "true");
-  await expect(inbox.getByRole("region", { name: "Inbox detail" })).toHaveCount(
-    0,
-  );
+  await expect(conversations(inbox)).toHaveCount(0);
   await choose(page, inbox, "Show", "Archived");
   await expect(rows).toHaveCount(1);
   await expect(rows.getByRole("button", { name: /^Restore / })).toBeVisible();
@@ -187,11 +194,17 @@ test("Inbox archive survives reload and reopens Threads before fresh Mentions", 
     .getByRole("listitem");
   await expect(rows).toHaveCount(1);
   await rows.getByRole("button", { name: /^Open / }).click();
-  await inbox.getByRole("button", { name: "Archive conversation" }).click();
+  await expect(sideTabs(inbox)).toHaveCount(1);
+  // Opening an unread row saves read state; row buttons are disabled and the
+  // shortcut is deregistered until that save settles.
+  await expect(rows.getByRole("button", { name: /^Open / })).toBeEnabled();
+  await archiveShortcut(page);
   await expect(rows).toHaveCount(0);
-  await expect(inbox.getByRole("region", { name: "Inbox detail" })).toHaveCount(
-    0,
-  );
+  // With nothing left, its tab closes and focus returns to the list.
+  await expect(conversations(inbox)).toHaveCount(0);
+  await expect(
+    inbox.getByRole("button", { name: "Inbox filters", exact: true }),
+  ).toBeFocused();
   await page.reload();
   await openPage(page, "Inbox");
   await expect(inbox.getByText("Checking recent activity…")).toHaveCount(0);
@@ -298,13 +311,18 @@ test.describe("DM archive delivery", () => {
     await choose(page, inbox, "Activity type", "DMs");
     await expect(rows).toHaveCount(1);
     await rows.getByRole("button", { name: /^Open / }).click();
+    // A DM opens whole; its root carries the mentioned reply.
     await expect(
       inbox
-        .getByRole("complementary", { name: "Thread", exact: true })
-        .getByText("Earlier DM reply", { exact: true }),
+        .getByRole("region", {
+          name: "Conversation in Alice Fixture",
+          exact: true,
+        })
+        .getByText("Our DM discussion", { exact: true }),
     ).toBeVisible();
-    await inbox.getByRole("button", { name: "Archive conversation" }).click();
+    await rows.getByRole("button", { name: /^Archive / }).click();
     await expect(rows).toHaveCount(0);
+    await expect(conversations(inbox)).toHaveCount(0);
     await choose(page, inbox, "Show", "Archived");
     app.append("primary", dm, "New ordinary DM message", true, false);
     await choose(page, inbox, "Show", "Inbox");
@@ -332,7 +350,7 @@ test.describe("DM archive delivery", () => {
     );
     await choose(page, inbox, "Activity type", "DMs");
     await expect(dmRows).toHaveCount(1);
-    await expect(dmRows).toContainText("New ordinary DM message");
+    await expect(dmRows).toContainText("Fresh explicit DM mention");
     await page.reload();
     await openPage(page, "Inbox");
     await expect(dmRows).toHaveCount(1);
@@ -431,30 +449,31 @@ test("Inbox sending keeps the conversation open until manually archived", async 
   await expect(
     inbox.getByRole("checkbox", { name: "Archive on send" }),
   ).toHaveCount(0);
-  const editor = inbox.getByRole("textbox");
+  const detail = conversations(inbox);
+  const editor = detail.getByRole("textbox");
   await editor.fill("Keep this conversation");
-  await inbox.getByRole("button", { name: "Send message" }).click();
+  await detail.getByRole("button", { name: "Send message" }).click();
   await expect(editor).toHaveText("");
   await expect(
-    inbox.getByText("Keep this conversation", { exact: true }),
+    detail.getByText("Keep this conversation", { exact: true }),
   ).toBeVisible();
   await expect(rows).toHaveCount(1);
   await expect(editor).toBeVisible();
-  await inbox.getByRole("button", { name: "Archive conversation" }).click();
+  // The shortcut archives the open conversation from its composer.
+  await editor.focus();
+  await archiveShortcut(page);
   await expect(rows).toHaveCount(0);
-  await expect(inbox.getByRole("region", { name: "Inbox detail" })).toHaveCount(
-    0,
-  );
+  await expect(detail).toHaveCount(0);
   await choose(page, inbox, "Show", "Archived");
   await expect(rows).toHaveCount(1);
 });
 
 // Browser-only: verify selection and original rich-editor identity across list changes.
-test("detail archive advances to next conversation then closes", async ({
+test("archiving the open conversation advances its tab, then closes it", async ({
   page,
   app,
 }) => {
-  app.append(
+  const request = app.append(
     "primary",
     channel,
     "Second explicit request",
@@ -471,20 +490,27 @@ test("detail archive advances to next conversation then closes", async ({
     .getByRole("list", { name: "Inbox conversations" })
     .getByRole("listitem");
   await expect(rows).toHaveCount(2);
-  await rows
-    .first()
-    .getByRole("button", { name: /^Open / })
-    .click();
-  const detail = inbox.getByRole("region", { name: "Inbox detail" });
-  await expect(detail).toBeVisible();
-  await inbox
-    .getByRole("button", { name: "Archive conversation", exact: true })
-    .click();
+  const thread = rows.filter({ hasText: "Inbox strict reply" });
+  const next = rows.filter({ hasText: "Second explicit request" });
+  await thread.getByRole("button", { name: /^Open / }).click();
+  const detail = conversations(inbox);
+  const root = detail.locator(`[data-message-id="${app.inboxWindow.root.id}"]`);
+  await expect(root).toBeVisible();
+  await expect(sideTabs(inbox)).toHaveCount(1);
+  // Row buttons are disabled while the opened row's read-state save is pending.
+  await expect(thread.getByRole("button", { name: /^Open / })).toBeEnabled();
+  await archiveShortcut(page);
   await expect(rows).toHaveCount(1);
-  await expect(detail).toBeVisible();
-  await inbox
-    .getByRole("button", { name: "Archive conversation", exact: true })
-    .click();
+  // The remaining conversation replaces the archived one's tab and is selected.
+  await expect(sideTabs(inbox)).toHaveCount(1);
+  await expect(root).toHaveCount(0);
+  await expect(
+    detail.locator(`[data-message-id="${request.id}"]`),
+  ).toBeInViewport();
+  await expect(next).toHaveAttribute("data-selected", "true");
+  // Advancing reads the successor, so its save must settle before the chord.
+  await expect(next.getByRole("button", { name: /^Open / })).toBeEnabled();
+  await archiveShortcut(page);
   await expect(rows).toHaveCount(0);
   await expect(detail).toHaveCount(0);
 });
@@ -514,7 +540,7 @@ test("selected row button advances and menu closes without losing the original d
   const next = rows.filter({ hasText: "Unread neighbor" });
   await expect(rows).toHaveCount(2);
   await thread.getByRole("button", { name: /^Open / }).click();
-  const editor = inbox.getByRole("textbox");
+  const editor = conversations(inbox).getByRole("textbox");
   await editor.fill("Keep the selected archive draft");
   await editor.evaluate((el) => {
     el.dataset.retentionMarker = "original-editor";
@@ -534,19 +560,22 @@ test("selected row button advances and menu closes without losing the original d
     "data-retention-marker",
     "original-editor",
   );
-  // Successor reveal owns initial focus; finish it before focusing the row menu.
-  const successor = inbox
-    .getByRole("region", { name: "Inbox detail" })
-    .locator(`[data-message-id="${neighbor.id}"]`);
+  // The successor's tab replaces the archived one and reveals its message.
+  await expect(sideTabs(inbox)).toHaveCount(1);
+  await expect(
+    conversations(inbox).locator(
+      `[data-message-id="${app.inboxWindow.root.id}"]`,
+    ),
+  ).toHaveCount(0);
+  const successor = conversations(inbox).locator(
+    `[data-message-id="${neighbor.id}"]`,
+  );
   await expect(successor).toBeInViewport();
-  await expect(successor).toBeFocused();
   await next.getByRole("button", { name: /^Open / }).focus();
   await page.keyboard.press("Shift+F10");
   await page.getByRole("menuitem", { name: "Archive conversation" }).click();
   await expect(rows).toHaveCount(0);
-  await expect(inbox.getByRole("region", { name: "Inbox detail" })).toHaveCount(
-    0,
-  );
+  await expect(conversations(inbox)).toHaveCount(0);
   await choose(page, inbox, "Show", "Archived");
   await expect(rows).toHaveCount(2);
   await thread.getByRole("button", { name: /^Open / }).click();
@@ -578,11 +607,10 @@ test("unselected row Archive preserves the open editor and unread neighbor", asy
   const next = rows.filter({ hasText: "Unread neighbor" });
   await expect(rows).toHaveCount(2);
   await thread.getByRole("button", { name: /^Open / }).click();
-  const target = inbox
-    .getByRole("region", { name: "Inbox detail" })
-    .locator(`[data-message-id="${app.inboxWindow.replies[0].id}"]`);
+  const target = conversations(inbox).locator(
+    `[data-message-id="${app.inboxWindow.replies[0].id}"]`,
+  );
   await expect(target).toBeInViewport();
-  await expect(target).toBeFocused();
   // Finish entry reveal and its next-frame acknowledgement before taking the
   // editor/row-focus baseline; list aria-busy does not cover reader positioning.
   await page.evaluate(
@@ -591,7 +619,7 @@ test("unselected row Archive preserves the open editor and unread neighbor", asy
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       ),
   );
-  const editor = inbox.getByRole("textbox");
+  const editor = conversations(inbox).getByRole("textbox");
   await editor.fill("Keep the unselected archive draft");
   await editor.evaluate((el) => {
     el.dataset.retentionMarker = "original-editor";
@@ -603,6 +631,9 @@ test("unselected row Archive preserves the open editor and unread neighbor", asy
   await expect(rows).toHaveCount(1);
   await expect(list).toHaveAttribute("aria-busy", "false");
   await expect(thread).toHaveAttribute("data-selected", "true");
+  // Archiving another row moves focus to the next row and leaves the tab.
+  await expect(thread.getByRole("button", { name: /^Open / })).toBeFocused();
+  await expect(sideTabs(inbox)).toHaveCount(1);
   await expect(editor).toHaveText("Keep the unselected archive draft");
   await expect(editor).toHaveAttribute(
     "data-retention-marker",
@@ -640,7 +671,8 @@ test("reply and fresh mention reopen their filters without replacing composer dr
   await choose(page, inbox, "Show", "Archived");
   await expect(rows).toHaveCount(1);
   await rows.getByRole("button", { name: /^Open / }).click();
-  const editor = inbox.getByRole("textbox");
+  const detail = conversations(inbox);
+  const editor = detail.getByRole("textbox");
   await editor.fill("Unsent mention retention draft");
   await editor.evaluate((el) => {
     el.dataset.retentionMarker = "original-composer";
@@ -664,9 +696,7 @@ test("reply and fresh mention reopen their filters without replacing composer dr
     false,
     app.inboxWindow.root.id,
   );
-  await expect(
-    inbox.getByRole("region", { name: "Inbox detail" }),
-  ).toContainText("Ordinary peer reply");
+  await expect(detail).toContainText("Ordinary peer reply");
   await expect(rows).toHaveCount(0);
   await expect(editor).toHaveText("Unsent mention retention draft");
   await expect(editor).toHaveAttribute(
@@ -695,9 +725,7 @@ test("reply and fresh mention reopen their filters without replacing composer dr
     [["p", app.viewer]],
   );
   await expect(rows).toHaveCount(0);
-  await expect(
-    inbox.getByRole("region", { name: "Inbox detail" }),
-  ).toContainText("Fresh peer explicit mention");
+  await expect(detail).toContainText("Fresh peer explicit mention");
   await expect(editor).toHaveText("Unsent mention retention draft");
   await expect(editor).toHaveAttribute(
     "data-retention-marker",

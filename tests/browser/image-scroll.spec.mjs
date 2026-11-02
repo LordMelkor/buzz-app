@@ -102,6 +102,7 @@ async function holdDecodes(page, holdVisibility = false) {
       const realDecode = HTMLImageElement.prototype.decode;
       const pending = new Map();
       const completed = new Map();
+      const released = new Set();
       const rejected = new Map();
       const paints = [];
       const realPaint = CanvasRenderingContext2D.prototype.putImageData;
@@ -115,6 +116,10 @@ async function holdDecodes(page, holdVisibility = false) {
         const key = this.src;
         try {
           await new Promise((resolve, reject) => {
+            if (released.has(key)) {
+              resolve();
+              return;
+            }
             const list = pending.get(key) ?? [];
             list.push({ resolve, reject });
             pending.set(key, list);
@@ -153,8 +158,9 @@ async function holdDecodes(page, holdVisibility = false) {
         rejected: (name) => rejected.get(`https://image.test/${name}.svg`) ?? 0,
         observed: (canvas) => observedCanvases.has(canvas),
         waiting: (name) => pending.has(`https://image.test/${name}.svg`),
-        release(name) {
+        release(name, includingRemounts = false) {
           const key = `https://image.test/${name}.svg`;
+          if (includingRemounts) released.add(key);
           for (const item of pending.get(key) ?? []) item.resolve();
           pending.delete(key);
         },
@@ -557,7 +563,10 @@ test("decoded image resizing preserves reading and bottom following across remou
       );
       expect(beforeHeight).toBeGreaterThan(10);
       await page.evaluate((names) => {
-        for (const name of names) window.imageTest.release(name);
+        // Resizing this batch can evict and remount another batch member.
+        // Keep these sources released so a new node cannot enter a fresh gate
+        // after the old node's completion satisfied the barrier below.
+        for (const name of names) window.imageTest.release(name, true);
       }, names);
       await expect
         .poll(() =>
@@ -604,6 +613,10 @@ test("decoded image resizing preserves reading and bottom following across remou
         ),
       ).toBe(true);
       await expect(latestImage).toHaveCSS("visibility", "hidden");
+      // A loaded image must retain its learned frame while the new DOM node's
+      // decode is pending. Otherwise eviction restores the 320px placeholder
+      // and feeds another geometry correction back into the virtualizer.
+      await expect(latestImage).toHaveCSS("height", "10px");
       await settle(page, feed);
       const completed = await page.evaluate(() =>
         window.imageTest.completed("58"),

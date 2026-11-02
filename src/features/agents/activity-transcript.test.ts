@@ -263,12 +263,7 @@ it("projects one thread turn into prompt, thought, tool, permission and reply", 
       event("t1", "turn_completed", {}, 14),
     ]),
   ];
-  const { turns, unknownThread } = activityTranscript(records, {
-    agent,
-    channelId: "alpha",
-    threadRootId: root,
-  });
-  expect(unknownThread).toBe(0);
+  const { turns } = activityTranscript(records, { agent, channelId: "alpha" });
   expect(turns).toHaveLength(1);
   const [turn] = turns;
   expect(turn).toMatchObject({
@@ -322,7 +317,7 @@ it("projects one thread turn into prompt, thought, tool, permission and reply", 
   });
 });
 
-it("scopes threads by payload root, then prompt context, and counts unknowns", () => {
+it("takes the thread from the payload root, then the prompt context", () => {
   serial = 0;
   const records = [
     record([
@@ -349,13 +344,6 @@ it("scopes threads by payload root, then prompt context, and counts unknowns", (
     ]),
     record([event("unknown", "turn_liveness", {}, 6)]),
   ];
-  const thread = activityTranscript(records, {
-    agent,
-    channelId: "alpha",
-    threadRootId: root,
-  });
-  expect(thread.turns.map((turn) => turn.turnId)).toEqual(["legacy"]);
-  expect(thread.unknownThread).toBe(1);
   const channel = activityTranscript(records, { agent, channelId: "alpha" });
   expect(
     channel.turns.map((turn) => [turn.turnId, turn.threadRootId, turn.partial]),

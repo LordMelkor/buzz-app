@@ -10,7 +10,9 @@ import {
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { StrictMode, useState } from "react";
+import { createRequire } from "node:module";
+import { Menu as BaseMenu } from "@base-ui/react/menu";
+import { StrictMode, Suspense, useState } from "react";
 import { Button } from "./Button";
 import { ChoiceRow } from "./ChoiceRow";
 import {
@@ -30,6 +32,161 @@ import {
 } from "./Menu";
 
 afterEach(cleanup);
+
+// The dependency ships both runtime entry points. Exercise real mounted
+// roots in each; a handle exposes the live root store without mocking React.
+const require = createRequire(import.meta.url);
+const menuRuntimes = [
+  ["ESM", BaseMenu],
+  [
+    "CommonJS",
+    (require("@base-ui/react/menu") as { Menu: typeof BaseMenu }).Menu,
+  ],
+] as const;
+
+test.each(menuRuntimes)(
+  "%s releases submenu subscriptions on close, replacement and unmount",
+  async (_, Menu) => {
+    const user = userEvent.setup();
+    const handle = Menu.createHandle();
+    const selected = vi.fn();
+    function Example({
+      parent,
+      sort = true,
+    }: {
+      parent: string;
+      sort?: boolean;
+    }) {
+      return (
+        <StrictMode>
+          <Menu.Root key={parent} handle={handle}>
+            <Menu.Trigger>Actions</Menu.Trigger>
+            <Menu.Portal>
+              <Menu.Positioner>
+                <Menu.Popup>
+                  {sort && (
+                    <Menu.SubmenuRoot>
+                      <Menu.SubmenuTrigger>Sort</Menu.SubmenuTrigger>
+                      <Menu.Portal>
+                        <Menu.Positioner>
+                          <Menu.Popup>
+                            <Menu.Item onClick={selected}>Recent</Menu.Item>
+                          </Menu.Popup>
+                        </Menu.Positioner>
+                      </Menu.Portal>
+                    </Menu.SubmenuRoot>
+                  )}
+                  <Menu.Item onClick={selected}>Sibling action</Menu.Item>
+                </Menu.Popup>
+              </Menu.Positioner>
+            </Menu.Portal>
+          </Menu.Root>
+        </StrictMode>
+      );
+    }
+    const view = render(<Example parent="first" />);
+    const firstListeners = Reflect.get(
+      Reflect.get(handle, "store"),
+      "listeners",
+    ) as Set<unknown>;
+    const baseline = firstListeners.size;
+    for (let cycle = 0; cycle < 3; cycle++) {
+      screen.getByRole("button", { name: "Actions" }).focus();
+      await user.keyboard("{ArrowDown}");
+      const sort = await screen.findByRole("menuitem", { name: "Sort" });
+      sort.focus();
+      await user.keyboard("{ArrowRight}");
+      const recent = await screen.findByRole("menuitem", { name: "Recent" });
+      recent.focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() =>
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
+      );
+      expect(firstListeners.size).toBe(baseline);
+    }
+    view.rerender(<Example parent="first" sort={false} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const sibling = await screen.findByRole("menuitem", {
+      name: "Sibling action",
+    });
+    const siblingBaseline = firstListeners.size;
+    view.rerender(<Example parent="first" />);
+    expect(await screen.findByRole("menuitem", { name: "Sort" })).toBeVisible();
+    view.rerender(<Example parent="first" sort={false} />);
+    expect(firstListeners.size).toBe(siblingBaseline);
+    sibling.focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
+    );
+    view.rerender(<Example parent="replacement" />);
+    const replacementListeners = Reflect.get(
+      Reflect.get(handle, "store"),
+      "listeners",
+    ) as Set<unknown>;
+    expect(replacementListeners).not.toBe(firstListeners);
+    const replacementBaseline = replacementListeners.size;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Sibling action" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
+    );
+    expect(replacementListeners.size).toBe(replacementBaseline);
+    expect(selected).toHaveBeenCalledTimes(5);
+    act(() => handle.open(screen.getByRole("button", { name: "Actions" }).id));
+    await screen.findByRole("menuitem", { name: "Sort" });
+    expect(handle.isOpen).toBe(true);
+    act(() => handle.close());
+    await waitFor(() =>
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
+    );
+    expect(replacementListeners.size).toBe(replacementBaseline);
+    view.unmount();
+    expect(handle.isOpen).toBe(false);
+  },
+);
+
+test.each(menuRuntimes)(
+  "%s never subscribes an abandoned submenu render to its parent",
+  async (_, Menu) => {
+    const handle = Menu.createHandle();
+    const pending = new Promise<never>(() => {});
+    function Pending(): never {
+      throw pending;
+    }
+    function Example({ show }: { show: boolean }) {
+      return (
+        <StrictMode>
+          <Menu.Root handle={handle}>
+            <Menu.Trigger>Actions</Menu.Trigger>
+            <Suspense fallback={<span>Pending submenu</span>}>
+              {show && (
+                <Menu.SubmenuRoot>
+                  <Pending />
+                </Menu.SubmenuRoot>
+              )}
+            </Suspense>
+          </Menu.Root>
+        </StrictMode>
+      );
+    }
+    const view = render(<Example show={false} />);
+    const listeners = Reflect.get(
+      Reflect.get(handle, "store"),
+      "listeners",
+    ) as Set<unknown>;
+    const baseline = listeners.size;
+    view.rerender(<Example show />);
+    expect(await screen.findByText("Pending submenu")).toBeVisible();
+    expect(listeners.size).toBe(baseline);
+    view.rerender(<Example show={false} />);
+    expect(screen.queryByText("Pending submenu")).not.toBeInTheDocument();
+    expect(listeners.size).toBe(baseline);
+    view.unmount();
+  },
+);
 
 test("actions and links keep semantics, callbacks and dismissal while disabled items reject activation", async () => {
   const user = userEvent.setup();
@@ -168,11 +325,77 @@ test("context menus reuse the shared popup and action boundary", async () => {
     name: "Copy context link",
   });
   expect(screen.getByRole("menu")).toHaveAttribute("data-buzz-ui");
+  expect(screen.getByText("Context target")).toHaveAttribute(
+    "data-context-menu-present",
+  );
   await user.click(item);
   expect(action).toHaveBeenCalledTimes(1);
   await waitFor(() =>
     expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
   );
+});
+
+test("a context submenu retains ordinary menu motion classification", async () => {
+  const user = userEvent.setup();
+  render(
+    <ContextMenuRoot>
+      <ContextMenuTrigger>Context target</ContextMenuTrigger>
+      <MenuPopup aria-label="Context actions">
+        <MenuSubmenu>
+          <MenuSubmenuTrigger>Sort</MenuSubmenuTrigger>
+          <MenuSubmenuPopup aria-label="Sort choices">
+            <MenuItem>Recent</MenuItem>
+          </MenuSubmenuPopup>
+        </MenuSubmenu>
+      </MenuPopup>
+    </ContextMenuRoot>,
+  );
+  fireEvent.contextMenu(screen.getByText("Context target"));
+  const parent = await screen.findByRole("menu", { name: "Context actions" });
+  expect(parent).toHaveAttribute("data-context-menu");
+  await user.click(screen.getByRole("menuitem", { name: "Sort" }));
+  const submenu = await screen.findByRole("menu", { name: "Sort choices" });
+  expect(submenu).not.toHaveAttribute("data-context-menu");
+  expect(parent).toHaveAttribute("data-context-menu");
+});
+
+test("context targets do not become present when an open is canceled or controlled closed", async () => {
+  const changed = vi.fn();
+  const { unmount } = render(
+    <ContextMenuRoot
+      onOpenChange={(next, details) => {
+        changed(next);
+        details.cancel();
+      }}
+    >
+      <ContextMenuTrigger>Context target</ContextMenuTrigger>
+      <MenuPopup>
+        <MenuItem>Action</MenuItem>
+      </MenuPopup>
+    </ContextMenuRoot>,
+  );
+  fireEvent.contextMenu(screen.getByText("Context target"));
+  expect(changed).toHaveBeenCalledWith(true);
+  expect(screen.getByText("Context target")).not.toHaveAttribute(
+    "data-context-menu-present",
+  );
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  unmount();
+  changed.mockClear();
+  render(
+    <ContextMenuRoot open={false} onOpenChange={(next) => changed(next)}>
+      <ContextMenuTrigger>Context target</ContextMenuTrigger>
+      <MenuPopup>
+        <MenuItem>Action</MenuItem>
+      </MenuPopup>
+    </ContextMenuRoot>,
+  );
+  fireEvent.contextMenu(screen.getByText("Context target"));
+  expect(changed).toHaveBeenCalledExactlyOnceWith(true);
+  expect(screen.getByText("Context target")).not.toHaveAttribute(
+    "data-context-menu-present",
+  );
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 });
 
 test("rich choices retain their names and selected state while disabled choices reject activation", async () => {

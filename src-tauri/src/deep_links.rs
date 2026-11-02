@@ -101,27 +101,48 @@ pub(crate) fn setup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
             accept(&handle, url.as_str());
         }
     });
-    // Windows and Linux receive the launch URL as argv, which the plugin parsed
-    // during its own setup before this listener existed. macOS delivers cold-start
-    // URLs through the event above once the run loop starts.
+    // The launch URL arrives before this listener exists: as argv on Windows and
+    // Linux, and on macOS as an open event delivered before app setup runs. The
+    // plugin keeps it either way.
+    match app.deep_link().get_current() {
+        Ok(Some(urls)) => {
+            for url in urls {
+                accept(app, url.as_str());
+            }
+        }
+        Ok(None) => {}
+        Err(error) => eprintln!("Could not read the launch deep link: {error}"),
+    }
+    // Every packaged/debug launch makes this binary the scheme handler, over any
+    // other app declaring it. Development runs leave any installed handler alone.
+    if tauri::is_dev() {
+        return;
+    }
     #[cfg(any(windows, target_os = "linux"))]
-    {
-        match app.deep_link().get_current() {
-            Ok(Some(urls)) => {
-                for url in urls {
-                    accept(app, url.as_str());
-                }
-            }
-            Ok(None) => {}
-            Err(error) => eprintln!("Could not read the launch deep link: {error}"),
-        }
-        // Installers register the scheme; packaged portable/debug binaries can
-        // repair it on launch. Development runs leave any installed handler alone.
-        if !tauri::is_dev() {
-            if let Err(error) = app.deep_link().register_all() {
-                eprintln!("Could not register {SCHEME}:// for this binary: {error}");
-            }
-        }
+    if let Err(error) = app.deep_link().register_all() {
+        eprintln!("Could not register {SCHEME}:// for this binary: {error}");
+    }
+    // Launch Services otherwise picks among every bundle declaring the scheme.
+    #[cfg(target_os = "macos")]
+    if let Err(status) = claim_macos_default(&app.config().identifier) {
+        eprintln!("Could not make this app the {SCHEME}:// handler: OSStatus {status}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn claim_macos_default(bundle_id: &str) -> Result<(), i32> {
+    use objc2_foundation::NSString;
+    // NSString is toll-free bridged to CFStringRef.
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn LSSetDefaultHandlerForURLScheme(scheme: *const NSString, bundle: *const NSString)
+            -> i32;
+    }
+    let scheme = NSString::from_str(SCHEME);
+    let bundle = NSString::from_str(bundle_id);
+    match unsafe { LSSetDefaultHandlerForURLScheme(&*scheme, &*bundle) } {
+        0 => Ok(()),
+        status => Err(status),
     }
 }
 

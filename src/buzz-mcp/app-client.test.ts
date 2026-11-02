@@ -1,14 +1,151 @@
 import { expect, it, vi } from "vitest";
 import type { AgentHandle } from "../features/agents/service";
-import { appClient } from "./app-client";
+import type { AgentProtection } from "../features/agent-protection/service";
+import { appClient, readFile } from "./app-client";
+import type { Host } from "../features/host/service";
+
+function gate<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+
+it.each([false, true])(
+  "uses the declared contained reader only when protected: %s",
+  async (protectedRead) => {
+    const protection = {
+      readOnlyPaths: ["/controls"],
+      hiddenPaths: ["/private"],
+    };
+    const path = 'report; $(do-not-execute) "quoted".txt';
+    const spawn = vi.fn<NonNullable<Host["spawn"]>>(async (_id, options) => {
+      options?.onStdout?.(btoa("captured bytes"));
+      return {
+        write: vi.fn(),
+        end: vi.fn(),
+        kill: vi.fn(),
+        exited: Promise.resolve(0),
+      };
+    });
+    const pending = readFile(
+      spawn,
+      "/workspace",
+      path,
+      undefined,
+      protectedRead ? protection : undefined,
+    );
+    protection.hiddenPaths.push("/changed");
+    expect(new TextDecoder().decode(await pending)).toBe("captured bytes");
+    expect(spawn).toHaveBeenCalledExactlyOnceWith(
+      protectedRead ? "read-protected" : "read",
+      expect.objectContaining({
+        cwd: "/workspace",
+        args: [path],
+        ...(protectedRead
+          ? {
+              protection: {
+                readOnlyPaths: ["/controls"],
+                hiddenPaths: ["/private"],
+              },
+            }
+          : {}),
+      }),
+    );
+    if (!protectedRead)
+      expect(spawn.mock.calls[0]?.[1]).not.toHaveProperty("protection");
+  },
+);
+
+it("does not fall back to an ordinary reader when containment denies a file", async () => {
+  const spawn = vi.fn<NonNullable<Host["spawn"]>>(async (_id, options) => {
+    options?.onStderr?.("Operation not permitted");
+    return {
+      write: vi.fn(),
+      end: vi.fn(),
+      kill: vi.fn(),
+      exited: Promise.resolve(1),
+    };
+  });
+  await expect(
+    readFile(spawn, "/workspace", "/private/approval", undefined, {
+      readOnlyPaths: [],
+      hiddenPaths: ["/private"],
+    }),
+  ).rejects.toThrow("Operation not permitted");
+  expect(spawn).toHaveBeenCalledOnce();
+  expect(spawn.mock.calls[0]?.[0]).toBe("read-protected");
+});
+
+it("withholds file bytes when the protected handle retires during a read", async () => {
+  const started = gate<void>();
+  const bytes = gate<Uint8Array>();
+  let live = true;
+  const assertAvailable = vi.fn(() => {
+    if (!live) throw new Error("retired");
+  });
+  const client = appClient(
+    {
+      pubkey: "agent",
+      protection: { assertAvailable },
+    } as unknown as AgentHandle,
+    {
+      read: async () => {
+        started.resolve(undefined);
+        return bytes.promise;
+      },
+      memories: async () => ({ entries: [], partial: false }),
+    },
+  );
+  const result = client.read("file");
+  try {
+    await started.promise;
+    live = false;
+    bytes.resolve(new TextEncoder().encode("must not escape"));
+    await expect(result).rejects.toThrow("retired");
+  } finally {
+    bytes.resolve(new Uint8Array());
+    await result.catch(() => undefined);
+  }
+});
+
+it("binds shared-tool review to native conversation context and refuses missing context", async () => {
+  const check = vi.fn<AgentProtection["check"]>().mockResolvedValue();
+  const agent = {
+    pubkey: "agent",
+    protection: { check },
+  } as unknown as AgentHandle;
+  const options = {
+    read: vi.fn(),
+    memories: async () => ({ entries: [], partial: false }),
+  };
+  const action = {
+    kind: "tool" as const,
+    session: "native-session",
+    content: { command: "write", conversation: "untrusted replacement" },
+  };
+  await expect(appClient(agent, options).protect?.(action)).rejects.toThrow(
+    "no native conversation context",
+  );
+  expect(check).not.toHaveBeenCalled();
+  const conversation = [{ role: "user", text: "Only read" }];
+  await appClient(agent, {
+    ...options,
+    protectionContext: async () => conversation,
+  }).protect?.(action);
+  expect(check.mock.calls[0]?.[0]).toEqual({
+    ...action,
+    content: { command: "write", conversation },
+  });
+});
 
 it("carries connection authorities independently of query event authors", async () => {
   const query = vi.fn(async () => []);
   const client = appClient(
     { pubkey: "agent", query } as unknown as AgentHandle,
     {
-      cwd: "/workspace",
-      spawn: vi.fn(),
+      read: vi.fn(),
       memories: async () => ({ entries: [], partial: false }),
       relayAuthor: "trusted-relay",
       signingAuthority: "trusted-workflows",
@@ -22,8 +159,7 @@ it("carries connection authorities independently of query event authors", async 
 
 it("does not invent authority when a host has none", () => {
   const client = appClient({ pubkey: "agent" } as AgentHandle, {
-    cwd: "/workspace",
-    spawn: vi.fn(),
+    read: vi.fn(),
     memories: async () => ({ entries: [], partial: false }),
   });
   expect(client.relayAuthor).toBeUndefined();
@@ -43,8 +179,7 @@ it("withholds a query result when the owning turn ends during the read", async (
   const client = appClient(
     { pubkey: "agent", query } as unknown as AgentHandle,
     {
-      cwd: "/workspace",
-      spawn: vi.fn(),
+      read: vi.fn(),
       signal: controller.signal,
       memories: async () => ({ entries: [], partial: false }),
     },
@@ -56,40 +191,22 @@ it("withholds a query result when the owning turn ends during the read", async (
   await expect(result).rejects.toThrow("Owning turn ended");
 });
 
-it("binds current audience decisions to the connected community and fences turn cancellation", async () => {
-  const community = "11111111-1111-4111-8111-111111111111";
-  const destination = "22222222-2222-4222-8222-222222222222";
-  const source = "33333333-3333-4333-8333-333333333333";
-  const pubkey = "a".repeat(64);
-  const response = {
-    audience_authority: 1,
-    complete: true,
-    community_id: community,
-    pubkey,
-    destination,
-    sources: [{ id: source, allowed: true }],
-  };
-  const authority = vi.fn(async () => response);
+it("refuses creation after the calling turn ends and surfaces native failures", async () => {
+  const createAgent = vi.fn(async () => {
+    throw new Error("Native creation failed");
+  });
   const controller = new AbortController();
-  const client = appClient(
-    { pubkey, audienceAuthority: authority } as unknown as AgentHandle,
-    {
-      cwd: "/workspace",
-      spawn: vi.fn(),
-      memories: async () => ({ entries: [], partial: false }),
-      audienceAuthorityCommunity: community,
-      signal: controller.signal,
-    },
-  );
-  expect(await client.authorizeAudience?.(destination, [source])).toEqual(
-    new Set([source]),
-  );
-  expect(authority).toHaveBeenCalledWith(destination, [source]);
-  authority.mockImplementationOnce(async () => {
-    controller.abort();
-    return response;
+  const client = appClient({ createAgent } as unknown as AgentHandle, {
+    read: vi.fn(),
+    signal: controller.signal,
+    memories: async () => ({ entries: [], partial: false }),
   });
   await expect(
-    client.authorizeAudience?.(destination, [source]),
-  ).rejects.toThrow();
+    client.createAgent?.({ type: "codex/codex", name: "Child" }),
+  ).rejects.toThrow("Native creation failed");
+  controller.abort(new Error("Turn ended"));
+  await expect(
+    client.createAgent?.({ type: "codex/codex", name: "Child" }),
+  ).rejects.toThrow("Turn ended");
+  expect(createAgent).toHaveBeenCalledOnce();
 });

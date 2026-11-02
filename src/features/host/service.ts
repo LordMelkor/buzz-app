@@ -8,6 +8,24 @@ export type HostRequest = Readonly<{
   method?: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
   headers?: Readonly<Record<string, string>>;
   body?: string;
+  /** Native deadline in milliseconds, 1–180000. Defaults to 30000. */
+  timeoutMs?: number;
+}>;
+/** A multipart POST of one local `.tar.gz` file in the home directory, with
+ * text fields beside it, to an origin the plugin declares. */
+export type HostUpload = Readonly<{
+  url: string;
+  headers?: Readonly<Record<string, string>>;
+  fields?: Readonly<Record<string, string>>;
+  file: Readonly<{
+    /** The form field it is sent as. */
+    field: string;
+    /** An absolute path. */
+    path: string;
+    /** The file name the form gives it. */
+    name: string;
+    contentType: string;
+  }>;
 }>;
 export type HostResponse = Readonly<{
   status: number;
@@ -21,6 +39,10 @@ export type NipOaAuthorization = readonly [
   conditions: string,
   signature: string,
 ];
+export type ProcessProtection = Readonly<{
+  readOnlyPaths: readonly string[];
+  hiddenPaths: readonly string[];
+}>;
 export type HostProcessOptions = Readonly<{
   /** Follow the arguments the manifest declares. */
   args?: readonly string[];
@@ -28,6 +50,10 @@ export type HostProcessOptions = Readonly<{
   cwd?: string;
   /** Added to the app's environment; `null` removes a variable. */
   env?: Readonly<Record<string, string | null>>;
+  /** Run with one app-held MCP session and an agent-scoped `buzz` on PATH. */
+  mcp?: Pick<HostMcpServer, "url" | "headers">;
+  /** Native macOS containment for a protected worker and its descendants. */
+  protection?: ProcessProtection;
   onStdout?(data: string): void;
   onStderr?(data: string): void;
 }>;
@@ -64,6 +90,10 @@ export type HostMcpServer = Readonly<{
 type McpEvent =
   | { type: "message"; request: number; body: string }
   | { type: "closed" };
+/** Share one MCP session among cooperating clients holding the token.
+ * This permits token reuse after initialization. The handler must bind identity
+ * itself and grant every client the same authority. Defaults to false. */
+export type HostMcpOptions = Readonly<{ sharedSession?: boolean }>;
 export interface Host {
   runCommand(id: string, input?: string): Promise<string | null>;
   /** Starts a process the manifest declares in `host.processes`. It lives until
@@ -71,8 +101,25 @@ export interface Host {
   spawn?: (id: string, options?: HostProcessOptions) => Promise<HostProcess>;
   /** Starts a loopback MCP server whose messages `handler` answers, for a
    * plugin whose manifest declares `host.mcp`. Desktop only. */
-  serveMcp?: (handler: McpHandler) => Promise<HostMcpServer>;
+  serveMcp?: (
+    handler: McpHandler,
+    options?: HostMcpOptions,
+  ) => Promise<HostMcpServer>;
+  /** Reads a file of at most 50 MB, for a plugin whose manifest declares
+   * `host.files`. `path` is absolute, `~/…`, or relative to `cwd`, which is
+   * absolute or `~/…`. A missing file rejects with "No such file". Desktop
+   * only. */
+  readFile?: (
+    path: string,
+    options?: Readonly<{ cwd?: string }>,
+  ) => Promise<Uint8Array>;
+  /** `path`, absolute or `~/…`, as an absolute directory without symbolic
+   * links, created if missing, for a plugin whose manifest declares
+   * `host.files`. Desktop only. */
+  resolveDirectory?: (path: string) => Promise<string>;
   request(input: HostRequest): Promise<HostResponse>;
+  /** Uploads a file as `request` sends a body. Desktop only. */
+  upload?: (input: HostUpload) => Promise<HostResponse>;
   prepareRemoteAgentAuthorization?: (
     agentPubkey: string,
     signal?: AbortSignal,
@@ -201,6 +248,8 @@ export class HostService extends Service implements Host {
       args: options.args ?? [],
       cwd: options.cwd ?? null,
       env: options.env ?? null,
+      mcp: options.mcp ?? null,
+      protection: options.protection ?? null,
       onEvent,
     });
     // The host takes at most 1 MiB a write, so a longer one goes in pieces,
@@ -250,7 +299,10 @@ export class HostService extends Service implements Host {
   }
 
   // A method, not a field: `this.ctx` is then the calling plugin's scope.
-  async serveMcp(handler: McpHandler): Promise<HostMcpServer> {
+  async serveMcp(
+    handler: McpHandler,
+    options?: HostMcpOptions,
+  ): Promise<HostMcpServer> {
     const owner = this.ctx.pluginOwner;
     if (!owner || !isTauri())
       throw new Error("MCP servers require an installed desktop plugin");
@@ -286,7 +338,12 @@ export class HostService extends Service implements Host {
     });
     const server = await invoke<{ handle: number; url: string; token: string }>(
       "plugin_host_mcp_serve",
-      { id: owner.id, revision: owner.revision, onEvent },
+      {
+        id: owner.id,
+        revision: owner.revision,
+        onEvent,
+        ...(options?.sharedSession ? { sharedSession: true } : {}),
+      },
     );
     handle = server.handle;
     const close = () =>
@@ -318,6 +375,34 @@ export class HostService extends Service implements Host {
     });
   }
 
+  // Methods, not fields: `this.ctx` is then the calling plugin's scope.
+  async readFile(
+    path: string,
+    { cwd }: Readonly<{ cwd?: string }> = {},
+  ): Promise<Uint8Array> {
+    const owner = this.ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("Files require an installed desktop plugin");
+    const data = await invoke<ArrayBuffer>("plugin_host_read_file", {
+      id: owner.id,
+      revision: owner.revision,
+      path,
+      cwd: cwd ?? null,
+    }).catch(rethrow);
+    return new Uint8Array(data);
+  }
+
+  async resolveDirectory(path: string): Promise<string> {
+    const owner = this.ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("Files require an installed desktop plugin");
+    return invoke<string>("plugin_host_resolve_directory", {
+      id: owner.id,
+      revision: owner.revision,
+      path,
+    }).catch(rethrow);
+  }
+
   async request(input: HostRequest): Promise<HostResponse> {
     const owner = this.ctx.pluginOwner;
     if (!owner || !isTauri())
@@ -326,8 +411,24 @@ export class HostService extends Service implements Host {
       id: owner.id,
       revision: owner.revision,
       request: input,
-    });
+    }).catch(rethrow);
   }
+
+  async upload(input: HostUpload): Promise<HostResponse> {
+    const owner = this.ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("Host uploads require an installed desktop plugin");
+    return invoke<HostResponse>("plugin_host_upload", {
+      id: owner.id,
+      revision: owner.revision,
+      upload: input,
+    }).catch(rethrow);
+  }
+}
+
+/** A native command's failure, which arrives as its message, as an Error. */
+function rethrow(error: unknown): never {
+  throw typeof error === "string" ? new Error(error) : error;
 }
 
 /** The reply to one HTTP body, which carries one message: MCP has no batches

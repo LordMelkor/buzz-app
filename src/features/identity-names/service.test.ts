@@ -75,6 +75,30 @@ it("reads the existing local inventory without changing public profile evidence"
   f.library.dispose();
 });
 
+it("leaves synthetic public profile names to the caller's identity fallback", () => {
+  const f = fixture();
+  const source = {
+    ...f.source,
+    profiles: {
+      ...f.source.profiles,
+      snapshot: () =>
+        new Map([
+          [key, { name: key.slice(0, 10), nameIsFallback: true as const }],
+        ]),
+    },
+  };
+  const names = bindNames(source);
+  try {
+    expect(names.lookup(key)).toBeUndefined();
+    expect(names.resolve(key, "Recognizable fallback")).toBe(
+      "Recognizable fallback",
+    );
+  } finally {
+    names.dispose();
+    f.library.dispose();
+  }
+});
+
 it("reuses one scope per candidate array and keeps distinct candidates distinct", () => {
   const a = "a".repeat(64),
     b = "b".repeat(64);
@@ -329,5 +353,52 @@ it("rejects a second policy until the current plugin is explicitly disabled", as
     owner.dispose();
     await runtime.dispose();
     await ctx.fiber.dispose();
+  }
+});
+
+it("qualifies a verified name through the scoped naming policy", () => {
+  const viewer = "a".repeat(64),
+    other = "b".repeat(64);
+  const source: NameSource = {
+    viewer,
+    profiles: {
+      snapshot: () =>
+        new Map([
+          [viewer, { name: "Alice " }],
+          [
+            other,
+            {
+              name: "Alice",
+              verified: {
+                displayName: "Alice",
+                username: "alice",
+                issuerLabel: "Example",
+                verifiedAt: 1,
+                status: "checked" as const,
+                multipleIssuers: false,
+              },
+            },
+          ],
+        ]),
+      subscribe: () => () => {},
+      ensure: async () => {},
+    },
+    agentLibrary: {
+      snapshot: () => ({ status: "ready", definitions: [], identities: [] }),
+      subscribe: () => () => {},
+      refresh: async () => {},
+      retain: () => () => {},
+    },
+  };
+  const view = bindNames(source, {
+    snapshot: () => [createAgentDirectory()],
+    subscribe: () => () => {},
+  });
+  try {
+    const scoped = view.scope([viewer, other]);
+    expect(scoped(viewer)?.name).toBe("Alice");
+    expect(scoped(other)?.name).toBe(`Alice · ${npubEncode(other).slice(-4)}`);
+  } finally {
+    view.dispose();
   }
 });

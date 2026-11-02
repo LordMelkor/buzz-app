@@ -1,7 +1,16 @@
 // @vitest-environment jsdom
 import { StrictMode, type ReactNode } from "react";
-import { act, cleanup, render, renderHook } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import type { RelayData, RelaySnapshot } from "../relay/service";
 import type { RelaySession } from "../relay/session";
 import { PanelWorkspace } from "../panels/PanelWorkspace";
@@ -15,12 +24,19 @@ afterEach(() => {
   cleanup();
   localStorage.clear();
 });
-function fixture() {
+function fixture(
+  run: (
+    action: string,
+    id: string,
+    signal?: AbortSignal,
+  ) => Promise<void> = async () => {},
+) {
   let ids = ["existing"];
-  // This UI handoff provider consumes only the roster, never a command writer.
   const session = () =>
     ({
       channels: { list: () => ({ channels: ids.map((id) => ({ id })) }) },
+      sidebarPreferences: { setMute: async () => [] },
+      channelLifecycle: { run },
     }) as unknown as RelaySession;
   let snapshot: RelaySnapshot = {
     status: "ready",
@@ -54,7 +70,7 @@ function fixture() {
     },
   };
 }
-function mount(relay: RelayData) {
+function mount(relay: RelayData, toasts = false) {
   return renderHook(
     () => {
       const value = useChannelNavigation();
@@ -64,9 +80,17 @@ function mount(relay: RelayData) {
     {
       wrapper: ({ children }: { children: ReactNode }) => (
         <StrictMode>
-          <ChannelNavigationProvider relay={relay}>
-            {children}
-          </ChannelNavigationProvider>
+          {toasts ? (
+            <ToastProvider>
+              <ChannelNavigationProvider relay={relay}>
+                {children}
+              </ChannelNavigationProvider>
+            </ToastProvider>
+          ) : (
+            <ChannelNavigationProvider relay={relay}>
+              {children}
+            </ChannelNavigationProvider>
+          )}
         </StrictMode>
       ),
     },
@@ -100,7 +124,6 @@ it("resets transient handoffs and rejects retired callbacks on session replaceme
   const view = mount(h.relay);
   act(() => {
     view.result.current?.prepareDm(["peer"]);
-    view.result.current?.updateDraftParents(() => ["parent"]);
     view.result.current.openLifecycle(
       { id: "channel", name: "Channel" },
       "leave",
@@ -124,14 +147,11 @@ it("resets transient handoffs and rejects retired callbacks on session replaceme
   expect(view.result.current.lifecycleDialog).toBeUndefined();
   expect(view.result.current.activityThread.current).toBeUndefined();
   expect(view.result.current.activityAgent.current).toBeUndefined();
-  expect(view.result.current.draftParents).toEqual(["parent"]);
   act(() => {
     retired.prepareDm(["late"]);
-    retired.updateDraftParents(() => ["late"]);
     retired.openLifecycle({ id: "late", name: "Late" }, "leave");
   });
   expect(view.result.current.preparingDm).toBeUndefined();
-  expect(view.result.current.draftParents).toEqual(["parent"]);
   expect(view.result.current.lifecycleDialog).toBeUndefined();
 });
 
@@ -266,4 +286,56 @@ it("retires only the originating header confirmation and rejects its deferred re
     channel,
     action: "archive",
   });
+});
+
+it("runs a chat archive's Undo through the lifecycle gate, after any action holding it", async () => {
+  const pending = new Map<string, () => void>();
+  const run = vi.fn(
+    (action: string, id: string) =>
+      new Promise<void>((resolve) => pending.set(`${action}:${id}`, resolve)),
+  );
+  const view = mount(fixture(run).relay, true);
+  const planning = { id: "a", name: "Planning", channelType: "solo" as const };
+  const roadmap = { id: "b", name: "Roadmap", channelType: "solo" as const };
+  act(() => view.result.current.openLifecycle(planning, "archive"));
+  await waitFor(() => expect(pending.has("archive:a")).toBe(true));
+  await act(async () => pending.get("archive:a")?.());
+  await screen.findByRole("dialog", { name: "Chat archived: Planning" });
+  expect(view.result.current.lifecycleDialog).toBeUndefined();
+
+  // Another archive holds the session's one lifecycle slot.
+  act(() => view.result.current.openLifecycle(roadmap, "archive"));
+  await waitFor(() => expect(pending.has("archive:b")).toBe(true));
+  const [undo] = screen.getAllByRole("button", { name: "Undo" });
+  if (!undo) throw new Error("Missing Undo");
+  fireEvent.click(undo);
+  expect(run).not.toHaveBeenCalledWith("unarchive", "a", expect.anything());
+  expect(view.result.current.lifecycleDialog?.channel).toBe(roadmap);
+
+  await act(async () => pending.get("archive:b")?.());
+  // Undo then holds the gate, so lifecycle menus stay disabled until it settles.
+  await waitFor(() =>
+    expect(run).toHaveBeenLastCalledWith(
+      "unarchive",
+      "a",
+      expect.any(AbortSignal),
+    ),
+  );
+  expect(view.result.current.lifecycleDialog).toMatchObject({
+    channel: planning,
+    action: "unarchive",
+    confirmed: true,
+  });
+  // A slow Undo is announced instead of leaving the click unanswered.
+  expect(
+    await screen.findByRole(
+      "dialog",
+      { name: "Unarchiving chat…" },
+      { timeout: 2000 },
+    ),
+  ).toBeDefined();
+  await act(async () => pending.get("unarchive:a")?.());
+  await screen.findByRole("dialog", { name: "Chat unarchived: Planning" });
+  expect(view.result.current.lifecycleDialog).toBeUndefined();
+  expect(run).toHaveBeenCalledTimes(3);
 });

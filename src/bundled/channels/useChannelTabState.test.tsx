@@ -11,6 +11,7 @@ import type {
 import {
   channelTabs,
   panelTabId,
+  rootOfTab,
   useChannelTabState,
 } from "./useChannelTabState";
 
@@ -22,6 +23,38 @@ afterEach(() => {
   cleanup();
   setThreadPlacementPreference("side");
   localStorage.clear();
+});
+
+test("selection readers stay stable during local updates and change with the channel", () => {
+  const session = {} as RelaySession;
+  const observations: unknown[] = [];
+  const h = renderHook(
+    ({ channel }) => {
+      const state = useChannelTabState(session, channel);
+      useEffect(() => {
+        observations.push([state.getSelected(), state.getMainSelected()]);
+      }, [state.getSelected, state.getMainSelected]);
+      return state;
+    },
+    { initialProps: { channel: "alpha" } },
+  );
+  const { getSelected, getMainSelected } = h.result.current;
+  act(() => {
+    h.result.current.select("side");
+    h.result.current.selectMain("main");
+    expect(getSelected()).toBe("side");
+    expect(getMainSelected()).toBe("main");
+  });
+  expect(observations).toEqual([["thread", undefined]]);
+  expect(h.result.current.getSelected).toBe(getSelected);
+  expect(h.result.current.getMainSelected).toBe(getMainSelected);
+  h.rerender({ channel: "beta" });
+  expect(observations).toEqual([
+    ["thread", undefined],
+    ["thread", undefined],
+  ]);
+  expect(h.result.current.getSelected()).toBe("thread");
+  expect(h.result.current.getMainSelected()).toBeUndefined();
 });
 
 test("page remount restores each channel's tabs, selection and closed pane", () => {
@@ -141,10 +174,10 @@ test("channel switches retire each visit's menu opening without copying retained
   expect(mounted.result.current.selected).toBe(panelTabId(alphaTool));
 });
 
-test("Me and Messages retain independent workspaces for the same conversation", () => {
+test("Solo and Messages retain independent workspaces for the same conversation", () => {
   const session = {} as RelaySession;
   const messages = renderHook(() => useChannelTabState(session, "alpha"));
-  const me = renderHook(() => useChannelTabState(session, "alpha", "me"));
+  const solo = renderHook(() => useChannelTabState(session, "alpha", "solo"));
   act(() => {
     messages.result.current.setTabs(() => [
       {
@@ -155,24 +188,26 @@ test("Me and Messages retain independent workspaces for the same conversation", 
       },
     ]);
     messages.result.current.select("messages-tab");
-    me.result.current.setTabs(() => [
-      { id: "me-tab", kind: "conversation", channelId: "beta" },
+    solo.result.current.setTabs(() => [
+      { id: "solo-tab", kind: "conversation", channelId: "beta" },
     ]);
-    me.result.current.select("me-tab");
-    me.result.current.setPaneOpen(false);
-    me.result.current.retireMenuEntries();
+    solo.result.current.select("solo-tab");
+    solo.result.current.setPaneOpen(false);
+    solo.result.current.retireMenuEntries();
   });
   expect(messages.result.current).toMatchObject({
     selected: "messages-tab",
     paneOpen: true,
     tabs: [{ id: "messages-tab" }],
   });
-  me.unmount();
-  const restored = renderHook(() => useChannelTabState(session, "alpha", "me"));
+  solo.unmount();
+  const restored = renderHook(() =>
+    useChannelTabState(session, "alpha", "solo"),
+  );
   expect(restored.result.current).toMatchObject({
-    selected: "me-tab",
+    selected: "solo-tab",
     paneOpen: false,
-    tabs: [{ id: "me-tab" }],
+    tabs: [{ id: "solo-tab" }],
   });
 });
 
@@ -225,6 +260,7 @@ test("opening a thread selects it, deduplicates its root and restores each chann
       channelId: "alpha",
       messageId: "root-b",
       replyRequest: undefined,
+      focusRequest: 1,
       pane: "side",
     },
   ]);
@@ -241,6 +277,32 @@ test("opening a thread selects it, deduplicates its root and restores each chann
     replyRequest: undefined,
   });
 });
+
+test.each(["main", "side"] as const)(
+  "ordinary openings request reply focus each time in the %s pane; restoration does not",
+  (pane) => {
+    const session = {} as RelaySession;
+    const h = renderHook(() => useChannelTabState(session, "alpha"));
+    const open = () =>
+      h.result.current.openThreadTab("alpha", "root", "root", undefined, pane);
+    act(open);
+    expect(h.result.current.tabs[0]).toMatchObject({ focusRequest: 1, pane });
+    act(open);
+    expect(h.result.current.tabs).toHaveLength(1);
+    expect(h.result.current.tabs[0]).toMatchObject({ focusRequest: 2, pane });
+    act(() => h.result.current.openThreadTab("alpha", "other", "other"));
+    act(open);
+    expect(h.result.current.tabs[0]).toMatchObject({ focusRequest: 3, pane });
+    act(() =>
+      h.result.current.enterVisit("restore", {
+        channelId: "alpha",
+        messageId: "root",
+        rootId: "root",
+      }),
+    );
+    expect(h.result.current.tabs[0]).toMatchObject({ focusRequest: 3, pane });
+  },
+);
 
 // Placement is one channel-owned list: a move reorders or crosses panes
 // without changing the tab's identity, and selection follows it.
@@ -275,6 +337,11 @@ test("moving a thread reorders it within a pane and across panes", () => {
   expect(
     h.result.current.tabs.find((tab) => tab.id === "thread:alpha:a"),
   ).toMatchObject({ replyRequest: 1 });
+  // Focusing keeps the reply request, so the reply box keeps its target.
+  act(() => h.result.current.openThreadTab("alpha", "a", "a", "focus"));
+  expect(
+    h.result.current.tabs.find((tab) => tab.id === "thread:alpha:a"),
+  ).toMatchObject({ replyRequest: 1, focusRequest: 2 });
 });
 
 // A link's root hint is not identity: the reader's verified root merges a
@@ -410,6 +477,297 @@ test("verified identity takes precedence over a tab's original hint id", () => {
 });
 
 // Back/Forward restore each visit's selected tabs and never close a thread.
+test("explicit close identifies only the thread's addressed visits, not channel visits retaining its tab", () => {
+  const session = {} as RelaySession;
+  const h = renderHook(() => useChannelTabState(session, "alpha"));
+  const thread = { channelId: "alpha", messageId: "reply", rootId: "root" };
+  act(() => h.result.current.enterVisit("channel:channel"));
+  act(() => h.result.current.enterVisit("first:thread", thread));
+  act(() =>
+    h.result.current.enterVisit("other:thread", { ...thread, rootId: "other" }),
+  );
+  act(() =>
+    h.result.current.enterVisit("second:thread", {
+      ...thread,
+      messageId: "root",
+    }),
+  );
+  act(() => h.result.current.enterVisit("retained:channel", undefined, true));
+  expect(h.result.current.threadVisits("alpha", "root")).toEqual([
+    "first",
+    "second",
+  ]);
+  expect(h.result.current.threadVisits("alpha", "other")).toEqual(["other"]);
+  expect(h.result.current.threadVisits("beta", "root")).toEqual([]);
+});
+
+test("dismissal follows verified roots and retains thread visits beyond the layout snapshot limit", () => {
+  const session = {} as RelaySession;
+  const h = renderHook(() => useChannelTabState(session, "alpha"));
+  act(() =>
+    h.result.current.enterVisit("linked:thread", {
+      channelId: "alpha",
+      messageId: "reply",
+      rootId: "hint",
+    }),
+  );
+  act(() =>
+    h.result.current.resolveThreadRoot("thread:alpha:hint", "verified"),
+  );
+  expect(h.result.current.threadVisits("alpha", "hint")).toEqual([]);
+  expect(h.result.current.threadVisits("alpha", "verified")).toEqual([
+    "linked",
+  ]);
+  for (let i = 0; i < 60; i++)
+    act(() => h.result.current.enterVisit(`${i}:channel`));
+  expect(h.result.current.threadVisits("alpha", "verified")).toEqual([
+    "linked",
+  ]);
+});
+
+test.each(["nostr:profile", "https://github.com/sample/project/pull/42"])(
+  "same-scope successors inherit all addressed visits for %s without old callback authority",
+  (target) => {
+    const scope = crypto.randomUUID();
+    const first = { scope, viewer: "viewer" } as RelaySession;
+    const h = renderHook(
+      ({ session }) => useChannelTabState(session, "alpha"),
+      { initialProps: { session: first } },
+    );
+    const detail = { channelId: "alpha", target };
+    act(() =>
+      h.result.current.enterVisit("first:detail", undefined, true, detail),
+    );
+    act(() =>
+      h.result.current.enterVisit("other:detail", undefined, true, {
+        ...detail,
+        target: "nostr:other",
+      }),
+    );
+    act(() =>
+      h.result.current.enterVisit("last:detail", undefined, true, detail),
+    );
+    const old = h.result.current;
+    h.rerender({ session: { scope, viewer: "viewer" } as RelaySession });
+    expect(h.result.current.detailVisits("alpha", target)).toEqual([
+      "first",
+      "last",
+    ]);
+    expect(h.result.current.detailVisits("alpha", "nostr:other")).toEqual([
+      "other",
+    ]);
+    expect(h.result.current.detailVisits("beta", target)).toEqual([]);
+    // No presentation state or live panel objects cross the session boundary.
+    expect(h.result.current.entries).toEqual([]);
+    act(() => old.enterVisit("stale:detail", undefined, true, detail));
+    act(() =>
+      h.result.current.enterVisit("fresh:detail", undefined, true, detail),
+    );
+    h.rerender({ session: { scope, viewer: "viewer" } as RelaySession });
+    expect(h.result.current.detailVisits("alpha", target)).toEqual([
+      "first",
+      "last",
+      "fresh",
+    ]);
+  },
+);
+
+test("successors retain verified roots and page/channel retirement partitions", () => {
+  const scope = crypto.randomUUID();
+  const first = { scope, viewer: "viewer" } as RelaySession;
+  const h = renderHook(
+    ({ session, channel, page }) => useChannelTabState(session, channel, page),
+    { initialProps: { session: first, channel: "alpha", page: "messages" } },
+  );
+  act(() =>
+    h.result.current.enterVisit("reply:thread", {
+      channelId: "alpha",
+      messageId: "reply",
+      rootId: "hint",
+    }),
+  );
+  act(() =>
+    h.result.current.resolveThreadRoot("thread:alpha:hint", "verified"),
+  );
+  const old = h.result.current;
+  h.rerender({ session: first, channel: "beta", page: "messages" });
+  act(() =>
+    h.result.current.enterVisit("beta:thread", {
+      channelId: "beta",
+      messageId: "root",
+      rootId: "root",
+    }),
+  );
+  const successor = { scope, viewer: "viewer" } as RelaySession;
+  h.rerender({ session: successor, channel: "alpha", page: "messages" });
+  expect(h.result.current.threadVisits("alpha", "verified")).toEqual(["reply"]);
+  expect(h.result.current.threadVisits("alpha", "hint")).toEqual([]);
+  act(() => old.resolveThreadRoot("thread:alpha:hint", "stale"));
+  expect(h.result.current.threadVisits("alpha", "verified")).toEqual(["reply"]);
+  act(() =>
+    h.result.current.enterVisit("current:thread", {
+      channelId: "alpha",
+      messageId: "reply",
+      rootId: "hint",
+    }),
+  );
+  act(() =>
+    h.result.current.resolveThreadRoot("thread:alpha:hint", "verified"),
+  );
+  expect(h.result.current.threadVisits("alpha", "verified")).toEqual([
+    "reply",
+    "current",
+  ]);
+  h.rerender({ session: successor, channel: "beta", page: "messages" });
+  expect(h.result.current.threadVisits("beta", "root")).toEqual(["beta"]);
+  h.rerender({ session: successor, channel: "alpha", page: "solo" });
+  expect(h.result.current.threadVisits("alpha", "verified")).toEqual([]);
+});
+
+test("a rebuilt reply keeps its inherited root before the successor reader resolves", () => {
+  const scope = crypto.randomUUID();
+  const h = renderHook(({ session }) => useChannelTabState(session, "alpha"), {
+    initialProps: { session: { scope, viewer: "viewer" } as RelaySession },
+  });
+  act(() =>
+    h.result.current.enterVisit("root:thread", {
+      channelId: "alpha",
+      messageId: "verified",
+      rootId: "verified",
+    }),
+  );
+  act(() =>
+    h.result.current.enterVisit("reply:thread", {
+      channelId: "alpha",
+      messageId: "reply",
+      rootId: "reply",
+    }),
+  );
+  act(() =>
+    h.result.current.resolveThreadRoot("thread:alpha:reply", "verified"),
+  );
+  h.rerender({ session: { scope, viewer: "viewer" } as RelaySession });
+  act(() =>
+    h.result.current.enterVisit("reply:thread", {
+      channelId: "alpha",
+      messageId: "reply",
+      rootId: "reply",
+    }),
+  );
+  const tab = h.result.current.tabs[0];
+  if (tab?.kind !== "thread") throw new Error("Missing rebuilt thread");
+  // Close reads these identities before any successor resolveThreadRoot call.
+  expect(rootOfTab(tab)).toBe("verified");
+  expect(h.result.current.threadVisits(tab.channelId, rootOfTab(tab))).toEqual([
+    "root",
+    "reply",
+  ]);
+  act(() => h.result.current.closeTabs(""));
+  expect(h.result.current.tabs).toEqual([]);
+});
+
+test.each(["channel", "message"])(
+  "a rebuilt visit cannot reuse a root for a different %s",
+  (change) => {
+    const scope = crypto.randomUUID();
+    const h = renderHook(
+      ({ session }) => useChannelTabState(session, "alpha"),
+      {
+        initialProps: { session: { scope, viewer: "viewer" } as RelaySession },
+      },
+    );
+    const route = { channelId: "alpha", messageId: "reply", rootId: "hint" };
+    act(() => h.result.current.enterVisit("reply:thread", route));
+    act(() =>
+      h.result.current.resolveThreadRoot("thread:alpha:hint", "verified"),
+    );
+    h.rerender({ session: { scope, viewer: "viewer" } as RelaySession });
+    const changed = {
+      ...route,
+      ...(change === "channel"
+        ? { channelId: "beta" }
+        : { messageId: "other" }),
+    };
+    act(() => h.result.current.enterVisit("reply:thread", changed));
+    const tab = h.result.current.tabs.find(
+      (item) =>
+        item.kind === "thread" &&
+        item.channelId === changed.channelId &&
+        item.messageId === changed.messageId,
+    );
+    if (tab?.kind !== "thread") throw new Error("Missing rebuilt thread");
+    expect(rootOfTab(tab)).toBe("hint");
+    expect(h.result.current.threadVisits(changed.channelId, "hint")).toEqual([
+      "reply",
+    ]);
+    expect(h.result.current.threadVisits("alpha", "verified")).toEqual([]);
+  },
+);
+
+test.each(["account", "community", "unknown"])(
+  "%s scope does not inherit another session's retirement records",
+  (change) => {
+    const first = {
+      viewer: "viewer",
+      scope: `${crypto.randomUUID()}:viewer`,
+    } as RelaySession;
+    const h = renderHook(
+      ({ session }) => useChannelTabState(session, "alpha"),
+      { initialProps: { session: first } },
+    );
+    act(() =>
+      h.result.current.enterVisit("detail:detail", undefined, true, {
+        channelId: "alpha",
+        target: "nostr:profile",
+      }),
+    );
+    act(() =>
+      h.result.current.enterVisit("thread:thread", {
+        channelId: "alpha",
+        messageId: "root",
+        rootId: "root",
+      }),
+    );
+    h.rerender({
+      session: {
+        viewer: "viewer",
+        scope:
+          change === "unknown"
+            ? undefined
+            : change === "account"
+              ? first.scope.replace(":viewer", ":other")
+              : `other:${first.scope}`,
+      } as RelaySession,
+    });
+    expect(h.result.current.detailVisits("alpha", "nostr:profile")).toEqual([]);
+    expect(h.result.current.threadVisits("alpha", "root")).toEqual([]);
+    expect(h.result.current.tabs).toEqual([]);
+  },
+);
+
+test("content retirement identifies only that channel's addressed panel visits beyond fifty layout snapshots", () => {
+  const session = {} as RelaySession;
+  const h = renderHook(() => useChannelTabState(session, "alpha"));
+  const detail = { channelId: "alpha", target: "nostr:profile" };
+  act(() => h.result.current.enterVisit("one:detail", undefined, true, detail));
+  act(() =>
+    h.result.current.enterVisit("two:detail", undefined, true, {
+      ...detail,
+      target: "https://github.com/sample/project/pull/42",
+    }),
+  );
+  act(() =>
+    h.result.current.enterVisit("three:detail", undefined, true, detail),
+  );
+  for (let i = 0; i < 60; i++)
+    act(() => h.result.current.enterVisit(`${i}:channel`));
+  expect(h.result.current.detailVisits("alpha", detail.target)).toEqual([
+    "one",
+    "three",
+  ]);
+  expect(h.result.current.detailVisits("beta", detail.target)).toEqual([]);
+});
+
 test("revisiting a history entry restores its selection without closing threads", () => {
   const session = {} as RelaySession;
   const h = renderHook(() => useChannelTabState(session, "alpha"));
@@ -549,10 +907,10 @@ test("agents open thread tabs in the background and never close a shown one", ()
     "thread:alpha:r4",
   ]);
   expect(page.result.current.selected).toBe("thread:alpha:r2");
-  // Other channels and the Me page keep their own tabs.
+  // Other channels and the Solo workspace keep their own tabs.
   expect(tabs.list("beta")).toEqual([]);
-  const me = renderHook(() => useChannelTabState(session, "alpha", "me"));
-  expect(me.result.current.tabs).toEqual([]);
+  const solo = renderHook(() => useChannelTabState(session, "alpha", "solo"));
+  expect(solo.result.current.tabs).toEqual([]);
 });
 
 test("an agent's tab leaves a page's side panel showing", () => {
@@ -564,6 +922,7 @@ test("an agent's tab leaves a page's side panel showing", () => {
     tabs.open("alpha", "r1");
   });
   expect(page.result.current.paneOpen).toBe(true);
+  expect(page.result.current.tabs[0]?.focusRequest).toBeUndefined();
 });
 
 test("an agent's main-pane tab leaves the conversation showing", () => {
@@ -577,13 +936,37 @@ test("an agent's main-pane tab leaves the conversation showing", () => {
   expect(page.result.current).toMatchObject({
     mainSelected: undefined,
     paneOpen: true,
-    tabs: [{ id: "thread:alpha:r1", pane: "main" }],
+    tabs: [{ id: "thread:alpha:r1", pane: "main", focusRequest: undefined }],
   });
   act(() => page.result.current.selectMain("thread:alpha:r1"));
   expect(tabs.list("alpha")).toEqual([
     { root: "r1", pane: "main", shown: true },
   ]);
   expect(tabs.close("alpha", "r1")).toBe("shown");
+});
+
+test("Solo threads open beside the chat even when the device prefers main", () => {
+  setThreadPlacementPreference("main");
+  const session = tabSession([
+    { id: "alpha", name: "Alpha", channelType: "solo" },
+  ]);
+  const tabs = channelTabs(session);
+  const page = renderHook(() => useChannelTabState(session, "alpha"));
+  act(() => {
+    tabs.open("alpha", "r1");
+  });
+  act(() =>
+    page.result.current.enterVisit("link", {
+      channelId: "alpha",
+      messageId: "r2",
+      rootId: "r2",
+      pane: "side",
+    }),
+  );
+  expect(page.result.current.tabs).toMatchObject([
+    { id: "thread:alpha:r1", pane: "side" },
+    { id: "thread:alpha:r2", pane: "side" },
+  ]);
 });
 
 function tabSession(
@@ -619,7 +1002,7 @@ test.each(["channel", "page", "community", "unmount"])(
       page.rerender({
         session: destination === "community" ? tabSession() : session,
         channel: destination === "channel" ? "beta" : "alpha",
-        page: destination === "page" ? "me" : "messages",
+        page: destination === "page" ? "solo" : "messages",
       });
     expect(tabs.list("alpha").every((tab) => !tab.shown)).toBe(true);
     act(() => {
@@ -657,6 +1040,15 @@ test.each(["missing", "readOnly", "archived", "cached"])(
     expect(tabs.list("alpha")).toEqual([]);
   },
 );
+
+test("a joined Guest can open a readable thread without writing access", () => {
+  const session = tabSession([
+    { id: "alpha", name: "Alpha", readOnly: true, viewerRole: "guest" },
+  ]);
+  const tabs = channelTabs(session);
+  expect(tabs.open("alpha", "r1")).toBe(true);
+  expect(tabs.list("alpha")).toHaveLength(1);
+});
 
 test("an agent's tab name stays with the tab until cleared", () => {
   const session = tabSession();
@@ -710,3 +1102,144 @@ test.each(["foreground", "background"])(
     expect(page.result.current.tabs[0]).toMatchObject({ name: "Launch plan" });
   },
 );
+
+test("offline sessions with the shared undefined scope never inherit retirement addresses", () => {
+  const scope = "undefined:undefined";
+  const h = renderHook(({ session }) => useChannelTabState(session, "alpha"), {
+    initialProps: { session: { scope } as RelaySession },
+  });
+  act(() =>
+    h.result.current.enterVisit("offline:detail", undefined, true, {
+      channelId: "alpha",
+      target: "nostr:profile",
+    }),
+  );
+  h.rerender({ session: { scope } as RelaySession });
+  expect(h.result.current.detailVisits("alpha", "nostr:profile")).toEqual([]);
+});
+
+test("agent Close retires inactive thread visits without moving the current selection", async () => {
+  const { createNavigationController } = await import(
+    "../../features/navigation/controller"
+  );
+  const { createMemoryHistory } = await import(
+    "../../features/navigation/history"
+  );
+  const scope = {
+    viewer: "a".repeat(64),
+    communityOrigin: "https://relay.example",
+  };
+  const channel = {
+    version: 1,
+    kind: "conversation",
+    scope,
+    channelId: "alpha",
+  } as const;
+  const host = createNavigationController(createMemoryHistory(channel));
+  const session = {
+    channels: { list: () => ({ channels: [{ id: "alpha" }] }) },
+  } as unknown as RelaySession;
+  const h = renderHook(() => useChannelTabState(session, "alpha"));
+  try {
+    for (const root of ["1".repeat(64), "2".repeat(64)]) {
+      void host.navigation.open({ ...channel, messageId: root });
+      act(() =>
+        h.result.current.enterVisit(
+          `${host.navigation.snapshot().entry.id}:thread`,
+          { channelId: "alpha", messageId: root, rootId: root },
+        ),
+      );
+    }
+    const selected = host.navigation.snapshot().attempt;
+    act(() =>
+      expect(
+        channelTabs(session, host.navigation).close("alpha", "1".repeat(64)),
+      ).toBe("closed"),
+    );
+    expect(host.navigation.snapshot().attempt).toBe(selected);
+    expect(h.result.current.selected).toBe(`thread:alpha:${"2".repeat(64)}`);
+    expect(h.result.current.threadVisits("alpha", "1".repeat(64))).toEqual([]);
+    host.navigation.back();
+    expect(host.navigation.snapshot().entry.target).toEqual(channel);
+    host.navigation.forward();
+    expect(host.navigation.snapshot().attempt.entry).toBe(selected.entry);
+  } finally {
+    host.dispose();
+  }
+});
+
+test("retirement metadata follows the bounded history window and drops dismissed identities", async () => {
+  const { createNavigationController } = await import(
+    "../../features/navigation/controller"
+  );
+  const { createMemoryHistory } = await import(
+    "../../features/navigation/history"
+  );
+  const scope = {
+    viewer: "a".repeat(64),
+    communityOrigin: "https://relay.example",
+  };
+  const channel = {
+    version: 1,
+    kind: "conversation",
+    scope,
+    channelId: "alpha",
+  } as const;
+  const host = createNavigationController(createMemoryHistory(channel));
+  const session = {
+    viewer: scope.viewer,
+    scope: `${scope.communityOrigin}:${scope.viewer}`,
+  } as RelaySession;
+  const h = renderHook(() =>
+    useChannelTabState(session, "alpha", "messages", host.navigation),
+  );
+  try {
+    for (let i = 0; i < 150; i++) {
+      const target = `https://github.com/sample/project/pull/${i}`;
+      act(() => {
+        void host.navigation.open({ ...channel, detail: { target } });
+        h.result.current.enterVisit(
+          `${host.navigation.snapshot().entry.id}:detail`,
+          undefined,
+          true,
+          { channelId: "alpha", target },
+        );
+      });
+    }
+    expect(
+      Array.from({ length: 150 }, (_, i) =>
+        h.result.current.detailVisits(
+          "alpha",
+          `https://github.com/sample/project/pull/${i}`,
+        ),
+      ).flat(),
+    ).toHaveLength(100);
+    const current = host.navigation.snapshot().entry.id;
+    act(() => host.navigation.dismiss([current], channel));
+    expect(
+      h.result.current.detailVisits(
+        "alpha",
+        "https://github.com/sample/project/pull/149",
+      ),
+    ).toEqual([]);
+    h.unmount();
+    const successor = renderHook(() =>
+      useChannelTabState(
+        { ...session } as RelaySession,
+        "alpha",
+        "messages",
+        host.navigation,
+      ),
+    );
+    expect(
+      Array.from({ length: 150 }, (_, i) =>
+        successor.result.current.detailVisits(
+          "alpha",
+          `https://github.com/sample/project/pull/${i}`,
+        ),
+      ).flat(),
+    ).toHaveLength(99);
+  } finally {
+    host.dispose();
+  }
+});

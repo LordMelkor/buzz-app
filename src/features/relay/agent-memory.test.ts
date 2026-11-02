@@ -139,6 +139,32 @@ it("reports denied/error separately, retries, rejects malformed host output and 
   expect(() => h.session.agentMemories.open(agent.pubkey)).not.toThrow();
 });
 
+it("passes deleted entries' tombstones through a runtime read and rejects malformed ones", async () => {
+  const deleted = { slug: "mem/gone", createdAt: 4_000_000_001 };
+  const read = vi
+    .fn<MemoryReader>()
+    .mockResolvedValueOnce({ ...listing, deleted: [deleted] });
+  const h = harness(read);
+  const signal = new AbortController().signal;
+  await expect(
+    h.session.agentMemories.read(agent.pubkey, signal),
+  ).resolves.toEqual({ ...listing, deleted: [deleted] });
+  for (const bad of [
+    { slug: "gone", createdAt: 1 },
+    { slug: "core", createdAt: 1 },
+    { slug: "mem/gone", createdAt: -1 },
+    { slug: "mem/gone" },
+  ]) {
+    read.mockResolvedValueOnce({
+      ...listing,
+      deleted: [bad],
+    } as unknown as MemoryListing);
+    await expect(
+      h.session.agentMemories.read(agent.pubkey, signal),
+    ).rejects.toThrow("Invalid memory entry");
+  }
+});
+
 it("serializes runtime reads outside the mounted-view budget", async () => {
   const next = keypair();
   const releases: ((value: MemoryListing) => void)[] = [];

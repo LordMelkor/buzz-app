@@ -1,5 +1,5 @@
 import { openChannelDetails } from "./channel-details.mjs";
-import { openPage } from "./navigation.mjs";
+import { openPage, settlePanelMotion } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 
 test("channel settings owns its responsive side panel and returns keyboard focus", async ({
@@ -103,7 +103,9 @@ test("channel settings owns its responsive side panel and returns keyboard focus
   await expect(panel).toHaveCount(0);
   await page.getByRole("button", { name: "Alpha", exact: true }).click();
   await expect(panel).toBeVisible();
+  await settlePanelMotion(page);
   await close.click();
+  await expect(panel).toHaveCount(0);
   await page.setViewportSize({ width: 600, height: 800 });
   await openChannelDetails(page);
   await expect(
@@ -115,7 +117,9 @@ test("channel settings owns its responsive side panel and returns keyboard focus
   expect(narrow.x).toBeGreaterThanOrEqual(0);
   expect(narrow.x + narrow.width).toBeLessThanOrEqual(600);
   expect(narrow.y + narrow.height).toBeLessThanOrEqual(800);
+  await settlePanelMotion(page);
   await close.click();
+  await expect(panel).toHaveCount(0);
   await expect(trigger).toBeFocused();
   await page.setViewportSize({ width: 1440, height: 950 });
   await openChannelDetails(page);

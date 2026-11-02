@@ -31,6 +31,10 @@ export type RelaySnapshot = Readonly<{
   cached?: true;
   /** Only local disk bootstrap is pending; never waits for the network. */
   restoring?: true;
+  /** This error is transient: the service reconnects without anyone acting. */
+  retrying?: true;
+  /** The community refused this account; not a connection problem. */
+  denied?: true;
 }>;
 export type RelayData = {
   snapshot(): RelaySnapshot;
@@ -77,11 +81,15 @@ export function provideRelay(
   /** Whether the latest connection failure can clear without anyone acting.
    * Later publishes of the same failure (cache handoff) keep it. */
   let transientFailure = false;
-  const publish = (next: RelaySnapshot) => {
-    snapshot = Object.freeze(next);
+  const publish = ({ retrying: _retrying, ...next }: RelaySnapshot) => {
+    if (next.status !== "error") transientFailure = false;
+    snapshot = Object.freeze(
+      transientFailure && !disposed
+        ? { ...next, retrying: true as const }
+        : next,
+    );
     clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
-    if (next.status !== "error") transientFailure = false;
     if (next.status === "ready" && !next.cached) reconnects = 0;
     else if (next.status === "error" && transientFailure && !disposed)
       reconnectTimer = setTimeout(
@@ -178,7 +186,10 @@ export function provideRelay(
       }
     }
   }
-  const service: RelayData = {
+  const service: RelayData & {
+    /** The federated session changed to signed in: retry what it refused. */
+    reauthorize(): void;
+  } = {
     snapshot: () => snapshot,
     subscribe: (listener) => {
       listeners.add(listener);
@@ -199,7 +210,11 @@ export function provideRelay(
           status: "connecting",
           generation,
           session: store.session,
-          ...(resume ? { restoring: true as const } : {}),
+          // Only the first attempt bootstraps from disk behind the launch
+          // surface; a retry after a failure keeps the app on screen.
+          ...(resume && snapshot.status !== "error"
+            ? { restoring: true as const }
+            : {}),
         });
       else {
         const { error: _error, ...retainedSnapshot } = snapshot;
@@ -313,6 +328,7 @@ export function provideRelay(
               generation,
               session: store.session,
               error: String(error),
+              denied: true,
             });
           } else {
             transientFailure = isTransientFailure(error);
@@ -328,6 +344,11 @@ export function provideRelay(
           if (current === generation && signal === controller?.signal)
             connecting = false;
         });
+    },
+    reauthorize() {
+      if (disposed) return;
+      if (snapshot.status === "error") service.retry();
+      else store.session.recovery?.retryAll();
     },
     disconnect() {
       if (disposed) return;

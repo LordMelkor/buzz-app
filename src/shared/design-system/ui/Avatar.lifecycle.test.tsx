@@ -144,3 +144,48 @@ it("preserves delayed loading and error fallbacks, resetting when the source cha
   view.unmount();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it("retries a failed source behind the fallback until it or another mount loads", () => {
+  vi.useFakeTimers();
+  vi.spyOn(HTMLImageElement.prototype, "complete", "get").mockReturnValue(
+    false,
+  );
+  const src = "https://example.test/transient.png";
+  const view = render(<Avatar src={src} alt="Preview" fallback="P" />);
+  const avatar = screen.getByRole("img", { name: "Preview" });
+  const artwork = () => view.container.querySelector("img");
+
+  // Each failure keeps the initial visible; the retry requests the same source.
+  for (const delay of [2_000, 10_000, 30_000]) {
+    const image = artwork();
+    if (!image) throw new Error("Expected avatar artwork");
+    fireEvent.error(image);
+    expect(artwork()).toBeNull();
+    act(() => vi.advanceTimersByTime(delay - 1));
+    expect(artwork()).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    expect(artwork()).toHaveAttribute("src", src);
+    expect(artwork()).not.toHaveAttribute("data-loaded");
+    expect(avatar).toHaveTextContent("P");
+  }
+  const last = artwork();
+  if (!last) throw new Error("Expected final retry artwork");
+  fireEvent.error(last);
+  expect(vi.getTimerCount()).toBe(0);
+  expect(avatar).toHaveTextContent("P");
+
+  // Once timed retries are spent, another mount loading the source recovers it.
+  const reply = render(<Avatar src={src} alt="Reply" fallback="R" />);
+  const loaded = reply.container.querySelector("img");
+  if (!loaded) throw new Error("Expected reply artwork");
+  fireEvent.load(loaded);
+  const recovered = artwork();
+  if (!recovered) throw new Error("Expected recovered artwork");
+  expect(recovered).toHaveAttribute("src", src);
+  fireEvent.load(recovered);
+  expect(recovered).toHaveAttribute("data-loaded", "true");
+  expect(avatar).toHaveTextContent("");
+  reply.unmount();
+  view.unmount();
+  expect(vi.getTimerCount()).toBe(0);
+});

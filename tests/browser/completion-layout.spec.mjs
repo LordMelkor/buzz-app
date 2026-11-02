@@ -1,4 +1,4 @@
-import { openPage } from "./navigation.mjs";
+import { closeSettings, openPage, settingsDialog } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 
 test.use({ historyCounts: { alpha: 1, beta: 0 } });
@@ -73,11 +73,12 @@ test("host shortcuts coexist with an open completion menu and preserve its draft
   await input.fill(":smile");
   await expect(page.getByRole("option").first()).toBeVisible();
   await input.press(`${modifier}+,`);
-  await expect(
-    page.getByRole("region", { name: "Settings", exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole("listbox")).toHaveCount(0);
-  await openPage(page, "Messages");
+  await expect(settingsDialog(page)).toBeVisible();
+  // The conversation stays mounted behind Settings; its menu must not.
+  await expect(page.getByRole("listbox", { includeHidden: true })).toHaveCount(
+    0,
+  );
+  await closeSettings(page);
   await expect(input).toHaveJSProperty("value", ":smile");
   // Draft persistence restores text, not selection. Establish the query caret
   // through the editor API; native End can race focus/selection reconciliation.

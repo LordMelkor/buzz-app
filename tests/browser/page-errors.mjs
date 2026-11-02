@@ -40,8 +40,17 @@ export function watchPageErrors(page) {
       if (request.isNavigationRequest() && request.frame() === page.mainFrame())
         navigation = request;
     });
-    page.on("framenavigated", (frame) => {
-      if (frame === page.mainFrame()) navigation = undefined;
+    // The navigation ends with its request: a same-document navigation (the
+    // old document's startup history.replaceState) also fires framenavigated
+    // while the request is still in flight, and the document response finishes
+    // only after its commit has replaced the old document.
+    page.on("requestfinished", (request) => {
+      if (request === navigation) navigation = undefined;
+    });
+    // Only the new document fires this, so it ends a navigation whose request
+    // never reports finishing or failing.
+    page.on("domcontentloaded", () => {
+      navigation = undefined;
     });
     page.on("requestfailed", (request) => {
       if (request === navigation) navigation = undefined;

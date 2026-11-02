@@ -27,7 +27,7 @@ function harness() {
     viewer: context.viewer,
     status: "ready",
   };
-  const read = deferred<{ data: number[]; exited: boolean }>();
+  const read = deferred<{ data: Uint8Array; exited: boolean }>();
   const bridge = {
     available: true as boolean,
     createOwner: vi.fn(async () => "owner"),
@@ -89,7 +89,7 @@ it("spawns once with exact public context and retains the session across consume
   await tick();
   expect(h.bridge.write).toHaveBeenCalledWith("owner", "pty", "echo hi\r");
   expect(h.bridge.resize).toHaveBeenCalledWith("owner", "pty", 500, 300);
-  h.read.resolve({ data: [65, 66], exited: true });
+  h.read.resolve({ data: new Uint8Array([65, 66]), exited: true });
   await tick();
   expect(h.screen.output).toHaveBeenCalledWith(new Uint8Array([65, 66]));
   expect(h.bridge.close).toHaveBeenCalledExactlyOnceWith("owner", "pty");
@@ -126,7 +126,7 @@ it("ending an in-flight session cannot attach its shell to the replacement", asy
   await tick();
   expect(h.bridge.close).toHaveBeenCalledWith("owner", "retired");
   expect(h.sessions.get(context)).toBe(replacement);
-  h.read.resolve({ data: [], exited: true });
+  h.read.resolve({ data: new Uint8Array(), exited: true });
   await tick();
   await h.sessions.dispose();
 });
@@ -153,7 +153,7 @@ it("failed close remains retryable, and browser use never invokes native IPC", a
   expect(h.sessions.get(context)?.error).toContain("busy");
   await h.sessions.end(context);
   expect(h.sessions.get(context)).toBeUndefined();
-  h.read.resolve({ data: [], exited: false });
+  h.read.resolve({ data: new Uint8Array(), exited: false });
   await h.sessions.dispose();
   h.bridge.available = false;
   const browser = createSessions(h.bridge, h.load, () => ({
@@ -186,7 +186,7 @@ it("ending during final emulator output cannot resurrect status or close twice",
   h.bridge.close.mockImplementation(() => closed.promise);
   const entry = h.sessions.ensure(context);
   await tick();
-  h.read.resolve({ data: [65], exited: true });
+  h.read.resolve({ data: new Uint8Array([65]), exited: true });
   await tick();
   const ending = h.sessions.end(context);
   await tick();
@@ -219,7 +219,7 @@ it("scope switches fence both new and queued user input, but retain PTY replies"
     ["owner", "pty", "queued reply"],
     ["owner", "pty", "background reply"],
   ]);
-  h.read.resolve({ data: [], exited: true });
+  h.read.resolve({ data: new Uint8Array(), exited: true });
   await tick();
   await h.sessions.dispose();
 });
@@ -241,7 +241,7 @@ it.each(["end", "dispose"] as const)(
     h.input("late user");
     h.input("late reply", "reply");
     writing.resolve();
-    h.read.resolve({ data: [], exited: false });
+    h.read.resolve({ data: new Uint8Array(), exited: false });
     await ending;
     await tick();
     expect(h.bridge.write.mock.calls).toEqual([["owner", "pty", "first"]]);
@@ -261,6 +261,56 @@ it("restoring an ended panel waits for explicit start instead of spawning anothe
   expect(h.bridge.spawn).toHaveBeenCalledTimes(1);
   h.sessions.ensure(context);
   await vi.waitFor(() => expect(h.bridge.spawn).toHaveBeenCalledTimes(2));
-  h.read.resolve({ data: [], exited: true });
+  h.read.resolve({ data: new Uint8Array(), exited: true });
   await h.sessions.dispose();
+});
+
+it("input wakes an idle read loop before the poll delay", async () => {
+  vi.useFakeTimers();
+  try {
+    const h = harness();
+    h.read.resolve({ data: new Uint8Array(), exited: false });
+    h.sessions.ensure(context);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.bridge.read).toHaveBeenCalledTimes(1);
+    h.input("x");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.bridge.write).toHaveBeenCalledWith("owner", "pty", "x");
+    expect(h.bridge.read).toHaveBeenCalledTimes(2);
+    // Without input, idle polling keeps its delay.
+    await vi.advanceTimersByTimeAsync(39);
+    expect(h.bridge.read).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.bridge.read).toHaveBeenCalledTimes(3);
+    const disposing = h.sessions.dispose();
+    await vi.advanceTimersByTimeAsync(40);
+    await disposing;
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("input written during an in-flight read skips the following idle delay", async () => {
+  vi.useFakeTimers();
+  try {
+    const h = harness();
+    const inFlight = deferred<{ data: Uint8Array; exited: boolean }>();
+    h.bridge.read.mockImplementationOnce(() => inFlight.promise);
+    h.read.resolve({ data: new Uint8Array(), exited: false });
+    h.sessions.ensure(context);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.bridge.read).toHaveBeenCalledTimes(1);
+    h.input("x");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.bridge.write).toHaveBeenCalledWith("owner", "pty", "x");
+    // The read started before the write returns its earlier, empty result.
+    inFlight.resolve({ data: new Uint8Array(), exited: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.bridge.read).toHaveBeenCalledTimes(2);
+    const disposing = h.sessions.dispose();
+    await vi.advanceTimersByTimeAsync(40);
+    await disposing;
+  } finally {
+    vi.useRealTimers();
+  }
 });

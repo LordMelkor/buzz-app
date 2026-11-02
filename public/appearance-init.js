@@ -13,18 +13,48 @@
     // Storage may be denied; the system palette still opens safely.
   }
   document.documentElement.dataset.colorMode = mode;
-  let bubbleColor = "neutral";
+  let accent = "citrus";
   try {
-    let value = localStorage.getItem("buzz-bubble-color.v1");
-    if (value === "cyan" || value === "indigo") value = "blue";
-    else if (value === "red") value = "pink";
-    else if (value === "purple") value = "lilac";
-    if (["neutral", "blue", "green", "orange", "pink", "lilac"].includes(value))
-      bubbleColor = value;
+    const accents = ["bee", "magenta", "iris", "cobalt", "citrus", "mono"];
+    let value = localStorage.getItem("buzz-accent.v1");
+    if (value === null) {
+      // The former bubble color carries over; its old "Default" does not.
+      const legacy = {
+        blue: "cobalt",
+        cyan: "cobalt",
+        indigo: "cobalt",
+        green: "citrus",
+        orange: "bee",
+        pink: "magenta",
+        red: "magenta",
+        lilac: "iris",
+        purple: "iris",
+      };
+      value = legacy[localStorage.getItem("buzz-bubble-color.v1")] ?? null;
+    }
+    if (
+      value === "chartreuse" ||
+      value === "lime" ||
+      value === "pear" ||
+      value === "jade"
+    )
+      value = "citrus";
+    if (value === "flame") value = "bee";
+    if (value === "gray") value = "mono";
+    if (accents.includes(value)) accent = value;
   } catch {
-    /* Neutral remains usable without storage. */
+    /* The default accent remains usable without storage. */
   }
-  document.documentElement.dataset.bubbleColor = bubbleColor;
+  document.documentElement.dataset.accent = accent;
+  let contrast = "low";
+  try {
+    const saved = localStorage.getItem("buzz-contrast.v1");
+    if (saved === "high") contrast = saved;
+  } catch {
+    /* Low contrast remains usable without storage. */
+  }
+  document.documentElement.dataset.colorLevel =
+    contrast === "low" ? "touch" : contrast;
   let scale = 1;
   try {
     const value = Number(localStorage.getItem("buzz-font-scale.v1"));

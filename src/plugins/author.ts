@@ -1,4 +1,5 @@
 // FOUNDATION: Type-only author entry. Runtime capabilities come from injected ctx.
+export type { AgentHook, AgentHookContext } from "../features/agents/hooks";
 export type { PluginManifest, PluginModule } from "./api";
 export type { SettingsCard, SettingsCards } from "../features/settings/service";
 export type { Context } from "@deepseek-ai/cordis";
@@ -9,7 +10,13 @@ export type {
 } from "../features/identity-names/service";
 export type { NamingIdentity } from "../features/identity-names/policy";
 export type { Browser, BrowserViewProps } from "../features/browser/api";
-export type { Page, Pages } from "../features/pages/service";
+export type { Page, PageSidebarProps, Pages } from "../features/pages/service";
+export type {
+  SidebarSectionAction,
+  SidebarSectionContribution,
+  SidebarSectionRow,
+  SidebarSections,
+} from "../features/channel-navigation/sidebar-sections-service";
 export type {
   Panel,
   Panels,
@@ -43,6 +50,12 @@ export type {
   TargetOpener,
 } from "../features/conversation/contracts";
 export type { RelayData, RelaySnapshot } from "../features/relay/service";
+export type {
+  ArtifactSyncFilter,
+  ArtifactSyncSnapshot,
+  ArtifactSyncStatus,
+  ArtifactSyncView,
+} from "../features/relay/artifact-sync";
 
 export type {
   Shortcuts,
@@ -65,6 +78,18 @@ export type {
 } from "../features/relay/read-state";
 
 export type {
+  Decisions,
+  DecisionProvider,
+  DecisionProviderStatus,
+  DecisionReply,
+  DecisionQuestion,
+  DecisionRequest,
+  DecisionAnswer,
+  DecisionFailure,
+  DecisionResult,
+} from "../features/decisions/service";
+
+export type {
   Navigation,
   NavigationSnapshot,
   OpenResult,
@@ -84,3 +109,47 @@ export type {
 } from "../features/notifications/service";
 
 export type { VoiceRecording } from "../features/relay/voice-media";
+
+export type {
+  Agents,
+  AgentAddedTab,
+  AgentType,
+  AgentSession,
+  AgentSessions,
+} from "../features/agents/service";
+
+export type { ArtifactStorage } from "../features/artifact-storage/service";
+export type {
+  ArtifactCollection,
+  ArtifactCollectionDefinition,
+  ArtifactEntry,
+  ArtifactIndex,
+  ArtifactPage,
+  ArtifactPageQuery,
+  ArtifactRevision,
+  ArtifactAvailability,
+  SavedArtifact,
+  ArtifactImport,
+} from "../features/artifact-storage/types";
+
+export type {
+  SoloNavigation,
+  SoloRegionBinding,
+  SoloRegionSnapshot,
+  SoloRegionAction,
+  SoloRegionSource,
+  SoloChatInput,
+  SoloRegionHandle,
+  SoloRegionProps,
+  SoloConversationProps,
+  SoloConversation,
+  SoloConversationLinkProps,
+  SoloCardProps,
+  SoloDisclosureProps,
+} from "../features/channel-navigation/solo-navigation-contract";
+
+export type {
+  FederatedIdentity,
+  SessionSnapshot,
+  AuthenticatedRequest,
+} from "../features/federated-identity/service";

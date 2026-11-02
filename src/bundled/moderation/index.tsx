@@ -1,12 +1,11 @@
 import type { PluginModule } from "../../plugins/api";
 import { CommunityAdmin } from "./CommunityAdmin";
-import { canManageMembership, createCommunityMembership } from "./membership";
+import { canManageMembership } from "./membership";
 
-export const inject = ["relay", "settingsCards"];
+export const inject = ["relay", "settingsCards", "adminAccess"];
 export const apply: PluginModule["apply"] = (ctx) => {
   const relay = ctx.relay;
-  const membership = createCommunityMembership(relay);
-  ctx.effect(() => () => membership.dispose());
+  const membership = ctx.adminAccess.membership;
   // Registered in every build. The card hides unsupported member changes
   // itself, so a Settings section, history entry or in-app locator naming it
   // still opens the roster and invite controls in native builds.

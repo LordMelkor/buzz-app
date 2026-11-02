@@ -203,6 +203,19 @@ fn context_and_dimensions_reject_bad_boundary_inputs() {
 }
 
 #[test]
+fn read_body_appends_the_exit_flag_after_output() {
+    let body = |data: &[u8], exited| {
+        ReadResult {
+            data: data.to_vec(),
+            exited,
+        }
+        .into_body()
+    };
+    assert_eq!(body(b"AB", true), b"AB\x01");
+    assert_eq!(body(b"", false), [0]);
+}
+
+#[test]
 fn large_final_output_is_fully_drained_before_exited() {
     let state = Terminals::default();
     let owner = state.create_owner().unwrap();
@@ -220,6 +233,155 @@ fn large_final_output_is_fully_drained_before_exited() {
     state.close(&owner, &id).unwrap();
     state.close(&owner, &id).unwrap();
     state.close_owner(&owner).unwrap();
+    state.close_owner(&owner).unwrap();
+}
+
+#[test]
+fn coalesced_reads_return_sparse_output_promptly() {
+    let state = Terminals::default();
+    let owner = state.create_owner().unwrap();
+    let id = state
+        .spawn_with(
+            &owner,
+            |_| Ok(script("printf a; sleep 1; printf b")),
+            80,
+            24,
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let first = loop {
+        let result = state.with_session(&owner, &id, Session::read).unwrap();
+        if !result.data.is_empty() {
+            break result.data;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    // The second write is a second away; coalescing must not wait for it.
+    assert_eq!(first, b"a");
+    // Bytes written just before exit still precede the exit report.
+    assert_eq!(read_all(&state, &owner, &id), b"b");
+    state.close_owner(&owner).unwrap();
+}
+
+#[test]
+fn each_coalesced_read_is_bounded_while_a_child_writes_continuously() {
+    // A slow continuous writer and one that keeps the PTY readable.
+    for child in ["while :; do printf x; done", "yes"] {
+        let state = Terminals::default();
+        let owner = state.create_owner().unwrap();
+        let id = state
+            .spawn_with(&owner, |_| Ok(script(child)), 80, 24)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while state
+            .with_session(&owner, &id, Session::read)
+            .unwrap()
+            .data
+            .is_empty()
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        for _ in 0..20 {
+            let started = Instant::now();
+            let result = state.with_session(&owner, &id, Session::read).unwrap();
+            let elapsed = started.elapsed();
+            assert!(result.data.len() <= MAX_BYTES && !result.exited);
+            // Slack is for scheduling only; without the budget, filling 64 KiB
+            // at the printf loop's rate takes hundreds of milliseconds.
+            assert!(
+                elapsed < unix::COALESCE_BUDGET + Duration::from_millis(100),
+                "{child}: {elapsed:?}"
+            );
+        }
+        let started = Instant::now();
+        state.close(&owner, &id).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        state.close_owner(&owner).unwrap();
+    }
+}
+
+#[test]
+fn a_held_or_closing_session_does_not_block_another_session() {
+    let state = Terminals::default();
+    let owner = state.create_owner().unwrap();
+    let busy = state
+        .spawn_with(&owner, |_| Ok(script("exec sleep 30")), 80, 24)
+        .unwrap();
+    let id = state
+        .spawn_with(
+            &owner,
+            |_| Ok(script("read answer; printf %s \"$answer\"")),
+            80,
+            24,
+        )
+        .unwrap();
+    // Stand in for a read that is draining the busy session.
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let hold = {
+        let (state, owner, busy) = (state.clone(), owner.clone(), busy.clone());
+        std::thread::spawn(move || {
+            state.with_session(&owner, &busy, |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+        })
+    };
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    // Registry entry, this probe and the held read each own one reference.
+    let probe = state.lock().unwrap().owners[&owner].sessions[&busy].clone();
+    assert_eq!(Arc::strong_count(&probe), 3);
+    let close = {
+        let (state, owner, busy) = (state.clone(), owner.clone(), busy.clone());
+        std::thread::spawn(move || state.close(&owner, &busy))
+    };
+    // A fourth reference means close has its handle and next waits on the
+    // held session lock; the registry must stay free while it does.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Arc::strong_count(&probe) < 4 {
+        assert!(Instant::now() < deadline, "close never took its handle");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    {
+        let (state, owner) = (state.clone(), owner.clone());
+        std::thread::spawn(move || {
+            let result = state
+                .with_session(&owner, &id, |s| s.resize(100, 40))
+                .and_then(|()| state.with_session(&owner, &id, |s| s.write(b"ok\n")))
+                .map(|()| read_all(&state, &owner, &id));
+            done_tx.send(result).unwrap();
+        });
+    }
+    let output = done_rx.recv_timeout(Duration::from_secs(5));
+    release_tx.send(()).unwrap();
+    hold.join().unwrap().unwrap();
+    close.join().unwrap().unwrap();
+    assert!(String::from_utf8(output.unwrap().unwrap())
+        .unwrap()
+        .contains("ok"));
+    assert!(state.with_session(&owner, &busy, Session::read).is_err());
+    state.shutdown().unwrap();
+}
+
+#[test]
+fn a_read_after_close_reaped_its_session_fails_without_polling_the_pid() {
+    let state = Terminals::default();
+    let owner = state.create_owner().unwrap();
+    let id = state
+        .spawn_with(&owner, |_| Ok(script("exec sleep 30")), 80, 24)
+        .unwrap();
+    // A read handle retained across close sees the reaped session.
+    let result = state.with_session(&owner, &id, |s| {
+        s.shutdown()?;
+        s.read().map(|_| ())
+    });
+    assert_eq!(result.unwrap_err(), "Terminal has exited");
+    state.close(&owner, &id).unwrap();
+    assert!(state.with_session(&owner, &id, Session::read).is_err());
     state.close_owner(&owner).unwrap();
 }
 

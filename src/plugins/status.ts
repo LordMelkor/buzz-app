@@ -4,6 +4,9 @@ declare module "@deepseek-ai/cordis" {
     pluginStatus: {
       isActive(id: string, revision: string): boolean;
       subscribe(listener: () => void): () => void;
+      /** Whether startup is over: the plugin settings are read, or need the
+       * user, and no plugin is still starting. Without it, startup is over. */
+      settled?(): boolean;
     };
   }
 }

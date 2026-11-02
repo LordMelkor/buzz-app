@@ -1,6 +1,7 @@
 import { test, expect } from "./playwright-test.mjs";
 import react from "@vitejs/plugin-react";
 import { createServer } from "./vite-server.mjs";
+import { readFile } from "node:fs/promises";
 
 function insideHistory(el) {
   const history = el.closest('[aria-label="Channel message history"]');
@@ -13,6 +14,122 @@ function insideHistory(el) {
     frame.bottom <= viewport.bottom
   );
 }
+
+// Browser-only: real video decoding, mixed tile geometry and gallery handoff.
+test("mixed videos and photos stay in four tiles and all remain reachable", async ({
+  page,
+}, testInfo) => {
+  const server = await createServer({
+    configFile: false,
+    envFile: false,
+    plugins: [react()],
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  await server.listen();
+  try {
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/relay-composer.html?attachments`,
+    );
+    const form = page.getByRole("form", {
+      name: "Send a message to General",
+      exact: true,
+    });
+    const clip = await readFile(
+      new URL("../fixtures/message-gallery/assets/sample.mp4", import.meta.url),
+    );
+    await form.getByLabel("Choose attachments").setInputFiles([
+      { name: "clip.mp4", mimeType: "video/mp4", buffer: clip },
+      ...Array.from({ length: 4 }, (_, index) => ({
+        name: `photo-${index}.svg`,
+        mimeType: "image/svg+xml",
+        buffer: Buffer.from(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="100%" height="100%" fill="#d9e7e3"/><text x="20" y="80" font-size="40">Photo ${index}</text></svg>`,
+        ),
+      })),
+    ]);
+    await expect(form.getByText(/Ready$/)).toHaveCount(5);
+    await form.getByRole("textbox").fill("Mixed gallery");
+    await form
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
+    const group = page
+      .getByRole("region", { name: "Channel message history", exact: true })
+      .getByRole("group", { name: "5 photos and videos", exact: true });
+    const links = group.getByRole("link");
+    await expect(links).toHaveCount(4);
+    await expect(links.last()).toHaveText("+2");
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          window.composerFixture
+            .pending()
+            .every((item) => ["accepted", "seen"].includes(item.delivery)),
+        ),
+      )
+      .toBe(true);
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: 950 });
+      const boxes = await links.evaluateAll((items) =>
+        items.map((item) => {
+          const r = item.getBoundingClientRect();
+          return { x: r.x, y: r.y, right: r.right, bottom: r.bottom };
+        }),
+      );
+      expect(boxes[0].y).toBe(boxes[1].y);
+      expect(boxes[2].y).toBe(boxes[3].y);
+      expect(boxes[2].y).toBeGreaterThan(boxes[0].bottom);
+      expect(boxes[1].x).toBeGreaterThan(boxes[0].right);
+      await page.screenshot({
+        path: testInfo.outputPath(`mixed-${width}.png`),
+      });
+    }
+    await links.last().click();
+    const viewer = page.getByRole("dialog");
+    await expect(viewer.getByText("4 / 5", { exact: true })).toBeVisible();
+    await expect(
+      viewer.getByRole("heading", { name: "photo-2.svg", exact: true }),
+    ).toBeVisible();
+    // The image stage is replaced between mixed-gallery items. Keep keyboard
+    // navigation working after focus was inside the departing stage.
+    await viewer.getByRole("group", { name: "Image gallery" }).focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(viewer.getByText("5 / 5", { exact: true })).toBeVisible();
+    await page.keyboard.press("ArrowLeft");
+    await expect(viewer.getByText("4 / 5", { exact: true })).toBeVisible();
+    await viewer
+      .getByRole("button", { name: "Next media", exact: true })
+      .click();
+    await expect(viewer.getByText("5 / 5", { exact: true })).toBeVisible();
+    await expect(
+      viewer.getByRole("heading", { name: "photo-3.svg", exact: true }),
+    ).toBeVisible();
+    await expect(
+      viewer.getByRole("button", { name: "Next media", exact: true }),
+    ).toBeDisabled();
+    for (let index = 4; index >= 1; index--) {
+      await viewer
+        .getByRole("button", { name: "Previous media", exact: true })
+        .click();
+      await expect(
+        viewer.getByText(`${index} / 5`, { exact: true }),
+      ).toBeVisible();
+    }
+    await expect(viewer).toHaveAttribute("aria-label", "Video review");
+    await expect(
+      viewer.getByRole("heading", { name: "clip.mp4", exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(() => viewer.locator("video").evaluate((video) => video.readyState))
+      .toBeGreaterThanOrEqual(2);
+    await viewer
+      .getByRole("button", { name: "Close fullscreen viewer", exact: true })
+      .click();
+    await expect(links.last()).toBeFocused();
+  } finally {
+    await server.close();
+  }
+});
 
 // Browser-only: posted full-frame layout, focus scrolling and real viewer wiring.
 test("posted image previews keep every image reachable beside documents", async ({
@@ -72,7 +189,8 @@ test("posted image previews keep every image reachable beside documents", async 
       exact: true,
     });
     const links = images.getByRole("link");
-    await expect(links).toHaveCount(8);
+    await expect(links).toHaveCount(4);
+    await expect(links.last()).toHaveText("+5");
     await expect
       .poll(() =>
         page.evaluate(() =>
@@ -91,7 +209,16 @@ test("posted image previews keep every image reachable beside documents", async 
     const optionTab = browserName === "webkit" && process.platform === "darwin";
     const forward = optionTab ? "Alt+Tab" : "Tab";
     const backward = optionTab ? "Shift+Alt+Tab" : "Shift+Tab";
-    for (const width of [390, 768, 1280]) {
+    for (const [width, fontSize] of [
+      [390, 16],
+      [768, 16],
+      [1280, 16],
+      [390, 20],
+      [1280, 20],
+    ]) {
+      await page.evaluate((size) => {
+        document.documentElement.style.fontSize = `${size}px`;
+      }, fontSize);
       await page.setViewportSize({ width, height: 950 });
       await expect(images).toBeVisible();
       const geometry = await links.evaluateAll((items) =>
@@ -100,10 +227,17 @@ test("posted image previews keep every image reachable beside documents", async 
           return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
         }),
       );
-      for (let index = 1; index < geometry.length; index++)
-        expect(geometry[index].top).toBeGreaterThanOrEqual(
-          geometry[index - 1].bottom,
-        );
+      for (let index = 0; index < geometry.length; index += 2) {
+        expect(geometry[index + 1].top).toBe(geometry[index].top);
+        expect(geometry[index + 1].left).toBeGreaterThan(geometry[index].right);
+        if (index >= 2)
+          expect(geometry[index].top).toBeGreaterThan(
+            geometry[index - 2].bottom,
+          );
+        expect(
+          geometry[index].right - geometry[index].left,
+        ).toBeLessThanOrEqual((180 * fontSize) / 16);
+      }
       for (const link of await links.all())
         await expect(link.locator("img")).toHaveCSS("object-fit", "contain");
       expect(
@@ -125,7 +259,7 @@ test("posted image previews keep every image reachable beside documents", async 
         true,
       );
       await links.first().focus();
-      for (let i = 1; i < 8; i++) await page.keyboard.press(forward);
+      for (let i = 1; i < 4; i++) await page.keyboard.press(forward);
       await expect(links.last()).toBeFocused();
       await expect.poll(() => links.last().evaluate(insideHistory)).toBe(true);
       await expect(links.last()).toHaveCSS("outline-style", "solid");
@@ -147,7 +281,7 @@ test("posted image previews keep every image reachable beside documents", async 
       await expect(history.getByText("8 images", { exact: true })).toHaveCount(
         0,
       );
-      for (let i = 6; i >= 0; i--) {
+      for (let i = 2; i >= 0; i--) {
         await page.keyboard.press(backward);
         await expect(links.nth(i)).toBeFocused();
         await expect
@@ -210,7 +344,9 @@ test("posted image previews keep every image reachable beside documents", async 
         await page
           .getByRole("article", { name: "Conversation", exact: true })
           .screenshot({
-            path: testInfo.outputPath(`images-${width}-${theme}.png`),
+            path: testInfo.outputPath(
+              `images-${width}-${fontSize}-${theme}.png`,
+            ),
             style:
               '[aria-label="App notifications"] { visibility: hidden !important; }',
           });
@@ -222,7 +358,28 @@ test("posted image previews keep every image reachable beside documents", async 
     await expect(
       viewer.getByRole("img", { name: "Attachment preview" }),
     ).toHaveAttribute("src", lastSource);
-    await expect(viewer.getByText("8 / 8", { exact: true })).toBeVisible();
+    await expect(viewer.getByText("4 / 8", { exact: true })).toBeVisible();
+    await expect(
+      viewer.getByRole("heading", { name: "sample-4.svg", exact: true }),
+    ).toBeVisible();
+    for (let index = 5; index <= 8; index++) {
+      await page.keyboard.press("ArrowRight");
+      await expect(
+        viewer.getByText(`${index} / 8`, { exact: true }),
+      ).toBeVisible();
+      await expect(
+        viewer.getByRole("heading", {
+          name: `sample-${index}.svg`,
+          exact: true,
+        }),
+      ).toBeVisible();
+    }
+    await expect(
+      viewer.getByRole("img", { name: "Attachment preview" }),
+    ).not.toHaveAttribute("src", lastSource);
+    await expect(
+      viewer.getByRole("button", { name: "Next image", exact: true }),
+    ).toBeDisabled();
     await viewer
       .getByRole("button", { name: "Close fullscreen viewer" })
       .click();

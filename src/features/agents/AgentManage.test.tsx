@@ -9,6 +9,7 @@ import type { Agent, Agents } from "./service";
 afterEach(cleanup);
 
 const agent = {
+  key: "1".repeat(64),
   pubkey: "1".repeat(64),
   name: "Ada",
   type: "test/echo",
@@ -31,7 +32,7 @@ it("deletes after confirming, and keeps the dialog open with the error when Dele
   const onRemoved = vi.fn();
   render(
     <AgentDelete
-      agents={{ remove } as unknown as Agents}
+      agents={{ remove, memberships: () => [] } as unknown as Agents}
       agent={agent}
       onRemoved={onRemoved}
     />,
@@ -44,7 +45,7 @@ it("deletes after confirming, and keeps the dialog open with the error when Dele
   expect(onRemoved).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "Delete" }));
   await vi.waitFor(() => expect(onRemoved).toHaveBeenCalledOnce());
-  expect(remove).toHaveBeenCalledWith(agent.pubkey);
+  expect(remove).toHaveBeenCalledWith(agent.key);
 });
 
 it("retries an unchecked archive state and shows what is left", async () => {
@@ -69,5 +70,5 @@ it("retries an unchecked archive state and shows what is left", async () => {
   ).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("Ada is still archived.")).toBeVisible();
-  expect(unarchive).toHaveBeenCalledWith(agent.pubkey);
+  expect(unarchive).toHaveBeenCalledWith(agent.key);
 });

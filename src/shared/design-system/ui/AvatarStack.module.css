@@ -22,7 +22,7 @@
 }
 .count {
   position: relative;
-  z-index: 4;
+  z-index: 100;
   margin-inline-start: var(--space-2);
   color: var(--text-subtle);
 }
@@ -32,12 +32,13 @@
   width: 1.5rem;
   height: 1.5rem;
 }
-/* Thread summaries retain their existing circular overflow badge. */
+/* Keep short counts round; wider counts grow into a capsule. */
 .root[data-size="small"] .count {
   display: inline-grid;
   place-items: center;
   flex-shrink: 0;
-  width: 1.5rem;
+  min-width: 1.5rem;
+  padding-inline: var(--space-1h);
   height: 1.5rem;
   margin-inline-start: 0;
   margin-inline-end: calc(-1 * var(--space-1));
@@ -46,9 +47,34 @@
   box-shadow: inset 0 0 0 1.5px var(--surface-panel);
 }
 
+.root[data-size="mini"] {
+  padding-inline-end: var(--space-1h);
+}
 .root[data-size="mini"] .item {
-  width: var(--space-4);
-  height: var(--space-4);
+  padding: 2px;
+  width: var(--space-5);
+  height: var(--space-5);
+  /* The mask takes 4px; retain 2px of overlap between the artwork. */
+  margin-inline-end: calc(-1 * var(--space-1h));
+}
+
+/* A hero row, such as the agents an empty page offers to import. */
+.root:is([data-size="hero"], [data-size="hero-large"]) .item {
+  padding: 3px;
+  width: 4rem;
+  height: 4rem;
+  margin-inline-end: calc(-1 * var(--space-3));
+}
+.root:is([data-size="hero"], [data-size="hero-large"]) .item:last-child {
+  margin-inline-end: 0;
+}
+.countFill {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--text-secondary);
+  background: var(--interaction-fill);
 }
 
 .miniInitial {
@@ -59,12 +85,17 @@
   transform: scale(0.75);
 }
 
-.item:nth-child(1) {
-  z-index: 1;
+.root[data-size="hero-large"] {
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: center;
 }
-.item:nth-child(2) {
-  z-index: 2;
+.root[data-size="hero-large"] .item {
+  width: 8rem;
+  height: 8rem;
+  margin-inline-end: calc(-1 * var(--space-6));
 }
-.item:nth-child(3) {
-  z-index: 3;
+
+.root[data-size="hero-large"] .item:last-child {
+  margin-inline-end: 0;
 }

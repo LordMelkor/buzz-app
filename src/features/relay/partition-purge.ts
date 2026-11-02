@@ -1,3 +1,4 @@
+import { purgeArtifactStorage } from "../artifact-storage/store";
 import { purgeOutboxStorage } from "./outbox-storage";
 import { relayPartition } from "./partition";
 import { createHeadPersistence } from "./persistence";
@@ -25,4 +26,5 @@ export async function purgeRelayPartition(
   });
   await attempt("read state", () => purgeReadStateStorage(partition));
   await attempt("outbox", () => purgeOutboxStorage(partition));
+  await attempt("artifacts", () => purgeArtifactStorage(viewer, origin));
 }

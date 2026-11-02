@@ -32,7 +32,9 @@
   display: inline-flex;
   padding: var(--space-half);
   border-radius: calc(var(--radius-row) - var(--space-1));
-  background: var(--affordance-subtle-hover);
+  /* Covers the timestamp with the hovered row's own fill, so the action never
+     reads as a separate gray chip on a colored row. */
+  background: var(--affordance-floating-hover);
   opacity: 0;
   pointer-events: none;
 }
@@ -64,7 +66,7 @@
     background: var(--affordance-floating-hover);
   }
   .activityItemAction [data-icon-variant]:hover:not([data-disabled]) {
-    background: var(--surface-popover);
+    background: var(--affordance-floating-selected);
   }
   .activityItemWithAction:hover .activityTimestamp {
     opacity: 0;

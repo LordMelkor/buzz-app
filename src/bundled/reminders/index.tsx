@@ -103,7 +103,8 @@ export const apply: PluginModule["apply"] = (ctx) => {
       )
         return;
       const { hydrated, reminders } = bound.snapshot();
-      // Nothing notifies before the first history read succeeds.
+      // Nothing notifies before the first page of a history read lands; later
+      // pages notify as they arrive, and the saved time below waits for `ready`.
       if (!hydrated) return;
       // Notification access is judged against the channel list, so hold the
       // window until a full roster read has verified it rather than spend it

@@ -22,6 +22,15 @@
   &:where([data-color-mode="dark"], [data-color-mode="dark"] *)
 );
 
+/* Set by the appearance service while a palette change commits. */
+:root[data-palette-changing],
+:root[data-palette-changing] *,
+:root[data-palette-changing] ::before,
+:root[data-palette-changing] ::after {
+  /* biome-ignore lint/complexity/noImportantStyles: The guard must suppress every component transition for one palette commit. */
+  transition: none !important;
+}
+
 /* Legacy utility compatibility. Prefix-specific primary avoids stealing the
    system's text-primary and border-primary meanings. */
 @theme inline {
@@ -98,7 +107,7 @@
     box-sizing: border-box;
   }
   html[data-sidebar-resizing] * {
-    cursor: col-resize;
+    cursor: ew-resize;
   }
   :where(strong, b) {
     font-weight: var(--type-weight-medium);
@@ -192,34 +201,50 @@
     --interaction-pressed: var(--affordance-backdrop-pressed);
     --interaction-selected: var(--affordance-backdrop-pressed);
     @apply relative flex shrink-0 items-center justify-between;
-    min-height: 3rem;
+    min-height: var(--size-topbar);
+    /* Compact headers hold the page capsule in flow; keep it inside the topbar. */
+    padding-block: var(--space-1);
     flex-wrap: wrap;
-    padding-left: var(--space-4);
-    padding-right: var(--space-2);
+    padding-inline: var(--space-panel-gap);
     gap: var(--space-2);
     /* The shell owns one continuous dot grid, including beneath this header. */
     background: transparent;
   }
-  @media (min-width: 40rem) {
-    .shell-header {
-      padding-right: var(--space-4);
-    }
-  }
-  .shell-communities {
+  .shell-history {
     @apply flex min-w-0 shrink-0 items-center justify-start;
     gap: 0;
-    padding-left: var(--space-4);
+    margin-left: var(--space-3);
+    padding-left: 0;
   }
-  .shell-communities > .navigation-item {
+  .shell-history > .navigation-item {
     flex-shrink: 1;
   }
-  .shell-header-mac .shell-communities {
+  .shell-header-mac .shell-history {
     padding-left: calc(var(--space-16) + var(--space-4));
   }
-  .shell-topbar-pages {
+  .shell-capsule {
+    flex: none;
+  }
+  .shell-center-capsule {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     position: absolute;
     left: 50%;
     transform: translateX(-50%);
+  }
+  .shell-header[data-compact-pages] .shell-center-capsule {
+    position: static;
+    transform: none;
+  }
+  .shell-community-switcher {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin-right: var(--space-3);
+    min-width: 0;
+  }
+  .shell-topbar-pages {
     width: max-content;
     max-width: none;
   }
@@ -306,7 +331,32 @@
     min-width: 0;
   }
   .shell-body {
-    @apply relative flex min-h-0 min-w-0 flex-1 pl-0 pr-2 pb-2 sm:pl-0 sm:pr-4 sm:pb-4;
+    @apply relative flex min-h-0 min-w-0 flex-1;
+    padding-inline: var(--space-panel-gap);
+    padding-bottom: var(--space-panel-gap);
+  }
+  /* Keep the modal portal outside the query container so its fixed backdrop
+     still blocks the whole window, including the header. */
+  .shell-workspace {
+    @apply relative flex min-h-0 min-w-0 flex-1;
+  }
+  .shell-dialog-frame {
+    position: absolute;
+    inset: 0 var(--space-panel-gap) var(--space-panel-gap);
+    pointer-events: none;
+  }
+  .shell-dialog-frame > * {
+    pointer-events: auto;
+  }
+  /* A wrapped narrow header would leave Settings a sliver; cover all but the
+     titlebar row, which keeps window controls clear. */
+  @media (max-width: 650px) {
+    .shell-dialog-frame {
+      position: fixed;
+      /* Fixed positioning creates a stacking context; raise it with the dialog. */
+      z-index: var(--layer-dialog);
+      inset: var(--size-topbar) var(--space-panel-gap) var(--space-panel-gap);
+    }
   }
   .shell-content {
     @apply relative flex h-full min-h-0 min-w-0 flex-1;
@@ -343,7 +393,11 @@
     margin-left: auto;
     gap: var(--space-2);
   }
-  .shell-header .buzz-button[data-icon-variant] {
+  .shell-header
+    .buzz-button[data-icon-variant]:not(
+      [data-icon-variant="prominent"],
+      .shell-search-action .buzz-button
+    ) {
     width: var(--size-control-sm);
     height: var(--size-control-sm);
   }
@@ -351,13 +405,15 @@
     .buzz-button[data-icon-variant="ghost"]:not(
       :hover,
       :focus-visible,
-      :active
+      :active,
+      [data-selected]
     ) {
     background: transparent;
     box-shadow: none;
   }
-  .shell-header .buzz-button[data-icon-variant] svg,
-  .shell-header .buzz-button[data-icon-variant="ghost"] img {
+  .shell-header
+    .buzz-button[data-icon-variant]:not([data-icon-variant="prominent"])
+    svg {
     width: 1rem;
     height: 1rem;
   }
@@ -366,8 +422,8 @@
       padding-left: var(--space-2);
       gap: var(--space-2);
     }
-    .shell-communities {
-      padding-left: var(--space-4);
+    .shell-history {
+      padding-left: 0;
     }
   }
   /* Keep this in sync with AppShell's matchMedia navigation owner. */
@@ -408,6 +464,37 @@
   }
   .notice {
     @apply my-5 rounded-2xl border border-warning-border bg-warning-surface p-5 text-body-sm text-warning;
+  }
+  /* A page-sized status, such as a page that could not open, centered in its pane. */
+  .page-status {
+    display: grid;
+    flex: 1;
+    place-items: center;
+    min-block-size: 100%;
+    padding: var(--space-6);
+  }
+  .page-status > * {
+    max-inline-size: 28rem;
+  }
+  .page-status-label {
+    @apply text-body;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+  /* A page status fills the page area, even inside its padded content
+   * column, so it sits in the middle rather than near the top. Each rule's
+   * :has() is on its own subject: a selector that continues past :has()
+   * (or a :has() list the minifier wraps in :is()) restyles the whole panel
+   * subtree on every DOM mutation inside it. */
+  .buzz-tabs-panel:has(> * > .page-status) {
+    display: flex;
+    flex-direction: column;
+  }
+  .buzz-tabs-panel > :has(> .page-status) {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
   }
   .error,
   .danger {

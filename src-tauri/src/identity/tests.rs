@@ -5,6 +5,10 @@ struct Memory {
     denied: Mutex<bool>,
     write_denied: Mutex<bool>,
     reads: Mutex<usize>,
+    legacy: Mutex<Option<String>>,
+    legacy_reads: Mutex<usize>,
+    previous: Mutex<Option<Vec<u8>>>,
+    deletes: Mutex<Vec<&'static str>>,
 }
 impl Store for Arc<Memory> {
     fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {
@@ -25,11 +29,35 @@ impl Store for Arc<Memory> {
         *saved = Some(value.to_vec());
         Ok(())
     }
+    fn legacy(&self) -> Result<Zeroizing<String>> {
+        *self.legacy_reads.lock().unwrap() += 1;
+        self.legacy
+            .lock()
+            .unwrap()
+            .clone()
+            .map(Zeroizing::new)
+            .ok_or_else(|| "No identity from the earlier Buzz app was found".into())
+    }
     fn delete(&self) -> Result<()> {
         if *self.write_denied.lock().unwrap() {
             return Err("delete denied".into());
         }
+        self.deletes.lock().unwrap().push("current");
         *self.saved.lock().unwrap() = None;
+        Ok(())
+    }
+    fn previous(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        if *self.denied.lock().unwrap() {
+            return Err("denied".into());
+        }
+        Ok(self.previous.lock().unwrap().clone().map(Zeroizing::new))
+    }
+    fn delete_previous(&self) -> Result<()> {
+        if *self.write_denied.lock().unwrap() {
+            return Err("delete denied".into());
+        }
+        self.deletes.lock().unwrap().push("previous");
+        *self.previous.lock().unwrap() = None;
         Ok(())
     }
 }
@@ -57,6 +85,41 @@ fn imports_exact_key_then_restores_and_exports_without_repeated_reads() {
     assert_eq!(restarted.restore().unwrap(), Some(public));
     assert_eq!(restarted.export().unwrap(), nsec);
     assert_eq!(*store.reads.lock().unwrap(), 2);
+}
+#[test]
+fn legacy_import_adopts_only_a_valid_old_key_and_never_replaces_one() {
+    let nsec = fixture().nsec().unwrap();
+    let other = Key(Zeroizing::new([2; 32])).nsec().unwrap();
+    // (saved, own store denied, legacy entry, imports, reads legacy)
+    for (saved, denied, legacy, imports, reads_legacy) in [
+        (None, false, Some(format!(" {nsec}\n")), true, true),
+        (None, false, None, false, true),
+        (None, false, Some("not-a-key".into()), false, true),
+        (Some(other.clone()), false, Some(nsec.clone()), false, false),
+        (None, true, Some(nsec.clone()), false, false),
+    ] {
+        let store = Arc::new(Memory::default());
+        *store.saved.lock().unwrap() = saved.clone().map(String::into_bytes);
+        *store.denied.lock().unwrap() = denied;
+        *store.legacy.lock().unwrap() = legacy;
+        let result = identity(&store).import_legacy();
+        assert_eq!(result.is_ok(), imports, "{result:?}");
+        assert_eq!(
+            *store.legacy_reads.lock().unwrap(),
+            usize::from(reads_legacy)
+        );
+        let expected = if imports { Some(nsec.clone()) } else { saved };
+        assert_eq!(
+            *store.saved.lock().unwrap(),
+            expected.map(String::into_bytes)
+        );
+        if imports {
+            assert_eq!(
+                identity(&store).restore().unwrap(),
+                Some(fixture().viewer().unwrap())
+            );
+        }
+    }
 }
 #[test]
 fn denied_and_corrupt_reads_cannot_create_or_overwrite() {
@@ -215,9 +278,9 @@ fn development_and_release_items_are_separate() {
     assert_eq!(
         credentials::HUMAN_SERVICE,
         if cfg!(debug_assertions) {
-            "dev.local.buzz.foundation.identity.debug"
+            "xyz.block.buzz.desktop.identity.debug"
         } else {
-            "dev.local.buzz.foundation.identity"
+            "xyz.block.buzz.desktop.identity"
         }
     );
     assert_eq!(credentials::HUMAN_ACCOUNT, "human");
@@ -482,6 +545,22 @@ fn remove_key_deletes_then_confirms_absence() {
     assert!(store.saved.lock().unwrap().is_some());
 }
 
+#[test]
+fn remove_key_also_deletes_the_key_under_its_previous_service() {
+    let store = Arc::new(Memory::default());
+    identity(&store).save(None).unwrap();
+    *store.previous.lock().unwrap() = store.saved.lock().unwrap().clone();
+    remove_key(&store).unwrap();
+    assert!(store.saved.lock().unwrap().is_none());
+    assert!(store.previous.lock().unwrap().is_none());
+    // The previous key first: reads copy it while the current one is absent.
+    assert_eq!(*store.deletes.lock().unwrap(), ["previous", "current"]);
+    // Only a previous key left is still a key to remove.
+    *store.previous.lock().unwrap() = Some(b"previous".to_vec());
+    remove_key(&store).unwrap();
+    assert!(store.previous.lock().unwrap().is_none());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_refuses_every_key_operation_including_a_sign_started_before_it() {
     let host = IdentityHost::fixture();
@@ -517,4 +596,168 @@ async fn closing_refuses_every_key_operation_including_a_sign_started_before_it(
     assert!(with_identity(host, |identity| identity.save(None))
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn sidebar_filter_signer_checks_projection_modes_and_coordinate() {
+    use serde_json::json;
+    let host = super::IdentityHost::fixture();
+    let payload = json!({"version":1,"groups":{"channels":"unreads"}, "activeWindowSeconds":{"channels":604800},
+        "meta":{"v":1,"g":{"channels":[100,"1234567890abcdef","unreads"]}}});
+    let event = host
+        .sign_sidebar("channel-filter".into(), payload.clone(), 100)
+        .await
+        .unwrap();
+    host.admit_sidebar(event.clone()).await.unwrap();
+    assert_eq!(
+        host.decode_sidebar(vec![event]).await.unwrap()["channel-filter"],
+        payload
+    );
+    let reset = json!({"version":1,"groups":{},
+        "meta":{"v":1,"g":{"channels":[101,"1234567890abcdef",null]}}});
+    assert!(host
+        .sign_sidebar("channel-filter".into(), reset, 101)
+        .await
+        .is_ok());
+    for seconds in [
+        json!(0),
+        json!(-86400),
+        json!(86401),
+        json!(86400.5),
+        json!(31622400),
+        json!("604800"),
+        json!(null),
+    ] {
+        let mut invalid = payload.clone();
+        invalid["activeWindowSeconds"]["channels"] = seconds;
+        assert!(host
+            .sign_sidebar("channel-filter".into(), invalid, 100)
+            .await
+            .is_err());
+    }
+    for invalid in [
+        json!({"version":1,"groups":{"channels":"recent"}}),
+        json!({"version":1,"groups":{},"meta":payload["meta"]}),
+        json!({"version":1,"groups":{},"meta":{"v":1,"g":{"channels":[1,"1234567890abcdef","recent"]}}}),
+    ] {
+        assert!(host
+            .sign_sidebar("channel-filter".into(), invalid, 100)
+            .await
+            .is_err());
+    }
+    assert!(host
+        .sign_sidebar("channel-sort".into(), payload, 100)
+        .await
+        .is_err());
+}
+
+#[test]
+fn native_recovery_install_is_create_only_and_failed_writes_keep_candidates_unadopted() {
+    let store = Arc::new(Memory::default());
+    let mut owner = identity(&store);
+    let public = fixture().viewer().unwrap();
+    *store.write_denied.lock().unwrap() = true;
+    assert!(owner
+        .install_recovered(Zeroizing::new([1; 32]), &public)
+        .is_err());
+    assert!(matches!(owner.state, State::Missing));
+    assert!(store.saved.lock().unwrap().is_none());
+    *store.write_denied.lock().unwrap() = false;
+    assert_eq!(
+        owner
+            .install_recovered(Zeroizing::new([1; 32]), &public)
+            .unwrap(),
+        public
+    );
+    assert!(owner
+        .install_recovered(Zeroizing::new([2; 32]), &public)
+        .is_err());
+    assert_eq!(identity(&store).restore().unwrap(), Some(public));
+}
+
+#[test]
+fn native_recovery_rechecks_absence_and_never_adopts_mismatched_or_invalid_scalars() {
+    let store = Arc::new(Memory::default());
+    let mut owner = identity(&store);
+    let public = fixture().viewer().unwrap();
+    owner.require_missing().unwrap();
+    for secret in [[0; 32], [2; 32]] {
+        assert!(owner
+            .install_recovered(Zeroizing::new(secret), &public)
+            .is_err());
+        assert!(store.saved.lock().unwrap().is_none());
+    }
+    *store.denied.lock().unwrap() = true;
+    assert!(owner.require_missing().is_err());
+    assert!(owner
+        .install_recovered(Zeroizing::new([1; 32]), &public)
+        .is_err());
+    *store.denied.lock().unwrap() = false;
+    let winner = identity(&store).save(None).unwrap();
+    assert!(owner.require_missing().is_err());
+    assert!(owner
+        .install_recovered(Zeroizing::new([1; 32]), &public)
+        .is_err());
+    assert_eq!(identity(&store).restore().unwrap(), Some(winner));
+}
+
+#[tokio::test]
+async fn canceled_recovery_admission_cannot_commit_a_key_and_closed_identity_refuses_install() {
+    let store = Arc::new(Memory::default());
+    let host = IdentityHost(Arc::new(Mutex::new(identity(&store))));
+    let public = fixture().viewer().unwrap();
+    let admission = Arc::new(Mutex::new(false));
+    assert!(host
+        .install_recovered(Zeroizing::new([1; 32]), public.clone(), admission)
+        .await
+        .is_err());
+    assert!(store.saved.lock().unwrap().is_none());
+    host.close();
+    assert!(host
+        .install_recovered(Zeroizing::new([1; 32]), public, Arc::new(Mutex::new(true)))
+        .await
+        .is_err());
+    assert!(store.saved.lock().unwrap().is_none());
+}
+
+// Shared synthetic secure storage for end-to-end native recovery orchestration tests.
+pub(crate) fn missing_fixture() -> IdentityHost {
+    let store = Arc::new(Memory::default());
+    IdentityHost(Arc::new(Mutex::new(identity(&store))))
+}
+pub(crate) fn write_denied_fixture() -> (IdentityHost, impl Fn()) {
+    let store = Arc::new(Memory::default());
+    *store.write_denied.lock().unwrap() = true;
+    let host = IdentityHost(Arc::new(Mutex::new(identity(&store))));
+    (host, move || *store.write_denied.lock().unwrap() = false)
+}
+
+#[tokio::test]
+async fn main_agent_signer_admits_only_one_agent() {
+    use serde_json::json;
+    let host = super::IdentityHost::fixture();
+    let payload = json!({"version": 1, "agent": "ab".repeat(32)});
+    let event = host
+        .sign_sidebar("main-agent".into(), payload.clone(), 100)
+        .await
+        .unwrap();
+    host.admit_sidebar(event.clone()).await.unwrap();
+    assert_eq!(
+        host.decode_sidebar(vec![event]).await.unwrap()["main-agent"],
+        payload
+    );
+    for invalid in [
+        json!({"version": 1}),
+        json!({"version": 1, "agent": null}),
+        json!({"version": 2, "agent": "ab".repeat(32)}),
+        json!({"version": 1, "agent": "AB".repeat(32)}),
+        json!({"version": 1, "agent": "ab".repeat(31)}),
+        json!({"version": 1, "agent": 7}),
+        json!({"version": 1, "agent": "ab".repeat(32), "extra": true}),
+    ] {
+        assert!(host
+            .sign_sidebar("main-agent".into(), invalid, 100)
+            .await
+            .is_err());
+    }
 }

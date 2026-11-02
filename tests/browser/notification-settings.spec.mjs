@@ -1,14 +1,15 @@
-import { selectSettingsSection } from "./navigation.mjs";
+import {
+  openSettings,
+  selectSettingsSection,
+  settingsDialog,
+} from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 
 test.use({ historyCounts: { alpha: 0, beta: 0 } });
 
-const button = (page, name) => page.getByRole("button", { name, exact: true });
-
 async function settings(page) {
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await expect(page.getByRole("main")).toBeFocused();
+  await openSettings(page);
+  await expect(settingsDialog(page).locator(":focus")).toHaveCount(1);
 }
 
 // Real font metrics, wrapping and parent layout need a browser, not jsdom.

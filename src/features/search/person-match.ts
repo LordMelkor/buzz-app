@@ -74,6 +74,39 @@ export function exactName<T>(
   return exact.length === 1 ? exact[0] : undefined;
 }
 
+// Bounds on one name's index entries. Names come from member profiles, so a
+// many-word name must not grow the index with the square of its length.
+const startLimit = 16;
+const startLength = 32;
+
+/**
+ * Where `matchPerson` can begin a match in `name`: the folded, trimmed name
+ * itself and each later word start, each cut to its first 32 code points. A
+ * query matches only where one of these starts with the query's first 32 code
+ * points, so a sorted list of them finds matches by search. A name with more
+ * than 16 starts is not `complete`: callers must match it directly.
+ */
+export function nameStarts(name: string) {
+  const chars = [...name].flatMap((char) => [...foldPoint(char)]);
+  let start = 0;
+  let end = chars.length;
+  while (start < end && space.test(chars[start] ?? "")) start += 1;
+  while (end > start && space.test(chars[end - 1] ?? "")) end -= 1;
+  const key = (from: number) =>
+    chars.slice(from, Math.min(end, from + startLength)).join("");
+  const starts = [key(start)];
+  for (let from = start + 1; from < end; from += 1)
+    if (isWord(chars[from]) && !isWord(chars[from - 1])) {
+      if (starts.length === startLimit) return { starts, complete: false };
+      starts.push(key(from));
+    }
+  return { starts, complete: true };
+}
+
+/** A query cut to the length of `nameStarts` entries. */
+export const startKey = (needle: string) =>
+  [...needle].slice(0, startLength).join("");
+
 export type PersonMatch = {
   /** 0 equal, 1 name starts with the query, 2 a word equals it, 3 a word starts with it. */
   tier: 0 | 1 | 2 | 3;

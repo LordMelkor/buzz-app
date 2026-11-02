@@ -6,6 +6,9 @@ import type { RelayReader } from "./reader";
 import type { Outbox } from "./outbox";
 import type { ProfileSearch } from "./profile-search";
 
+/** The longest text the community people search accepts. */
+export const PEOPLE_SEARCH_MAX_LENGTH = 100;
+
 /** Opening is idempotent by participant set; first messages use the durable outbox. */
 export function createDirectMessages(
   transport: ReadTransport | null,
@@ -28,7 +31,11 @@ export function createDirectMessages(
     },
     async people(query: string, page: number, signal: AbortSignal) {
       const active = AbortSignal.any([lifetime, signal]);
-      if (query.length > 100 || !Number.isSafeInteger(page) || page < 1)
+      if (
+        query.length > PEOPLE_SEARCH_MAX_LENGTH ||
+        !Number.isSafeInteger(page) ||
+        page < 1
+      )
         throw new Error("Invalid people search.");
       // Both browse and search profiles can carry large metadata. Keep pages
       // small; the second browse page overlaps the preview and is deduplicated.
@@ -60,9 +67,10 @@ export function createDirectMessages(
       return {
         people: [...foldProfiles(events)]
           .filter(([pubkey]) => pubkey !== transport?.viewer)
-          .map(([pubkey, { name, picture, isAgent }]) => ({
+          .map(([pubkey, { name, username, picture, isAgent }]) => ({
             pubkey,
             name,
+            ...(username ? { username } : {}),
             ...(picture ? { picture } : {}),
             ...(isAgent ? { isAgent } : {}),
           })),

@@ -1,0 +1,10 @@
+{
+  "id": "buzz.typesafe",
+  "name": "TypeSafe",
+  "apiVersion": 1,
+  "description": "Answer decisions with your own TypeSafe API key.",
+  "discovery": {
+    "category": "developer-tools-and-integrations",
+    "tags": ["coding-agents"]
+  }
+}

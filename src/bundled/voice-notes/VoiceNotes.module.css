@@ -10,43 +10,8 @@
   margin: 0;
 }
 .capture {
-  min-height: 40px;
+  min-height: var(--size-control-sm);
   animation: capture-in 180ms var(--easing-enter);
-}
-.iconButton {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-icon-button);
-  background: transparent;
-  color: var(--text-subtle);
-  cursor: pointer;
-  transition:
-    transform 120ms var(--easing-state),
-    background-color 120ms var(--easing-state);
-}
-.iconButton:active:not(:disabled) {
-  transform: scale(0.96);
-}
-.iconButton:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
-}
-.iconButton:disabled {
-  cursor: default;
-  color: var(--text-unavailable);
-}
-.divider {
-  flex-shrink: 0;
-  width: 1px;
-  height: 20px;
-  margin-inline: var(--space-1);
-  background: var(--border-standard);
 }
 .timer {
   font-size: var(--text-caption);
@@ -93,68 +58,56 @@
   display: flex;
   align-items: center;
   box-sizing: border-box;
-  gap: calc(var(--space-5) / 2);
+  gap: calc(var(--space-5) / 2 + var(--space-1));
   width: 21rem;
   min-width: 0;
   max-width: 100%;
   padding: var(--space-2) calc(var(--space-5) / 2);
   margin: var(--space-1) 0;
   border: 1px solid var(--voice-card-border);
-  border-radius: var(--radius-container);
+  border-radius: var(--radius-icon-button);
   background: var(--voice-card-background);
   transition:
     background-color 150ms var(--easing-state),
     border-color 150ms var(--easing-state);
 }
-.cardSurface {
-  display: none;
+.download {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
 }
-.card[data-smooth-corners] {
-  isolation: isolate;
-  background: transparent;
-  border-color: transparent;
+.download [data-download-feedback] {
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+  letter-spacing: var(--text-caption--letter-spacing);
 }
-.card[data-smooth-corners] .cardSurface {
-  display: block;
-  position: absolute;
-  z-index: -1;
-  inset: -1px;
-  width: calc(100% + 2px);
-  height: calc(100% + 2px);
-  pointer-events: none;
-  clip-path: var(--media-corner-clip);
+.download [data-download-feedback][role="alert"] {
+  color: var(--text-danger);
 }
-.cardSurface > path {
-  fill: var(--voice-card-background);
-  stroke: var(--voice-card-border);
-  stroke-width: 2px;
-  transition:
-    fill 150ms var(--easing-state),
-    stroke 150ms var(--easing-state);
-}
-.play,
-.discard {
+.play {
   display: inline-flex;
   border-radius: var(--radius-icon-button);
+  background: color-mix(
+    in srgb,
+    var(--voice-card-background) 90%,
+    var(--text-standard)
+  );
 }
-.play[data-smooth-corners] > button,
-.discard[data-smooth-corners] > button {
-  clip-path: var(--media-corner-clip);
-}
-.play:has(:focus-visible),
-.discard:has(:focus-visible) {
+.play:has(:focus-visible) {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
-.discard {
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-}
 .play {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
+  width: calc(36px + 2 * var(--space-1h));
+  height: calc(36px + 2 * var(--space-1h));
+  margin-block: calc(-1 * var(--space-1h));
+  margin-inline-start: calc(-1 * var(--space-2));
+  margin-inline-end: calc(-1 * var(--space-1));
+  border-radius: calc(var(--radius-icon-button) - var(--space-half) - 1px);
 }
 .content {
   flex: 1;
@@ -281,9 +234,6 @@
     opacity: 1;
     transform: none;
   }
-  .iconButton:hover:not(:disabled) {
-    background: var(--affordance-subtle-hover);
-  }
   .card:hover {
     --voice-card-background: var(--affordance-panel-hover);
   }
@@ -324,38 +274,14 @@
   .spinner {
     animation: none;
   }
-  .iconButton,
   .card,
-  .cardSurface > path,
   .details > *,
   .playIcon > svg {
     transition: none;
   }
-  .iconButton:active:not(:disabled) {
-    transform: none;
-  }
 }
 
-/* Composer drafts share the enclosing composer's circular inset geometry. */
+/* Draft and sent voice notes share the same card and inset play geometry. */
 [data-voice-draft] .card {
   margin: 0;
-  border-radius: var(--radius-icon-button);
-  background: var(--voice-card-background);
-  border-color: var(--voice-card-border);
-}
-[data-voice-draft] .card .cardSurface {
-  display: none;
-}
-
-[data-voice-draft] .play {
-  /* Expand into the chip padding without moving the text/waveform column. */
-  width: calc(36px + 2 * var(--space-1h));
-  height: calc(36px + 2 * var(--space-1h));
-  margin-block: calc(-1 * var(--space-1h));
-  margin-inline-start: calc(-1 * var(--space-2));
-  margin-inline-end: calc(-1 * var(--space-1));
-  border-radius: calc(var(--radius-icon-button) - var(--space-half) - 1px);
-}
-[data-voice-draft] .play[data-smooth-corners] > button {
-  clip-path: none;
 }

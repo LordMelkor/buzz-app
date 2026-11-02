@@ -10,7 +10,7 @@ import {
   screen,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { Profiler, type ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ChannelSummary, Profile } from "../../features/relay/contracts";
 import type { RelaySession } from "../../features/relay/session";
@@ -100,13 +100,7 @@ function itemProps(
     working,
     sessionsEnabled: true,
     selected: undefined,
-    collapsed: false,
-    onToggle: vi.fn(),
-    draft: false,
-    draftSelected: false,
-    sessions: undefined,
     onSelect: vi.fn(),
-    onNewSession: vi.fn(),
     onOpenThread: vi.fn(),
   };
 }
@@ -254,13 +248,7 @@ it("keeps live unread updates and uses replacement session callbacks across row 
     session: first.session,
     working: false,
     selected: undefined,
-    collapsed: false,
-    onToggle: vi.fn(),
-    draft: false,
-    draftSelected: false,
-    sessions: undefined,
     onSelect,
-    onNewSession: vi.fn(),
     onOpenThread: vi.fn(),
   };
   const view = render(<ChannelSidebarItem {...props} />);
@@ -338,13 +326,7 @@ it("badges one-to-one DM avatars with live presence and sanitizes their media", 
     session,
     working: false,
     selected: undefined,
-    collapsed: false,
-    onToggle: vi.fn(),
-    draft: false,
-    draftSelected: false,
-    sessions: undefined,
     onSelect: vi.fn(),
-    onNewSession: vi.fn(),
     onOpenThread: vi.fn(),
   };
   const view = render(<ChannelSidebarItem {...props} />);
@@ -424,10 +406,9 @@ it("badges one-to-one DM avatars with live presence and sanitizes their media", 
 });
 
 it.each(["ContextMenu", "F10"])(
-  "opens the parent menu with %s without involving disclosure or child sessions",
-  async (key) => {
+  "opens the row menu with %s without selecting the row",
+  (key) => {
     const onSelect = vi.fn();
-    const onToggle = vi.fn();
     const onOpenMenu = vi.fn();
     const channel = {
       id: "alpha",
@@ -440,13 +421,7 @@ it.each(["ContextMenu", "F10"])(
         session={owner().session}
         working={false}
         selected={undefined}
-        collapsed={false}
-        onToggle={onToggle}
-        draft={false}
-        draftSelected={false}
-        sessions={[{ id: "child", name: "Plan", channelType: "session" }]}
         onSelect={onSelect}
-        onNewSession={vi.fn()}
         onOpenThread={vi.fn()}
         menuEnabled
         sectionKey="group:work"
@@ -461,43 +436,22 @@ it.each(["ContextMenu", "F10"])(
       parent.parentElement,
     );
     expect(onSelect).not.toHaveBeenCalled();
-    const disclosure = screen.getByRole("button", {
-      name: "Collapse sessions in Alpha",
-    });
-    const child = screen.getByRole("button", {
-      name: "Plan, session in Alpha",
-    });
-    fireEvent.keyDown(disclosure, { key, shiftKey: key === "F10" });
-    fireEvent.keyDown(child, { key, shiftKey: key === "F10" });
-    expect(onOpenMenu).toHaveBeenCalledTimes(1);
-    const user = userEvent.setup();
-    await user.click(disclosure);
-    expect(onToggle).toHaveBeenCalledWith("session-children:alpha", false);
-    expect(onSelect).not.toHaveBeenCalled();
-    await user.click(child);
-    expect(onSelect).toHaveBeenCalledWith("child");
   },
 );
 
-it.each(["Collapse sessions in Alpha", "Plan, session in Alpha"])(
-  "retains focused %s across idle and working transitions",
-  (name) => {
-    const props = {
-      ...itemProps(owner().session, false),
-      sessions: [
-        { id: "child", name: "Plan", channelType: "session" as const },
-      ],
-    };
-    const view = render(<ChannelSidebarItem {...props} />);
-    const control = screen.getByRole("button", { name });
-    control.focus();
-    for (const working of [true, false]) {
-      view.rerender(<ChannelSidebarItem {...props} working={working} />);
-      expect(screen.getByRole("button", { name })).toBe(control);
-      expect(control).toHaveFocus();
-    }
-  },
-);
+it("retains the focused row across idle and working transitions", () => {
+  const props = itemProps(owner().session, false);
+  const view = render(<ChannelSidebarItem {...props} />);
+  const row = () =>
+    document.querySelector<HTMLElement>('button[data-channel-id="alpha"]');
+  const control = row();
+  control?.focus();
+  for (const working of [true, false]) {
+    view.rerender(<ChannelSidebarItem {...props} working={working} />);
+    expect(row()).toBe(control);
+    expect(control).toHaveFocus();
+  }
+});
 
 it("marks the row for ordinary unread and working agents", () => {
   const state = owner();
@@ -559,4 +513,45 @@ it("marks a temporary channel with its lifetime and yields the slot to working a
   expect(document.querySelector("[data-channel-temporary]")).toBeNull();
   view.rerender(<ChannelSidebarItem {...itemProps(state.session, false)} />);
   expect(document.querySelector("[data-channel-temporary]")).toBeNull();
+});
+
+it("re-renders a working row for its agents' profiles, not every profile", () => {
+  const agent = "a".repeat(64);
+  let profiles = new Map<string, Profile>([
+    [agent, { name: "Buzzy", isAgent: true }],
+  ]);
+  const listeners = new Set<() => void>();
+  const session = {
+    ...owner().session,
+    profiles: {
+      snapshot: () => profiles,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+  } as unknown as RelaySession;
+  const publish = (next: typeof profiles) =>
+    act(() => {
+      profiles = next;
+      for (const listener of listeners) listener();
+    });
+  let commits = 0;
+  render(
+    <Profiler id="row" onRender={() => commits++}>
+      <ChannelSidebarItem {...itemProps(session, true)} />
+    </Profiler>,
+  );
+  expect(
+    screen.getByRole("img", { name: "Buzzy working in Alpha" }),
+  ).toBeInTheDocument();
+  const settled = commits;
+  publish(new Map([...profiles, ["b".repeat(64), { name: "Bystander" }]]));
+  expect(commits).toBe(settled);
+  publish(
+    new Map([...profiles, [agent, { name: "Buzzy Two", isAgent: true }]]),
+  );
+  expect(
+    screen.getByRole("img", { name: "Buzzy Two working in Alpha" }),
+  ).toBeInTheDocument();
 });

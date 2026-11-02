@@ -1,4 +1,4 @@
-import type { RelaySession } from "../../features/relay/session";
+import type { ComposerSession } from "../../features/messages/composer-session";
 import type { MentionRecipient } from "../../features/messages/mention-draft";
 import { Avatar } from "../../shared/design-system/ui/Avatar";
 import { avatarMedia } from "../../shared/avatar-source";
@@ -8,7 +8,7 @@ export function TeamMentionAvatars({
   session,
   recipients,
 }: {
-  session: RelaySession;
+  session: ComposerSession;
   recipients: readonly MentionRecipient[];
 }) {
   const profiles = session.profiles.snapshot();

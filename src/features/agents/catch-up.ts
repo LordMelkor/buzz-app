@@ -4,6 +4,8 @@
 // Only the progress is saved, never an event.
 import type { Agent } from "./service";
 import type { EventData, ReadFilter } from "../relay/events";
+import type { AgentStore } from "./store";
+import { AGENT_KEY, type AgentKey } from "./membership";
 
 export const CATCH_UP_KEY = "buzz.agents.catch-up.v1";
 /** Events in one read, as Janet's catch-up pages are. */
@@ -17,12 +19,15 @@ export const CATCH_UP_BYTES = 8 * 1024 * 1024;
  * delivered or skipped. While a window (`through`, `upper`] is being
  * delivered, `after` is the last event delivered of it, in delivery order:
  * oldest first, ties by id. A restart goes on after it, up to `upper`.
- * `heard` are later ones already heard live, which catch-up skips too. */
+ * `heard` are later ones already heard live, which catch-up skips too.
+ * `hidden` marks one moved while no plugin showed Attention: once one does,
+ * even after a restart, it starts from then. */
 export type Checkpoint = Readonly<{
   through: number;
   upper?: number;
   after?: Readonly<{ created_at: number; id: string }>;
   heard?: readonly Readonly<{ created_at: number; id: string }>[];
+  hidden?: true;
 }>;
 /** Live events each stream keeps as heard past its checkpoint. A tick moves
  * the checkpoint past them every few seconds while the app listens; past
@@ -46,9 +51,10 @@ const ID = /^[0-9a-f]{64}$/;
 export const oldestFirst = (a: Position, b: Position) =>
   a.created_at - b.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
-/** The key of a watch's stream in one channel, or in every channel. */
-export const streamKey = (pubkey: string, slug: string, channel?: string) =>
-  JSON.stringify([pubkey, slug, channel ?? null]);
+/** The key of a membership's watch's stream in one channel, or in every
+ * channel. */
+export const streamKey = (agent: AgentKey, slug: string, channel?: string) =>
+  JSON.stringify([agent, slug, channel ?? null]);
 /** Whether `event` of a stream is past its checkpoint: not delivered or
  * skipped yet. */
 export const undelivered = (checkpoint: Checkpoint, event: Position) =>
@@ -56,10 +62,65 @@ export const undelivered = (checkpoint: Checkpoint, event: Position) =>
   (!checkpoint.after || oldestFirst(event, checkpoint.after) > 0) &&
   !checkpoint.heard?.some(({ id }) => id === event.id);
 
-export function readCheckpoints(storage: Storage): Checkpoints {
+/** Each agent membership's catch-up progress has its own key, so programs
+ * that run different agents and share this storage never write over each
+ * other's progress. */
+export const CATCH_UP_PREFIX = "buzz.agents.catch-up.v1:";
+export const catchUpKey = (agent: AgentKey) => `${CATCH_UP_PREFIX}${agent}`;
+
+/** The membership a stream key belongs to, or undefined for a malformed key. */
+function ownerOf(key: string): AgentKey | undefined {
+  try {
+    const [agent] = JSON.parse(key) as unknown[];
+    return typeof agent === "string" && AGENT_KEY.test(agent)
+      ? agent
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A valid checkpoint, with its fields in one order; undefined otherwise. */
+function checkpointOf(value: unknown): Checkpoint | undefined {
+  const { through, upper, after, heard, hidden } = (value ?? {}) as Checkpoint;
+  if (
+    !time(through) ||
+    (upper !== undefined && !(time(upper) && upper > through))
+  )
+    return undefined;
+  const valid =
+    after === undefined ||
+    (upper !== undefined &&
+      time(after.created_at) &&
+      after.created_at > through &&
+      after.created_at <= upper &&
+      ID.test(after.id));
+  if (!valid) return undefined;
+  const live = (Array.isArray(heard) ? heard : [])
+    .filter(
+      (event) =>
+        time(event?.created_at) &&
+        event.created_at > through &&
+        typeof event.id === "string" &&
+        ID.test(event.id),
+    )
+    .slice(-HEARD_LIMIT)
+    .map(({ created_at, id }) => ({ created_at, id }));
+  return {
+    through,
+    ...(upper !== undefined ? { upper } : {}),
+    ...(after ? { after: { created_at: after.created_at, id: after.id } } : {}),
+    ...(live.length ? { heard: live } : {}),
+    ...(hidden === true ? { hidden } : {}),
+  };
+}
+
+/** The valid checkpoints of one stored value, of `agent`'s streams only when
+ * it is given. */
+function parseStreams(text: string | null, agent?: string) {
   let stored: unknown;
   try {
-    stored = JSON.parse(storage.getItem(CATCH_UP_KEY) ?? "null");
+    stored = JSON.parse(text ?? "null");
   } catch {
     return {};
   }
@@ -70,53 +131,107 @@ export function readCheckpoints(storage: Storage): Checkpoints {
   if (!streams || typeof streams !== "object") return {};
   const checkpoints: Record<string, Checkpoint> = {};
   for (const [key, value] of Object.entries(streams)) {
-    const { through, upper, after, heard } = (value ?? {}) as Checkpoint;
-    if (
-      !time(through) ||
-      (upper !== undefined && !(time(upper) && upper > through))
-    )
-      continue;
-    const valid =
-      after === undefined ||
-      (upper !== undefined &&
-        time(after.created_at) &&
-        after.created_at > through &&
-        after.created_at <= upper &&
-        ID.test(after.id));
-    if (!valid) continue;
-    const live = (Array.isArray(heard) ? heard : [])
-      .filter(
-        (event) =>
-          time(event?.created_at) &&
-          event.created_at > through &&
-          typeof event.id === "string" &&
-          ID.test(event.id),
-      )
-      .slice(-HEARD_LIMIT)
-      .map(({ created_at, id }) => ({ created_at, id }));
-    checkpoints[key] = {
-      through,
-      ...(upper !== undefined ? { upper } : {}),
-      ...(after
-        ? { after: { created_at: after.created_at, id: after.id } }
-        : {}),
-      ...(live.length ? { heard: live } : {}),
-    };
+    if (agent !== undefined && ownerOf(key) !== agent) continue;
+    const checkpoint = checkpointOf(value);
+    if (checkpoint) checkpoints[key] = checkpoint;
   }
   return checkpoints;
 }
 
-export function writeCheckpoints(storage: Storage, checkpoints: Checkpoints) {
-  storage.setItem(
-    CATCH_UP_KEY,
-    JSON.stringify({ version: 1, streams: checkpoints }),
+/** One stored value, the same text for the same progress. */
+const serialize = (checkpoints: Checkpoints) =>
+  JSON.stringify({
+    version: 1,
+    streams: Object.fromEntries(
+      Object.entries(checkpoints).sort(([a], [b]) =>
+        a < b ? -1 : a > b ? 1 : 0,
+      ),
+    ),
+  });
+
+/** Every agent's progress: its own key's, or else the old shared value's. */
+export function readCheckpoints(storage: AgentStore): Checkpoints {
+  const legacy = parseStreams(storage.get(CATCH_UP_KEY));
+  const own: Record<string, Checkpoints> = {};
+  for (const key of storage.keys()) {
+    if (!key.startsWith(CATCH_UP_PREFIX)) continue;
+    const agent = key.slice(CATCH_UP_PREFIX.length);
+    own[agent] = parseStreams(storage.get(key), agent);
+  }
+  return Object.assign(
+    Object.fromEntries(
+      Object.entries(legacy).filter(([key]) => {
+        const agent = ownerOf(key);
+        return agent !== undefined && !own[agent];
+      }),
+    ),
+    ...Object.values(own),
   );
+}
+
+/** Valid checkpoints by agent. */
+function byAgent(checkpoints: Checkpoints) {
+  const agents = new Map<string, Record<string, Checkpoint>>();
+  for (const [key, value] of Object.entries(checkpoints)) {
+    const agent = ownerOf(key);
+    const checkpoint = checkpointOf(value);
+    if (agent === undefined || !checkpoint) continue;
+    const streams = agents.get(agent) ?? {};
+    streams[key] = checkpoint;
+    agents.set(agent, streams);
+  }
+  return agents;
+}
+
+/** Saves the progress of each agent whose progress changed since `saved`,
+ * this program's last save or read, in its own key, and removes the key of
+ * an agent with none left. An agent this program did not move is never
+ * written, so it keeps what the program that runs it saved, even when this
+ * program's copy of it is older. Settles once every write is saved. */
+export async function writeCheckpoints(
+  storage: AgentStore,
+  checkpoints: Checkpoints,
+  saved: Checkpoints,
+) {
+  const next = byAgent(checkpoints);
+  const last = byAgent(saved);
+  const writes: Promise<void>[] = [];
+  for (const agent of new Set([...next.keys(), ...last.keys()])) {
+    const streams = next.get(agent);
+    const before = last.get(agent);
+    const text = streams && serialize(streams);
+    if (text === (before && serialize(before))) continue;
+    writes.push(storage.set(catchUpKey(agent), text ?? null));
+  }
+  await Promise.all(writes);
+}
+
+/** Moves progress from the old value that held every agent's into one key
+ * per agent, then removes it, as `splitLegacyRecords` does records. A key
+ * is only added where none is saved: a program that starts from the old
+ * value after another moved it, and ran its agents on, keeps their newer
+ * progress. */
+export async function splitLegacyCheckpoints(storage: AgentStore) {
+  if (storage.get(CATCH_UP_KEY) === null) return;
+  const agents = byAgent(readCheckpoints(storage));
+  try {
+    await Promise.all(
+      [...agents].map(([agent, streams]) =>
+        storage.add(catchUpKey(agent), serialize(streams)),
+      ),
+    );
+    await storage.set(CATCH_UP_KEY, null);
+  } catch (error) {
+    // This must not stop startup. The shared value stays, so the progress is
+    // read from it and the move is tried again at the next start.
+    console.error("Agent catch-up progress was not split", error);
+  }
 }
 
 /** The agent's streams: one for each channel of each event watch whose kinds
  * are exactly [9], enabled or not. Other kinds have reconnect replay only, as
  * in Janet. */
-export function streamsOf(agent: Pick<Agent, "pubkey" | "attention">) {
+export function streamsOf(agent: Pick<Agent, "key" | "attention">) {
   const streams: Stream[] = [];
   for (const { slug, value } of Object.values(agent.attention)) {
     if (value.type !== "event") continue;
@@ -125,7 +240,7 @@ export function streamsOf(agent: Pick<Agent, "pubkey" | "attention">) {
       ? [undefined]
       : value.channels)
       streams.push({
-        key: streamKey(agent.pubkey, slug, channel),
+        key: streamKey(agent.key, slug, channel),
         slug,
         ...(channel ? { channel } : {}),
         since: value.since,

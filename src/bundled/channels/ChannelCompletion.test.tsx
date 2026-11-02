@@ -20,7 +20,7 @@ import { LinkLabel } from "../links/InlineLink";
 import { ChannelCompletion } from "./ChannelCompletion";
 import {
   composerClipboard,
-  buzzCopyMarkdown,
+  buzzCopyDocument,
 } from "../../features/messages/composer-clipboard";
 import { composerSchema } from "../../features/messages/composer-document";
 
@@ -108,12 +108,18 @@ it("offers joined streams/forums, including private and still-confirming channel
     channel("stream"),
     channel("forum", { channelType: "forum" }),
     channel("private", { private: true }),
+    channel("private-guest", {
+      private: true,
+      readOnly: true,
+      viewerRole: "guest",
+    }),
+    channel("huddle", { huddle: true }),
     channel("archived", { archived: true }),
     // The real store's shape for a joined channel restored from cache.
     channel("cached", { cached: true, readOnly: true }),
     channel("readOnly", { readOnly: true }),
     channel("dm", { channelType: "dm" }),
-    channel("session", { channelType: "session" }),
+    channel("chat", { channelType: "solo" }),
     { id: "unknown", name: "unknown", members: ["viewer"] },
     channel("outside", { members: ["other"] }),
     { id: "missing", name: "missing", channelType: "stream" },
@@ -125,6 +131,7 @@ it("offers joined streams/forums, including private and still-confirming channel
     "cached",
     "forum",
     "private",
+    "private-guest",
     "stream",
     "unknown",
   ]);
@@ -205,7 +212,7 @@ it.each(["Beta", "a [b] *c* _d_ ~e~ &amp; <f> \\ !"])(
     const html = new DOMParser().parseFromString(copied.html, "text/html");
     expect(html.querySelector("a")?.textContent).toBe(`#${name}`);
     expect(
-      scanMarkdown(buzzCopyMarkdown(copied.html) ?? "").links[0],
+      scanMarkdown(buzzCopyDocument(copied.html)?.textContent ?? "").links[0],
     ).toMatchObject({
       url: "buzz://channel/beta",
       children: [{ type: "text", value: `#${name}` }],
@@ -215,6 +222,7 @@ it.each(["Beta", "a [b] *c* _d_ ~e~ &amp; <f> \\ !"])(
 it.each<Partial<ChannelSummary>>([
   {},
   { members: [] },
+  { huddle: true },
   { archived: true },
   { readOnly: true },
   { name: "renamed" },
@@ -349,15 +357,21 @@ it("keeps joined matches when open-channel search fails", async () => {
 
 it("uses the channel pickers' name rule, without scattered-letter matches", () => {
   const t = fixture([
-    channel("prs", { name: "buzz-github-prs" }),
-    channel("hub", { name: "agithub" }),
+    channel("plan", { name: "team-launch-planning" }),
+    channel("re", { name: "relaunch" }),
+    channel("tags", { name: "debounce-tags" }),
   ]);
-  const view = render(t.element("github"));
+  const view = render(t.element("launch"));
   // A word start (after "-") ranks before a match inside a word.
-  expect(t.result().items.map((item) => item.id)).toEqual(["prs", "hub"]);
-  // Command-K finds "bgp" by word initials; inline completion does not,
-  // because Enter would turn prose into a channel link.
-  view.rerender(t.element("bgp"));
+  expect(t.result().items.map((item) => item.id)).toEqual(["plan", "re"]);
+  // Letter runs that each begin a word match, as in Command-K.
+  view.rerender(t.element("tlp"));
+  expect(t.result().items.map((item) => item.id)).toEqual(["plan"]);
+  view.rerender(t.element("team-pl"));
+  expect(t.result().items.map((item) => item.id)).toEqual(["plan"]);
+  // Letters merely in order do not, because Enter would turn prose into a
+  // channel link: "dtg" is in debounce-tags only as scattered letters.
+  view.rerender(t.element("dtg"));
   expect(t.result().items).toEqual([]);
 });
 it("lists open channels after joined ones, each ranked by match", async () => {
@@ -399,6 +413,39 @@ it("lists open channels after joined ones, each ranked by match", async () => {
       "Not joined",
       "Not joined · open-tie",
     ]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+it("completes open channels by word runs, without scattered letters", async () => {
+  vi.useFakeTimers();
+  try {
+    const runs = channel("runs", {
+      name: "buzz-community",
+      members: [],
+      readOnly: true,
+    });
+    const scattered = channel("scattered", {
+      name: "lobster-cat",
+      members: [],
+      readOnly: true,
+    });
+    const t = fixture([]);
+    const previews = new Map(
+      [runs, scattered].map((entry) => [entry.id, entry]),
+    );
+    Object.assign(t.session.channels, {
+      // The store's answer may hold scattered-letter matches; completion
+      // drops them, as it does for joined channels.
+      searchPublic: vi.fn(async () => ({
+        channels: [runs, scattered],
+        partial: false,
+      })),
+      get: (id: string) => previews.get(id),
+    });
+    render(t.element("bc"));
+    await act(async () => vi.advanceTimersByTime(180));
+    expect(t.result().items.map((item) => item.id)).toEqual(["runs"]);
   } finally {
     vi.useRealTimers();
   }
@@ -613,6 +660,7 @@ it.each([true, false])(
           profiles: new Map(),
           agents: [],
           channels: member ? [row] : [],
+          named: member ? [row] : [],
         }}
         extensions={{
           tools: { snapshot: () => [], subscribe: () => () => {} },

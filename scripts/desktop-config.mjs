@@ -24,8 +24,13 @@ export function options(args, names) {
   return { values, forwarded, rest: args.slice(index) };
 }
 
+// Development launches keep their own app storage, copied once from the
+// installed app's, so they never take or block it, but share its Agents folder
+// (see `src-tauri/src/sign_out/legacy_identifier.rs`).
+const DEV_IDENTIFIER = "xyz.block.buzz.desktop.dev";
+
 export function desktopOverlay(root) {
-  const config = {};
+  const config = { identifier: DEV_IDENTIFIER };
   const icon = worktreeIcon(root);
   if (icon) config.bundle = { icon: [icon] };
   return config;

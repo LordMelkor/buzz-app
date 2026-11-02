@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { UploadedAttachment } from "../relay/attachments";
-import type { RelaySession } from "../relay/session";
+import type { ComposerSession } from "./composer-session";
 import {
   attachmentDraft,
   clearAttachmentDraft,
@@ -38,9 +38,9 @@ type Queue = {
 };
 
 // Sends outlive their composer but not their session: in memory, as Desktop.
-const queues = new WeakMap<RelaySession, Queue>();
+const queues = new WeakMap<ComposerSession, Queue>();
 
-function queueFor(session: RelaySession) {
+function queueFor(session: ComposerSession) {
   let queue = queues.get(session);
   if (!queue) {
     const listeners = new Set<() => void>();
@@ -108,11 +108,11 @@ function reason(error: unknown) {
 /** Takes admitted files after Send; files upload in order, then publish once.
  * Every unpublished outcome hands the files back to `recover`. */
 export function sendInBackground(
-  session: RelaySession,
+  session: ComposerSession,
   owner: string,
   channelId: string,
   files: readonly DraftAttachment[],
-  publish: (uploaded: readonly UploadedAttachment[]) => void,
+  publish: (uploaded: readonly UploadedAttachment[]) => void | Promise<void>,
   recover: (
     files: readonly DraftAttachment[],
     preparationError?: unknown,
@@ -136,7 +136,7 @@ export function sendInBackground(
     try {
       uploaded = await store.prepareForSend(signal);
       signal.throwIfAborted();
-      publish(uploaded);
+      await publish(uploaded);
       return;
     } catch (error) {
       // Session aborts (access change, cache clear, close) restore like failures.
@@ -207,7 +207,7 @@ export function sendInBackground(
 }
 
 /** Desktop's Cancel stops the newest send and restores it like a failure. */
-export function cancelBackgroundUpload(session: RelaySession) {
+export function cancelBackgroundUpload(session: ComposerSession) {
   const live = queueFor(session).jobs.filter(
     (job) => !job.controller.signal.aborted,
   );
@@ -215,14 +215,17 @@ export function cancelBackgroundUpload(session: RelaySession) {
 }
 
 /** Like Desktop, a conversation cannot send again until its upload settles. */
-export function useBackgroundSendPending(session: RelaySession, owner: string) {
+export function useBackgroundSendPending(
+  session: ComposerSession,
+  owner: string,
+) {
   const queue = queueFor(session);
   const pending = () => queue.jobs.some((job) => job.owner === owner);
   return useSyncExternalStore(queue.subscribe, pending, pending);
 }
 
 export function dismissBackgroundUploadNotice(
-  session: RelaySession,
+  session: ComposerSession,
   id: string,
 ) {
   const queue = queueFor(session);
@@ -231,7 +234,7 @@ export function dismissBackgroundUploadNotice(
 }
 
 /** Every composer shows progress; only the first mounted one hosts notices. */
-export function useBackgroundUploads(session: RelaySession) {
+export function useBackgroundUploads(session: ComposerSession) {
   const queue = queueFor(session);
   const [host] = useState(() => ({}));
   useEffect(() => {

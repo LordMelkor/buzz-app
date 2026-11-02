@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { ActivityTurn } from "../../features/agents/activity";
 import { requestActivity, requestActivityState } from "./request-activity";
 const request = "a".repeat(64),
@@ -50,6 +50,32 @@ it("uses exact request/agent/channel starts and excludes earlier same-turn recor
       request,
     ).records,
   ).toEqual([]);
+});
+it("parses a snapshot's records once across requests, never serving a newer snapshot stale", () => {
+  const rows = Object.freeze([row(1, "turn_started"), row(2, "acp_read")]);
+  const parse = vi.spyOn(JSON, "parse");
+  try {
+    requestActivity(rows, agent, "alpha", request);
+    const parsed = parse.mock.calls.length;
+    expect(parsed).toBeGreaterThan(0);
+    expect(
+      requestActivity(rows, agent, "alpha", "c".repeat(64)).records,
+    ).toEqual([]);
+    expect(
+      requestActivity(rows, agent, "alpha", request).records.map((r) => r.id),
+    ).toEqual(["1", "2"]);
+    expect(parse.mock.calls.length).toBe(parsed);
+  } finally {
+    parse.mockRestore();
+  }
+  expect(
+    requestActivity(
+      [...rows, row(3, "acp_read")],
+      agent,
+      "alpha",
+      request,
+    ).records.map((r) => r.id),
+  ).toEqual(["1", "2", "3"]);
 });
 it("does not combine reused turn IDs, conflicting sequences or inherited batch context", () => {
   const rows = [row(1, "turn_started"), row(2, "acp_read")];

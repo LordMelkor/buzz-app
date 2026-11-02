@@ -1,5 +1,12 @@
+import { setPluginEnabled } from "./plugin-settings.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
+import {
+  openPage,
+  openSettings,
+  settingsDialog,
+  settingsSections,
+} from "./navigation.mjs";
 
 test.use({ historyCounts: { alpha: 1, beta: 0 } });
 
@@ -8,6 +15,149 @@ const composer = (page, name) =>
   page.getByRole("textbox", { name: `Message #${name}`, exact: true });
 const entry = (page) =>
   page.evaluate(() => history.state.buzzNavigationV1.entry);
+
+const providerTest = test.extend({ pluginFixtures: true });
+providerTest(
+  "Settings provider closes before its parent and retires only its own return path",
+  async ({ page, app }) => {
+    await open(page, app);
+    const alpha = await entry(page);
+    await button(page, "Beta").click();
+    await expect(composer(page, "Beta")).toBeVisible();
+    const beta = await entry(page);
+    await openSettings(page);
+    await settingsSections(page)
+      .getByRole("button", { name: "Manage plugins", exact: true })
+      .click();
+    await setPluginEnabled(page, "Provider fixture", true);
+    await settingsSections(page)
+      .getByRole("button", { name: "Agent setup", exact: true })
+      .click();
+    const parent = await entry(page);
+    await button(page, "Fixture provider, ready").click();
+    const dialog = page.getByRole("dialog", {
+      name: "Fixture provider",
+      exact: true,
+    });
+    await expect(dialog).toBeVisible();
+    await page.goBack();
+    await expect(dialog).toHaveCount(0);
+    await expect(settingsDialog(page)).toBeVisible();
+    expect(await entry(page)).toEqual(parent);
+    await page.goForward();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(await entry(page)).toEqual(parent);
+    // Settings intentionally makes the shell toolbar inert and inaccessible.
+    await expect(
+      page.locator('button[aria-label="Go forward"]'),
+    ).toBeDisabled();
+    await button(page, "Fixture provider, ready").click();
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(await entry(page)).toEqual(parent);
+    await settingsDialog(page)
+      .getByRole("button", { name: "Close Settings", exact: true })
+      .click();
+    await expect(settingsDialog(page)).toHaveCount(0);
+    expect(await entry(page)).toEqual(beta);
+    await page.goBack();
+    await expect(composer(page, "Alpha")).toBeVisible();
+    expect(await entry(page)).toEqual(alpha);
+    await page.goForward();
+    await expect(settingsDialog(page)).toHaveCount(0);
+    await expect(button(page, "Go forward")).toBeDisabled();
+  },
+);
+providerTest(
+  "Agents provider Back is reversible; Close skips its visit and returns to Agents",
+  async ({ page, app }) => {
+    await open(page, app);
+    await openSettings(page);
+    await settingsSections(page)
+      .getByRole("button", { name: "Manage plugins", exact: true })
+      .click();
+    await setPluginEnabled(page, "Provider fixture", true);
+    await settingsDialog(page)
+      .getByRole("button", { name: "Close Settings", exact: true })
+      .click();
+    await expect(settingsDialog(page)).toHaveCount(0);
+    const alpha = await entry(page);
+    await openPage(page, "Agents");
+    const agents = await entry(page);
+    const provider = {
+      ...agents.target,
+      route: { version: 1, params: { provider: "fixture.provider/sample" } },
+    };
+    await page.evaluate((target) => {
+      location.hash = `#buzz=${encodeURIComponent(JSON.stringify(target))}`;
+    }, provider);
+    const dialog = page.getByRole("dialog", {
+      name: "Fixture provider",
+      exact: true,
+    });
+    await expect(dialog).toBeVisible();
+    await page.goBack();
+    await expect(dialog).toHaveCount(0);
+    expect(await entry(page)).toEqual(agents);
+    await page.goForward();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(await entry(page)).toEqual(agents);
+    await page.goBack();
+    await expect(composer(page, "Alpha")).toBeVisible();
+    expect(await entry(page)).toEqual(alpha);
+    await page.goForward();
+    await expect(button(page, "Go forward")).toBeDisabled();
+    await expect(dialog).toHaveCount(0);
+  },
+);
+
+// Native popstate/hashchange and modal focus are the integration boundary here;
+// identity matching and scope isolation are covered in the owner tests.
+test("Settings Back is reversible; explicit Close retires every section visit", async ({
+  page,
+  app,
+}) => {
+  await open(page, app);
+  const alpha = await entry(page);
+  await button(page, "Beta").click();
+  await expect(composer(page, "Beta")).toBeVisible();
+  const beta = await entry(page);
+  await openSettings(page);
+  await page.goBack();
+  await expect(settingsDialog(page)).toHaveCount(0);
+  expect(await entry(page)).toEqual(beta);
+  await page.goForward();
+  await expect(settingsDialog(page)).toBeVisible();
+  await settingsSections(page)
+    .getByRole("button", { name: "Appearance", exact: true })
+    .click();
+  await page.goBack();
+  await expect(
+    settingsSections(page).getByRole("button", {
+      name: "Profile",
+      exact: true,
+    }),
+  ).toHaveAttribute("aria-current", "page");
+  await settingsDialog(page)
+    .getByRole("button", { name: "Close Settings", exact: true })
+    .click();
+  await expect(settingsDialog(page)).toHaveCount(0);
+  expect(await entry(page)).toEqual(beta);
+  await page.goBack();
+  await expect(composer(page, "Alpha")).toBeVisible();
+  expect(await entry(page)).toEqual(alpha);
+  await page.goForward();
+  await expect(composer(page, "Beta")).toBeVisible();
+  await expect(button(page, "Go forward")).toBeDisabled();
+  await openSettings(page);
+  await page.keyboard.press("Escape");
+  await expect(settingsDialog(page)).toHaveCount(0);
+  await expect(button(page, "Go forward")).toBeDisabled();
+});
 
 test("a collapsible sidebar yields to narrow drawer styles during resize", async ({
   page,
@@ -36,15 +186,12 @@ test("a retired contributed Settings destination fails promptly on Back", async 
   app,
 }) => {
   await open(page, app);
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  const sections = page.getByRole("navigation", { name: "Settings sections" });
-  await sections.getByRole("button", { name: "Plugins", exact: true }).click();
-  const pairingEnabled = page.getByRole("switch", {
-    name: "Enable Pair mobile",
-    exact: true,
-  });
-  if (!(await pairingEnabled.isChecked())) await pairingEnabled.click();
+  await openSettings(page);
+  const sections = settingsSections(page);
+  await sections
+    .getByRole("button", { name: "Manage plugins", exact: true })
+    .click();
+  await setPluginEnabled(page, "Pair mobile", true);
   const pairing = sections.getByRole("button", {
     name: "Pair mobile",
     exact: true,
@@ -52,13 +199,16 @@ test("a retired contributed Settings destination fails promptly on Back", async 
   await expect(pairing).toBeVisible();
   await pairing.click();
   await expect(pairing).toHaveAttribute("aria-current", "page");
-  await sections.getByRole("button", { name: "Plugins", exact: true }).click();
-  await pairingEnabled.click();
+  await sections
+    .getByRole("button", { name: "Manage plugins", exact: true })
+    .click();
+  await setPluginEnabled(page, "Pair mobile", false);
   await expect(pairing).toHaveCount(0);
-  await button(page, "Go back").click();
+  // The shell toolbar is inert behind the Settings modal; traverse history.
+  await page.goBack();
   await expect(
     page.getByRole("alert").getByRole("heading", {
-      name: "This destination couldn’t open",
+      name: "This page isn’t available",
       exact: true,
     }),
   ).toBeVisible({ timeout: 3000 });
@@ -89,9 +239,8 @@ test("channel visits, toolbar, browser traversal and Settings sections share one
   await expect(composer(page, "Alpha")).toBeVisible();
   await page.goForward();
   await expect(composer(page, "Beta")).toBeVisible();
-  await button(page, "Your profile").click();
-  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  const sections = page.getByRole("navigation", { name: "Settings sections" });
+  await openSettings(page);
+  const sections = settingsSections(page);
   await expect(
     sections.getByRole("button", { name: "Profile", exact: true }),
   ).toHaveAttribute("aria-current", "page");
@@ -111,10 +260,12 @@ test("channel visits, toolbar, browser traversal and Settings sections share one
   await expect(
     sections.getByRole("button", { name: "Appearance", exact: true }),
   ).toHaveAttribute("aria-current", "page");
-  await button(page, "Go back").click();
+  // The shell toolbar is inert behind the Settings modal; traverse history.
+  await page.goBack();
   await expect(
     sections.getByRole("button", { name: "Profile", exact: true }),
   ).toHaveAttribute("aria-current", "page");
-  await button(page, "Go back").click();
+  await page.goBack();
+  await expect(settingsDialog(page)).toHaveCount(0);
   await expect(composer(page, "Beta")).toBeVisible();
 });

@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { AlertDialog } from "../../shared/design-system/ui/AlertDialog";
 import { Button } from "../../shared/design-system/ui/Button";
 
@@ -22,15 +23,17 @@ export function ConfirmAction({
   destructive?: boolean;
   error?: string | null;
 }) {
+  const cancelAction = useRef<HTMLButtonElement>(null);
   return (
     <AlertDialog
       title={title}
+      initialFocus={cancelAction}
       description={description}
       pending={pending}
       onClose={onCancel}
       actions={
         <>
-          <Button disabled={pending} onClick={onCancel}>
+          <Button ref={cancelAction} disabled={pending} onClick={onCancel}>
             {cancel}
           </Button>
           <Button

@@ -173,11 +173,18 @@ export async function checkDurationLayout(
 }
 
 // Other consumers need representative integration, not another app-startup matrix.
-export async function checkDurationConsumer(page, dialog, prefix, testInfo) {
-  const nextControl = dialog.getByRole("switch", {
-    name: "Private",
-    exact: true,
-  });
+export async function checkDurationConsumer(
+  page,
+  dialog,
+  prefix,
+  testInfo,
+  {
+    nextControl = dialog.getByRole("switch", {
+      name: "Private",
+      exact: true,
+    }),
+  } = {},
+) {
   await checkDurationLayout(dialog, { selected: false, nextControl });
   await page.screenshot({
     path: testInfo.outputPath(`${prefix}-ongoing-wide.png`),

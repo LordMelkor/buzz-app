@@ -15,6 +15,21 @@ import {
 import type { RelayData } from "../features/relay/service";
 import { clientMetrics } from "../features/developer/client-metrics";
 import { ClientMetricsPanel } from "./ClientMetricsPanel";
+import { SwitchPreferenceRow } from "../shared/design-system/ui/SwitchPreferenceRow";
+import {
+  importScenario,
+  setImportScenario,
+  subscribeImportScenario,
+  type ImportScenario,
+} from "../features/developer/agent-import-scenario";
+
+const IMPORT_SCENARIOS: readonly { value: ImportScenario; label: string }[] = [
+  { value: "off", label: "Real data" },
+  { value: "none", label: "Nothing to import" },
+  { value: "both", label: "Other communities and old Buzz" },
+  { value: "communities", label: "Other communities only" },
+  { value: "old", label: "Buzz (Legacy) only" },
+];
 
 type BrokerStats = {
   queries: number;
@@ -39,6 +54,10 @@ async function fetchStats(): Promise<BrokerStats | undefined> {
 
 export function DeveloperSettings({ relay }: { relay: RelayData }) {
   const level = useSyncExternalStore(subscribeLogLevel, logLevel);
+  const scenario = useSyncExternalStore(
+    subscribeImportScenario,
+    importScenario,
+  );
   const [settingsReady, setSettingsReady] = useState(false);
   const [saving, setSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string>();
@@ -181,6 +200,37 @@ export function DeveloperSettings({ relay }: { relay: RelayData }) {
                 {settingsError}
               </p>
             )}
+          </SettingsGroup>
+        </div>
+        <div className="space-y-2">
+          <InlineHeader
+            title="Agent import"
+            subtitle="Simulated findings leave agents unchanged. Real data uses actual imports, even when shown as a new community."
+          />
+          <SettingsGroup layout="form">
+            <PreferenceRow
+              title="What Import finds"
+              trailing={
+                <Select
+                  label="What Import finds"
+                  variant="compact"
+                  value={scenario.scenario}
+                  onValueChange={(value) => {
+                    const next = IMPORT_SCENARIOS.find(
+                      (item) => item.value === value,
+                    );
+                    if (next) setImportScenario({ scenario: next.value });
+                  }}
+                  groups={[{ label: "", options: [...IMPORT_SCENARIOS] }]}
+                />
+              }
+            />
+            <SwitchPreferenceRow
+              label="Show as a new community"
+              description="The Agents page shows no agents or teams here, as a first visit would."
+              checked={scenario.empty}
+              onCheckedChange={(empty) => setImportScenario({ empty })}
+            />
           </SettingsGroup>
         </div>
         <SettingsGroup layout="form">

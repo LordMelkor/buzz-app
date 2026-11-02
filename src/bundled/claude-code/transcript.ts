@@ -1,6 +1,7 @@
 // A conversation's Claude Code session, read from the transcript Claude Code
 // keeps on this computer and shown in the host's turn-transcript model. Claude
 // Code owns the file; nothing here writes or keeps it.
+import { isMessageTool } from "../../buzz-mcp/session-tools";
 import { readFile } from "../../buzz-mcp/app-client";
 import {
   promptMessage,
@@ -11,9 +12,16 @@ import {
   type TranscriptTurn,
 } from "../../features/agents/activity-transcript";
 import type { Spawn } from "./claude";
+import { readProject, type Start } from "./history";
 
 /** The latest turns shown; the file keeps the rest. */
 export const TURN_LIMIT = 50;
+/** A conversation's transcript, and why some of its sessions may be missing
+ * when the history could not all be searched. */
+export type ClaudeTranscript = Transcript & {
+  more: boolean;
+  incomplete?: string;
+};
 const STEER = "new-message-arrived-while-you-were-working";
 
 type Json = Record<string, unknown>;
@@ -26,7 +34,7 @@ type Session = Readonly<{
 /** A conversation to read: the agent's sessions for its thread or channel,
  * including the one this build of the app saved, if any. */
 export type Conversation = Readonly<{
-  /** The agent's pubkey, as its turn prompts name it. */
+  /** The agent's membership key, as its turn prompts name it. */
   agent: string;
   sessionId?: string;
   channelId: string;
@@ -179,7 +187,11 @@ export function claudeTurns(
       else if (block.type === "tool_use") {
         const name = str(block.name);
         const input = object(block.input) ?? {};
-        if (name === "mcp__buzz__send" && str(input.text).trim()) {
+        if (
+          name.startsWith("mcp__buzz__") &&
+          isMessageTool(name.slice("mcp__buzz__".length)) &&
+          str(input.text).trim()
+        ) {
           const message: TranscriptItem & { posted?: boolean } = {
             id: key,
             at,
@@ -252,29 +264,19 @@ export function startedFor(file: string, conversation: Conversation) {
   return false;
 }
 
-/** Other session files mentioning the conversation. The agent starts a new
- * session when it cannot resume one, e.g. in another build of the app, which
- * keeps its own saved sessions. */
-async function otherSessions(spawn: Spawn, project: string, pattern: string) {
-  let output = "";
-  const process = await spawn("find", {
-    args: [pattern, "."],
-    cwd: `~/.claude/projects/${project}`,
-    onStdout: (data) => {
-      output += data;
-    },
-  });
-  // No match exits 1; a failed search leaves just the saved session.
-  await process.exited;
-  return output
-    .split("\n")
-    .map((line) => line.trim().replace(/^\.\//, ""))
-    .filter((name) => /^[^/]+\.jsonl$/.test(name));
-}
+/** Whether the index says a session was started for `conversation`. Its
+ * fields come from the first line naming any, which `startedFor` checks is
+ * the first prompt once the file is read. */
+const indexedFor = (start: Start, conversation: Conversation) =>
+  (start.agent === undefined || start.agent === conversation.agent) &&
+  start.channelId === conversation.channelId &&
+  (conversation.root
+    ? start.scope === "thread" && start.root === conversation.root
+    : start.scope !== "thread");
 
 /** The Claude Code project directory name for the agent's workspace, or
  * undefined when it is too long to be one. */
-async function workspaceProject(
+export async function workspaceProject(
   spawn: Spawn,
   workspace: string,
   signal: AbortSignal,
@@ -342,17 +344,30 @@ export async function readTranscript(
   conversation: Conversation,
   working: boolean,
   signal: AbortSignal,
-): Promise<(Transcript & { more: boolean }) | undefined> {
+): Promise<ClaudeTranscript | undefined> {
   const project = await workspaceProject(spawn, workspace, signal);
   if (!project) return undefined;
   const saved = conversation.sessionId && `${conversation.sessionId}.jsonl`;
+  // The agent starts a new session when it cannot resume one, e.g. in
+  // another build of the app, which keeps its own saved sessions. A failed
+  // listing still finds the saved one, and a partly failed search the
+  // sessions it did search; the transcript says it may be missing some.
+  let failure: unknown;
+  const starts = await readProject(spawn, project).then(
+    (state) => {
+      failure = state.incomplete;
+      return state.starts;
+    },
+    (error: unknown) => {
+      failure = error;
+      return new Map<string, Start>();
+    },
+  );
   const names = new Set([
     ...(saved ? [saved] : []),
-    ...(await otherSessions(
-      spawn,
-      project,
-      conversation.root ?? conversation.channelId,
-    )),
+    ...[...starts]
+      .filter(([, start]) => indexedFor(start, conversation))
+      .map(([name]) => name),
   ]);
   signal.throwIfAborted();
   const turns: TranscriptTurn[] = [];
@@ -390,11 +405,20 @@ export async function readTranscript(
       ),
     );
   }
-  if (!found) return undefined;
+  // Nothing found is no transcript only when every file was searched.
+  if (!found) {
+    if (failure) throw failure;
+    return undefined;
+  }
   turns.sort((a, b) => a.startedAt - b.startedAt);
   return {
     turns: turns.slice(-TURN_LIMIT),
-    unknownThread: 0,
     more: turns.length > TURN_LIMIT,
+    ...(failure
+      ? {
+          incomplete:
+            failure instanceof Error ? failure.message : String(failure),
+        }
+      : {}),
   };
 }

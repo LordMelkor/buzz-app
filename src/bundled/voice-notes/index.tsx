@@ -3,7 +3,7 @@ import type { PluginModule } from "../../plugins/api";
 import { VoiceCapture } from "./VoiceCapture";
 import { VoiceNoteCard } from "./VoiceNoteCard";
 import { isVoiceNoteAttachment } from "./audio";
-import styles from "./VoiceNotes.module.css";
+import { IconButton } from "../../shared/design-system/ui/IconButton";
 
 export const inject = ["conversation"];
 export const apply: PluginModule["apply"] = (ctx) => {
@@ -13,9 +13,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
     order: 10,
     component: ({ session, disabled, capture, focus }) =>
       session.attachments && capture ? (
-        <button
+        <IconButton
           type="button"
-          className={styles.iconButton}
+          size="sm"
           aria-label="Record voice note"
           title="Record voice note"
           disabled={disabled}
@@ -34,9 +34,8 @@ export const apply: PluginModule["apply"] = (ctx) => {
               />
             ))
           }
-        >
-          <MicrophoneIcon size={18} aria-hidden="true" />
-        </button>
+          icon={<MicrophoneIcon size={16} aria-hidden="true" />}
+        />
       ) : null,
   });
   ctx.conversation.registerAttachment({
@@ -51,6 +50,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     component: ({ attachment, source, onRemove }) => (
       <VoiceNoteCard
         source={source}
+        downloadName={attachment.name ?? ""}
         {...(attachment.duration === undefined
           ? {}
           : { duration: attachment.duration })}

@@ -179,9 +179,35 @@ html[data-keyboard-navigation] .panelViewport {
   );
 }
 
-.emojiPreview {
+.emojiScale {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.emojiScale input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--affordance-prominent);
+}
+
+.emojiPreview,
+.emojiPreviewArtwork {
   width: 100%;
   height: 100%;
+}
+
+.emojiPreview[tabindex="0"] {
+  cursor: grab;
+  touch-action: none;
+}
+
+.emojiPreview[tabindex="0"]:active {
+  cursor: grabbing;
+}
+
+.emojiPreview:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 4px;
 }
 
 .emojiArtwork {
@@ -232,6 +258,11 @@ html[data-keyboard-navigation] .panelViewport {
   }
 }
 
+.dottedFrame {
+  display: grid;
+  gap: var(--space-3);
+}
+
 .dottedTrigger {
   position: relative;
   width: 13rem;
@@ -256,6 +287,12 @@ html[data-keyboard-navigation] .panelViewport {
   outline-offset: 4px;
 }
 
+/* The emoji preview covers the trigger as its own control. */
+.dottedFrame > .dottedTrigger,
+.dottedFrame > .emojiPreview {
+  grid-area: 1 / 1;
+}
+
 .dottedOutline {
   position: absolute;
   inset: 0;
@@ -276,8 +313,11 @@ html[data-keyboard-navigation] .panelViewport {
   gap: var(--space-6) var(--space-3);
   width: 100%;
 }
-.inlineEditor .dottedTrigger {
+.inlineEditor .dottedFrame {
   width: min(13rem, 100%);
+}
+.inlineEditor .dottedTrigger {
+  width: 100%;
   height: auto;
   aspect-ratio: 1;
 }
@@ -285,16 +325,11 @@ html[data-keyboard-navigation] .panelViewport {
   .inlineEditor {
     grid-template-columns: minmax(0, 1fr);
   }
-  .inlineEditor .dottedTrigger {
+  .inlineEditor .dottedFrame {
     width: 8rem;
   }
 }
 
-.inlineEditor[data-empty-image] {
-  grid-template-columns: minmax(0, 1fr);
-  max-width: 30rem;
-  margin-inline: auto;
-}
 .imagePanel[data-surface="panel"] {
   --surface-panel: var(--interaction-row-hover);
 }

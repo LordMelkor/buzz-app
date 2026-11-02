@@ -178,20 +178,24 @@ export function SidebarUnread({
       })
       .slice(0, 3);
     const Icon = edge === "above" ? ArrowUpIcon : ArrowDownIcon;
+    // Spend the strong fill only when a DM, a mention of you or a thread
+    // reply waits past this edge; ordinary unread uses the quiet gray fill.
+    const attention = edges[edge].some((target) => target.attention);
     return (
       <div
         className={styles.unreadEdge}
         data-edge={edge}
         key={edge}
+        data-attention={attention}
         data-visible={count > 0}
         inert={count === 0}
         aria-hidden={count === 0}
       >
         <Button
-          variant="prominent"
+          variant={attention ? "prominent" : "subtle"}
           aria-label={`${count} unread ${count === 1 ? "conversation" : "conversations"} ${edge}`}
           data-edge={edge}
-          data-attention={edges[edge].some(({ attention }) => attention)}
+          data-attention={attention}
           size="xs"
           shape="capsule"
           type="button"

@@ -1,6 +1,9 @@
 import { registerBrokerCommunity } from "../relay/transport";
 import { nativeIdentityEnabled } from "../identity/service";
 import { nativeRelayInfo } from "../relay/native";
+import { communityName, publishedCommunityName } from "./names";
+import { communityDestination } from "./destination";
+import type { Membership } from "./service";
 
 /** Keep untrusted relay metadata out of executable URL schemes and huge data URLs. */
 export function communityIcon(value: unknown): string | undefined {
@@ -47,22 +50,47 @@ export function communityIcon(value: unknown): string | undefined {
   return undefined;
 }
 
-/** NIP-11 icon comes through the existing same-origin broker, without a relay session. */
-export async function fetchCommunityIcon(id: string, signal: AbortSignal) {
+/** Existing optional NIP-11 discovery, without join policy or a relay session. */
+export async function fetchCommunityPresentation(
+  id: string,
+  signal: AbortSignal,
+) {
   const bounded = AbortSignal.any([signal, AbortSignal.timeout(12_000)]);
-  if (nativeIdentityEnabled())
-    return communityIcon((await nativeRelayInfo(id, bounded)).icon);
-  await registerBrokerCommunity(id, bounded);
-  const response = await fetch(
-    `/api/relay/${encodeURIComponent(id)}/icon-info`,
-    {
-      credentials: "same-origin",
-      signal: bounded,
-    },
+  let info: unknown;
+  if (nativeIdentityEnabled()) info = await nativeRelayInfo(id, bounded);
+  else {
+    await registerBrokerCommunity(id, bounded);
+    const response = await fetch(
+      `/api/relay/${encodeURIComponent(id)}/icon-info`,
+      { credentials: "same-origin", signal: bounded },
+    );
+    if (!response.ok) throw new Error("Community information unavailable");
+    info = await response.json();
+  }
+  if (!info || typeof info !== "object" || Array.isArray(info))
+    throw new Error("Community information unavailable");
+  return {
+    publishedName: publishedCommunityName(
+      "name" in info ? info.name : undefined,
+    ),
+    publishedIcon: communityIcon("icon" in info ? info.icon : undefined),
+  };
+}
+
+/** Resolve display-only metadata without acquiring a community session. */
+export function communityPresentation(
+  origin: string,
+  memberships: readonly Membership[] = [],
+) {
+  const destination = communityDestination(origin);
+  const membership = memberships.find(
+    (item) => communityDestination(item.id).url === destination.url,
   );
-  if (!response.ok) return undefined;
-  const info: unknown = await response.json();
-  return info && typeof info === "object" && "icon" in info
-    ? communityIcon(info.icon)
-    : undefined;
+  return {
+    id: destination.url,
+    name: membership ? communityName(membership) : destination.name,
+    src: membership
+      ? communityIcon(membership.publishedIcon ?? membership.icon)
+      : undefined,
+  };
 }

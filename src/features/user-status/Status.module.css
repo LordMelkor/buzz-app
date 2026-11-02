@@ -18,6 +18,11 @@
   align-items: center;
   gap: var(--space-1);
 }
+/* An unresolved code keeps its width; the status text beside it wraps. */
+.tooltipContent > .text {
+  flex: none;
+  max-width: 100%;
+}
 .emoji {
   width: var(--user-status-emoji-size, 1.25rem);
   height: var(--user-status-emoji-size, 1.25rem);
@@ -25,16 +30,14 @@
   object-fit: contain;
   vertical-align: middle;
 }
+.emoji[data-pending] {
+  display: inline-block;
+}
 .emojiFallback {
   white-space: nowrap;
   font-size: var(--user-status-emoji-size, 1.25rem);
   line-height: 1;
   transform: translateY(var(--user-status-emoji-offset, 0px));
-}
-.emojiFallback[data-custom] {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .fields {
   display: grid;
@@ -99,4 +102,85 @@
   --floating-inset: var(--space-2);
   --interaction-row-hover: var(--affordance-subtle-hover);
   padding: var(--space-2);
+}
+
+.status[data-size="caption"] {
+  width: 100%;
+  @apply text-caption;
+  --user-status-emoji-size: 1rem;
+  align-items: baseline;
+}
+.status[data-size="caption"] .text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.ticker {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-align: start;
+}
+.tickerTrack {
+  margin-inline: auto;
+  display: flex;
+  width: max-content;
+}
+.tickerCopy {
+  flex: none;
+  white-space: nowrap;
+}
+.ticker[data-overflow] {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--space-2),
+    black calc(100% - var(--space-2)),
+    transparent
+  );
+}
+.ticker[data-overflow] .tickerCopy {
+  padding-inline: var(--space-6);
+}
+.ticker[data-overflow] .tickerTrack {
+  margin-inline: 0;
+  animation: status-ticker var(--status-ticker-duration) linear infinite;
+}
+.ticker:focus-visible .tickerTrack {
+  animation-play-state: paused;
+}
+@media (hover: hover) and (pointer: fine) {
+  .ticker:hover .tickerTrack {
+    animation-play-state: paused;
+  }
+}
+@keyframes status-ticker {
+  to {
+    transform: translateX(-50%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ticker[data-overflow] {
+    mask-image: none;
+  }
+  .ticker {
+    overflow: visible;
+  }
+  .ticker .tickerTrack,
+  .ticker[data-overflow] .tickerTrack {
+    display: block;
+    animation: none;
+    width: auto;
+  }
+  .tickerCopy {
+    display: block;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .ticker[data-overflow] .tickerCopy {
+    padding-inline: 0;
+  }
+  .tickerCopy[aria-hidden] {
+    display: none;
+  }
 }

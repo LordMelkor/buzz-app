@@ -95,3 +95,17 @@
   --text-mono-sm--letter-spacing: 0.03em;
   --text-mono-sm--font-weight: var(--type-weight-normal);
 }
+
+/* Text selection uses a visible neutral pair on both panels and message fills. */
+@layer base {
+  ::selection {
+    background-color: var(--selection-fill, var(--surface-text-selection));
+    color: var(--selection-text, var(--text-on-selection));
+  }
+  @media (forced-colors: active) {
+    ::selection {
+      background-color: Highlight;
+      color: HighlightText;
+    }
+  }
+}

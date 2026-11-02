@@ -1,4 +1,4 @@
-import type { MouseEventHandler } from "react";
+import type { MouseEventHandler, PointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -60,5 +60,28 @@ export const macTitleBarDragHandlers = createTitleBarDragHandlers({
   },
   doubleClick: () => {
     void invoke("title_bar_double_click");
+  },
+});
+
+/** Modal backdrops block controls, but native window movement remains available. */
+export function createModalWindowDragHandlers(
+  actions: Pick<TitleBarActions, "startDragging">,
+  hitTest = (x: number, y: number) => document.elementsFromPoint(x, y),
+) {
+  return {
+    canDrag(event: PointerEvent<HTMLElement>) {
+      const target = hitTest(event.clientX, event.clientY).find(
+        (element) =>
+          element !== event.currentTarget &&
+          !element.closest("[data-base-ui-portal]"),
+      );
+      return target?.hasAttribute("data-buzz-window-drag") === true;
+    },
+    startDragging: actions.startDragging,
+  };
+}
+export const modalWindowDragHandlers = createModalWindowDragHandlers({
+  startDragging: () => {
+    void getCurrentWindow().startDragging();
   },
 });

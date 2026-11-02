@@ -66,6 +66,15 @@ test("statuses edit, synchronize, clear, reject stale traffic and retain failed 
     await expect(emojiButton).not.toHaveText("💬");
     await editor.getByLabel("Status message").fill("Design meeting");
     await expect(emojiButton).toHaveText("💬");
+    // This picker shares the external-trigger contract with message reactions.
+    // Escape restores its exact trigger without dismissing the status draft.
+    await emojiButton.click();
+    const emojiSearch = page.getByRole("searchbox", { name: "Search emoji" });
+    await expect(emojiSearch).toBeFocused();
+    await emojiSearch.press("Escape");
+    await expect(emojiSearch).toBeHidden();
+    await expect(emojiButton).toBeFocused();
+    await expect(editor).toBeVisible();
     await expect(editor.getByLabel("Status message")).toHaveValue(
       "Design meeting",
     );
@@ -243,6 +252,58 @@ test("statuses edit, synchronize, clear, reject stale traffic and retain failed 
     await expect(
       bobByline.getByRole("img", { name: ":party: Celebrating", exact: true }),
     ).toBeVisible();
+    // A code missing from the catalog keeps compact slots at emoji size and
+    // reads as status text where the full status is shown.
+    await page
+      .getByRole("button", { name: "Uncatalogued Bob", exact: true })
+      .click();
+    const buzzin =
+      "Buzzin' between hives all afternoon, so replies may wait until the honey run is done";
+    const unresolved = `[aria-label=":bee-intensifies: ${buzzin}"]`;
+    await expect(dmName.locator(unresolved)).toHaveText("💬");
+    await expectStatusBesideName();
+    await expect(bobByline.locator(unresolved)).toHaveText("💬");
+    const code = (scope) =>
+      scope.getByText(":bee-intensifies:", { exact: true });
+    const expectTextSized = async (scope) => {
+      const size = (locator) =>
+        locator.evaluate((element) => getComputedStyle(element).fontSize);
+      expect(await size(code(scope))).toBe(
+        await size(scope.getByText(buzzin, { exact: true })),
+      );
+    };
+    await expectTextSized(
+      page.getByRole("region", { name: "Profile", exact: true }),
+    );
+    const unresolvedTip = page.locator('[role="tooltip"][data-open]');
+    for (const status of [dmName, bobByline]) {
+      await status.locator(unresolved).hover();
+      await expect(unresolvedTip).toContainText(":bee-intensifies:");
+      await expectTextSized(unresolvedTip);
+      // The tooltip is where a compact slot shows the code, so long text
+      // beside it must not clip it.
+      expect(
+        await code(unresolvedTip).evaluate(
+          (element) => element.scrollWidth <= element.clientWidth,
+        ),
+      ).toBe(true);
+    }
+    // The status's own image URL renders without the catalog listing the code.
+    await page
+      .getByRole("button", { name: "Uncatalogued Bob with image", exact: true })
+      .click();
+    for (const status of [dmName, bobByline]) {
+      const image = status.locator(
+        `[aria-label=":bee-intensifies: Buzzin'"] img`,
+      );
+      await expect(image).toHaveAttribute(
+        "src",
+        "https://emoji.test/bee-intensifies.svg",
+      );
+      await expect
+        .poll(() => image.evaluate((element) => element.naturalWidth))
+        .toBeGreaterThan(0);
+    }
     await page
       .getByRole("button", { name: "Text-only Bob", exact: true })
       .click();

@@ -87,11 +87,11 @@ export class CoreMemoryCache {
   }
 
   /** Keeps what the agent just wrote, ahead of any read still under way. */
-  wrote(pubkey: string, slug: string, body: string) {
+  wrote(pubkey: string, slug: string, body: string | null) {
     const reads = this.reads(pubkey);
     if (!reads) return;
     this.memoryReads.forget(reads.connection, pubkey);
-    if (slug !== "core") return;
+    if (slug !== "core" || body === null) return;
     const key = this.key(reads.scope, pubkey);
     this.claim(key);
     this.latest.set(key, body);

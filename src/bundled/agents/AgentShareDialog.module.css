@@ -1,0 +1,57 @@
+/* Search and the Marketplace stay put; only the results between them scroll,
+   as in Share access. */
+.layout {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: var(--space-4);
+  /* When enlarged text leaves too little room, scroll the whole layout. */
+  overflow-y: auto;
+  /* Room for focus rings, which the scrolling layout would otherwise clip. */
+  --row-bleed: min(
+    var(--dialog-padding),
+    var(--space-control-inset) +
+    var(--space-1)
+  );
+  margin-inline: calc(-1 * var(--row-bleed));
+  padding-inline: var(--row-bleed);
+}
+.layout > * {
+  flex-shrink: 0;
+}
+/* Rows span the same width as the search field and the Marketplace group. */
+.results {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  /* A sticky heading plus one reachable row. */
+  min-height: calc(var(--size-row) * 2);
+  overflow: auto;
+  gap: var(--space-4);
+}
+.results > * {
+  flex-shrink: 0;
+}
+.groupHeading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-block: var(--space-2);
+  /* Text lines up with the rows' pictures. */
+  padding-inline: var(--space-2);
+  background: var(--surface-popover);
+}
+.note {
+  padding-inline: var(--space-2);
+}
+/* The export preview takes the room the share step's layout had. Its loading
+   region passes that on: feedback at its own height, then the card, whole, in
+   what is left, at any window or text size. */
+.preview,
+.preview > * {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

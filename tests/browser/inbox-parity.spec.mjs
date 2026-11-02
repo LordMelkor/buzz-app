@@ -35,10 +35,19 @@ test("the same signed mention opens its profile in Inbox and Channels", async ({
     .getByRole("list", { name: "Inbox conversations" })
     .getByRole("button", { name: "Open Alice Fixture in #Alpha", exact: true })
     .click();
-  const detail = inbox.getByRole("region", { name: "Inbox detail" });
-  // A pending exact reveal would take focus from the profile dialog below.
-  await expect(detail.locator("[data-message-id]:focus")).toHaveCount(1);
+  const detail = inbox.getByRole("region", {
+    name: "Conversation in Alpha",
+    exact: true,
+  });
   const row = detail.locator(`[data-message-id="${message.id}"]`);
+  // A pending exact reveal would move the reader under the profile tab below.
+  await expect(row).toBeInViewport();
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
   const mention = row.getByRole("button", {
     name: "View Fixture Reader profile",
     exact: true,
@@ -50,33 +59,50 @@ test("the same signed mention opens its profile in Inbox and Channels", async ({
     exact: true,
   });
   await composer.fill("Preserved Inbox reply");
+  // Inbox hosts the profile as a tab beside the thread, as Channels' tabs do.
+  const side = inbox.getByRole("tablist", { name: "Panel tabs" });
+  const profileTab = side.getByRole("tab", {
+    name: "Fixture Reader",
+    exact: true,
+  });
+  const threadTab = side.getByRole("tab", {
+    name: "Thread root 0",
+    exact: true,
+  });
+  const profile = inbox.getByRole("complementary", {
+    name: "Profile",
+    exact: true,
+  });
   await mention.focus();
   await mention.press("Enter");
-  const profile = page.getByRole("dialog", { name: "Profile", exact: true });
-  // The dialog owns entry focus; an earlier Escape would reach Inbox detail.
-  const entered = () =>
-    expect
-      .poll(() =>
-        profile.evaluate((element) => element.contains(document.activeElement)),
-      )
-      .toBe(true);
-  await expect(profile).toBeVisible();
+  await expect(profileTab).toHaveAttribute("aria-selected", "true");
   await expect(profile).toContainText("Fixture Reader");
-  await entered();
-  await page.keyboard.press("Escape");
-  await expect(mention).toBeFocused();
+  await threadTab.click();
+  await expect(mention).toBeVisible();
   await expect(composer).toHaveJSProperty("value", "Preserved Inbox reply");
   await page.setViewportSize({ width: 560, height: 900 });
   await page.emulateMedia({ colorScheme: "dark" });
   await page.addStyleTag({ content: "html { font-size: 125%; }" });
   await mention.click();
-  await expect(profile).toBeVisible();
-  await entered();
-  await page.keyboard.press("Escape");
-  await expect(mention).toBeFocused();
+  await expect(profileTab).toHaveAttribute("aria-selected", "true");
+  await expect(profile).toContainText("Fixture Reader");
+  await side
+    .getByRole("button", { name: "Close Fixture Reader tab", exact: true })
+    .click();
+  await expect(profileTab).toHaveCount(0);
+  await expect(threadTab).toHaveAttribute("aria-selected", "true");
   await expect(composer).toHaveJSProperty("value", "Preserved Inbox reply");
-  await detail
-    .getByRole("button", { name: "Open in channel", exact: true })
+  // Channels shows the same signed reply in its own thread.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await openPage(page, "Messages");
+  await page
+    .getByRole("navigation", { name: "Subscribed channels" })
+    .getByRole("button", { name: /^Alpha/ })
+    .click();
+  await page
+    .locator(`[data-message-id="${root.id}"]`)
+    .filter({ visible: true })
+    .getByRole("button", { name: /^View thread/ })
     .click();
   const channelRow = page
     .locator(`[data-message-id="${message.id}"]`)

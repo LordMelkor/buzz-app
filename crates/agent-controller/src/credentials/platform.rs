@@ -164,7 +164,7 @@ mod keyring_platform {
             Error::Occupied => Failure::Occupied,
             Error::Denied => Failure::Denied,
             Error::Corrupt => Failure::Corrupt,
-            Error::Unavailable => Failure::Unavailable,
+            Error::Unavailable | Error::Changed => Failure::Unavailable,
             Error::Busy => Failure::Busy,
         }
     }
@@ -181,6 +181,9 @@ mod keyring_platform {
         }
         fn delete(&self, service: &str, account: &str) -> Result<(), Failure> {
             credentials::delete(service, account).map_err(error)
+        }
+        fn copy(&self, previous: &str, service: &str, account: &str) -> Result<(), Failure> {
+            credentials::copy(previous, service, account).map_err(error)
         }
     }
 }

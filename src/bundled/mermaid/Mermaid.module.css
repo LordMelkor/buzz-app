@@ -1,0 +1,44 @@
+/* Pele lays the diagram out for its container's width, so the container must
+   not shrink to the diagram: claim the full width a fitted message allows.
+   Pele reads its palette from these variables, so theme changes need no redraw. */
+.diagram {
+  width: 100vw;
+  max-width: 100%;
+  padding: var(--space-3);
+  --pele-bg: var(--surface-panel);
+  --pele-fg: var(--text-standard);
+  --pele-muted: var(--text-subtle);
+  --pele-line: var(--border-prominent);
+  --pele-surface: var(--surface-inset);
+  --pele-surface-alt: var(--surface-base);
+  --pele-border: var(--border-prominent);
+  --pele-accent: var(--border-accent);
+  --pele-critical: var(--border-danger);
+  --pele-error: var(--text-danger);
+  --pele-font: var(--font-sans);
+  --pele-font-mono: var(--font-mono);
+}
+.diagram > svg {
+  display: block;
+  margin-inline: auto;
+}
+/* Pele's error snippet aligns a caret under the source, so keep it monospaced. */
+.error,
+.source {
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: var(--text-mono--line-height);
+  letter-spacing: var(--text-mono--letter-spacing);
+  font-weight: var(--text-mono--font-weight);
+}
+.error {
+  padding-bottom: 0;
+  color: var(--text-danger);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.source {
+  overflow-x: auto;
+  white-space: pre;
+}

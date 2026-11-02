@@ -14,10 +14,12 @@ const page: OpenTarget = {
   pageId: "board",
 };
 const cleanups: (() => void)[] = [];
-function setup(capacity = 100) {
+function setup(capacity = 100, presenter = true) {
   const history = createMemoryHistory(homeTarget, capacity);
   const host = createNavigationController(history);
   cleanups.push(host.dispose);
+  // The deadline measures a presenter; the app's attaches on mount.
+  if (presenter) cleanups.push(host.attach());
   return { host, navigation: host.navigation, history };
 }
 afterEach(() => {
@@ -26,6 +28,84 @@ afterEach(() => {
 });
 
 describe("navigation attempts over one history driver", () => {
+  it("dismissing an inactive visit preserves the selected attempt and its signal", () => {
+    const { navigation: nav } = setup();
+    void nav.open(settings);
+    const dismissed = nav.snapshot().entry.id;
+    void nav.open(page);
+    const attempt = nav.snapshot().attempt;
+    nav.dismiss([dismissed], homeTarget);
+    expect(nav.snapshot().attempt).toBe(attempt);
+    expect(attempt.signal.aborted).toBe(false);
+    nav.back();
+    expect(nav.snapshot().entry.target).toEqual(homeTarget);
+  });
+  it("keeps Members through passive traversal but retires an explicit dismissal", async () => {
+    const { host, navigation: nav } = setup();
+    const conversation: OpenTarget = {
+      version: 1,
+      kind: "conversation",
+      scope: {
+        viewer: "a".repeat(64),
+        communityOrigin: "https://relay.example",
+      },
+      channelId: "alpha",
+    };
+    const members: OpenTarget = { ...conversation, panel: "members" };
+    void nav.open(settings);
+    void nav.open(conversation);
+    const channel = nav.snapshot().entry;
+    // Opening is a visit: Back closes Members on the same channel.
+    const opened = nav.open(members, { replace: false });
+    expect(nav.snapshot().entry.target).toEqual(members);
+    expect(nav.snapshot().entry.id).not.toBe(channel.id);
+    const membersId = nav.snapshot().entry.id;
+    expect(nav.snapshot().canGoForward).toBe(false);
+    host.complete(nav.snapshot().attempt, { status: "opened" });
+    await expect(opened).resolves.toEqual({ status: "opened" });
+    nav.back();
+    expect(nav.snapshot().entry).toEqual(channel);
+    expect(nav.snapshot().canGoForward).toBe(true);
+    nav.forward();
+    expect(nav.snapshot().entry.target).toEqual(members);
+    // X removes the return path without adding a closed-dialog visit.
+    nav.dismiss([membersId], conversation);
+    expect(nav.snapshot().entry).toEqual(channel);
+    expect(nav.snapshot().entry.target).toEqual(conversation);
+    expect(nav.snapshot().canGoForward).toBe(false);
+    nav.back();
+    expect(nav.snapshot().entry.target).toEqual(settings);
+    nav.forward();
+    expect(nav.snapshot().entry.target).toEqual(conversation);
+    expect(nav.snapshot().canGoForward).toBe(false);
+    // Explicitly reopening remains possible, including over an exact message.
+    void nav.open({ ...members, messageId: "b".repeat(64) });
+    nav.back();
+    expect(nav.snapshot().entry.target).toEqual(conversation);
+  });
+  it.each([true, false])(
+    "keeps one channel visit beneath a Members handoff (warm: %s)",
+    (warm) => {
+      const { navigation: nav } = setup();
+      const conversation: OpenTarget = {
+        version: 1,
+        kind: "conversation",
+        scope: {
+          viewer: "a".repeat(64),
+          communityOrigin: "https://relay.example",
+        },
+        channelId: "alpha",
+      };
+      if (warm) void nav.open(conversation);
+      void nav.open({ ...conversation, panel: "members" });
+      void nav.open({ ...conversation, channelId: "dm" });
+      nav.back();
+      expect(nav.snapshot().entry.target).toEqual(conversation);
+      nav.back();
+      expect(nav.snapshot().entry.target).toEqual(homeTarget);
+    },
+  );
+
   it("pushes, traverses without a push, preserves forward on retry, and truncates new branches", async () => {
     const { host, navigation: nav } = setup();
     const initial = nav.snapshot().entry;
@@ -34,24 +114,62 @@ describe("navigation attempts over one history driver", () => {
     host.complete(nav.snapshot().attempt, { status: "opened" });
     await expect(first).resolves.toEqual({ status: "opened" });
     void nav.open(page);
+    expect(nav.snapshot().attempt.traversal).toBeUndefined();
     nav.back();
     expect(nav.snapshot().entry).toBe(settingsEntry);
     expect(nav.snapshot().canGoForward).toBe(true);
+    // Traversal returns to a visit; retry and a same-target open open it again.
+    expect(nav.snapshot().attempt.traversal).toBe(true);
     const retry = nav.retry();
     expect(nav.snapshot().entry).toBe(settingsEntry);
     expect(nav.snapshot().canGoForward).toBe(true);
+    expect(nav.snapshot().attempt.traversal).toBeUndefined();
     const same = nav.open(settings);
     await expect(retry).resolves.toEqual({ status: "superseded" });
     expect(nav.snapshot().entry).toBe(settingsEntry);
     expect(nav.snapshot().canGoForward).toBe(true);
+    expect(nav.snapshot().attempt.traversal).toBeUndefined();
     nav.forward();
     await expect(same).resolves.toEqual({ status: "superseded" });
     expect(nav.snapshot().entry.target).toEqual(page);
+    expect(nav.snapshot().attempt.traversal).toBe(true);
     nav.back();
     nav.back();
     expect(nav.snapshot().entry).toBe(initial);
     void nav.open({ version: 1, kind: "settings", section: "plugins" });
     expect(nav.snapshot().canGoForward).toBe(false);
+  });
+  it("dismisses a modal visit back to its opener, or replaces it, without adding a visit", () => {
+    const { navigation: nav } = setup();
+    void nav.open(page);
+    const opener = nav.snapshot().entry;
+    void nav.open(settings);
+    void nav.open(page, { dismiss: true });
+    expect(nav.snapshot().entry).toBe(opener);
+    expect(nav.snapshot().canGoForward).toBe(true);
+    nav.forward();
+    const other: OpenTarget = { ...page, pageId: "other" };
+    void nav.open(other, { dismiss: true });
+    expect(nav.snapshot().entry.target).toEqual(other);
+    expect(nav.snapshot().canGoForward).toBe(false);
+    nav.back();
+    expect(nav.snapshot().entry).toBe(opener);
+  });
+  it("counts a return to a visit history held as traversal, not a dismissal's new fallback", () => {
+    const { navigation: nav } = setup();
+    void nav.open(page);
+    const opener = nav.snapshot().entry;
+    void nav.open(settings);
+    nav.dismiss([nav.snapshot().entry.id], page);
+    expect(nav.snapshot().entry).toBe(opener);
+    expect(nav.snapshot().attempt.traversal).toBe(true);
+    void nav.open(settings);
+    const dialog = nav.snapshot().entry.id;
+    // The fallback isn't the preceding visit, so it replaces the dialog anew.
+    nav.dismiss([dialog], homeTarget);
+    expect(nav.snapshot().entry.target).toEqual(homeTarget);
+    expect(nav.snapshot().entry.id).not.toBe(dialog);
+    expect(nav.snapshot().attempt.traversal).toBeUndefined();
   });
   it("rejects late acknowledgments and aborts obsolete work even after successful reveal", async () => {
     const { host, navigation: nav } = setup();
@@ -104,6 +222,23 @@ describe("navigation attempts over one history driver", () => {
     expect(attempt.signal.reason).toBe(NAVIGATION_ABORTED);
     await expect(cancelled).resolves.toEqual({ status: "cancelled" });
     expect(nav.snapshot().entry.target).toEqual(settings);
+  });
+  it("keeps a failure presented in place authoritative until its visit is left", async () => {
+    const { host, navigation: nav } = setup();
+    const opened = nav.open(settings);
+    const attempt = nav.snapshot().attempt;
+    host.complete(attempt, {
+      status: "failed",
+      reason: "unavailable",
+      presented: true,
+    });
+    await expect(opened).resolves.toMatchObject({ status: "failed" });
+    expect(nav.snapshot()).toMatchObject({ status: "failed", presented: true });
+    expect(attempt.signal.aborted).toBe(false);
+    expect(host.complete(attempt, { status: "opened" })).toBe(false);
+    void nav.open(page);
+    expect(attempt.signal.reason).toBe(NAVIGATION_ABORTED);
+    expect(nav.snapshot().presented).toBeUndefined();
   });
   it("rejects invalid targets before cancelling or moving the current intent", async () => {
     const { navigation: nav } = setup();
@@ -178,6 +313,7 @@ describe("navigation attempts over one history driver", () => {
     history.back();
     expect(nav.snapshot().entry.target).toEqual(settings);
     expect(nav.snapshot().canGoBack).toBe(false);
+    expect(nav.snapshot().attempt.traversal).toBe(true);
     history.back();
     expect(nav.snapshot().entry.target).toEqual(settings);
     history.forward();
@@ -197,6 +333,42 @@ describe("navigation attempts over one history driver", () => {
     nav.forward();
     expect(listener).not.toHaveBeenCalled();
     expect(host.complete(attempt, { status: "opened" })).toBe(false);
+  });
+});
+
+it("runs the attempt deadline only while a presenter is attached", async () => {
+  vi.useFakeTimers();
+  const { host, navigation: nav } = setup(100, false);
+  // The startup visit exists before any presenter; its deadline is not running.
+  const { attempt } = nav.snapshot();
+  expect(nav.snapshot()).toMatchObject({ status: "opening", attempt });
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(nav.snapshot()).toMatchObject({ status: "opening", attempt });
+  // The deadline starts when a presenter attaches and stops when the last leaves.
+  const first = host.attach();
+  await vi.advanceTimersByTimeAsync(14_999);
+  const second = host.attach();
+  first();
+  await vi.advanceTimersByTimeAsync(1);
+  // One presenter remains, so the running deadline stands.
+  expect(nav.snapshot()).toMatchObject({
+    status: "failed",
+    reason: "timeout",
+    attempt,
+  });
+  const pending = nav.retry();
+  await vi.advanceTimersByTimeAsync(14_999);
+  second();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(nav.snapshot().status).toBe("opening");
+  // A presenter attaching later is measured from its own start.
+  cleanups.push(host.attach());
+  await vi.advanceTimersByTimeAsync(14_999);
+  expect(nav.snapshot().status).toBe("opening");
+  await vi.advanceTimersByTimeAsync(1);
+  await expect(pending).resolves.toEqual({
+    status: "failed",
+    reason: "timeout",
   });
 });
 
@@ -256,4 +428,125 @@ it("resolution observers may introduce real competing intent without capturing t
   await expect(first).resolves.toEqual({ status: "superseded" });
   await expect(next).resolves.toEqual({ status: "opened" });
   off();
+});
+
+it("guards driver traversal before aborting the current presentation", () => {
+  const { host, navigation: nav } = setup();
+  void nav.open(page);
+  void nav.open(settings);
+  const original = nav.snapshot().attempt;
+  let decide: ((proceed: boolean) => void) | undefined;
+  host.guardDeparture((_next, decision) => {
+    decide = decision;
+    return true;
+  });
+  nav.back();
+  expect(nav.snapshot().attempt).toBe(original);
+  expect(original.signal.aborted).toBe(false);
+  decide?.(false);
+  expect(nav.snapshot().entry.target).toEqual(settings);
+  nav.back();
+  decide?.(true);
+  expect(nav.snapshot().entry.target).toEqual(page);
+  expect(original.signal.aborted).toBe(true);
+  nav.forward();
+  expect(nav.snapshot().entry.target).toEqual(page);
+  decide?.(true);
+  expect(nav.snapshot().entry.target).toEqual(settings);
+});
+
+it("settles guarded open callers only after the user's decision and destination completion", async () => {
+  const { host, navigation: nav } = setup();
+  void nav.open(settings);
+  host.complete(nav.snapshot().attempt, { status: "opened" });
+  let decide: ((proceed: boolean) => void) | undefined;
+  host.guardDeparture((_next, decision) => {
+    decide = decision;
+    return true;
+  });
+  const retained = nav.snapshot().retainedVisits;
+  const cancelled = nav.open(page);
+  decide?.(false);
+  expect(await cancelled).toEqual({ status: "cancelled" });
+  expect(nav.snapshot().retainedVisits).toEqual(retained);
+  expect(nav.snapshot().canGoForward).toBe(false);
+  const opened = nav.open(page);
+  decide?.(true);
+  host.complete(nav.snapshot().attempt, { status: "opened" });
+  expect(await opened).toEqual({ status: "opened" });
+});
+
+it("continues Discard to the preceding eligible visit if its destination was dismissed", () => {
+  const { host, navigation: nav } = setup();
+  void nav.open(page);
+  const closed = nav.snapshot().entry.id;
+  void nav.open(settings);
+  const original = nav.snapshot().attempt;
+  let decide: ((proceed: boolean) => void) | undefined;
+  const guard = vi.fn((_next, decision) => {
+    decide = decision;
+    return true;
+  });
+  host.guardDeparture(guard);
+  nav.back();
+  nav.dismiss([closed], homeTarget);
+  decide?.(true);
+  expect(nav.snapshot().entry.target).toEqual(homeTarget);
+  expect(original.signal.aborted).toBe(true);
+  expect(guard).toHaveBeenCalledTimes(1);
+});
+
+describe("reopening a visit refused for missing sign-in", () => {
+  function signIn() {
+    let reopen: (() => void) | undefined;
+    const cancel = vi.fn();
+    const reauthorize = vi.fn((next: () => void) => {
+      reopen = next;
+      return cancel;
+    });
+    return { reauthorize, cancel, signedIn: () => reopen?.() };
+  }
+  it("reopens the failed visit once after sign-in", async () => {
+    const { host, navigation: nav } = setup();
+    const opened = nav.open(page);
+    const failed = nav.snapshot().attempt;
+    const auth = signIn();
+    host.complete(failed, {
+      status: "failed",
+      reason: "unavailable",
+      reauthorize: auth.reauthorize,
+    });
+    await opened;
+    expect(auth.reauthorize).toHaveBeenCalledOnce();
+    const entry = nav.snapshot().entry;
+    auth.signedIn();
+    expect(nav.snapshot().entry).toBe(entry);
+    expect(nav.snapshot().attempt).not.toBe(failed);
+    expect(nav.snapshot().entry.target).toEqual(page);
+  });
+  it("does not reopen a failure that was not a sign-in refusal", async () => {
+    const { host, navigation: nav } = setup();
+    const opened = nav.open(page);
+    const failed = nav.snapshot().attempt;
+    host.complete(failed, { status: "failed", reason: "unavailable" });
+    await opened;
+    expect(nav.snapshot().attempt).toBe(failed);
+  });
+  it("cancels the reopen when the user navigates elsewhere before sign-in", async () => {
+    const { host, navigation: nav } = setup();
+    const opened = nav.open(page);
+    const auth = signIn();
+    host.complete(nav.snapshot().attempt, {
+      status: "failed",
+      reason: "unavailable",
+      reauthorize: auth.reauthorize,
+    });
+    await opened;
+    void nav.open(settings);
+    expect(auth.cancel).toHaveBeenCalledOnce();
+    const elsewhere = nav.snapshot().attempt;
+    auth.signedIn();
+    expect(nav.snapshot().attempt).toBe(elsewhere);
+    expect(nav.snapshot().entry.target).toEqual(settings);
+  });
 });

@@ -1,7 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { RelaySession } from "../../features/relay/session";
 import type { ChannelList } from "../../features/relay/contracts";
-import { readView, writeView } from "../../shared/view-state";
+import {
+  readView,
+  subscribeView,
+  viewRevision,
+  writeView,
+} from "../../shared/view-state";
 
 type MessageHead = Readonly<{ id: string; createdAt: number }>;
 type HiddenDm = {
@@ -12,19 +24,6 @@ type HiddenDm = {
   knownIds?: readonly string[];
 };
 const key = "hidden-dms";
-
-function pause(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) return resolve();
-    const done = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", done);
-      resolve();
-    };
-    const timer = setTimeout(done, ms);
-    signal.addEventListener("abort", done, { once: true });
-  });
-}
 
 function restore(scope: string): HiddenDm[] {
   const saved = readView<unknown>(scope, key, []);
@@ -53,6 +52,27 @@ function restore(scope: string): HiddenDm[] {
       },
     ];
   });
+}
+
+/** The DMs this scope's sidebar has hidden, as it last saved them. The
+ * sidebar's own hook drops an entry when a newer message or an open restores
+ * the row, and this follows that saved state while mounted. */
+export function useSavedHiddenDmIds(scope: string | undefined) {
+  const subscribe = useCallback(
+    (notify: () => void) => (scope ? subscribeView(scope, notify) : () => {}),
+    [scope],
+  );
+  const revision = useSyncExternalStore(subscribe, () =>
+    scope ? viewRevision(scope, key) : undefined,
+  );
+  return useMemo<ReadonlySet<string>>(
+    () =>
+      // The revision is the saved value restore() reads; it keys the memo.
+      revision !== undefined && scope
+        ? new Set(restore(scope).map((entry) => entry.id))
+        : new Set(),
+    [revision, scope],
+  );
 }
 
 /** Local, viewer-scoped sidebar intent; verified message evidence restores a row. */
@@ -176,57 +196,47 @@ export function useHiddenDms(
         const entry = current.current.find((item) => item.id === id);
         if (!entry) continue;
         if (!dmIds.has(id)) continue;
-        for (
-          let attempt = 0;
-          attempt < 3 && !controller.signal.aborted;
-          attempt++
-        ) {
-          try {
-            // Save a deeper initial window so deleting a recent head does not
-            // make older pre-hide history look like a new message.
-            const events = await session.read(
-              [
-                {
-                  kinds: [9, 40002, 40008],
-                  "#h": [id],
-                  limit: entry.knownIds ? 50 : 100,
-                },
-              ],
+        // `session.read` owns the quiet transient retry for this finite read.
+        try {
+          // Save a deeper initial window so deleting a recent head does not
+          // make older pre-hide history look like a new message.
+          const events = await session.read(
+            [
               {
-                signal: controller.signal,
-                priority: "background",
+                kinds: [9, 40002, 40008],
+                "#h": [id],
+                limit: entry.knownIds ? 50 : 100,
               },
+            ],
+            {
+              signal: controller.signal,
+              priority: "background",
+            },
+          );
+          if (!current.current.includes(entry)) continue;
+          const latest = session.unread.snapshot({
+            kind: "channel",
+            channelId: id,
+          }).latestMessage;
+          const ids = events.map((event) => event.id);
+          const changed =
+            entry.knownIds &&
+            ids.some((eventId) => !entry.knownIds?.includes(eventId));
+          if (changed) show([id]);
+          else if (entry.baseline === undefined || !entry.knownIds)
+            update(
+              current.current.map((item) =>
+                item === entry
+                  ? {
+                      ...item,
+                      baseline: latest ?? null,
+                      knownIds: ids,
+                    }
+                  : item,
+              ),
             );
-            if (current.current.includes(entry)) {
-              const latest = session.unread.snapshot({
-                kind: "channel",
-                channelId: id,
-              }).latestMessage;
-              const ids = events.map((event) => event.id);
-              const changed =
-                entry.knownIds &&
-                ids.some((eventId) => !entry.knownIds?.includes(eventId));
-              if (changed) {
-                show([id]);
-                break;
-              }
-              if (entry.baseline === undefined || !entry.knownIds)
-                update(
-                  current.current.map((item) =>
-                    item === entry
-                      ? {
-                          ...item,
-                          baseline: latest ?? null,
-                          knownIds: ids,
-                        }
-                      : item,
-                  ),
-                );
-            }
-            break;
-          } catch {
-            if (attempt < 2) await pause(500 * 2 ** attempt, controller.signal);
-          }
+        } catch {
+          // Keep the hidden entry; the next roster or hide change rechecks it.
         }
       }
     })();

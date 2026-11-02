@@ -1,10 +1,18 @@
 // Prompts in the harness's format (buzz-acp), so a Claude agent here reads the
 // same sections and follows the same base prompt as a harness agent.
 import { npubEncode } from "nostr-tools/nip19";
-import { BUZZ_PROMPT, TOP_LEVEL_PROMPT } from "../../buzz-mcp/prompt";
+import {
+  BUZZ_PROMPT,
+  TOP_LEVEL_PROMPT,
+  CHANNEL_LEVEL_PROMPT,
+} from "../../buzz-mcp/prompt";
 import type { EventData } from "../../features/relay/events";
 import { BASE_PROMPT } from "../../features/agent-harness/base-prompt";
 import { coreMemorySection } from "../../features/agent-harness/core-memory";
+import {
+  type ConversationWake,
+  wakeSection,
+} from "../../features/agent-harness/plugin-wake";
 import channelModel from "./session_model_channel.md?raw";
 import threadModel from "./session_model_thread.md?raw";
 
@@ -22,6 +30,8 @@ export function systemPrompt(
     /** Who the agent is, so it can name itself and the session viewer can too. */
     agent?: Readonly<{ name: string; pubkey: string }>;
     instructions?: string;
+    /** Device-local repository location, supplied by the owning runtime. */
+    repositories?: string;
     /** A section for each team the agent is on, from the host. */
     team?: string;
     /** The agent's `core` memory; `null` when it has none yet. */
@@ -39,6 +49,7 @@ export function systemPrompt(
       : "",
     section("base", base.map((part) => part.trim()).join("\n\n")),
     section("workspace", `Current working directory: ${input.cwd}`),
+    input.repositories ?? "",
     input.instructions?.trim()
       ? section("agent-instructions", input.instructions)
       : "",
@@ -55,17 +66,20 @@ export type Channel = Readonly<{
   dm?: boolean;
 }>;
 export type TurnInput = Readonly<{
-  /** The agent's pubkey, which finds its sessions among others' in a shared
-   * workspace. */
+  /** The agent's membership key, which finds its sessions among others' in a
+   * shared workspace. */
   agent: string;
   event: EventData;
   channel: Channel;
   scope: Scope;
-  /** An owner's Me chat: one channel conversation, posted at its top level. */
+  /** One channel conversation, with a channel-level posting default. */
   topLevel?: boolean;
+  /** Channel delivery permits explicit replies; Solo chats do not. */
+  channelLevel?: boolean;
   /** The thread the event belongs to, absent for a top-level message. */
   thread?: Readonly<{ rootId: string; parentId: string }>;
-  /** Earlier messages of the conversation the session has not been shown. */
+  /** Messages of the conversation the session has not been shown: earlier
+   * ones, and for a resumed turn also those after it. */
   context: readonly EventData[];
   /** Messages the conversation has in all, for `total=`. */
   total: number;
@@ -73,6 +87,10 @@ export type TurnInput = Readonly<{
   label: string;
   /** A display name for a pubkey, if known. */
   name(pubkey: string): string | undefined;
+  /** The chat's workspace Canvas section, for a Solo chat with one. */
+  project?: string;
+  /** A plugin's wake, whose turn has its section in place of the event's. */
+  wake?: ConversationWake;
 }>;
 
 const time = (seconds: number) => new Date(seconds * 1000).toISOString();
@@ -92,7 +110,7 @@ export function turnPrompt(input: TurnInput) {
   const root = thread?.rootId ?? event.id;
   const shared = channel.dm || input.scope === "channel";
   const reply = input.topLevel
-    ? `IMPORTANT: ${TOP_LEVEL_PROMPT}`
+    ? `IMPORTANT: ${input.channelLevel ? CHANNEL_LEVEL_PROMPT : TOP_LEVEL_PROMPT}`
     : shared
       ? `IMPORTANT: For ordinary replies in this turn, pass \`reply: "${root}"\` to \`send\` so the conversation stays threaded. Do NOT reply into any other (older) thread. If the human explicitly asks for a channel-root, top-level, or broadcast post, leave out \`reply\`.`
       : thread
@@ -140,6 +158,7 @@ export function turnPrompt(input: TurnInput) {
       [...lines, `Agent: ${input.agent}`, hint, reply].join("\n"),
     ),
   ];
+  if (input.project) parts.push(input.project);
   if (context.length)
     parts.push(
       section(
@@ -156,7 +175,9 @@ export function turnPrompt(input: TurnInput) {
       ),
     );
   parts.push(
-    section("buzz-event", eventBlock(input), ` type="${input.label}"`),
+    input.wake
+      ? wakeSection(input.wake)
+      : section("buzz-event", eventBlock(input), ` type="${input.label}"`),
   );
   return parts.join("\n\n");
 }

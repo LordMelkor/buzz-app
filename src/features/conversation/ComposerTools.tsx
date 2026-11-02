@@ -73,6 +73,8 @@ function OwnedTool({
         | "insertText"
         | "insertMention"
         | "insertMentions"
+        | "replaceRecipients"
+        | "replaceRecipientsIfEmpty"
         | "insertResource"
         | "focus"
         | "capture"
@@ -105,6 +107,12 @@ function OwnedTool({
         active() ? current.current.insertMention(recipient) : false,
       insertMentions: (recipients) =>
         active() ? current.current.insertMentions(recipients) : false,
+      replaceRecipients: (recipients) =>
+        active() ? current.current.replaceRecipients(recipients) : false,
+      replaceRecipientsIfEmpty: (recipients) =>
+        active()
+          ? (current.current.replaceRecipientsIfEmpty?.(recipients) ?? false)
+          : false,
       insertResource: (resource) =>
         active()
           ? current.current.insertResource(resource)
@@ -120,5 +128,15 @@ function OwnedTool({
   }, [tool, registry]);
   const opener = useTargetOpener(registry, tool);
   const Tool = tool.component;
-  return commands ? <Tool {...props} {...commands} {...opener} /> : null;
+  // A host that cannot attach withholds capture, so capture tools hide.
+  if (!commands) return null;
+  const { capture, ...rest } = commands;
+  return (
+    <Tool
+      {...props}
+      {...rest}
+      {...(props.capture && capture ? { capture } : {})}
+      {...opener}
+    />
+  );
 }

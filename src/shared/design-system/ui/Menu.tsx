@@ -2,12 +2,90 @@ import { ContextMenu as BaseContextMenu } from "@base-ui/react/context-menu";
 import { Menu as BaseMenu } from "@base-ui/react/menu";
 import { CheckIcon, CaretRightIcon } from "../icons/index";
 import { useFinalFocusUnlessMoved } from "./finalFocus";
-import type { ComponentProps, ReactNode } from "react";
+import { hoverOpenTiming, type HoverOpen } from "./hoverIntent";
+import {
+  createContext,
+  useContext,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 
-export const MenuRoot = BaseMenu.Root;
-export const MenuTrigger = BaseMenu.Trigger;
-export const ContextMenuRoot = BaseContextMenu.Root;
-export const ContextMenuTrigger = BaseContextMenu.Trigger;
+// null is an ordinary menu; a boolean is a context menu's visible lifetime.
+const ContextMenuPresence = createContext<boolean | null>(null);
+
+export function MenuRoot<Payload>(props: BaseMenu.Root.Props<Payload>) {
+  return (
+    <ContextMenuPresence value={null}>
+      <BaseMenu.Root {...props} />
+    </ContextMenuPresence>
+  );
+}
+
+type MenuTriggerProps<Payload> = Omit<
+  BaseMenu.Trigger.Props<Payload>,
+  "openOnHover" | "delay" | "closeDelay"
+> & {
+  /** Opening on hover takes its timing from a DESIGN.md "Hover timing" bucket. */
+  openOnHover?: HoverOpen | false | undefined;
+};
+
+export function MenuTrigger<Payload>({
+  openOnHover,
+  ...props
+}: MenuTriggerProps<Payload>) {
+  return (
+    <BaseMenu.Trigger
+      {...props}
+      {...(openOnHover && {
+        openOnHover: true,
+        ...hoverOpenTiming[openOnHover],
+      })}
+    />
+  );
+}
+
+export function ContextMenuRoot({
+  open,
+  defaultOpen,
+  onOpenChange,
+  onOpenChangeComplete,
+  ...props
+}: ComponentProps<typeof BaseContextMenu.Root>) {
+  const [present, setPresent] = useState(open ?? defaultOpen ?? false);
+  // Controlled opens can come from the keyboard without a trigger event.
+  if (open && !present) setPresent(true);
+  return (
+    <ContextMenuPresence value={present}>
+      <BaseContextMenu.Root
+        {...props}
+        open={open}
+        defaultOpen={defaultOpen}
+        onOpenChange={(next, details) => {
+          onOpenChange?.(next, details);
+          if (next && open === undefined && !details.isCanceled)
+            setPresent(true);
+        }}
+        onOpenChangeComplete={(next) => {
+          if (!next) setPresent(false);
+          onOpenChangeComplete?.(next);
+        }}
+      />
+    </ContextMenuPresence>
+  );
+}
+
+export function ContextMenuTrigger(
+  props: ComponentProps<typeof BaseContextMenu.Trigger>,
+) {
+  const present = useContext(ContextMenuPresence);
+  return (
+    <BaseContextMenu.Trigger
+      {...props}
+      data-context-menu-present={present || undefined}
+    />
+  );
+}
 export const MenuGroup = BaseMenu.Group;
 export const MenuRadioGroup = BaseMenu.RadioGroup;
 
@@ -46,6 +124,7 @@ function PositionedPopup({
   ...props
 }: PopupProps) {
   const focus = useFinalFocusUnlessMoved(finalFocus, ref);
+  const contextMenu = useContext(ContextMenuPresence) !== null;
   return (
     <BaseMenu.Portal>
       <BaseMenu.Positioner
@@ -65,6 +144,7 @@ function PositionedPopup({
           finalFocus={focus.finalFocus}
           data-buzz-ui=""
           data-size={size}
+          data-context-menu={contextMenu || undefined}
           className="buzz-menu-popup text-body-sm"
         >
           {children}
@@ -79,8 +159,14 @@ export function MenuPopup(props: PopupProps) {
   return <PositionedPopup {...props} />;
 }
 
-export function MenuSubmenu({ children }: { children: ReactNode }) {
-  return <BaseMenu.SubmenuRoot>{children}</BaseMenu.SubmenuRoot>;
+export function MenuSubmenu(
+  props: ComponentProps<typeof BaseMenu.SubmenuRoot>,
+) {
+  return (
+    <ContextMenuPresence value={null}>
+      <BaseMenu.SubmenuRoot {...props} />
+    </ContextMenuPresence>
+  );
 }
 
 export function MenuSubmenuPopup(props: PopupProps) {

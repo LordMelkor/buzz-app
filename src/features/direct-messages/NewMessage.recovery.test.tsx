@@ -1,3 +1,4 @@
+import type { ConversationHostServices } from "../conversation/ConversationHost";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import type { ComposerInputElement } from "../messages/composer-dom";
@@ -7,14 +8,23 @@ import { afterEach, assert, beforeEach, expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useChannelList } from "../relay/react";
 import { createRelaySession } from "../relay/session";
-import { keypair, profile, roster, signed } from "../relay/testing";
+import {
+  keypair,
+  profile,
+  roster,
+  signed,
+  message,
+  bounds,
+} from "../relay/testing";
 import {
   PublishRejected,
   type OutboxStorage,
@@ -30,6 +40,7 @@ import type {
 import { MentionPicker } from "../../bundled/mentions/MentionPicker";
 import { MentionCompletion } from "../../bundled/mentions/MentionCompletion";
 import { mentionQuery } from "../../bundled/mentions/mention-query";
+import { attachmentDraft } from "../messages/attachment-draft";
 import { NewMessage } from "./NewMessage";
 import { OutboxStatus } from "../../bundled/channels/OutboxStatus";
 import { createRelayProfiler } from "../relay/profiling";
@@ -43,14 +54,38 @@ const viewer = keypair(),
   relay = keypair();
 const channel = "11111111-1111-4111-8111-111111111111";
 
+const emptyPanels: never[] = [];
 const scope = `https://relay.example:${viewer.pubkey}`;
 const owners: ReturnType<typeof createRelaySession>[] = [];
 beforeEach(() => {
   localStorage.clear();
+  vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockImplementation(
+    function (this: HTMLElement) {
+      return this.parentElement;
+    },
+  );
   vi.stubGlobal(
     "ResizeObserver",
     class {
-      observe() {}
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        // Supply row and viewport sizes; real scrolling is covered in browsers.
+        queueMicrotask(() =>
+          this.callback(
+            [
+              {
+                target,
+                contentRect: {
+                  width: 400,
+                  height: target.getAttribute("role") === "listbox" ? 400 : 40,
+                },
+              } as ResizeObserverEntry,
+            ],
+            this as unknown as ResizeObserver,
+          ),
+        );
+      }
+      unobserve() {}
       disconnect() {}
     },
   );
@@ -98,8 +133,13 @@ function setup(
     }),
     roster(relay, channel, [viewer.pubkey, other.pubkey]),
   ];
-  const query = async (filters: readonly ReadFilter[]) =>
-    events.filter((event) =>
+  const query = vi.fn(async (filters: readonly ReadFilter[]) => {
+    if (filters.some((filter) => filter.kinds?.includes(9)))
+      return [
+        ...events.filter((event) => event.kind === 9),
+        bounds(relay, channel, "head", { has_more: false, next_cursor: null }),
+      ];
+    return events.filter((event) =>
       filters.some(
         (filter) =>
           (!filter.kinds || filter.kinds.includes(event.kind)) &&
@@ -114,16 +154,21 @@ function setup(
             )),
       ),
     );
+  });
+  let rosterTime = 1_700_000_000;
   const openDirectMessage = vi.fn(async (pubkeys: readonly string[]) => {
-    events[events.length - 1] = roster(relay, channel, [
-      viewer.pubkey,
-      ...pubkeys,
-    ]);
+    events[events.length - 1] = roster(
+      relay,
+      channel,
+      [viewer.pubkey, ...pubkeys],
+      ++rosterTime,
+    );
     return channel;
   });
   const create = () => {
     const owner = createRelaySession(
       {
+        scope: "https://relay.example",
         viewer: viewer.pubkey,
         relayAuthor: relay.pubkey,
         media: () => undefined,
@@ -141,19 +186,46 @@ function setup(
     return owner;
   };
   const onStarted = vi.fn();
+  function Draft({
+    owner,
+    extensions,
+  }: {
+    owner: ReturnType<typeof create>;
+    extensions?: ConversationExtensions | undefined;
+  }) {
+    const { channels } = useChannelList(owner.session.channels);
+    return (
+      <NewMessage
+        session={owner.session}
+        channels={channels}
+        scope={scope}
+        host={
+          {
+            panels: {
+              snapshot: () => emptyPanels,
+              subscribe: () => () => {},
+              resolve: () => undefined,
+            },
+            relay: {
+              snapshot: () => ({
+                status: "ready",
+                session: owner.session,
+                scope,
+              }),
+            },
+            navigation: { open: vi.fn() },
+          } as unknown as ConversationHostServices
+        }
+        onOpenThread={vi.fn()}
+        onStarted={onStarted}
+        extensions={extensions}
+      />
+    );
+  }
   const mount = (
     owner: ReturnType<typeof create>,
     extensions?: ConversationExtensions,
-  ) =>
-    render(
-      <NewMessage
-        session={owner.session}
-        scope={scope}
-        onOpened={vi.fn()}
-        onStarted={onStarted}
-        extensions={extensions}
-      />,
-    );
+  ) => render(<Draft owner={owner} extensions={extensions} />);
   const user = userEvent.setup();
   const compose = async () => {
     await user.click(await screen.findByRole("option", { name: "Avery" }));
@@ -161,6 +233,8 @@ function setup(
   };
   return {
     storage,
+    query,
+    events,
     openDirectMessage,
     publish,
     create,
@@ -333,7 +407,11 @@ it("removing a failed operation in Diagnostics unlocks the preserved draft on re
   await waitFor(() => expect(outbox.snapshot()[0]?.delivery).toBe("failed"));
   page.unmount();
   const diagnostics = render(
-    <OutboxStatus outbox={outbox} profiling={createRelayProfiler()} />,
+    <OutboxStatus
+      outbox={outbox}
+      profiling={createRelayProfiler()}
+      memberAdditions={owner.session.memberAdditions}
+    />,
   );
   await t.user.click(
     screen.getByRole("button", { name: "Remove from outbox" }),
@@ -574,7 +652,7 @@ it.each(["picker", "completion"])(
     );
     expect(composer()).toHaveTextContent("@Zoe");
     expect(t.openDirectMessage).not.toHaveBeenCalled();
-    expect(owner.session.channels.list().channels).toHaveLength(0);
+    expect(t.publish).not.toHaveBeenCalled();
     // The provisional names are sufficient without warming the global profile cache.
     expect(owner.session.profiles.snapshot().size).toBe(0);
     await t.user.click(screen.getByRole("button", { name: "Remove Zoe" }));
@@ -622,7 +700,7 @@ it.each(["", "Please review these fixes"])(
     writeView(scope, "direct-message:new-draft", {
       text: caption,
       recipients: [],
-      sessionCards: [link],
+      chatCards: [link],
     });
     t.publish.mockRejectedValueOnce(new Error("Receipt lost"));
     const first = t.create();
@@ -645,7 +723,7 @@ it.each(["", "Please review these fixes"])(
     t.mount(second);
     const retry = await screen.findByRole("button", { name: "Retry send" });
     expect(
-      await screen.findByRole("region", { name: "Session attachments" }),
+      await screen.findByRole("region", { name: "Chat attachments" }),
     ).toHaveTextContent("Fix");
     expect(screen.getByRole("textbox")).toHaveValue(caption);
     await t.user.click(retry);
@@ -656,3 +734,371 @@ it.each(["", "Please review these fixes"])(
     expect(readView(scope, "direct-message:new-draft", null)).toBeNull();
   },
 );
+
+it("loads matching DM history inline and keeps the draft while recipients change", async () => {
+  const t = setup();
+  t.events.unshift(
+    message(other, channel, "Earlier conversation", 1_700_000_001),
+  );
+  const owner = t.create();
+  const view = t.mount(owner);
+  await t.user.click(await screen.findByRole("option", { name: "Avery" }));
+  await screen.findByRole("region", { name: "Channel message history" });
+  await waitFor(() =>
+    expect(
+      owner.session.channels.window(channel).rows.map((row) => row.content),
+    ).toContain("Earlier conversation"),
+  );
+  expect(
+    screen.queryByRole("button", { name: "Open conversation" }),
+  ).not.toBeInTheDocument();
+  expect(t.openDirectMessage).not.toHaveBeenCalled();
+  expect(t.publish).not.toHaveBeenCalled();
+  await t.user.type(screen.getByRole("textbox"), "Keep this draft");
+  await t.user.click(
+    screen.getByRole("combobox", { name: "Message recipients" }),
+  );
+  await t.user.click(await screen.findByRole("option", { name: "Zoe" }));
+  expect(
+    screen.queryByRole("region", { name: "Channel message history" }),
+  ).not.toBeInTheDocument();
+  expect(
+    view.container.querySelector('[data-new-message-body] [title="Zoe"]'),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("textbox")).toHaveTextContent("Keep this draft");
+  await t.user.click(screen.getByRole("button", { name: "Remove Zoe" }));
+  await screen.findByRole("region", { name: "Channel message history" });
+  await waitFor(() =>
+    expect(
+      owner.session.channels.window(channel).rows.map((row) => row.content),
+    ).toContain("Earlier conversation"),
+  );
+  expect(screen.getByRole("textbox")).toHaveTextContent("Keep this draft");
+});
+
+it.each([40003, 5])(
+  "shows and dismisses a restored failed message update (%i) in the preview",
+  async (kind) => {
+    const t = setup();
+    const original = message(
+      viewer,
+      channel,
+      "Original message",
+      1_700_000_001,
+    );
+    t.events.unshift(original);
+    const event = signed(viewer, {
+      kind,
+      tags: [
+        ["h", channel],
+        ["e", original.id],
+        ...(kind === 5 ? [["k", "9"]] : []),
+      ],
+      content: kind === 40003 ? "Recovered edit" : "",
+    });
+    t.storage.load = async () => [
+      { event, signed: event, delivery: "failed", error: "Rejected update" },
+    ];
+    const owner = t.create();
+    await owner.session.outbox?.ready();
+    t.mount(owner);
+    await t.user.click(await screen.findByRole("option", { name: "Avery" }));
+    await screen.findByRole("region", { name: "Channel message history" });
+    expect(
+      screen.getByRole("button", { name: "Retry message update" }),
+    ).toBeVisible();
+    await t.user.click(
+      screen.getByRole("button", { name: "Discard failed update" }),
+    );
+    await waitFor(() =>
+      expect(owner.session.outbox?.snapshot()).toHaveLength(0),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Retry message update" }),
+    ).not.toBeInTheDocument();
+  },
+);
+
+it.each([false, true])(
+  "preserves draft and retry focus without stealing moved focus (%s)",
+  async (moveFocus) => {
+    const t = setup();
+    t.events.unshift(
+      message(other, channel, "Recovered history", 1_700_000_001),
+    );
+    const read = t.query.getMockImplementation();
+    assert.exists(read);
+    let broken = true;
+    let pending: Promise<void> | undefined;
+    let started = false;
+    t.query.mockImplementation(async (filters) => {
+      if (filters.some((filter) => filter.kinds?.includes(9))) {
+        started = true;
+        await pending;
+      }
+      const result = await read(filters);
+      return broken && filters.some((filter) => filter.kinds?.includes(9))
+        ? result.filter((event) => event.kind === 9)
+        : result;
+    });
+    const owner = t.create();
+    t.mount(owner);
+    await t.user.click(await screen.findByRole("option", { name: "Avery" }));
+    await waitFor(() =>
+      expect(owner.session.channels.window(channel).status).toBe("error"),
+    );
+    await t.user.type(screen.getByRole("textbox"), "Keep this draft");
+    const retry = screen.getByRole("button", { name: "Retry messages" });
+    const recipients = screen.getByRole("combobox", {
+      name: "Message recipients",
+    });
+    const historyReads = () =>
+      t.query.mock.calls.filter(([filters]) =>
+        filters.some((filter) => filter.kinds?.includes(9)),
+      ).length;
+    for (const fail of [true, false]) {
+      broken = fail;
+      started = false;
+      let release = () => {};
+      pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      try {
+        act(() => retry.focus());
+        await t.user.keyboard("{Enter}");
+        await waitFor(() => expect(started).toBe(true));
+        expect(retry).toHaveFocus();
+        expect(retry).toHaveAttribute("aria-busy", "true");
+        const reads = historyReads();
+        await t.user.keyboard("{Enter}");
+        expect(historyReads()).toBe(reads);
+        if (!fail && moveFocus) {
+          await t.user.click(recipients);
+          expect(recipients).toHaveFocus();
+        }
+      } finally {
+        release();
+      }
+      await waitFor(() =>
+        expect(owner.session.channels.window(channel).status).toBe(
+          fail ? "error" : "ready",
+        ),
+      );
+      if (fail) {
+        expect(retry).toHaveFocus();
+        expect(retry).not.toHaveAttribute("aria-busy", "true");
+      }
+    }
+    expect(retry).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        moveFocus ? recipients : screen.getByRole("textbox"),
+      ).toHaveFocus(),
+    );
+    expect(
+      owner.session.channels.window(channel).rows.map((row) => row.content),
+    ).toContain("Recovered history");
+    expect(screen.getByRole("textbox")).toHaveTextContent("Keep this draft");
+    expect(t.publish).not.toHaveBeenCalled();
+  },
+);
+
+const photo = {
+  name: "photo.png",
+  url: `https://relay.example/media/${"f".repeat(64)}.png`,
+  type: "image/png",
+  size: 5,
+  sha256: "f".repeat(64),
+};
+function attachable(t: ReturnType<typeof setup>) {
+  const live = t.create();
+  const uploadForNewChat = vi.fn(async () => photo);
+  const owner = {
+    ...live,
+    session: {
+      ...live.session,
+      attachments: {
+        prepare: async (file: File) => file,
+        upload: vi.fn(),
+        uploadForNewChat,
+      },
+    },
+  };
+  const view = t.mount(owner);
+  const attach = () =>
+    t.user.upload(
+      screen.getByLabelText("Choose attachments"),
+      new File(["photo"], "photo.png", { type: "image/png" }),
+    );
+  return {
+    owner,
+    get files() {
+      return attachmentDraft(
+        owner.session,
+        `${scope}:direct-message:new-draft`,
+        channel,
+        true,
+      );
+    },
+    view,
+    uploadForNewChat,
+    attach,
+  };
+}
+
+it.each(["", "See attached"])(
+  "sends a photo with caption %j and clears files on delivery",
+  async (caption) => {
+    const t = setup();
+    const f = attachable(t);
+    await t.user.click(await screen.findByRole("option", { name: "Avery" }));
+    if (caption) await t.user.type(screen.getByRole("textbox"), caption);
+    await f.attach();
+    await waitFor(() => expect(f.files.snapshot()[0]?.status).toBe("ready"));
+    expect(t.openDirectMessage).not.toHaveBeenCalled();
+    expect(send()).toBeEnabled();
+    await t.user.click(send());
+    await waitFor(() => expect(t.onStarted).toHaveBeenCalledOnce());
+    const event = t.publish.mock.calls[0]?.[0];
+    expect(event?.content).toContain(`![photo.png](<${photo.url}>)`);
+    if (caption) expect(event?.content).toContain(caption);
+    expect(event?.tags).toContainEqual(
+      expect.arrayContaining(["imeta", `x ${photo.sha256}`]),
+    );
+    expect(f.files.snapshot()).toEqual([]);
+    f.view.unmount();
+    t.mount(f.owner);
+    await waitFor(() => expect(screen.getByRole("combobox")).toBeEnabled());
+    expect(
+      screen.queryByRole("button", { name: "Remove photo.png" }),
+    ).not.toBeInTheDocument();
+    expect(send()).toBeDisabled();
+  },
+);
+
+it("waits for uploads before opening a DM and reports failure only on the chip", async () => {
+  const t = setup();
+  const f = attachable(t);
+  let rejectUpload = (_reason: Error) => {};
+  f.uploadForNewChat.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectUpload = reject;
+      }),
+  );
+  await t.user.click(await screen.findByRole("option", { name: "Avery" }));
+  await f.attach();
+  await waitFor(() => expect(f.uploadForNewChat).toHaveBeenCalledOnce());
+  try {
+    await t.user.click(send());
+    expect(await screen.findByText("Uploading files…")).toBeVisible();
+    expect(t.openDirectMessage).not.toHaveBeenCalled();
+  } finally {
+    await act(async () =>
+      rejectUpload(new Error("Upload failed. Retry or remove this file.")),
+    );
+  }
+  expect(
+    await screen.findByRole("button", { name: "Retry photo.png" }),
+  ).toBeEnabled();
+  expect(
+    await screen.findByText(
+      "A file couldn’t upload. Retry or remove it, then send again.",
+    ),
+  ).toHaveAttribute("role", "status");
+  expect(screen.getAllByRole("alert")).toHaveLength(1);
+  expect(send()).toBeDisabled();
+  expect(t.openDirectMessage).not.toHaveBeenCalled();
+  expect(t.publish).not.toHaveBeenCalled();
+  await t.user.click(screen.getByRole("button", { name: "Retry photo.png" }));
+  await waitFor(() => expect(f.files.snapshot()[0]?.status).toBe("ready"));
+  await t.user.click(send());
+  await waitFor(() => expect(t.onStarted).toHaveBeenCalledOnce());
+});
+
+it.each(["remove", "replace", "rename", "unchanged"])(
+  "uses the visible files after a failed send: %s",
+  async (change) => {
+    const t = setup();
+    t.publish.mockRejectedValueOnce(new PublishRejected("Not sent"));
+    const f = attachable(t);
+    await t.compose();
+    await f.attach();
+    await t.user.click(send());
+    await screen.findByRole("alert");
+    expect(f.files.snapshot()).toHaveLength(1);
+    const original = t.publish.mock.calls[0]?.[0];
+    if (change !== "unchanged") {
+      await t.user.click(
+        screen.getByRole("button", { name: "Remove photo.png" }),
+      );
+      if (change === "replace") {
+        f.uploadForNewChat.mockResolvedValue({
+          ...photo,
+          sha256: "e".repeat(64),
+          url: `https://relay.example/media/${"e".repeat(64)}.png`,
+        });
+        await f.attach();
+      } else if (change === "rename") {
+        f.uploadForNewChat.mockResolvedValue({ ...photo, name: "renamed.png" });
+        await t.user.upload(
+          screen.getByLabelText("Choose attachments"),
+          new File(["photo"], "renamed.png", { type: "image/png" }),
+        );
+      }
+    }
+    await t.user.click(send());
+    await waitFor(() => expect(t.onStarted).toHaveBeenCalledOnce());
+    const retried = t.publish.mock.calls[1]?.[0];
+    if (change === "unchanged") expect(retried).toEqual(original);
+    else {
+      expect(retried?.id).not.toBe(original?.id);
+      if (change === "rename") {
+        expect(retried?.content).toContain(`![renamed.png](<${photo.url}>)`);
+        expect(retried?.tags).toContainEqual(
+          expect.arrayContaining(["imeta", "filename renamed.png"]),
+        );
+      } else expect(retried?.content).not.toContain(photo.url);
+      expect(retried?.tags.filter(([name]) => name === "imeta")).toHaveLength(
+        change === "remove" ? 0 : 1,
+      );
+    }
+  },
+);
+
+it("confirms a photo-only uncertain send after session restart without files or a replacement event", async () => {
+  const t = setup();
+  t.publish.mockRejectedValueOnce(new Error("Receipt lost"));
+  const f = attachable(t);
+  await t.user.click(await screen.findByRole("option", { name: "Avery" }));
+  await f.attach();
+  await t.user.click(send());
+  await screen.findByRole("alert");
+  const original = t.publish.mock.calls[0]?.[0];
+  f.view.unmount();
+  f.owner.dispose();
+  t.mount(t.create());
+  await t.user.click(await screen.findByRole("button", { name: "Retry send" }));
+  await waitFor(() => expect(t.onStarted).toHaveBeenCalledOnce());
+  expect(t.publish.mock.calls[1]?.[0]).toEqual(original);
+});
+
+it("drops files on the recipient header into the new DM composer", async () => {
+  const t = setup();
+  const f = attachable(t);
+  await t.user.click(await screen.findByRole("option", { name: "Avery" }));
+  const header = screen.getByRole("combobox");
+  const dataTransfer = {
+    types: ["Files"],
+    files: [new File(["photo"], "photo.png", { type: "image/png" })],
+    dropEffect: "uninitialized",
+  };
+  fireEvent.dragEnter(header, { dataTransfer });
+  const overlay = await screen.findByText("Drop files into this conversation");
+  expect(overlay.parentElement?.parentElement).toBe(
+    screen.getByRole("region", { name: "New message" }),
+  );
+  fireEvent.drop(header, { dataTransfer });
+  await waitFor(() => expect(f.files.snapshot()[0]?.status).toBe("ready"));
+  expect(t.openDirectMessage).not.toHaveBeenCalled();
+});

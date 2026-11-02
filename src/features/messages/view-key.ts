@@ -1,11 +1,9 @@
-import type { RelaySession } from "../relay/session";
-
-const sessions = new WeakMap<RelaySession, number>();
+const sessions = new WeakMap<object, number>();
 let nextSession = 0;
 
 /** Presentation lifetimes reset on retarget/reconnect; persisted intent uses stable scope alone. */
 export function messageViewKey(
-  session: RelaySession,
+  session: object,
   ...identity: (string | undefined)[]
 ) {
   let generation = sessions.get(session);

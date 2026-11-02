@@ -94,6 +94,8 @@ export function createSessions(
       }
       let pendingBytes = 0;
       let writes = Promise.resolve();
+      // Input usually produces echo; poll for it now instead of after the idle delay.
+      let wake = () => {};
       let dimensions: [number, number] | undefined;
       let resizing = false;
       entry.screen = factory(
@@ -115,8 +117,10 @@ export function createSessions(
           writes = writes
             .then(async () => {
               try {
-                if (live(entry) && permitted() && entry.status === "running")
+                if (live(entry) && permitted() && entry.status === "running") {
                   await bridge.write(token, id, data);
+                  wake();
+                }
               } finally {
                 pendingBytes -= bytes;
               }
@@ -154,10 +158,13 @@ export function createSessions(
       entry.status = "running";
       notify();
       while (live(entry) && entry.status === "running") {
+        // Armed before reading, so input written during the read still counts.
+        const woken = new Promise<void>((resolve) => {
+          wake = resolve;
+        });
         const result = await bridge.read(token, id);
         if (!live(entry)) break;
-        if (result.data.length)
-          await entry.screen.output(Uint8Array.from(result.data));
+        if (result.data.length) await entry.screen.output(result.data);
         if (!live(entry) || entry.status !== "running") break;
         if (result.exited) {
           await bridge.close(token, id);
@@ -167,9 +174,12 @@ export function createSessions(
           notify();
           break;
         }
-        await new Promise((resolve) =>
-          setTimeout(resolve, result.data.length ? 0 : 40),
-        );
+        await Promise.race([
+          woken,
+          new Promise((resolve) =>
+            setTimeout(resolve, result.data.length ? 0 : 40),
+          ),
+        ]);
       }
     } catch (error) {
       fail(entry, error);

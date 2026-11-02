@@ -49,16 +49,16 @@
 }
 .row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 1.5rem auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
-  padding-block: var(--space-3);
+  padding-block: var(--space-2);
   border-bottom: 1px solid var(--border-standard);
 }
 .row:first-child {
   padding-block-start: var(--space-2);
 }
-.row:last-child {
+.list > li:last-child > .row {
   padding-block-end: 0;
   border-bottom: 0;
 }
@@ -107,4 +107,25 @@
 .feedback p {
   flex: 1 1 16rem;
   margin: 0;
+}
+
+.children {
+  list-style: none;
+  margin: 0;
+  padding-inline-start: var(--space-5);
+}
+.disclosure {
+  display: flex;
+  align-items: center;
+  width: 1.5rem;
+}
+.label a {
+  color: var(--text-link);
+}
+
+.assigneeName {
+  max-width: 6rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

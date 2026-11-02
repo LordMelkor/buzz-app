@@ -1,13 +1,26 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { dirname, join } from "node:path";
+import { afterEach, expect, it, vi } from "vitest";
 import type { HostProcessOptions } from "../../features/host/service";
+import { manifestProcesses } from "./claude-testing";
 import manifest from "./manifest.json";
 import { claudeTurns, projectName, readTranscript } from "./transcript";
 
 const root = "c".repeat(64);
+const homes: string[] = [];
+afterEach(() => {
+  for (const home of homes.splice(0))
+    rmSync(home, { recursive: true, force: true });
+});
 const agent = "a".repeat(64);
 const conversation = {
   agent,
@@ -119,9 +132,9 @@ it("groups a session file into prompted turns with steering, tools and replies",
 
 it("shows what the agent posted as its reply once sent, and names Buzz tools as Codex does", () => {
   clock = 0;
-  const send = (id: string, text: string) =>
+  const send = (id: string, text: string, tool = "send") =>
     line("assistant", [
-      { type: "tool_use", id, name: "mcp__buzz__send", input: { text } },
+      { type: "tool_use", id, name: `mcp__buzz__${tool}`, input: { text } },
     ]);
   const result = (id: string, content: string, is_error = false) =>
     line("user", [{ type: "tool_result", tool_use_id: id, content, is_error }]);
@@ -139,6 +152,8 @@ it("shows what the agent posted as its reply once sent, and names Buzz tools as 
       result("r", "3 messages"),
       send("s1", "Looks good."),
       result("s1", "sent"),
+      send("n1", "Nested.", "reply_in_subthread"),
+      result("n1", "sent"),
       send("s2", "One more thing."),
       result("s2", "channel not found", true),
       // Not finished when the session was read, or never: it ended mid-send.
@@ -155,12 +170,42 @@ it("shows what the agent posted as its reply once sent, and names Buzz tools as 
       text: "Looks good.",
       posted: true,
     }),
+    expect.objectContaining({ type: "message", text: "Nested.", posted: true }),
     expect.not.objectContaining({ posted: true }),
     expect.objectContaining({
       type: "status",
       text: "The message above was not posted: channel not found",
     }),
     expect.not.objectContaining({ posted: true }),
+  ]);
+});
+
+it("leaves a bare send or reply_in_subthread, outside Buzz, as an ordinary tool", () => {
+  clock = 0;
+  const [turn] = claudeTurns(
+    [
+      line("user", prompt("go")),
+      ...["send", "reply_in_subthread"].flatMap((name) => [
+        line("assistant", [
+          { type: "tool_use", id: name, name, input: { text: "Hi." } },
+        ]),
+        line("user", [
+          {
+            type: "tool_result",
+            tool_use_id: name,
+            content: "ok",
+            is_error: false,
+          },
+        ]),
+      ]),
+    ].join("\n"),
+    conversation,
+    false,
+  );
+  expect(turn?.items).toEqual([
+    expect.objectContaining({ type: "prompt" }),
+    expect.objectContaining({ type: "tool" }),
+    expect.objectContaining({ type: "tool" }),
   ]);
 });
 
@@ -179,24 +224,25 @@ it("names projects as Claude Code does", () => {
   expect(projectName("/Users/me/my_repo")).toBe("-Users-me-my-repo");
 });
 
-/** `workspace` prints the resolved folder; `read` serves `files` as base64,
- * and `find` lists those in the project folder that contain its pattern. */
+/** `workspace` prints the resolved folder and `read` serves `files` as
+ * base64; the manifest's `list` and `starts` run for real on a copy of them. */
 function host(files: Record<string, string>) {
+  const home = mkdtempSync(join(tmpdir(), "claude-transcript-"));
+  homes.push(home);
+  for (const [path, content] of Object.entries(files)) {
+    const copy = join(home, ".claude/projects", path);
+    mkdirSync(dirname(copy), { recursive: true });
+    writeFileSync(copy, content);
+    // Written an hour ago, so a later listing finds it unchanged.
+    const hourAgo = new Date(Date.now() - 3_600_000);
+    utimesSync(copy, hourAgo, hourAgo);
+  }
+  const listed = manifestProcesses(home);
   const reads: HostProcessOptions[] = [];
   const spawn = vi.fn(async (id: string, options: HostProcessOptions = {}) => {
+    if (id === "list" || id === "starts") return listed(id, options);
     let code = 0;
     if (id === "workspace") options.onStdout?.("/Users/me/.buzz\n");
-    if (id === "find") {
-      const project = options.cwd?.split("/").pop();
-      const matches = Object.entries(files).flatMap(([path, content]) =>
-        path.startsWith(`./${project}/`) &&
-        content.includes(options.args?.[0] ?? "")
-          ? [`./${path.split("/").pop()}`]
-          : [],
-      );
-      if (matches.length) options.onStdout?.(`${matches.join("\n")}\n`);
-      else code = 1;
-    }
     if (id === "read") {
       reads.push(options);
       const path = options.args?.[0] ?? "";
@@ -213,7 +259,7 @@ function host(files: Record<string, string>) {
       exited: Promise.resolve(code),
     };
   });
-  return { spawn, reads };
+  return { spawn, reads, home };
 }
 
 it("reads the session file from the project of the agent's workspace", async () => {
@@ -235,7 +281,7 @@ it("reads the session file from the project of the agent's workspace", async () 
     cwd: "~/.claude/projects",
     args: ["./-Users-me--buzz/session-1.jsonl"],
   });
-  expect(read).toMatchObject({ more: false, unknownThread: 0 });
+  expect(read).toMatchObject({ more: false });
   expect(read?.turns).toHaveLength(2);
 });
 
@@ -283,6 +329,11 @@ it("merges the agent's other sessions for the thread, oldest turn first", async 
       `Session scope: channel\nChannel: dev (#channel)\nThread root: ${root}`,
       "shared",
     ),
+    // Run by hand, then shown a Buzz prompt.
+    "./-Users-me--buzz/by-hand.jsonl": [
+      line("user", "hello"),
+      session(14, `${thread}\nAgent: ${agent}`, "quoted"),
+    ].join("\n"),
   });
   const signal = new AbortController().signal;
   const read = await readTranscript(
@@ -298,11 +349,8 @@ it("merges the agent's other sessions for the thread, oldest turn first", async 
     ["session-1", expect.objectContaining({ text: "latest" })],
   ]);
   expect(spawn).toHaveBeenCalledWith(
-    "find",
-    expect.objectContaining({
-      args: [root, "."],
-      cwd: "~/.claude/projects/-Users-me--buzz",
-    }),
+    "starts",
+    expect.objectContaining({ cwd: "~/.claude/projects/-Users-me--buzz" }),
   );
   // Without a saved session, the found ones are the conversation's.
   const found = await readTranscript(
@@ -317,6 +365,147 @@ it("merges the agent's other sessions for the thread, oldest turn first", async 
     "unnamed",
     "session-1",
   ]);
+});
+
+it("keeps the sessions it could search when another file cannot be read", async () => {
+  const session = (start: number, content: string) => {
+    clock = start;
+    return [
+      line(
+        "user",
+        prompt(content).replace(
+          "Scope: thread",
+          `Session scope: thread\nChannel: dev (#channel)\nThread root: ${root}\nAgent: ${agent}`,
+        ),
+      ),
+      line("assistant", [{ type: "text", text: `re: ${content}` }]),
+    ].join("\n");
+  };
+  const { spawn, home } = host({
+    "./-Users-me--buzz/target.jsonl": session(20, "latest"),
+    "./-Users-me--buzz/older.jsonl": session(10, "first"),
+    "./-Users-me--buzz/unreadable.jsonl": session(5, "hidden"),
+    // Enough run by hand that one search names several files.
+    ...Object.fromEntries(
+      Array.from({ length: 16 }, (_, index) => [
+        `./-Users-me--buzz/by-hand-${index}.jsonl`,
+        line("user", "hello"),
+      ]),
+    ),
+  });
+  const unreadable = join(
+    home,
+    ".claude/projects/-Users-me--buzz/unreadable.jsonl",
+  );
+  chmodSync(unreadable, 0);
+  const signal = new AbortController().signal;
+  const place = { agent, channelId: "channel", root };
+  const saved = await readTranscript(
+    spawn,
+    "~/.buzz",
+    { ...place, sessionId: "target" },
+    false,
+    signal,
+  );
+  expect(saved?.turns.map((turn) => turn.sessionId)).toEqual([
+    "older",
+    "target",
+  ]);
+  expect(saved?.incomplete).toMatch(/unreadable\.jsonl/);
+  const searched = () =>
+    spawn.mock.calls
+      .filter(([id]) => id === "starts")
+      .flatMap(([, options]) => options?.args ?? []);
+  const first = searched().length;
+  // Without a saved session, the ones it searched are still found.
+  const found = await readTranscript(spawn, "~/.buzz", place, false, signal);
+  expect(found?.turns.map((turn) => turn.sessionId)).toEqual([
+    "older",
+    "target",
+  ]);
+  expect(found?.incomplete).toMatch(/unreadable\.jsonl/);
+  // The next read searched again the file it could not read, and only that.
+  expect(searched().slice(first)).toEqual(["unreadable.jsonl"]);
+  chmodSync(unreadable, 0o644);
+  const retried = await readTranscript(spawn, "~/.buzz", place, false, signal);
+  expect(retried?.turns.map((turn) => turn.sessionId)).toEqual([
+    "unreadable",
+    "older",
+    "target",
+  ]);
+  expect(retried?.incomplete).toBeUndefined();
+});
+
+it("fails, not reports no transcript, when it found none and could not search everything", async () => {
+  const { spawn, home } = host({
+    "./-Users-me--buzz/unreadable.jsonl": file(),
+  });
+  chmodSync(join(home, ".claude/projects/-Users-me--buzz/unreadable.jsonl"), 0);
+  await expect(
+    readTranscript(
+      spawn,
+      "~/.buzz",
+      { agent, channelId: "channel", root },
+      false,
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow(/unreadable\.jsonl/);
+});
+
+/** A thread session whose first prompt `host` finds cut off before its
+ * thread root, as while Claude Code is still writing it. */
+function partlyWritten() {
+  clock = 0;
+  const whole = [
+    line(
+      "user",
+      prompt("first").replace(
+        "Scope: thread",
+        `Session scope: thread\nChannel: dev (#channel)\nThread root: ${root}\nAgent: ${agent}`,
+      ),
+    ),
+    line("assistant", [{ type: "text", text: "re: first" }]),
+  ].join("\n");
+  const path = "./-Users-me--buzz/writing.jsonl";
+  const files = { [path]: whole.slice(0, whole.indexOf("Thread root")) };
+  const { spawn, home } = host(files);
+  const complete = (at: Date) => {
+    files[path] = whole;
+    const copy = join(home, ".claude/projects", path);
+    writeFileSync(copy, whole);
+    utimesSync(copy, at, at);
+  };
+  return { spawn, complete };
+}
+const thread = { agent, channelId: "channel", root };
+
+it("searches a session again once its cut-off first prompt is written", async () => {
+  const { spawn, complete } = partlyWritten();
+  const signal = new AbortController().signal;
+  await expect(
+    readTranscript(spawn, "~/.buzz", thread, false, signal),
+  ).resolves.toBeUndefined();
+  complete(new Date());
+  const read = await readTranscript(spawn, "~/.buzz", thread, false, signal);
+  expect(read?.turns.map((turn) => turn.sessionId)).toEqual(["writing"]);
+});
+
+it("searches every session again after the clock is set back", async () => {
+  const { spawn, complete } = partlyWritten();
+  const signal = new AbortController().signal;
+  await expect(
+    readTranscript(spawn, "~/.buzz", thread, false, signal),
+  ).resolves.toBeUndefined();
+  // Written before the clock's new time, so no listing of changes finds it.
+  const earlier = Date.now() - 3_600_000;
+  complete(new Date(earlier - 60_000));
+  const now = vi.spyOn(Date, "now").mockReturnValue(earlier);
+  try {
+    const read = await readTranscript(spawn, "~/.buzz", thread, false, signal);
+    expect(read?.turns.map((turn) => turn.sessionId)).toEqual(["writing"]);
+  } finally {
+    now.mockRestore();
+  }
 });
 
 it("passes this platform's base64 a session path it reads as a file", async () => {

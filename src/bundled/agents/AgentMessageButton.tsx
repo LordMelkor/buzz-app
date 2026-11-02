@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { canMessageAgent } from "../../features/agents/choices";
 import type { Navigation } from "../../features/navigation/controller";
 import type { PageNavigation } from "../../features/navigation/service";
 import { useRelayConnection } from "../../features/relay/react";
@@ -11,7 +12,9 @@ export function AgentMessageButton({
   relay,
   navigator,
   navigation,
+  variant = "subtle",
 }: {
+  variant?: "glass" | "subtle";
   pubkey: string;
   relay: RelayData;
   navigator: Navigation | undefined;
@@ -37,7 +40,7 @@ export function AgentMessageButton({
     !!connection.viewer &&
     !!connection.origin &&
     connection.viewer !== pubkey;
-  const open = async () => {
+  const open = async (refresh = false) => {
     const { viewer, origin } = connection;
     if (
       !available ||
@@ -48,14 +51,6 @@ export function AgentMessageButton({
       navigation?.signal.aborted
     )
       return;
-    if (
-      !connection.session.agentChoices
-        .snapshot()
-        .identities.some((agent) => agent.managed && agent.pubkey === pubkey)
-    ) {
-      setError("This agent is not ready to message in this community.");
-      return;
-    }
     const controller = new AbortController();
     attempt.current = controller;
     const abort = () => controller.abort();
@@ -63,13 +58,42 @@ export function AgentMessageButton({
     setOpening(true);
     setError("");
     try {
+      const session = connection.session;
+      if (refresh) await session.agentChoices.refresh();
+      controller.signal.throwIfAborted();
+      if (relay.snapshot().session !== session) return;
+      const existing = session.channels
+        .list()
+        .channels.some(
+          (channel) =>
+            channel.channelType === "dm" &&
+            !channel.archived &&
+            channel.participants?.length === 1 &&
+            channel.participants[0] === pubkey,
+        );
+      const choices = session.agentChoices.snapshot();
+      if (
+        !existing &&
+        !choices.identities.some(
+          (agent) => canMessageAgent(agent) && agent.pubkey === pubkey,
+        )
+      )
+        throw new Error(
+          choices.error ??
+            (choices.pending
+              ? "Agent details are still loading. Try again."
+              : "This agent is unavailable in this community. Refresh its details and try again."),
+        );
       const channelId = await connection.session.directMessages.open(
         [pubkey],
         controller.signal,
       );
       if (
         controller.signal.aborted ||
-        relay.snapshot().session !== connection.session
+        relay.snapshot().session !== connection.session ||
+        // An open that finishes behind the Settings modal must not navigate
+        // away from Settings, which would discard its unsaved edits.
+        navigator.snapshot().entry.target.kind === "settings"
       )
         return;
       await navigator.open({
@@ -96,7 +120,7 @@ export function AgentMessageButton({
       <Button
         size="sm"
         shape="control"
-        variant="subtle"
+        variant={variant}
         disabled={!available || opening}
         loading={opening}
         onClick={() => void open()}
@@ -105,7 +129,15 @@ export function AgentMessageButton({
       </Button>
       {error && (
         <p role="alert" className="m-0 text-body-sm text-danger">
-          {error}
+          {error}{" "}
+          <Button
+            size="inline"
+            variant="link"
+            disabled={!available || opening}
+            onClick={() => void open(true)}
+          >
+            Retry
+          </Button>
         </p>
       )}
     </>

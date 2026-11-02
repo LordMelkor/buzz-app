@@ -524,3 +524,89 @@ it("in-place channel interests preserve an outstanding presence publication", as
     owner.dispose();
   }
 });
+it("keeps the reconnect backoff growing for streams that drop right after their first frame", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const t = await connectBrokerTransport();
+  const owner = required(t.subscribe)(f.callbacks);
+  try {
+    // Every accepted stream sends its state at once, so that proves nothing.
+    for (const [index, wait] of [500, 1000, 2000].entries()) {
+      f.accept(index);
+      await tick();
+      f.publish(index);
+      await tick();
+      f.disconnect(index);
+      await tick();
+      await vi.advanceTimersByTimeAsync(wait - 1);
+      expect(f.headers).toHaveLength(index + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.headers).toHaveLength(index + 2);
+    }
+  } finally {
+    owner.dispose();
+  }
+});
+it("resets the reconnect backoff once a stream stayed up a minute", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const t = await connectBrokerTransport();
+  const owner = required(t.subscribe)(f.callbacks);
+  try {
+    // Two drops without a healthy stream: 500 ms, then 1 s.
+    f.accept(0);
+    await tick();
+    f.disconnect(0);
+    await tick();
+    await vi.advanceTimersByTimeAsync(500);
+    f.accept(1);
+    await tick();
+    f.disconnect(1);
+    await tick();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.headers).toHaveLength(3);
+    // A minute up proves the broker is back: the next drop is quick.
+    f.accept(2);
+    await tick();
+    for (let second = 0; second < 60; second += 30) {
+      f.publish(2);
+      await vi.advanceTimersByTimeAsync(30_000);
+    }
+    f.disconnect(2);
+    await tick();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(f.headers).toHaveLength(4);
+  } finally {
+    owner.dispose();
+  }
+});
+it.each([400, 401, 403, 413])(
+  "keeps a %s stream rejection visible and retries it slowly, doubling the wait",
+  async (status) => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const t = await connectBrokerTransport();
+    const owner = required(t.subscribe)(f.callbacks);
+    try {
+      for (const [index, wait] of [60_000, 120_000].entries()) {
+        required(f.headers[index]).resolve(new Response(null, { status }));
+        await tick();
+        expect(f.snapshots.at(-1)).toMatchObject({
+          status: "error",
+          error: `Live broker rejected subscription (${status})`,
+        });
+        await vi.advanceTimersByTimeAsync(wait - 1);
+        expect(f.headers).toHaveLength(index + 1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(f.headers).toHaveLength(index + 2);
+      }
+      f.accept(2);
+      await tick();
+      f.publish(2);
+      await tick();
+      expect(f.snapshots.at(-1)).toMatchObject({ status: "connected" });
+    } finally {
+      owner.dispose();
+    }
+  },
+);

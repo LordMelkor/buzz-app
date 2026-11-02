@@ -1900,7 +1900,10 @@ it("enforcement error finished while closed reaches reopened detail", async () =
   fireEvent.click(await screen.findByRole("button", { name: /spam/ }));
   await screen.findByRole("button", { name: "Cancel and reopen" });
   expect(screen.queryByText("Native enforcement detail")).toBeVisible();
-  expect(screen.queryByText("Distinct completion failure")).toBeVisible();
+  // Sonner keeps a new toast transparent until its mount effect flips data-mounted.
+  await waitFor(() =>
+    expect(screen.getByText("Distinct completion failure")).toBeVisible(),
+  );
 });
 
 it("a reopen finished while closed is announced on the reopened detail, once", async () => {
@@ -2402,7 +2405,7 @@ it("opening Settings sends one probe and shows each role its entries before any 
   ]);
   expect(sent("probe")).toHaveLength(1);
   for (const card of cards(operator, (node) => node))
-    expect(card.group).toBe("Relay admin");
+    expect(card.group).toBe("Moderation");
 
   routes.probe = () => probe();
   const moderator = createStaff(backend, () => ({ relay, signer }));

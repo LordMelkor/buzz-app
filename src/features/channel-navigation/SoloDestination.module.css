@@ -1,0 +1,77 @@
+.destination {
+  min-width: 0;
+}
+/* Ordinary Solo row paint. A card owns hover and selection paint inside it. */
+.menu {
+  position: relative;
+  isolation: isolate;
+  min-width: 0;
+  border-radius: var(--radius-row);
+}
+.menu > :first-child {
+  --interaction-row-hover: transparent;
+  --interaction-selected: transparent;
+  --interaction-pressed: transparent;
+}
+.menu::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset-block: 0;
+  inset-inline: var(--channel-row-fill-start, 0) var(--channel-row-fill-end, 0);
+  border-radius: inherit;
+  pointer-events: none;
+}
+.menu:is(
+  :hover,
+  [data-context-menu-present],
+  :has(:focus-visible),
+  :has([aria-expanded="true"][aria-haspopup="menu"])
+):not(:has([aria-current="page"]))::before {
+  background: var(--affordance-panel-hover);
+}
+.menu:has([aria-current="page"])::before {
+  background: var(--surface-sidebar-selected);
+}
+[data-navigation-card] .menu::before {
+  display: none;
+}
+
+/* Menu activity reveals the overflow menu and swaps the source's Reveal content. */
+.menu [data-solo-row-action] {
+  width: var(--session-action-size);
+  height: var(--session-action-size);
+  margin: 0;
+}
+.active {
+  opacity: 0;
+}
+@media (hover: hover) {
+  .menu [data-solo-row-action] {
+    opacity: 0;
+  }
+}
+.menu:is(
+  :hover,
+  [data-context-menu-present],
+  :has(:focus-visible),
+  :has([aria-expanded="true"][aria-haspopup="menu"])
+) {
+  .rest {
+    opacity: 0;
+  }
+  .active,
+  [data-solo-row-action] {
+    opacity: 1;
+  }
+}
+
+.summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+[data-solo-disclosure][aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}

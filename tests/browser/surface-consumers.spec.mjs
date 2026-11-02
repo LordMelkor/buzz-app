@@ -1,5 +1,4 @@
 import { test, expect } from "./fixture.mjs";
-import { openPage } from "./navigation.mjs";
 
 // Browser-only contract: actual app consumers, CSS Modules, inherited custom
 // properties, portal boundaries and pointer states. No live account mutations.
@@ -19,14 +18,6 @@ async function resolvedColor(locator, expression) {
   }, expression);
 }
 
-const meChannel = "33333333-3333-4333-8333-333333333333";
-const meSurface = test.extend({
-  channelIds: [meChannel, "beta"],
-  channelNames: { [meChannel]: "Alpha" },
-  sessionChannels: [meChannel],
-  meChannels: [meChannel],
-  historyCounts: { [meChannel]: 5, beta: 1 },
-});
 for (const mode of ["light", "dark"]) {
   test(`availability retains semantic state fills in ${mode}`, async ({
     page,
@@ -122,40 +113,4 @@ for (const mode of ["light", "dark"]) {
       );
     }
   });
-
-  meSurface(
-    `sidebar session selection stays quiet in ${mode}`,
-    async ({ page, app }) => {
-      await page.emulateMedia({ colorScheme: mode });
-      await page.goto(app.origin);
-      await openPage(page, "Me");
-      const sidebar = page.getByRole("navigation", {
-        name: "Solo conversations",
-      });
-      const alpha = { name: /^Alpha(?: |$)/ };
-      const session = sidebar.getByRole("button", alpha);
-      await session.click();
-      const row = sidebar
-        .locator("[data-session-menu-id]")
-        .filter({ has: page.getByRole("button", alpha) });
-      await page.mouse.move(1, 1);
-      const selected =
-        mode === "dark" ? "rgb(51, 51, 51)" : "rgb(232, 232, 232)";
-      await expect(session).toHaveAttribute("aria-current", "page");
-      await expect(row).toHaveCSS("background-color", selected);
-      await expect(session).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-      await session.hover();
-      await expect(row).toHaveCSS("background-color", selected);
-      await expect(session).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-      await sidebar
-        .getByRole("button", { name: "New chat", exact: true })
-        .click();
-      await expect(session).not.toHaveAttribute("aria-current", "page");
-      await session.hover();
-      await expect(row).toHaveCSS(
-        "background-color",
-        await resolvedColor(sidebar, "var(--affordance-panel-hover)"),
-      );
-    },
-  );
 }

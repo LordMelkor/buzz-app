@@ -228,8 +228,8 @@ it("real broker scoped history signs exact GET path/cursor and captured principa
     const other = await connectBrokerTransport(h.base, undefined, "secondary");
     expect(h.calls).toHaveLength(0);
     expect(first.writer.kinds).toEqual([
-      30315, 30030, 7, 9, 40003, 42000, 9000, 9001, 30078, 30175, 30178, 40100,
-      1984, 45010, 30620, 46020, 5,
+      30315, 30030, 7, 9, 40003, 42000, 9000, 9001, 30078, 30175, 30177, 30178,
+      40100, 1984, 45010, 30620, 46020, 5,
     ]);
     await first.workflows.runs(id, cursor, signal());
     await other.workflows.runs(id, undefined, signal());
@@ -396,8 +396,8 @@ it("existing backend signs only canonical workflow sign/publish with exact own e
     const t = await connectBrokerTransport(h.base);
     live = await openBrokerSocket(t);
     expect(t.writer.kinds).toEqual([
-      30315, 30030, 7, 9, 40003, 42000, 9000, 9001, 30078, 30175, 30178, 40100,
-      1984, 45010, 30620, 46020, 5,
+      30315, 30030, 7, 9, 40003, 42000, 9000, 9001, 30078, 30175, 30177, 30178,
+      40100, 1984, 45010, 30620, 46020, 5,
     ]);
     for (const input of [
       template(),

@@ -92,6 +92,30 @@ it("keeps either available source visible and makes partial failure explicit", a
   );
 });
 
+it("quietly retries a transient relay inventory failure before merging", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
+  try {
+    const identity = { pubkey: "b".repeat(64), name: "Relay" };
+    const relay = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValue({ definitions: [], identities: [identity] });
+    const pending = inventoryReader(
+      async () => ({ definitions: [], identities: [] }),
+      relay,
+    )(new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(750);
+    const result = await pending;
+    expect(relay).toHaveBeenCalledTimes(2);
+    expect(result.identities).toEqual([identity]);
+    expect(result).not.toHaveProperty("error");
+  } finally {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  }
+});
+
 it("actual session reads owner-signed relay inventory and clears/disposes it", async () => {
   const viewer = keypair();
   const query = vi.fn().mockResolvedValue([

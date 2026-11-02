@@ -50,6 +50,7 @@ function capability() {
     run: vi.fn<ChannelLifecycleCapability["run"]>(async () => {}),
     snapshot: () => ({ status: "ready", hidden: [] }),
     subscribe: () => () => {},
+    observeRemoval: () => () => {},
     refreshVisibility: async () => {},
   } satisfies ChannelLifecycleCapability;
 }
@@ -573,13 +574,13 @@ it.each(
 );
 
 it.each([
-  ["archive", "Archive channel", "prominent", "subtle", true],
+  ["archive", "Archive channel", "prominent", "subtle", false],
   ["unarchive", "Unarchive channel", "prominent", "subtle", true],
   ["hide", "Hide conversation", "prominent", "subtle", true],
-  ["leave", "Leave channel", "subtle", "prominent", false],
-  ["delete", "Delete channel", "destructive", "prominent", false],
+  ["leave", "Leave channel", "subtle", "subtle", false],
+  ["delete", "Delete channel", "destructive", "subtle", false],
 ] as const)(
-  "Enter presses the prominent default button for %s",
+  "Enter presses the focused default button for %s",
   async (action, label, confirmVariant, cancelVariant, confirms) => {
     const lifecycle = capability();
     const close = vi.fn();
@@ -615,3 +616,151 @@ it.each([
     }
   },
 );
+
+it("names Solo chats as chats in the menu and result", async () => {
+  const lifecycle = capability();
+  const choose = vi.fn();
+  render(
+    <ContextMenuRoot open>
+      <MenuPopup>
+        <ChannelLifecycleMenu
+          channelId="id"
+          lifecycle={lifecycle}
+          choose={choose}
+          disabled={false}
+          separator={false}
+          noun="chat"
+        />
+      </MenuPopup>
+    </ContextMenuRoot>,
+  );
+  expect(
+    await screen.findByRole("menuitem", { name: "Archive chat" }),
+  ).toBeDefined();
+  expect(screen.getByRole("menuitem", { name: "Delete chat" })).toBeDefined();
+  cleanup();
+  const undo = vi.fn();
+  render(
+    <ToastProvider>
+      <ChannelLifecycleDialog
+        channelId="id"
+        channelName="Planning"
+        noun="chat"
+        action="archive"
+        lifecycle={lifecycle}
+        completed={() => {}}
+        close={() => {}}
+        undo={undo}
+      />
+    </ToastProvider>,
+  );
+  // Archiving a chat skips confirmation; its result toast offers Undo.
+  expect(screen.queryByRole("dialog", { name: /^Archive chat/ })).toBeNull();
+  expect(await screen.findByText("Chat archived: Planning")).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+  expect(undo).toHaveBeenCalledOnce();
+  cleanup();
+  render(
+    <ToastProvider>
+      <ChannelLifecycleDialog
+        channelId="id"
+        channelName="Planning"
+        noun="chat"
+        action="unarchive"
+        confirmed
+        lifecycle={lifecycle}
+        completed={() => {}}
+        close={() => {}}
+      />
+    </ToastProvider>,
+  );
+  // Undo was already chosen: it runs without asking and reports its result.
+  expect(screen.queryByRole("dialog", { name: /^Unarchive chat/ })).toBeNull();
+  expect(await screen.findByText("Chat unarchived: Planning")).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+});
+
+it("chat archive runs without confirmation, then Undo unarchives from its result toast", async () => {
+  const lifecycle = capability();
+  const gate = deferred<void>();
+  lifecycle.run.mockImplementationOnce(() => gate.promise);
+  const completed = vi.fn();
+  const failed = vi.fn();
+  function Host() {
+    // Stands in for the session-owned handoff: Undo reopens its owner.
+    const [action, setAction] = useState<"archive" | "unarchive">();
+    const [open, setOpen] = useState(true);
+    return (
+      <ToastProvider>
+        {open && (
+          <ChannelLifecycleDialog
+            key={action ?? "archive"}
+            channelId="id"
+            channelName="Fixture"
+            noun="chat"
+            action={action ?? "archive"}
+            confirmed={!!action}
+            lifecycle={lifecycle}
+            close={() => setOpen(false)}
+            completed={() => {
+              completed();
+              setOpen(false);
+            }}
+            failed={(title, message) => {
+              failed(title, message);
+              setOpen(false);
+            }}
+            undo={() => {
+              setAction("unarchive");
+              setOpen(true);
+            }}
+          />
+        )}
+      </ToastProvider>
+    );
+  }
+  render(<Host />);
+  expect(screen.queryByRole("button", { name: "Archive chat" })).toBeNull();
+  try {
+    await waitFor(() =>
+      expect(lifecycle.run).toHaveBeenCalledWith(
+        "archive",
+        "id",
+        expect.any(AbortSignal),
+      ),
+    );
+    // A fast archive shows no progress; only a slow one is announced.
+    expect(
+      screen.queryByRole("dialog", { name: "Archiving chat…" }),
+    ).toBeNull();
+    expect(
+      await screen.findByRole(
+        "dialog",
+        { name: "Archiving chat…" },
+        { timeout: 2000 },
+      ),
+    ).toBeDefined();
+  } finally {
+    await act(async () => gate.resolve());
+  }
+  await screen.findByRole("dialog", { name: "Chat archived: Fixture" });
+  expect(completed).toHaveBeenCalledOnce();
+  lifecycle.run.mockRejectedValueOnce(new Error("Relay rejected the request."));
+  fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() =>
+    expect(lifecycle.run).toHaveBeenLastCalledWith(
+      "unarchive",
+      "id",
+      expect.any(AbortSignal),
+    ),
+  );
+  await waitFor(() =>
+    expect(failed).toHaveBeenCalledExactlyOnceWith(
+      "Unarchive chat failed",
+      "Relay rejected the request.",
+    ),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull(),
+  );
+});

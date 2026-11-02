@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Tooltip } from "../../shared/design-system/ui/Tooltip";
 import {
   formatDayGroupLabel,
@@ -60,7 +60,7 @@ export function MessageTimestamp({ createdAt }: { createdAt: number }) {
   const date = new Date(createdAt * 1000);
   const fullDate = formatFullTimestamp(createdAt);
   return (
-    <Tooltip content={fullDate} delay={500} disableHoverablePopup>
+    <Tooltip content={fullDate} disableHoverablePopup>
       <time dateTime={date.toISOString()} style={{ cursor: "default" }}>
         <span aria-hidden="true">
           {formatItemTimestamp(createdAt, { withTime: true })}
@@ -72,7 +72,7 @@ export function MessageTimestamp({ createdAt }: { createdAt: number }) {
   );
 }
 
-/** Grouped messages keep their date available without an inline clock. */
+/** Grouped messages keep their date for assistive technology without an inline clock. */
 export function MessageTimestampHint({
   createdAt,
   attachments = false,
@@ -84,36 +84,21 @@ export function MessageTimestampHint({
   children: ReactNode;
 }) {
   useLocalDay();
-  const payload = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
-  const fullDate =
-    createdAt === undefined ? undefined : formatFullTimestamp(createdAt);
   return (
-    <Tooltip
-      content={fullDate}
-      open={createdAt !== undefined && open}
-      onOpenChange={(next) =>
-        setOpen(next && !payload.current?.contains(document.activeElement))
-      }
-      delay={1000}
-      disableHoverablePopup
+    <div
+      className={styles.messagePayload}
+      data-message-payload=""
+      data-attachments={attachments || undefined}
     >
-      <div
-        ref={payload}
-        className={styles.messagePayload}
-        data-attachments={attachments || undefined}
-        onFocusCapture={() => setOpen(false)}
-      >
-        {children}
-        {createdAt !== undefined && (
-          <time
-            dateTime={new Date(createdAt * 1000).toISOString()}
-            className="sr-only select-none"
-          >
-            {fullDate}
-          </time>
-        )}
-      </div>
-    </Tooltip>
+      {children}
+      {createdAt !== undefined && (
+        <time
+          dateTime={new Date(createdAt * 1000).toISOString()}
+          className="sr-only select-none"
+        >
+          {formatFullTimestamp(createdAt)}
+        </time>
+      )}
+    </div>
   );
 }

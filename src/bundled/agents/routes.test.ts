@@ -2,6 +2,8 @@ import { expect, it } from "vitest";
 import {
   agentProviderRoute,
   agentProviderTarget,
+  agentRoute,
+  agentTarget,
   availableAgentProviderRoute,
 } from "./routes";
 
@@ -31,4 +33,17 @@ it("admits provider-shaped routes and preserves the Agents page scope", () => {
     route: { version: 1, params: route },
   });
   expect(agentProviderTarget(opened)).toEqual(base);
+});
+
+it("admits an agent of yours to open, by its key", () => {
+  const pubkey = "a".repeat(64);
+  expect(agentRoute(agentTarget(pubkey).route.params)).toBe(pubkey);
+  expect(availableAgentProviderRoute({ agent: pubkey })).toBe(true);
+  for (const invalid of [
+    { agent: "Ada" },
+    { agent: pubkey, provider: "test/echo" },
+    { agent: 1 },
+  ] as const)
+    expect(agentRoute(invalid)).toBeUndefined();
+  expect(agentProviderRoute({ agent: pubkey })).toBeUndefined();
 });

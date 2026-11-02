@@ -42,7 +42,7 @@ const visualProperty =
 const controlSelector =
   /(?:^|[\s>+~])(?:button|input|textarea|select)(?:[.#][\w-]+|\[[^\]]*\]|:[\w-]+)*$|\.buzz-(?:button|input|textarea|radio|checkbox)\b/;
 const palette =
-  /--(?:neutral|purple|red|green|amber|blue|cyan|orange)-(?:\d+|action-pressed)\b|\b(?:bg|text|border|outline|ring|fill|stroke|shadow|from|via|to)-(?:neutral|purple|red|green|amber|blue|cyan|orange)-\d+\b/g;
+  /--(?:neutral|purple|red|green|amber|blue|cyan|orange|gray|chartreuse|bee|citrus|mono|flame|magenta|iris|cobalt|jade)-(?:\d+|action-pressed|contrast|ink|pressed|link(?:-hover)?)\b|\b(?:bg|text|border|outline|ring|fill|stroke|shadow|from|via|to)-(?:neutral|purple|red|green|amber|blue|cyan|orange|gray|chartreuse|bee|citrus|mono|flame|magenta|iris|cobalt|jade)-\d+\b/g;
 
 export function adoptionFindings(file, source) {
   const code = source

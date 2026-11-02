@@ -20,3 +20,21 @@ it.each([
     expect(nativeBridge.available).toBe(available);
   },
 );
+it("decodes the raw read body's trailing exit flag", async () => {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const { nativeBridge } = await import("./bridge");
+  vi.mocked(invoke).mockResolvedValueOnce(new Uint8Array([65, 66, 1]).buffer);
+  await expect(nativeBridge.read("owner", "pty")).resolves.toEqual({
+    data: new Uint8Array([65, 66]),
+    exited: true,
+  });
+  expect(invoke).toHaveBeenCalledWith("terminal_read", {
+    owner: "owner",
+    id: "pty",
+  });
+  vi.mocked(invoke).mockResolvedValueOnce(new Uint8Array([0]).buffer);
+  await expect(nativeBridge.read("owner", "pty")).resolves.toEqual({
+    data: new Uint8Array(),
+    exited: false,
+  });
+});

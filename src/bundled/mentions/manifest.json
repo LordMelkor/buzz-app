@@ -3,5 +3,8 @@
   "name": "Mentions",
   "apiVersion": 1,
   "description": "Find and mention people, agents, and teams while composing.",
-  "discovery": { "category": "communication", "tags": ["Essentials"] }
+  "discovery": {
+    "category": "communication",
+    "tags": ["Essentials", "messaging", "people"]
+  }
 }

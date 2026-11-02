@@ -73,6 +73,8 @@ it("creates and assigns together, imports legacy fields into registers and keeps
 it.each([
   { ...intent, createSection: { id, name: " " } },
   { ...intent, createSection: { id: "__proto__", name: "Launch" } },
+  { ...intent, createSection: { id, name: "Launch", position: "last" } },
+  { ...intent, createSection: { id, name: "Launch", position: 0 } },
 ])("rejects malformed create intent before writing: %j", (value) => {
   expect(() => assertSidebarAssignmentIntent(value)).toThrow("Invalid");
 });
@@ -101,26 +103,35 @@ it("enforces section limits and refuses an invalid or unreadable current head", 
     ),
   ).toThrow("Invalid");
 });
-it("failed confirmation may follow publication; retry confirms the same section without another write", async () => {
-  let head;
-  let reads = 0;
-  let publications = 0;
-  const read = async () => {
-    if (++reads === 2) throw new Error("confirmation offline");
-    return head ? [head] : [];
-  };
-  const publish = async (value) => {
-    publications++;
-    head = value;
-  };
-  await expect(
-    mutateSidebarAssignment(intent, secret, read, publish),
-  ).rejects.toThrow("confirmation offline");
-  const groups = await mutateSidebarAssignment(intent, secret, read, publish);
-  expect(groups.sections).toEqual([{ id, name: "Launch", order: 0 }]);
-  expect(groups.assignments).toEqual({ alpha: id });
-  expect(publications).toBe(1);
-});
+it.each([intent, { createSection: intent.createSection }])(
+  "failed confirmation may follow publication; retry confirms the same section without another write: %j",
+  async (creation) => {
+    let head;
+    let reads = 0;
+    let publications = 0;
+    const read = async () => {
+      if (++reads === 2) throw new Error("confirmation offline");
+      return head ? [head] : [];
+    };
+    const publish = async (value) => {
+      publications++;
+      head = value;
+    };
+    await expect(
+      mutateSidebarAssignment(creation, secret, read, publish),
+    ).rejects.toThrow("confirmation offline");
+    expect(decode(head).sections).toEqual([{ id, name: "Launch", order: 0 }]);
+    const groups = await mutateSidebarAssignment(
+      creation,
+      secret,
+      read,
+      publish,
+    );
+    expect(groups.sections).toEqual([{ id, name: "Launch", order: 0 }]);
+    expect(groups.assignments).toEqual(creation.channelId ? { alpha: id } : {});
+    expect(publications).toBe(1);
+  },
+);
 it("a failed initial read never seeds or publishes", async () => {
   let publications = 0;
   await expect(
@@ -185,6 +196,32 @@ it("decodes all encrypted preferences despite oversized deleted text without rew
     "Invalid sidebar register",
   );
   expect(decode(head)).toEqual(blob);
+});
+
+it("creates at the top in one event, preserves existing orders and keeps retry idempotent", () => {
+  const first = {
+    ...intent,
+    createSection: { ...intent.createSection, position: "first" },
+  };
+  const created = prepareSidebarAssignment(
+    [
+      event({
+        version: 1,
+        sections: [{ id: "work", name: "Work", order: -7 }],
+        assignments: {},
+      }),
+    ],
+    first,
+    secret,
+  );
+  const saved = decode(created.event);
+  expect(saved.sections.map(({ id }) => id)).toEqual([id, "work"]);
+  expect(saved.assignments).toEqual({ alpha: id });
+  expect(saved.meta.s[id].order[2]).toBe(-8);
+  expect(saved.meta.s.work.order[2]).toBe(-7);
+  expect(
+    prepareSidebarAssignment([created.event], first, secret).event,
+  ).toBeUndefined();
 });
 
 it("appends after the rounded order imported from a fractional legacy head", () => {
@@ -257,3 +294,38 @@ it.each([
     expect(decode(head)).toEqual(blob);
   },
 );
+
+it("creates an empty section without changing any assignments, and confirms the same ID on retry", async () => {
+  const create = { createSection: { id, name: " Launch " } };
+  let head = event({
+    version: 1,
+    sections: [{ id: "work", name: "Work", order: 0 }],
+    assignments: { alpha: "work" },
+  });
+  const publications = [];
+  const read = async () => [head];
+  const publish = async (record) => {
+    publications.push(record);
+    head = record;
+  };
+  const groups = await mutateSidebarAssignment(create, secret, read, publish);
+  expect(groups.sections).toEqual([
+    { id: "work", name: "Work", order: 0 },
+    { id, name: "Launch", order: 1 },
+  ]);
+  expect(groups.assignments).toEqual({ alpha: "work" });
+  expect(decode(head).meta.a).not.toHaveProperty("undefined");
+  expect(await mutateSidebarAssignment(create, secret, read, publish)).toEqual(
+    groups,
+  );
+  expect(publications).toHaveLength(1);
+});
+
+it.each([
+  {},
+  { sectionId: "work" },
+  { createSection: { id, name: " " } },
+  { channelId: null, createSection: { id, name: "Launch" } },
+])("rejects invalid empty-section envelopes: %j", (intent) => {
+  expect(() => assertSidebarAssignmentIntent(intent)).toThrow("Invalid");
+});

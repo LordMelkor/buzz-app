@@ -131,6 +131,7 @@
 
 /* Profile-style identity and shared agent sections in one scrollport. */
 .build {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -138,45 +139,80 @@
   min-width: 0;
 }
 .detailsScroll {
+  --agent-footer-height: 0px;
   flex: 1;
   min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
   padding: var(--space-5);
+  padding-block-end: calc(var(--space-5) + var(--agent-footer-height));
+  scroll-padding-block-end: calc(var(--space-5) + var(--agent-footer-height));
 }
-.saveFooter {
-  flex: none;
-  padding: var(--space-4) var(--space-5);
-  border-top: 1px solid var(--border-standard);
-  background: var(--surface-panel);
+.panelFooter {
+  display: grid;
+  box-sizing: border-box;
+  position: absolute;
+  left: 0;
+  width: 100%;
+  bottom: 0;
+  z-index: 2;
+  /* Give the floating surface its own inset, inside the content's border line. */
+  padding: var(--space-5) calc(2 * var(--space-5));
+  pointer-events: none;
 }
-.saveFooter:empty {
+.panelFooter:empty {
   display: none;
 }
-.rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-5);
-  min-width: 0;
-  padding: var(--space-8) var(--space-4);
-  border-radius: var(--radius-container);
-  background: var(--interaction-row-hover);
+.panelFooter::before {
+  content: "";
+  position: absolute;
+  inset: 50% 0 0;
+  z-index: -1;
+  background: linear-gradient(to top, var(--surface-panel), transparent);
 }
-.identityActions {
-  --interaction-fill: var(--interaction-selected);
-  --interaction-hover: var(--interaction-pressed);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
+.panelFooter > * {
+  grid-area: 1 / 1;
+  pointer-events: auto;
 }
 .identityPortrait {
   position: relative;
   width: 8rem;
   height: 8rem;
+}
+/* Motion drives only artwork; labels and controls retain color. */
+.identityCard > :is([aria-hidden="true"], .identityPortrait) {
+  filter: grayscale(var(--agent-artwork-grayscale, 0));
+}
+.identityCard > .identityPortrait {
+  filter: grayscale(var(--agent-artwork-grayscale, 0))
+    blur(var(--agent-artwork-blur, 0px));
+  /* Independent scale preserves the name editor's motion transform. */
+  scale: var(--agent-artwork-scale, 1);
+  opacity: var(--agent-artwork-opacity, 1);
+}
+.saveFooter {
+  flex: none;
+  position: sticky;
+  bottom: calc(-1 * var(--space-5));
+  z-index: 1;
+  margin-block-start: auto;
+  margin-inline: calc(-1 * var(--space-5));
+  margin-block-end: calc(-1 * var(--space-5));
+}
+.saveFooter:empty {
+  display: none;
+}
+.sharedSettingsNotice {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
 }
 .work {
   min-width: 0;
@@ -247,6 +283,41 @@
 .identityName {
   position: relative;
   width: 100%;
+}
+
+/* The shared squircle mask separates the overlapping community artwork. */
+.importIdentity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  isolation: isolate;
+}
+.importPortrait {
+  flex: none;
+  width: 5.75rem;
+  height: 5.75rem;
+}
+.importCommunity {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: calc(3rem + var(--space-2));
+  height: calc(3rem + var(--space-2));
+  margin: 0;
+}
+.importCommunity:first-child {
+  margin-inline-end: calc(-1 * var(--space-3));
+}
+.importCommunity:last-child {
+  margin-inline-start: calc(-1 * var(--space-3));
+}
+.importCommunityImage {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: var(--space-1);
+  background: var(--surface-popover);
 }
 .nameEditor {
   position: absolute;

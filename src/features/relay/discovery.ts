@@ -1,23 +1,34 @@
-import { channelTtl, channelVisibility } from "./channel-details-protocol";
-import { sessionMetadata } from "../sessions/metadata";
+import {
+  channelJoinRole,
+  channelTtl,
+  channelVisibility,
+} from "./channel-details-protocol";
+import { huddleParent } from "../huddle/lifecycle";
+import { soloLabels } from "../solo/labels";
 import { objectBody } from "./body";
 import { newer, hasTag, tag, type RelayEvent } from "./events";
 import type { ChannelSummary } from "./contracts";
 import { channelIdentity } from "./channel-labels";
 
+const names = new WeakMap<RelayEvent, string | undefined>();
 /** Display name from signed channel metadata; the content body overrides the tag. */
 export function metadataName(event: RelayEvent): string | undefined {
+  if (names.has(event)) return names.get(event);
   const body = objectBody(event.content);
-  if (typeof body?.name === "string" && body.name) return body.name;
-  return tag(event, "name") || undefined;
+  const name =
+    typeof body?.name === "string" && body.name
+      ? body.name
+      : tag(event, "name") || undefined;
+  names.set(event, name);
+  return name;
 }
 
-/** The canonical session identity, independent of membership or presentation labels. */
-export function sessionChannelMetadata(event: RelayEvent): boolean {
+/** A Solo chat: a private stream carrying the Solo label. Never access. */
+export function soloChannelMetadata(event: RelayEvent): boolean {
   return (
     tag(event, "t") === "stream" &&
     event.tags.some(([name]) => name === "private") &&
-    sessionMetadata(tag(event, "about")) !== undefined
+    soloLabels(channelIdentity(event).labels)
   );
 }
 
@@ -33,6 +44,10 @@ export function openMetadata(event: RelayEvent): boolean {
 /** NIP-29 discovery: relay-authored replaceable metadata (39000) and rosters (39002). */
 export class DiscoveryState {
   private denied = new Set<string>();
+  /** Denied only because a complete read omitted them; a later one can list them again. */
+  private absent = new Set<string>();
+  /** Fresh public resolution can restore reading while membership remains denied. */
+  private confirmedPreviews = new Set<string>();
   private suspended = new Set<string>();
   private complete = false;
   private cached = new Set<string>();
@@ -41,6 +56,11 @@ export class DiscoveryState {
   overflowRevision = 0;
   private rosters = new Map<string, RelayEvent>();
   private metadata = new Map<string, RelayEvent>();
+  private creations = new Map<string, RelayEvent>();
+  /** Solo chats this device started whose signed metadata and roster have not
+   * both arrived. Local display and intent only: never saved, never proof.
+   * It stands in for access only until a signed roster decides it. */
+  private starting = new Map<string, ChannelSummary>();
   constructor(
     readonly viewer: string,
     readonly relayAuthor: string,
@@ -48,6 +68,14 @@ export class DiscoveryState {
   ) {}
   /** Returns whether visible state changed. Events from other authors are ignored, not trusted. */
   accept(event: RelayEvent, cached = false): boolean {
+    if (event.kind === 9007) {
+      const id = tag(event, "h");
+      const metadata = id && this.metadata.get(id);
+      if (!id || !metadata || !huddleCreation(event, metadata)) return false;
+      if (this.creations.get(id)?.id === event.id) return false;
+      this.creations.set(id, event);
+      return true;
+    }
     if (
       event.pubkey !== this.relayAuthor ||
       (event.kind !== 39000 && event.kind !== 39002)
@@ -72,7 +100,10 @@ export class DiscoveryState {
     if (next === previous) return confirmed;
     const accessible = this.canAccess(id);
     map.set(id, next);
+    if (event.kind === 39000 && !this.open(id))
+      this.confirmedPreviews.delete(id);
     if (event.kind === 39002) {
+      this.absent.delete(id);
       if (cached) this.cached.add(id);
       if (
         previous &&
@@ -81,14 +112,38 @@ export class DiscoveryState {
       )
         this.denied.add(id);
       else if (hasTag(event, "p", this.viewer)) this.denied.delete(id);
+      // A signed roster without the viewer ends the start it stood in for.
+      if (!hasTag(event, "p", this.viewer)) this.starting.delete(id);
     } else if (previous && !this.rosters.has(id) && this.open(id))
       this.denied.delete(id);
     if (this.authorized(id) || (event.kind === 39000 && this.open(id)))
       this.suspended.delete(id);
+    if (this.metadata.has(id) && this.authorized(id)) this.starting.delete(id);
     if (accessible && !this.canAccess(id)) this.accessRevision++;
     return true;
   }
+  /** Lists a Solo chat this device is creating until the relay confirms it. */
+  start(channel: ChannelSummary) {
+    if (this.metadata.has(channel.id) || this.rosters.has(channel.id)) return;
+    this.starting.set(channel.id, Object.freeze({ ...channel, pending: true }));
+  }
+  /** Returns whether a started chat was still awaiting confirmation. */
+  abandon(id: string): boolean {
+    return this.starting.delete(id);
+  }
+  isPending(id: string): boolean {
+    return this.starting.has(id);
+  }
+  /** A started chat no signed roster has decided yet. */
+  private undecided(id: string) {
+    return this.starting.has(id) && !this.rosters.has(id);
+  }
   deny(id: string) {
+    // A read can race the chat's own creation; only abandon() or a signed
+    // roster ends a start.
+    if (this.undecided(id)) return;
+    // A relay denial outranks an omission that a later read could undo.
+    this.absent.delete(id);
     if (!this.canAccess(id) && !this.suspended.has(id)) return;
     // Never evict denial evidence back into "unknown". Bound adversarial IDs by
     // failing closed until fresh signed membership is available.
@@ -98,11 +153,12 @@ export class DiscoveryState {
     }
     this.accessRevision++;
     this.suspended.delete(id);
+    this.confirmedPreviews.delete(id);
     this.denied.add(id);
   }
   /** A CLOSED preview is unreadable pending fresh evidence, not permanently denied. */
   suspend(id: string): boolean {
-    if (!this.get(id)?.readOnly) return false;
+    if (this.authorized(id) || !this.get(id)?.readOnly) return false;
     this.suspended.add(id);
     this.accessRevision++;
     return true;
@@ -110,8 +166,21 @@ export class DiscoveryState {
   suspendedChannels(): string[] {
     return [...this.suspended];
   }
-  resume(id: string): boolean {
-    return this.suspended.delete(id);
+  resume(id: string, metadata?: RelayEvent): boolean {
+    const resumed = this.suspended.delete(id);
+    if (
+      this.denied.has(id) &&
+      metadata?.kind === 39000 &&
+      metadata.pubkey === this.relayAuthor &&
+      tag(metadata, "d") === id &&
+      openMetadata(metadata) &&
+      newer(this.metadata.get(id), metadata)?.id === metadata.id
+    ) {
+      const changed = !this.confirmedPreviews.has(id);
+      this.confirmedPreviews.add(id);
+      return resumed || changed;
+    }
+    return resumed;
   }
   /** A complete viewer-scoped roster read proves absence: rosters it omitted no longer include the viewer. */
   rosterVersions(): ReadonlyMap<string, RelayEvent> {
@@ -126,22 +195,28 @@ export class DiscoveryState {
     // Keep the last signed version: an old replay cannot undo authoritative loss.
     // A NIP-CL pass reads system channels through their own opt-in filter
     // into the same complete set, so one absence rule covers them too.
-    for (const [id, roster] of this.rosters)
-      if (
-        hasTag(roster, "p", this.viewer) &&
-        !ids.has(id) &&
-        !this.denied.has(id) &&
-        started.get(id) === roster
-      ) {
+    for (const [id, roster] of this.rosters) {
+      if (!hasTag(roster, "p", this.viewer) || started.get(id) !== roster)
+        continue;
+      // A lagging read replica can omit a roster; a later complete read that
+      // lists the same version again restores what omission alone revoked.
+      if (ids.has(id)) {
+        if (this.absent.delete(id)) this.denied.delete(id);
+      } else if (!this.denied.has(id)) {
         this.denied.add(id);
+        this.absent.add(id);
         changed = true;
       }
+    }
     if (changed) this.accessRevision++;
     return changed;
   }
   denyAll() {
     this.accessRevision++;
     this.complete = true;
+    this.starting.clear();
+    this.absent.clear();
+    this.confirmedPreviews.clear();
     for (const id of [...this.rosters.keys(), ...this.metadata.keys()])
       this.denied.add(id);
   }
@@ -155,7 +230,10 @@ export class DiscoveryState {
   }
   /** Unknown is not denied until a complete roster or local snapshot closes that boundary. */
   canAccess(id: string): boolean {
-    if (this.denied.has(id) || this.suspended.has(id)) return false;
+    if (this.undecided(id)) return true;
+    if (this.suspended.has(id)) return false;
+    if (this.denied.has(id))
+      return this.confirmedPreviews.has(id) && this.open(id);
     const roster = this.rosters.get(id);
     if (roster && hasTag(roster, "p", this.viewer)) return true;
     return (
@@ -168,14 +246,30 @@ export class DiscoveryState {
     return !!event && openMetadata(event);
   }
   canParticipate(id: string): boolean {
+    if (this.undecided(id)) return true;
     const roster = this.rosters.get(id);
     return (
       this.canAccess(id) &&
+      !this.denied.has(id) &&
       !this.cached.has(id) &&
       (roster
         ? hasTag(roster, "p", this.viewer)
         : !this.complete && !this.open(id))
     );
+  }
+  canWrite(id: string): boolean {
+    return this.canParticipate(id) && this.viewerRole(id) !== "guest";
+  }
+  private viewerRole(id: string): ChannelSummary["viewerRole"] {
+    const entries = this.rosters
+      .get(id)
+      ?.tags.filter(([key, value]) => key === "p" && value === this.viewer);
+    // A contradictory guest entry cannot restore writing through another role.
+    if (entries?.some((entry) => entry[3] === "guest")) return "guest";
+    const role = entries?.length === 1 ? entries[0]?.[3] : undefined;
+    return ["owner", "admin", "member", "bot"].includes(role ?? "")
+      ? (role as ChannelSummary["viewerRole"])
+      : undefined;
   }
   authorized(id: string): boolean {
     const roster = this.rosters.get(id);
@@ -186,6 +280,10 @@ export class DiscoveryState {
   }
   named(id: string): boolean {
     return this.metadata.has(id);
+  }
+  /** Metadata slots still free: `accept` drops a new channel's 39000 without one. */
+  headroom(): number {
+    return this.capacity - this.metadata.size;
   }
   name(id: string): string {
     const event = this.metadata.get(id);
@@ -200,18 +298,22 @@ export class DiscoveryState {
     const event = this.metadata.get(id);
     return !!event && event.tags.some(([name]) => name === "private");
   }
-  isSession(id: string): boolean {
+  isSolo(id: string): boolean {
+    if (this.starting.has(id)) return true;
     const event = this.metadata.get(id);
-    return !!event && sessionChannelMetadata(event);
+    return !!event && soloChannelMetadata(event);
   }
   get(id: string): ChannelSummary | undefined {
+    const starting = this.starting.get(id);
+    if (starting) return starting;
     if (!this.canAccess(id) || (!this.authorized(id) && !this.open(id))) return;
     const event = this.metadata.get(id);
     // The relay tags a system roster too, so a roster that arrives before its
     // metadata (the full pass reads names later) never lists as a channel.
     const roster = this.rosters.get(id);
-    const type = this.isSession(id)
-      ? "session"
+    const viewerRole = this.authorized(id) ? this.viewerRole(id) : undefined;
+    const type = this.isSolo(id)
+      ? "solo"
       : event
         ? tag(event, "t")
         : roster && hasTag(roster, "t", "system")
@@ -222,25 +324,39 @@ export class DiscoveryState {
       type === "forum" ||
       type === "dm" ||
       type === "system" ||
-      (type === "session" && this.isSession(id))
+      (type === "solo" && this.isSolo(id))
         ? type
         : undefined;
-    const parentId = event && sessionMetadata(tag(event, "about"))?.parentId;
+    const creation = this.creations.get(id);
+    const huddle =
+      event && creation && huddleCreation(creation, event)
+        ? huddleParent(tag(creation, "about"))
+        : undefined;
     const identity = event && channelIdentity(event);
     const ttlSeconds = event && channelTtl(event);
+    // Legacy generated rooms lack creation proof. This is presentation only;
+    // their parent still needs independent signed lifecycle evidence.
+    const legacyHuddle =
+      event &&
+      channelType === "stream" &&
+      channelVisibility(event) === "private" &&
+      ttlSeconds !== undefined &&
+      metadataName(event) === `huddle-${id.slice(0, 8)}`;
     return {
       id,
-      ...(!this.authorized(id) || this.cached.has(id)
+      ...(huddle || legacyHuddle ? { huddle: true as const } : {}),
+      ...(huddle ? { parentChannelId: huddle } : {}),
+      ...(!this.authorized(id) || this.cached.has(id) || viewerRole === "guest"
         ? { readOnly: true as const }
         : {}),
+      ...(viewerRole ? { viewerRole } : {}),
       ...(this.cached.has(id) ? { cached: true as const } : {}),
       name: this.name(id),
       ...(event
         ? {
             visibility: channelVisibility(event),
-            ...(channelType !== "session"
-              ? { description: tag(event, "about") ?? "" }
-              : {}),
+            joinRole: channelJoinRole(event),
+            description: tag(event, "about") ?? "",
           }
         : {}),
       members: Object.freeze(
@@ -257,15 +373,8 @@ export class DiscoveryState {
       ...(this.hidden(id) ? { hidden: true } : {}),
       ...(this.isPrivate(id) ? { private: true } : {}),
       ...(channelType ? { channelType } : {}),
-      ...(channelType === "session" && event
-        ? {
-            updatedAt: event.created_at,
-            ...(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
-              parentId ?? "",
-            )
-              ? { parentChannelId: parentId }
-              : {}),
-          }
+      ...(channelType === "solo" && event
+        ? { updatedAt: event.created_at }
         : {}),
       ...(event && hasTag(event, "archived", "true") ? { archived: true } : {}),
       ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
@@ -298,6 +407,7 @@ export class DiscoveryState {
       // Clearing must allow a fresh identical signed roster to regrant access.
       this.rosters.delete(id);
       this.metadata.delete(id);
+      this.creations.delete(id);
     }
     this.cached.clear();
   }
@@ -305,24 +415,51 @@ export class DiscoveryState {
     return [...this.rosters.entries()].flatMap(([id, roster]) => {
       if (!this.authorized(id) || this.cached.has(id)) return [];
       const metadata = this.metadata.get(id);
-      return metadata ? [roster, metadata] : [roster];
+      const creation = this.creations.get(id);
+      return metadata
+        ? [roster, metadata, ...(creation ? [creation] : [])]
+        : [roster];
     });
   }
   /** Every roster channel get() serves, system channels included. Membership,
    * not listing, decides what the device may keep. */
   readable(): ChannelSummary[] {
-    return [...this.rosters.keys()]
-      .filter((id) => this.authorized(id))
-      .flatMap((id) => {
-        const channel = this.get(id);
-        return channel ? [channel] : [];
-      });
+    return [
+      ...new Set([
+        ...[...this.rosters.keys()].filter((id) => this.authorized(id)),
+        ...this.starting.keys(),
+      ]),
+    ].flatMap((id) => {
+      const channel = this.get(id);
+      return channel ? [channel] : [];
+    });
   }
   /** The channel list. System channels (NIP-CL) hold app data, not
    * conversation: they stay readable through get() but never list here. */
-  channels(): ChannelSummary[] {
-    return this.readable()
+  channels(
+    readable: readonly ChannelSummary[] = this.readable(),
+  ): ChannelSummary[] {
+    return readable
       .filter((channel) => channel.channelType !== "system")
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   }
+}
+
+/** A signed creation receipt must agree with the relay's immutable identity facts. */
+export function huddleCreation(
+  creation: RelayEvent,
+  metadata: RelayEvent,
+): boolean {
+  const identity = channelIdentity(metadata);
+  const coordinates = creation.tags.filter(([name]) => name === "h");
+  return (
+    creation.kind === 9007 &&
+    coordinates.length === 1 &&
+    coordinates[0]?.length === 2 &&
+    coordinates[0]?.[1] === tag(metadata, "d") &&
+    creation.pubkey === identity.creator &&
+    tag(creation, "visibility") === "private" &&
+    tag(creation, "channel_type") === "stream" &&
+    !!huddleParent(tag(creation, "about"))
+  );
 }

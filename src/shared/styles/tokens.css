@@ -17,7 +17,7 @@
       --text-standard
     ); /* Legacy foreground, NOT shadcn's accent background. */
     --primary: var(--affordance-prominent);
-    --on-primary: var(--text-inverse);
+    --on-primary: var(--text-on-prominent);
     --selected: var(--affordance-selected);
     --on-selected: var(--text-standard);
     --focus: var(--border-focus);
@@ -59,7 +59,7 @@
     --border-input: var(--border-prominent);
     --accent: var(--text-standard);
     --primary: var(--affordance-prominent);
-    --on-primary: var(--text-inverse);
+    --on-primary: var(--text-on-prominent);
     --selected: var(--affordance-selected);
     --on-selected: var(--text-standard);
     --focus: var(--border-focus);

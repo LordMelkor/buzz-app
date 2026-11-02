@@ -1,5 +1,12 @@
+import Markdown from "react-markdown";
+import { parseBuzzLink } from "../../features/navigation/buzz-links";
+import { profileKey } from "../../features/profiles/target";
+import { safeLinkUrl } from "../../features/relay/message-content";
+import remarkGfm from "remark-gfm";
+import { MessageLink } from "../../features/conversation/MessageLink";
 import { CanvasConflictError } from "../../features/channel-templates/canvas-conflict";
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useId,
@@ -17,6 +24,8 @@ import type { ChannelCanvas } from "../../features/channel-templates/capability"
 import type { ChannelPanelContext } from "../../features/panels/service";
 import {
   XIcon,
+  CaretDownIcon,
+  CaretRightIcon,
   InfoIcon,
   ArrowsClockwiseIcon,
   ListChecksIcon,
@@ -46,6 +55,7 @@ import {
 import { publicKeyLabels } from "../../shared/identity/public-key";
 import { readView, writeView } from "../../shared/view-state";
 import {
+  todoLabelText,
   addTodo,
   assignTodo,
   readTodos,
@@ -70,6 +80,7 @@ type Draft = {
   base: string | null;
   input: string;
 };
+const noMembers: readonly string[] = [];
 const empty: Draft = { content: "", original: "", base: null, input: "" };
 const statuses: [Status, string][] = [
   ["todo", "To do"],
@@ -113,12 +124,14 @@ export function TodosPanel({
   context,
   close,
   active,
+  onOpenLink = () => false,
 }: {
   canvas: ChannelCanvas;
   people: TodoPeople;
   context: ChannelPanelContext;
   close(): void;
   active(): boolean;
+  onOpenLink?(url: string): boolean;
 }) {
   const list = useSyncExternalStore(
     people.channels.subscribeList,
@@ -133,12 +146,13 @@ export function TodosPanel({
     (channel) => channel.id === context.channelId,
   )?.members;
   const resolveName = (pubkey: string, fallback: string) =>
-    resolveIdentity(pubkey, fallback, members ?? []);
+    resolveIdentity(pubkey, fallback, members ?? noMembers);
   const key = `todos-draft-v1:${context.channelId}`;
   const [saved] = useState(() => readDraft(context.scope, key));
   const savedDirty = !!saved && saved.content !== saved.original;
   const [draft, setDraft] = useState<Draft>(saved ?? empty);
   const latestDraft = useRef(draft);
+  const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set());
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<"load" | "save">();
   const [error, setError] = useState("");
@@ -162,6 +176,38 @@ export function TodosPanel({
   const dirty = draft.content !== draft.original;
   const update = useCallback(
     (next: Draft) => {
+      const before = latestDraft.current.content;
+      if (before !== next.content) {
+        let start = 0,
+          end = before.length,
+          nextEnd = next.content.length;
+        while (
+          start < end &&
+          start < nextEnd &&
+          before[start] === next.content[start]
+        )
+          start++;
+        while (
+          end > start &&
+          nextEnd > start &&
+          before[end - 1] === next.content[nextEnd - 1]
+        ) {
+          end--;
+          nextEnd--;
+        }
+        setCollapsed(
+          (current) =>
+            new Set(
+              [...current].flatMap((offset) =>
+                offset <= start
+                  ? [offset]
+                  : offset >= end
+                    ? [offset + nextEnd - end]
+                    : [],
+              ),
+            ),
+        );
+      }
       latestDraft.current = next;
       setDraft(next);
       writeView(
@@ -196,6 +242,7 @@ export function TodosPanel({
           );
         else if (!replace && savedDirty && !alreadySaved)
           setError("Recovered unsaved changes. Retry to save them to Canvas.");
+        if (replace) setCollapsed(new Set());
         if (replace || !savedDirty || alreadySaved)
           update({
             ...empty,
@@ -367,6 +414,268 @@ export function TodosPanel({
         : loaded
           ? "Saved in Canvas"
           : "Channel Canvas";
+  // Source order and ancestor depth keep descendants beside their root across statuses.
+  const childrenByOffset = new Map<number | undefined, typeof items>();
+  const ancestors: typeof items = [];
+  for (const item of items) {
+    ancestors.length = item.parents.length;
+    const parent = ancestors.at(-1)?.offset;
+    const children = childrenByOffset.get(parent) ?? [];
+    children.push(item);
+    childrenByOffset.set(parent, children);
+    ancestors.push(item);
+  }
+  const renderItems = (group: typeof items): ReactNode =>
+    group.map((item) => {
+      const children = childrenByOffset.get(item.offset) ?? [];
+      const taskLabel = todoLabelText(item.label);
+      const assigneeName = item.assignee
+        ? resolveName(item.assignee.pubkey, item.assignee.name) ||
+          keyLabels.get(item.assignee.pubkey)
+        : item.namedAssignee?.name;
+
+      return (
+        <li key={item.offset}>
+          <div className={styles.row}>
+            <div className={styles.disclosure}>
+              {children.length > 0 && (
+                <IconButton
+                  size="sm"
+                  aria-label={`${collapsed.has(item.offset) ? "Expand" : "Collapse"} ${taskLabel}`}
+                  aria-expanded={!collapsed.has(item.offset)}
+                  aria-controls={`${prefix}-${item.offset}-children`}
+                  icon={
+                    collapsed.has(item.offset) ? (
+                      <CaretRightIcon size="1rem" />
+                    ) : (
+                      <CaretDownIcon size="1rem" />
+                    )
+                  }
+                  onClick={() =>
+                    setCollapsed((current) => {
+                      const next = new Set(current);
+                      if (next.has(item.offset)) next.delete(item.offset);
+                      else next.add(item.offset);
+                      return next;
+                    })
+                  }
+                />
+              )}
+            </div>
+            <Checkbox
+              id={`${prefix}-${item.offset}`}
+              checked={item.status === "done"}
+              indeterminate={item.status === "doing"}
+              disabled={disabled}
+              onCheckedChange={(value) => {
+                focusAfterToggle.current = `${prefix}-${item.offset}`;
+                change(() =>
+                  setStatus(
+                    draft.content,
+                    item.offset,
+                    value ? "done" : "todo",
+                  ),
+                );
+              }}
+              aria-label={taskLabel}
+              label=""
+            />
+            <div
+              className={`${styles.label} text-body-sm ${item.status === "done" ? "text-secondary" : ""}`}
+              data-completed={item.status === "done" || undefined}
+            >
+              <Markdown
+                remarkPlugins={[remarkGfm]}
+                urlTransform={(value) =>
+                  parseBuzzLink(value) || profileKey(value)
+                    ? value
+                    : safeLinkUrl(value)
+                }
+                allowedElements={[
+                  "p",
+                  "a",
+                  "strong",
+                  "em",
+                  "del",
+                  "code",
+                  "br",
+                  "img",
+                ]}
+                unwrapDisallowed
+                components={{
+                  p: ({ children }) => <span>{children}</span>,
+                  a: ({ href, children }) =>
+                    href ? (
+                      <MessageLink
+                        url={href}
+                        registry={undefined}
+                        onOpenLink={(url) => active() && onOpenLink(url)}
+                      >
+                        {children}
+                      </MessageLink>
+                    ) : (
+                      <span>{children}</span>
+                    ),
+                  img: ({ alt }) => <span>{alt}</span>,
+                }}
+              >
+                {item.label}
+              </Markdown>
+            </div>
+            <div className={styles.rowDetails}>
+              <div
+                id={`${prefix}-${item.offset}-status`}
+                className={styles.status}
+              >
+                <TodoChoice
+                  id={`${prefix}-${item.offset}-status-control`}
+                  label={`Status for ${taskLabel}`}
+                  menuTitle="Change status"
+                  title="Status"
+                  icon={<StatusIcon status={item.status} />}
+                  value={item.status}
+                  disabled={disabled}
+                  options={statuses.map(([value, label]) => ({
+                    value,
+                    label,
+                    icon: <StatusIcon status={value} />,
+                  }))}
+                  onValueChange={(value) => {
+                    const status = statuses.find(
+                      ([status]) => status === value,
+                    )?.[0];
+                    if (!status || status === item.status) return;
+                    focusAfterToggle.current = `${prefix}-${item.offset}-status`;
+                    change(() => setStatus(draft.content, item.offset, status));
+                  }}
+                />
+              </div>
+              <fieldset
+                id={`${prefix}-${item.offset}-assignee`}
+                className={styles.assignee}
+                aria-label={`Assignee for ${taskLabel}`}
+              >
+                <TodoChoice
+                  id={`${prefix}-${item.offset}-assignee-control`}
+                  label={`Assignee for ${taskLabel}${assigneeName ? `: ${assigneeName}` : ""}`}
+                  menuTitle="Assign to"
+                  text={
+                    (item.assignee || item.namedAssignee) && (
+                      <span className={styles.assigneeName}>
+                        {item.assignee
+                          ? resolveName(
+                              item.assignee.pubkey,
+                              item.assignee.name,
+                            ) || keyLabels.get(item.assignee.pubkey)
+                          : item.namedAssignee?.name}
+                      </span>
+                    )
+                  }
+                  title={
+                    item.assignee
+                      ? userLabel(item.assignee.pubkey, item.assignee.name)
+                      : item.namedAssignee
+                        ? `${item.namedAssignee.name} (from Canvas; choose a member to link)`
+                        : "Assign task"
+                  }
+                  icon={
+                    item.assignee ? (
+                      personIcon(item.assignee.pubkey, item.assignee.name)
+                    ) : (
+                      <UserIcon size="1rem" aria-hidden="true" />
+                    )
+                  }
+                  variant={item.assignee ? "avatar" : "ghost"}
+                  value={
+                    item.assignee?.pubkey ??
+                    (item.namedAssignee ? "canvas-name" : "")
+                  }
+                  disabled={disabled || !members}
+                  options={[
+                    ...(item.namedAssignee
+                      ? [
+                          {
+                            value: "canvas-name",
+                            label: `${item.namedAssignee.name} (from Canvas; not linked to a member)`,
+                            icon: <UserIcon size="1rem" aria-hidden="true" />,
+                            disabled: true,
+                          },
+                        ]
+                      : []),
+                    {
+                      value: "",
+                      label: "Unassigned",
+                      icon: <UserIcon size="1rem" aria-hidden="true" />,
+                    },
+                    ...choices.map((choice) => ({
+                      ...choice,
+                      label: userLabel(
+                        choice.value,
+                        item.assignee?.pubkey === choice.value
+                          ? item.assignee.name
+                          : "",
+                      ),
+                      icon: personIcon(choice.value),
+                    })),
+                    ...(item.assignee &&
+                    !members?.includes(item.assignee.pubkey)
+                      ? [
+                          {
+                            value: item.assignee.pubkey,
+                            label: `${userLabel(item.assignee.pubkey, item.assignee.name)} (${members ? "not in channel" : "membership unavailable"})`,
+                            icon: personIcon(
+                              item.assignee.pubkey,
+                              item.assignee.name,
+                            ),
+                            disabled: true,
+                          },
+                        ]
+                      : []),
+                  ]}
+                  onValueChange={(pubkey) => {
+                    const currentMembers = people.channels
+                      .list()
+                      .channels.find(
+                        (channel) => channel.id === context.channelId,
+                      )?.members;
+                    if (
+                      !currentMembers ||
+                      (pubkey && !currentMembers.includes(pubkey))
+                    )
+                      return;
+                    focusAfterToggle.current = `${prefix}-${item.offset}-assignee`;
+                    change(() =>
+                      assignTodo(
+                        draft.content,
+                        item.offset,
+                        pubkey
+                          ? {
+                              pubkey,
+                              name: resolveName(
+                                pubkey,
+                                keyLabels.get(pubkey) ?? pubkey,
+                              ),
+                            }
+                          : undefined,
+                      ),
+                    );
+                  }}
+                />
+              </fieldset>
+            </div>
+          </div>
+          {children.length > 0 && (
+            <ul
+              id={`${prefix}-${item.offset}-children`}
+              className={styles.children}
+              hidden={collapsed.has(item.offset)}
+            >
+              {renderItems(children)}
+            </ul>
+          )}
+        </li>
+      );
+    });
   return (
     <div data-buzz-ui="" className={styles.panel} aria-busy={!!busy}>
       <PanelHeader
@@ -407,6 +716,7 @@ export function TodosPanel({
               </PopoverPopup>
             </PopoverRoot>
             <IconButton
+              hint="familiar"
               ref={refreshRef}
               size="sm"
               icon={<ArrowsClockwiseIcon size="1rem" aria-hidden="true" />}
@@ -423,6 +733,7 @@ export function TodosPanel({
               }}
             />
             <IconButton
+              hint="familiar"
               size="sm"
               variant="ghost"
               icon={<XIcon size="1rem" aria-hidden="true" />}
@@ -546,7 +857,9 @@ export function TodosPanel({
                   />
                 )}
                 {statuses.map(([status, title]) => {
-                  const group = items.filter((item) => item.status === status);
+                  const group = (childrenByOffset.get(undefined) ?? []).filter(
+                    (item) => item.status === status,
+                  );
                   return (
                     group.length > 0 && (
                       <section
@@ -560,176 +873,7 @@ export function TodosPanel({
                             {group.length}
                           </span>
                         </h3>
-                        <ul className={styles.list}>
-                          {group.map((item) => (
-                            <li key={item.offset} className={styles.row}>
-                              <Checkbox
-                                id={`${prefix}-${item.offset}`}
-                                checked={item.status === "done"}
-                                indeterminate={item.status === "doing"}
-                                disabled={disabled}
-                                onCheckedChange={(value) => {
-                                  focusAfterToggle.current = `${prefix}-${item.offset}`;
-                                  change(() =>
-                                    setStatus(
-                                      draft.content,
-                                      item.offset,
-                                      value ? "done" : "todo",
-                                    ),
-                                  );
-                                }}
-                                label={
-                                  <span
-                                    className={`${styles.label} text-body-sm ${item.status === "done" ? "text-secondary" : ""}`}
-                                    data-completed={
-                                      item.status === "done" || undefined
-                                    }
-                                  >
-                                    {item.label}
-                                  </span>
-                                }
-                              />
-                              <div className={styles.rowDetails}>
-                                <div
-                                  id={`${prefix}-${item.offset}-status`}
-                                  className={styles.status}
-                                >
-                                  <TodoChoice
-                                    id={`${prefix}-${item.offset}-status-control`}
-                                    label={`Status for ${item.label}`}
-                                    menuTitle="Change status"
-                                    title="Status"
-                                    icon={<StatusIcon status={item.status} />}
-                                    value={item.status}
-                                    disabled={disabled}
-                                    options={statuses.map(([value, label]) => ({
-                                      value,
-                                      label,
-                                      icon: <StatusIcon status={value} />,
-                                    }))}
-                                    onValueChange={(value) => {
-                                      const status = statuses.find(
-                                        ([status]) => status === value,
-                                      )?.[0];
-                                      if (!status || status === item.status)
-                                        return;
-                                      focusAfterToggle.current = `${prefix}-${item.offset}-status`;
-                                      change(() =>
-                                        setStatus(
-                                          draft.content,
-                                          item.offset,
-                                          status,
-                                        ),
-                                      );
-                                    }}
-                                  />
-                                </div>
-                                <fieldset
-                                  id={`${prefix}-${item.offset}-assignee`}
-                                  className={styles.assignee}
-                                  aria-label={`Assignee for ${item.label}`}
-                                >
-                                  <TodoChoice
-                                    id={`${prefix}-${item.offset}-assignee-control`}
-                                    label={`Assignee for ${item.label}`}
-                                    menuTitle="Assign to"
-                                    title={
-                                      item.assignee
-                                        ? userLabel(
-                                            item.assignee.pubkey,
-                                            item.assignee.name,
-                                          )
-                                        : "Assign task"
-                                    }
-                                    icon={
-                                      item.assignee ? (
-                                        personIcon(
-                                          item.assignee.pubkey,
-                                          item.assignee.name,
-                                        )
-                                      ) : (
-                                        <UserIcon
-                                          size="1rem"
-                                          aria-hidden="true"
-                                        />
-                                      )
-                                    }
-                                    variant={item.assignee ? "avatar" : "ghost"}
-                                    value={item.assignee?.pubkey ?? ""}
-                                    disabled={disabled || !members}
-                                    options={[
-                                      {
-                                        value: "",
-                                        label: "Unassigned",
-                                        icon: (
-                                          <UserIcon
-                                            size="1rem"
-                                            aria-hidden="true"
-                                          />
-                                        ),
-                                      },
-                                      ...choices.map((choice) => ({
-                                        ...choice,
-                                        label: userLabel(
-                                          choice.value,
-                                          item.assignee?.pubkey === choice.value
-                                            ? item.assignee.name
-                                            : "",
-                                        ),
-                                        icon: personIcon(choice.value),
-                                      })),
-                                      ...(item.assignee &&
-                                      !members?.includes(item.assignee.pubkey)
-                                        ? [
-                                            {
-                                              value: item.assignee.pubkey,
-                                              label: `${userLabel(item.assignee.pubkey, item.assignee.name)} (${members ? "not in channel" : "membership unavailable"})`,
-                                              icon: personIcon(
-                                                item.assignee.pubkey,
-                                                item.assignee.name,
-                                              ),
-                                              disabled: true,
-                                            },
-                                          ]
-                                        : []),
-                                    ]}
-                                    onValueChange={(pubkey) => {
-                                      const currentMembers = people.channels
-                                        .list()
-                                        .channels.find(
-                                          (channel) =>
-                                            channel.id === context.channelId,
-                                        )?.members;
-                                      if (
-                                        !currentMembers ||
-                                        (pubkey &&
-                                          !currentMembers.includes(pubkey))
-                                      )
-                                        return;
-                                      focusAfterToggle.current = `${prefix}-${item.offset}-assignee`;
-                                      change(() =>
-                                        assignTodo(
-                                          draft.content,
-                                          item.offset,
-                                          pubkey
-                                            ? {
-                                                pubkey,
-                                                name: resolveName(
-                                                  pubkey,
-                                                  keyLabels.get(pubkey) ??
-                                                    pubkey,
-                                                ),
-                                              }
-                                            : undefined,
-                                        ),
-                                      );
-                                    }}
-                                  />
-                                </fieldset>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
+                        <ul className={styles.list}>{renderItems(group)}</ul>
                       </section>
                     )
                   );

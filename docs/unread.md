@@ -38,10 +38,18 @@ visible rows, and 300 ms dwell. Scroll/content/focus changes cancel/restart dwel
 scheduler when positioning finishes, even if an empty history page changes no
 rows or geometry.
 The list and its own composer share a reading surface; focus anywhere in an open
-thread panel also qualifies, including its selected owning tab header. Inactive
-or hidden tab content and passive restoration do not qualify. Another pane, a
-dialog, background window, preload,
-and mounted virtualizer overscan do not qualify.
+thread panel also qualifies, including its selected owning tab header. Explicitly
+returning to a channel reads both its main conversation and its visible selected
+side-pane thread tab for that channel: while focus stays anywhere in that
+channel's workspace (normally the main composer), that side-pane thread
+qualifies too. A thread in the main pane never borrows this grant. A link to
+a message or thread (Activity, a message link) is not a plain visit and reads
+only what holds focus. A hidden or collapsed pane, another channel's tab, a
+members or media-review view, and a passive restoration (`preserve` focus) keep
+the main conversation as the only reading surface. Inactive or hidden tab
+content does not qualify. Pane motion completion restarts observation after
+unchanged rows enter the viewport. Another pane, a dialog, background window,
+preload, and mounted virtualizer overscan do not qualify.
 
 Away from the bottom, observations mark individual fully visible messages. At the
 physical bottom, 300 ms visibility of the newest message's bottom edge also earns
@@ -53,10 +61,14 @@ catch-up (including a message taller than the viewport):
   count (see [Relevant replies](#relevant-replies)) are all attention, and stay
   unread until read in their thread. Replies outside the viewer's conversations
   do not count at all, so there is no reply activity to quiet. Mentions,
-  broadcasts and marked messages are not quieted. Participation discovered
-  later makes a reply relevant again, with its own unread state intact. A
-  timeline that shows replies (Solo chats) can end at one; that reply anchors
-  the live bottom without being acknowledged.
+  broadcasts and marked messages are not quieted by this mark: a timestamp
+  would also read attention delivered later with an older one (a retried send,
+  a fast clock). Participation discovered later makes a reply relevant again,
+  with its own unread state intact.
+- The same channel catch-up also writes `msg:` marks for the retained top-level
+  mentions and broadcast replies through the bottom row, as in Slack and Discord,
+  so a mention taller than the viewport is still read. Messages marked unread
+  keep their intent. Mobile and older desktop clients honor these marks.
 - `thread-activity:<root>` acknowledges replies through the newest reply only in
   that thread. A collapsed newest reply, or one outside the bottom viewport in a
   branch-ordered thread, cannot earn catch-up; visible rows still read individually.
@@ -69,21 +81,44 @@ catch-up (including a message taller than the viewport):
   (replies included) and ends a local manual unread on the DM. It writes no
   `activity:` or per-message marks. Like catch-up, it never uses wall time.
 
-This intentionally relaxes the old individual-row-only policy for ordinary
-backlog and the thread being read, without reading unopened threads' replies.
+This intentionally relaxes the old individual-row-only policy for the channel
+timeline and the thread being read, without reading unopened threads' replies.
 
 - `observedCount` is `null` when unknown or denied, never a fabricated zero.
   Otherwise it counts the bounded evidence currently known, excluding own messages,
-  auxiliary events, authorized deletions and replies outside the viewer's
-  conversations (see [Relevant replies](#relevant-replies)). It is **not an exact total or lower
+  auxiliary events, authorized deletions, quiet agent messages and replies outside
+  the viewer's conversations (see [Relevant replies](#relevant-replies)). It is **not an exact total or lower
   bound**: missing markers/deletions can overcount; missing history can undercount.
 - `coverage` and `freshness` describe message evidence, separately from `sync()`.
   Evidence is capped at 4,096 events / 8 MiB. Repair queries the membership roster
-  in sequential batches of at most 128 explicit channel IDs (the relay limit),
+  in sequential batches of at most 128 explicit channel IDs (the relay limit, in ID
+  order, so a rename does not move them),
   with up to 500 recent rows **per batch**, not a shared remainder or one head
   request per sidebar row. A 278-channel roster therefore makes three reads.
   Earlier results publish progressively and survive a later transport failure;
   capacity overflow retains the existing visible error/clear policy and stops repair.
+  A batch whose last read returned fewer rows than its limit (500), and at least one,
+  is read again only from sixteen minutes (960 s) before the newest of them: that read
+  saw everything in its window, and the relay accepts a `created_at` up to 900 s from
+  its own clock, so an event stored just after it can be backdated that far, and the
+  margin covers it, together with client clock skew and the relay's replica read budget.
+  "Fewer than its limit" means nothing was cut off because the relay applies the limit
+  to the rows it returns and does not filter repair kinds (9, 40002, 40008) out after
+  it. The mark never passes the present, so a skewed clock or a
+  future-dated event cannot hide history. A read that returned its full limit may have
+  cut off older rows (a later deletion frees a slot for one), so it installs no mark
+  and drops any existing one: the next repair of that batch reads in full, as it did
+  before. Retained evidence only grows between resets, so a bounded read adds what is
+  newer to what the earlier reads already returned. Cache clears, access changes,
+  capacity overflow and an explicit `refresh()` forget the marks and read every batch
+  in full. A repair still waiting for its answer when they do, or still accepting it
+  (a subscriber notified of the answer may refresh), installs no mark, and
+  after an overflow it also leaves the error and its refresh offer in place; `refresh()`
+  waits for it, then reads in full. An empty read installs no mark: a batch that has
+  never returned a row is read in full, and an existing mark stays, since its window
+  held nothing newer. Edits and deletions
+  of messages older than the window arrive through live traffic, as they do for the
+  unbounded read.
   Querying every ID does not mean observing every channel: busy channels can still
   consume their batch's sample, and missing thread roots can affect inherited markers.
   Repair evidence does not seed channel windows, alter cursors, or mark messages read.
@@ -119,7 +154,7 @@ backlog and the thread being read, without reading unopened threads' replies.
   marks that the channel count does not show, so an already-read community costs no writes. One failing channel does not stop
   the sweep; the first failure is rethrown afterwards. A channel whose grant is
   revoked before its turn is skipped, not failed; like a grant that arrives
-  mid-sweep, it waits for the next explicit action. The community rail's
+  mid-sweep, it waits for the next explicit action. The community switcher's
   Mark all as read uses it for the selected community only.
 - `markUnreadLocal(target)` is durable **on this browser profile/device only**.
   Automatic reading does not clear it. An explicit mark-through clears that
@@ -131,6 +166,8 @@ backlog and the thread being read, without reading unopened threads' replies.
 The sidebar separates ordinary unread from directed attention. Ordinary backlog
 or local manual intent strengthens the channel label; protected attention alone
 retains its dot without bolding a caught-up channel. DMs retain unread bolding.
+Solo chat labels strengthen for any observed unread message, including mentions,
+broadcasts and relevant replies, so Solo rows omit the attention dot.
 Ordinary unread renders no row marker. DMs, mentions, broadcasts, and
 relevant thread replies add one accent dot; non-DM row numerals are omitted and DM
 avatars are reserved for promoted offscreen cues. Thread activity reuses that dot:
@@ -164,8 +201,9 @@ A partly visible row is not outside the fold. Activation scrolls and focuses the
 nearest row, retaining its ordinary focus preparation; it does not select the channel,
 prefer a farther DM, or acknowledge any messages.
 
-Thread buttons keep the summary's total reply count and add a dot when the shared
-thread selector has observed unread replies or explicit thread-unread intent.
+Thread buttons keep the relay's total reply count (plus replies this client has
+sent since that summary) and add a dot when the shared thread selector has observed
+unread replies or explicit thread-unread intent.
 Accessible names distinguish observed evidence, stale evidence and local-only
 intent; unknown/observed-zero omit the dot, not assert complete read history.
 Each mounted button subscribes to its own thread, without fetching thread history.
@@ -207,6 +245,18 @@ the reference client. A thread the viewer has not posted in therefore stays
 quiet, apart from mentions and broadcasts. Explicit per-message unread intent still
 applies to any reply. The same rule feeds channel and thread counts, thread
 activity, per-message attention and the `thread` notification category.
+
+**Quiet agent messages.** A message whose signed `audience` tag is `agents` is
+coordination between agents, which people see quietly: the agent harness sends
+progress and agent-to-agent detail with it and the completion message to
+everyone. It never counts toward channel or thread counts, never earns attention
+(direct, mention or thread, so a `p` tag inside it is not a mention), never
+appears as an Inbox item or thread activity, and never queues a conversation
+lookup. This is the rule the [notification pipeline](notifications.md#running-app-behavior)
+already applies. The row stays in evidence, so it is still `latestMessage` and
+the live bottom that catch-up reads through, and explicit **Mark unread** still
+applies to it. The tag is self-declared by the sender. Older clients, mobile and
+the relay's read-state and push rules do not apply the exemption yet.
 
 **Follow thread** / **Unfollow thread** in a message's menu records an explicit
 choice for the message's canonical thread root (`threadRootId ?? id`), so every

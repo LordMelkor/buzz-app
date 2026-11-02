@@ -1,4 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  communityActionLabel,
+  communityDefaultName,
+} from "../features/communities/names";
+import { communityDestination } from "../features/communities/destination";
 import type { Communities, Membership } from "../features/communities/service";
 import {
   CommunityDepartureError,
@@ -58,7 +63,7 @@ export function CommunityDepartureSettings({
         if (communities.snapshot().viewer === viewer)
           notify(
             leftCommunityText(
-              community.name,
+              communityActionLabel(community),
               result.outcome,
               result.residue.length > 0,
             ),
@@ -68,7 +73,10 @@ export function CommunityDepartureSettings({
         const result = await removeCommunityFromDevice(communities, community);
         if (communities.snapshot().viewer === viewer)
           notify(
-            removedFromDeviceText(community.name, result.residue.length > 0),
+            removedFromDeviceText(
+              communityActionLabel(community),
+              result.residue.length > 0,
+            ),
             "success",
           );
       }
@@ -83,15 +91,18 @@ export function CommunityDepartureSettings({
         error instanceof CommunityDepartureError ? error : undefined;
       notify(
         intent === "remove"
-          ? deviceRemovalFailureText(community.name, departure?.reason ?? error)
+          ? deviceRemovalFailureText(
+              communityActionLabel(community),
+              departure?.reason ?? error,
+            )
           : departure?.phase === "device"
             ? leaveCleanupFailureText(
-                community.name,
+                communityActionLabel(community),
                 departure.reason,
                 departure.outcome,
               )
             : leaveCommunityFailureText(
-                community.name,
+                communityActionLabel(community),
                 departure?.reason ?? error,
               ),
         "error",
@@ -147,8 +158,8 @@ export function CommunityDepartureSettings({
         <AlertDialog
           title={
             intent === "leave"
-              ? `Leave ${community.name}?`
-              : `Remove ${community.name} from this device?`
+              ? `Leave ${communityDefaultName(community)}?`
+              : `Remove ${communityDefaultName(community)} from this device?`
           }
           description={
             intent === "leave"
@@ -180,7 +191,19 @@ export function CommunityDepartureSettings({
               </Button>
             </>
           }
-        />
+        >
+          <div className="min-w-0 space-y-2 text-body-sm">
+            {community.localName &&
+              community.localName !== communityDefaultName(community) && (
+                <p className="text-muted">
+                  Shown as {community.localName} on this device
+                </p>
+              )}
+            <p className="break-all">
+              {communityDestination(community.id).url}
+            </p>
+          </div>
+        </AlertDialog>
       )}
     </section>
   );

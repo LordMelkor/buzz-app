@@ -17,10 +17,50 @@ import {
   type ReactNode,
 } from "react";
 
+/** Marks a scrolling strip's edges that have tabs past them, for the fade. */
+function useScrollEdges() {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const list = ref.current;
+    if (!list) return;
+    const update = () => {
+      // Right-to-left scroll offsets are negative.
+      const scrolled = Math.abs(list.scrollLeft);
+      const hidden = list.scrollWidth - list.clientWidth;
+      list.toggleAttribute("data-overflow-start", scrolled > 1);
+      list.toggleAttribute("data-overflow-end", hidden - scrolled > 1);
+    };
+    update();
+    list.addEventListener("scroll", update, { passive: true });
+    // Tabs added, removed or renamed change the strip without resizing it.
+    const content = new MutationObserver(update);
+    content.observe(list, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    const size =
+      typeof ResizeObserver === "undefined"
+        ? undefined
+        : new ResizeObserver(update);
+    size?.observe(list);
+    return () => {
+      list.removeEventListener("scroll", update);
+      content.disconnect();
+      size?.disconnect();
+    };
+  }, []);
+  return ref;
+}
+
+/** A host action in a tab's menu. */
+export type TabAction = { label: string; run(): void };
+
 export type TabItem<Value extends string> = {
   value: Value;
   label: string;
   icon?: ReactNode;
+  disabled?: boolean;
   trailing?: ReactNode;
   /** Link a retained, externally owned tab panel. */
   panelId?: string;
@@ -32,13 +72,16 @@ export type TabItem<Value extends string> = {
   onMove?: ((delta: -1 | 1) => void) | undefined;
   /** Double-click, F2 or the tab's menu edits its name; blank restores the default. */
   onRename?: ((name: string) => void) | undefined;
+  /** Listed first in the tab's menu. */
+  actions?: readonly TabAction[] | undefined;
 };
 
 /**
  * Which background this control is drawn for.
  *
  * `chrome` is the glass pill that belongs on the app gradient. `panel` is an
- * underline for a plain light or dark surface.
+ * underline for a plain light or dark surface. `segmented` groups filters
+ * on an opaque surface with an inset track and a raised selection.
  *
  * **A variant rather than a second component**, because behaviour, keyboard
  * model, accessibility, props, and the Base UI tabs underneath are identical —
@@ -47,7 +90,13 @@ export type TabItem<Value extends string> = {
  *
  * `chrome` is the default because every existing call site is on the gradient.
  */
-export type TabsVariant = "chrome" | "panel" | "workspace" | "navigation";
+export type TabsVariant =
+  | "chrome"
+  | "panel"
+  | "workspace"
+  | "navigation"
+  | "segmented"
+  | "segmented-icons";
 
 export function Tabs<Value extends string>({
   value,
@@ -57,6 +106,7 @@ export function Tabs<Value extends string>({
   onReselect,
   trailingAction,
   variant = "chrome",
+  size = "md",
   showSelection = true,
   previewValue,
   arrivalValue,
@@ -82,6 +132,8 @@ export function Tabs<Value extends string>({
   onReselect?: (value: Value) => void;
   trailingAction?: ReactNode;
   variant?: TabsVariant;
+  /** Segmented filter track size; other variants retain their own geometry. */
+  size?: "sm" | "md";
   /** Hide the visual selection for a single-view header; tab semantics remain. */
   showSelection?: boolean;
   /** Incoming tab being previewed before a workspace drop is committed. */
@@ -89,12 +141,14 @@ export function Tabs<Value extends string>({
   /** Brief visual confirmation of a tab arriving after a completed move. */
   arrivalValue?: Value | undefined;
 }) {
+  const iconOnly = variant === "segmented-icons";
   const [renaming, setRenaming] = useState<Value>();
   if (renaming !== undefined && !items.some((item) => item.value === renaming))
     setRenaming(undefined);
+  const list = useScrollEdges();
   const strip = (
     <>
-      <BaseTabs.List className="buzz-tabs-list" aria-label={label}>
+      <BaseTabs.List ref={list} className="buzz-tabs-list" aria-label={label}>
         {showSelection && variant !== "navigation" && (
           <BaseTabs.Indicator className="buzz-tabs-indicator" />
         )}
@@ -102,6 +156,7 @@ export function Tabs<Value extends string>({
           <TabMenu
             key={JSON.stringify([tabMenu?.key, item.value])}
             label={item.label}
+            actions={item.actions}
             closeAll={tabMenu?.closeAll}
             closeOthers={
               tabMenu?.closeOthers &&
@@ -113,6 +168,8 @@ export function Tabs<Value extends string>({
             <BaseTabs.Tab
               value={item.value}
               title={item.label}
+              disabled={item.disabled}
+              data-icon-only={iconOnly || undefined}
               render={
                 variant === "navigation" ? (
                   <NavigationItem
@@ -183,8 +240,16 @@ export function Tabs<Value extends string>({
               ) : null}
               {variant !== "navigation" && (
                 <>
-                  {item.icon}
-                  <span>{item.label}</span>
+                  {iconOnly ? (
+                    <span className="buzz-tabs-icon" aria-hidden="true">
+                      {item.icon}
+                    </span>
+                  ) : (
+                    item.icon
+                  )}
+                  <span className={iconOnly ? "sr-only" : undefined}>
+                    {item.label}
+                  </span>
                   {item.trailing}
                 </>
               )}
@@ -217,6 +282,7 @@ export function Tabs<Value extends string>({
       data-buzz-ui=""
       className={renderPanel ? "buzz-tab-panels" : "buzz-tabs"}
       data-variant={variant}
+      data-size={size}
       data-selection-hidden={!showSelection || undefined}
       value={value}
       onValueChange={(nextValue) => onValueChange(nextValue as Value)}
@@ -225,6 +291,7 @@ export function Tabs<Value extends string>({
         <div
           className="buzz-tabs"
           data-variant={variant}
+          data-size={size}
           data-selection-hidden={!showSelection || undefined}
         >
           {strip}
@@ -246,9 +313,10 @@ export function Tabs<Value extends string>({
   );
 }
 
-/** One shared menu composes tab naming with the host's close actions. */
+/** One shared menu composes host actions and tab naming with close actions. */
 function TabMenu({
   label,
+  actions,
   onClose,
   onRename,
   closeAll,
@@ -256,6 +324,7 @@ function TabMenu({
   children,
 }: {
   label: string;
+  actions: readonly TabAction[] | undefined;
   onClose: (() => void) | undefined;
   onRename: (() => void) | undefined;
   closeAll: (() => boolean) | undefined;
@@ -267,6 +336,9 @@ function TabMenu({
   const trigger = useRef<HTMLElement>(null);
   const [anchor, setAnchor] = useState<HTMLElement>();
   const closingAll = useRef(false);
+  // A host action runs once the menu has closed, from its tab, so a
+  // destination it opens can take focus from there.
+  const afterClose = useRef<() => void>(undefined);
   // Middle-click closes a closable tab, without the browser's own default.
   const item = {
     className: "buzz-tabs-item",
@@ -280,13 +352,22 @@ function TabMenu({
       onClose();
     },
   };
-  if (!onRename && !closeAll) return <span {...item}>{children}</span>;
+  if (!actions?.length && !onRename && !closeAll)
+    return <span {...item}>{children}</span>;
   return (
     <ContextMenuRoot
       open={open}
       onOpenChange={(next) => {
         if (next) closingAll.current = false;
         setOpen(next);
+      }}
+      onOpenChangeComplete={(next) => {
+        if (next) return;
+        const action = afterClose.current;
+        afterClose.current = undefined;
+        if (!action) return;
+        trigger.current?.querySelector<HTMLElement>('[role="tab"]')?.focus();
+        action();
       }}
     >
       <ContextMenuTrigger
@@ -321,6 +402,16 @@ function TabMenu({
               false)
         }
       >
+        {actions?.map((action) => (
+          <MenuItem
+            key={action.label}
+            onClick={() => {
+              afterClose.current = action.run;
+            }}
+          >
+            {action.label}
+          </MenuItem>
+        ))}
         {onRename && <MenuItem onClick={onRename}>Rename tab</MenuItem>}
         {closeOthers && (
           <MenuItem onClick={closeOthers}>Close other tabs</MenuItem>

@@ -3,8 +3,10 @@ import { projectSidebarRecord } from "./sidebar-registers";
 import {
   editSidebarSectionOrder,
   editSidebarSectionRemoval,
+  editSidebarSectionRename,
   validSidebarSectionOrder,
   validSidebarSectionRemoval,
+  validSidebarSectionRename,
   validSidebarAssignment,
   validSidebarChannelId,
   validSidebarSort,
@@ -101,6 +103,12 @@ it("validates create-section policy separately from the host envelope", () => {
     name: " Work ",
   };
   expect(validSidebarAssignment({ channelId: "c", createSection })).toBe(true);
+  expect(
+    validSidebarAssignment({
+      channelId: "c",
+      createSection: { ...createSection, position: "first" },
+    }),
+  ).toBe(true);
   expect(validSidebarAssignment({ channelId: "c" })).toBe(true);
   for (const intent of [
     { channelId: "c", sectionId: "" },
@@ -134,4 +142,36 @@ it("retains built-in and known-section sorting limits", () => {
     false,
   );
   expect(validSidebarSort("channels", "recent", [" "])).toBe(false);
+});
+
+it("renames one live section by rewriting only its name register", () => {
+  const current = {
+    version: 1,
+    sections: [
+      { id: "work", name: "Work", order: 0 },
+      { id: "later", name: "Later", order: 1 },
+    ],
+    assignments: { alpha: "work" },
+  };
+  const next = editSidebarSectionRename(
+    current,
+    1_700_000_000,
+    "work",
+    " Projects ",
+    42,
+  );
+  expect(projectSidebarRecord("channel-sections", next)).toMatchObject({
+    sections: [
+      { id: "work", name: "Projects", order: 0 },
+      { id: "later", name: "Later", order: 1 },
+    ],
+    assignments: { alpha: "work" },
+  });
+  expect(editSidebarSectionRename(next, 0, "work", "Projects", 43)).toBe(next);
+  expect(() => editSidebarSectionRename(current, 0, "gone", "X", 42)).toThrow(
+    "no longer exists",
+  );
+  expect(validSidebarSectionRename("work", "Projects")).toBe(true);
+  expect(validSidebarSectionRename("work", "  ")).toBe(false);
+  expect(validSidebarSectionRename("work", "x".repeat(257))).toBe(false);
 });

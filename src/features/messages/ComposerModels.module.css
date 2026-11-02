@@ -1,73 +1,68 @@
-/* The controls are the popup: no surface around them. */
+/* Base UI positions the group; each agent owns one floating card. */
 .popup {
   display: grid;
-  gap: var(--space-3);
-  width: 20rem;
-  max-width: var(--available-width);
+  gap: var(--space-1);
+  width: 23.5rem;
+  max-width: min(var(--available-width), calc(100vw - var(--space-4)));
+  max-height: var(--available-height);
+  overflow: auto;
+  padding: var(--space-1);
   outline: none;
 }
-
-.agent {
+.agent,
+.loading {
+  --floating-inset: var(--space-2);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
+  min-width: 0;
+  padding: 0;
 }
-
 .model {
   display: grid;
   min-width: 0;
   max-width: 100%;
 }
-
 .slider {
-  --track: calc(var(--space-8) + var(--space-2));
-  --thumb-height: var(--space-8);
   --thumb-width: var(--space-8);
-  --shoulder: var(--space-2);
-  --tab-inset: calc(var(--track) / 2);
   display: grid;
+  min-width: 0;
   width: 100%;
 }
-
 .control {
   position: relative;
   display: flex;
   align-items: center;
   width: 100%;
-  height: var(--track);
+  height: calc(var(--space-8) + var(--space-3));
+  margin-bottom: calc(-1 * (var(--space-1) + var(--space-half)));
   cursor: pointer;
   touch-action: none;
   user-select: none;
 }
-
 .slider[data-disabled] .control {
   cursor: not-allowed;
 }
-
 .track {
   position: relative;
+  container-type: inline-size;
   width: 100%;
-  height: 100%;
-  border: 1px solid var(--border-standard);
-  border-radius: var(--radius-pill);
-  background: var(--surface-popover);
-  box-shadow: var(--shadow-sm);
-}
-
-.indicator {
-  inset-block-start: 50%;
-  max-height: var(--space-6);
+  height: var(--space-8);
   border-radius: var(--radius-pill);
   background: var(--affordance-subtle);
-  margin-inline-start: var(--space-1);
+}
+.indicator {
+  inset-block-start: 50%;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--affordance-prominent);
+  overflow: hidden;
   transform: translateY(-50%);
   transition: width var(--duration-settle) var(--easing-settle);
 }
-
-/* Without a pick it still shows the level the run uses, if known. */
 .slider[data-unknown] .indicator {
   visibility: hidden;
 }
-
 .stop {
   position: absolute;
   inset-block-start: 50%;
@@ -77,132 +72,175 @@
     var(--stop) *
     (100% - var(--thumb-width))
   );
-  width: var(--space-half);
+  width: var(--space-1);
   height: var(--space-1);
   border-radius: var(--radius-pill);
   background: var(--text-subtle);
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
-
+.stop[data-filled] {
+  background: var(--text-on-prominent);
+}
 .thumb {
   width: var(--thumb-width);
-  height: var(--thumb-height);
-  border: var(--space-1) solid transparent;
+  height: var(--thumb-width);
+  border: 0;
   border-radius: var(--radius-pill);
-  background: var(--affordance-prominent);
-  background-clip: padding-box;
   transition: inset-inline-start var(--duration-settle) var(--easing-settle);
 }
-
-.slider[data-unknown] .thumb {
-  background-color: var(--affordance-subtle);
+.thumbFace {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--surface-popover);
+  box-shadow: var(--shadow-sm);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  transition: transform var(--duration-fast) var(--easing-settle);
 }
-
+.slider[data-dragging] .thumbFace {
+  transform: translateY(-2px) scale(1.1);
+}
+.thumbAvatar {
+  width: var(--space-5);
+  height: var(--space-5);
+}
 html[data-keyboard-navigation] .thumb:focus-within {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
-
-.slider[data-disabled] .thumb {
-  background-color: var(--affordance-disabled);
-}
-
-/* A single continuous rim: the tab covers the track's top stroke, while
- * concave shoulders turn its sides into that stroke without a square seam. */
-.tab {
+.tetherRow {
   position: relative;
-  z-index: 1;
-  justify-self: end;
-  margin-inline: var(--tab-inset);
-  translate: 0 1px;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  max-width: calc(100% - 2 * var(--tab-inset));
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border-standard);
-  border-block-end: 0;
-  border-start-start-radius: var(--radius-row);
-  border-start-end-radius: var(--radius-row);
-  background: var(--surface-popover);
-  color: var(--text-standard);
-  white-space: nowrap;
+  min-width: 0;
+  margin-bottom: calc(-1 * var(--space-half));
+}
+.tetherAnchor {
+  position: relative;
+  width: max-content;
+  max-width: 100%;
+  left: clamp(
+    var(--tether-half, 50%),
+    calc(
+      var(--thumb-width) /
+      2 +
+      var(--effort-progress) *
+      (100% - var(--thumb-width))
+    ),
+    calc(100% - var(--tether-half, 50%))
+  );
+  transform: translateX(-50%);
+  transition: left var(--duration-settle) var(--easing-settle);
+}
+.tetherSway {
+  transform-origin: center bottom;
+}
+.tetherSway button {
+  max-width: 100%;
+}
+.level,
+.about,
+.fixedModel,
+.loading {
   font-size: var(--text-caption);
   line-height: var(--text-caption--line-height);
   letter-spacing: var(--text-caption--letter-spacing);
   font-weight: var(--text-caption--font-weight);
 }
-
-.tab::before,
-.tab::after {
-  content: "";
-  position: absolute;
-  inset-block-end: 0;
-  width: var(--shoulder);
-  height: var(--shoulder);
-  background: radial-gradient(
-    circle at top left,
-    transparent calc(var(--shoulder) - 1px),
-    var(--border-standard) calc(var(--shoulder) - 1px),
-    var(--border-standard) var(--shoulder),
-    var(--surface-popover) var(--shoulder)
-  );
-}
-
-.tab::before {
-  inset-inline-end: 100%;
-}
-
-.tab::after {
-  inset-inline-start: 100%;
-  transform: scaleX(-1);
-}
-
-.solo {
-  justify-self: end;
-  display: grid;
-  min-width: 0;
-  max-width: 100%;
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border-standard);
-  border-radius: var(--radius-row);
-  background: var(--surface-popover);
-  box-shadow: var(--shadow-sm);
-}
-
 .about {
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--text-subtle);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption--line-height);
-  letter-spacing: var(--text-caption--letter-spacing);
-  font-weight: var(--text-caption--font-weight);
+  color: var(--text-standard);
 }
-
-.slider[data-dragging] .thumb,
-.slider[data-dragging] .indicator,
-html[data-keyboard-navigation] .slider * {
+.level,
+.loading {
+  color: var(--text-subtle);
+}
+.level {
+  white-space: nowrap;
+}
+.fixedModel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--affordance-subtle);
+  max-width: 100%;
+}
+.controls {
+  min-width: 0;
+  padding: 0 var(--space-2) var(--space-2);
+}
+.actions {
+  margin: 0;
+  flex-shrink: 0;
+  display: flex;
+  padding: 0;
+  border: 0;
+}
+.mesh {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.meshCanvas {
+  position: absolute;
+  left: calc(-1 * var(--mesh-bleed));
+  top: calc(-1 * var(--mesh-bleed));
+  width: calc(100cqw + 2 * var(--mesh-bleed));
+  height: calc(100% + 2 * var(--mesh-bleed));
+  filter: blur(var(--mesh-blur));
+}
+.slider[data-pointer-moving] .thumb,
+.slider[data-pointer-moving] .indicator,
+.slider[data-pointer-moving] .tetherAnchor,
+html[data-keyboard-input] .slider * {
   transition: none;
 }
-
 @media (prefers-reduced-motion: reduce) {
   .slider * {
     transition: none;
   }
+  .slider[data-dragging] .thumbFace {
+    transform: none;
+  }
+}
+@media (forced-colors: active) {
+  .mesh {
+    display: none;
+  }
+  .indicator {
+    background: Highlight;
+  }
+  .thumbFace {
+    background: ButtonFace;
+    border: 1px solid ButtonText;
+  }
 }
 
-.loading {
-  display: grid;
+.status {
+  display: flex;
+  align-items: center;
   gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--border-standard);
-  border-radius: var(--radius-row);
-  background: var(--surface-popover);
+  padding: var(--space-1);
+}
+.statusIcon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 var(--space-5);
+  height: var(--space-5);
   color: var(--text-subtle);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption--line-height);
-  letter-spacing: var(--text-caption--letter-spacing);
-  font-weight: var(--text-caption--font-weight);
+}
+.statusCopy {
+  display: grid;
+  justify-items: start;
+  min-width: 0;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+  font-size: var(--text-body-sm);
+  line-height: var(--text-body-sm--line-height);
+  letter-spacing: var(--text-body-sm--letter-spacing);
+  font-weight: var(--text-body-sm--font-weight);
 }

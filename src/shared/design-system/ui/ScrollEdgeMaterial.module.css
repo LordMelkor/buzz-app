@@ -1,0 +1,40 @@
+.root {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--scroll-edge-fill, transparent);
+}
+.root[data-edge="bottom"] {
+  transform: scaleY(-1);
+}
+.root > span {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+.root > span:nth-child(1) {
+  backdrop-filter: blur(2px);
+}
+.root > span:nth-child(2) {
+  backdrop-filter: blur(4px);
+  mask-image: linear-gradient(to bottom, black 30%, transparent 85%);
+}
+.root > span:nth-child(3) {
+  backdrop-filter: blur(8px);
+  background: linear-gradient(
+    to bottom,
+    var(--scroll-edge-surface, var(--surface-popover)) 25%,
+    transparent
+  );
+  mask-image: linear-gradient(to bottom, black 40%, transparent 75%);
+}
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  .root {
+    background: var(--scroll-edge-surface, var(--surface-popover));
+  }
+  .root > span {
+    display: none;
+  }
+}

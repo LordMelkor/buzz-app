@@ -46,6 +46,8 @@ test("a fresh opening retires a closed plugin draft even before its exit finishe
     resolve: () => panel,
     snapshot: () => available,
     subscribe: () => () => {},
+    requestOpen: () => false,
+    handleOpenRequests: () => () => {},
   };
   function Host() {
     const launcher = usePanelLauncher(panels, true);

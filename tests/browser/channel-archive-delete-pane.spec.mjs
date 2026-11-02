@@ -129,7 +129,7 @@ for (const action of ["archive", "delete"]) {
       );
       await expect(
         dialog.getByRole("button", {
-          name: action === "delete" ? "Cancel" : label,
+          name: "Cancel",
           exact: true,
         }),
       ).toBeFocused();
@@ -220,11 +220,13 @@ for (const action of ["archive", "delete"]) {
             exact: true,
           }),
         ).toBeFocused();
-        await expect(composer).toBeDisabled();
-        await expect(composer).toHaveJSProperty("value", draft);
+        await expect(composer).toHaveCount(0);
+        await expect(
+          page.getByRole("region", { name: "Archived channel", exact: true }),
+        ).toHaveText("This channel is archived");
         await expect(
           page.getByRole("button", { name: "Send message", exact: true }),
-        ).toBeDisabled();
+        ).toHaveCount(0);
       } else {
         await expect(panel).toHaveCount(0);
         await expect(sidebar.locator("button[data-channel-id]")).toHaveCount(0);
@@ -242,11 +244,13 @@ for (const action of ["archive", "delete"]) {
         await expect(
           panel.getByRole("button", { name: "Unarchive channel", exact: true }),
         ).toBeVisible();
-        await expect(composer).toBeDisabled();
-        await expect(composer).toHaveJSProperty("value", draft);
+        await expect(composer).toHaveCount(0);
+        await expect(
+          page.getByRole("region", { name: "Archived channel", exact: true }),
+        ).toHaveText("This channel is archived");
         await expect(
           page.getByRole("button", { name: "Send message", exact: true }),
-        ).toBeDisabled();
+        ).toHaveCount(0);
         await page
           .getByRole("button", {
             name: "Close Channel settings tab",
@@ -290,8 +294,10 @@ for (const action of ["archive", "delete"]) {
           exact: true,
         });
         await expect(restore).toBeVisible();
-        await expect(composer).toBeDisabled();
-        await expect(composer).toHaveJSProperty("value", draft);
+        await expect(composer).toHaveCount(0);
+        await expect(
+          page.getByRole("region", { name: "Archived channel", exact: true }),
+        ).toHaveText("This channel is archived");
         await expect(
           panel.getByRole("button", { name: "Archive channel", exact: true }),
         ).toHaveCount(0);
@@ -329,9 +335,46 @@ for (const action of ["archive", "delete"]) {
         await expect(restore).toBeFocused();
         expect(app.report.lifecyclePublications).toHaveLength(1);
         await restore.click();
-        await unarchive
-          .getByRole("button", { name: "Unarchive channel", exact: true })
-          .click();
+        await unarchive.evaluate(async (element) => {
+          await Promise.all(
+            element.getAnimations().map((animation) => animation.finished),
+          );
+        });
+        // Force the operation to finish before the confirmation's exit does.
+        const exitGate = await unarchive.evaluateHandle((element) => {
+          const state = { held: false, animations: [] };
+          const observer = new MutationObserver(() => {
+            if (!element.hasAttribute("data-ending-style")) return;
+            for (const animation of element.getAnimations()) {
+              animation.pause();
+              state.animations.push(animation);
+              state.held = true;
+            }
+          });
+          observer.observe(element, {
+            attributes: true,
+            attributeFilter: ["data-ending-style"],
+          });
+          return {
+            state,
+            release() {
+              observer.disconnect();
+              for (const animation of state.animations) animation.finish();
+            },
+          };
+        });
+        try {
+          await unarchive
+            .getByRole("button", { name: "Unarchive channel", exact: true })
+            .click();
+          await expect
+            .poll(() => exitGate.evaluate(({ state }) => state.held))
+            .toBe(true);
+          await expect(row).toBeVisible();
+        } finally {
+          await exitGate.evaluate((gate) => gate.release());
+          await exitGate.dispose();
+        }
         await expect(unarchive).toHaveCount(0);
         await expect(panel).toBeVisible();
         await expect(
@@ -489,7 +532,7 @@ test.describe("owner-role agent without direct ownership", () => {
     await expect(panel).toHaveCount(0);
     await expect(row).toHaveCount(0);
     await expect(
-      page.getByRole("textbox", { name: "Message #Alpha", exact: true }),
+      page.getByRole("textbox", { name: "Message #Beta", exact: true }),
     ).toBeVisible();
     expect(app.report.lifecyclePublications.map((event) => event.kind)).toEqual(
       [9008],

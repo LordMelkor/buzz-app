@@ -1,6 +1,7 @@
 // A conversation's goose sessions, read back through a short-lived `goose-acp`
 // and shown in the host's turn-transcript model. goose keeps the sessions in
 // its own database; nothing here writes or keeps them.
+import { isMessageTool } from "../../buzz-mcp/session-tools";
 import {
   promptMessage,
   promptSections,
@@ -9,8 +10,8 @@ import {
   type TranscriptItem,
   type TranscriptTurn,
 } from "../../features/agents/activity-transcript";
-import type { GooseProcess, Spawn } from "./goose";
-import { absolute } from "./sessions";
+import { type GooseHost, type GooseProcess, REQUEST_TIMEOUT_MS } from "./goose";
+import { absolute, abortable } from "./sessions";
 import { briefly } from "./setup";
 
 /** The latest turns shown; goose keeps the rest. */
@@ -23,12 +24,17 @@ const STEER = "new-message-arrived-while-you-were-working";
 
 type Json = Record<string, unknown>;
 /** A message as goose saves it. */
-type Message = {
+export type Message = {
   id?: string | null;
   role: string;
   created: number;
   content: Json[];
-  metadata?: { userVisible?: boolean; steer?: boolean };
+  metadata?: {
+    userVisible?: boolean;
+    steer?: boolean;
+    usage?: unknown;
+    inference?: unknown;
+  };
 };
 /** A place the agent talks in: a channel, or a thread in one. */
 export type Place = Readonly<{ channelId: string; root?: string }>;
@@ -200,7 +206,11 @@ export function gooseTurns(
         const name = str(value.name);
         const input = object(value.arguments) ?? {};
         const callId = str(block.id);
-        if (name === "buzz__send" && str(input.text).trim()) {
+        if (
+          name.startsWith("buzz__") &&
+          isMessageTool(name.slice("buzz__".length)) &&
+          str(input.text).trim()
+        ) {
           const message: TranscriptItem & { posted?: boolean } = {
             id: key,
             at,
@@ -255,6 +265,10 @@ function opening(messages: readonly Message[]) {
   return undefined;
 }
 
+/** The agent a session's first prompt names, if any. */
+export const ownerOf = (messages: readonly Message[]) =>
+  opening(messages)?.("Agent");
+
 /** Whether a session was started for the agent in `place`: its first prompt's
  * context names the same agent, channel and, for a thread, thread root. */
 export function startedFor(
@@ -280,37 +294,78 @@ type Listed = {
   updatedAt?: string | null;
 };
 
-/** The agent's goose sessions in its workspace, newest first; `query` keeps
- * those whose messages mention it. */
+/** A page of the goose sessions in the workspace, newest first; `query`
+ * keeps those whose messages mention it. */
+async function page(
+  goose: GooseProcess,
+  cwd: string,
+  query?: string,
+  cursor?: string,
+) {
+  const { sessions, nextCursor } = (await goose.request(
+    "session/list",
+    {
+      cwd,
+      ...(cursor ? { cursor } : {}),
+      _meta: { types: ["acp"], ...(query ? { query } : {}) },
+    },
+    REQUEST_TIMEOUT_MS,
+  )) as { sessions: Listed[]; nextCursor?: string | null };
+  return {
+    rows: sessions.map(
+      (session): GooseSessionRow => ({
+        sessionId: session.sessionId,
+        title: session.title ?? "",
+        at: Date.parse(session.updatedAt ?? "") || 0,
+      }),
+    ),
+    next: (sessions.length && nextCursor) || undefined,
+  };
+}
+
+/** The first page of the agent's goose sessions in the workspace, newest
+ * first; `query` keeps those whose messages mention it. */
 async function list(goose: GooseProcess, cwd: string, query?: string) {
-  const { sessions } = (await goose.request("session/list", {
-    cwd,
-    _meta: { types: ["acp"], ...(query ? { query } : {}) },
-  })) as { sessions: Listed[] };
-  return sessions.map(
-    (session): GooseSessionRow => ({
-      sessionId: session.sessionId,
-      title: session.title ?? "",
-      at: Date.parse(session.updatedAt ?? "") || 0,
-    }),
-  );
+  return (await page(goose, cwd, query)).rows;
+}
+
+/** Every goose session in the workspace. Without a query a page is an index
+ * lookup; with one, the SQLite goose bundles (3.51) parses each session's
+ * messages again for every message in it, which takes seconds. */
+async function all(goose: GooseProcess, cwd: string) {
+  const rows: GooseSessionRow[] = [];
+  let cursor: string | undefined;
+  do {
+    const read = await page(goose, cwd, undefined, cursor);
+    rows.push(...read.rows);
+    cursor = read.next;
+  } while (cursor);
+  return rows;
 }
 
 async function messages(goose: GooseProcess, sessionId: string) {
-  const { data } = (await goose.request("_goose/unstable/session/export", {
-    sessionId,
-    format: "json",
-  })) as { data: string };
+  const { data } = (await goose.request(
+    "_goose/unstable/session/export",
+    { sessionId, format: "json" },
+    REQUEST_TIMEOUT_MS,
+  )) as { data: string };
   const session = object(JSON.parse(data));
   return (
     Array.isArray(session?.conversation) ? session.conversation : []
   ) as Message[];
 }
 
+/** A listed session's messages; none for one goose deleted since it listed it. */
+const listed = (goose: GooseProcess, sessionId: string) =>
+  messages(goose, sessionId).catch((error): Message[] => {
+    if (/not found/i.test(String(error))) return [];
+    throw error;
+  });
+
 /** What a session's transcript is read for: one session, or every session the
  * agent ran for a place. */
 export type Lookup = Readonly<{
-  /** The agent's pubkey, as its turn prompts name it. */
+  /** The agent's membership key, as its turn prompts name it. */
   agent: string;
   workspace: string;
   sessionId?: string;
@@ -321,33 +376,51 @@ export type Lookup = Readonly<{
 
 /** goose's history for an agent, each read in its own short-lived `goose-acp`. */
 export class GooseHistory {
-  constructor(private readonly spawn: Spawn | undefined) {}
+  constructor(private readonly host: GooseHost | undefined) {}
 
   /** The agent's latest sessions in `workspace`, newest first: those whose
-   * first prompt names its pubkey, `agent`. */
+   * first prompt names its key, `agent`. */
   recent(agent: string, workspace: string, signal: AbortSignal) {
-    return this.with(signal, async (goose, spawn) => {
-      const cwd = await absolute(spawn, workspace);
+    return this.with(signal, async (goose, { resolveDirectory }) => {
+      const cwd = await absolute(resolveDirectory, workspace);
       const rows: GooseSessionRow[] = [];
       for (const row of await list(goose, cwd, agent)) {
         if (rows.length >= RECENT_LIMIT) break;
         signal.throwIfAborted();
-        // One goose deleted since it listed it is left out.
-        const read = await messages(goose, row.sessionId).catch((error) => {
-          if (/not found/i.test(String(error))) return [];
-          throw error;
-        });
+        const read = await listed(goose, row.sessionId);
         if (opening(read)?.("Agent") === agent) rows.push(row);
       }
       return rows;
     });
   }
 
+  /** Every session in `workspace` used since `since`, newest first, and the
+   * messages of those `wanted` picks, all from one `goose-acp`: every agent
+   * in a workspace reads its sessions from one listing. */
+  workspace(
+    workspace: string,
+    since: number,
+    wanted: (row: GooseSessionRow) => boolean,
+    signal: AbortSignal,
+  ) {
+    return this.with(signal, async (goose, { resolveDirectory }) => {
+      const cwd = await absolute(resolveDirectory, workspace);
+      const rows = (await all(goose, cwd)).filter((row) => row.at >= since);
+      const messages = new Map<string, Message[]>();
+      for (const row of rows) {
+        if (!wanted(row)) continue;
+        signal.throwIfAborted();
+        messages.set(row.sessionId, await listed(goose, row.sessionId));
+      }
+      return { rows, messages };
+    });
+  }
+
   /** The agent's newest session for `place`, or undefined when goose has none
    * for it in this workspace. */
   find(agent: string, workspace: string, place: Place, signal: AbortSignal) {
-    return this.with(signal, async (goose, spawn) => {
-      const cwd = await absolute(spawn, workspace);
+    return this.with(signal, async (goose, { resolveDirectory }) => {
+      const cwd = await absolute(resolveDirectory, workspace);
       for (const row of await candidates(goose, cwd, place))
         if (startedFor(await messages(goose, row.sessionId), agent, place))
           return row;
@@ -361,10 +434,10 @@ export class GooseHistory {
     lookup: Lookup,
     signal: AbortSignal,
   ): Promise<GooseTranscript | undefined> {
-    return this.with(signal, async (goose, spawn) => {
+    return this.with(signal, async (goose, { resolveDirectory }) => {
       const ids = new Set(lookup.sessionId ? [lookup.sessionId] : []);
       if (lookup.place) {
-        const cwd = await absolute(spawn, lookup.workspace);
+        const cwd = await absolute(resolveDirectory, lookup.workspace);
         for (const row of await candidates(goose, cwd, lookup.place))
           ids.add(row.sessionId);
       }
@@ -398,7 +471,6 @@ export class GooseHistory {
       turns.sort((a, b) => a.startedAt - b.startedAt);
       return {
         turns: turns.slice(-TURN_LIMIT),
-        unknownThread: 0,
         more: turns.length > TURN_LIMIT,
       };
     });
@@ -406,14 +478,12 @@ export class GooseHistory {
 
   private async with<T>(
     signal: AbortSignal,
-    run: (goose: GooseProcess, spawn: Spawn) => Promise<T>,
+    run: (goose: GooseProcess, host: GooseHost) => Promise<T>,
   ) {
-    const { spawn } = this;
-    if (!spawn) throw new Error("goose runs only in the desktop app");
-    signal.throwIfAborted();
-    const result = await briefly(spawn, (goose) => run(goose, spawn));
-    signal.throwIfAborted();
-    return result;
+    const { host } = this;
+    if (!host) throw new Error("goose runs only in the desktop app");
+    // Cancelling rejects at once, and `briefly` then stops goose.
+    return briefly(host, (goose) => abortable(run(goose, host), signal));
   }
 }
 

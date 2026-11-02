@@ -1,14 +1,426 @@
 # Packaged human identity and relay access
 
-Native macOS, Windows and Linux without the live development broker offer
-**Use an existing key** or **Create a new identity**. These are alternatives. Import accepts an nsec,
-validates its checksum and secp256k1 scalar, and persists that exact key before
-adopting its public identity. It never generates a replacement after an import,
-read or write failure. Denied/unavailable/corrupt storage is not first run.
+Native macOS, Windows and Linux without the live development broker open on a
+welcome screen when no human key exists on this device: **Buzz** — "Your people,
+your agents, your projects — all in one place." — with **Sign in with email**
+(the label the Buzz mobile client uses; first-run copy never names the sign-in
+provider) and a live **Community URL** field with **Continue** beside it (the
+same field and normalisation as Join a community below). Sign in runs the
+bundled Builderlab plugin's browser sign-in under that plugin's own native
+network grant; that credential is not yet shared with Settings → Integrations →
+Builderlab. A failed or canceled sign-in shows *Couldn’t sign in* with the
+error and **Back** to the welcome screen. The welcome screen carries the
+onboarding artwork and wordmark, and every later first-run page sits on the
+same artwork; pages without a finished design are plain black-and-white
+wireframes. When a page replaces another, focus moves to the new page's
+heading unless the page focuses a field itself, and **Back** returns focus to
+the choice that opened the page.
+
+Federated-identity builds (`BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG`) do not yet
+support this flow. **Sign in with email** runs under the bundled Builderlab
+plugin's own network grant, which an FI build does not have (its Builderlab
+calls go through the native FI session; #1461), so sign-in fails with
+*Couldn’t sign in* after the browser step. FI builds need their own first-run
+path before adopting this flow.
+
+A URL given on the welcome screen is looked up first, before sign-in and before
+any key exists: **Continue** opens the same **Finding community** page described
+below, which sends only the two unauthenticated GETs, so a typo, an unreachable
+relay or a non-Buzz address fails there with the same classified copy; **Cancel**
+(and **Retry**, when offered) behave as below, except that Cancel returns to the
+welcome screen with the address kept in the field. A build has one Builderlab,
+and the only listed deployment is the public one (`builderlab-hosted.ts`): a
+host under `communities.buzz.xyz` on the default port, or a relay publishing
+that deployment's NIP-11 `self` key, is hosted by this build's Builderlab when
+the origin of `BUZZ_BUILDERLAB_URL` is `https://app.builderlab.xyz`. Such a
+community requires Builderlab sign-in, so it starts at once there, exactly as
+the welcome screen's own button does, and the welcome screen shows it pending
+(**Cancel sign-in**, with the field disabled); setup then lands on **Join
+Community** for the address, and it is never offered a key of the user's own
+instead. Cancel sign-in, and **Back** from a sign-in or setup failure, return
+to the welcome screen with the address kept and do not look it up again. A
+canceled sign-in that finishes later is ignored: it cannot restart setup or use
+a later sign-in's account. Any other found community, including one run by
+another Builderlab deployment, and every community in a build whose
+`BUZZ_BUILDERLAB_URL` is another origin or empty, pauses on **Connect to
+{host}**: nothing a relay publishes names its sign-in portal, so the user
+chooses. The page says only that Buzz relies on a key for the user's identity; its choices are
+**Sign in with email**, which signs in at `BUZZ_BUILDERLAB_URL` and
+continues exactly as the welcome screen's own button does (the landing shows
+the sign-in pending with the address held; the key it creates is linked to that
+account and backed up there), and setup then lands on **Join Community** for
+the address;
+**I already have a key** opens **Enter your private key** and, with no account
+signed in, continues from there with no link step and no backup offer; **Back**
+returns to the welcome screen with the address kept.
+
+Success continues to a **Setting up Buzz** page that shows the current step
+beside a spinner. It first runs **Checking your account**, a real read of the
+Nostr key bound to the signed-in Builderlab account
+(`POST /api/goose/v1/buzz/nostr-identities/current` at the portal that signed
+the user in, authenticated with the first-run session credential and sent
+through the bundled plugin's native grant; `src/features/identity/builderlab-account.ts`,
+sharing the hosted-communities card's routes and reply parsers). A `200` with
+no `identity` means no key is linked (kgoose sends `MISSING_MAPPING` only from
+the community list); any other failure is **Couldn’t finish setup**, naming the
+step and HTTP status (never the response body), for example "Builderlab account
+check failed (HTTP 403: not JSON)". A lapsed sign-in, which kgoose answers on
+every account route with a plain-text HTTP 401, reads *Your Builderlab sign-in
+is no longer valid.* here and on every later account step. Binding is 1:1 and
+enforced, so the answer picks the lane: a linked account is never given a
+second key. Under the same label, and in parallel, it reads the destinations
+saved to the account (`POST /api/goose/v1/buzz/known-communities/list`, same
+portal and credential: the list the Builderlab plugin's
+[known-communities sync](communities.md#known-communities) keeps, which needs
+no Nostr identity). That read never fails setup: a refusal, a portal without
+the route (a plain-text `404`) or a row the app cannot read leaves the list
+unknown and first run continues as if the account had saved none. The list is
+kept from sign-in until the welcome screen is shown again, so Start over keeps
+it, and every lane ends by restoring it (*Restoring your communities*, below).
+
+Either lane continues with *Checking for a backed-up key*, which reads the
+keys the account holds a backup of
+(`POST /api/goose/v1/buzz/nsec-backups/status`, same portal). It is sent only
+where the backup step can run (see
+[automatic backup](#automatic-backup-and-optional-recovery)); kgoose answers
+`404` wherever backups are not configured. Not sent, a `404` or any failure
+leaves the lookup unavailable rather than empty, and never fails setup: it only
+decides whether Welcome back offers a restore and whether an import needs the
+backup offer.
+
+**Not linked** then pauses on **Set up your key**: when the lookup listed no
+backups, it says no backed-up key was found for this account, so Buzz will
+make one (an unavailable or failed lookup says nothing either way, nor does
+one that lists backups, which outlive an unlink), and it says that an
+encrypted copy is backed up to the account, which Block can use to restore the
+key on the user's other devices. Under the body it says who is signed in
+(*Signed in as {email}.*, or *Signed in.* when the portal sent no address), so
+a wrong account is visible before any key exists. Like the welcome screen, it
+stacks its choices at the bottom: **Create my key** (primary) above a quieter
+**I already have a key** and **Use a different account**, which signs the
+first-run session out and returns to the welcome screen with the typed address
+kept and no key created. The browser may still hold the portal's own cookie
+session, so the next **Sign in with email** can re-select the same account
+unless the user signs out of the portal in the browser first; first run cannot
+end that session. Choosing Create my key is the backup consent (see
+[consent hooks](#automatic-backup-consent-hooks)). It runs **Creating keys**,
+which generates a Nostr key through the same native create command as the key
+setup screen, so the next launch opens as a returning user; then **Linking your key**, which
+binds that key to the signed-in account at the same portal (kgoose's binding
+challenge, signed natively as a kind-24243 event, then verified — the flow the
+hosted-communities card drives), sending nothing more when the account already
+holds the key; then **Backing up your key**, which waits for the native
+uploader to confirm the backup
+([automatic backup](#automatic-backup-and-optional-recovery)). First run never
+shows the new key; Settings → Identity can reveal it later.
+
+**I already have a key** opens **Enter your private key** while setup stays
+paused, laid out as the onboarding import screen (centred heading and body,
+**Continue with this key** above **Back** at the bottom): a masked private-key
+field —
+paste or type an `nsec1…` key,
+or drop or choose a text file of at most 1 KiB whose first line is one — with
+**Reveal private key**, a live *Public identity* npub preview under a valid key
+(never hex), and classified messages for anything else: a NIP-49 `ncryptsec1…`
+backup is refused as *Password-protected backups aren’t supported here yet*
+(the app has no NIP-49 decryption), other text as *That doesn’t look like a
+valid nsec*. **Back** returns to Set up your key with the typed key discarded;
+**Continue with this key**, enabled only for a valid nsec, stores it through the
+same native import command as the key setup screen (`identity_import`, which
+takes the nsec as typed) behind *Importing your key…*, shown on the same
+screen. A native refusal — an
+invalid key, or a key already saved in this slot — appears under the field with
+the form kept. An imported key is then linked to the account like a created
+one and pauses on **Back up this key?**, since importing never uploads
+silently: Buzz can keep an encrypted copy in the account, which Block can use
+to restore this key, including anywhere else it is used. **Not now** carries on without a
+backup; **Back it up**, the backup consent for that key, runs **Backing up your
+key**. An import from **Connect to {host}**, with no Builderlab sign-in, has
+no account to link the key to or back it up in, so it skips the link and the
+offer and continues at once.
+
+**Linked** pauses on **Welcome back**: the account is already linked to a Buzz
+identity — the key on the user's other device — shown as the full npub under
+*Linked public key (npub)* with **Copy**, with the same *Signed in as {email}.*
+line under the body. A linked key does not mean a
+backed-up one, so only when the lookup lists the linked key does the page also
+offer **Restore from backup** (primary), with **Enter your private key** as a
+smaller choice; otherwise **Enter your private key** is primary. It opens the
+same import page, which here accepts only the linked key: any other valid nsec
+is refused under the field with *That isn’t the key linked to this account. It
+expects npub1…*, and **Back** returns to Welcome back. **Recover from another
+device** is *Coming soon* (device pairing is its future entry). Last in the
+stack, **Use a different account** is the same exit as on Set up your key: it
+signs the session out and returns to the welcome screen without importing,
+restoring or replacing the linked key. The imported
+key is already the account's, so nothing is linked. Unless the lookup already
+lists it, a successful import then pauses on **Back up this key?** as on a new
+account; a listed key continues without the offer.
+
+**Restore from backup** runs native recovery (see
+[optional recovery](#automatic-backup-and-optional-recovery)), which opens its
+own browser sign-in: the first-run one is not reused. Above the recovery, the
+page centres its heading and, only while it waits for that sign-in or offers
+the linked key, *Your key is stored securely on this device.*: an outcome that
+restores nothing drops the line, and the unavailable copy below replaces it. Of
+the keys it recovers, only the linked one is offered; a recovery without it
+says *None of your backups holds the key linked to this account, so nothing was
+restored.*, installs nothing and offers **Enter your private key**, which opens
+the import page. Installing the key continues as an import does, without the
+backup offer: the key is already backed up. Where recovery is unavailable for
+the deployment or refused for the account (public organizations are refused by
+design), the page says *Backup restore isn’t available for this account* and
+offers **Enter your private key**, which opens the import page, never a retry.
+Any other failure offers **Try recovery again**. **Back** cancels the recovery
+and returns to Welcome back.
+
+On Welcome back, **I lost this key** (quieter) runs **Finding communities**, a real read of the
+communities the account owns
+(`POST /api/goose/v1/buzz/communities/list`), and shows **Start over with a new
+key**: a new key loses everything the old one could reach; *Communities you
+own* lists their hostnames (*None* when empty, or that the list could not be
+loaded), and memberships in other people's communities cannot be listed and are
+lost too. The page also says that starting over unlinks the old key, then
+creates a new key, links it to the account and keeps an encrypted copy that
+Block can use to restore it, so choosing it is the new key's backup consent.
+**Back** returns to Welcome back; **Start over with a new key** (destructive)
+runs **Creating keys**, then *Unlinking your old key*, which deletes the old
+key's binding (`POST /api/goose/v1/buzz/nostr-identities/delete`), then
+**Linking your key** and **Backing up your key** for the new key, with no key
+choice between. The old key stays linked until the new one is on the device,
+and binding never overwrites, so the unlink comes after creation and before
+the link. The unlink checks the bound key first: it sends nothing more when
+the account holds no key or the new one, fails when it holds a third key, and
+deletes only while it is still the old one, so repeating it never removes the
+new key's binding. It
+counts as done only when kgoose confirms removing the old key, or the account
+then holds no key or the new one. If the old key is still bound (kgoose removes
+nothing when the sign-in is no longer active) or another key is, the step fails
+without Try again.
+Welcome back itself never offers Create my key.
+
+Every lane ends the same way. A linked account runs **Finding communities**
+(the same real read) once its key is on the device; the old key's list is not
+read after starting over. A failed step shows **Couldn’t finish setup** with the
+error — for a refused link, the hosted-communities card's copy (*This
+Builderlab account is connected to another Buzz identity.*, *This Buzz identity
+is connected to another Builderlab account.*) or first run's own for kgoose's
+other refusals, such as an expired link request or too many attempts; for a
+backup, why it did not complete; otherwise the step and HTTP status, as for the
+account check. kgoose's own wording is never shown, nor its correlation ID,
+which stays on the error and is logged in development builds. Once a key is on
+the device, the page also says what is undone: *Your key is saved on this
+device, but it isn’t linked to your account or backed up yet.* when
+the unlink or link failed (a key that isn't linked can't be backed up),
+otherwise *Your key is saved on this device, but it isn’t backed up yet.* A
+failure that may clear offers **Try again** (primary), which repeats the failed
+step and the rest of the lane, never creating a second key: for the account
+check, unlink or link, no answer, too many requests (HTTP 429) or a server
+error (HTTP 5xx), and for the link also a link request that expired, was
+already used or could not be found, since Try again asks for a new one; for a
+backup, Builderlab being unreachable or slow to confirm. A lapsed sign-in is
+never retried, since Try again would send the same sign-in. A failed unlink or
+link with a key on the device blocks: nothing links the key later, so the page
+offers only **Try again**, whatever the failure, and no way past it. A failed
+backup also offers **Continue without backup**, which writes nothing and skips
+the remaining steps for the end of the lane below (Finding communities on a
+linked account, then the restore); a later sign-in runs the backup again.
+Before a key exists, the page offers **Back** to the welcome screen instead.
+
+Within one first-run session the Join page exits only through a join or a
+restored community; there is no skip. That holds only while the app stays
+open. Quitting with a key on the device but no saved community ends first run:
+the next launch restores the key and, with setup idle, lifts the gate straight
+into the in-app **Join a community** landing (`CommunityLanding`), the page a
+key without a community has always opened on. The key stays on the device, and
+the **Key backup** row in Settings → Identity shows the backup state. A link or
+backup step still running at quit ends with the process: the native uploader's
+pass is retired, and whether the link committed on kgoose is unknown to the
+client. Both are safe to run again — the link reads the account's current key
+first and does nothing when it already holds this one, and the uploader runs
+again when the user next signs in to Builderlab in Settings — but nothing
+re-runs the link on its own, and Settings has no row for it; the Key backup row
+reports only what the uploader's last pass found.
+
+Every lane ends with *Restoring your communities…* when the account check
+listed destinations saved to the account (`src/features/identity/restore-communities.ts`):
+each distinct destination this build can open (the list is deduplicated by
+canonical origin, and an address the app cannot open is skipped) gets the
+same signed profile read the Join Community page uses to prove admission, at
+most three at once, and none started more than 45 s after the step began. A
+destination that admits the key is saved to this device through
+`communities.joined` under its hostname (its relay profile seeds the empty
+local default); one that refuses the key, cannot be reached or will not save
+is recorded and otherwise silent — nothing shows it in the app, and the
+Builderlab plugin's sync adds it without an admission read after the next
+Settings sign-in. The step never fails setup. Where setup rests then depends
+on what was admitted:
+
+- Nothing (the list was empty, unreadable, or every destination was refused or
+  unreachable): the Join page below, as if the account had saved none.
+- At least one, with no address given on the welcome screen: the first
+  admitted is selected and the app opens on it.
+- At least one, and the welcome-screen address is among them: that one is
+  selected and the app opens on it; nothing else is asked.
+- At least one, but the welcome-screen address is not among them (not saved,
+  refused or unreachable): the first admitted is selected, the app opens on it,
+  and the typed address — with its invite code, if it came from an invite link —
+  is handed to the rail's **Add a community** dialog through the same invite
+  intent a `buzz://join` link uses ([deep links](deep-links.md)), so the join
+  completes inside the app: discovery, policy, code, profile. A saved
+  destination that refused the key therefore never shows the first-run **This
+  community needs an invite** page; the dialog's access step says to ask an
+  administrator for a code, and the npub is in Settings → Identity. Closing
+  the dialog leaves the restored community selected.
+
+Entering the app this way (as after a first-run join) first runs the profile
+step below when no profile exists anywhere, and clears the typed address from
+the welcome screen's own state, so once the dialog owns it nothing on this
+side can look it up again. The startup visit's 15-second deadline runs only
+while the app is presenting it, so a first run of any length enters on the
+channels page rather than a timed-out destination. Otherwise setup lands on
+**Join Community** for the address given on the welcome screen, looked up again
+(the policy may have changed meanwhile), or otherwise on **Join a community**,
+laid out as the in-app Join a community landing: a centred heading, then, when
+the account owns communities, rows under *Communities you own* — icon
+placeholder, hostname and **Join** (named *Join {host}* for assistive
+technology), which takes exactly the typed-URL path for that host — then a
+**Community URL** field with **Continue** beside it. An empty or failed list
+shows the page without rows. No invite list is shown; nothing serves pending
+invites yet. In development,
+[`BUZZ_DEV_FIRST_RUN_ACCOUNT`](configuration.md#first-run-account-seed-development)
+answers the two account reads, and fakes the link, the unlink and the backup,
+in place of kgoose and the native uploader.
+
+The URL field is live. A typed address may omit its scheme (`relay.example.com`
+is read as `wss://relay.example.com`); `wss://` and `https://` are accepted in
+any case, while `ws://`/`http://`, credentials, paths, queries and fragments are
+not (`enteredRelayOrigin` in `src/features/communities/destination.ts`).
+**Continue** stays enabled while the field is empty or invalid; Continue or
+Enter submits, and an empty or invalid address shows *Please enter a valid
+community URL* under the field. Continue only starts the lookup; the join itself
+is the Join Community page's **Join**. The field also takes an invite link: the
+relay's `https://<host>/invite/<code>` page, or the `buzz://join?relay=…&code=…`
+link that page opens (`parsePastedInvite` in
+`src/features/communities/invite-link.ts`). The community is looked up at the
+link's origin exactly as for a typed address, and nothing is sent with the code
+until Join claims it; a link given on the welcome screen keeps its code through
+sign-in and setup.
+
+Join opens **Finding community** (`src/features/communities/FindCommunity.tsx`,
+reusable by later flows): the hostname and **Cancel** at once, with a "Looking
+up {host}…" status only after one second (the shared `LoadingRegion`, as for
+any initial read; Retry starts the second again). **Cancel** returns to Join a
+community with the typed address intact — however the user arrived there — and
+discards any late answer. The page reads the relay's NIP-11
+document and `/api/join-policy` in parallel through the identity-free native
+`relay_http` GET path. Those two unauthenticated GETs are the only pre-join
+traffic: nothing is signed with the device's key until the user chooses to join.
+On success it shows **Join Community**: only what the relay publishes — the
+icon if set and the hostname — plus, when the deployment has a join policy,
+*I confirm that I am at least 18 years old.* (if age attestation is required) and
+*I agree to this community’s Terms of Service and Privacy Notice.*, whose links
+open the relay's `/api/join-policy/terms` and `/privacy` pages outside the app. No
+name, description, member count, owner or invite badge is shown: none is knowable
+before joining. **Join** sits to the right of **Cancel**, as in every dialog
+footer, and is always labelled Join: shown consent boxes gate it, they do not
+rename it. Lookup failures are classified, not echoed: an unreachable relay or an
+unusable policy answer offers **Cancel** and **Retry** (a missing policy counts as
+"none" only once NIP-11 confirmed a Buzz relay); a non-Buzz address or a Buzz
+relay with no community bound to that host offers **Cancel** only.
+
+**Join** is the same join the rail's Add-a-community dialog performs, through
+the same owner (`admitCommunity` and `completeJoin` in
+`src/features/communities/join.ts`, which save through `communities.joined` in
+`src/features/communities/service.ts`; [communities](communities.md)). Before
+anything is sent, the join is recorded on this device for the key (the join
+journal, `join-journal.ts`), so a reply lost between the relay and the app —
+a claim the relay honoured but the app never heard — is not claimed again: a
+later Join for a recorded community first sends the signed profile read, and
+only when that still denies the key does it claim. A device that cannot keep
+the record stops there with the journal's storage message and sends nothing.
+When the address came with an invite code, Join
+claims it as the dialog does: if the deployment has a join policy, the
+policy is accepted for that code with its version and the age box
+(`/api/invites/accept-policy`), then the claim (`/api/invites/claim`) carries the
+returned receipt; both are NIP-98-signed by the key, and the relay must answer
+that the key joined or already was a member. Then, with or without a code, a
+signed profile read (`inspectProfile`: NIP-11 again, then a NIP-98-signed
+`POST /query` for the key's own kind 0) proves the relay admits this key. The
+membership — the canonical origin as id, the hostname as name, the NIP-11
+icon if set — is saved to this device and selected, and the gate lifts into the
+app on that community; when **Set up your profile** follows (below), the
+membership is saved after that step, as in the dialog, so nothing is joined
+while it stands. After a Builderlab sign-in the destination is also saved
+to the account straight away (`POST /api/goose/v1/buzz/known-communities/add`
+with its `wss://host[:port]` address, same portal and credential as the account
+reads), so the user's other devices restore it; the app waits for that answer,
+but a failed save never stops it opening. A key imported from **Connect to
+{host}** has no account, so nothing is saved there. Restored destinations are
+not saved again, and joins in the in-app dialog reach the account through the
+sync instead ([known communities](communities.md#known-communities)). While the
+join is in flight the page shows *Joining…* with Join and Cancel disabled. The
+join itself publishes nothing: no kind 0, and no policy receipt or invite claim
+without a code. Without a code the ticked boxes are the client's record of
+consent, as on the dialog's code-less path.
+
+A relay that requires an invite answers the read with 401/403, shown as **This
+community needs an invite**; a claim the relay refuses (an expired, used-up or
+invalid code, or a policy that changed) lands on the same page with the dialog's
+refusal copy under the code field, and no read is sent. The page offers an
+**Invite code** field with **Join**, which runs the same policy acceptance (under
+the consent the first Join gave), claim and read for the typed code; a refusal
+shows under the field and keeps the page and the typed code, and a code the
+native route will not send (anything but letters, digits, `.`, `_` and `-`)
+reads as not valid. Admins also admit people by npub, so the page shows the
+user's public key as the full npub (never hex or an abbreviation) under *Your
+public key (npub)* with **Copy** and an inline copied/could-not-copy status,
+plus the note that it is their public identity and safe to share. **Try again**
+repeats the join without a code, so an admin's add takes effect without
+retyping the address; **Back** returns to the find page (the typed address
+stays in the URL field behind it). A relay that cannot be reached — for the
+claim or the read — shows the lookup's unreachable copy; a device that will
+not keep the join's record shows the journal's storage message. Both offer
+**Back**. An existing relay profile seeds the empty local default.
+
+When no profile exists anywhere — the relay held no kind 0 for the key and the
+device's local default has no name (read before the join, since `joined` adopts
+a relay profile into an empty default) — the gate stays up for **Set up your
+profile** (`src/features/identity/ProfileStep.tsx`): the shared profile
+fields — avatar, required display name, optional description — prefilled with
+the local part of the Builderlab email as the name (blank when the key was
+imported without a Builderlab sign-in). The same rule applies after
+*Restoring your communities*: if none of the admitted destinations held a
+profile and the local default has none, the step is shown for the selected
+one, and a handed-off address opens in the dialog only after it, so the
+dialog's own profile step starts from the name given here. A relay that
+already holds the key's profile, or a local default with a name, skips the
+step. **Continue** is the dialog's profile step (`completeJoin`): the draft is
+recorded in the join journal, the profile is read afresh, the kind 0 is
+published to that one relay through the same signed `relay_sign` +
+`POST /events` route Settings → Profile uses when the draft differs from what
+the relay holds, and it is read back; only a readback that is current saves the
+membership (and the result as the device's local default for later joins) and
+enters the app on the community. A rejected publish, or a readback the relay
+has since superseded, stays on the step with the error inline and the draft
+intact. **Skip for now** saves the membership alone, publishes nothing, and
+enters the app; Settings → Profile remains the
+editor. Denied/unavailable/corrupt storage is not first run: like the page
+shown while the saved identity opens, it is titled **Your Buzz identity**, and
+it keeps the **Retry secure storage access** path.
+
+The key setup screen (`IdentitySetup`) is no longer shown on first launch; the
+fixture below still renders it. It offers **Create a new identity** or **Use an
+existing key**. These are alternatives. It can also offer **Continue with your
+Buzz identity** when old Buzz is installed and **Restore from backup** in builds
+with backup recovery configured; both are described below. Import accepts an
+nsec, validates its checksum and secp256k1 scalar, and persists that exact key
+before adopting its public identity. It never generates a replacement after an
+import, read or write failure.
 
 One native owner keeps the key in memory after successful restore. The new
-create-only secure-storage item is service `dev.local.buzz.foundation.identity` in release
-builds, or `dev.local.buzz.foundation.identity.debug` with Rust debug assertions,
+create-only secure-storage item is service `xyz.block.buzz.desktop.identity` in release
+builds, or `xyz.block.buzz.desktop.identity.debug` with Rust debug assertions,
 account `human`. Debug worktrees share the debug item, not the release identity;
 ports and frontend dev mode do not isolate it. macOS keeps its existing default
 file Keychain/security-framework implementation. Windows uses Credential Manager;
@@ -30,12 +442,130 @@ Neither Windows Credential Manager nor Secret Service supplies per-app access
 isolation from other programs running as the same OS user.
 
 There is no file/environment fallback, automatic legacy migration or human key
-replacement. The human key is deleted from this device only by
-[Sign out of Buzz](#sign-out-of-buzz); no other command or plugin service can
-delete it. Agents' bring-over (`app_agent_port`) may read only the selected
-old Buzz service/account and copy the selected agent key into this app's separate
-agent namespace; it never writes the old blob.
+replacement. When installed old Buzz's data folder (`xyz.block.buzz.app`) exists,
+the welcome screen opens a **Continue with your Buzz identity?** dialog over
+itself. The landing's actions never wait for the folder check, and the dialog
+waits while a sign-in is pending or another first-run page shows. Only its
+**Continue** reads old Buzz's `buzz-desktop`/`secrets` item, so any OS access
+prompt follows that click; the offer itself checks only the folder. It takes
+the item's `identity` entry and saves it exactly as a pasted import would:
+validated, create-only, never over a saved key, and never writing the old item.
+A failed import shows its error in the dialog, where Continue tries again. Success enters the app with no Builderlab sign-in, link
+or backup, where that key's old communities are offered
+([Import from the previous desktop app](communities.md#import-from-the-previous-desktop-app)).
+**Not now** or Escape leaves the welcome screen as it was, with focus on its
+heading, and the dialog stays closed until the app next starts with no key. It
+returns after Sign out while old Buzz's data remains. The human key is deleted
+from this device only by [Sign out of Buzz](#sign-out-of-buzz); no other command
+or plugin service can delete it. Agents' bring-over (`app_agent_port`) may read
+only the selected old Buzz service/account and copy the selected agent key into
+this app's separate agent namespace; it never writes the old blob.
 No user key belongs in release configuration.
+
+## Local restore helper on macOS
+
+macOS builds with Rust debug assertions accept `BUZZ_DEV_CREDENTIAL_HELPER` as an
+absolute executable path. When set, only `read_human()` uses this helper.
+The helper replaces both the normal read and the copy from the previous service.
+Its setup must select the intended saved identity, including its service name.
+Exit 10 declares that identity absent; it does not start a Keychain migration.
+Release builds ignore it. With no setting, the normal Keychain read is unchanged.
+Import, creation, deletion, agent keys, and session records keep their own owners.
+
+The helper receives a fresh Unix socket as stdout and no stdin. It must return
+exactly 63 bytes of nsec text with no newline, then close stdout and exit zero.
+The native identity owner still validates the nsec checksum and scalar. Exit 10
+means absent, 11 means denied, and 12 means corrupt. Other failures stop restore.
+Only absence permits identity creation. The app clears the returned buffer when
+its owner releases it. It does not log helper output or stderr.
+
+Normal reads have a five-second limit. For first approval only, set
+`BUZZ_DEV_CREDENTIAL_HELPER_AUTHORIZE=1`. This passes `--authorize` and allows
+two minutes. Remove that setting after approval. A failed helper never triggers
+a second credential read.
+
+The helper is trusted local code. Keep its setup and signing keys outside this
+repository. It must read only the exact debug human item in the default Keychain
+and disable Keychain dialogs during normal reads. Before it sends a key, it must
+verify the socket peer's audit token, parent PID, and live code signature against
+the configured app identifier and certificate. A PID check alone is insufficient.
+Reject pipes and sockets created before exec. Sign both processes with hardened
+runtime and without entitlements that allow code injection. These access controls
+need native tests; the app hook does not supply them.
+
+The certificate check trusts access to its signing key. Another program that can
+use that key and app identifier can satisfy the same requirement. Approval to use
+the signing key across rebuilds therefore extends trust to those programs.
+
+## Automatic backup and optional recovery
+
+Desktop builds configured with `BUZZ_NSEC_BACKUP_SERVICE_URL` and
+`BUZZ_NSEC_BACKUP_NAMESPACE` back up a local identity only after an explicit saved
+automatic-backup choice, Builderlab login, and matching key
+binding. Unset, self-managed, corrupt or mismatched consent prevents all backup
+requests, including retries. These are paired
+native build-process inputs; unset leaves the feature disabled. The service URL
+includes its API prefix and must use HTTPS. Existing login credentials are accepted
+only for the matching trusted build origin. Without a qualifying login, backup
+defers without opening a browser or delaying identity readiness.
+
+The native host validates enrollment and seals with the reviewed HPKE v1 protocol.
+Only encrypted pending bytes and public completion metadata are saved in the OS
+account's `.buzz-foundation/nsec-backups/<human credential service>` folder, scoped
+separately for debug and release. A shared lock serializes cooperating
+copies. Pending bytes and IDs survive restart; later login/binding/key-install
+events retry them, including a coalesced follow-up when an event arrives during an
+active pass. Upload success requires a matching stored receipt. Backup
+failure never replaces or deletes the local identity.
+
+The main WebView can observe the uploader through `identity.backup`, which
+registers on first read and stays out of identity snapshots. Its status says
+whether Builderlab backup can run in this build and whether the latest pass is
+idle, running, complete, waiting for consent, a session or a key binding, or
+failed with a named kind; no service response body reaches the renderer. A login
+handoff or retry resolves to the number of the pass it starts, or to none, so a
+caller can wait for that pass's own outcome. A pass superseded by a key install
+reports nothing; reloading the window mid-pass reports idle.
+
+First run's **Backing up your key** is a pass of this uploader. It saves the
+automatic choice for the key, hands the first-run Builderlab sign-in to the
+uploader, waits up to 60 seconds for the pass that handoff starts, and then
+hands the sign-in back, whatever the outcome; an earlier pass's result never
+answers it. A pass that stops to wait for consent, a session or a key binding
+fails the step, since nothing would wake it again before first run ends. The
+failed page names the reason without any service response. The automatic choice
+stays on after a failure, Continue without backup included, so a later
+Builderlab sign-in may still finish the backup the user asked for. The step
+hands a sign-in over only when this build's uploader can back up to Builderlab.
+Anywhere else (a build without backup configured) the step fails at once as
+*Key backup isn’t available in this version of Buzz.* without saving the
+choice, and the user continues without backup.
+
+When secure storage confirms absence, native recovery commands support explicit
+browser sign-in. The session and recovered keys remain native; the renderer sees
+only validated public identities and attempt-scoped handles. Recovery prefers the
+account's current associated identity. A previous identity requires explicit
+selection and does not change the account association. Failed mapping requests,
+unavailable endpoints, an account refused recovery (outside a private
+organization, or without Buzz access), failed backups and an empty successful
+result remain distinct.
+Installation uses the existing create-only secure store; cancel, reload, signout
+or a competing create/import prevents stale installation.
+Remembering recovered completion is best effort; retry-file failure does not block
+secure-store installation. Pending uploads still require durable ciphertext before sending.
+Plain signout retains backup records; Sign out and erase removes this credential
+service's records through the existing resumable wipe before clearing its marker.
+
+Rollout requires the backend backup/recovery endpoints, private-organization
+authorization, database migration, and configured KMS recipient/permissions. The
+client inputs must match that service's namespace. Synthetic HTTP/storage tests
+do not establish live sign-in, KMS or installed-app
+secure-storage acceptance. No backend provisioning or activation is part of this change.
+
+Identity setup offers Restore when secure storage confirms that no local key is present.
+The existing restore UI presents the current identity and explicit previous-identity
+selection. Restoring a key does not enable automatic backup or change its saved
+consent; no consent selection UI is added in this stack.
 
 A shared credential blob can reduce repeated OS prompts by caching many credentials
 after one read. For this one human key, one cached item retains that read-once benefit without
@@ -46,12 +576,21 @@ Consent, app signing and update behavior require attended native verification.
 ## UI and sensitive data
 
 Settings exposes Profile in Personal space as well as in a selected community.
-Identity details remains available if the community profile cannot load. The full
-npub and hex public key can be copied. The nsec is absent from the rendered field
-until Reveal; Copy can fetch it without revealing it. Hide, leaving Profile,
+Identity details are separate under **Buzz → Identity**, so they remain available
+if the community profile cannot load. The full npub and hex public key can be
+copied. The nsec is absent from the rendered field until Reveal; Copy can fetch it without revealing it. Hide, leaving Identity,
 window blur and document hiding retire pending reveals and clear the displayed
 secret. Failed private-key actions report fixed errors. Copy deliberately leaves
-the key on the OS clipboard; the UI warns about that.
+the key on the OS clipboard; the UI warns about that. The one exception is the
+first-run **Enter your private key** page: the typed, pasted or file-read nsec
+lives only in that page's state, masked until **Reveal private key**, and
+crosses IPC once, on **Continue with this key**, through `identity_import`; leaving the page
+discards it, and nothing logs or persists it. On the returning-user lane the
+page compares the typed key's derived npub with the account's linked npub in
+the page, before IPC, so a mismatched nsec never reaches native import. The
+**Welcome back** page shows the linked public key and the signed-in email; the first-run
+Builderlab session credential is held by the OAuth session store and sent only
+in the two account reads' `X-BB-Session-Credential` header, never rendered.
 
 The app UI passes a private string through IPC only during explicit import/export
 interaction. JavaScript/IPC string memory is not guaranteed zeroized. Native
@@ -65,7 +604,7 @@ command permission is not proof of a human gesture.
 
 ## Sign out of Buzz
 
-Settings → Profile → **Sign out of Buzz** removes the private key from this
+Settings → Buzz → Identity → **Sign out of Buzz** removes the private key from this
 device only; the npub and its history stay on relays. The dialog presents two
 layers: the key always goes, and settings, agents and other Buzz data stay unless
 the user erases them. It embeds the private-key controls above. Confirm stays
@@ -77,7 +616,7 @@ this app's data, local data, WebView storage, caches and plugin storage. It cann
 reach the clipboard, exported keys or relay data, and the dialog says so. Sign out
 is unavailable with the development broker (`BUZZ_DEV_VIEWER`). Development
 builds can sign out but not wipe: they have their own human key, but share agent
-keys and plugin storage with the installed app, so the native command refuses
+keys with the installed app, so the native command refuses
 wipe. The dialog asks the native side (`sign_out_wipe_refusal`) whether wipe is
 available and, when it isn't, disables wipe up front with the reason; this holds
 for any Rust debug build, including a debug bundle with a production frontend. A development-build sign-out signs out every
@@ -90,10 +629,76 @@ shared in the user data folder (created first if a first launch finds none)
 before it looks for a pending sign-out:
 
 - a **key lock** named for its human key store (`.<service>.instance.lock`), shared
-  by every copy using that key whatever its identifier; and
+  by every copy using that key whatever its identifier. Like the sign-out marker,
+  record and backup folder, it keeps the store's service from before 1.0
+  (`dev.local.buzz.foundation.identity`), so files older builds wrote are still
+  found; and
 - the **all-Buzz lock** (`.dev.local.buzz.foundation.instance.lock`), named for
   the storage all builds share (the default plugin folder and the agent key
-  service), not for the app identifier.
+  service), not for the app identifier. It keeps the identifier Buzz used before
+  1.0, so those builds and later ones exclude each other.
+
+Before 1.0, Buzz's identifier was `dev.local.buzz.foundation`. Before taking these
+locks, a launch as `xyz.block.buzz.desktop` renames what the old identifier names:
+app data (with plugin storage), config, local data, caches, macOS WebKit storage,
+their sign-out trash and a pending sign-out marker, so the update keeps
+everything and finishes a sign-out the old build committed. It takes the all-Buzz
+lock alone and waits for every agent ownership lock, so it never moves storage
+another copy or a stopping agent still uses. If any legacy path sits beside its
+new-identifier counterpart, after a rollback for instance, the launch moves
+nothing, finishes no pending sign-out, and exits naming every such pair; neither copy
+is safely the one to keep, and an erase would miss the legacy one. A failure exits
+with a native alert, and the next launch moves what is left. Development launches
+(`just desktop`, `just desktop-bundle`) use `xyz.block.buzz.desktop.dev`, so they
+keep their own app data and plugin storage and never take or block the installed
+app's. The first one copies the installed app's app data (without the release-only
+`archive`), config, local data and macOS WebKit storage, each from
+`xyz.block.buzz.desktop`, else `dev.local.buzz.foundation`, under the same locks,
+so the installed app must be closed once, and takes a pending development
+sign-out marker. It refuses while the installed app has a sign-out pending, so it
+never copies storage being erased. A linked folder copies what it links to; links
+inside are left out, so the copy shares nothing with the installed app's storage,
+which stays in place. Copied folders keep who else may read them, but stay
+writable by their owner. An interrupted copy finishes at the next launch.
+
+Keys were saved under `dev.local.buzz.foundation.*` services before 1.0; they
+now live under `xyz.block.buzz.desktop.*`: the human key (`.identity[.debug]`),
+the agent keys (`.agents`, shared by release and development) and the TypeSafe
+key (`.jev-key[.debug]`). A read looks under the new name first. Only when the
+key is absent there does it look under the old name and copy what it finds,
+create-only, then return the key saved under the new name. The copy holds the
+old item's interprocess lock, which deleting the old item takes too, so a delete
+in another Buzz can't land between its read and write. A key already there
+stays, even if it differs. On macOS an agent key is looked for in the new
+bundle, then its own new item, then the old bundle, then its own old item, all
+under the bundle lock older builds take too. The old items stay, so an older
+build still finds them. Any failure is an error for that key only, never
+absence. Writes touch only the new names. Every deletion (Sign out, deleting
+an agent, an erase, clearing the TypeSafe key) removes the old item before the
+new one, and on macOS the agent's entry from the old bundle, so a read never
+copies back a deleted key. On macOS each deletion reads again to confirm the
+item is gone. Deleting an agent fails, keeping every copy, while the old bundle
+is malformed.
+
+Older builds sign out by deleting the human key under the old name only. A
+record in the user data folder (`.<service>.sign-outs-seen`, next to the
+finished record) keeps the count of finished sign-outs the last launch saw.
+After any pending sign-out finishes, a launch that finds the count grew deletes
+the human key under the new name too; the first launch only starts the count.
+It decides holding the record's lock file alone, so a copy launching at the
+same time sees the count this one recorded and never deletes a key saved since.
+If the deletion fails, it records nothing and exits. The count is replaced by
+a synced rename, and on macOS and Linux every launch syncs its folder before
+any key is saved, so a power loss can't bring back a lower count and delete a
+newer key. Windows has no folder sync, as for the app's other atomic writes: a
+power loss right after a launch recorded a new count can lose the rename, and
+the next launch then deletes a key saved in that window. Older builds record a
+finished sign-out with an unsynced append on every OS, so a power loss then can
+keep the deletion but lose the count, and the signed-out key under the new name
+stays. Older builds' other
+deletions aren't counted: after an older build erases agents or clears the
+TypeSafe key, their copies under the new names stay. On macOS, Keychain may ask once to
+allow the renamed app to use each saved item.
 
 A sign-out needs its key lock alone, so every other copy using that key must be
 closed. A wipe also needs the all-Buzz lock alone, so every other Buzz must be
@@ -111,7 +716,8 @@ process finished a sign-out of its key while it let go. Retaking them
 shared is bounded too; on timeout, or if a lock can't be let go, Buzz exits the
 same way. These locks
 coordinate running Buzz 1.0 app copies only: `buzzodz plugin sign` reads the
-human key without them, and older Buzz versions don't take them, so close those
+human key without them, under the new name else the old, and never copies it,
+so Keychain items stay the app's; older Buzz versions don't take them, so close those
 before signing out. The native
 `sign_out` command deletes nothing: it admits one sign-out per instance, refuses
 unless it can hold the locks it needs alone, writes a marker beside (not inside)
@@ -181,9 +787,160 @@ too: one that can't look fails the attempt, keeping the marker. If renaming or t
 the marker is kept and Buzz shows a native error and exits without opening a
 window, so nothing recreates wiped storage and the next launch retries. Without
 wipe, local data stays: it is already scoped by public key, so signing back in
-with the same key finds it. Builderlab and hosted-community logins live only in
-memory and end with the restart. Kept agents start only while the signed-in key
+with the same key finds it. Native federated sessions are removed by the same
+sign-out owner across indexed profiles and configurations. Without FI, Builderlab and
+hosted-community logins live only in memory and end with the restart; an FI build signs
+them in through the native FI session instead, which restores after it. Kept agents start only while the signed-in key
 matches the owner in their saved attestation, checked before their key is read.
+
+## Automatic backup consent hooks
+
+The native identity service exposes `getBackupChoice()` and
+`setBackupChoice(pubkey, automatic)`. These APIs expose public metadata and do not
+change identity readiness. Reading a choice does not contact a server; saving
+automatic backup wakes the existing native uploader if a session is connected.
+First run's selections are **Create my key**, **Start over with a new key** and,
+for an imported key, **Back it up**: each page discloses that Block can restore
+the key (an imported one including anywhere else it is used) before **Backing
+up your key** saves `automatic: true`. Account sign-in, the key setup screen,
+an import without Builderlab sign-in and **Not now** do not imply consent, and Settings has no
+selection.
+
+The choice is bound to the current public key and trusted build-configured backup
+service and namespace. Missing or mismatched metadata returns no choice;
+unreadable metadata fails closed. An unavailable build rejects choice writes.
+Debug and release use their existing separate key-custody namespaces. Only the
+main WebView can read or save the choice.
+Plain sign-out retains the choice; sign-out and erase removes it through the
+existing resumable wipe, without erasing the other key-custody namespace.
+
+The native uploader consumes `nsec_backup_choice::read` before any
+backup request and retain its returned value through the upload. Its shared file
+lease prevents a successful choice change from racing an admitted upload across
+app copies. Saving a choice reports busy while such a lease is held. Disabling
+automatic backup governs future uploads and does not delete existing backups.
+The consent hooks are the base of the draft stack:
+#1137 consent hooks → #1106 gated uploader → #1107 recovery → #1101 restore UI.
+
+## Native federated session module
+
+Federated identity ([NIP-FI](https://github.com/block/buzz/blob/main/docs/nips/NIP-FI.md),
+[NIP-FA](https://github.com/block/buzz/blob/main/docs/nips/NIP-FA.md)) adds a native
+owner separate from the human Nostr key. Its deployment descriptor is documented
+in [configuration](configuration.md#federated-identity-build-input).
+The native commands return status, authority, revision, optional email, and fixed
+failure codes. Session tokens and assertion headers are native-only.
+
+Sign-in uses the existing native loopback callback owner with NIP-FA `return_to`
+and an S256 handoff challenge, exchanges the code natively, and verifies the
+fixed session expiry before persistence. Restore checks the stored credential
+against `/v1/session`; failed reads and unrecognized refusals do not authorize
+replacement. Local expiry, cancellation, and sign-out fence stale work.
+
+FI records use the OS secure-store service
+`xyz.block.buzz.desktop.federated-session` (with `.debug` for Rust debug
+builds), keyed by profile and deployment fingerprint. Account indices and
+revision-specific refusal markers contain no credential and live outside wiped
+Buzz data. Failed removal of a known record leaves refusal durable before any
+secure-store access, so that revision cannot restore until cleanup succeeds.
+Sign out of Buzz removes indexed FI records across profiles/configurations in
+its debug/release namespace before deleting the human key or opening a WebView.
+
+The app's `federatedIdentity` service exposes this public state to the shared
+sign-in UI. Session record revision survives restore and scopes account caches
+without inventing a NIP-FA subject.
+
+NIP-11 discovery from the exact relay carries no FI credential. Valid absent or
+false FI flags retain ordinary Nostr transport. A true flag requires the supported
+client-attached/offline-jwt descriptor and compiled authority mapping. Assertions
+are acquired with native same-key NIP-98 proof and checked for exact audience,
+key, and lifetime. Native HTTP, media, repository Git reads/imports, and socket
+upgrades attach the assertion beside their existing possession proof. Protected
+socket workers stop by assertion expiry; the existing live owner reconnects and
+performs fresh NIP-42. Retirement fences protected reads and results.
+
+### Local agent federated credentials
+
+Each local agent enrolls using the signed-in owner's session and its own NIP-98
+proof. The native agent-token owner stores the resulting grant beside session
+records in the same OS secure-store service, under a separate key scoped to the
+profile, deployment, owner public key and agent public key. Neither grants nor
+assertion headers cross IPC. Enrollment validates the returned owner and issuer;
+assertions are checked for the agent key, issuer, relay audience and lifetime.
+The relay remains responsible for signature and authorization verification.
+
+An enrolled grant survives ordinary owner-session expiry and same-account
+restoration. Organization sign-out, another account or agent deletion retires it.
+Account installation records required retirement before persisting the new session;
+interrupted cleanup resumes before grants are admitted. Enrollment also rechecks
+its session revision, so a caller paused before reservation cannot install a
+credential from a retired session.
+
+A refused grant permits one replacement enrollment while the owner is signed in.
+Replacement attempts preserve that budget across transient errors. Before enrollment
+or replacement issuance, the same secure-store record reserves a token-free stop
+scoped to the persisted session revision. Terminal refusal, restart or interrupted
+issuance cannot silently start another enrollment. A new sign-in revision or
+explicit agent deletion permits a reset; ordinary restore of the same session does
+not. Failure to persist the reservation prevents dispatch. A known transient
+outcome releases it only if that storage write succeeds.
+
+The `/v1/nip-fi/agent-grant` and `/v1/nip-fi/agent-assertion` routes and
+`Nostr-Agent-Proof` header are this configured adapter's wire contract, not
+standard endpoints defined by NIP-FI/NIP-FA. NIP-FI defines the
+`nip-fi-agent+jwt` assertion class and owner checks; that does not establish
+interoperability with another adapter's enrollment endpoints.
+
+In an FI build, Builderlab's remote-agent, hosted-community, known-community,
+Apps viewer and backup calls go through the native FI session. The renderer
+names only the public session revision. For API calls, native checks the
+plugin's authority/operation grant, enabled artifact revision, live
+registration and that revision; the Apps viewer exchange and backup check only
+that the revision is current. Each sends the adapter session as
+`Authorization: Bearer` to the identity origin only. A 401 fails that call
+without ending the session; native then checks the adapter's `GET /v1/session`
+once and ends the session only if the adapter refuses it there. Builderlab's
+Settings card has no sign-out of its own in an FI build: it links to Identity →
+Organization sign-in, which ends the shared session. Builderlab
+Apps' agent tools still need the legacy login and are absent in FI builds.
+
+### Sign in at launch
+
+A build whose descriptor sets `"signIn": "at-launch"` treats organization
+sign-in as part of opening the app. After key setup, the launch mark stays up
+while the saved session is checked. A restored session opens the app directly.
+Otherwise a full-window screen titled "Signing you in to *organization*" opens
+the browser sign-in, and the app opens when it finishes. Cancel or a failed
+sign-in leaves **Sign in with *organization*** and **Not now**; neither reopens
+the browser by itself. Not now opens the app, where protected communities offer
+their usual sign-in recovery.
+
+When the session ends during a run (expiry or the adapter refusing it), the same
+screen covers the app, above any dialog or menu it had open, and starts sign-in
+again. The app stays mounted, covered and inert, so drafts, scroll and
+navigation survive, and focus returns to where it was. An explicit sign-out
+shows the screen without opening the browser. A saved session that cannot be
+checked (network or secure storage) offers Try again, and the screen stays up
+while it checks.
+
+Before the session expires, a persistent warning names when it ends and offers
+**Sign in again**. It appears 72 hours ahead, or halfway through a shorter
+session. Signing in again keeps the current session working until the new one
+is exchanged; Cancel or a failure leaves it in place, and a different account
+retires derived agent grants as any account change does. At expiry, native ends
+the session itself rather than waiting for the next relay assertion or 401, and
+the screen above takes over.
+On-demand builds are unchanged.
+
+The Node development host retains its supported broker flow.
+
+For the community sign-in and recovery UI alone, run the environment-free
+fixture server documented below and open `/tests/fixtures/federated-identity.html`.
+Click **Sign in**, then **Cancel sign-in** or **Complete** in fixture controls;
+verify the prompt switches to **Cancel sign-in** and clears once signed in.
+**Binding mismatch** shows existing identity-link guidance; **Storage failure**
+shows recovery without claiming success. It does not exercise the running app's
+full navigation or native credentials.
 
 ## Packaged connection
 
@@ -217,7 +974,7 @@ expected relay, admin origin and signer before signing, and caps each response.
 When there is a selected identity and relay and the relay advertises a valid
 admin host, opening Settings sends one signed role check (`probe`, `GET
 /api/admin/v1/probe`, empty body) to that host without a further click, so the
-Relay admin entries show only to staff (a relay with admin auth off shows its
+Moderation entries show only to staff (a relay with admin auth off shows its
 read-only entries to everyone). Every member who opens Settings sends it, not
 only staff, because only the answer says who is staff. It goes to whatever
 admin host the relay advertises, which can differ from the community's
@@ -256,7 +1013,9 @@ the user must inspect the conversation before explicitly sending a new message.
 
 Protected media and uploads are native, because the webview cannot attach Blossom
 (kind 24242) authentication itself: `<img>`, `<video>` and `<audio>` send no custom
-headers, and the CSP keeps `connect-src` closed to general HTTPS. Relay `/media/`
+headers, and the CSP keeps `connect-src` closed to general HTTPS; it admits only
+the `buzz-media` scheme, whose bytes the requesting window may already read (such
+as an agent card's embedded definition). Relay `/media/`
 URLs selected by shared TypeScript render through the `buzz-media` URI scheme;
 `<video>` and `<audio>` instead load the same URLs from a native listener on
 `127.0.0.1`, since WebKitGTK cannot play a custom scheme. It authorizes each
@@ -275,8 +1034,7 @@ hashes and uploads only the converted bytes; JavaScript receives the descriptor,
 not the prepared file. ffmpeg must be installed on the computer.
 Community member changes (NIP-43 kinds 9030–9032) are signed in the host only
 in the exact add/remove/role shape; the relay decides authority. Repository HTTP
-and other broker-only helpers are not claimed by this adapter. NIP-FI assertion
-acquisition is not implemented, so deployments enforcing it are outside acceptance.
+and other broker-only helpers are not claimed by this adapter.
 Windows/Linux custody, credential migration and release-signing acceptance remain
 separate limitations.
 
@@ -302,7 +1060,8 @@ Use the existing environment-free fixture Vite config:
 bin/pnpm exec vite --config tests/fixtures/agent-control.vite.mjs --port 1547
 ```
 
-Open `/tests/fixtures/identity.html`. It uses mock IPC and an in-memory public
+Open `/tests/fixtures/identity.html`. It renders the key import/create screen
+(not the first-launch welcome) with mock IPC and an in-memory public
 fixture key, not an OS credential store or a relay. Import accepts only the
 displayed fixture key. Reset and simulated restart affect fixture state only. **Never enter a real
 nsec.** Browser exercises prove UI behavior, not secure native persistence.

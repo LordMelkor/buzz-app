@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, type RefObject } from "react";
+import { highlightWhenSettled, onScreen } from "./message-highlight";
 import { readingPositioned } from "./use-reading";
 
 /** One reveal per request signal, never per row/profile/image update. */
@@ -10,6 +11,7 @@ export function useMessageReveal({
   ready,
   complete,
   prepare,
+  placed,
   hold,
   focus = true,
 }: {
@@ -20,6 +22,8 @@ export function useMessageReveal({
   ready: boolean;
   complete(): void;
   prepare?(): void;
+  /** Align a virtualizer's retained request with the exact native placement. */
+  placed?(): void;
   /** A covering modal owns focus; the underlying target still verifies/reveals. */
   focus?: boolean;
   /**
@@ -36,7 +40,15 @@ export function useMessageReveal({
   // Outlives the reveal effect: a dependency change after completion must not
   // end the hold, but unmount and the next reveal do.
   const holding = useRef<(() => void) | undefined>(undefined);
-  useLayoutEffect(() => () => holding.current?.(), []);
+  // Every arrival is marked the same way, whatever sent the reader here.
+  const highlight = useRef<() => void>(() => {});
+  useLayoutEffect(
+    () => () => {
+      holding.current?.();
+      highlight.current();
+    },
+    [],
+  );
   useLayoutEffect(() => {
     if (
       !ready ||
@@ -73,6 +85,7 @@ export function useMessageReveal({
         inline: "nearest",
         behavior: "instant",
       });
+      placed?.();
       settled.current = true;
       // A replacement may recover lost focus, but must not take it from another
       // control after this request already focused a row successfully.
@@ -103,22 +116,21 @@ export function useMessageReveal({
         holding.current = hold
           ? keep(container, target, signal, hold, position)
           : undefined;
-        const box = row.getBoundingClientRect();
-        const viewport = container.getBoundingClientRect();
-        const visible =
-          box.height > 0 &&
-          box.width > 0 &&
-          box.bottom > Math.max(viewport.top, 0) &&
-          box.top < Math.min(viewport.bottom, window.innerHeight) &&
-          box.right > Math.max(viewport.left, 0) &&
-          box.left < Math.min(viewport.right, window.innerWidth);
-        if (!visible) {
+        if (
+          !onScreen(
+            row.getBoundingClientRect(),
+            container.getBoundingClientRect(),
+          )
+        ) {
           holding.current?.();
           holding.current = undefined;
           return;
         }
         revealed.current = signal;
         cancel();
+        highlight.current();
+        // A reveal behind a covering panel is not an arrival the reader sees.
+        if (focus) highlight.current = highlightWhenSettled(container, target);
         readingPositioned(container);
         complete();
       });
@@ -153,6 +165,7 @@ export function useMessageReveal({
     ready,
     complete,
     prepare,
+    placed,
     focus,
     hold,
   ]);

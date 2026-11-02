@@ -35,9 +35,13 @@ export function PageNavigation({
         }}
         items={pages.map((page) => {
           const Badge = page.badge;
+          const { icon, image } = pagePresentation(page);
           return {
             value: page.key,
             label: pagePresentation(page).label,
+            icon: (
+              <PageIcon icon={icon} image={image} size={16} strokeWidth={2.5} />
+            ),
             panelId: `shell-page-${page.key}`,
             trailing: Badge ? (
               <ContributionBoundary key={contributionKey(page)} fallback={null}>

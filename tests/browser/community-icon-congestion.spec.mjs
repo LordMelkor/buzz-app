@@ -1,3 +1,4 @@
+import { openCommunityPicker } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 
 // A real same-origin HTTP server holds icon responses. Browser route interception
@@ -10,7 +11,7 @@ test("held saved-community icons leave a connection for foreground traffic", asy
 }) => {
   try {
     await page.goto(app.origin);
-    const rail = page.getByRole("navigation", { name: "Communities" });
+    const rail = await openCommunityPicker(page);
     await expect(
       rail.getByRole("button", { name: "Switch to Saved 5" }),
     ).toBeVisible();

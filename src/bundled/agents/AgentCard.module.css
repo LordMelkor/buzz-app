@@ -7,8 +7,14 @@
   gap: var(--space-2);
   outline: none;
 }
+/* Import actions need room for the selected type; scale their tracks with
+   interface text instead of forcing two narrow cards at small viewports. */
+.grid[data-import] {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
+}
 .card {
   position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -19,17 +25,71 @@
   padding: var(--space-8) var(--space-3) var(--space-4);
   border: 1px solid transparent;
   border-radius: var(--radius-container);
-  background: var(--interaction-row-hover);
+  /* A resting card is a quiet fill, not a hovered row: it stays neutral until
+     quiet controls take the accent. */
+  background: var(--interaction-fill);
   text-align: center;
   user-select: none;
+}
+.agentCard {
+  --profile-backdrop-mask: linear-gradient(to bottom, black, 25%, transparent);
+  --profile-backdrop-filter: blur(40px) saturate(4);
+  --profile-backdrop-scale: 2;
+  --profile-backdrop-opacity: 0.64;
+  /* Keep filtered artwork static so hover never recomposites the foreground. */
+  --profile-backdrop-duration: 0s;
+  gap: var(--space-6);
+  border: 0;
+  justify-content: flex-end;
+  padding: calc(var(--space-8) * 2 + var(--space-2)) var(--space-6)
+    var(--space-6);
+}
+/* Static grain sits above the blurred/faded artwork, below card content. */
+.grain {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image: url("./card-grain.png");
+  background-size: 128px 128px;
+  opacity: 0.02;
+}
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  .grain {
+    display: none;
+  }
+}
+.identity {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
 }
 .card:is([role="option"], [role="gridcell"]) {
   cursor: pointer;
 }
 .card:is([aria-selected="true"], [data-selected="true"]) {
-  border-color: var(--border-focus);
+  border-color: var(--border-prominent);
+  box-shadow: var(--shadow-sm);
 }
-.card:focus-visible {
+/* Selection is persistent; decorative artwork does not react to hover. */
+.agentCard:is([aria-selected="true"], [data-selected="true"]) {
+  --profile-backdrop-opacity: 0.76;
+  box-shadow:
+    inset 0 0 0 1px var(--border-prominent),
+    var(--shadow-sm);
+}
+@media (forced-colors: active) {
+  .agentCard:is([aria-selected="true"], [data-selected="true"]) {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
+html[data-keyboard-navigation] .card:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
@@ -54,7 +114,7 @@
 .crewPortrait + .crewPortrait {
   margin-left: calc(var(--space-5) * -1);
 }
-.crewPortrait :is(img, video) {
+.crewPortrait > :is(img, video) {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -74,7 +134,7 @@
 .card[data-unavailable] .portrait {
   opacity: 0.5;
 }
-.portrait :is(img, video) {
+.portrait > :is(img, video) {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -86,6 +146,18 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.identity .name {
+  margin-block: 0;
+}
+/* Keep photos at their existing size without invisible spacing around them. */
+.agentCard .portrait:has(> [class~="buzz-avatar-status"]) {
+  width: clamp(3rem, 12cqw, 6rem);
+  height: clamp(3rem, 12cqw, 6rem);
+}
+.agentCard .portrait > [class~="buzz-avatar-status"] {
+  width: 100%;
+  height: 100%;
 }
 .detail {
   display: flex;
@@ -184,8 +256,30 @@
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4);
   border-radius: var(--radius-pill);
-  color: var(--text-inverse);
+  color: var(--text-on-prominent);
   background: var(--affordance-prominent);
+}
+.newLabel[data-tone="secondary"] {
+  color: var(--text-standard);
+  background: var(--interaction-fill);
+}
+/* A tile about agents the owner knows: their pictures in a stack above
+   the centered text. */
+.newTile[data-crew] {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4);
+}
+/* Where a first agent can come from, stacked: Import above when there is
+   something to import, then making one and the marketplace side by side. */
+.starts {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: var(--space-2);
 }
 
 @media (max-width: 560px) {
@@ -280,11 +374,15 @@
     display: none;
   }
 }
-/* Placeholder treatment until the card's status styling is designed. */
 .tag {
   position: absolute;
-  inset-block-start: var(--space-3);
-  inset-inline-start: var(--space-3);
-  color: var(--text-subtle);
+  inset-block-end: calc(100% + var(--space-2));
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  color: var(--text-on-accent);
+  background: var(--affordance-accent-prominent);
   @apply text-caption;
 }

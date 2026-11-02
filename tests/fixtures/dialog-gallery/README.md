@@ -23,6 +23,6 @@ broker or remote writes are used. Media examples show image variants; video
 playback and native window dragging are not exercised here.
 
 The community dialog's standalone profile mode has no current production caller.
-Its profile step is reachable through the three-step Add a community preview.
+Its profile step is reachable through the three-step Join a community preview.
 The backdrop is simplified context, not the full app shell. These previews do not
 replace browser regression coverage or native integration checks.

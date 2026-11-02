@@ -1,0 +1,7 @@
+{
+  "id": "buzz.usage",
+  "name": "Usage",
+  "apiVersion": 1,
+  "description": "Token usage and estimated costs from local agent sessions.",
+  "discovery": { "category": "agent-tools" }
+}

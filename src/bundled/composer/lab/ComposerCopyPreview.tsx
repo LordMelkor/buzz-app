@@ -19,14 +19,14 @@ const CONTEXTS = [
     threadRootId: "preview-thread",
   },
   {
-    group: "Session",
+    group: "Chat",
     value: "session-reply",
-    label: "Session · Reply",
-    copy: "this session",
+    label: "Chat · Reply",
+    copy: "this chat",
     threadRootId: "preview-session",
   },
 ] as const;
-const GROUPS = ["Channel", "Session"].map((label) => ({
+const GROUPS = ["Channel", "Chat"].map((label) => ({
   label,
   options: CONTEXTS.filter((context) => context.group === label),
 }));

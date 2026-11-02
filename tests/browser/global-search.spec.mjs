@@ -33,11 +33,15 @@ test("search arrows traverse the conversation action and recent activity, Enter 
   await expect(input).toHaveAttribute("autocomplete", "off");
   await expect(input).toBeFocused();
   const first = dialog
-    .getByRole("group", { name: "This conversation" })
-    .getByRole("option");
+    .locator(
+      '[role="group"][aria-label="This conversation"], [role="rowgroup"][aria-label="This conversation"]',
+    )
+    .locator("[data-search-result]");
   const second = dialog
-    .getByRole("group", { name: "Recent activity" })
-    .getByRole("option")
+    .locator(
+      '[role="group"][aria-label="Recent activity"], [role="rowgroup"][aria-label="Recent activity"]',
+    )
+    .locator("[data-search-result]")
     .first();
   await expect(second).toBeVisible();
   for (const [key, result] of [
@@ -66,8 +70,11 @@ test("search arrows traverse the conversation action and recent activity, Enter 
   await expect(input).not.toHaveAttribute("aria-activedescendant");
   await input.fill("Alpha");
   const alpha = dialog
-    .getByRole("group", { name: "Channels" })
-    .getByRole("option", { name: /Alpha/ });
+    .locator(
+      '[role="group"][aria-label="Channels"], [role="rowgroup"][aria-label="Channels"]',
+    )
+    .locator("[data-search-result]")
+    .filter({ hasText: /Alpha/ });
   await expect(alpha).toBeVisible();
   // Typed text selects its best match, so Enter needs no arrow keys.
   await expect(input).toBeFocused();
@@ -91,8 +98,10 @@ test("changing search scope returns focus to the input without clearing the quer
   await button(page, "Search Buzz").click();
   const scopeAction = page
     .getByRole("dialog", { name: "Search Buzz" })
-    .getByRole("group", { name: "This conversation" })
-    .getByRole("option");
+    .locator(
+      '[role="group"][aria-label="This conversation"], [role="rowgroup"][aria-label="This conversation"]',
+    )
+    .locator("[data-search-result]");
   await scopeAction.click();
 
   const scoped = page.getByRole("dialog", { name: "Search this conversation" });
@@ -112,12 +121,15 @@ test("changing search scope returns focus to the input without clearing the quer
   const input = global.getByRole("combobox", { name: "Search Buzz" });
   await expect(input).toBeFocused();
   await expect(input).toHaveValue("hello");
-  // Typed text selects the first result; no conversation is named "hello".
-  await expect(
-    global
-      .getByRole("group", { name: "This conversation" })
-      .getByRole("option"),
-  ).toHaveAttribute("aria-selected", "true");
+  // Relevance can put an inline setting or plugin ahead of the scope action.
+  const first = global
+    .locator("[data-search-result], .search-control-row")
+    .first();
+  await expect(first).toHaveAttribute("aria-selected", "true");
+  await expect(input).toHaveAttribute(
+    "aria-activedescendant",
+    await first.getAttribute("id"),
+  );
 });
 
 // Real portal → routed timeline/thread ownership and focus, in both browser engines.
@@ -177,7 +189,7 @@ test.describe("public search destination", () => {
       ).toHaveCount(0);
       await expect(
         page
-          .getByRole("complementary", { name: "Channel sidebar" })
+          .getByRole("complementary", { name: "Sidebar", exact: true })
           .getByRole("button", { name: "open", exact: true }),
       ).toHaveCount(0);
     }
@@ -238,8 +250,11 @@ test.describe("public search destination", () => {
     await button(page, "Search Buzz").click();
     await page.getByRole("combobox", { name: "Search Buzz" }).fill("ope");
     const result = page
-      .getByRole("group", { name: "Channels" })
-      .getByRole("option", { name: /^open/ });
+      .locator(
+        '[role="group"][aria-label="Channels"], [role="rowgroup"][aria-label="Channels"]',
+      )
+      .locator("[data-search-result]")
+      .filter({ hasText: /^open/ });
     await expect(result).toContainText("Public channel · not joined");
     await result.click();
     const composer = page.getByRole("textbox", {
@@ -285,7 +300,8 @@ test.describe("public search destination", () => {
       .toBe(true);
     await expect(composer).toHaveCount(0);
     const sidebar = page.getByRole("complementary", {
-      name: "Channel sidebar",
+      name: "Sidebar",
+      exact: true,
     });
     await expect(
       sidebar.getByRole("button", { name: "open", exact: true }),
@@ -327,8 +343,11 @@ test.describe("public search destination", () => {
     await button(page, "Search Buzz").click();
     await page.getByRole("combobox", { name: "Search Buzz" }).fill("ope");
     await page
-      .getByRole("group", { name: "Channels" })
-      .getByRole("option", { name: /^open/ })
+      .locator(
+        '[role="group"][aria-label="Channels"], [role="rowgroup"][aria-label="Channels"]',
+      )
+      .locator("[data-search-result]")
+      .filter({ hasText: /^open/ })
       .click();
     const composer = page.getByRole("textbox", {
       name: "Message #open",
@@ -346,14 +365,107 @@ test.describe("public search destination", () => {
     await composer.pressSequentially("Joined");
     await expect(composer).toHaveText("Joined");
   });
+
+  // A rejected Join grows the preview notice, and the thread's end spacer
+  // grows with it. A reader at the end of the thread must stay at the end.
+  test("a rejected Join keeps a thread reader at its end, clear of the notice", async ({
+    page,
+    app,
+  }) => {
+    await page.addInitScript(() => {
+      window.revealedRows = [];
+      document.addEventListener(
+        "reading-positioned",
+        () =>
+          window.revealedRows.push(document.activeElement?.dataset.messageId),
+        true,
+      );
+    });
+    // A short viewport makes the two-message thread scroll.
+    await page.setViewportSize({ width: 1100, height: 360 });
+    await page.goto(app.origin);
+    await expect(page.locator("[data-message-id]").first()).toBeVisible();
+    await button(page, "Search Buzz").click();
+    await page
+      .getByRole("combobox", { name: "Search Buzz" })
+      .fill("crew-search");
+    await page
+      .getByRole("option", { name: /crew-search exact public reply/ })
+      .click();
+    const threadPanel = page.getByRole("complementary", {
+      name: "Thread",
+      exact: true,
+    });
+    const history = threadPanel.getByRole("region", {
+      name: "Thread messages",
+      exact: true,
+    });
+    const notice = threadPanel.getByRole("region", {
+      name: "Channel preview",
+      exact: true,
+    });
+    const last = history.locator(`[data-message-id="${app.searchTarget.id}"]`);
+    // The exact reveal completes a frame after it focuses the reply. Scroll
+    // after it: a later completion would rightly take over the position.
+    await expect
+      .poll(() => page.evaluate(() => window.revealedRows))
+      .toContain(app.searchTarget.id);
+    await expect
+      .poll(() => history.evaluate((el) => el.scrollHeight > el.clientHeight))
+      .toBe(true);
+    // The reveal can leave the reply at the end without following it. Scroll
+    // away and back as a reader does, so the thread follows its end.
+    await history.hover();
+    await page.mouse.wheel(0, -2000);
+    await expect.poll(() => history.evaluate((el) => el.scrollTop)).toBe(0);
+    await page.mouse.wheel(0, 2000);
+    const fromEnd = () =>
+      history.evaluate(
+        (el) => el.scrollHeight - el.clientHeight - el.scrollTop,
+      );
+    await expect.poll(fromEnd).toBeLessThan(1);
+    const height = () =>
+      notice.evaluate((el) => el.getBoundingClientRect().height);
+    const before = await height();
+    await page.route(
+      "**/api/relay/**/channel-lifecycle-publish",
+      async (route) => {
+        const event = route.request().postDataJSON();
+        expect(event.kind).toBe(9021);
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            accepted: false,
+            event_id: event.id,
+            message: "Joining this channel is not allowed",
+          }),
+        });
+      },
+      { times: 1 },
+    );
+    await threadPanel
+      .getByRole("button", { name: "Join", exact: true })
+      .click();
+    await expect(notice.getByRole("alert")).toContainText(
+      "Joining this channel is not allowed",
+    );
+    expect(await height()).toBeGreaterThan(before);
+    await expect.poll(fromEnd).toBeLessThan(1);
+    const [row, overlay] = await Promise.all([
+      last.boundingBox(),
+      notice.boundingBox(),
+    ]);
+    expect(row.y + row.height).toBeLessThanOrEqual(overlay.y - 20);
+  });
 });
 
-test("keyboard selection follows its action while recent conversations arrive above it", async ({
+test("keyboard selection follows its page while matching conversations arrive", async ({
   page,
   app,
 }) => {
   const rail = page.getByRole("button", {
-    name: "Switch to Primary",
+    name: "Community switcher: Primary",
     exact: true,
   });
   // Hold startup membership before navigation so the channel list arrives after
@@ -376,12 +488,21 @@ test("keyboard selection follows its action while recent conversations arrive ab
       exact: true,
     });
     const input = dialog.getByRole("combobox", { name: "Search Buzz" });
+    await expect(
+      dialog.getByText("Connecting to this community…", { exact: true }),
+    ).toHaveCount(0);
+    await input.fill("a");
     const recent = dialog
-      .getByRole("group", { name: "Recent activity" })
-      .getByRole("option");
+      .locator(
+        '[role="group"][aria-label="Channels"], [role="rowgroup"][aria-label="Channels"]',
+      )
+      .locator("[data-search-result]");
     const projects = dialog
-      .getByRole("group", { name: "Actions" })
-      .getByRole("option", { name: "Projects", exact: true });
+      .locator(
+        '[role="group"][aria-label="Pages"], [role="rowgroup"][aria-label="Pages"]',
+      )
+      .locator("[data-search-result]")
+      .filter({ hasText: "Messages" });
     await expect(projects).toBeVisible();
     // The connected palette is mounted, but its channel list is still held.
     await expect(
@@ -392,7 +513,6 @@ test("keyboard selection follows its action while recent conversations arrive ab
     const id = await projects.getAttribute("id");
     while ((await input.getAttribute("aria-activedescendant")) !== id)
       await input.press("ArrowDown");
-    const before = await projects.boundingBox();
     holding = false;
     for (const resolve of held.splice(0)) resolve();
     await expect(recent.first()).toBeVisible();
@@ -404,13 +524,12 @@ test("keyboard selection follows its action while recent conversations arrive ab
       }),
     ).toBeAttached();
     await expect(input).toBeFocused();
-    // The arrivals moved the action; the selection stays with it.
-    expect((await projects.boundingBox()).y).toBeGreaterThan(before.y);
+    // Channel arrival must preserve the explicitly selected page.
     await expect(input).toHaveAttribute("aria-activedescendant", id);
     await input.press("Enter");
     await expect(dialog).toHaveCount(0);
     await expect(
-      page.getByRole("heading", { name: "Projects", exact: true }),
+      page.getByRole("textbox", { name: "Message #Alpha", exact: true }),
     ).toBeVisible();
   } finally {
     holding = false;
@@ -426,12 +545,15 @@ test("a resting pointer does not steal the typed selection when results move und
   await button(page, "Search Buzz").click();
   const dialog = page.getByRole("dialog", { name: "Search Buzz" });
   const input = dialog.getByRole("combobox", { name: "Search Buzz" });
-  const rows = dialog.getByRole("option");
+  const rows = dialog.locator("[data-search-result]");
   // Measure where the row stays: after the entrance and recent activity load.
   await expect(
     dialog
-      .getByRole("group", { name: "Recent activity" })
-      .getByRole("option", { name: /Beta/ }),
+      .locator(
+        '[role="group"][aria-label="Recent activity"], [role="rowgroup"][aria-label="Recent activity"]',
+      )
+      .locator("[data-search-result]")
+      .filter({ hasText: /Beta/ }),
   ).toBeVisible();
   await entered(dialog);
   const row = rows.nth(2);
@@ -444,8 +566,11 @@ test("a resting pointer does not steal the typed selection when results move und
   await expect(row).toHaveAttribute("aria-selected", "true");
   await input.fill("a");
   const alpha = dialog
-    .getByRole("group", { name: "Channels" })
-    .getByRole("option", { name: /Alpha/ });
+    .locator(
+      '[role="group"][aria-label="Channels"], [role="rowgroup"][aria-label="Channels"]',
+    )
+    .locator("[data-search-result]")
+    .filter({ hasText: /Alpha/ });
   await expect(alpha).toHaveAttribute("aria-selected", "true");
   // WebKit replays the resting position when rows move; that is not a hover.
   await page.mouse.move(box.x + 30, y);
@@ -453,7 +578,8 @@ test("a resting pointer does not steal the typed selection when results move und
   // A real move selects whichever result is now under the pointer.
   await page.mouse.move(box.x + 40, y);
   const hovered = await page.evaluate(
-    ([x, y]) => document.elementFromPoint(x, y)?.closest('[role="option"]')?.id,
+    ([x, y]) =>
+      document.elementFromPoint(x, y)?.closest("[data-search-result]")?.id,
     [box.x + 40, y],
   );
   expect(hovered).toBeTruthy();
@@ -478,13 +604,19 @@ test.describe("message search operators", () => {
     app,
   }) => {
     await page.goto(app.origin);
+    // The same unproven ordering mitigation for the WebKit lost-fill failure
+    // as the public search destination test above.
+    await expect(page.locator("[data-message-id]").first()).toBeVisible();
     await button(page, "Search Buzz").click();
     const input = page.getByRole("combobox", { name: "Search Buzz" });
-    await input.fill(
-      `crew-search in:${app.openChannelId} from:${app.searchTarget.pubkey} after:2023-11-14 before:2023-11-15`,
-    );
+    const query = `crew-search in:${app.openChannelId} from:${app.searchTarget.pubkey} after:2023-11-14 before:2023-11-15`;
+    await input.fill(query);
+    // Attribute a missing result to the typed query or to the search.
+    await expect(input).toHaveValue(query);
     await expect(
-      page.getByRole("option", { name: /crew-search exact public reply/ }),
+      page
+        .locator("[data-search-result]")
+        .filter({ hasText: /crew-search exact public reply/ }),
     ).toBeVisible();
     const filter = app.report.queries.find(
       ({ filter }) => filter.search === "crew-search" && filter.authors?.length,
@@ -499,7 +631,9 @@ test.describe("message search operators", () => {
       `crew-search in:${app.openChannelId} from:${app.searchTarget.pubkey} before:2023-11-14`,
     );
     await expect(
-      page.getByRole("option", { name: /crew-search exact public reply/ }),
+      page
+        .locator("[data-search-result]")
+        .filter({ hasText: /crew-search exact public reply/ }),
     ).toHaveCount(0);
     await expect
       .poll(() =>
@@ -511,4 +645,52 @@ test.describe("message search operators", () => {
       )
       .toBe(true);
   });
+});
+
+test("inline search exposes selected grid rows and hands focus to the destination setting", async ({
+  page,
+  app,
+}) => {
+  await page.goto(app.origin);
+  await button(page, "Search Buzz").click();
+  const dialog = page.getByRole("dialog", { name: "Search Buzz" });
+  const input = dialog.getByRole("combobox", { name: "Search Buzz" });
+  await input.fill("color mode");
+  const grid = dialog.getByRole("grid", { name: "Search results" });
+  const row = grid.getByRole("row", {
+    name: "Appearance — Color mode",
+    exact: true,
+  });
+  await expect(row).toHaveAttribute("aria-selected", "true");
+  await expect(input).toHaveAttribute(
+    "aria-activedescendant",
+    await row.getAttribute("id"),
+  );
+  const snapshot = await grid.ariaSnapshot();
+  expect(snapshot).toContain('rowgroup "Settings"');
+  expect(snapshot).toContain('row "Appearance — Color mode" [selected]');
+  const mode = row.getByRole("combobox", { name: "Color mode" });
+  await mode.click();
+  await page.getByRole("option", { name: "Dark", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-color-mode", "dark");
+  await expect(dialog).toBeVisible();
+  await mode.focus();
+  await mode.press("Enter");
+  await page.getByRole("option", { name: "Light", exact: true }).focus();
+  await page.getByRole("option", { name: "Light", exact: true }).press("Enter");
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-color-mode",
+    "light",
+  );
+  await expect(dialog).toBeVisible();
+  await input.focus();
+  await input.press("Enter");
+  await expect(dialog).toBeHidden();
+  const target = page.locator("#setting-mode");
+  await expect(target).toBeVisible();
+  await expect
+    .poll(() =>
+      target.evaluate((node) => node.contains(document.activeElement)),
+    )
+    .toBe(true);
 });

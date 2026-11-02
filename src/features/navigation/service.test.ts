@@ -19,11 +19,13 @@ afterEach(async () => {
   for (const ctx of contexts.splice(0)) await ctx.fiber.dispose();
   vi.useRealTimers();
 });
-function setup() {
+function setup(retain = false) {
   vi.useFakeTimers();
   const ctx = new Context();
   contexts.push(ctx);
   const host = provideNavigation(ctx);
+  // The visit deadline runs only while a presenter is attached, as the app's is.
+  host.attach();
   let live = true;
   const listeners = new Set<() => void>();
   const owner: PresentationOwner = {
@@ -37,7 +39,7 @@ function setup() {
   };
   const promise = host.navigation.open(target);
   const attempt = host.navigation.snapshot().attempt;
-  const presentation = host.request(attempt, owner);
+  const presentation = host.request(attempt, owner, retain);
   return {
     ctx,
     host,
@@ -160,6 +162,37 @@ it("preserves opening focus through session binding, resolution and retry, not l
   expect(request().focus).toBe("content");
 });
 
+it("exposes Back/Forward through session binding, not openings or retry, and keeps each visit's positions", async () => {
+  const t = setup();
+  const nav = t.host.navigation;
+  const relay = provideRelay(t.ctx);
+  const request = () => t.host.request(nav.snapshot().attempt, t.owner).request;
+  const first = t.presentation.request.forSession(relay, relay.snapshot());
+  expect(first.traversal).toBeUndefined();
+  expect(first.complete({ status: "opened" })).toBe(true);
+  await t.promise;
+  void nav.open(settings);
+  // Leaving revokes the visit's presentation, which can still record its place.
+  expect(first.signal.aborted).toBe(true);
+  first.savePosition("thread", { top: 1 });
+  const other = request();
+  expect(other.traversal).toBeUndefined();
+  expect(other.position("thread")).toBeUndefined();
+  other.savePosition("thread", { top: 2 });
+  nav.back();
+  const returned = request().forSession(relay, relay.snapshot());
+  expect(returned.entryId).toBe(first.entryId);
+  expect(returned.traversal).toBe(true);
+  expect(returned.position("thread")).toEqual({ top: 1 });
+  expect(returned.position("timeline")).toBeUndefined();
+  void nav.retry();
+  expect(
+    request().forSession(relay, relay.snapshot()).traversal,
+  ).toBeUndefined();
+  void nav.open(target);
+  expect(request().traversal).toBeUndefined();
+});
+
 it("returning to a retained connection mints fresh authority without reviving its old request", async () => {
   const t = setup();
   const source = provideRelay(t.ctx);
@@ -190,4 +223,84 @@ it("returning to a retained connection mints fresh authority without reviving it
   expect(old.complete({ status: "opened" })).toBe(false);
   expect(fresh.complete({ status: "opened" })).toBe(true);
   expect(await t.promise).toEqual({ status: "opened" });
+});
+
+it("keeps a workspace alive under Settings without letting it complete or redirect Settings, then resumes its original visit", async () => {
+  const t = setup(true);
+  const relay = provideRelay(t.ctx);
+  const bound = t.presentation.request.forSession(relay, relay.snapshot());
+  expect(bound.complete({ status: "opened" })).toBe(true);
+  await expect(t.promise).resolves.toEqual({ status: "opened" });
+  const request = t.presentation.request;
+  void t.host.navigation.open(settings);
+  expect(t.attempt.signal.aborted).toBe(true);
+  expect(request.signal.aborted).toBe(false);
+  expect(bound.signal.aborted).toBe(false);
+  expect(bound.complete({ status: "opened" })).toBe(false);
+  expect(t.host.navigation.snapshot().status).toBe("opening");
+  void t.host.navigation.open({ ...settings, section: "profile" });
+  expect(t.host.returnTo(request.entryId)).toBe(true);
+  const returned = t.host.navigation.snapshot().attempt;
+  expect(returned.entry.id).toBe(request.entryId);
+  expect(t.presentation.resume(returned)).toBe(true);
+  expect(request.forSession(relay, relay.snapshot())).toBe(bound);
+  expect(bound.focus).toBe("preserve");
+  expect(t.host.navigation.snapshot().status).toBe("opened");
+  expect(bound.complete({ status: "opened" })).toBe(false);
+  void t.host.navigation.open({ ...target, pageId: "other" });
+  expect(request.signal.aborted).toBe(true);
+  expect(bound.signal.aborted).toBe(true);
+});
+it.each(["owner", "ingress"])(
+  "revokes the retained workspace on %s failure even under Settings",
+  (failure) => {
+    const t = setup(true);
+    void t.host.navigation.open(settings);
+    if (failure === "owner") t.change(false);
+    else t.host.fail("invalid-target");
+    expect(t.presentation.request.signal.aborted).toBe(true);
+    expect(t.presentation.resume(t.attempt)).toBe(false);
+  },
+);
+
+it.each(["opened", "failed"] as const)(
+  "replays a workspace's %s result completed behind Settings on resume, never into Settings",
+  (status) => {
+    const t = setup(true);
+    const request = t.presentation.request;
+    void t.host.navigation.open(settings);
+    const result =
+      status === "opened"
+        ? { status }
+        : { status, reason: "unavailable" as const };
+    expect(request.complete(result)).toBe(false);
+    expect(t.host.navigation.snapshot().status).toBe("opening");
+    expect(t.host.returnTo(request.entryId)).toBe(true);
+    expect(t.presentation.resume(t.host.navigation.snapshot().attempt)).toBe(
+      true,
+    );
+    expect(t.host.navigation.snapshot().status).toBe(status);
+  },
+);
+it("does not resume a retained workspace on an ordinary retry", () => {
+  const t = setup(true);
+  void t.host.navigation.retry();
+  expect(t.presentation.request.signal.aborted).toBe(true);
+  expect(t.presentation.resume(t.host.navigation.snapshot().attempt)).toBe(
+    false,
+  );
+});
+
+it("defers workspace normalization until Settings closes", () => {
+  const t = setup(true);
+  void t.host.navigation.open(settings);
+  const destination = { ...target, route: { version: 1, params: "default" } };
+  expect(t.presentation.request.resolve(destination)).toBe(false);
+  expect(t.host.navigation.snapshot().entry.target).toEqual(settings);
+  expect(t.host.returnTo(t.attempt.entry.id)).toBe(true);
+  expect(t.presentation.resume(t.host.navigation.snapshot().attempt)).toBe(
+    true,
+  );
+  expect(t.host.navigation.snapshot().entry.target).toEqual(destination);
+  expect(t.host.navigation.snapshot().entry.id).toBe(t.attempt.entry.id);
 });

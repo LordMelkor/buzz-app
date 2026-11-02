@@ -14,13 +14,14 @@ Use this map to find the shared owner before changing a product surface.
 | Actions | Button and IconButton | Retry, refresh, delete, recovery, composer send, and picker triggers. Standard sizes are 32/40/52px; IconButton defaults to small and labelled Button defaults to medium. Text-button heights are minimums. Labels stay on one line; surrounding layouts reflow whole controls or scroll. |
 | Forms and choices | Field, Input, Textarea, RadioGroup, Checkbox | Profile, community setup, appearance, plugin import, and workflow editing. |
 | Search | SearchField | Channels, pages, members, and GIFs retain their query, refs, and keyboard handlers. |
-| Navigation | NavigationItem | Settings, channel rows, shell destinations, Home, and community choices. Route destinations use button semantics; the wide shell topbar is the documented chrome-tab exception. |
-| Tabs | Tabs | The wide shell Me/Messages topbar links retained page panels and preserves tab focus on selection. Emoji/GIF connects tabs to panels with Base UI keyboard activation. Workflow mode keeps its feature-owned editor view. |
-| Modals | Dialog and AlertDialog | Page search, community setup, and workflow confirmations. Pending work prevents dismissal; focus restoration follows the shared contract. |
+| Navigation | SidebarNavigation composing NavigationItem and NavigationSection | The primary sidebar and Settings consume the same component, preserving main’s compact sidebar appearance. Features retain unread, collapsing, dragging and scrollbar geometry. Other shell destinations, Home, and community choices retain their existing treatment. Route destinations use button semantics; the wide shell topbar is the documented chrome-tab exception. |
+| Tabs | Tabs | The wide shell Messages topbar links retained page panels and preserves tab focus on selection. Emoji/GIF connects tabs to panels with Base UI keyboard activation. Workflow mode keeps its feature-owned editor view. |
+| Modals | Dialog and AlertDialog | Use the [modal composition](../src/shared/design-system/DESIGN.md#modal-composition): shared title/description lockup, normalized sizes, secondary Close, and fixed footer gutter outside scrolling content. Page search, community setup, and workflow confirmations retain their dismissal and focus contracts. |
 | Panels and headers | Panel and PanelHeader | Settings, channels, and companion cards share appearance. Features own grids, scrolling, docks, and subscriptions. |
+| Read loading | LoadingRegion | Profile Settings uses a same-scope verified snapshot while refreshing; cold reads reserve the actual form geometry. Delayed status does not delay results, errors, or write feedback. |
 | Feedback | Toast (Sonner) | Sidebar preferences and Settings recovery use the shared bottom-right Sonner stack with source-owned recovery. Completed-action feedback can outlive its row. Channel live-update recovery stays inline above the composer; form errors, blocked pages, and lasting paused-state context stay inline. |
 | Hints | Tooltip | Control hints and agent activity support keyboard access and dismissal. Controls keep their own accessible names. |
-| Sessions and activity | NavigationItem, Button, IconButton, Panel, PanelHeader | Session history, agent choice, child-channel navigation, and activity actions retain unread, admission, draft, and focus behavior. Base UI owns their menus. |
+| Solo chats and activity | NavigationItem, Button, IconButton, Panel, PanelHeader | Solo chat history, agent choice, and activity actions retain unread, admission, draft, and focus behavior. Base UI owns their menus. |
 | Media stages | `surface-inverse` and `text-inverse` | Preserve the stage’s existing values and measure text pairings. Renderers own image and video pixels. |
 
 ## What stays with the feature
@@ -31,7 +32,7 @@ Shared appearance does not transfer ownership of product data or interaction.
 - **Media:** GIF and image tiles retain native selection buttons and geometry. Search, retry, playback, and zoom actions use shared controls. Image zoom uses a native range with semantic colors; there is no shared Slider. The renderer owns modal focus, drag regions, playback, and timecodes.
 - **Emoji Mart:** the shadow-root adapter retains native search behavior. Search mirrors the shared 40px minimum field, 12px corners, 14px body type, inset fill, metadata placeholder, and perimeter stroke. Keyboard focus and reduced motion are immediate. The widget uses the host appearance preference.
 - **Disclosures:** persisted channel groups and diagnostic content retain native disclosure semantics and local state.
-- **Identity and navigation:** avatars, previews, links, mentions, and thread summaries keep their existing owners. Composer mentions use inert InlineChip rendering. Editing or deleting a mention removes its explicit intent; host-owned recipient avatars can clear that intent without changing authored text. Sessions may still route to the selected or sole agent.
+- **Identity and navigation:** avatars, previews, links, mentions, and thread summaries keep their existing owners. Composer mentions use inert InlineChip rendering. Editing or deleting a mention removes its explicit intent; host-owned recipient avatars can clear that intent without changing authored text. Solo chats require an explicit agent tag to send.
 - **Host defaults:** Panel marks its surface separately from interactive controls, so native product and plugin content inside it can still receive host defaults.
 - **Compatibility:** legacy utilities forward to shared roles for existing callers and plugins. Use semantic names and shared components in new work.
 
@@ -72,8 +73,10 @@ changes. This is an adoption snapshot, not blanket approval of these components.
 Use [DESIGN.md's whole-surface recipes](../src/shared/design-system/DESIGN.md#compose-the-whole-surface)
 as the target; remove resolved gaps from this table when their migrations are verified.
 During PR preparation, source references were refreshed against `a6ea532d6`,
-including the new Me workspace. The browser observations below remain tied to
+including the Me workspace. The browser observations below remain tied to
 `2bea18769`; the newer Me workspace and Agents page were not browser-retested.
+The Me and Sessions pages named in this snapshot have since been retired: Solo
+chats now open in Messages, so those observations are historical.
 
 Browser inspection covered Messages, Inbox, Reminders, Projects, Agents, Sessions,
 Workflows, Me, the account menu, Channel members, a profile companion panel, and
@@ -92,9 +95,9 @@ below are labelled separately. No product fixes are included in this documentati
 | --- | --- |
 | Conversation workspace | [ChannelsPage](../src/bundled/channels/ChannelsPage.tsx): pane identity and icon actions, timeline scroll ownership, persistent composer |
 | Collection with detail | [InboxPage](../src/bundled/inbox/InboxPage.tsx): filters in the body and list/detail ownership; the Drafts header action is a gap below |
-| Me workspace | [SessionsPage](../src/bundled/sessions/SessionsPage.tsx): conversation timeline/composer beside the shared panel workspace; source-refreshed, with its disconnected header gap recorded below |
+| Solo chats | [ChannelsPage](../src/bundled/channels/ChannelsPage.tsx) Solo treatment ([SoloHeading](../src/bundled/channels/SoloHeading.tsx)): flat timeline/composer in the shared conversation page and panel workspace |
 | Immediate settings | [NotificationSettings](../src/app/NotificationSettings.tsx), [AppearanceSettings](../src/app/AppearanceSettings.tsx): shared preference rows, grouped controls, and contextual permission feedback |
-| Explicit-save settings | [ProfileSettings](../src/app/ProfileSettings.tsx): scoped description, labelled fields, preserved draft/save behavior, separate identity details |
+| Explicit-save settings | [ProfileSettings](../src/app/ProfileSettings.tsx): scoped description, labelled fields, preserved draft/save behavior. [IdentitySettings](../src/app/IdentitySettings.tsx) owns separate identity details |
 | Bounded modal | [ChannelMembersDialog](../src/bundled/channels/ChannelMembersDialog.tsx): stable shell, fixed search/filter area, bounded results; [RemindDialog](../src/bundled/reminders/RemindDialog.tsx) is the short-form source reference |
 | Anchored actions | [ChannelHeaderMenu](../src/bundled/channels/ChannelHeaderMenu.tsx): shared Menu parts, grouped actions, and focus handoff; account-menu composition is feature-specific |
 | Contributed detail | [ProfilePanel](../src/bundled/profiles/ProfilePanel.tsx) inside [PanelCard](../src/features/panels/PanelCard.tsx): body content and tabs within host-supplied framing |
@@ -106,13 +109,10 @@ interaction or authorize a redesign of the feature's behavior.
 
 | Before | After | Why |
 | --- | --- | --- |
-| [Projects](../src/bundled/projects/ProjectsPage.tsx) and [Workflows](../src/bundled/workflows/WorkflowsPage.tsx) begin with feature-authored large headings; Projects loading replaces the heading too. Observed in the browser. | Adopt the shared pane composition, with filters, scoped notices, and labelled task actions in the body. Keep identity stable across loading and results. | A destination should remain recognizable while its content changes. |
+| [Repository views](../src/bundled/repos/RepoPage.tsx) begin with feature-authored large headings; loading replaces the heading too. Observed in the browser. | Adopt the shared pane composition, with filters, scoped notices, and labelled task actions in the body. Keep identity stable across loading and results. | A destination should remain recognizable while its content changes. |
 | [Inbox](../src/bundled/inbox/InboxPage.tsx) uses a text Drafts action. Browser observed. | Shared label/navigation treatment and small icon-only header actions; retain accessible names and existing action behavior. | Using the frame alone does not establish correct composition. |
-| [WorkflowLanding](../src/bundled/workflows/WorkflowLanding.tsx) and [workflows.css](../src/bundled/workflows/workflows.css) make a 15rem-tall, plus-only Button look like a creation card. Observed in the empty landing view. | A named creation action with useful EmptyState guidance for a settled empty collection; ordinary cards remain for populated objects. | The visible next step should be understandable without hovering and should not require a private Button recipe. |
 | [Builderlab Login](../src/bundled/builderlab/login/Login.tsx) uses its own heading/gaps; [PairingSettings](../src/bundled/pairing/PairingSettings.tsx) uses a different hand-built heading. Builderlab observed; Pairing source-reviewed. | Use the Settings content Header and appropriate form/preference/management grouping. Preserve integration-specific instructions and steps. | Settings registration does not render consistent content hierarchy for the plugin. |
-| Shared [AlertDialog](../src/shared/design-system/ui/AlertDialog.tsx) still uses direct title/description/action markup and `text-heading`, while [Dialog](../src/shared/design-system/ui/Dialog.tsx) owns a structured header/body/footer with `text-label`. Source-only. | Reconcile visual geometry in the shared confirmation owner while retaining alert-dialog semantics. | A guide cannot promise uniform modal composition until the shared owners agree. |
 | [PanelSubview](../src/features/panels/PanelSubview.tsx) focuses its Back control on entry. Adding an IconButton title opens a Tooltip that consumes the first Escape before Back; reproduced in the existing focus/return component test during an isolated trial. | Preserve accessible names and the existing one-Escape Back contract until the shared Tooltip policy supports both. Current controls omit the new hint. | A mandatory hint recipe can conflict with an established keyboard contract; token guards do not detect this. |
-| [SessionsPage](../src/bundled/sessions/SessionsPage.tsx), which now supplies [Me](../src/bundled/me/index.tsx), renders its disconnected state inside PanelFrame with a standalone heading instead of the shared pane header. Source-reviewed at `a6ea532d6`. | Keep pane identity consistent across connection states while preserving contextual connection and recovery guidance. | A host frame alone does not supply the pane's header composition. |
 
 ### Enforcement boundary
 

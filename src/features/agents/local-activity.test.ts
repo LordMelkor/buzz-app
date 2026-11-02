@@ -1,15 +1,16 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   createLocalAgentActivity,
   localActivity,
   localWorkLabel,
   stepText,
 } from "./local-activity";
-import { createAgentActivity } from "../agents/activity";
+import { createAgentActivity } from "./activity";
 import { messageActivity } from "../../bundled/agent-activity/message-activity";
 import { workingAgents } from "../../bundled/channels/working-agents";
-import { threadWorkingAgents } from "../agents/thread-working";
+import { threadWorkingAgents } from "./thread-working";
 
+type Work = ReturnType<ReturnType<typeof createLocalAgentActivity>["begin"]>;
 const scope = "https://relay.test:viewer",
   agent = "a".repeat(64),
   root = "b".repeat(64),
@@ -21,7 +22,6 @@ it("projects one local source into channel, exact thread and message without nee
     false,
     () => {},
     (channel) => allowed && channel === "channel",
-    undefined,
     undefined,
     undefined,
     { source: local.reader, scope },
@@ -168,4 +168,259 @@ it("words readable steps from the harness's own tool names and targets", () => {
   expect(text("Bash")).toBe("Running a command");
   expect(text("custom_tool", "x")).toBe("custom_tool · x");
   expect(text("custom_tool")).toBe("custom_tool");
+});
+
+const request = (messageId = "m") => ({
+  scope: "s",
+  agent: "a",
+  channelId: "c",
+  messageId,
+  threadRootId: "m",
+});
+const target = { scope: "s", agent: "a", messageId: "m" };
+
+it("stops a stoppable request through its harness and shows it stopped", async () => {
+  const activity = createLocalAgentActivity();
+  const work = activity.begin(request());
+  const stop = vi.fn(async () => {});
+  const row = () => {
+    const current = activity.reader.work()[0];
+    if (!current) throw new Error("Expected local work");
+    return current;
+  };
+  expect(row().stoppable).toBeUndefined();
+  work.step("Read", "notes.txt");
+  work.interruptible(stop);
+  expect(row()).toMatchObject({ state: "working", stoppable: true });
+  work.step("Edit", "other.txt");
+  expect(row().stoppable).toBe(true);
+  await activity.reader.interrupt?.(target);
+  expect(stop).toHaveBeenCalledTimes(1);
+  expect(row()).toMatchObject({ state: "stopped" });
+  expect(row().step).toBeUndefined();
+  expect(row().stoppable).toBeUndefined();
+  expect(localWorkLabel(row())).toBe("Stopped");
+  // A late outcome from the cancelled turn cannot reopen or relabel the row.
+  work.finish({ ok: false, error: "Cancelled" });
+  work.finish({ ok: true });
+  work.step("Late");
+  expect(row()).toMatchObject({ state: "stopped" });
+  expect(row().error).toBeUndefined();
+  await activity.reader.interrupt?.(target);
+  expect(stop).toHaveBeenCalledTimes(1);
+});
+
+it("shows a request stopped when its harness reports the stop ended the turn", () => {
+  const activity = createLocalAgentActivity();
+  const work = activity.begin(request());
+  work.step("Read", "notes.txt");
+  work.interruptible(async () => {});
+  work.finish({ ok: true, stopped: true });
+  const row = activity.reader.work()[0];
+  expect(row).toMatchObject({ state: "stopped" });
+  expect(row?.step).toBeUndefined();
+  expect(row?.stoppable).toBeUndefined();
+});
+
+it("ranks stopped work as settled, below any live request of the same agent", async () => {
+  const activity = createLocalAgentActivity();
+  const stopped = activity.begin(request("one"));
+  stopped.interruptible(async () => {});
+  activity.begin(request("two")).started();
+  await activity.reader.interrupt?.({ ...target, messageId: "one" });
+  const snapshot = { local: activity.reader.work() };
+  expect(snapshot.local[0]?.state).toBe("stopped");
+  expect(localActivity(snapshot, "c").get("a")?.messageId).toBe("two");
+});
+
+it.each([
+  ["finish", (work: Work) => work.finish({ ok: true })],
+  ["fail", (work: Work) => work.finish({ ok: false, error: "Broke" })],
+  ["supersede", (work: Work) => work.supersede()],
+  ["remove", (work: Work) => work.remove()],
+])("loses its stopper once it settles by %s", async (_name, settle) => {
+  const activity = createLocalAgentActivity();
+  const work = activity.begin(request());
+  const stop = vi.fn(async () => {});
+  work.interruptible(stop);
+  settle(work);
+  expect(activity.reader.work()[0]?.stoppable).toBeUndefined();
+  await activity.reader.interrupt?.(target);
+  expect(stop).not.toHaveBeenCalled();
+  expect(activity.reader.work()[0]?.state).not.toBe("stopped");
+});
+
+it("ignores a stopper registered after the request settled", async () => {
+  const activity = createLocalAgentActivity();
+  const work = activity.begin(request());
+  const stop = vi.fn(async () => {});
+  work.finish({ ok: true });
+  work.interruptible(stop);
+  expect(activity.reader.work()[0]).toMatchObject({ state: "done" });
+  expect(activity.reader.work()[0]?.stoppable).toBeUndefined();
+  await activity.reader.interrupt?.(target);
+  expect(stop).not.toHaveBeenCalled();
+});
+
+it("keeps the request working and reports the failure when its stopper rejects", async () => {
+  const activity = createLocalAgentActivity();
+  const work = activity.begin(request());
+  const stop = vi.fn(async (): Promise<void> => {
+    throw new Error("Harness refused");
+  });
+  work.step("Read", "notes.txt");
+  work.interruptible(stop);
+  await expect(activity.reader.interrupt?.(target)).rejects.toThrow(
+    "Harness refused",
+  );
+  expect(activity.reader.work()[0]).toMatchObject({
+    state: "working",
+    stoppable: true,
+    step: { tool: "Read", target: "notes.txt" },
+  });
+  // Stop stays offered, so the owner can try again.
+  stop.mockResolvedValueOnce(undefined);
+  await activity.reader.interrupt?.(target);
+  expect(activity.reader.work()[0]).toMatchObject({ state: "stopped" });
+});
+
+it("leaves the outcome alone when the turn settles while its stopper runs", async () => {
+  const activity = createLocalAgentActivity();
+  const work = activity.begin(request());
+  let release!: () => void;
+  work.interruptible(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const stopping = activity.reader.interrupt?.(target);
+  work.finish({ ok: true });
+  release();
+  await stopping;
+  expect(activity.reader.work()[0]).toMatchObject({ state: "done" });
+});
+
+it("stops only the exact request and not an unmatched scope, agent or message", async () => {
+  const activity = createLocalAgentActivity();
+  const stop = vi.fn(async () => {});
+  activity.begin(request()).interruptible(stop);
+  await activity.reader.interrupt?.({ ...target, scope: "other" });
+  await activity.reader.interrupt?.({ ...target, agent: "b" });
+  await activity.reader.interrupt?.({ ...target, messageId: "n" });
+  expect(stop).not.toHaveBeenCalled();
+  expect(activity.reader.work()[0]).toMatchObject({
+    state: "waiting",
+    stoppable: true,
+  });
+});
+
+it("drops a stopper when its request is replaced, evicted or cleared", async () => {
+  const activity = createLocalAgentActivity();
+  const replaced = vi.fn(async () => {});
+  activity.begin(request()).interruptible(replaced);
+  const next = activity.begin(request());
+  expect(activity.reader.work()[0]?.stoppable).toBeUndefined();
+  await activity.reader.interrupt?.(target);
+  expect(replaced).not.toHaveBeenCalled();
+  const live = vi.fn(async () => {});
+  next.interruptible(live);
+  await activity.reader.interrupt?.(target);
+  expect(live).toHaveBeenCalledTimes(1);
+
+  const bounded = createLocalAgentActivity();
+  const evicted = vi.fn(async () => {});
+  const settled = bounded.begin(request("settled"));
+  settled.interruptible(evicted);
+  settled.finish({ ok: true });
+  for (let i = 0; i < 520; i++) bounded.begin(request(String(i)));
+  await bounded.reader.interrupt?.({ ...target, messageId: "settled" });
+  expect(evicted).not.toHaveBeenCalled();
+
+  const cleared = createLocalAgentActivity();
+  const stop = vi.fn(async () => {});
+  cleared.begin(request()).interruptible(stop);
+  cleared.clear("s", "a");
+  await cleared.reader.interrupt?.(target);
+  expect(stop).not.toHaveBeenCalled();
+  expect(cleared.reader.work()).toEqual([]);
+});
+
+it("offers Stop through the session only for this scope and accessible channels, and hides stopped bubbles", async () => {
+  const local = createLocalAgentActivity();
+  let allowed = true;
+  const activity = createAgentActivity(
+    false,
+    () => {},
+    (channel) => allowed && channel === "channel",
+    undefined,
+    undefined,
+    { source: local.reader, scope },
+  );
+  const snapshot = activity.queries.snapshot;
+  const stop = vi.fn(async () => {});
+  try {
+    const work = local.begin({
+      scope,
+      agent,
+      channelId: "channel",
+      threadRootId: root,
+      messageId: reply,
+    });
+    work.started();
+    work.interruptible(stop);
+    expect(messageActivity(snapshot(), "channel", reply)[0]).toMatchObject({
+      state: "working",
+      stoppable: true,
+    });
+    allowed = false;
+    await expect(
+      activity.queries.interrupt(agent, "channel", reply),
+    ).rejects.toThrow("This work can't be stopped here");
+    expect(stop).not.toHaveBeenCalled();
+    allowed = true;
+    await activity.queries.interrupt(agent, "channel", reply);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(snapshot().local?.[0]).toMatchObject({ state: "stopped" });
+    expect(messageActivity(snapshot(), "channel", reply)).toEqual([]);
+    expect(workingAgents(snapshot(), "channel")).toEqual([]);
+    expect(threadWorkingAgents(snapshot(), [], "channel", root)).toEqual([]);
+  } finally {
+    activity.dispose();
+  }
+  await expect(
+    activity.queries.interrupt(agent, "channel", reply),
+  ).rejects.toThrow("This work can't be stopped here");
+});
+
+it("cannot stop work from a source that has no way to interrupt", async () => {
+  const local = createLocalAgentActivity();
+  const { interrupt: _interrupt, ...reader } = local.reader;
+  const activity = createAgentActivity(
+    false,
+    () => {},
+    () => true,
+    undefined,
+    undefined,
+    { source: reader, scope },
+  );
+  try {
+    await expect(
+      activity.queries.interrupt(agent, "channel", reply),
+    ).rejects.toThrow("This work can't be stopped here");
+  } finally {
+    activity.dispose();
+  }
+  const bare = createAgentActivity(
+    false,
+    () => {},
+    () => true,
+  );
+  try {
+    await expect(
+      bare.queries.interrupt(agent, "channel", reply),
+    ).rejects.toThrow("This work can't be stopped here");
+  } finally {
+    bare.dispose();
+  }
 });

@@ -9,6 +9,26 @@ export function isChannelDropSectionKey(key: string) {
   return key === "starred" || isChannelSectionKey(key);
 }
 
+export function contributedSidebarSectionKey(key: string) {
+  return `plugin:${key}`;
+}
+
+export function orderContributedSidebarSections<T extends { key: string }>(
+  sections: readonly T[],
+  order: readonly string[],
+) {
+  const position = new Map(order.map((key, index) => [key, index]));
+  return sections
+    .map((section, index) => ({ section, index }))
+    .sort(
+      (a, b) =>
+        (position.get(a.section.key) ?? Number.MAX_SAFE_INTEGER) -
+          (position.get(b.section.key) ?? Number.MAX_SAFE_INTEGER) ||
+        a.index - b.index,
+    )
+    .map(({ section }) => section);
+}
+
 /** Preferences only arrange the supplied authorized roster; they never add channels. */
 export function sidebarSections<T extends ChannelSummary>(
   channels: readonly T[],

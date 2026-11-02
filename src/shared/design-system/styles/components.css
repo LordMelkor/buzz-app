@@ -2,6 +2,20 @@
 @import "./tab-drag.css";
 
 @layer components {
+  .buzz-loading-region {
+    position: relative;
+    min-width: 0;
+  }
+  .buzz-loading-region-feedback {
+    min-block-size: var(--size-row);
+    padding-inline: var(--space-4);
+  }
+  .buzz-loading-region-status {
+    @apply text-body-sm;
+    margin: 0;
+    color: var(--text-subtle);
+  }
+
   .buzz-button {
     position: relative;
     display: inline-flex;
@@ -53,10 +67,23 @@
     min-height: var(--space-6);
     padding: var(--space-1) var(--space-3);
   }
+  /* Activity-only message summaries share geometry in channels and threads. */
+  .buzz-button[data-size="xs"][data-activity-summary] {
+    padding-inline: var(--space-1h) var(--space-2);
+  }
   .buzz-button[data-size="xs"] .buzz-button-label > svg,
   .buzz-button[data-size="xs"] .buzz-button-spinner {
     width: var(--space-4);
     height: var(--space-4);
+  }
+  .buzz-button[data-size="caption"] {
+    @apply text-caption;
+    min-height: var(--size-control-sm);
+    padding: var(--space-2) var(--space-3);
+  }
+  /* A leading icon sits as close to the leading edge as to the top and bottom. */
+  .buzz-button[data-size="xs"]:has(> .buzz-button-label > svg:first-child) {
+    padding-inline-start: var(--space-1);
   }
   /* Inline caption choices, such as the composer's model label. */
   .buzz-button[data-size="inline"] {
@@ -72,6 +99,13 @@
     width: var(--space-3);
     height: var(--space-3);
   }
+  /* Medium labelled actions with a leading icon use optical side insets. */
+  .buzz-button[data-size="md"]:not([data-icon-variant]):has(
+    > .buzz-button-label > svg:first-child
+  ) {
+    padding-inline-start: var(--space-3);
+    padding-inline-end: var(--space-4);
+  }
   .buzz-button[data-size="sm"] {
     @apply text-label-sm;
     min-height: var(--size-control-sm);
@@ -82,16 +116,120 @@
     width: var(--space-4);
     height: var(--space-4);
   }
+  /* Small identity buttons: leading avatars sit as close to the leading
+     edge as to the top and bottom, and a trailing icon tucks in to match. */
+  .buzz-button[data-size="sm"]:has(
+    > .buzz-button-label > [data-avatar-stack]:first-child
+  ) {
+    padding-inline: var(--space-1h) var(--space-3);
+  }
   .buzz-button[data-size="lg"] {
     min-height: var(--size-control-lg);
     padding-block: calc(var(--space-3) + var(--space-half));
   }
   .buzz-button[data-variant="prominent"] {
     background: var(--affordance-prominent);
-    color: var(--text-inverse);
+    color: var(--text-on-prominent);
   }
   .buzz-button[data-variant="subtle"] {
     background: var(--interaction-fill);
+  }
+  /* Profile actions over artwork; the shared material supplies fill, rim and blur. */
+  .buzz-button[data-variant="glass"] {
+    @apply glass-secondary;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .buzz-button[data-variant="glass"]:hover:not([data-disabled]) {
+      background: var(--bg-glass-secondary-hover);
+    }
+  }
+  .buzz-button[data-variant="glass"]:is(:active, [aria-expanded="true"]):not(
+    [data-disabled]
+  ) {
+    background: var(--surface-panel);
+  }
+  @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+    .buzz-button[data-variant="glass"] {
+      background: var(--surface-panel);
+      backdrop-filter: none;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .buzz-button[data-variant="glass"]:hover:not([data-disabled]) {
+        background: var(--affordance-subtle-hover);
+      }
+    }
+    .buzz-button[data-variant="glass"]:is(:active, [aria-expanded="true"]):not(
+        [data-disabled]
+      ) {
+      background: var(--affordance-subtle-pressed);
+    }
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    .buzz-button[data-variant="glass"] {
+      background: var(--surface-panel);
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .buzz-button[data-variant="glass"]:hover:not([data-disabled]) {
+        background: var(--affordance-subtle-hover);
+      }
+    }
+    .buzz-button[data-variant="glass"]:is(:active, [aria-expanded="true"]):not(
+        [data-disabled]
+      ) {
+      background: var(--affordance-subtle-pressed);
+    }
+  }
+  /* Proposed quiet artwork control. Blur stays fixed across interaction states. */
+  .buzz-button[data-variant="glass-ghost"] {
+    @apply glass-primary;
+    background: transparent;
+    box-shadow: none;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .buzz-button[data-variant="glass-ghost"]:hover:not([data-disabled]) {
+      @apply glass-primary;
+    }
+  }
+  .buzz-button[data-variant="glass-ghost"]:is(
+    :active,
+    [aria-expanded="true"]
+  ):not([data-disabled]) {
+    @apply glass-primary;
+    background: var(--bg-glass-primary-hover);
+  }
+  @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+    .buzz-button[data-variant="glass-ghost"] {
+      backdrop-filter: none;
+    }
+    .buzz-button[data-variant="glass-ghost"]:is(
+        :hover,
+        :active,
+        [aria-expanded="true"]
+      ):not([data-disabled]) {
+      background: var(--surface-panel);
+      backdrop-filter: none;
+      box-shadow: inset 0 0 0 1px var(--border-standard);
+    }
+  }
+  @media (forced-colors: active) {
+    .buzz-button[data-variant="glass-ghost"]:where(
+        :hover,
+        :active,
+        [aria-expanded="true"]
+      ):where(:not([data-disabled])) {
+      outline: 1px solid ButtonText;
+      outline-offset: -1px;
+    }
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    .buzz-button[data-variant="glass-ghost"]:is(
+        :hover,
+        :active,
+        [aria-expanded="true"]
+      ):not([data-disabled]) {
+      background: var(--surface-panel);
+      box-shadow: inset 0 0 0 1px var(--border-standard);
+    }
   }
   .buzz-button[data-variant="inverted"] {
     background: var(--surface-panel);
@@ -129,6 +267,9 @@
   }
   .buzz-button[data-icon-variant] .buzz-button-attention rect {
     ry: var(--radius-icon-button);
+  }
+  .buzz-button[data-icon-shape="inset"] {
+    border-radius: var(--control-inset-radius, var(--radius-icon-button));
   }
   .buzz-button[data-icon-shape="round"] .buzz-button-attention rect {
     ry: 50%;
@@ -270,6 +411,49 @@
     width: var(--size-control-lg);
     height: var(--size-control-lg);
   }
+  /* A split button is one capsule: the action, then its menu. Filled halves
+     part with a hairline; outlined halves share one stroke. */
+  .buzz-split-button {
+    display: inline-flex;
+    max-width: 100%;
+    gap: 1px;
+  }
+  .buzz-split-button[data-variant="outline"] {
+    gap: 0;
+  }
+  .buzz-split-button > .buzz-button {
+    border-radius: var(--radius-capsule);
+  }
+  /* Menu focus guards add spans around its trigger while open. Select the
+     buttons by type so those siblings cannot detach the joined edges. */
+  .buzz-split-button > .buzz-button:first-of-type {
+    flex-shrink: 1;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    border-start-end-radius: 0;
+    border-end-end-radius: 0;
+  }
+  .buzz-split-button > .buzz-button:where(:first-of-type) .buzz-button-label {
+    flex-wrap: wrap;
+  }
+  .buzz-split-button > .buzz-button:last-of-type {
+    height: auto;
+    border-start-start-radius: 0;
+    border-end-start-radius: 0;
+  }
+  /* Compact icon-only menus keep equal insets rather than the leading-icon text inset. */
+  .buzz-split-button
+  > .buzz-button[data-icon-variant][data-icon-size="xs"][aria-haspopup="menu"] {
+    width: auto;
+    padding-inline: var(--space-2);
+  }
+  .buzz-split-button[data-variant="outline"] > .buzz-button:last-of-type {
+    margin-inline-start: -1px;
+  }
+  /* The focused half's ring stays above its neighbour. */
+  .buzz-split-button > .buzz-button:focus-visible {
+    z-index: 1;
+  }
   /* Preserve fill avatars and pointer-origin Tab traversal in WebKit. */
   .buzz-button[data-icon-variant] .buzz-button-label {
     width: 100%;
@@ -279,6 +463,15 @@
   }
   .buzz-button[data-icon-shape="round"] {
     border-radius: var(--radius-pill);
+  }
+
+  .buzz-button[data-color-swatch] .buzz-button-label {
+    color: var(--text-on-accent);
+  }
+
+  .buzz-button[data-color-swatch] .buzz-button-label > svg {
+    width: var(--space-6);
+    height: var(--space-6);
   }
 
   /* Avatar edit badges reuse the artwork curve. Mask only the fill so the
@@ -345,19 +538,25 @@
     );
   }
 
-  .buzz-button[data-icon-variant="ghost"][data-selected],
+  .buzz-button[data-icon-variant="ghost"][data-selected]:not(
+    [data-disabled],
+    :disabled
+  ),
   .buzz-button[data-icon-variant="ghost"][data-selected]:hover:not(
     [data-disabled]
   ) {
-    background: var(--interaction-selected);
+    background: var(--surface-navigation-selected);
+    color: var(--text-navigation-selected);
   }
 
-  /* Glyph-state toggles stay unfilled; their caller supplies outline/filled art.
-     Keep the 32px small hit area with slightly larger 20px artwork. */
+  /* Bare controls stay unfilled. Glyph-state toggles keep their larger
+     artwork; row actions retain the standard icon sizing. */
   .buzz-button[data-icon-variant="bare"] {
     background: transparent;
   }
-  .buzz-button[data-icon-variant="bare"][data-size="sm"]
+  .buzz-button[data-icon-variant="bare"][aria-pressed]:where(
+      [data-icon-size="sm"]
+    )
     .buzz-button-label
     > svg {
     width: var(--space-5);
@@ -369,6 +568,39 @@
     background: var(--affordance-accent);
     color: var(--text-accent);
   }
+  .buzz-button[data-muted]:not([data-disabled]) {
+    color: var(--text-subtle);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .buzz-button[data-muted]:hover:not([data-disabled]) {
+      background: var(--affordance-subtle-pressed);
+      color: var(--text-standard);
+    }
+  }
+  .buzz-button[data-muted]:is(:active, :focus-visible):not([data-disabled]) {
+    color: var(--text-standard);
+  }
+  .buzz-button[data-icon-variant="destructive-quiet"] {
+    background: transparent;
+    color: var(--text-quiet-control);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .buzz-button[data-icon-variant="destructive-quiet"]:hover:not(
+        [data-disabled]
+      ) {
+      background: var(--affordance-danger-hover);
+      color: var(--text-danger);
+    }
+  }
+  .buzz-button[data-icon-variant="destructive-quiet"]:active:not(
+    [data-disabled]
+  ) {
+    background: var(--affordance-danger-pressed);
+    color: var(--text-danger);
+  }
+  .buzz-button[data-icon-variant="inset"] {
+    --interaction-fill: var(--surface-inset);
+  }
   .buzz-button[data-icon-variant="chrome"] {
     background: transparent;
   }
@@ -378,6 +610,15 @@
         [aria-current="page"]
       ) {
       background: var(--affordance-backdrop-hover);
+    }
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .chrome-navigation
+      .buzz-button[data-icon-variant="chrome"]:hover:not(
+        [data-disabled],
+        [aria-current="page"]
+      ) {
+      background: var(--affordance-chrome-hover);
     }
   }
   .buzz-button[data-icon-variant="chrome"]:is(
@@ -438,7 +679,9 @@
   .buzz-preview-card {
     display: grid;
     width: max-content;
-    max-width: min(18rem, 75vw);
+    max-width: min(18rem, 75vw, var(--available-width, 100vw));
+    max-height: var(--available-height);
+    overflow-y: auto;
     gap: var(--space-1);
     @apply floating-surface;
     padding: var(--space-4);
@@ -512,6 +755,16 @@
     color: var(--text-subtle);
   }
 
+  /* A fallback initial (marked data-avatar-fallback by Avatar.tsx) keeps the
+     component's body line box, which can be taller than small artwork; centre
+     the overflowing track rather than letting it start at the top. Only there:
+     centring also stops the track stretching, and a percentage-sized artwork
+     child (the packed video wrapper) would shrink to the video's intrinsic
+     height until its poster or metadata arrives. */
+  .buzz-avatar:has(> [data-avatar-fallback]) {
+    place-content: center;
+  }
+
   /* Matches reply-stack artwork inside its 24px slot and 1.5px ring. */
   .buzz-avatar[data-size="compact"] {
     @apply text-caption;
@@ -562,6 +815,10 @@
   .buzz-avatar-status[data-size="fill"] {
     width: 100%;
     height: 100%;
+    /* The host sizes the artwork. Without containment a fallback's line box
+       is this box's intrinsic height and grows a host shorter than it, as
+       artwork cannot (its img is absolute). */
+    contain: size;
   }
 
   .buzz-avatar-status-dot {
@@ -622,6 +879,10 @@
     border-radius: var(--radius-container);
     background: var(--surface-panel);
     box-shadow: var(--shadow-panel);
+  }
+
+  .panel[data-shape="capsule"] {
+    border-radius: var(--radius-pill);
   }
 
   /* A joined surface keeps one outer edge; nested panels retain opaque
@@ -693,6 +954,40 @@
     -webkit-user-select: none;
     user-select: none;
   }
+  /* A scrolling strip fades out on each edge that has tabs past them, so a cut
+     tab reads as "more this way" rather than as clipped. Only the panel and
+     navigation lists scroll; the others never hide a tab to fade. */
+  .buzz-tabs-list {
+    --tabs-fade: var(--space-8);
+  }
+  .buzz-tabs:is([data-variant="panel"], [data-variant="navigation"])
+    .buzz-tabs-list[data-overflow-start] {
+    mask-image: linear-gradient(to right, transparent, #000 var(--tabs-fade));
+  }
+  .buzz-tabs:is([data-variant="panel"], [data-variant="navigation"])
+    .buzz-tabs-list[data-overflow-end] {
+    mask-image: linear-gradient(to left, transparent, #000 var(--tabs-fade));
+  }
+  .buzz-tabs:is([data-variant="panel"], [data-variant="navigation"])
+    .buzz-tabs-list[data-overflow-start][data-overflow-end] {
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      #000 var(--tabs-fade),
+      #000 calc(100% - var(--tabs-fade)),
+      transparent
+    );
+  }
+  [dir="rtl"]
+    .buzz-tabs:is([data-variant="panel"], [data-variant="navigation"])
+    .buzz-tabs-list[data-overflow-start]:not([data-overflow-end]) {
+    mask-image: linear-gradient(to left, transparent, #000 var(--tabs-fade));
+  }
+  [dir="rtl"]
+    .buzz-tabs:is([data-variant="panel"], [data-variant="navigation"])
+    .buzz-tabs-list[data-overflow-end]:not([data-overflow-start]) {
+    mask-image: linear-gradient(to right, transparent, #000 var(--tabs-fade));
+  }
 
   /* Geometry only. **Colour is not here, deliberately.**
 
@@ -721,6 +1016,18 @@
     cursor: pointer;
   }
 
+  .buzz-tabs-tab[data-icon-only] {
+    min-width: var(--space-8);
+  }
+  :where(.buzz-tabs-tab[data-icon-only] .buzz-tabs-icon) > * {
+    width: 100%;
+    height: 100%;
+  }
+  .buzz-tabs-tab[data-disabled] {
+    opacity: 0.5;
+    cursor: default;
+  }
+
   /* Base UI drives both indicators from the same four custom properties
      (`--active-tab-left`, `--active-tab-width`, and their siblings), so the
      travelling animation is one implementation and the two surfaces only
@@ -739,7 +1046,7 @@
 
   .buzz-tabs[data-variant="chrome"],
   .chrome-navigation {
-    background: var(--affordance-subtle);
+    background: var(--affordance-chrome);
   }
 
   .buzz-tabs[data-variant="chrome"] {
@@ -760,17 +1067,18 @@
     height: 2rem;
     border-radius: var(--radius-pill);
     padding: 0 var(--space-4);
-    color: var(--text-subtle);
+    color: var(--text-chrome-subtle);
   }
 
   /* Selection and hover occupy the same box; a selected tab does not hover. */
-  .buzz-tabs[data-variant="chrome"] .buzz-tabs-tab:hover:not([data-selected]) {
-    background: var(--affordance-subtle-hover);
+  .buzz-tabs[data-variant="chrome"]
+  .buzz-tabs-tab:hover:not([data-selected], [data-disabled]) {
+    background: var(--affordance-chrome-hover);
     color: var(--text-standard);
   }
 
   .buzz-tabs[data-variant="chrome"] .buzz-tabs-tab[data-selected] {
-    color: var(--text-standard);
+    color: var(--text-navigation-selected);
   }
 
   .buzz-tabs[data-variant="chrome"] .buzz-tabs-indicator {
@@ -778,6 +1086,52 @@
     bottom: 0;
     border-radius: var(--radius-pill);
     background: var(--bg-chrome-selected);
+    box-shadow: var(--shadow-xs);
+  }
+
+  /* Segmented filters on opaque surfaces, as used by sidebar scope. */
+  .buzz-tabs:is([data-variant="segmented"], [data-variant="segmented-icons"]) {
+    display: flex;
+    padding: var(--space-1);
+    border-radius: var(--radius-pill);
+    background: var(--surface-inset);
+  }
+  .buzz-tabs:is([data-variant="segmented"], [data-variant="segmented-icons"])
+    .buzz-tabs-list {
+    width: 100%;
+    gap: var(--space-1);
+  }
+  .buzz-tabs:is([data-variant="segmented"], [data-variant="segmented-icons"])
+    .buzz-tabs-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: var(--space-8);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-pill);
+    color: var(--text-subtle);
+  }
+  .buzz-tabs:is(
+      [data-variant="segmented"],
+      [data-variant="segmented-icons"]
+    ):where([data-size="sm"])
+    .buzz-tabs-tab {
+    min-height: calc(var(--size-control-sm) - 2 * var(--space-1));
+    padding-block: 0;
+  }
+  .buzz-tabs:is([data-variant="segmented"], [data-variant="segmented-icons"])
+    .buzz-tabs-tab:hover:not([data-selected], [data-disabled]) {
+    background: var(--affordance-subtle-hover);
+    color: var(--text-standard);
+  }
+  .buzz-tabs:is([data-variant="segmented"], [data-variant="segmented-icons"])
+    .buzz-tabs-tab[data-selected] {
+    color: var(--text-control-selected);
+  }
+  .buzz-tabs:is([data-variant="segmented"], [data-variant="segmented-icons"])
+    .buzz-tabs-indicator {
+    inset-block: 0;
+    border-radius: var(--radius-pill);
+    background: var(--surface-control-selected);
     box-shadow: var(--shadow-xs);
   }
 
@@ -823,12 +1177,13 @@
   }
 
   /* Excluded for the same reason as the chrome variant above. */
-  .buzz-tabs[data-variant="panel"] .buzz-tabs-tab:hover:not([data-selected]) {
+  .buzz-tabs[data-variant="panel"]
+  .buzz-tabs-tab:hover:not([data-selected], [data-disabled]) {
     color: var(--text-standard);
   }
 
   .buzz-tabs[data-variant="panel"] .buzz-tabs-tab[data-selected] {
-    color: var(--text-standard);
+    color: var(--text-accent);
   }
 
   /* Sits on the tab's bottom edge and spans the tab exactly. `height` is
@@ -839,7 +1194,7 @@
     bottom: var(--space-1);
     height: 2px;
     border-radius: var(--radius-pill);
-    background: var(--text-standard);
+    background: var(--affordance-prominent-mark);
   }
 
   .buzz-tabs-item[data-closable] .buzz-tabs-tab {
@@ -863,6 +1218,12 @@
     gap: var(--space-2);
     padding-block: 0;
     padding-inline: var(--space-1);
+  }
+
+  /* The painted band includes the outer rim above and excludes the separator
+     below. Center its controls one hairline above the layout box's center. */
+  .panel-header > * {
+    translate: 0 -1px;
   }
 
   .panel-header::after {
@@ -903,6 +1264,21 @@
     margin-inline-start: auto;
   }
 
+  /* Floating agent cards keep actions beside a truncating title. */
+  .panel-header[data-variant="card"] {
+    min-width: 0;
+    flex-wrap: nowrap;
+  }
+  .panel-header[data-variant="card"]::after {
+    display: none;
+  }
+  .panel-header[data-variant="card"] .panel-header-title {
+    flex: 1 1 0;
+  }
+  .panel-header[data-variant="card"] .panel-header-actions {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+  }
   .panel-header-title > h2 {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -977,7 +1353,14 @@
   }
 
   .navigation-section-label {
+    @apply text-body;
+    color: var(--text-subtle);
     margin: 0;
+  }
+
+  /* A headingless reference stays above the named groups when navigation wraps. */
+  .navigation-section[data-headingless] {
+    grid-column: 1 / -1;
   }
 
   .navigation-section-heading .buzz-button[data-icon-size="compact"] {
@@ -994,6 +1377,232 @@
      Base UI Button's native button behavior. It does not compose Buzz Button:
      a navigation destination is not an ordinary action button, and sharing the
      styling made the generic ghost hover compete with navigation's own states. */
+  .navigation-card {
+    display: block;
+    border-radius: var(--radius-row);
+    color: var(--text-standard);
+    --interaction-row-hover: transparent;
+    --interaction-selected: transparent;
+    --interaction-pressed: transparent;
+  }
+  .navigation-card-row {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    min-width: 0;
+  }
+  .navigation-card-row > :first-child {
+    flex: 1;
+    min-width: 0;
+  }
+  .navigation-card-body {
+    padding-block-end: var(--space-1);
+  }
+  .navigation-card-body:has(> [hidden]:only-child) {
+    display: none;
+  }
+  .navigation-card:not([data-tone="tonal"], [data-tone="inset"]):has(
+    > .navigation-card-body > :not([hidden])
+  ) {
+    background: var(--affordance-subtle);
+  }
+  .navigation-card-footer:empty,
+  .navigation-card-body:empty {
+    display: none;
+  }
+  .navigation-card-footer {
+    padding: var(--space-1) var(--space-2);
+  }
+  .navigation-card-footer
+    .buzz-button[data-variant="plain"][data-size="inline"] {
+    color: var(--text-navigation);
+  }
+  .navigation-card:not([data-tone="tonal"], [data-tone="inset"]):is(
+    :has(
+      > .navigation-card-row:hover,
+      > .navigation-card-footer:hover,
+      > .navigation-card-row :focus-visible,
+      > .navigation-card-footer :focus-visible,
+      > .navigation-card-row [data-context-menu-present],
+      > .navigation-card-row [aria-expanded="true"][aria-haspopup="menu"]
+    ),
+    [data-context-menu-present]
+  ):not(:has(> .navigation-card-row [aria-current="page"])) {
+    background: var(--affordance-panel-hover);
+  }
+  .navigation-card:not([data-tone="tonal"], [data-tone="inset"]):has(
+    > .navigation-card-row [aria-current="page"]
+  ) {
+    background: var(--surface-sidebar-selected);
+  }
+  .navigation-card:has(> .navigation-card-row [aria-current="page"])
+    > :is(.navigation-card-row, .navigation-card-footer) {
+    --text-subtle: var(--text-row-selected-subtle);
+  }
+  /* Task navigation has a tonal selected surface; the card still owns all paint. */
+  .navigation-card:is([data-tone="tonal"], [data-tone="inset"]) {
+    --affordance-panel-hover: var(--affordance-subtle-hover);
+    --text-row-selected: var(--text-standard);
+    --text-row-selected-subtle: var(--text-metadata);
+    --text-row-selected-metadata: var(--text-metadata);
+    --interaction-selected-text: var(--text-row-selected-subtle);
+    --interaction-selected-metadata: var(--text-metadata);
+    --interaction-row-text: var(--text-subtle);
+    --interaction-row-metadata: var(--text-metadata);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-chip);
+  }
+  .navigation-card:is([data-tone="tonal"], [data-tone="inset"]):where(
+    :is(
+      :has(
+        > :is(.navigation-card-row, .navigation-card-footer):hover,
+        > :is(.navigation-card-row, .navigation-card-footer)
+          :is(
+            :focus-visible,
+            [data-context-menu-present],
+            [aria-expanded="true"][aria-haspopup="menu"]
+          )
+      ),
+      [data-context-menu-present]
+    ):not(:has(> .navigation-card-row [aria-current="page"]))
+  ) {
+    background: var(--affordance-panel-hover);
+  }
+  /* Contained destinations align at every depth rather than adding tree insets. */
+  :where(.navigation-card-body)
+  .navigation-card:is([data-tone="tonal"], [data-tone="inset"]) {
+    border-inline-width: 0;
+  }
+  .navigation-card:is([data-tone="tonal"], [data-tone="inset"]):where(
+    :has(> .navigation-card-row [aria-current="page"])
+  ) {
+    background: var(--affordance-selected);
+    border-color: var(--border-standard);
+  }
+  .navigation-card[data-tone="inset"] {
+    --affordance-panel-hover: var(--surface-inset);
+  }
+  .navigation-card[data-tone="inset"]:where(
+    :has(> .navigation-card-row [aria-current="page"])
+  ) {
+    background: var(--surface-inset);
+  }
+  /* Deeper interaction wins. Own interaction may still paint over child selection. */
+  .navigation-card:is([data-tone="tonal"], [data-tone="inset"]):where(
+    :has(> .navigation-card-body .navigation-card:hover),
+    :has(
+      > .navigation-card-body
+        :is(
+          :focus-visible,
+          [data-context-menu-present],
+          [aria-expanded="true"][aria-haspopup="menu"]
+        )
+    ),
+    :has(> .navigation-card-body [aria-current="page"]):not(
+      :has(
+        > :is(.navigation-card-row, .navigation-card-footer):hover,
+        > :is(.navigation-card-row, .navigation-card-footer)
+          :is(
+            :focus-visible,
+            [data-context-menu-present],
+            [aria-expanded="true"][aria-haspopup="menu"]
+          )
+      ),
+      [data-context-menu-present]
+    )
+  ) {
+    background: transparent;
+    border-color: transparent;
+  }
+  /* An active enclosing row owns one uniform surface until a child is interacted with. */
+  :where(
+    .navigation-card:is([data-tone="tonal"], [data-tone="inset"]):is(
+        :has(
+          > :is(.navigation-card-row, .navigation-card-footer):hover,
+          > :is(.navigation-card-row, .navigation-card-footer)
+            :is(
+              :focus-visible,
+              [data-context-menu-present],
+              [aria-expanded="true"][aria-haspopup="menu"]
+            )
+        ),
+        [data-context-menu-present]
+      ):not(
+        :has(
+          > .navigation-card-body .navigation-card:hover,
+          > .navigation-card-body
+            :is(
+              :focus-visible,
+              [data-context-menu-present],
+              [aria-expanded="true"][aria-haspopup="menu"]
+            )
+        )
+      )
+      > .navigation-card-body
+  ) .navigation-card:is([data-tone="tonal"], [data-tone="inset"]) {
+    background: transparent;
+    border-color: transparent;
+  }
+  /* A hovered task card is the sidebar's only shaded card until hover leaves. */
+  :where(
+    .buzz-sidebar-navigation:has(
+      .navigation-card
+        > :is(.navigation-card-row, .navigation-card-footer):hover
+    )
+  )
+  .navigation-card:is([data-tone="tonal"], [data-tone="inset"]):where(
+    :not(:has(> :is(.navigation-card-row, .navigation-card-footer):hover))
+  ) {
+    background: transparent;
+    border-color: transparent;
+  }
+  /* Let pointer travel settle before restoring the selected task's surface. */
+  @media (prefers-reduced-motion: no-preference) {
+    :where(html:not([data-keyboard-navigation]) .buzz-sidebar-navigation)
+      .navigation-card:is([data-tone="tonal"], [data-tone="inset"]):where(
+        :has(> .navigation-card-row [aria-current="page"])
+      ) {
+      transition:
+        background-color var(--duration-fast) var(--easing-state)
+        var(--duration-state),
+        border-color var(--duration-fast) var(--easing-state)
+        var(--duration-state);
+    }
+    :where(
+        .buzz-sidebar-navigation:has(
+          .navigation-card
+            > :is(.navigation-card-row, .navigation-card-footer):hover
+        )
+      )
+      .navigation-card:is([data-tone="tonal"], [data-tone="inset"]):where(
+        :has(> .navigation-card-row [aria-current="page"])
+      ) {
+      transition-delay: 0ms;
+    }
+    .buzz-sidebar-navigation
+      .navigation-card:is([data-tone="tonal"], [data-tone="inset"]):where(
+        :has(> :is(.navigation-card-row, .navigation-card-footer):hover),
+        [data-drop-target]
+      ) {
+      transition: none;
+    }
+  }
+  /* Accepted drag destinations override selection and contained interaction paint. */
+  .navigation-card[data-drop-target] {
+    background: var(--affordance-sidebar-hover);
+    border-color: var(--border-standard);
+  }
+  .navigation-card[data-drop-target] .navigation-card {
+    background: transparent;
+    border-color: transparent;
+  }
+  .navigation-item[data-multiline] {
+    height: auto;
+    min-height: var(--space-8);
+    align-items: flex-start;
+    padding-block: var(--space-1);
+  }
   .navigation-item {
     display: inline-flex;
     width: 100%;
@@ -1006,10 +1615,13 @@
     border-radius: var(--radius-row);
     padding: var(--space-1) var(--space-control-inset);
     background: transparent;
-    color: var(--text-standard);
+    color: var(--navigation-item-text, var(--text-standard));
     font: inherit;
     text-align: left;
     cursor: pointer;
+    /* Navigation labels are controls, not selectable document text. */
+    -webkit-user-select: none;
+    user-select: none;
     transition:
       color var(--duration-state) var(--easing-state),
       background-color var(--duration-state) var(--easing-state);
@@ -1023,7 +1635,7 @@
       --text-subtle: var(--interaction-row-text);
       --text-metadata: var(--interaction-row-metadata);
       background: var(--interaction-row-hover);
-      color: var(--text-standard);
+      color: var(--navigation-item-text, var(--text-standard));
     }
   }
 
@@ -1035,14 +1647,14 @@
     --text-subtle: var(--interaction-row-text);
     --text-metadata: var(--interaction-row-metadata);
     background: var(--interaction-row-hover);
-    color: var(--text-standard);
+    color: var(--navigation-item-text, var(--text-standard));
   }
 
   .navigation-item[data-selected] {
     --text-subtle: var(--interaction-selected-text);
     --text-metadata: var(--interaction-selected-metadata);
     background: var(--interaction-selected);
-    color: var(--text-standard);
+    color: var(--navigation-item-text, var(--text-standard));
   }
 
   /* Route navigation shares flat chrome, not Tabs' focus/tabpanel contract. */
@@ -1054,27 +1666,47 @@
     border-radius: var(--radius-pill);
     height: 2.5rem;
   }
+  /* A shell action group supplies the single outer track around its tabs. */
+  .chrome-navigation .buzz-tabs[data-variant="chrome"] {
+    background: transparent;
+    padding: 0;
+    height: auto;
+  }
   .chrome-navigation .navigation-item[data-variant="pill"] {
     width: auto;
     min-height: 2rem;
     height: 2rem;
     padding: 0 var(--space-4);
     border-radius: var(--radius-pill);
-    color: var(--text-subtle);
+    color: var(--text-chrome-subtle);
     @apply text-label;
   }
   .chrome-navigation
     .navigation-item[data-variant="pill"]:hover:not([data-selected]) {
-    background: var(--affordance-subtle-hover);
+    background: var(--affordance-chrome-hover);
     color: var(--text-standard);
   }
   .chrome-navigation .navigation-item[data-variant="pill"][data-selected],
   .buzz-button[data-icon-variant="chrome"][aria-current="page"] {
     background: var(--bg-chrome-selected);
-    color: var(--text-standard);
+    color: var(--text-navigation-selected);
     box-shadow: var(--shadow-xs);
   }
 
+  .navigation-item[data-variant="search"] {
+    padding: var(--space-3);
+    border-radius: max(
+      0px,
+      calc(
+        var(
+          --search-palette-radius,
+          calc(var(--radius-panel) + var(--space-1))
+        ) -
+        var(--space-3)
+      )
+    );
+    corner-shape: squircle;
+  }
   .navigation-item[data-variant="option"] {
     padding: var(--space-2);
     transition: none;
@@ -1084,6 +1716,24 @@
     --text-metadata: var(--text-standard);
     --text-subtle: var(--text-standard);
     outline-offset: -2px;
+  }
+
+  /* A text-only row action, such as a list's Show more: row text and
+     geometry with no fill. Quiet at rest, full text color on hover or focus. */
+  .navigation-item[data-variant="text"] {
+    color: var(--text-subtle);
+  }
+  .navigation-item[data-variant="text"]:focus-visible {
+    color: var(--text-standard);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .navigation-item[data-variant="text"]:hover:not(
+        [data-disabled],
+        :disabled
+      ) {
+      background: transparent;
+      color: var(--text-standard);
+    }
   }
 
   .navigation-item[data-inset] {
@@ -1098,9 +1748,93 @@
     white-space: nowrap;
   }
 
+  .navigation-item[data-multiline] .navigation-item-label {
+    white-space: normal;
+  }
   .navigation-item-trailing {
     flex: 0 0 auto;
     color: var(--text-metadata);
+  }
+
+  /* SidebarNavigation copies main's compact sidebar appearance. Keep this global:
+     applying nested shared selectors inside CSS Modules would rename their targets. */
+  .buzz-sidebar-navigation {
+    display: contents;
+    --affordance-navigation-quiet: var(--affordance-sidebar-hover);
+    --affordance-navigation-selected: var(--surface-sidebar-selected);
+    --text-row: var(--text-sidebar-hover);
+    --text-row-subtle: var(--text-sidebar-hover);
+    --text-row-metadata: var(--text-sidebar-hover);
+    --text-row-selected: var(--text-sidebar-selected);
+    --text-row-selected-subtle: var(--text-sidebar-selected);
+    --text-row-selected-metadata: var(--text-sidebar-selected);
+    --interaction-selected: var(--surface-sidebar-selected);
+    --interaction-selected-text: var(--text-sidebar-selected);
+    --interaction-selected-metadata: var(--text-sidebar-selected);
+    --interaction-row-text: var(--text-sidebar-hover);
+    --interaction-row-metadata: var(--text-sidebar-hover);
+    --size-row: var(--space-6);
+    --affordance-panel-hover: var(--affordance-navigation-quiet);
+    --interaction-row-hover: var(--affordance-navigation-quiet);
+  }
+  .buzz-sidebar-navigation .navigation-item[data-variant="row"] {
+    --space-row-gap: calc(var(--space-1) + var(--space-half));
+    --navigation-item-text: var(--text-navigation);
+    @apply text-body-sm;
+    min-height: calc(var(--space-6) + var(--space-1));
+    height: calc(var(--space-6) + var(--space-1));
+    padding: var(--space-half) calc(var(--space-1) + var(--space-half))
+      var(--space-half) var(--space-2);
+    border-radius: var(--radius-row);
+  }
+  .buzz-sidebar-navigation .navigation-item[data-multiline] {
+    height: auto;
+  }
+  .buzz-sidebar-navigation .navigation-item[data-variant="row"][data-selected] {
+    --navigation-item-text: var(--text-row-selected);
+  }
+  .buzz-sidebar-navigation .navigation-item[data-variant="row"][data-inset] {
+    padding-inline-start: calc(var(--space-2) + var(--space-6));
+  }
+  .buzz-sidebar-navigation
+    .navigation-item[data-variant="row"]:is([data-disabled], :disabled) {
+    --navigation-item-text: var(--text-unavailable);
+    cursor: default;
+    background: transparent;
+  }
+  .buzz-sidebar-navigation
+    .navigation-item[data-variant="row"]
+    > :is(svg, img) {
+    flex-shrink: 0;
+  }
+  /* Named static groups use main's disclosure-heading type and leading inset.
+     Disclosure, chevron and action behavior stay with their feature owner. */
+  .buzz-sidebar-navigation .navigation-section-heading {
+    min-height: var(--size-control-sm);
+    padding: var(--space-half) var(--space-2);
+  }
+  .buzz-sidebar-navigation .navigation-section-label {
+    @apply text-body-sm;
+    color: var(--text-subtle);
+  }
+  .buzz-sidebar-navigation .navigation-section + .navigation-section {
+    margin-top: var(--space-4);
+  }
+  .buzz-sidebar-navigation .navigation-section-rows {
+    gap: var(--space-half);
+  }
+
+  @container (max-width: 36rem) {
+    .buzz-sidebar-navigation[data-wrap-sections] {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+      gap: var(--space-4);
+    }
+    .buzz-sidebar-navigation[data-wrap-sections]
+      > .navigation-section
+      + .navigation-section {
+      margin-top: 0;
+    }
   }
 
   /* Compose the sidebar's NavigationItem as a tab; the sibling close action
@@ -1158,6 +1892,11 @@
     .navigation-item {
     background: transparent;
     cursor: default;
+  }
+  /* A hidden-selection strip is a single title, not a row of tabs: it fills
+     the header's title slot and truncates only when the header runs out of room. */
+  .buzz-tabs[data-variant="navigation"][data-selection-hidden] .buzz-tabs-item {
+    max-width: 100%;
   }
   .buzz-tabs[data-variant="navigation"]
     .buzz-tabs-item[data-closable]
@@ -1268,8 +2007,8 @@
   }
   /* Floating rows need more separation than controls on a darker panel.
      Supporting copy follows the brighter fill so it remains readable. */
-  .buzz-menu-item[data-highlighted],
-  .buzz-menu-item[data-popup-open],
+  .buzz-menu-item[data-highlighted]:not([data-disabled]),
+  .buzz-menu-item[data-popup-open]:not([data-disabled]),
   .buzz-select-option[data-highlighted] {
     --text-subtle: var(--text-standard);
     --text-metadata: var(--text-standard);
@@ -1323,13 +2062,14 @@
     color: var(--text-subtle);
   }
   .buzz-menu-group-label {
-    padding: var(--space-2) var(--space-2) var(--space-1);
+    padding: var(--space-2) var(--space-3) var(--space-1);
     color: var(--text-subtle);
   }
   .buzz-menu-group-label[data-emphasis="quiet"] {
     color: var(--text-metadata);
   }
-  .buzz-menu-separator {
+  .buzz-menu-separator,
+  .buzz-select-separator {
     height: 1px;
     margin: var(--space-1) 0;
     background: var(--border-standard);
@@ -1366,6 +2106,9 @@
     --floating-inset: var(--space-half);
     padding: var(--space-half);
   }
+  .buzz-menu-popup[data-size="compact"] .buzz-menu-group-label {
+    padding-inline: var(--space-2);
+  }
   .buzz-menu-popup[data-size="compact"] .buzz-menu-item {
     padding: var(--space-1) var(--space-2);
   }
@@ -1401,6 +2144,7 @@
     min-width: 0;
     align-items: center;
     gap: var(--space-row-gap);
+    color: inherit;
   }
   .buzz-choice-row-leading {
     display: flex;
@@ -1424,7 +2168,10 @@
     :is(
       .buzz-choice-row-description,
       .buzz-choice-row-trailing,
-      .buzz-menu-icon
+      .buzz-menu-icon,
+      .buzz-menu-trailing,
+      .buzz-menu-item-indicator,
+      .buzz-menu-submenu-arrow
     ) {
     color: inherit;
   }
@@ -1469,6 +2216,16 @@
   }
   :is(.buzz-menu-popup, .buzz-popover-popup):where([data-ending-style]) {
     transition-duration: calc(var(--duration-fast) / 2);
+  }
+  /* Context actions appear at the pointer immediately; retain a quiet exit. */
+  .buzz-menu-popup[data-context-menu] {
+    filter: none;
+    transform: none;
+    transition-property: opacity;
+  }
+  .buzz-menu-popup[data-context-menu]:not([data-ending-style]) {
+    opacity: 1;
+    transition: none;
   }
   html[data-keyboard-navigation] :is(.buzz-menu-popup, .buzz-popover-popup) {
     transition: none;
@@ -1640,6 +2397,29 @@
   .buzz-accordion-panel {
     padding: var(--space-2);
   }
+  .buzz-accordion[data-animate] .buzz-accordion-panel {
+    padding: 0;
+    height: var(--accordion-panel-height);
+    overflow: clip;
+    transition: height var(--duration-settle) var(--easing-settle);
+  }
+  .buzz-accordion[data-animate] .buzz-accordion-content {
+    padding: var(--space-2);
+  }
+  .buzz-accordion[data-animate]
+    .buzz-accordion-panel:is([data-starting-style], [data-ending-style]) {
+    height: 0;
+  }
+  :where(html[data-keyboard-navigation])
+    .buzz-accordion[data-animate]
+    .buzz-accordion-panel {
+    transition: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .buzz-accordion[data-animate] .buzz-accordion-panel {
+      transition: none;
+    }
+  }
   .buzz-accordion[data-variant="settings"]
     .buzz-accordion-trigger[aria-expanded="true"] {
     border-end-start-radius: 0;
@@ -1734,7 +2514,7 @@
     width: 0.875rem;
     height: 0.875rem;
     border-radius: var(--radius-pill);
-    background: var(--text-inverse);
+    background: var(--text-on-prominent);
     box-shadow: var(--shadow-xs);
     transform: translateX(0);
     transition: transform var(--duration-settle) var(--easing-settle);
@@ -1760,15 +2540,25 @@
   }
 
   .buzz-preference-row {
+    --preference-row-trailing: auto;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) var(--preference-row-trailing);
     align-items: center;
     gap: var(--space-4);
     min-width: 0;
     padding: var(--space-3) 0;
   }
   .buzz-preference-row[data-has-icon] {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) var(--preference-row-trailing);
+  }
+  /* A compact choice ellipsizes its value, so a long one, such as a model
+   * name, takes at most 60% of the row and the title keeps its words. Fixed
+   * controls, such as pickers and swatches, and trailings that only contain
+   * a choice beside other content keep their full width. */
+  .buzz-preference-row:has(
+    > .buzz-preference-row-trailing > .buzz-select[data-variant="compact"]
+  ) {
+    --preference-row-trailing: fit-content(60%);
   }
   .buzz-preference-row-icon {
     display: flex;
@@ -1997,5 +2787,41 @@
     .buzz-arrive[data-leaving] {
       animation: none;
     }
+  }
+}
+
+@layer components {
+  .buzz-preference-row[data-variant="search"] {
+    padding: var(--space-3);
+    gap: var(--space-row-gap);
+  }
+  .buzz-preference-row[data-variant="search"] .buzz-preference-row-icon {
+    width: var(--space-6);
+    height: var(--space-6);
+    justify-content: flex-start;
+  }
+  .buzz-preference-row[data-variant="search"] .buzz-preference-row-icon > svg {
+    width: calc(var(--space-5) + 1px);
+    height: calc(var(--space-5) + 1px);
+  }
+  .buzz-preference-row[data-variant="search"] .buzz-preference-row-content {
+    gap: 0;
+  }
+  .buzz-preference-row[data-variant="search"] .buzz-preference-row-description {
+    @apply text-body-sm;
+    color: var(--text-subtle);
+  }
+}
+
+@layer components {
+  .search-control-row {
+    border-radius: max(
+      0px,
+      calc(var(--search-palette-radius, var(--radius-panel)) - var(--space-3))
+    );
+    corner-shape: squircle;
+  }
+  .search-control-row[data-highlighted] {
+    background: var(--affordance-subtle-hover);
   }
 }

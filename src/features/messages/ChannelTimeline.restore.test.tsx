@@ -16,16 +16,24 @@ import { readView, writeView } from "../../shared/view-state";
 
 // Real React lifecycle; only the virtualizer's imperative layout boundary is
 // modeled here. Browser journeys retain the actual same-message/4px contract.
-const scroll = vi.hoisted(() => ({ toIndex: vi.fn(), toOffset: vi.fn() }));
+const scroll = vi.hoisted(() => ({
+  toIndex: vi.fn(),
+  toOffset: vi.fn(),
+  itemOffset: vi.fn((_index: number) => 0),
+  resized: () => {},
+}));
 vi.mock("virtua", async () => {
   const { forwardRef, useImperativeHandle } = await import("react");
   return {
     Virtualizer: forwardRef(function Virtualizer(
-      { children }: { children: ReactNode },
+      { children, onResize }: { children: ReactNode; onResize?: () => void },
       ref,
     ) {
+      scroll.resized = onResize ?? (() => {});
       useImperativeHandle(ref, () => ({
         cache: undefined,
+        findItemIndex: () => 0,
+        getItemOffset: scroll.itemOffset,
         scrollToIndex: scroll.toIndex,
         scrollTo: scroll.toOffset,
       }));
@@ -40,6 +48,7 @@ const owners: { dispose(): void }[] = [];
 beforeEach(() => {
   scroll.toIndex.mockClear();
   scroll.toOffset.mockClear();
+  scroll.itemOffset.mockReset().mockReturnValue(0);
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(2000);
@@ -77,10 +86,11 @@ async function frame() {
     }
   });
 }
-function mount(bottom = false, revealOnMount = false) {
+function mount(bottom = false, revealOnMount = false, anchorLoaded = true) {
   const viewer = keypair(),
     relay = keypair();
   const target = message(viewer, "c", "Saved reading anchor", 1);
+  const earlier = message(viewer, "c", "Earlier message", 0);
   const owner = createRelaySession(
     scriptedTransport(viewer.pubkey, relay.pubkey).transport,
   );
@@ -97,20 +107,18 @@ function mount(bottom = false, revealOnMount = false) {
     hasMore: false,
     loadingOlder: false,
     error: undefined,
-    rows: [
-      {
-        id: target.id,
-        channelId: "c",
-        authorId: viewer.pubkey,
-        content: target.content,
-        createdAt: 1,
-        mentions: [],
-        participants: [],
-        attachments: [],
-        reactions: [],
-        replyCount: 0,
-      },
-    ],
+    rows: [anchorLoaded ? target : earlier].map((event) => ({
+      id: event.id,
+      channelId: "c",
+      authorId: viewer.pubkey,
+      content: event.content,
+      createdAt: event.created_at,
+      mentions: [],
+      participants: [],
+      attachments: [],
+      reactions: [],
+      replyCount: 0,
+    })),
   };
   const tree = (snapshot: ChannelWindow, revealMessageId?: string) => (
     <StrictMode>
@@ -140,6 +148,16 @@ function mount(bottom = false, revealOnMount = false) {
   return {
     saved: { offset: 900, bottom, anchor: { id: target.id, y: 42 } },
     unmount: result.unmount,
+    /** A reload never runs unmount cleanup; reopen from what storage holds. */
+    reload() {
+      const write = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(() => {});
+      result.unmount();
+      write.mockRestore();
+      scroll.toIndex.mockClear();
+      render(tree(window));
+    },
     reveal() {
       result.rerender(tree(sentWindow, sent.id));
     },
@@ -157,6 +175,12 @@ function mount(bottom = false, revealOnMount = false) {
         tree({ ...sentWindow, rows: [older, ...sentWindow.rows] }, sent.id),
       );
     },
+    /** The network head lands after the saved head, with the saved row in it. */
+    loadAnchor() {
+      result.rerender(
+        tree({ ...window, rows: [first, { ...first, id: target.id }] }),
+      );
+    },
     replaceAnchor() {
       const first = window.rows[0];
       if (!first) throw new Error("Missing fixture row");
@@ -169,6 +193,14 @@ function mount(bottom = false, revealOnMount = false) {
         tree({ ...window, freshness: "verified", rows: [...window.rows] }),
       );
     },
+    append() {
+      result.rerender(tree(sentWindow));
+    },
+    pageAroundAnchor() {
+      result.rerender(
+        tree({ ...sentWindow, rows: [older, ...sentWindow.rows] }),
+      );
+    },
     async measured() {
       await act(async () => {
         screen.getByRole("list").style.height = "2120px";
@@ -177,6 +209,182 @@ function mount(bottom = false, revealOnMount = false) {
     },
   };
 }
+it.each([
+  { offset: 0, gap: 1400 },
+  { offset: 400, gap: 1000 },
+  { offset: 400, gap: 40 },
+])(
+  "refreshes measured geometry without changing reading intent at offset $offset / gap $gap",
+  async ({ offset, gap }) => {
+    const h = mount(true);
+    await frame();
+    const region = screen.getByRole("region", {
+      name: "Channel message history",
+    });
+    let rowY = 120;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        return new DOMRect(0, this.closest("ol") ? rowY : 0, 800, 100);
+      },
+    );
+    region.scrollTop = 1400;
+    fireEvent.scroll(region);
+    fireEvent.keyDown(region, { key: "Home", ctrlKey: true });
+    region.scrollTop = offset;
+    fireEvent.scroll(region);
+    fireEvent(region, new Event("scrollend"));
+
+    // Virtua's measured offsets commit without another scroll event.
+    rowY += 238;
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(
+      offset + region.clientHeight + gap,
+    );
+    act(() => scroll.resized());
+    h.append();
+    await h.measured();
+    expect(region.scrollTop).toBe(offset);
+
+    // Measurements during an active hold must still preserve its original Y.
+    rowY += 90;
+    act(() => scroll.resized());
+    await act(async () => {
+      screen.getByRole("list").style.height = "2210px";
+    });
+    expect(region.scrollTop).toBe(offset + 90);
+    h.unmount();
+    expect(readView("scope", "scroll:c", null)).toMatchObject({
+      bottom: false,
+      anchor: { y: 358 },
+    });
+  },
+);
+it("preserves a held reader's logical offset while its DOM lookup is absent", async () => {
+  const h = mount(true);
+  await frame();
+  const region = screen.getByRole("region", {
+    name: "Channel message history",
+  });
+  let rowY = 120;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      return new DOMRect(0, this.closest("ol") ? rowY : 0, 800, 100);
+    },
+  );
+  region.scrollTop = 1400;
+  fireEvent.scroll(region);
+  fireEvent.keyDown(region, { key: "Home", ctrlKey: true });
+  region.scrollTop = 400;
+  fireEvent.scroll(region);
+  fireEvent(region, new Event("scrollend"));
+  scroll.itemOffset.mockImplementation((index) => index * 100);
+  h.pageAroundAnchor();
+  await h.measured();
+  // A drag after the hold starts must become the new logical baseline.
+  region.scrollTop -= 50;
+  rowY += 50;
+  fireEvent.scroll(region);
+
+  // Model Virtua evicting the lookup, while React still owns the test DOM.
+  const row = region.querySelector<HTMLElement>(
+    `[data-message-id="${h.saved.anchor.id}"]`,
+  );
+  expect(row).not.toBeNull();
+  row?.removeAttribute("data-message-id");
+  scroll.itemOffset.mockImplementation((index) => index * 100 + 45.5);
+  region.scrollTop = 423; // Virtua has already applied part of the batch.
+  await act(async () => {
+    screen.getByRole("list").style.height = "2210px";
+  });
+  expect(region.scrollTop).toBe(495.5);
+
+  // Another virtualized batch must not undo the drag or double-count a jump.
+  scroll.itemOffset.mockImplementation((index) => index * 100 + 135.5);
+  region.scrollTop += 10;
+  await act(async () => {
+    screen.getByRole("list").style.height = "2300px";
+  });
+  expect(region.scrollTop).toBe(585.5);
+});
+
+it("keeps a held reader when measured row offsets change without total height", async () => {
+  const h = mount(true);
+  await frame();
+  const region = screen.getByRole("region", {
+    name: "Channel message history",
+  });
+  let rowY = 120;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      return new DOMRect(0, this.closest("ol") ? rowY : 0, 800, 100);
+    },
+  );
+  region.scrollTop = 1400;
+  fireEvent.scroll(region);
+  fireEvent.keyDown(region, { key: "Home", ctrlKey: true });
+  region.scrollTop = 400;
+  fireEvent.scroll(region);
+  fireEvent.pointerDown(region);
+  h.append();
+  await h.measured();
+  const list = screen.getByRole("list");
+  const height = list.style.height;
+  // Virtua can toggle pointer-events before this gesture's scroll reader runs.
+  // That list-only change must not pull the drag back to its previous anchor.
+  region.scrollTop -= 50;
+  rowY += 50;
+  await act(async () => {
+    list.style.pointerEvents = "none";
+  });
+  expect(region.scrollTop).toBe(350);
+  fireEvent.scroll(region);
+  // Equal and opposite row resizes leave the total unchanged, while Virtua's
+  // partial compensation moves the held paragraph up by 113px.
+  region.scrollTop += 113;
+  rowY -= 113;
+  await act(async () => {
+    (list.firstElementChild as HTMLElement).style.top = "113px";
+  });
+  expect(list.style.height).toBe(height);
+  expect(region.scrollTop).toBe(350);
+});
+
+it("retargets a held reader when its former row is below the viewport", async () => {
+  const h = mount(true);
+  await frame();
+  const region = screen.getByRole("region", {
+    name: "Channel message history",
+  });
+  let formerY = 120;
+  let olderY = -200;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      const row = this.closest<HTMLElement>("[data-message-id]");
+      const y = row?.dataset.messageId === "older" ? olderY : row ? formerY : 0;
+      return new DOMRect(0, y, 800, 100);
+    },
+  );
+  region.scrollTop = 1400;
+  fireEvent.scroll(region);
+  fireEvent.keyDown(region, { key: "Home", ctrlKey: true });
+  region.scrollTop = 400;
+  fireEvent.scroll(region);
+  fireEvent.pointerDown(region);
+  h.pageAroundAnchor();
+  await h.measured();
+
+  // Scrolling away selects the newly visible older row. The former reader's
+  // DOM can return below the viewport without reclaiming the active hold.
+  formerY = 900;
+  olderY = 100;
+  region.scrollTop = 0;
+  fireEvent.scroll(region);
+  formerY += 300;
+  await act(async () => {
+    screen.getByRole("list").style.height = "2420px";
+  });
+  expect(region.scrollTop).toBe(0);
+});
+
 it("retains the saved anchor correction when cached rows are promoted before its frame", async () => {
   const h = mount();
   await frame();
@@ -389,7 +597,7 @@ it.each([false, true])(
     fireEvent.scroll(feed);
     h.unmount();
     expect(readView("scope", "scroll:c", null)).toEqual(
-      readerInput ? { offset: 900, bottom: false } : h.saved,
+      readerInput ? { bottom: false } : h.saved,
     );
   },
 );
@@ -698,6 +906,95 @@ it.each([
   },
 );
 
+it("reads through the last message when a Huddle card is newest, with no plugin renderer", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 800, 500),
+  );
+  vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([
+    new DOMRect(0, 0, 800, 500),
+  ] as unknown as DOMRectList);
+  const owner = createRelaySession(null);
+  owners.push(owner);
+  const catchUp = vi.fn(async () => {}),
+    observe = vi.fn(async () => {});
+  const sync = {
+    ...owner.session.unread.sync(),
+    capability: "frontier-sync" as const,
+  };
+  const session = {
+    ...owner.session,
+    unread: {
+      ...owner.session.unread,
+      sync: () => sync,
+      reading: () => ({ view: () => {}, dispose: () => {}, observe, catchUp }),
+    },
+  };
+  const base = {
+    channelId: "c",
+    authorId: "a".repeat(64),
+    content: "Message",
+    createdAt: 1,
+    mentions: [],
+    participants: [],
+    attachments: [],
+    reactions: [],
+    replyCount: 0,
+  };
+  try {
+    render(
+      <ChannelTimeline
+        channelId="c"
+        scope="read-huddle"
+        queries={session}
+        window={{
+          channelId: "c",
+          status: "ready",
+          freshness: "verified",
+          error: undefined,
+          hasMore: false,
+          loadingOlder: false,
+          rows: [
+            { ...base, id: "message" },
+            {
+              ...base,
+              id: "card",
+              content: "",
+              createdAt: 2,
+              huddle: { room: "room", state: "started" },
+            },
+          ],
+        }}
+        onOpenLink={() => false}
+      />,
+    );
+    await frame();
+    await frame();
+    const history = screen.getByRole("region", {
+      name: "Channel message history",
+    });
+    await act(async () => {
+      history.focus();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(catchUp).toHaveBeenCalledWith("message", undefined);
+    expect(observe).toHaveBeenCalledWith(["message"]);
+    expect(
+      history
+        .querySelector('[data-message-id="card"]')
+        ?.hasAttribute("data-huddle-row"),
+    ).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("scroll completion saves row geometry measured after the last scroll event", async () => {
   const h = mount();
   await frame();
@@ -718,8 +1015,217 @@ it("scroll completion saves row geometry measured after the last scroll event", 
   fireEvent(region, new Event("scrollend"));
   h.unmount();
   expect(readView("scope", "scroll:c", null)).toEqual({
-    offset: 0,
     bottom: false,
     anchor: { id: h.saved.anchor.id, y: 142 },
   });
+});
+
+it("catching up saves the bottom once scrolling settles, so a reload opens at the latest message", async () => {
+  const h = mount();
+  await frame();
+  expect(scroll.toIndex).toHaveBeenLastCalledWith(0, {
+    align: "start",
+    offset: -42,
+  });
+  const region = screen.getByRole("region", {
+    name: "Channel message history",
+  });
+  fireEvent.wheel(region, { deltaY: 600 });
+  for (const top of [700, 1100, 1400]) {
+    region.scrollTop = top;
+    fireEvent.scroll(region);
+  }
+  // Scroll events update the place in memory only.
+  expect(readView("scope", "scroll:c", null)).toEqual(h.saved);
+  fireEvent(region, new Event("scrollend"));
+  expect(readView("scope", "scroll:c", null)).toMatchObject({ bottom: true });
+  h.reload();
+  await frame();
+  expect(scroll.toIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+  expect(scroll.toIndex).not.toHaveBeenCalledWith(0, {
+    align: "start",
+    offset: -42,
+  });
+});
+
+it.each(["scrollend", "pagehide"])(
+  "a reload reopens the message a reader stopped at, at the same y, saved on %s",
+  async (save) => {
+    const h = mount(true);
+    await frame();
+    const region = screen.getByRole("region", {
+      name: "Channel message history",
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        return new DOMRect(0, this.closest("ol") ? 120 : 0, 800, 100);
+      },
+    );
+    fireEvent.wheel(region, { deltaY: -400 });
+    region.scrollTop = 400;
+    fireEvent.scroll(region);
+    if (save === "scrollend") fireEvent(region, new Event("scrollend"));
+    else fireEvent(window, new Event("pagehide"));
+    h.reload();
+    await frame();
+    expect(scroll.toIndex).toHaveBeenLastCalledWith(0, {
+      align: "start",
+      offset: -120,
+    });
+  },
+);
+
+it("a saved row missing from the first rows stays pending: the reader follows, scrollend keeps the place, and its arrival restores it", async () => {
+  const h = mount(false, false, false);
+  await frame();
+  expect(scroll.toIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+  expect(scroll.toOffset).not.toHaveBeenCalled();
+  const region = screen.getByRole("region", {
+    name: "Channel message history",
+  });
+  // The timeline's own scroll to the end settles; the saved place survives it.
+  region.scrollTop = 1400;
+  fireEvent.scroll(region);
+  fireEvent(region, new Event("scrollend"));
+  expect(readView("scope", "scroll:c", null)).toEqual(h.saved);
+  scroll.toIndex.mockClear();
+  h.loadAnchor();
+  await frame();
+  expect(scroll.toIndex).toHaveBeenLastCalledWith(1, {
+    align: "start",
+    offset: -42,
+  });
+});
+
+/** A focused reader reopening at a saved row the first rows do not hold yet. */
+async function pendingReader() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 800, 500),
+  );
+  vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([
+    new DOMRect(0, 0, 800, 500),
+  ] as unknown as DOMRectList);
+  const owner = createRelaySession(null);
+  owners.push(owner);
+  const catchUp = vi.fn(async () => {}),
+    observe = vi.fn(async () => {});
+  const sync = {
+    ...owner.session.unread.sync(),
+    capability: "frontier-sync" as const,
+  };
+  const session = {
+    ...owner.session,
+    unread: {
+      ...owner.session.unread,
+      sync: () => sync,
+      reading: () => ({ view: () => {}, dispose: () => {}, observe, catchUp }),
+    },
+  };
+  const base = {
+    channelId: "c",
+    authorId: "a".repeat(64),
+    content: "Message",
+    createdAt: 1,
+    mentions: [],
+    participants: [],
+    attachments: [],
+    reactions: [],
+    replyCount: 0,
+  };
+  const tree = (rows: ChannelWindow["rows"]) => (
+    <ChannelTimeline
+      channelId="c"
+      scope="read-restore"
+      queries={session}
+      window={{
+        channelId: "c",
+        status: "ready",
+        freshness: "cached",
+        error: undefined,
+        hasMore: false,
+        loadingOlder: false,
+        rows,
+      }}
+      onOpenLink={() => false}
+    />
+  );
+  writeView("read-restore", "scroll:c", {
+    bottom: false,
+    anchor: { id: "saved", y: 42 },
+  });
+  const latest = { ...base, id: "latest" };
+  const view = render(tree([latest]));
+  await frame();
+  await frame();
+  expect(scroll.toIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+  const history = screen.getByRole("region", {
+    name: "Channel message history",
+  });
+  await act(async () => {
+    history.focus();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    vi.advanceTimersByTime(300);
+  });
+  return {
+    history,
+    catchUp,
+    observe,
+    load() {
+      view.rerender(tree([{ ...base, id: "saved", createdAt: 0 }, latest]));
+    },
+  };
+}
+
+it("following the latest message while a saved row loads reads the rows shown, but does not catch up past the saved row", async () => {
+  try {
+    const h = await pendingReader();
+    expect(h.observe).toHaveBeenCalledWith(["latest"]);
+    expect(h.catchUp).not.toHaveBeenCalled();
+    scroll.toIndex.mockClear();
+    h.load();
+    await frame();
+    expect(scroll.toIndex).toHaveBeenLastCalledWith(0, {
+      align: "start",
+      offset: -42,
+    });
+    expect(h.catchUp).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("reader input retires a loading saved row, so a dwell at the latest message catches up", async () => {
+  try {
+    const h = await pendingReader();
+    expect(h.catchUp).not.toHaveBeenCalled();
+    fireEvent.keyDown(h.history, { key: "ArrowDown" });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(h.catchUp).toHaveBeenCalledWith("latest", undefined);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("a wheel at the bottom that cannot scroll still retires a loading saved row, so the next dwell catches up", async () => {
+  try {
+    const h = await pendingReader();
+    expect(h.catchUp).not.toHaveBeenCalled();
+    // The reader is already at the end: the wheel moves nothing and emits no
+    // scroll event, so only the retired restore can wake the dwell.
+    fireEvent.wheel(h.history, { deltaY: 100 });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(h.catchUp).toHaveBeenCalledWith("latest", undefined);
+  } finally {
+    vi.useRealTimers();
+  }
 });

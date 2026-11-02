@@ -29,9 +29,9 @@ export function FloatingSurfacesPage() {
           <dl className="flex min-w-0 flex-col gap-2 text-body text-standard">
             {[
               ["Background", "surface-popover"],
-              ["Border", "border-standard"],
-              ["Corners", "radius-panel"],
-              ["Shadow", "shadow-sm"],
+              ["Border", "transparent"],
+              ["Corners", "radius-container"],
+              ["Shadow", "shadow-panel"],
             ].map(([label, token]) => (
               <div key={label} className="flex flex-wrap gap-x-4 gap-y-1">
                 <dt>{label}</dt>

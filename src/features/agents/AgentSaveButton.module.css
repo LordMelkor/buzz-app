@@ -1,0 +1,20 @@
+.frame {
+  --scroll-edge-surface: var(--surface-panel);
+  --scroll-edge-fill: linear-gradient(
+    to bottom,
+    var(--surface-panel) 65%,
+    transparent 85%
+  );
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  pointer-events: none;
+}
+.footer {
+  display: grid;
+  gap: var(--space-2);
+  padding: calc(var(--space-8) + var(--space-4)) var(--space-5) var(--space-2);
+}
+.footer > * {
+  pointer-events: auto;
+}

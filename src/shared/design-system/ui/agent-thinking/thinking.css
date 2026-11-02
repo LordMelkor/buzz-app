@@ -56,7 +56,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--text-inverse);
+  background: var(--text-on-prominent);
   /* Arjun's typing preview: block/buzz-app#52, dfd28b512e52e9fc5a682a8785eaf30955f6611e. */
   animation: badge-pill-typing-pulse 1.2s linear infinite;
 }

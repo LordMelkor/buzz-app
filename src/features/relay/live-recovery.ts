@@ -5,12 +5,18 @@ import type { LiveSnapshot } from "./live";
 export type LiveRecoveryView = LiveSnapshot &
   Readonly<{
     roster: Readonly<{ state: string; transient?: true }>;
-    heads: readonly Readonly<{ state: string; transient?: true }>[];
+    heads: readonly Readonly<{
+      channelId?: string;
+      state: string;
+      transient?: true;
+    }>[];
     previews?: "checking" | "suspended";
   }>;
 
 /** NIP-01 CLOSED prefixes that mean someone has to act: the same request
- * fails again until access, the request or the client changes. */
+ * fails again until access, the request or the client changes. Session
+ * recovery leaves them alone; the live layer retries them on its own slow
+ * schedule (liveSlowRetryDelay). */
 const PERMANENT_PREFIXES = [
   "restricted:",
   "blocked:",
@@ -22,7 +28,6 @@ const PERMANENT_PREFIXES = [
 ];
 /** Deterministic local failures (live.ts): retrying sends the same thing. */
 const PERMANENT_LOCAL = new Set([
-  "Relay supplied invalid live traffic",
   "Unsupported live cooldown; automatic setup stopped",
 ]);
 /** A route failure that a later attempt can clear. Anything not known to
@@ -37,8 +42,8 @@ export function isTransientLiveError(reason: string | undefined): boolean {
 }
 
 /** How the live layer looks to session recovery. Only failures a retry can
- * fix count as failed. A terminal sign-in error, a denial or invalid traffic
- * is settled here and stays visible in live status instead. */
+ * fix count as failed. A sign-in error or a denial is settled here and stays
+ * visible in live status instead; the live layer retries it slowly itself. */
 export function liveRecoveryStatus(view: LiveRecoveryView): RecoveryStatus {
   // A terminal connection error closed the socket: its routes stay pending
   // but nothing is in flight. Finite roster and head reads still count.
@@ -65,4 +70,27 @@ export function liveRecoveryStatus(view: LiveRecoveryView): RecoveryStatus {
     routes.some((route) => route.status === "pending")
     ? "busy"
     : "settled";
+}
+
+type LiveRead = Readonly<{ state: string; transient?: true }>;
+/** True while session recovery retries the roster read (failed or busy in
+ * liveRecoveryStatus), so recovery reports a list error. A denial is not. */
+export const rosterRecovering = (roster: LiveRead) =>
+  roster.state === "deferred" ||
+  roster.state === "pending" ||
+  (roster.state === "error" && !!roster.transient);
+/** The same for one channel's timeline: true while the live source is not
+ * settled for that channel. That covers its head read failing transiently or
+ * in flight, and the handoff after a dropped stream: catch-up entries are
+ * cleared until the channel's route re-establishes, which reads its head
+ * again. */
+export function headRecovering(view: LiveRecoveryView, channelId: string) {
+  return (
+    liveRecoveryStatus({
+      status: view.status,
+      routes: view.routes.filter((route) => route.channelId === channelId),
+      roster: { state: "verified" },
+      heads: view.heads.filter((head) => head.channelId === channelId),
+    }) !== "settled"
+  );
 }

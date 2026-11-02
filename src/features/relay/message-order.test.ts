@@ -1,5 +1,4 @@
 import { afterEach, assert, expect, it, vi } from "vitest";
-import type { EventData } from "./events";
 import { foldMessages } from "./fold";
 import { MessageProjection } from "./message-projection";
 import { compareMessages, eventMs, MessageClock } from "./message-order";
@@ -20,11 +19,6 @@ afterEach(() => {
 });
 const tagged = (content: string, second: number, ms: string) =>
   message(alice, "c", content, second, [["ms", ms]]);
-const reply = (root: EventData, content: string, second: number, ms?: string) =>
-  message(alice, "c", content, second, [
-    ["e", root.id, "", "reply"],
-    ...(ms ? [["ms", ms]] : []),
-  ]);
 const ids = (rows: readonly { id: string }[]) => rows.map((row) => row.id);
 
 it("orders by a valid ms tag, falls back to seconds, and breaks equal ms by ascending id", () => {
@@ -96,20 +90,19 @@ it.each([
 });
 
 it("renders channel and thread orderings identically", () => {
-  const root = message(alice, "c", "root", 10);
-  const replies = [
-    reply(root, "c", 20, "900"),
-    reply(root, "a", 20),
-    reply(root, "b", 20, "100"),
-    reply(root, "d", 20, "100"),
-    reply(root, "e", 20, "1000"),
+  // A thread folds its events directly; the channel timeline projects them.
+  const events = [
+    message(alice, "c", "root", 10),
+    tagged("c", 20, "900"),
+    message(alice, "c", "a", 20),
+    tagged("b", 20, "100"),
+    tagged("d", 20, "100"),
+    tagged("e", 20, "1000"),
   ];
-  const events = [root, ...replies];
   const channel = new MessageProjection(
     "c",
     relay.pubkey,
     createRelayProfiler(),
-    () => true,
   ).reconcile(events, []);
   const thread = foldMessages("c", relay.pubkey, [...events].reverse(), {
     includeReplies: true,
@@ -170,7 +163,6 @@ it("keeps a near-cap burst in send order through relay replacement", async () =>
     channel,
     relay.pubkey,
     createRelayProfiler(),
-    () => false,
     messageClock,
   );
   expect(
@@ -225,7 +217,6 @@ it.each([700, 998])(
       channel,
       relay.pubkey,
       createRelayProfiler(),
-      () => false,
       messageClock,
     );
     const optimistic = projection.reconcile(

@@ -1,6 +1,10 @@
 import type { ChannelMessage } from "../relay/contracts";
 
-/** A forest of the available history, never a claim that all parents were loaded. */
+/**
+ * A forest of the available history, never a claim that all parents were loaded.
+ * Branches are one level deep: a reply to a nested reply joins its branch, in
+ * order, so continuing a conversation never drifts further in.
+ */
 export function replyTree(rows: readonly ChannelMessage[], rootId?: string) {
   const byId = new Map(rows.map((row) => [row.id, row]));
   const parents = new Map<string, string>();
@@ -18,6 +22,12 @@ export function replyTree(rows: readonly ChannelMessage[], rootId?: string) {
       }
       seen.add(cursor);
       cursor = byId.get(cursor)?.replyParentId;
+    }
+    // Signed ancestry stays exact; only the display lifts to the branch.
+    while (parent) {
+      const next = byId.get(parent)?.replyParentId;
+      if (!next || next === rootId || !byId.has(next)) break;
+      parent = next;
     }
     if (parent) parents.set(row.id, parent);
     const siblings = children.get(parent) ?? [];

@@ -2,9 +2,10 @@
 // per `owner:community:channel:type`. It decides each artifact's state from relay
 // evidence (NIP-AP "Artifact state"), fences every writer so a late or stale
 // result never replaces newer state, and resolves start inputs synchronously
-// from storage. Dormant until config channels ship.
+// from storage.
 import { verifyEvent } from "nostr-tools";
 import type { RelayEvent } from "../relay/events";
+import { localStore, type AgentStore } from "./store";
 import {
   artifactOp,
   artifactPrev,
@@ -35,6 +36,9 @@ type Stored = {
   entries: Record<string, Entry>;
   /** `owner:community:subject:type` once this device has seen any revision. */
   hadVersion: Record<string, true>;
+  /** `owner:community:subject:type`: the channel it was last bound in, so a
+   * start can find its confirmed copy while no channel is bound. */
+  channels: Record<string, string>;
 };
 /** What a writer saw before its first await. */
 export type Captured = Readonly<{ generation: number; sequence: number }>;
@@ -54,8 +58,9 @@ const hadKey = (s: Subject) =>
 
 export class AgentConfigStore {
   private stored: Stored;
+  private readonly listeners = new Set<() => void>();
 
-  constructor(private readonly storage: Storage = localStorage) {
+  constructor(private readonly storage: AgentStore = localStore()) {
     this.stored = this.load();
   }
 
@@ -68,7 +73,21 @@ export class AgentConfigStore {
       }
     );
   }
+  /** Called after any entry changes, live, read or written alike, so starts
+   * and running agents re-resolve from the confirmed copy. */
+  subscribe(listener: () => void) {
+    this.listeners.add(listener);
+    return () => void this.listeners.delete(listener);
+  }
   hadVersion = (subject: Subject) => !!this.stored.hadVersion[hadKey(subject)];
+  /** The channel `subject` (its `channel` ignored) was last bound in. */
+  boundChannel = (subject: Subject): string | undefined =>
+    this.stored.channels[hadKey(subject)];
+  markBound(subject: Subject) {
+    if (this.boundChannel(subject) === subject.channel) return;
+    this.stored.channels[hadKey(subject)] = subject.channel;
+    this.save();
+  }
 
   /** Taken by every writer before its first await. */
   capture(subject: Subject): Captured {
@@ -180,21 +199,35 @@ export class AgentConfigStore {
   private put(subject: Subject, entry: Entry) {
     this.stored.entries[key(subject)] = entry;
     this.save();
+    for (const listener of [...this.listeners]) listener();
   }
   private save() {
-    this.storage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(this.stored));
+    // Unsaved, the next start reads the last saved copy and syncs again.
+    void this.storage
+      .set(CONFIG_STORAGE_KEY, JSON.stringify(this.stored))
+      .catch((error: unknown) =>
+        console.warn("Agent synced settings were not saved", error),
+      );
   }
   private load(): Stored {
-    const empty: Stored = { version: 1, entries: {}, hadVersion: {} };
-    let value: Stored;
+    const empty: Stored = {
+      version: 1,
+      entries: {},
+      hadVersion: {},
+      channels: {},
+    };
+    let value: unknown;
     try {
-      value = JSON.parse(this.storage.getItem(CONFIG_STORAGE_KEY) ?? "null");
+      value = JSON.parse(this.storage.get(CONFIG_STORAGE_KEY) ?? "null");
     } catch {
       return empty;
     }
-    if (value?.version !== 1 || typeof value.entries !== "object") return empty;
+    if (!isRecord(value) || value.version !== 1 || !isRecord(value.entries))
+      return empty;
     const entries: Record<string, Entry> = {};
     for (const [k, entry] of Object.entries(value.entries)) {
+      // A malformed entry counts as never synced.
+      if (!isEntry(entry)) continue;
       // A stored head is re-verified; one that fails counts as never synced.
       const copy = entry.head && { ...entry.head };
       const head = copy && verifyEvent(copy) ? copy : undefined;
@@ -207,8 +240,30 @@ export class AgentConfigStore {
             }
           : entry;
     }
-    return { version: 1, entries, hadVersion: value.hadVersion ?? {} };
+    const hadVersion = (value.hadVersion ?? {}) as Stored["hadVersion"];
+    const channels = isRecord(value.channels)
+      ? (value.channels as Stored["channels"])
+      : {};
+    return { version: 1, entries, hadVersion, channels };
   }
+}
+
+const STATES: readonly unknown[] = [
+  "present",
+  "invalid",
+  "deleted",
+  "unavailable",
+];
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+const isCount = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
+function isEntry(v: unknown): v is Entry {
+  return (
+    isRecord(v) &&
+    STATES.includes(v.state) &&
+    isCount(v.generation) &&
+    isCount(v.sequence)
+  );
 }
 
 function live(
@@ -250,9 +305,23 @@ export const pickSettings = (schema: SettingsSchema, config: object) =>
       .map((name) => [name, (config as Record<string, unknown>)[name]]),
   ) as Record<string, string>;
 
+/** A config with its synced fields taken only from accepted `settings`: a
+ * field they leave out gets the plugin's default, never this device's value.
+ * Everything outside the schema stays this device's. */
+export const withSynced = <C extends object>(
+  schema: SettingsSchema,
+  defaults: C,
+  config: C,
+  settings: Readonly<Record<string, string>>,
+): C => ({
+  ...config,
+  ...pickSettings(schema, defaults),
+  ...pickSettings(schema, settings),
+});
+
 /** A `buzz.agent.settings` body for a plugin: `{version: 1, agentType,
  * settings}`. Another agent type, or a value the plugin can't honour, is
- * invalid for start. */
+ * invalid for start; one naming no type is the agent's (NIP-AP). */
 export function syncedSettings(
   content: string,
   agentType: string,
@@ -264,10 +333,20 @@ export function syncedSettings(
     agentType?: unknown;
     settings?: unknown;
   };
-  if (body.agentType !== agentType)
+  if (body.agentType !== undefined && body.agentType !== agentType)
     return { problem: "These settings are for another agent type" };
   const problem = settingsProblem(schema, body.settings);
   return problem
     ? { problem }
     : { settings: body.settings as Record<string, string> };
 }
+
+/** The error a launch shows instead of running a synced setting its runtime
+ * doesn't offer on a default (NIP-AP `buzz.agent.settings`). */
+export const unsupportedSynced = (name: string, value: string, by: string) =>
+  `This agent's synced ${name} "${value}" isn't offered by ${by}. Change it in Settings.`;
+
+/** The error a launch shows when it can't tell whether its runtime offers a
+ * synced setting, which it never runs unchecked (NIP-AP). */
+export const unverifiedSynced = (name: string, value: string, by: string) =>
+  `Couldn't check that ${by} offers this agent's synced ${name} "${value}". Try again, or change it in Settings.`;

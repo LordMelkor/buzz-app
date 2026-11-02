@@ -1,12 +1,15 @@
-import type { RelaySession } from "../relay/session";
+import type { ComposerSession } from "./composer-session";
 
 /** Session lifetime isolates community/viewer; bounded per-destination explicit choices. */
-const histories = new WeakMap<RelaySession, Map<string, Map<string, number>>>();
-export function mentionHistory(session: RelaySession, channelId: string) {
+const histories = new WeakMap<
+  ComposerSession,
+  Map<string, Map<string, number>>
+>();
+export function mentionHistory(session: ComposerSession, channelId: string) {
   return histories.get(session)?.get(channelId);
 }
 export function rememberMention(
-  session: RelaySession,
+  session: ComposerSession,
   channelId: string,
   pubkey: string,
 ) {

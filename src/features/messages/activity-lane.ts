@@ -1,9 +1,9 @@
 import { useCallback, useLayoutEffect, useSyncExternalStore } from "react";
-import type { RelaySession } from "../relay/session";
+import type { ComposerSession } from "./composer-session";
 
 /** The conversation whose composer, a following sibling of this history, shows activity. */
 export type ActivityLane = Readonly<{
-  session: RelaySession;
+  session: ComposerSession;
   channelId: string;
   threadRootId?: string | undefined;
 }>;
@@ -13,11 +13,11 @@ export type ActivityLane = Readonly<{
 // composer's replacement context and subscribe the button to every typing
 // tick. Mounted presentation only: no data, timers, or reads.
 type Lane = { shown: number; listeners: Set<() => void> };
-const lanes = new WeakMap<RelaySession, Map<string, Lane>>();
+const lanes = new WeakMap<ComposerSession, Map<string, Lane>>();
 const key = (channelId: string, threadRootId: string | undefined) =>
   `${channelId}\n${threadRootId ?? ""}`;
 function lane(
-  session: RelaySession,
+  session: ComposerSession,
   channelId: string,
   threadRootId: string | undefined,
 ) {
@@ -28,14 +28,14 @@ function lane(
   byKey.set(id, entry);
   return entry;
 }
-function release(entry: Lane, session: RelaySession, id: string) {
+function release(entry: Lane, session: ComposerSession, id: string) {
   if (entry.shown === 0 && entry.listeners.size === 0)
     lanes.get(session)?.delete(id);
 }
 
 /** Publish, while `shown`, that this conversation's composer shows working agents. */
 export function useActivityLanePublisher(
-  session: RelaySession,
+  session: ComposerSession,
   channelId: string,
   threadRootId: string | undefined,
   shown: boolean,

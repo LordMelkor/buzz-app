@@ -4,6 +4,7 @@ import type { RelayReader } from "./reader";
 import type { RelayWriter } from "./transport";
 import { PublishRejected } from "./outbox";
 import { isTransientFailure, readErrorKind } from "./errors";
+import { retryRead } from "./read-retry";
 import { hasTag, newer, type RelayEvent } from "./events";
 import { openMetadata } from "./discovery";
 import {
@@ -31,8 +32,6 @@ export type DmVisibility = Readonly<{
   status: "idle" | "loading" | "ready" | "error";
   hidden: readonly string[];
   error?: string;
-  /** Set with an error that a later retry can fix; see isTransientFailure. */
-  transient?: true;
 }>;
 export interface ChannelLifecycleCapability {
   readonly available: boolean;
@@ -44,10 +43,13 @@ export interface ChannelLifecycleCapability {
     action: ChannelLifecycleCommand,
     channelId: string,
     signal?: AbortSignal,
+    /** Checked synchronously right before publishing; false publishes nothing. */
+    active?: () => boolean,
   ): Promise<void>;
   snapshot(): DmVisibility;
   subscribe(listener: () => void): () => void;
-  refreshVisibility(): Promise<void>;
+  refreshVisibility(signal?: AbortSignal): Promise<void>;
+  observeRemoval(listener: (channelId: string) => void): () => void;
 }
 
 export function createChannelLifecycle({
@@ -73,12 +75,15 @@ export function createChannelLifecycle({
   // Each in-flight operation and the channel it concerns; visibility reads have none.
   const controllers = new Map<AbortController, string | undefined>();
   const listeners = new Set<() => void>();
+  const removalListeners = new Set<(channelId: string) => void>();
   let snapshot: DmVisibility = Object.freeze({
     status: "idle",
     hidden: Object.freeze([]),
   });
   let visibility: RelayEvent | undefined;
   let refresh: Promise<void> | undefined;
+  let refreshSignal: AbortSignal | undefined;
+  let refreshController: AbortController | undefined;
   const available = !!reader && !!writer;
   const emit = (next: DmVisibility) => {
     snapshot = Object.freeze(next);
@@ -180,9 +185,17 @@ export function createChannelLifecycle({
     try {
       for (let start = 0; start < owners.length; start += 4) {
         const batch = owners.slice(start, start + 4);
-        const profiles = await reader.read(
-          batch.map((pubkey) => ({ kinds: [0], authors: [pubkey], limit: 1 })),
-          { signal: profileSignal, fresh: true, priority: "foreground" },
+        const profiles = await retryRead(
+          (signal) =>
+            reader.read(
+              batch.map((pubkey) => ({
+                kinds: [0],
+                authors: [pubkey],
+                limit: 1,
+              })),
+              { signal, fresh: true, priority: "foreground" },
+            ),
+          profileSignal,
         );
         profileSignal.throwIfAborted();
         assertAccess(id);
@@ -261,6 +274,12 @@ export function createChannelLifecycle({
   }
   const capability: ChannelLifecycleCapability = Object.freeze({
     available,
+    observeRemoval(listener: (channelId: string) => void) {
+      removalListeners.add(listener);
+      return () => {
+        removalListeners.delete(listener);
+      };
+    },
     snapshot: () => snapshot,
     subscribe(listener: () => void) {
       listeners.add(listener);
@@ -268,52 +287,76 @@ export function createChannelLifecycle({
         listeners.delete(listener);
       };
     },
-    refreshVisibility() {
-      if (refresh) return refresh;
-      if (!reader || closed) return Promise.resolve();
+    refreshVisibility(caller?: AbortSignal) {
+      if (!reader || closed || caller?.aborted) return Promise.resolve();
+      if (refresh && !refreshSignal?.aborted) return refresh;
       const started = epoch;
+      const controller = new AbortController();
+      refreshController = controller;
+      const signal = AbortSignal.any([
+        controller.signal,
+        ...(caller ? [caller] : []),
+      ]);
+      refreshSignal = signal;
       emit({ status: "loading", hidden: snapshot.hidden });
-      const operation = owned({}, async (signal) => {
-        await readVisibility(signal);
-      })
+      // Exhausted errors omit `transient`, so session recovery cannot restart
+      // them. A read retired by another channel's access change (`cancelled`)
+      // retries within the same budget.
+      const operation = retryRead(
+        async () => {
+          await owned({ caller: signal }, readVisibility);
+        },
+        signal,
+        isTransientFailure,
+      )
         .catch((error: unknown) => {
-          if (started === epoch && !closed)
+          if (started === epoch && !closed && refresh === operation)
             emit({
-              status: "error",
+              status: signal.aborted
+                ? visibility
+                  ? "ready"
+                  : "idle"
+                : "error",
               hidden: snapshot.hidden,
-              error: error instanceof Error ? error.message : String(error),
-              ...(isTransientFailure(error)
-                ? { transient: true as const }
+              ...(!signal.aborted
+                ? {
+                    error:
+                      error instanceof Error ? error.message : String(error),
+                  }
                 : {}),
             });
         })
         .finally(() => {
-          if (refresh === operation) refresh = undefined;
+          if (refresh === operation) {
+            refresh = undefined;
+            refreshController = undefined;
+          }
         });
       refresh = operation;
       return operation;
     },
     async load(value: string, caller?: AbortSignal) {
       const id = lifecycleChannelId(value);
-      return owned({ id, caller }, async (signal) => {
-        for (;;) {
-          try {
-            return await load(id, signal);
-          } catch (error) {
-            // Owner cancel/clear/dispose, the caller and the deadline all
-            // arrive through `signal`. Any other cancellation is the session
-            // retiring shared reads for another channel's access change,
-            // which is no evidence about this channel: read again.
-            if (signal.aborted || readErrorKind(error) !== "cancelled")
-              throw error;
+      return owned({ id, caller }, (signal) =>
+        retryRead(async () => {
+          for (;;) {
+            try {
+              return await load(id, signal);
+            } catch (error) {
+              // Another channel's revocation retires shared reads. It is not
+              // a failed attempt for this channel; reread under the same deadline.
+              if (signal.aborted || readErrorKind(error) !== "cancelled")
+                throw error;
+            }
           }
-        }
-      });
+        }, signal),
+      );
     },
     async run(
       action: ChannelLifecycleCommand,
       value: string,
       caller?: AbortSignal,
+      active?: () => boolean,
     ) {
       if (!available || !writer)
         throw new Error("Channel actions are unavailable on this connection");
@@ -389,6 +432,8 @@ export function createChannelLifecycle({
             throw new Error("Signer changed the channel lifecycle command");
           if (await authorize()) return;
           signal.throwIfAborted();
+          if (active?.() === false)
+            throw new DOMException("Channel action cancelled", "AbortError");
           publicationStarted = true;
           await writer.publish(signed, signal);
           // An accepted write may precede its relay-owned side effects. Do not
@@ -442,6 +487,7 @@ export function createChannelLifecycle({
                 }
               } else if (!record) {
                 removed(id);
+                for (const listener of removalListeners) listener(id);
                 return;
               }
             }
@@ -463,11 +509,15 @@ export function createChannelLifecycle({
     capability,
     /** Abort work on `ids` and id-less visibility reads; without `ids`, everything. */
     cancel(ids?: readonly string[]) {
+      // A channel-scoped invalidation retires a read, not the viewer's whole
+      // refresh. Its cancellation can retry within the existing budget.
+      if (!ids) refreshController?.abort();
       for (const [controller, id] of controllers)
         if (!ids || id === undefined || ids.includes(id)) controller.abort();
     },
     clear() {
       epoch++;
+      refreshController?.abort();
       for (const controller of controllers.keys()) controller.abort();
       refresh = undefined;
       visibility = undefined;
@@ -476,8 +526,10 @@ export function createChannelLifecycle({
     dispose() {
       closed = true;
       epoch++;
+      refreshController?.abort();
       for (const controller of controllers.keys()) controller.abort();
       listeners.clear();
+      removalListeners.clear();
     },
   };
 }

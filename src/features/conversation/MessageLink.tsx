@@ -22,24 +22,33 @@ import {
   BrowserIcon,
   ChatCircleIcon,
   CopyIcon,
-  FileTextIcon,
+  CaretRightIcon,
+  MessageReplyIcon,
   LockIcon,
 } from "../../shared/design-system/icons";
 import { ToastNotice } from "../../shared/design-system/ui/Toast";
 import { PreviewCard } from "../../shared/design-system/ui/PreviewCard";
 import type { RelaySession } from "../relay/session";
+import {
+  fullSession,
+  type ComposerSession,
+} from "../messages/composer-session";
 import { parseBuzzLink, isBuzzLink } from "../navigation/buzz-links";
 import {
   LinkChannelPrivateContext,
+  LinkDescriptionContext,
+  LinkInteractiveContext,
   LinkLabelContext,
   LinkContentContext,
   LinkThreadTabContext,
 } from "./LinkLabelContext";
 import { BuzzLinkPreview, ChannelLinkPreview } from "./BuzzLinkPreview";
 import { useChannelReference } from "./channel-reference";
+import { useLinkedMessageByline } from "./linked-message";
 import { messageViewKey } from "../messages/view-key";
-import { sessionLinkName } from "../sessions/metadata";
+import { soloChatLinkName } from "../solo/labels";
 import styles from "./LinkPreview.module.css";
+import { writeClipboardText } from "../../shared/clipboard";
 
 const empty: readonly Contribution<LinkRenderer>[] = [];
 const snapshot = () => empty;
@@ -72,7 +81,7 @@ export function MessageLink({
   /** The receiving community's name for a raw destination. Display only: a raw
    * link copies as its URL. */
   directoryLabel?: string | undefined;
-  session?: RelaySession | undefined;
+  session?: RelaySession | ComposerSession | undefined;
   scope?: string | undefined;
   interactive?: boolean;
   channelPrivate?: boolean;
@@ -86,11 +95,13 @@ export function MessageLink({
   const renderer = resolveLink(url, renderers);
   const [unavailable, setUnavailable] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [description, setDescription] = useState<string>();
   if (!active && previewOpen) setPreviewOpen(false);
   const trigger = useRef<HTMLAnchorElement>(null);
   const internal = isBuzzLink(url);
   const parsed = internal ? parseBuzzLink(url) : null;
   const destination = parsed?.format === "legacy" ? parsed : undefined;
+  const host = fullSession(session);
   // Channel-only links name a channel the reader may not have joined. A
   // composer decoration is the writer's own draft: it never looks one up.
   const referenced =
@@ -100,50 +111,59 @@ export function MessageLink({
     !destination.threadRootId
       ? destination.channelId
       : undefined;
-  const reference = useChannelReference(session?.channels, referenced);
+  const reference = useChannelReference(host?.channels, referenced);
   // Subscribe to the session's presentation, including chosen-name provenance.
   // A string snapshot stays stable when unrelated channel activity changes.
-  const sessionName = useSyncExternalStore(
-    session?.channels.subscribeList ?? subscribe,
+  const chatName = useSyncExternalStore(
+    host?.channels.subscribeList ?? subscribe,
     () => {
       if (!destination || destination.messageId || destination.threadRootId)
         return "";
-      const channel = session?.channels
+      const channel = host?.channels
         .list()
         .channels.find((item) => item.id === destination.channelId);
-      return channel?.channelType === "session" && !channel.cached
-        ? sessionLinkName(channel)
+      return channel?.channelType === "solo" && !channel.cached
+        ? soloChatLinkName(channel)
         : "";
     },
     () => "",
   );
   // Authored Session labels survive access loss; they are presentation only.
-  const sentSessionName = label?.match(/^Session(?::| ·)\s+(.+)$/s)?.[1];
-  const sessionChip = !!(
+  const sentChatName = label?.match(/^(?:Session|Chat)(?::| ·)\s+(.+)$/s)?.[1];
+  const chatChip = !!(
     destination &&
     !destination.messageId &&
     !destination.threadRootId &&
-    (sessionName ||
-      (reference.state === "found" && reference.channelType === "session") ||
-      (reference.state !== "found" && sentSessionName))
+    (chatName ||
+      (reference.state === "found" && reference.channelType === "solo") ||
+      (reference.state !== "found" && sentChatName))
   );
   const chipName =
-    sessionName || sentSessionName || destination?.channelId.slice(0, 8);
-  const sessionLabel = sessionChip ? `Session: ${chipName}` : undefined;
+    chatName || sentChatName || destination?.channelId.slice(0, 8);
+  const chatLabel = chatChip ? `Chat: ${chipName}` : undefined;
   // DMs and sessions keep their existing presentation.
   const named =
     reference.state === "found" &&
     !reference.hidden &&
     reference.channelType !== "dm" &&
-    reference.channelType !== "session"
+    reference.channelType !== "solo"
       ? reference
       : undefined;
   const withheld = reference.state === "withheld";
   // The authored label is message text, so it stays; the lock marks it. A raw
   // destination has no name to show.
   const shown = withheld && label === undefined ? "Private channel" : children;
+  // A raw message destination names its author once read; a draft never reads.
+  const byline = useLinkedMessageByline(
+    interactive && label === undefined && children === undefined
+      ? host
+      : undefined,
+    destination?.channelId,
+    destination?.messageId,
+  );
   const display =
     label ??
+    byline ??
     directoryLabel ??
     (named ? `#${named.name}` : withheld ? "Private channel" : undefined);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -170,7 +190,7 @@ export function MessageLink({
     setCopying(true);
     setNotice(undefined);
     try {
-      await navigator.clipboard.writeText(url);
+      await writeClipboardText(url);
       setNotice({ text: "Link copied", error: false });
     } catch {
       setNotice({
@@ -183,7 +203,7 @@ export function MessageLink({
     }
   }
   const preview =
-    session && destination?.messageId
+    host && destination?.messageId
       ? { channelId: destination.channelId, messageId: destination.messageId }
       : undefined;
   const openInternal = () => {
@@ -231,22 +251,22 @@ export function MessageLink({
   const anchor = (entry?: Contribution<LinkRenderer>) => {
     const Content = entry?.component;
     const content =
-      sessionChip && destination ? (
-        <span className={styles.sessionChip}>
-          <span className={styles.sessionIcon}>
-            <FileTextIcon size={16} aria-hidden="true" />
+      chatChip && destination ? (
+        <span className={styles.soloChip}>
+          <span className={styles.soloIcon}>
+            <ChatCircleIcon size={16} aria-hidden="true" />
           </span>
-          <span className={styles.sessionPrefix}>Session:</span>
-          <span className={styles.sessionName}>{chipName}</span>
-          {(withheld ||
-            channelPrivate ||
-            (reference.state === "found" && reference.private)) && (
+          <span className={styles.soloPrefix}>Chat:</span>
+          <span className={styles.soloName}>{chipName}</span>
+          {withheld ? (
             <LockIcon
-              className={styles.sessionLock}
+              className={styles.soloLock}
               size={12}
               aria-hidden="true"
             />
-          )}
+          ) : reference.state === "found" ? (
+            <CaretRightIcon size={16} aria-hidden="true" />
+          ) : null}
         </span>
       ) : Content ? (
         <Content url={url} />
@@ -259,31 +279,31 @@ export function MessageLink({
         ref={trigger}
         href={url}
         aria-label={
-          sessionLabel
+          chatLabel
             ? withheld
-              ? `${sessionLabel}, unavailable`
-              : `Open ${sessionLabel}`
+              ? `${chatLabel}, unavailable`
+              : `Open ${chatLabel}`
             : display
         }
         aria-description={
-          sessionChip && withheld
-            ? "Session unavailable. You don’t have access, or it no longer exists."
-            : undefined
+          chatChip && withheld
+            ? "Chat unavailable. You don’t have access, or it no longer exists."
+            : description
         }
         data-link-label={label ?? ""}
-        data-session-link={sessionChip ? "" : undefined}
+        data-solo-link={chatChip ? "" : undefined}
         title={
-          sessionLabel
+          chatLabel
             ? withheld
-              ? `${sessionLabel}. Session unavailable. You don’t have access, or it no longer exists.`
-              : sessionLabel
+              ? `${chatLabel}. Chat unavailable. You don’t have access, or it no longer exists.`
+              : chatLabel
             : withheld
               ? "Private channel. You aren’t a member, or it no longer exists."
               : !preview && !named
                 ? url
                 : undefined
         }
-        className={sessionChip ? styles.sessionLink : entry?.className}
+        className={chatChip ? styles.soloLink : entry?.className}
         data-link-renderer={entry?.key}
         {...navigation}
       >
@@ -291,7 +311,7 @@ export function MessageLink({
       </a>
     ) : (
       <span
-        className={sessionChip ? styles.sessionLink : entry?.className}
+        className={chatChip ? styles.soloLink : entry?.className}
         data-link-renderer={entry?.key}
       >
         {content}
@@ -317,15 +337,15 @@ export function MessageLink({
       element
     );
     const card =
-      !active || !interactive || !session
+      !active || !interactive || !host
         ? undefined
         : preview
           ? {
               label: "Message preview",
               body: previewOpen && (
                 <BuzzLinkPreview
-                  key={messageViewKey(session, scope, url)}
-                  session={session}
+                  key={messageViewKey(host, scope, url)}
+                  session={host}
                   channelId={preview.channelId}
                   messageId={preview.messageId}
                 />
@@ -384,7 +404,7 @@ export function MessageLink({
               }}
             >
               <MenuIcon>
-                <ChatCircleIcon size={16} />
+                <MessageReplyIcon size={16} />
               </MenuIcon>
               Open link
             </MenuItem>
@@ -442,7 +462,15 @@ export function MessageLink({
       value={channelPrivate || withheld || !!named?.private}
     >
       <LinkLabelContext value={display}>
-        <LinkContentContext value={shown}>{result}</LinkContentContext>
+        <LinkContentContext value={shown}>
+          <LinkInteractiveContext value={interactive}>
+            <LinkDescriptionContext
+              value={interactive ? setDescription : undefined}
+            >
+              {result}
+            </LinkDescriptionContext>
+          </LinkInteractiveContext>
+        </LinkContentContext>
       </LinkLabelContext>
     </LinkChannelPrivateContext>
   );

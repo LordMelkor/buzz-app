@@ -1,3 +1,4 @@
+import { pauseClock } from "./clock.mjs";
 import { openPage } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 import {
@@ -97,6 +98,9 @@ test("production WS → broker → mounted UI delivers messages and retries a pa
       return result;
     };
   });
+  // A running page clock behaves like real time until the cooldown below
+  // pauses it.
+  await page.clock.install();
   await ready(page, app);
   const live = app.append("primary", "alpha", "Policy-realistic live delivery");
   await expect(
@@ -134,6 +138,17 @@ test("production WS → broker → mounted UI delivers messages and retries a pa
   const globalRequests = app.relay.requests.filter(({ filters }) =>
     filters.every((filter) => !filter["#h"]),
   ).length;
+  // The app arms its cooldown when it consumes the refusal, and the ignored
+  // clicks below must land before that deadline. Pause the page clock before
+  // the failure and step it in 250 ms slices: the clicks then land within
+  // 250 ms of page time after the 3 s notice delay, inside the 6 s cooldown.
+  await pauseClock(page, 1000);
+  const step = (done) =>
+    expect
+      .poll(async () => (await done()) || void (await page.clock.runFor(250)), {
+        intervals: [50],
+      })
+      .toBe(true);
   app.relay.failRoute("primary", "alpha");
   const missed = app.append(
     "primary",
@@ -141,7 +156,7 @@ test("production WS → broker → mounted UI delivers messages and retries a pa
     "Delivered by authoritative catch-up",
     false,
   );
-  app.relay.quotaNextHead("alpha", 2);
+  app.relay.quotaNextHead("alpha", 6);
   // A sidebar preview may reach the shared broker before the selected head.
   // It must not consume the failure injected specifically for head catch-up.
   const previewStatus = await page.evaluate(async () => {
@@ -165,8 +180,9 @@ test("production WS → broker → mounted UI delivers messages and retries a pa
   expect(previewStatus).toBe(200);
   expect(app.relay.rejected).toHaveLength(0);
   // No click: automatic recovery sends the head catch-up.
-  await expect.poll(() => app.relay.rejected.length).toBe(1);
-  await expect(notice(page)).toBeVisible();
+  await step(() => app.relay.rejected.length === 1);
+  // The notice appears once recovery lasts 3 s (RECOVERY_NOTICE_DELAY_MS).
+  await step(() => notice(page).isVisible());
   const calls = heads(app, "alpha").length;
   await retry(page).click();
   await retry(page).click();
@@ -177,6 +193,8 @@ test("production WS → broker → mounted UI delivers messages and retries a pa
       filters.every((filter) => !filter["#h"]),
     ),
   ).toHaveLength(globalRequests);
+  // The timeline keeps the browser's own clock from here.
+  await page.clock.resume();
   await expectAnchor(page, reading);
   await retryAfterCooldown(page, app, () => heads(app, "alpha").length > calls);
   await expect(notice(page)).toHaveCount(0);
@@ -242,13 +260,8 @@ test("automatic recovery restores an empty paused roster without restarting heal
 }) => {
   // Empty is a valid authoritative result: recovery must not depend on a
   // selected channel or on an interest change replacing the global stream.
-  let displayGeneration = 0;
-  page.on("request", (request) => {
-    if (request.url().endsWith("/stream-observer"))
-      displayGeneration = request.postDataJSON().observer;
-  });
   app.relay.emptyRoster();
-  app.relay.quotaNextRoster(2);
+  app.relay.quotaNextRoster(6);
   // The app arms its cooldown when it consumes the refusal, and the ignored
   // clicks below must land before that deadline. Navigation needs a running
   // page clock, so hold the first roster read until it is done, then pause the
@@ -272,15 +285,15 @@ test("automatic recovery restores an empty paused roster without restarting heal
   try {
     await openPage(page, "Messages");
     await expect.poll(() => rosterHeld).toBe(true);
-    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await pauseClock(page, 1000);
   } finally {
     roster.resolve();
   }
   await expect.poll(() => app.relay.rejected.length).toBe(1);
-  // The notice appears with the first automatic retry, 1 s after the refusal
-  // (RECOVERY_DELAYS_MS[0]). Run the paused clock only that far: the 2 s
-  // cooldown still holds, so the ignored clicks below land before it ends.
-  await page.clock.runFor(1_000);
+  // The notice appears once recovery lasts 3 s (RECOVERY_NOTICE_DELAY_MS).
+  // Run the paused clock only that far: the 6 s cooldown still holds, so the
+  // ignored clicks below land before it ends.
+  await page.clock.runFor(3_000);
   await expect(notice(page)).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Alpha", exact: true }),
@@ -321,15 +334,6 @@ test("automatic recovery restores an empty paused roster without restarting heal
   await retry(page).click();
   await retry(page).click();
   expect(rosters()).toHaveLength(calls);
-  // Automatic recovery can read the roster while the clock crosses the
-  // cooldown, so listen for the observer update before crossing it.
-  const previousGeneration = displayGeneration;
-  const observerUpdated = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/stream-observer") &&
-      response.ok() &&
-      response.request().postDataJSON().observer > previousGeneration,
-  );
   await crossCooldown(page, app);
   await retryIfShown(page);
   await expect(
@@ -338,13 +342,21 @@ test("automatic recovery restores an empty paused roster without restarting heal
   await expect(notice(page)).toHaveCount(0);
   expect(rosters()).toHaveLength(calls + 1);
   expect(app.relay.sockets).toHaveLength(sockets);
-  // The first authoritative (empty) roster resets the display generation, not
-  // the unchanged owner capture route or healthy profile/membership globals.
-  // Cross the observer control response before asserting no wire was replaced.
-  await observerUpdated;
-  expect(observer()).toHaveLength(1);
+  // The first authoritative (empty) roster resets the access generation:
+  // activity renews its live-only route. That lifecycle may not restart the
+  // healthy profile/membership chat globals.
+  await expect.poll(() => observer().length).toBe(2);
+  await expect
+    .poll(() =>
+      app.report.wireFrames.some(
+        (frame) => frame[0] === "EOSE" && frame[1] === observer()[1].id,
+      ),
+    )
+    .toBe(true);
   expect(globals()).toHaveLength(2);
-  for (const { socket, id } of [...healthy, ...observer()])
+  for (const { socket, id } of healthy)
     expect(app.relay.sockets[socket].routes.has(id)).toBe(true);
-  expect(observer()[0].filters[0].kinds).toEqual([24200, 44200]);
+  expect(observer()[1].filters[0].since).toBeGreaterThanOrEqual(
+    observer()[0].filters[0].since,
+  );
 });

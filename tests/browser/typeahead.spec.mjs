@@ -162,7 +162,7 @@ for (const mode of ["light", "dark"]) {
       const options = popup.getByRole("option");
       await expect(options.nth(1)).toBeVisible();
       if (kind === "mention") {
-        await expect(popup).toHaveCSS("border-radius", "16px");
+        await expect(popup).toHaveCSS("border-radius", "24px");
         await expect(popup).toHaveCSS("padding", "12px");
         await expect(popup).toHaveCSS("width", "380px");
         await expect(options.first()).toHaveCSS("padding", "8px");
@@ -677,8 +677,8 @@ test("current custom catalog drives typeahead and signed tags across community r
   const selectedParty = partyOptions.first();
   const hoveredParty = partyOptions.nth(1);
   await expect(selectedParty).toHaveAttribute("aria-selected", "true");
-  await expect(suggestions).toHaveCSS("border-radius", "16px");
-  await expect(selectedParty).toHaveCSS("border-radius", "9px");
+  await expect(suggestions).toHaveCSS("border-radius", "24px");
+  await expect(selectedParty).toHaveCSS("border-radius", "17px");
   const nativeEmoji = partyOptions.locator("[data-native-emoji]").first();
   await expect(nativeEmoji).toBeVisible();
   expect(

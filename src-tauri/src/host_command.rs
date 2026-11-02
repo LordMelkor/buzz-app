@@ -7,6 +7,9 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::AtomicI32;
+#[cfg(unix)]
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -83,33 +86,36 @@ pub(crate) mod windows_job {
             })
         }
 
-        pub(super) fn spawn(&self, command: &mut Command) -> Option<Child> {
+        pub(super) fn spawn(&self, command: &mut Command) -> std::io::Result<Child> {
             self.spawn_with_check(command, 0, |_, _| {})
         }
 
-        pub(crate) fn spawn_hidden(&self, command: &mut Command) -> Option<Child> {
+        pub(crate) fn spawn_hidden(&self, command: &mut Command) -> std::io::Result<Child> {
             self.spawn_with_check(command, CREATE_NO_WINDOW, |_, _| {})
         }
 
+        /// Fails with the operating system's reason when the program cannot
+        /// start, such as a missing file.
         pub(super) fn spawn_with_check(
             &self,
             command: &mut Command,
             flags: u32,
             check: impl FnOnce(&Child, &OwnedHandle),
-        ) -> Option<Child> {
+        ) -> std::io::Result<Child> {
             command
                 .creation_flags(CREATE_SUSPENDED | flags)
                 .kill_on_drop(true);
-            let child = command.spawn().ok()?;
-            let primary_thread = primary_thread(child.id()?)?;
+            let child = command.spawn()?;
+            let unjobbed = || std::io::Error::other("it could not join its job");
+            let primary_thread = child.id().and_then(primary_thread).ok_or_else(unjobbed)?;
             check(&child, &primary_thread);
             if !self.assign(&child) {
-                return None;
+                return Err(unjobbed());
             }
             if unsafe { ResumeThread(primary_thread.as_raw_handle()) } != 1 {
-                return None;
+                return Err(unjobbed());
             }
-            Some(child)
+            Ok(child)
         }
     }
 
@@ -174,6 +180,26 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
+/// Exposes a running command's process group, so app exit can kill it, and
+/// withdraws it once the command has finished.
+#[cfg(unix)]
+struct PublishedGroup<'a>(&'a AtomicI32);
+
+#[cfg(unix)]
+impl<'a> PublishedGroup<'a> {
+    fn new(group: &'a AtomicI32, process_id: i32) -> Self {
+        group.store(process_id, Ordering::SeqCst);
+        Self(group)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PublishedGroup<'_> {
+    fn drop(&mut self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn plugin_host_run_command(
     manager: tauri::State<'_, PluginManager>,
@@ -201,6 +227,99 @@ pub(crate) async fn plugin_host_run_command(
         .flatten())
 }
 
+#[cfg(target_os = "macos")]
+static LOGIN_SHELL_PATH: tokio::sync::OnceCell<Option<OsString>> =
+    tokio::sync::OnceCell::const_new();
+#[cfg(target_os = "macos")]
+static LOGIN_SHELL_PROBE_GROUP: AtomicI32 = AtomicI32::new(0);
+#[cfg(target_os = "macos")]
+const LOGIN_SHELL_DEADLINE: Duration = Duration::from_secs(10);
+#[cfg(target_os = "macos")]
+const LOGIN_SHELL_PATH_MARKER: &str = "__BUZZ_LOGIN_SHELL_PATH__";
+
+/// Reads PATH from the user's login shell once, so later calls to
+/// [`effective_path`] see it. Apps opened from Finder only inherit launchd's
+/// `/usr/bin:/bin:/usr/sbin:/sbin`, which would run system tools, such as an
+/// older Apple git, instead of the ones the user's terminal finds.
+pub(crate) async fn load_login_shell_path() {
+    #[cfg(target_os = "macos")]
+    LOGIN_SHELL_PATH
+        .get_or_init(|| async {
+            use std::io::IsTerminal as _;
+            // Started from a terminal, Buzz already has that shell's PATH, and an
+            // interactive probe would stop on the terminal it cannot take over.
+            if std::io::stdin().is_terminal() {
+                return None;
+            }
+            let shell = crate::terminal::resolve_shell(std::env::var("SHELL").ok().as_deref());
+            let path = login_shell_path(
+                Path::new(&shell),
+                LOGIN_SHELL_DEADLINE,
+                &LOGIN_SHELL_PROBE_GROUP,
+            )
+            .await;
+            if path.is_none() {
+                eprintln!(
+                    "Could not read PATH from login shell {shell}; agents use the app's PATH"
+                );
+            }
+            path
+        })
+        .await;
+}
+
+/// Kills a login-shell probe still running when the app exits: its async task
+/// will not run again to enforce the deadline.
+pub(crate) fn stop_login_shell_probe() {
+    #[cfg(target_os = "macos")]
+    kill_published_group(&LOGIN_SHELL_PROBE_GROUP);
+}
+
+#[cfg(target_os = "macos")]
+fn kill_published_group(group: &AtomicI32) {
+    let process_id = group.load(Ordering::SeqCst);
+    if process_id > 0 {
+        unsafe { libc::kill(-process_id, libc::SIGKILL) };
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn login_shell_path(shell: &Path, deadline: Duration, group: &AtomicI32) -> Option<OsString> {
+    // External commands only, so any shell's syntax runs it and PATH arrives
+    // colon-separated even from shells that keep it as a list, such as fish.
+    let script = format!(
+        "/usr/bin/printf {LOGIN_SHELL_PATH_MARKER}; /usr/bin/printenv PATH; /usr/bin/printf {LOGIN_SHELL_PATH_MARKER}"
+    );
+    // Profiles can check BUZZ_RESOLVING_ENVIRONMENT to skip slow setup, and
+    // DISABLE_AUTO_UPDATE stops Oh My Zsh from prompting to update.
+    let args = [
+        "DISABLE_AUTO_UPDATE=true",
+        "BUZZ_RESOLVING_ENVIRONMENT=1",
+        &shell.to_string_lossy(),
+        "-l",
+        "-i",
+        "-c",
+        &script,
+    ]
+    .map(String::from);
+    // Profiles may print banners or exit non-zero after setting PATH.
+    let (output, _) = run_output_with_input(
+        Path::new("/usr/bin/env"),
+        &args,
+        deadline,
+        OsStr::new(""),
+        1 << 20,
+        None,
+        Some(group),
+    )
+    .await?;
+    let path = output
+        .split(LOGIN_SHELL_PATH_MARKER)
+        .nth(1)?
+        .trim_end_matches('\n');
+    (!path.is_empty()).then(|| path.into())
+}
+
 pub(crate) fn effective_path() -> OsString {
     let path = std::env::var_os("PATH").unwrap_or_default();
     #[cfg(target_os = "macos")]
@@ -210,23 +329,38 @@ pub(crate) fn effective_path() -> OsString {
         } else {
             path
         };
-        // Per-user installs, such as Claude's official installer, come first:
-        // an older system-wide copy in /usr/local/bin would otherwise run instead,
-        // and installing again could not replace it.
-        let mut directories = std::env::var_os("HOME")
-            .map(|home| std::path::Path::new(&home).join(".local/bin"))
-            .into_iter()
-            .collect::<Vec<_>>();
-        directories.extend(
-            std::env::split_paths(&path).filter(|directory| !directory.as_os_str().is_empty()),
-        );
-        directories.extend(["/opt/homebrew/bin".into(), "/usr/local/bin".into()]);
-        std::env::join_paths(directories).unwrap_or(path)
+        compose_path(
+            std::env::var_os("HOME").as_deref(),
+            LOGIN_SHELL_PATH.get().cloned().flatten().as_deref(),
+            &path,
+        )
     }
     #[cfg(not(target_os = "macos"))]
     {
         path
     }
+}
+
+#[cfg(target_os = "macos")]
+fn compose_path(home: Option<&OsStr>, login_shell: Option<&OsStr>, inherited: &OsStr) -> OsString {
+    // Per-user installs, such as Claude's official installer, come first:
+    // an older system-wide copy in /usr/local/bin would otherwise run instead,
+    // and installing again could not replace it.
+    let mut directories = home
+        .map(|home| Path::new(home).join(".local/bin"))
+        .into_iter()
+        .collect::<Vec<_>>();
+    let candidates = login_shell
+        .into_iter()
+        .chain([inherited])
+        .flat_map(std::env::split_paths)
+        .chain(["/opt/homebrew/bin".into(), "/usr/local/bin".into()]);
+    for directory in candidates {
+        if !directory.as_os_str().is_empty() && !directories.contains(&directory) {
+            directories.push(directory);
+        }
+    }
+    std::env::join_paths(directories).unwrap_or_else(|_| inherited.to_owned())
 }
 
 pub(crate) fn resolve_program(program: &str, effective_path: &OsStr) -> PathBuf {
@@ -292,8 +426,16 @@ async fn run(
     max_output_bytes: u64,
     input: Option<&str>,
 ) -> Option<String> {
-    let (output, status) =
-        run_output_with_input(executable, args, deadline, path, max_output_bytes, input).await?;
+    let (output, status) = run_output_with_input(
+        executable,
+        args,
+        deadline,
+        path,
+        max_output_bytes,
+        input,
+        None,
+    )
+    .await?;
     status.success().then_some(output)
 }
 
@@ -304,6 +446,7 @@ async fn run_output_with_input(
     path: &OsStr,
     max_output_bytes: u64,
     input: Option<&str>,
+    group: Option<&AtomicI32>,
 ) -> Option<(String, std::process::ExitStatus)> {
     let mut command = Command::new(executable);
     command
@@ -325,7 +468,7 @@ async fn run_output_with_input(
     #[cfg(windows)]
     let _job = windows_job::WindowsJob::new()?;
     #[cfg(windows)]
-    let mut child = _job.spawn(&mut command)?;
+    let mut child = _job.spawn(&mut command).ok()?;
     #[cfg(not(windows))]
     let mut child = command.spawn().ok()?;
     #[cfg(unix)]
@@ -333,6 +476,10 @@ async fn run_output_with_input(
         process_id: child.id()? as i32,
         armed: true,
     };
+    #[cfg(unix)]
+    let _published = group.map(|group| PublishedGroup::new(group, process_group.process_id));
+    #[cfg(not(unix))]
+    let _ = group;
     let stdout = child.stdout.take()?;
     let output = tokio::time::timeout(deadline, async {
         let writer = async {
@@ -418,6 +565,67 @@ mod tests {
         let first = |directory: &Path| directories.iter().position(|item| item == directory);
         assert_eq!(first(&Path::new(&home).join(".local/bin")), Some(0));
         assert!(first(Path::new("/usr/local/bin")) > Some(0));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn login_shell_order_wins_over_the_launchd_path() {
+        let path = super::compose_path(
+            Some("/Users/me".as_ref()),
+            Some("/opt/homebrew/bin:/usr/bin:/bin".as_ref()),
+            "/usr/bin:/bin:/usr/sbin:/sbin".as_ref(),
+        );
+        assert_eq!(
+            path,
+            "/Users/me/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn login_shell_path_is_read_past_profile_output() {
+        let (_directory, shell) = executable(
+            "[ \"$DISABLE_AUTO_UPDATE$BUZZ_RESOLVING_ENVIRONMENT\" = true1 ] || exit\n\
+             echo 'Last login: Tue'; PATH=/opt/homebrew/bin:/usr/bin; eval \"$4\"; exit 1",
+        );
+        assert_eq!(
+            super::login_shell_path(&shell, Duration::from_secs(2), &Default::default()).await,
+            Some("/opt/homebrew/bin:/usr/bin".into())
+        );
+        let (_directory, shell) = executable("echo 'no PATH here'");
+        assert_eq!(
+            super::login_shell_path(&shell, Duration::from_secs(2), &Default::default()).await,
+            None
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn app_exit_kills_a_running_login_shell_probe() {
+        use std::sync::atomic::{AtomicI32, Ordering};
+        static GROUP: AtomicI32 = AtomicI32::new(0);
+        let (_directory, shell) = executable("sleep 30");
+        let probe = tokio::spawn(async move {
+            super::login_shell_path(&shell, Duration::from_secs(30), &GROUP).await
+        });
+        let process_id = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match GROUP.load(Ordering::SeqCst) {
+                    0 => tokio::task::yield_now().await,
+                    process_id => break process_id,
+                }
+            }
+        })
+        .await
+        .expect("probe did not start");
+        super::kill_published_group(&GROUP);
+        let result = tokio::time::timeout(Duration::from_secs(2), probe)
+            .await
+            .expect("probe outlived the kill")
+            .unwrap();
+        assert_eq!(result, None);
+        assert_eq!(GROUP.load(Ordering::SeqCst), 0);
+        assert_eq!(unsafe { libc::kill(process_id, 0) }, -1);
     }
 
     #[tokio::test]

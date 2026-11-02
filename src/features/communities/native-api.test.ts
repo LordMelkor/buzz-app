@@ -9,6 +9,8 @@ import {
   type CommunityInfo,
 } from "./api";
 import { keypair, signed } from "../relay/testing";
+import { fetchCommunityPresentation } from "./community-icon";
+import { NOT_A_COMMUNITY_ERROR } from "../relay/native";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -125,6 +127,17 @@ it("reads discovery and join policy together, reporting a discovery failure firs
   });
   await expect(communityRequest(community, "info")).rejects.toThrow(
     "Community discovery failed",
+  );
+});
+
+it("explains a website that is not a Buzz community instead of a JSON parse error", async () => {
+  vi.mocked(invoke).mockImplementation(async () => ({
+    status: 200,
+    headers: {},
+    body: "<!doctype html><title>Home</title>",
+  }));
+  await expect(communityRequest(community, "info")).rejects.toThrow(
+    NOT_A_COMMUNITY_ERROR,
   );
 });
 
@@ -394,4 +407,15 @@ it("routes exact owner setup confirmation through native commands, not the broke
     }),
   ).rejects.toThrow("Explicit owner community resolution required");
   expect(requests).toEqual([]);
+});
+
+it("projects native public community presentation without a join-policy read or broker", async () => {
+  expect(
+    await fetchCommunityPresentation(community, new AbortController().signal),
+  ).toEqual({
+    publishedName: "Native community",
+    publishedIcon: undefined,
+  });
+  expect(requests).toEqual([{ path: "/", body: undefined }]);
+  expect(fetch).not.toHaveBeenCalled();
 });

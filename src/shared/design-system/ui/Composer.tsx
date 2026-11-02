@@ -46,6 +46,7 @@ export function Composer({
   return (
     <form
       className="buzz-composer"
+      data-composer-surface=""
       aria-label={label}
       aria-busy={sending || undefined}
       data-disabled={disabled || undefined}
@@ -75,6 +76,7 @@ export function Composer({
         <div className="buzz-composer-tools">{tools}</div>
         {trailingTool}
         <IconButton
+          hint="familiar"
           type="submit"
           size="toolbar"
           aria-label={sending ? "Sending message" : "Send message"}

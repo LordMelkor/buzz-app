@@ -1,4 +1,12 @@
-import { openPage, pageChoices } from "./navigation.mjs";
+import { pluginAction } from "./plugin-settings.mjs";
+import {
+  closeSettings,
+  openPage,
+  pageChoice,
+  pageChoices,
+  selectSettingsSection,
+  settingsDialog,
+} from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open, edge, settle } from "./timeline.mjs";
 
@@ -19,7 +27,7 @@ const scale = async (page, expected) =>
     )
     .toBe(String(expected));
 
-test("real Settings keys respect dialogs and modifiers, focus main, and preserve drafts", async ({
+test("real Settings keys respect dialogs and modifiers, focus Settings, and preserve drafts", async ({
   page,
   app,
 }) => {
@@ -36,7 +44,7 @@ test("real Settings keys respect dialogs and modifiers, focus main, and preserve
   await page.keyboard.press(`${modifier}+,`);
   await expect(page.getByRole("dialog", { name: "Search Buzz" })).toBeVisible();
   await expect(
-    page.getByRole("region", {
+    page.getByRole("dialog", {
       name: "Settings",
       exact: true,
       includeHidden: true,
@@ -49,11 +57,11 @@ test("real Settings keys respect dialogs and modifiers, focus main, and preserve
   await expect(button(page, "Search Buzz")).toBeFocused();
   await composer.focus();
   await page.keyboard.press(`${modifier}+,`);
-  await expect(
-    page.getByRole("region", { name: "Settings", exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole("main")).toBeFocused();
-  await openPage(page, "Messages");
+  await expect(settingsDialog(page)).toBeVisible();
+  await expect(button(settingsDialog(page), "Close Settings")).toBeFocused();
+  // Closing returns to the retained conversation and its focused draft.
+  await closeSettings(page);
+  await expect(composer).toBeFocused();
   await expect(composer).toHaveJSProperty("value", "Keep my draft");
 });
 
@@ -165,15 +173,18 @@ test("zoom keys scale text, icons and spacing together and persist/reset", async
   await page.keyboard.press("Enter");
   await scale(page, 1);
   await expect(button(page, "Increase interface size")).toBeFocused();
+  const colorMode = page.getByRole("combobox", { name: "Mode", exact: true });
+  const modeHeight = await colorMode.evaluate(
+    (el) => el.getBoundingClientRect().height,
+  );
   // At 200%, the handoff target is disabled until the reset commit finishes.
   for (const reset of ["keyboard", "external", "external-unfocused"]) {
     for (let i = 0; i < 10; i++)
       await button(page, "Increase interface size").click();
     await scale(page, 2);
-    const colorMode = page.getByRole("radio", { name: "Light", exact: true });
-    await expect(
-      page.locator('.buzz-theme-thumbnail[data-mode="light"]'),
-    ).toHaveCSS("width", "160px");
+    await expect
+      .poll(() => colorMode.evaluate((el) => el.getBoundingClientRect().height))
+      .toBeCloseTo(modeHeight * 2, 1);
     await expect(button(page, "Increase interface size")).toBeDisabled();
     await (reset === "external-unfocused"
       ? colorMode
@@ -313,7 +324,8 @@ test.describe("scaled history", () => {
       ),
     ).toBe(112);
     const sidebar = page.getByRole("complementary", {
-      name: "Channel sidebar",
+      name: "Sidebar",
+      exact: true,
     });
     const handle = page.getByRole("separator", {
       name: "Resize sidebar",
@@ -406,22 +418,26 @@ test("independent plugin consumes injected shortcuts; disable/re-enable and edit
   ).toHaveCount(0);
   await expect(button(page, "Search Buzz")).toBeFocused();
   await page.keyboard.press(`${modifier}+,`);
-  await button(page, "Plugins").click();
-  const toggle = page.getByRole("switch", { name: "Enable Shortcut counter" });
+  await button(page, "Manage plugins").click();
+  const toggle = pluginAction(page, "Shortcut counter");
   await toggle.click();
-  const choices = await pageChoices(page);
-  await expect(
-    choices.getByRole("option", { name: "Settings", exact: true }),
-  ).toBeVisible();
-  await expect(
-    choices.getByRole("option", { name: "Shortcut counter", exact: true }),
-  ).toHaveCount(0);
+  // Search Buzz lives in the workspace, which is inert behind Settings.
+  await closeSettings(page);
+  const choices = await pageChoices(page, "Settings");
+  await expect(pageChoice(choices, "Settings")).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "Search Buzz", exact: true })
+    .fill("Shortcut counter");
+  await expect(pageChoice(choices, "Shortcut counter")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(
     page.getByRole("dialog", { name: "Search Buzz", includeHidden: true }),
   ).toHaveCount(0);
   await page.keyboard.press(`${modifier}+Shift+k`);
+  await page.keyboard.press(`${modifier}+,`);
+  await selectSettingsSection(page, "Manage plugins");
   await toggle.click();
+  await closeSettings(page);
   await openPage(page, "Shortcut counter");
   await expect(count).toHaveText("Shortcut count: 0");
   await page.keyboard.press(`${modifier}+Shift+k`);
@@ -453,7 +469,7 @@ test("a shadow-root modal blocks Settings and plugin bindings but allows interfa
   await page.keyboard.press(`${modifier}+,`);
   await expect(control).toBeFocused();
   await expect(
-    page.getByRole("region", {
+    page.getByRole("dialog", {
       name: "Settings",
       exact: true,
       includeHidden: true,
@@ -526,6 +542,7 @@ test("Settings → Shortcuts rebinds a plugin shortcut live, blocks host conflic
   ).toBeAttached();
   await expect(button(row, `Reset shortcut for ${title}`)).toBeVisible();
   await expect(button(row, `Change shortcut for ${title}`)).toBeFocused();
+  await closeSettings(page);
   await openPage(page, "Shortcut counter");
   await expect(count).toHaveText("Shortcut count: 1");
   await page.keyboard.press(`${modifier}+Shift+k`);
@@ -543,6 +560,7 @@ test("Settings → Shortcuts rebinds a plugin shortcut live, blocks host conflic
   await expect(
     page.getByRole("button", { name: "Reset all shortcuts", exact: true }),
   ).toBeDisabled();
+  await closeSettings(page);
   await openPage(page, "Shortcut counter");
   await page.keyboard.press(`${modifier}+Shift+u`);
   await page.keyboard.press(`${modifier}+Shift+k`);

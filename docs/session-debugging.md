@@ -102,8 +102,8 @@ appropriate to the inspected usage; the simple estimator does not infer tiers.
 
 ## Storage and older exports
 
-Discovery reads `$CODEX_HOME/sessions`, `$CODEX_HOME/archived_sessions` (default
-`~/.codex`) and `$CLAUDE_CONFIG_DIR/projects` (default `~/.claude`). Compressed
+Discovery reads `sessions` and `archived_sessions` in Buzz's Codex home and in
+`$CODEX_HOME` (default `~/.codex`), which holds threads from older Buzz builds, and `$CLAUDE_CONFIG_DIR/projects` (default `~/.claude`). Compressed
 `.jsonl.zst` rollouts must be decompressed to a local file first and opened with
 `--file`. The server is bound to 127.0.0.1, uses an unguessable path, rejects foreign
 Host/Origin requests, and serves only its three assets and selected transcript.

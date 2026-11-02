@@ -11,10 +11,12 @@
   /* Keep the hit target centered on the divider without adding a gutter. */
   margin: 0 calc(-1 * var(--space-4) / 2);
   background: transparent;
-  cursor: col-resize;
+  cursor: ew-resize;
   touch-action: none;
 }
 .handle::after {
+  /* The painted grip must use the handle’s hit target and cursor. */
+  pointer-events: none;
   position: absolute;
   top: 50%;
   /* The divider occupies the last pixel of the sidebar. */

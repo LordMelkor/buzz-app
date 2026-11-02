@@ -1,0 +1,466 @@
+diff --git a/checkbox/root/CheckboxRoot.js b/checkbox/root/CheckboxRoot.js
+index 541c3117a19e6ba7f572b1ef903facd464c3317e..b13465e583f52406d5929bf8ddf354a47be51d9a 100644
+--- a/checkbox/root/CheckboxRoot.js
++++ b/checkbox/root/CheckboxRoot.js
+@@ -7,6 +7,7 @@ Object.defineProperty(exports, "__esModule", {
+ });
+ exports.PARENT_CHECKBOX = exports.CheckboxRoot = void 0;
+ var React = _interopRequireWildcard(require("react"));
++var _useStableCallback = require("@base-ui/utils/useStableCallback");
+ var _empty = require("@base-ui/utils/empty");
+ var _useControlled = require("@base-ui/utils/useControlled");
+ var _useIsoLayoutEffect = require("@base-ui/utils/useIsoLayoutEffect");
+@@ -140,6 +141,37 @@ const CheckboxRoot = exports.CheckboxRoot = /*#__PURE__*/React.forwardRef(functi
+   (0, _useRegisterFieldControl.useRegisterFieldControl)(controlRef, id, checked, undefined, !groupContext && !disabled, nameProp);
+   const registerChildId = parentContext?.registerChildId;
+   const inputRef = React.useRef(null);
++  // Native reset emits no change event; keep the existing state owner authoritative.
++  const resetInput = (0, _useStableCallback.useStableCallback)(() => {
++    if (groupChecked !== undefined || groupValue !== undefined) {
++      if (inputRef.current) inputRef.current.checked = checked;
++    } else {
++      setCheckedState(defaultChecked);
++    }
++  });
++  React.useEffect(() => {
++    const formElement = inputRef.current?.form;
++    if (!formElement) {
++      return undefined;
++    }
++    let active = true;
++    const pendingResets = new Set();
++    function handleReset(event) {
++      // A native reset's default action can follow microtask checkpoints.
++      // The next task observes completed reset and ancestor cancellation.
++      const task = setTimeout(() => {
++        pendingResets.delete(task);
++        if (active && !event.defaultPrevented) resetInput();
++      }, 0);
++      pendingResets.add(task);
++    }
++    formElement.addEventListener('reset', handleReset);
++    return () => {
++      active = false;
++      pendingResets.forEach(clearTimeout);
++      formElement.removeEventListener('reset', handleReset);
++    };
++  }, [form, resetInput]);
+   const registerFieldInput = validation.registerInput;
+   const registeredInputValue = groupContext ? value : undefined;
+   const registerInput = React.useCallback(element => registerFieldInput(element, {
+diff --git a/checkbox/root/CheckboxRoot.mjs b/checkbox/root/CheckboxRoot.mjs
+index 545a5e3ebae09ba0bd4d4c4664b745f8a53dfb10..d537f8b8c98785ad120ee81a6b1483aaf586bc25 100644
+--- a/checkbox/root/CheckboxRoot.mjs
++++ b/checkbox/root/CheckboxRoot.mjs
+@@ -3,4 +3,5 @@
+ import * as React from 'react';
++import { useStableCallback } from '@base-ui/utils/useStableCallback';
+ import { EMPTY_OBJECT } from '@base-ui/utils/empty';
+ import { useControlled } from '@base-ui/utils/useControlled';
+ import { useIsoLayoutEffect } from '@base-ui/utils/useIsoLayoutEffect';
+@@ -134,6 +135,37 @@ export const CheckboxRoot = /*#__PURE__*/React.forwardRef(function CheckboxRoot(
+   useRegisterFieldControl(controlRef, id, checked, undefined, !groupContext && !disabled, nameProp);
+   const registerChildId = parentContext?.registerChildId;
+   const inputRef = React.useRef(null);
++  // Native reset emits no change event; keep the existing state owner authoritative.
++  const resetInput = useStableCallback(() => {
++    if (groupChecked !== undefined || groupValue !== undefined) {
++      if (inputRef.current) inputRef.current.checked = checked;
++    } else {
++      setCheckedState(defaultChecked);
++    }
++  });
++  React.useEffect(() => {
++    const formElement = inputRef.current?.form;
++    if (!formElement) {
++      return undefined;
++    }
++    let active = true;
++    const pendingResets = new Set();
++    function handleReset(event) {
++      // A native reset's default action can follow microtask checkpoints.
++      // The next task observes completed reset and ancestor cancellation.
++      const task = setTimeout(() => {
++        pendingResets.delete(task);
++        if (active && !event.defaultPrevented) resetInput();
++      }, 0);
++      pendingResets.add(task);
++    }
++    formElement.addEventListener('reset', handleReset);
++    return () => {
++      active = false;
++      pendingResets.forEach(clearTimeout);
++      formElement.removeEventListener('reset', handleReset);
++    };
++  }, [form, resetInput]);
+   const registerFieldInput = validation.registerInput;
+   const registeredInputValue = groupContext ? value : undefined;
+   const registerInput = React.useCallback(element => registerFieldInput(element, {
+diff --git a/radio/root/RadioRoot.js b/radio/root/RadioRoot.js
+index 8930c6ce8d3d9b7ed0b80643f57a85bf83123340..3cb7002df48dce00df61eba0e8b21f3ddb448f4c 100644
+--- a/radio/root/RadioRoot.js
++++ b/radio/root/RadioRoot.js
+@@ -7,6 +7,7 @@ Object.defineProperty(exports, "__esModule", {
+ });
+ exports.RadioRoot = void 0;
+ var React = _interopRequireWildcard(require("react"));
++var _useStableCallback = require("@base-ui/utils/useStableCallback");
+ var _useMergedRefs = require("@base-ui/utils/useMergedRefs");
+ var _useIsoLayoutEffect = require("@base-ui/utils/useIsoLayoutEffect");
+ var _visuallyHidden = require("@base-ui/utils/visuallyHidden");
+@@ -84,6 +85,36 @@ var _jsxRuntime = require("react/jsx-runtime");
+   const radioRef = React.useRef(null);
+   const setFieldFocused = (0, _useSetFieldFocused.useSetFieldFocused)(disabled, radioRef);
+   const inputRef = React.useRef(null);
++  // Native reset emits no change event; keep the existing state owner authoritative.
++  const resetInput = (0, _useStableCallback.useStableCallback)(() => {
++    groupContext?.resetValue();
++    if (groupContext?.controlled && inputRef.current) {
++      inputRef.current.checked = checked;
++    }
++  });
++  React.useEffect(() => {
++    const formElement = inputRef.current?.form;
++    if (!formElement) {
++      return undefined;
++    }
++    let active = true;
++    const pendingResets = new Set();
++    function handleReset(event) {
++      // A native reset's default action can follow microtask checkpoints.
++      // The next task observes completed reset and ancestor cancellation.
++      const task = setTimeout(() => {
++        pendingResets.delete(task);
++        if (active && !event.defaultPrevented) resetInput();
++      }, 0);
++      pendingResets.add(task);
++    }
++    formElement.addEventListener('reset', handleReset);
++    return () => {
++      active = false;
++      pendingResets.forEach(clearTimeout);
++      formElement.removeEventListener('reset', handleReset);
++    };
++  }, [form, resetInput]);
+   const registerFieldInput = validation?.registerInput;
+   const registerInput = React.useCallback(element => registerFieldInput?.(element, {
+     controlRef: radioRef,
+diff --git a/radio/root/RadioRoot.mjs b/radio/root/RadioRoot.mjs
+index bad952d9b2d7210ea4fb9c31c4db3365353922d9..eab3e9a91a43bec3543421d0b03c475c72e6782c 100644
+--- a/radio/root/RadioRoot.mjs
++++ b/radio/root/RadioRoot.mjs
+@@ -3,4 +3,5 @@
+ import * as React from 'react';
++import { useStableCallback } from '@base-ui/utils/useStableCallback';
+ import { useMergedRefs } from '@base-ui/utils/useMergedRefs';
+ import { useIsoLayoutEffect } from '@base-ui/utils/useIsoLayoutEffect';
+ import { visuallyHidden, visuallyHiddenInput } from '@base-ui/utils/visuallyHidden';
+@@ -80,6 +81,36 @@ export const RadioRoot = /*#__PURE__*/React.forwardRef(function RadioRoot(compon
+   const radioRef = React.useRef(null);
+   const setFieldFocused = useSetFieldFocused(disabled, radioRef);
+   const inputRef = React.useRef(null);
++  // Native reset emits no change event; keep the existing state owner authoritative.
++  const resetInput = useStableCallback(() => {
++    groupContext?.resetValue();
++    if (groupContext?.controlled && inputRef.current) {
++      inputRef.current.checked = checked;
++    }
++  });
++  React.useEffect(() => {
++    const formElement = inputRef.current?.form;
++    if (!formElement) {
++      return undefined;
++    }
++    let active = true;
++    const pendingResets = new Set();
++    function handleReset(event) {
++      // A native reset's default action can follow microtask checkpoints.
++      // The next task observes completed reset and ancestor cancellation.
++      const task = setTimeout(() => {
++        pendingResets.delete(task);
++        if (active && !event.defaultPrevented) resetInput();
++      }, 0);
++      pendingResets.add(task);
++    }
++    formElement.addEventListener('reset', handleReset);
++    return () => {
++      active = false;
++      pendingResets.forEach(clearTimeout);
++      formElement.removeEventListener('reset', handleReset);
++    };
++  }, [form, resetInput]);
+   const registerFieldInput = validation?.registerInput;
+   const registerInput = React.useCallback(element => registerFieldInput?.(element, {
+     controlRef: radioRef,
+diff --git a/radio-group/RadioGroup.js b/radio-group/RadioGroup.js
+index dbf64d12c450ff288ec53882552dc443eb0a784b..79fceb3ad50ef08f73d965251b3f99a5126d3c11 100644
+--- a/radio-group/RadioGroup.js
++++ b/radio-group/RadioGroup.js
+@@ -79,6 +79,10 @@ const RadioGroup = exports.RadioGroup = /*#__PURE__*/React.forwardRef(function R
+     name: 'RadioGroup',
+     state: 'value'
+   });
++  const resetValue = (0, _useStableCallback.useStableCallback)(() => {
++    setCheckedValueUnwrapped(defaultValue);
++  });
++  const controlled = externalValue !== undefined;
+   const [touched, setTouched] = React.useState(false);
+   const setCheckedValue = (0, _useStableCallback.useStableCallback)((value, eventDetails) => {
+     onValueChangeProp?.(value, eventDetails);
+@@ -170,6 +174,8 @@ const RadioGroup = exports.RadioGroup = /*#__PURE__*/React.forwardRef(function R
+   };
+   const contextValue = React.useMemo(() => ({
+     checkedValue,
++    controlled,
++    resetValue,
+     disabled,
+     form,
+     validation,
+@@ -180,7 +186,7 @@ const RadioGroup = exports.RadioGroup = /*#__PURE__*/React.forwardRef(function R
+     setCheckedValue,
+     setTouched,
+     touched
+-  }), [checkedValue, disabled, form, validation, name, readOnly, registerInputRef, required, setCheckedValue, setTouched, touched]);
++  }), [checkedValue, controlled, resetValue, disabled, form, validation, name, readOnly, registerInputRef, required, setCheckedValue, setTouched, touched]);
+   const defaultProps = {
+     id: idProp,
+     role: 'radiogroup',
+diff --git a/radio-group/RadioGroup.mjs b/radio-group/RadioGroup.mjs
+index 2f847219e60f25a714d207fbf6b81c01c6e186a9..c3191df6d3be3acae55381a7bc1ff1f52d171b3d 100644
+--- a/radio-group/RadioGroup.mjs
++++ b/radio-group/RadioGroup.mjs
+@@ -73,6 +73,10 @@ export const RadioGroup = /*#__PURE__*/React.forwardRef(function RadioGroup(comp
+     name: 'RadioGroup',
+     state: 'value'
+   });
++  const resetValue = useStableCallback(() => {
++    setCheckedValueUnwrapped(defaultValue);
++  });
++  const controlled = externalValue !== undefined;
+   const [touched, setTouched] = React.useState(false);
+   const setCheckedValue = useStableCallback((value, eventDetails) => {
+     onValueChangeProp?.(value, eventDetails);
+@@ -164,6 +168,8 @@ export const RadioGroup = /*#__PURE__*/React.forwardRef(function RadioGroup(comp
+   };
+   const contextValue = React.useMemo(() => ({
+     checkedValue,
++    controlled,
++    resetValue,
+     disabled,
+     form,
+     validation,
+@@ -174,7 +180,7 @@ export const RadioGroup = /*#__PURE__*/React.forwardRef(function RadioGroup(comp
+     setCheckedValue,
+     setTouched,
+     touched
+-  }), [checkedValue, disabled, form, validation, name, readOnly, registerInputRef, required, setCheckedValue, setTouched, touched]);
++  }), [checkedValue, controlled, resetValue, disabled, form, validation, name, readOnly, registerInputRef, required, setCheckedValue, setTouched, touched]);
+   const defaultProps = {
+     id: idProp,
+     role: 'radiogroup',
+diff --git a/floating-ui-react/hooks/useHoverReferenceInteraction.d.mts b/floating-ui-react/hooks/useHoverReferenceInteraction.d.mts
+index 1d040d4bd63f14b9899d2cf9383d83a2c7ba6276..828492cd005677472dbf6fe938b891f6685b45d8 100644
+--- a/floating-ui-react/hooks/useHoverReferenceInteraction.d.mts
++++ b/floating-ui-react/hooks/useHoverReferenceInteraction.d.mts
+@@ -25,7 +25,7 @@ export interface UseHoverReferenceInteractionProps {
+    * Called before each hover-driven open attempt (immediate, delayed, and rest-ms
+    * paths). Return `false` to veto; any other return value permits the open.
+    */
+-  shouldOpen?: (() => boolean) | undefined;
++  shouldOpen?: ((event: MouseEvent) => boolean) | undefined;
+   /**
+    * Regression workaround (#5152): also cancels a pending hover-open from the
+    * trigger's `mouseout`, backing up a `mouseleave` that Chrome can drop during
+diff --git a/floating-ui-react/hooks/useHoverReferenceInteraction.d.ts b/floating-ui-react/hooks/useHoverReferenceInteraction.d.ts
+index a8ed4138235739ddd513750a72a5a24861ebe1f1..c5b840f27a7a3434ebc51fec0d6a3972f9aec793 100644
+--- a/floating-ui-react/hooks/useHoverReferenceInteraction.d.ts
++++ b/floating-ui-react/hooks/useHoverReferenceInteraction.d.ts
+@@ -25,7 +25,7 @@ export interface UseHoverReferenceInteractionProps {
+    * Called before each hover-driven open attempt (immediate, delayed, and rest-ms
+    * paths). Return `false` to veto; any other return value permits the open.
+    */
+-  shouldOpen?: (() => boolean) | undefined;
++  shouldOpen?: ((event: MouseEvent) => boolean) | undefined;
+   /**
+    * Regression workaround (#5152): also cancels a pending hover-open from the
+    * trigger's `mouseout`, backing up a `mouseleave` that Chrome can drop during
+diff --git a/floating-ui-react/hooks/useHoverReferenceInteraction.js b/floating-ui-react/hooks/useHoverReferenceInteraction.js
+index dc00a4054e867a5538fb997bb4734eff426ce233..4a2f1d6a16c0f210ccfd72ea476cbc1ff2ea0c1b 100644
+--- a/floating-ui-react/hooks/useHoverReferenceInteraction.js
++++ b/floating-ui-react/hooks/useHoverReferenceInteraction.js
+@@ -61,8 +61,8 @@ function useHoverReferenceInteraction(store, props = {}) {
+   const isClickLikeOpenEvent = (0, _useStableCallback.useStableCallback)(() => {
+     return (0, _useHoverShared.isClickLikeOpenEvent)(dataRef.current.openEvent?.type, instance.interactedInside);
+   });
+-  const checkShouldOpen = (0, _useStableCallback.useStableCallback)(() => {
+-    return shouldOpenRef.current?.() !== false;
++  const checkShouldOpen = (0, _useStableCallback.useStableCallback)(event => {
++    return shouldOpenRef.current?.(event) !== false;
+   });
+   const isOverInactiveTrigger = (0, _useStableCallback.useStableCallback)((currentDomReference, currentTarget, target) => {
+     const allTriggers = store.context.triggerElements;
+@@ -183,7 +183,7 @@ function useHoverReferenceInteraction(store, props = {}) {
+       // Open immediately when moving between triggers while open, or during
+       // a hover-driven close transition (including same-trigger re-entry).
+       if (shouldOpenImmediately) {
+-        if (checkShouldOpen()) {
++        if (checkShouldOpen(event)) {
+           store.setOpen(true, (0, _createBaseUIEventDetails.createChangeEventDetails)(_reasons.REASONS.triggerHover, event, triggerNode));
+         }
+         return;
+@@ -193,12 +193,12 @@ function useHoverReferenceInteraction(store, props = {}) {
+       }
+       if (openDelay) {
+         instance.openChangeTimeout.start(openDelay, () => {
+-          if (shouldOpen && checkShouldOpen()) {
++          if (shouldOpen && checkShouldOpen(event)) {
+             store.setOpen(true, (0, _createBaseUIEventDetails.createChangeEventDetails)(_reasons.REASONS.triggerHover, event, triggerNode));
+           }
+         });
+       } else if (shouldOpen) {
+-        if (checkShouldOpen()) {
++        if (checkShouldOpen(event)) {
+           store.setOpen(true, (0, _createBaseUIEventDetails.createChangeEventDetails)(_reasons.REASONS.triggerHover, event, triggerNode));
+         }
+       }
+@@ -311,7 +311,7 @@ function useHoverReferenceInteraction(store, props = {}) {
+             return;
+           }
+           const latestOpen = store.select('open');
+-          if (!instance.blockMouseMove && (!latestOpen || isOverInactive) && checkShouldOpen()) {
++          if (!instance.blockMouseMove && (!latestOpen || isOverInactive) && checkShouldOpen(nativeEvent)) {
+             store.setOpen(true, (0, _createBaseUIEventDetails.createChangeEventDetails)(_reasons.REASONS.triggerHover, nativeEvent, trigger));
+           }
+         }
+diff --git a/floating-ui-react/hooks/useHoverReferenceInteraction.mjs b/floating-ui-react/hooks/useHoverReferenceInteraction.mjs
+index 25d989e87d6f61b32abf6f7bc428553184d4856d..3b21937deefca56fc8b2be0e3040621aab80a3ec 100644
+--- a/floating-ui-react/hooks/useHoverReferenceInteraction.mjs
++++ b/floating-ui-react/hooks/useHoverReferenceInteraction.mjs
+@@ -55,8 +55,8 @@ export function useHoverReferenceInteraction(store, props = {}) {
+   const isClickLikeOpenEvent = useStableCallback(() => {
+     return isClickLikeOpenEventShared(dataRef.current.openEvent?.type, instance.interactedInside);
+   });
+-  const checkShouldOpen = useStableCallback(() => {
+-    return shouldOpenRef.current?.() !== false;
++  const checkShouldOpen = useStableCallback(event => {
++    return shouldOpenRef.current?.(event) !== false;
+   });
+   const isOverInactiveTrigger = useStableCallback((currentDomReference, currentTarget, target) => {
+     const allTriggers = store.context.triggerElements;
+@@ -177,7 +177,7 @@ export function useHoverReferenceInteraction(store, props = {}) {
+       // Open immediately when moving between triggers while open, or during
+       // a hover-driven close transition (including same-trigger re-entry).
+       if (shouldOpenImmediately) {
+-        if (checkShouldOpen()) {
++        if (checkShouldOpen(event)) {
+           store.setOpen(true, createChangeEventDetails(REASONS.triggerHover, event, triggerNode));
+         }
+         return;
+@@ -187,12 +187,12 @@ export function useHoverReferenceInteraction(store, props = {}) {
+       }
+       if (openDelay) {
+         instance.openChangeTimeout.start(openDelay, () => {
+-          if (shouldOpen && checkShouldOpen()) {
++          if (shouldOpen && checkShouldOpen(event)) {
+             store.setOpen(true, createChangeEventDetails(REASONS.triggerHover, event, triggerNode));
+           }
+         });
+       } else if (shouldOpen) {
+-        if (checkShouldOpen()) {
++        if (checkShouldOpen(event)) {
+           store.setOpen(true, createChangeEventDetails(REASONS.triggerHover, event, triggerNode));
+         }
+       }
+@@ -305,7 +305,7 @@ export function useHoverReferenceInteraction(store, props = {}) {
+             return;
+           }
+           const latestOpen = store.select('open');
+-          if (!instance.blockMouseMove && (!latestOpen || isOverInactive) && checkShouldOpen()) {
++          if (!instance.blockMouseMove && (!latestOpen || isOverInactive) && checkShouldOpen(nativeEvent)) {
+             store.setOpen(true, createChangeEventDetails(REASONS.triggerHover, nativeEvent, trigger));
+           }
+         }
+diff --git a/menu/submenu-trigger/MenuSubmenuTrigger.js b/menu/submenu-trigger/MenuSubmenuTrigger.js
+index 735ca99c29e60ec592f8e195302d5fc0cf14eacb..f47453c66b1e4406ec516ff3f320f96c92827c21 100644
+--- a/menu/submenu-trigger/MenuSubmenuTrigger.js
++++ b/menu/submenu-trigger/MenuSubmenuTrigger.js
+@@ -168,7 +168,9 @@ const MenuSubmenuTriggerPlain = /*#__PURE__*/React.forwardRef(function MenuSubme
+       open: delay,
+       close: closeDelay
+     },
+-    shouldOpen: delay > 0 ? () => parentMenuStore.select('allowMouseEnter') : undefined,
++    // A newly opened parent can appear beneath a stationary pointer.
++    // Zero delay still requires pointer movement before activating its submenu.
++    shouldOpen: event => parentMenuStore.select('allowMouseEnter') || delay === 0 && event.type === 'mousemove',
+     triggerElementRef,
+     externalTree: floatingTreeRoot,
+     isClosing: () => store.select('transitionStatus') === 'ending',
+diff --git a/menu/submenu-trigger/MenuSubmenuTrigger.mjs b/menu/submenu-trigger/MenuSubmenuTrigger.mjs
+index 7b5b5505db070d3741519245a5f804b42b20e323..c50d7ad8730fe3fb903ad4e8316e0c881a1eb72f 100644
+--- a/menu/submenu-trigger/MenuSubmenuTrigger.mjs
++++ b/menu/submenu-trigger/MenuSubmenuTrigger.mjs
+@@ -161,7 +161,9 @@ const MenuSubmenuTriggerPlain = /*#__PURE__*/React.forwardRef(function MenuSubme
+       open: delay,
+       close: closeDelay
+     },
+-    shouldOpen: delay > 0 ? () => parentMenuStore.select('allowMouseEnter') : undefined,
++    // A newly opened parent can appear beneath a stationary pointer.
++    // Zero delay still requires pointer movement before activating its submenu.
++    shouldOpen: event => parentMenuStore.select('allowMouseEnter') || delay === 0 && event.type === 'mousemove',
+     triggerElementRef,
+     externalTree: floatingTreeRoot,
+     isClosing: () => store.select('transitionStatus') === 'ending',
+diff --git a/preview-card/trigger/PreviewCardTrigger.js b/preview-card/trigger/PreviewCardTrigger.js
+index d22e1c4c6e275fd64df21514403d4c1d9e52214d..39b14241dc2c3561b8b91d890b1f3c27b3636c65 100644
+--- a/preview-card/trigger/PreviewCardTrigger.js
++++ b/preview-card/trigger/PreviewCardTrigger.js
+@@ -60,17 +60,18 @@ const PreviewCardTrigger = exports.PreviewCardTrigger = (0, _fastHooks.fastCompo
+     mouseOnly: true,
+     move: false,
+     handleClose: (0, _floatingUiReact.safePolygon)(),
++    // Open once the pointer rests on the trigger, as Tooltip does; movement restarts it.
++    restMs: delayWithDefault,
+     delay: () => ({
+-      open: delayWithDefault,
+       close: closeDelayWithDefault
+     }),
+     triggerElementRef,
+     isActiveTrigger: isTriggerActive,
+     isClosing: () => store.select('transitionStatus') === 'ending'
+   });
+-  const focusProps = (0, _floatingUiReact.useFocus)(floatingRootContext, {
+-    delay: delayWithDefault
+-  });
++  // Focus is a deliberate request: open at once, as Tooltip does. The delay
++  // is the pointer's rest time only.
++  const focusProps = (0, _floatingUiReact.useFocus)(floatingRootContext);
+   const state = {
+     open: isOpenedByThisTrigger
+   };
+diff --git a/preview-card/trigger/PreviewCardTrigger.mjs b/preview-card/trigger/PreviewCardTrigger.mjs
+index 2287f76c2a9c52f40af2f1176f7350b4f0c8d40b..d926b05704eff551df940968390332ec38ab2085 100644
+--- a/preview-card/trigger/PreviewCardTrigger.mjs
++++ b/preview-card/trigger/PreviewCardTrigger.mjs
+@@ -54,17 +54,18 @@ export const PreviewCardTrigger = fastComponentRef(function PreviewCardTrigger(c
+     mouseOnly: true,
+     move: false,
+     handleClose: safePolygon(),
++    // Open once the pointer rests on the trigger, as Tooltip does; movement restarts it.
++    restMs: delayWithDefault,
+     delay: () => ({
+-      open: delayWithDefault,
+       close: closeDelayWithDefault
+     }),
+     triggerElementRef,
+     isActiveTrigger: isTriggerActive,
+     isClosing: () => store.select('transitionStatus') === 'ending'
+   });
+-  const focusProps = useFocus(floatingRootContext, {
+-    delay: delayWithDefault
+-  });
++  // Focus is a deliberate request: open at once, as Tooltip does. The delay
++  // is the pointer's rest time only.
++  const focusProps = useFocus(floatingRootContext);
+   const state = {
+     open: isOpenedByThisTrigger
+   };

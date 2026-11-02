@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { finalizeEvent } from "nostr-tools";
-import { parseGitRead, GIT_READ_BYTES } from "../src/features/projects/git.ts";
+import { parseGitRead, GIT_READ_BYTES } from "../src/features/repos/git.ts";
 
 const TEXT_BYTES = 1024 * 1024;
 

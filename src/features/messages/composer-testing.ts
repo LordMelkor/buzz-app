@@ -1,4 +1,6 @@
 import { afterEach, beforeEach } from "vitest";
+import { readComposerDocument } from "./composer-document";
+import { type MentionDraft, mentionDraft } from "./mention-draft";
 
 /** jsdom has no layout/hit testing. Supply only the browser APIs ProseMirror
  * needs to edit; geometry and native selection remain browser-test contracts. */
@@ -37,5 +39,18 @@ export function composerDOMFixture() {
       if (descriptor) Object.defineProperty(target, name, descriptor);
       else Reflect.deleteProperty(target, name);
     });
+  });
+}
+
+/** A draft as the editor saves it, with the snapshot of its content: the
+ * recipients are tokens. A saved tag without one is a legacy follow-up. */
+export function typedDraft(draft: MentionDraft): MentionDraft {
+  const doc = readComposerDocument(
+    draft,
+    draft.recipients.map(({ start, end }) => ({ start, end })),
+  );
+  return mentionDraft({
+    ...draft,
+    document: { version: 1, content: doc.toJSON() },
   });
 }

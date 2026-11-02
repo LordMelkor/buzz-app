@@ -1,7 +1,7 @@
 {
   "id": "buzz.moderation",
-  "name": "Community admin",
+  "name": "Membership",
   "apiVersion": 1,
-  "description": "Manage community membership and invitations.",
-  "discovery": { "category": "people-and-communities" }
+  "description": "Invite people and manage their access and roles.",
+  "discovery": { "category": "people-and-communities", "tags": ["people"] }
 }

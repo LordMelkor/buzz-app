@@ -1,18 +1,20 @@
+import { pauseClock } from "./clock.mjs";
 import { test, expect } from "./source-fixture.mjs";
 import { fileURLToPath } from "node:url";
+
+const artworkPath = fileURLToPath(
+  new URL("../fixtures/design-system/assets/avatar.png", import.meta.url),
+);
 
 test("shared avatars defer offscreen artwork, omit the referrer and recover from failure", async ({
   page,
 }) => {
+  // Time flows normally until the spec pauses it around the same-source retry.
+  await page.clock.install();
   const requests = [];
   await page.route("https://images.example/avatar.png", async (route) => {
     requests.push(route.request().headers());
-    await route.fulfill({
-      path: fileURLToPath(
-        new URL("../fixtures/design-system/assets/avatar.png", import.meta.url),
-      ),
-      contentType: "image/png",
-    });
+    await route.fulfill({ path: artworkPath, contentType: "image/png" });
   });
   let sentinelRequests = 0;
   await page.route("https://images.example/sentinel.png", (route) => {
@@ -67,7 +69,11 @@ test("shared avatars defer offscreen artwork, omit the referrer and recover from
   const held = new Promise((resolve) => {
     release = resolve;
   });
+  let failureRequests = 0;
   await page.route("https://images.example/failure.png", async (route) => {
+    // The first request fails transiently; the same URL then succeeds.
+    if (++failureRequests > 1)
+      return route.fulfill({ path: artworkPath, contentType: "image/png" });
     await held;
     await route.abort();
   });
@@ -77,12 +83,20 @@ test("shared avatars defer offscreen artwork, omit the referrer and recover from
   await expect(avatar).toContainText("A");
   await expect(image).toHaveCSS("opacity", "0");
   expect(await box()).toEqual(original);
+  await pauseClock(page, 1_000);
   release();
   await expect(avatar).toContainText("A");
   await expect(avatar.locator("img")).toHaveCount(0);
-  await page.evaluate(() =>
-    window.avatarFixture.setArtwork("https://images.example/avatar.png"),
-  );
+  expect(failureRequests).toBe(1);
+  // A mounted avatar recovers without a new source or remount. The retry timer
+  // is armed after the failed commit, so advance until it fires; the exact
+  // schedule is covered by Avatar.lifecycle.test.tsx.
+  await expect
+    .poll(async () => {
+      await page.clock.runFor(1_000);
+      return failureRequests;
+    })
+    .toBe(2);
   await expect
     .poll(() => image.evaluate((el) => el.naturalWidth))
     .toBeGreaterThan(0);

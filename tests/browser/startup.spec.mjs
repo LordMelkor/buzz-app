@@ -392,7 +392,7 @@ test("launch waits for the initial sidebar and message history before revealing 
       "true",
     );
     await expect(
-      page.locator('[aria-label="Channel sidebar"][data-buzz-launch-pending]'),
+      page.locator('[aria-label="Sidebar"][data-buzz-launch-pending]'),
     ).toBeAttached();
     await page.clock.runFor(1900);
     await expect(launch).toBeVisible();
@@ -400,7 +400,7 @@ test("launch waits for the initial sidebar and message history before revealing 
     app.relay.releaseUnread();
     await expect.poll(() => requested).toBe(true);
     await expect(
-      page.locator('[aria-label="Channel sidebar"][data-buzz-launch-pending]'),
+      page.locator('[aria-label="Sidebar"][data-buzz-launch-pending]'),
     ).toHaveCount(0);
     const composer = page.locator(
       '#root [role="textbox"][contenteditable="true"]',
@@ -666,7 +666,7 @@ test.describe("pending startup navigation", () => {
       gate.release();
       await expect(page.locator("#buzz-launch")).toHaveCount(0);
       await expect(
-        page.getByRole("heading", { name: "This destination couldn’t open" }),
+        page.getByRole("heading", { name: "This page isn’t available" }),
       ).toBeVisible();
     } finally {
       gate.release();

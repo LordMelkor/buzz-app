@@ -69,7 +69,8 @@ export function createContributions<T extends { id: string }>(root: Context) {
         listeners.delete(listener);
       };
     },
-    register(ctx: Context, value: T) {
+    /** Returns a function that removes it before its scope ends. */
+    register(ctx: Context, value: T): () => void {
       const owner = ctx.pluginOwner;
       if (!owner)
         throw new Error(
@@ -84,7 +85,7 @@ export function createContributions<T extends { id: string }>(root: Context) {
         pluginId: owner.id,
         revision: owner.revision,
       });
-      ctx.effect(() => {
+      const remove = ctx.effect(() => {
         entries = [...entries, entry];
         publish();
         return () => {
@@ -92,6 +93,7 @@ export function createContributions<T extends { id: string }>(root: Context) {
           publish();
         };
       }, key);
+      return () => void remove();
     },
   };
 }

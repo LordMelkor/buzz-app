@@ -1,4 +1,5 @@
-import { openPage } from "./navigation.mjs";
+import { openPage, openSettings, settingsDialog } from "./navigation.mjs";
+import { hoverMessage } from "./message-actions.mjs";
 import { upper, settle } from "./timeline.mjs";
 import { test as base, expect } from "./playwright-test.mjs";
 import { preview } from "./vite-server.mjs";
@@ -18,7 +19,8 @@ const test = base.extend({
   pairingFixture: [false, { scope: "worker" }],
   localAgentActivity: [false, { scope: "worker" }],
   compiledApp: [buildApp, { scope: "worker" }],
-  app: async ({ compiledApp, page, context }, use) => {
+  directorySize: [35, { option: true }],
+  app: async ({ compiledApp, page, context, directorySize }, use) => {
     const key = generateSecretKey(),
       relay = generateSecretKey();
     const viewer = getPublicKey(key),
@@ -33,7 +35,9 @@ const test = base.extend({
         },
         secret,
       );
-    const secrets = Array.from({ length: 35 }, () => generateSecretKey());
+    const secrets = Array.from({ length: directorySize }, () =>
+      generateSecretKey(),
+    );
     const people = secrets.map((secret, i) => {
       return sign(
         secret,
@@ -64,6 +68,10 @@ const test = base.extend({
       releaseDirectory = () => {};
     let backgroundReady = Promise.resolve(),
       releaseBackground = () => {};
+    let backgroundPage = 1;
+    let historyReady = Promise.resolve(),
+      releaseHistory = () => {},
+      failHistory = false;
     const publish = async (event) => {
       // Only hold messages: presence/read-state writes must not replace the gate.
       if (hold && event.kind === 9)
@@ -133,11 +141,15 @@ const test = base.extend({
               },
             ];
           reads.push(...body);
+          if (body.some((filter) => filter.top_level)) await historyReady;
           if (body.some((filter) => filter.kinds?.includes(0) && filter.page))
             await directoryReady;
           if (
             body.some(
-              (filter) => filter.kinds?.includes(0) && filter.limit === 30,
+              (filter) =>
+                filter.kinds?.includes(0) &&
+                filter.limit === 30 &&
+                filter.page >= backgroundPage,
             )
           )
             await backgroundReady;
@@ -168,7 +180,7 @@ const test = base.extend({
               );
             else if (filter.limit) rows = rows.slice(0, filter.limit);
             for (const row of rows) result.set(row.id, row);
-            if (filter.top_level) {
+            if (filter.top_level && !failHistory) {
               const id = filter["#h"][0];
               const bounds = sign(
                 relay,
@@ -231,6 +243,16 @@ const test = base.extend({
         commands,
         publications: socket.publications,
         errors,
+        failHistory: () => {
+          failHistory = true;
+        },
+        holdHistory: () => {
+          failHistory = false;
+          historyReady = new Promise((resolve) => {
+            releaseHistory = resolve;
+          });
+        },
+        showHistory: () => releaseHistory(),
         holdPeople: () => {
           directoryReady = new Promise((resolve) => {
             releaseDirectory = resolve;
@@ -238,7 +260,7 @@ const test = base.extend({
         },
         showPeople: () => releaseDirectory(),
         // A shared stream where Avery has spoken, so the profile is reachable.
-        seedChannel: (id, text) => {
+        seedChannel: (id, text, channelType = "stream") => {
           const avery = getPublicKey(secrets[0]);
           events.push(
             sign(
@@ -246,9 +268,9 @@ const test = base.extend({
               39000,
               [
                 ["d", id],
-                ["t", "stream"],
+                ["t", channelType],
               ],
-              JSON.stringify({ name: "general" }),
+              JSON.stringify({ name: "general", channel_type: channelType }),
             ),
             sign(relay, 39002, [
               ["d", id],
@@ -258,7 +280,8 @@ const test = base.extend({
             sign(secrets[0], 9, [["h", id]], text),
           );
         },
-        holdBackground: () => {
+        holdBackground: (page = 1) => {
+          backgroundPage = page;
           backgroundReady = new Promise((resolve) => {
             releaseBackground = resolve;
           });
@@ -280,6 +303,7 @@ const test = base.extend({
     } finally {
       releaseDirectory();
       releaseBackground();
+      releaseHistory();
       release();
       server.httpServer.closeAllConnections();
       await new Promise((resolve) => server.httpServer.close(resolve));
@@ -298,7 +322,7 @@ async function startNewMessage(page) {
 
 async function open(page, app) {
   await page.goto(app.origin);
-  await openPage(page, "Projects");
+  await openPage(page, "Workflows");
   await startNewMessage(page);
 }
 
@@ -358,7 +382,10 @@ test("empty compose, keyboard selection, pagination, removal effects, retry, the
     .toBe(true);
   // Background discovery starts without scrolling and preserves the preview's order.
   app.showBackground();
-  await expect(page.getByRole("option")).toHaveCount(34);
+  await expect(page.getByRole("option").first()).toHaveAttribute(
+    "aria-setsize",
+    "34",
+  );
   await expect(
     page.getByRole("option", { name: "Build Agent, Agent", exact: true }),
   ).toHaveCount(0);
@@ -407,27 +434,53 @@ test("empty compose, keyboard selection, pagination, removal effects, retry, the
   }
   await expect(page.locator("[data-message-id]")).toHaveCount(0);
   await page.screenshot({ path: info.outputPath("new-message-empty.png") });
-  const loadedPeople = await page.getByRole("option").allTextContents();
+  const loadedPeople = await page
+    .getByRole("option")
+    .evaluateAll((rows) =>
+      Object.fromEntries(
+        rows.map((row) => [row.getAttribute("aria-posinset"), row.textContent]),
+      ),
+    );
   const directoryReads = () =>
     app.reads.filter(
       (filter) => filter.kinds?.includes(0) && filter.page && !filter.search,
     ).length;
   const beforeReopen = directoryReads();
-  await openPage(page, "Projects");
+  await openPage(page, "Workflows");
   await openPage(page, "Messages");
   await startNewMessage(page);
-  await expect(page.getByRole("option")).toHaveCount(34);
-  expect(await page.getByRole("option").allTextContents()).toEqual(
-    loadedPeople,
+  await expect(page.getByRole("option").first()).toHaveAttribute(
+    "aria-setsize",
+    "34",
   );
+  // Overscan can mount a different range after reopening; each retained
+  // position must still represent the same person.
+  const reopenedPeople = await page
+    .getByRole("option")
+    .evaluateAll((rows) =>
+      Object.fromEntries(
+        rows.map((row) => [row.getAttribute("aria-posinset"), row.textContent]),
+      ),
+    );
+  expect(
+    Object.keys(reopenedPeople).some((position) => position in loadedPeople),
+  ).toBe(true);
+  for (const [position, person] of Object.entries(loadedPeople)) {
+    if (position in reopenedPeople)
+      expect(reopenedPeople[position]).toBe(person);
+  }
   expect(directoryReads()).toBe(beforeReopen);
+  // Virtualized offscreen choices mount when the scrollport reveals them.
+  await picker.evaluate((list) => {
+    list.scrollTop = list.scrollHeight;
+  });
   await expect(
     page.getByRole("option", { name: "Person 35", exact: true }),
   ).toBeAttached();
   // A partly visible row under the pointer must not snap fully into view.
   const partial = page.getByRole("option", { name: "Person 34", exact: true });
   const scrollTop = await partial.evaluate((row) => {
-    const list = row.parentElement;
+    const list = row.closest('[role="listbox"]');
     list.scrollTop +=
       row.getBoundingClientRect().bottom -
       list.getBoundingClientRect().bottom -
@@ -446,6 +499,8 @@ test("empty compose, keyboard selection, pagination, removal effects, retry, the
     clientY: 20,
   });
   await expect(partial).toHaveAttribute("aria-selected", "true");
+  // Scrubbing must paint the active row immediately, without a hover fade.
+  await expect(partial).toHaveCSS("transition-duration", "0s");
   await expect
     .poll(() => picker.evaluate((element) => element.scrollTop))
     .toBe(scrollTop);
@@ -458,7 +513,7 @@ test("empty compose, keyboard selection, pagination, removal effects, retry, the
       last.evaluate(
         (row) =>
           row.getBoundingClientRect().bottom <=
-          row.parentElement.getBoundingClientRect().bottom + 1,
+          row.closest('[role="listbox"]').getBoundingClientRect().bottom + 1,
       ),
     )
     .toBe(true);
@@ -467,15 +522,18 @@ test("empty compose, keyboard selection, pagination, removal effects, retry, the
   await expect(page.getByRole("option")).toHaveCount(7);
   await expect
     .poll(() => picker.evaluate((element) => element.clientHeight))
-    .toBe(280);
+    .toBe(336);
   await expect
     .poll(() => picker.evaluate((element) => element.scrollHeight))
-    .toBe(280);
+    .toBe(336);
   await page.screenshot({
     path: info.outputPath("new-message-short-results.png"),
   });
   await input.fill("Person");
-  await expect(page.getByRole("option")).toHaveCount(33);
+  await expect(page.getByRole("option").first()).toHaveAttribute(
+    "aria-setsize",
+    "33",
+  );
   await expectStablePicker();
   await input.fill("Nobody matches this name");
   await expect(
@@ -493,7 +551,7 @@ test("empty compose, keyboard selection, pagination, removal effects, retry, the
   ).toBeVisible();
   await expect
     .poll(() => picker.evaluate((element) => element.clientHeight))
-    .toBe(40);
+    .toBe(48);
   await page.screenshot({
     path: info.outputPath("new-message-one-result.png"),
   });
@@ -570,11 +628,15 @@ test("empty compose, keyboard selection, pagination, removal effects, retry, the
     await removal.evaluate((observer) => observer.disconnect());
     await removal.dispose();
   }
+  await input.fill("Avery");
   await page.getByRole("option", { name: "Avery Chen", exact: true }).click();
   const composer = page.getByRole("textbox", {
     name: "Message Avery Chen",
     exact: true,
   });
+  await input.press("Tab");
+  await expect(composer).toBeFocused();
+  await expect(picker).toHaveCount(0);
   // Both real extension paths use the selected roster before any DM exists.
   await page
     .getByRole("button", { name: "Mention a member", exact: true })
@@ -622,7 +684,7 @@ test("empty compose, keyboard selection, pagination, removal effects, retry, the
     page.getByRole("region", { name: "New message", exact: true }),
   ).toBeVisible();
   const sidebarDm = page
-    .getByRole("complementary", { name: "Channel sidebar" })
+    .getByRole("complementary", { name: "Sidebar", exact: true })
     .getByRole("button", { name: "Avery Chen", exact: true });
   await expect(sidebarDm).toHaveCount(0);
   const firstSend = app.publications.find((event) => event.kind === 9);
@@ -655,11 +717,25 @@ test("empty compose, keyboard selection, pagination, removal effects, retry, the
   // Give this DM a real above-bottom reading position. A short timeline masks
   // a lost setSent -> select handoff when New message resolves the selected DM.
   const dmInput = page.getByRole("textbox", { name: "Message #Avery Chen" });
-  await dmInput.fill(
-    Array.from({ length: 60 }, (_, i) => `Reading paragraph ${i + 1}`).join(
-      "\n\n",
-    ),
-  );
+  const readingText = Array.from(
+    { length: 40 },
+    (_, i) => `Reading paragraph ${i + 1}`,
+  ).join("\n\n");
+  // Seed the long reading history through the editor's clipboard path. Linux
+  // WebKit can insert this text but strand fill()'s Page.insertText response.
+  await dmInput.click();
+  await dmInput.evaluate((element, text) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData("text/plain", text);
+    element.dispatchEvent(
+      new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData,
+      }),
+    );
+  }, readingText);
+  await expect(dmInput).toHaveJSProperty("value", readingText);
   await dmInput.press("Enter");
   await expect
     .poll(() => app.publications.filter((event) => event.kind === 9).length)
@@ -711,7 +787,10 @@ test("profile Message opens a fresh DM and restores a hidden one", async ({
   app.seedChannel("22222222-2222-4222-8222-222222222222", "Hello from Avery");
   await page.goto(app.origin);
   await openPage(page, "Messages");
-  const sidebar = page.getByRole("complementary", { name: "Channel sidebar" });
+  const sidebar = page.getByRole("complementary", {
+    name: "Sidebar",
+    exact: true,
+  });
   const general = sidebar.locator(
     '[data-channel-id="22222222-2222-4222-8222-222222222222"]',
   );
@@ -743,7 +822,7 @@ test("profile Message opens a fresh DM and restores a hidden one", async ({
   await sidebarDm.click({ button: "right" });
   await page
     .getByRole("menu", { name: "Actions for Avery Chen" })
-    .getByRole("menuitem", { name: "Remove from Multiplayer", exact: true })
+    .getByRole("menuitem", { name: "Remove from Team", exact: true })
     .click();
   await expect(sidebarDm).toHaveCount(0);
   await page.reload();
@@ -757,4 +836,224 @@ test("profile Message opens a fresh DM and restores a hidden one", async ({
   await expect(sidebarDm).toBeVisible();
   expect(app.commands).toHaveLength(2);
   expect(app.errors.unexplained()).toEqual([]);
+});
+
+test("a send finishing behind Settings keeps Settings and its unsaved edit", async ({
+  page,
+  app,
+}) => {
+  await open(page, app);
+  await page.getByRole("option", { name: "Avery Chen", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "Message Avery Chen", exact: true })
+    .fill("Sent while Settings is open");
+  app.holdDelivery();
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect
+    .poll(() => app.publications.filter((event) => event.kind === 9).length)
+    .toBe(1);
+  await openSettings(page);
+  const name = settingsDialog(page).getByRole("textbox", {
+    name: "Display name",
+    exact: true,
+  });
+  await name.fill("Unsaved name");
+  app.confirm();
+  // The new DM joins the retained sidebar behind the modal without leaving it.
+  await expect(
+    page.locator('[aria-label="Sidebar"] button', {
+      hasText: "Avery Chen",
+    }),
+  ).toHaveCount(1);
+  // The send has finished once its status clears behind the modal.
+  await expect(page.getByText("Sending message…")).toHaveCount(0);
+  expect(decodeURIComponent(new URL(page.url()).hash)).toContain(
+    '"kind":"settings"',
+  );
+  await expect(settingsDialog(page)).toBeVisible();
+  await expect(name).toHaveValue("Unsaved name");
+  // The edit is still unsaved, so closing asks before discarding it.
+  await settingsDialog(page)
+    .getByRole("button", { name: "Close Settings", exact: true })
+    .click();
+  await page
+    .getByRole("alertdialog", { name: "Discard changes?" })
+    .getByRole("button", { name: "Discard changes", exact: true })
+    .click();
+  await expect(settingsDialog(page)).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("complementary", { name: "Sidebar", exact: true })
+      .getByRole("button", { name: "Avery Chen", exact: true }),
+  ).toBeVisible();
+  expect(app.errors.unexplained()).toEqual([]);
+});
+
+// Browser-only contract: the inline reader's thread action reaches the actual
+// host navigation and mounts its reply editor, preserving the selected target.
+// Recovery also checks native button focus and the handoff to the real editor.
+test("existing DM previews inline and opens its exact thread", async ({
+  page,
+  app,
+}) => {
+  const id = "22222222-2222-4222-8222-222222222222";
+  app.seedChannel(id, "Existing DM history", "dm");
+  app.failHistory();
+  await open(page, app);
+  await page.getByRole("option", { name: "Avery Chen", exact: true }).click();
+  const body = page.locator("[data-new-message-body]");
+  const retry = body.getByRole("button", { name: "Retry messages" });
+  await expect(retry).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "Message recipients" })
+    .press("Escape");
+  const row = body
+    .locator("[data-message-id]")
+    .filter({ hasText: "Existing DM history" });
+  const composer = page.getByRole("textbox", {
+    name: "Message Avery Chen",
+    exact: true,
+  });
+  await composer.fill("Keep this draft");
+  app.holdHistory();
+  const historyReads = () =>
+    app.reads.filter((filter) => filter.top_level).length;
+  const beforeRetry = historyReads();
+  try {
+    await retry.focus();
+    await retry.press("Enter");
+    await expect.poll(historyReads).toBeGreaterThan(beforeRetry);
+    await expect(retry).toHaveAttribute("aria-busy", "true");
+    await expect(retry).toBeFocused();
+  } finally {
+    app.showHistory();
+  }
+  await expect(
+    body.getByText("Existing DM history", { exact: true }),
+  ).toBeVisible();
+  await expect(composer).toBeFocused();
+  const messageId = await row.getAttribute("data-message-id");
+  const author = row.getByRole("button", { name: "View Avery Chen profile" });
+  await author.click();
+  const profile = page.getByRole("dialog", { name: "Profile", exact: true });
+  await expect(profile).toBeVisible();
+  await profile.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(author).toBeFocused();
+  await expect(composer).toHaveText("Keep this draft");
+  await hoverMessage(row);
+  await row.getByRole("button", { name: "Reply", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: /reply/i })).toBeVisible();
+  await expect(page.getByRole("region", { name: "New message" })).toHaveCount(
+    0,
+  );
+  await expect
+    .poll(() => decodeURIComponent(new URL(page.url()).hash))
+    .toContain(`"messageId":"${messageId}"`);
+  await expect
+    .poll(() => decodeURIComponent(new URL(page.url()).hash))
+    .toContain(`"threadRootId":"${messageId}"`);
+  expect(app.commands).toHaveLength(0);
+  expect(app.publications.filter((event) => event.kind === 9)).toHaveLength(0);
+  expect(app.errors.unexplained()).toEqual([]);
+});
+
+test.describe("large recipient directory", () => {
+  test.use({ directorySize: 1000 });
+
+  // Browser-only: native scroll offset and the visible row's geometry must
+  // survive the page that crosses the former 100-result rendering threshold.
+  test("paging past 100 preserves the mounted row and scroll position", async ({
+    page,
+    app,
+  }) => {
+    app.holdBackground(4);
+    await open(page, app);
+    const options = page.getByRole("option");
+    await expect(options.first()).toHaveAttribute("aria-setsize", "88");
+    await expect
+      .poll(() =>
+        app.reads.some(
+          (filter) =>
+            filter.kinds?.includes(0) &&
+            filter.limit === 30 &&
+            filter.page === 4,
+        ),
+      )
+      .toBe(true);
+    const picker = page.getByRole("listbox", { name: "People" });
+    await picker.evaluate((list) => {
+      list.scrollTop = 600;
+    });
+    await expect
+      .poll(() => picker.evaluate((list) => list.scrollTop))
+      .toBe(600);
+    const visiblePosition = () =>
+      picker.evaluate((list) => {
+        const top = list.getBoundingClientRect().top;
+        return [...list.querySelectorAll('[role="option"]')]
+          .find((row) => row.getBoundingClientRect().top >= top)
+          ?.getAttribute("aria-posinset");
+      });
+    await expect.poll(visiblePosition).toBeTruthy();
+    const position = await visiblePosition();
+    const anchor = page.locator(`[role="option"][aria-posinset="${position}"]`);
+    const node = await anchor.elementHandle();
+    const top = await anchor.evaluate((row) => row.getBoundingClientRect().top);
+    app.showBackground();
+    await expect(options.first()).toHaveAttribute("aria-setsize", "999");
+    await expect(
+      page.getByRole("status", { name: "Loading people" }),
+    ).toHaveCount(0);
+    expect(await node.evaluate((row) => row.isConnected)).toBe(true);
+    expect(await picker.evaluate((list) => list.scrollTop)).toBe(600);
+    expect(
+      await anchor.evaluate((row) => row.getBoundingClientRect().top),
+    ).toBe(top);
+  });
+
+  test("reopens a bounded list and reaches offscreen recipients by keyboard and search", async ({
+    page,
+    app,
+  }) => {
+    await open(page, app);
+    const options = page.getByRole("option");
+    await expect(options.first()).toHaveAttribute("aria-setsize", "999");
+    await expect(
+      page.getByRole("status", { name: "Loading people" }),
+    ).toHaveCount(0);
+    await openPage(page, "Workflows");
+    await startNewMessage(page);
+    const input = page.getByRole("combobox", { name: "Message recipients" });
+    await expect(input).toBeFocused();
+    // Cached discovery must not mount a thousand avatars before the pane paints.
+    await expect(options.first()).toBeVisible();
+    expect(await options.count()).toBeLessThan(100);
+    await input.press("ArrowUp");
+    const last = page.locator('[role="option"][aria-posinset="999"]');
+    const lastName = await last.getAttribute("aria-label");
+    await expect(last).toHaveAttribute("aria-selected", "true");
+    await expect
+      .poll(() =>
+        last.evaluate((row) => {
+          const list = row.closest('[role="listbox"]');
+          return (
+            row.getBoundingClientRect().bottom <=
+            list.getBoundingClientRect().bottom + 1
+          );
+        }),
+      )
+      .toBe(true);
+    await input.press("Enter");
+    await expect(
+      page.getByRole("button", { name: `Remove ${lastName}`, exact: true }),
+    ).toBeVisible();
+    await input.fill("Person 500");
+    await expect(
+      page.getByRole("option", { name: "Person 500", exact: true }),
+    ).toBeVisible();
+    await input.press("Enter");
+    await expect(
+      page.getByRole("button", { name: "Remove Person 500", exact: true }),
+    ).toBeVisible();
+  });
 });

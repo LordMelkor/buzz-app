@@ -5,23 +5,19 @@ import { useComposerSent } from "./useComposerSent";
 
 afterEach(cleanup);
 
-it("keeps onSend stable across parent renders and selects only for a requested session message", () => {
+it("keeps onSend stable across parent renders and records the sent message", () => {
   const setSent = vi.fn();
-  const select = vi.fn();
   const view = renderHook(
-    ({ channelId, selectAfterSend }) =>
-      useComposerSent(channelId, selectAfterSend, setSent, select),
-    { initialProps: { channelId: "a", selectAfterSend: false } },
+    ({ channelId }) => useComposerSent(channelId, setSent),
+    { initialProps: { channelId: "a" } },
   );
   const initial = view.result.current;
-  view.rerender({ channelId: "a", selectAfterSend: false });
+  view.rerender({ channelId: "a" });
   expect(view.result.current).toBe(initial);
   act(() => view.result.current("one"));
   expect(setSent).toHaveBeenCalledWith({ channelId: "a", id: "one" });
-  expect(select).not.toHaveBeenCalled();
-  view.rerender({ channelId: "b", selectAfterSend: true });
+  view.rerender({ channelId: "b" });
   expect(view.result.current).not.toBe(initial);
   act(() => view.result.current("two"));
   expect(setSent).toHaveBeenLastCalledWith({ channelId: "b", id: "two" });
-  expect(select).toHaveBeenCalledExactlyOnceWith("b");
 });

@@ -102,7 +102,25 @@ export function validateUploadResult(
     sha256: v.sha256,
   });
 }
-function attachmentMarkdown(name: string, result: UploadedAttachment) {
+/** A file's name as relay filename metadata takes it: a basename capped at
+ * 255 UTF-8 bytes. */
+export function attachmentName(file: string) {
+  let name = "";
+  let bytes = 0;
+  for (const char of file) {
+    const clean =
+      !safeAttachmentName(char) || char === "/" || char === "\\" ? " " : char;
+    bytes += new TextEncoder().encode(clean).length;
+    if (bytes > 255) break;
+    name += clean;
+  }
+  return name.trim() || "File";
+}
+/** An uploaded file's Markdown link: inline media embeds, others link. */
+export function attachmentMarkdown(
+  name: string,
+  result: Pick<UploadedAttachment, "url" | "type">,
+) {
   const label = Array.from(name, (char) =>
     char.charCodeAt(0) < 32 ? " " : char,
   )
@@ -296,17 +314,7 @@ export function attachmentMessage(
     if (!origin || typeof item.name !== "string")
       throw new UploadError("invalid");
     const result = validateUploadResult(item, origin, item.size, item.name);
-    // Relay filename metadata is a basename capped at 255 UTF-8 bytes.
-    let name = "";
-    let bytes = 0;
-    for (const char of item.name) {
-      const clean =
-        !safeAttachmentName(char) || char === "/" || char === "\\" ? " " : char;
-      bytes += new TextEncoder().encode(clean).length;
-      if (bytes > 255) break;
-      name += clean;
-    }
-    name = name.trim() || "File";
+    const name = attachmentName(item.name);
     tags.push([
       "imeta",
       `url ${result.url}`,

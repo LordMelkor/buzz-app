@@ -14,9 +14,6 @@
   --github-merged-bg: var(--surface-categorical-purple);
   --github-additions-text: var(--text-success);
   --github-deletions-text: var(--text-danger);
-  --github-review-approved: var(--text-success);
-  --github-review-commented: var(--text-standard);
-  --github-review-changes-requested: var(--text-danger);
   padding: var(--space-5);
   overflow-y: auto;
   min-height: 0;
@@ -36,6 +33,10 @@
 }
 .identity > div {
   min-width: 0;
+}
+.identityAction {
+  flex-shrink: 0;
+  margin-inline-start: auto;
 }
 .repository {
   font-size: var(--text-label);
@@ -284,339 +285,7 @@
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-standard);
 }
-
-.checksCard {
-  border: 1px solid var(--border-standard);
-  border-radius: var(--radius-control);
-}
-.checkSummary {
-  display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr);
-  align-items: center;
-  gap: var(--space-1) var(--space-3);
-  padding: var(--space-4);
-}
-.checkSummary > svg {
-  width: 2rem;
-  height: 2rem;
-  grid-row: 1 / span 2;
-  color: var(--text-subtle);
-}
-.checkSummaryLabel {
-  font-weight: var(--text-label--font-weight);
-  overflow-wrap: anywhere;
-}
-.checkSummary:where([data-check-state="success"]) > svg {
-  color: var(--github-checks-success);
-}
-.checkSummary:where([data-check-state="failure"]) > svg {
-  color: var(--github-checks-failure);
-}
-.checkSummary:where([data-check-state="pending"]) > svg {
-  color: var(--github-checks-pending);
-}
-:where(.checkSummary) .checksDescription {
-  margin: 0;
-}
-.checkSegment {
-  fill: none;
-  stroke: var(--check-color, var(--border-standard));
-  stroke-width: 3;
-}
-
-.pullTabs {
-  padding-block: var(--space-5);
-}
-
-.checksDescription {
-  color: var(--text-subtle);
-  margin: var(--space-1) 0 0;
-  overflow-wrap: anywhere;
-}
-.checksRetry {
-  padding: 0 var(--space-4) var(--space-3);
-}
-.checkGroups {
-  border-top: 1px solid var(--border-standard);
-  padding: var(--space-2) var(--space-4);
-}
-.checkList {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.checkRow {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-3) 0;
-}
-.checkRow + .checkRow {
-  border-top: 1px solid var(--border-standard);
-}
-.checkRow > svg {
-  flex-shrink: 0;
-  margin-top: var(--space-half);
-  color: var(--check-color, var(--text-subtle));
-}
-.checkActions {
-  flex-shrink: 0;
-}
-@media (hover: hover) and (pointer: fine) {
-  .checkActions {
-    opacity: 0;
-    pointer-events: none;
-  }
-  .checkRow:hover .checkActions,
-  .checkRow:focus-within .checkActions,
-  .checkActions[data-menu-open] {
-    opacity: 1;
-    pointer-events: auto;
-  }
-}
-.checkContent {
-  flex: 1;
-  min-width: 0;
-}
-.checkHeading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-1) var(--space-3);
-  overflow-wrap: anywhere;
-}
-.checkHeading > :where(:first-child) {
-  min-width: 0;
-}
-.checkName {
-  --link-text: var(--text-standard);
-  --link-hover: transparent;
-  text-underline-offset: 2px;
-}
-@media (hover: hover) and (pointer: fine) {
-  .checkName:hover {
-    text-decoration: underline;
-  }
-}
-.checkResult {
-  color: var(--text-subtle);
-}
-:is(.checkRow, .checkSegment):is(
-  [data-check-category="failing"],
-  [data-check-category="cancelled"]
-) {
-  --check-color: var(--github-checks-failure);
-}
-:is(.checkRow, .checkSegment)[data-check-category="pending"] {
-  --check-color: var(--github-checks-pending);
-}
-:is(.checkRow, .checkSegment)[data-check-category="successful"] {
-  --check-color: var(--github-checks-success);
-}
-.conversation {
-  container-type: inline-size;
-  margin-top: var(--space-5);
-}
-.conversationMessage {
-  display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr);
-  gap: var(--space-3);
-  align-items: start;
-  padding: var(--space-2) 0;
-}
-.conversationMessage[data-bodyless] {
-  align-items: center;
-}
-.messageMarker {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  justify-content: center;
-  width: 2rem;
-}
-.eventIcon {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: var(--radius-pill);
-  background: var(--surface-panel);
-  color: var(--text-subtle);
-}
-.eventIcon[data-review-state] {
-  color: var(--github-review-commented);
-}
-.eventIcon[data-review-state="DISMISSED"] {
-  color: var(--text-subtle);
-}
-.eventIcon[data-review-state="APPROVED"] {
-  color: var(--github-review-approved);
-}
-.eventIcon[data-review-state="CHANGES_REQUESTED"] {
-  color: var(--github-review-changes-requested);
-}
-.messageContent {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  min-width: 0;
-}
-/* The linked comment keeps GitHub's anchored wash while its link is current.
-   Like the channel feed's return wash, it paints the whole row and extends
-   into the timeline's inset without changing the row's box; the focus ring
-   draws on the same box, and the scroll margin keeps both clear of the
-   scroller edge. */
-.conversationMessage[data-anchored] {
-  position: relative;
-  isolation: isolate;
-  scroll-margin-block: var(--space-3);
-}
-.conversationMessage[data-anchored]::before {
-  content: "";
-  position: absolute;
-  inset-block: 0;
-  inset-inline: calc(-1 * var(--space-2));
-  z-index: -1;
-  border-radius: var(--radius-row);
-  background: var(--affordance-accent);
-  pointer-events: none;
-}
-html[data-keyboard-navigation]
-  .conversationMessage[data-anchored]:focus-visible::before {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
-}
-.messageHeader {
-  position: relative;
-  grid-area: 1 / 1;
-  min-width: 0;
-}
-.messageMeasure {
-  position: absolute;
-  inset: 0;
-  visibility: hidden;
-  overflow: hidden;
-  pointer-events: none;
-}
-.messageMeasureText {
-  padding-right: var(--space-6);
-}
-.messageMeasureText > .body > :first-child {
-  margin-top: 0;
-}
-.messageMetadata {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-1) var(--space-2);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption--line-height);
-  letter-spacing: var(--text-caption--letter-spacing);
-  overflow-wrap: anywhere;
-  padding-right: var(--space-6);
-  pointer-events: none;
-}
-.messageMetadata time {
-  color: var(--text-subtle);
-}
-.messageAuthor {
-  position: relative;
-  z-index: 1;
-  pointer-events: auto;
-  font-weight: var(--text-label--font-weight);
-  overflow-wrap: anywhere;
-  font-size: var(--text-body-sm);
-  line-height: var(--text-body-sm--line-height);
-  letter-spacing: var(--text-body-sm--letter-spacing);
-}
-.messageTime {
-  font-size: var(--text-caption);
-  line-height: var(--text-caption--line-height);
-  letter-spacing: var(--text-caption--letter-spacing);
-  margin-left: auto;
-  color: var(--text-subtle);
-  text-align: right;
-}
-.messageTrigger {
-  position: absolute;
-  inset: 0;
-  height: 100%;
-  padding: 0;
-}
-.messageTrigger > svg {
-  position: absolute;
-  top: var(--space-1);
-  /* Center the 14px caret over the 20px action’s footprint. */
-  right: calc((var(--space-5) - 0.875rem) / 2);
-  color: var(--text-subtle);
-}
-.messageLabel {
-  color: var(--text-subtle);
-}
-.previewText {
-  display: block;
-  padding-top: var(--space-1);
-  padding-right: var(--space-6);
-  pointer-events: none;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.commentActions {
-  position: relative;
-  z-index: 1;
-  width: fit-content;
-  margin-top: var(--space-2);
-}
-.commentActions[data-menu-action] {
-  grid-area: 1 / 1;
-  align-self: end;
-  justify-self: end;
-  margin-top: 0;
-}
-.conversationMessage[data-single-line] .commentActions[data-menu-action] {
-  align-self: start;
-  top: calc(var(--space-1) - (var(--space-5) - 0.875rem) / 2);
-}
-.conversationMessage[data-bodyless] .commentActions {
-  align-self: center;
-}
-@media (hover: hover) and (pointer: fine) {
-  .commentActions[data-menu-action] {
-    opacity: 0;
-    pointer-events: none;
-  }
-  .conversationMessage:hover .commentActions,
-  .conversationMessage:focus-within .commentActions,
-  .commentActions[data-menu-open] {
-    opacity: 1;
-    pointer-events: auto;
-  }
-}
-
-.thumbnails {
-  margin-top: var(--space-2);
-  display: flex;
-  gap: var(--space-1);
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  min-width: 0;
-}
-.thumbnail {
-  display: block;
-  position: relative;
-  width: 2.5rem;
-  height: 2.5rem;
-  flex-shrink: 0;
-  border-radius: var(--radius-control);
-}
 /* Paint above the image: matching-color content cannot cover its edge. */
-.thumbnail::after,
 .attachment [data-image-preview]::after {
   content: "";
   position: absolute;
@@ -626,130 +295,174 @@ html[data-keyboard-navigation]
   border: 1px solid var(--border-standard);
   border-radius: inherit;
 }
-.thumbnail [data-image-preview] {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  border-radius: inherit;
+
+.checklist {
+  container-type: inline-size;
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-control);
 }
-.thumbnail [data-image-preview] > img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+.checklistRow {
+  display: grid;
+  grid-template-columns: 1rem 4.5rem minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
 }
-.conversationMessage[data-open]
-  > .messageContent
-  > .messageHeader
-  > .previewText,
-.conversationMessage[data-open] > .messageContent > .thumbnails {
+.checklistRow + .checklistRow {
+  border-top: 1px solid var(--border-standard);
+}
+.checklistRow > svg {
+  /* Centred on the first line, however many lines the value wraps to. */
+  height: 1lh;
+  color: var(--checklist-color, var(--text-subtle));
+}
+.checklistRow[data-tone="success"] {
+  --checklist-color: var(--github-checks-success);
+}
+.checklistRow[data-tone="failure"] {
+  --checklist-color: var(--github-checks-failure);
+}
+.checklistRow[data-tone="pending"] {
+  --checklist-color: var(--github-checks-pending);
+}
+.checklistRow[data-tone="merged"] {
+  --checklist-color: var(--github-merged-text);
+  grid-template-columns: 1rem minmax(0, 1fr);
+}
+.checklistLabel {
+  color: var(--text-subtle);
+}
+.checklistValue {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pullActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.pullActions:empty {
   display: none;
 }
-.thumbnailCount {
-  pointer-events: none;
-  position: absolute;
-  inset: auto 0 0 auto;
-  padding: var(--space-half) var(--space-1);
-  border-radius: var(--radius-control) 0 0 0;
-  background: var(--surface-panel);
-  color: var(--text-standard);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption--line-height);
-  letter-spacing: var(--text-caption--letter-spacing);
-}
-.messageBody {
-  padding-right: var(--space-6);
-  padding-top: var(--space-1);
-}
-.messageBody > .body > :first-child,
-.messageBody > p {
-  margin-top: 0;
-}
-@container (max-width: 24rem) {
-  .previewText {
-    white-space: normal;
-    overflow-wrap: anywhere;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-}
-.conversationNotice,
-.sourceStatus {
+.pullActionNote {
   color: var(--text-subtle);
   font-size: var(--text-caption);
   line-height: var(--text-caption--line-height);
   letter-spacing: var(--text-caption--letter-spacing);
-  overflow-wrap: anywhere;
 }
-.conversationNotice {
-  margin: var(--space-3) 0;
-}
-.conversationTimeline {
-  display: grid;
-  gap: var(--space-3);
-  position: relative;
-}
-.conversationTimeline[data-has-events]::before {
-  content: "";
-  position: absolute;
-  left: 1rem;
-  top: var(--space-5);
-  bottom: var(--space-5);
-  border-left: 1px solid var(--border-standard);
-}
-.conversationSources {
-  margin-top: var(--space-4);
-  border-top: 1px solid var(--border-standard);
-  padding-top: var(--space-2);
-}
-.sourceStatus {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-}
-.sourceStatus > :last-child {
+.pullActions > [aria-haspopup="menu"] {
   margin-left: auto;
 }
-@container (max-width: 18rem) {
-  .conversationMessage:not([data-bodyless]) {
-    display: block;
-  }
-  .conversationMessage:not([data-bodyless]) .messageMarker {
-    margin-bottom: var(--space-2);
-  }
-  .conversationTimeline[data-has-events]::before {
-    display: none;
-  }
-}
-
-.eventIcon[data-merged] {
-  color: var(--github-merged-text);
-}
-.commentRunTrigger {
-  display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr);
-  gap: var(--space-3);
-  align-items: center;
-  width: 100%;
-  padding: var(--space-2) 0;
-  text-align: left;
-}
-.commentRunSummary {
+.pullActionError {
+  margin: var(--space-2) 0 0;
+  color: var(--text-danger);
   overflow-wrap: anywhere;
 }
-.commentRunSummary > span {
-  color: var(--text-subtle);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption--line-height);
-  letter-spacing: var(--text-caption--letter-spacing);
-}
-.historyReveal {
-  overflow: hidden;
-}
-.commentRunEvents {
+.review {
   display: grid;
-  gap: var(--space-3);
-  padding-top: var(--space-3);
+  gap: var(--space-4);
+}
+.review p {
+  margin: 0;
+}
+.reviewNotice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.reviewActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.description {
+  margin-top: var(--space-4);
+}
+/* A Solo chat's linked pull request, in the sidebar's chat icon slot. */
+.soloPull {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-5);
+  flex: 0 0 var(--space-5);
+}
+/* The sidebar's icon and a message link's icon take one colour per state, as
+   the panel's chip above does; a link's text stays a link. Open and merged
+   use the icon-tier roles: the chip's step-12 text inks are indistinguishable
+   from a bubble's own ink. Draft, closed and not yet read are quiet: closed is
+   not red here. Only the sidebar shows an open one's checks and conflicts.
+   The sidebar's quiet icon is the row's subtle ink, which a hovered or
+   selected row rebinds; a message's icons take the pair the bubble hands
+   them, if any. */
+.soloPull {
+  color: var(--text-subtle);
+}
+.pullState {
+  color: var(--message-icon-subtle, var(--icon-subtle));
+}
+.soloPull[data-tone="open"],
+.pullState[data-pr-state="open"] {
+  color: var(--message-icon-success, var(--icon-success));
+}
+.soloPull[data-tone="failure"] {
+  color: var(--text-danger);
+}
+.soloPull[data-tone="pending"] {
+  color: var(--text-warning);
+}
+.soloPull[data-tone="merged"],
+.pullState[data-pr-state="merged"] {
+  color: var(--message-icon-categorical-purple, var(--icon-categorical-purple));
+}
+.soloLink {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.soloLink > [role="alert"] {
+  flex-basis: 100%;
+}
+
+.checklistContent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.checklistContent > .checklistValue {
+  flex: 1 1 auto;
+  width: max-content;
+  max-width: 100%;
+}
+.checklistAction {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+.resolutionAction {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.checklistDetails {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.checklistDetails ul {
+  margin: 0;
+  padding-inline-start: var(--space-6);
 }

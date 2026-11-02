@@ -1,3 +1,7 @@
+import {
+  hoverMessage,
+  expectMessageActionsHidden,
+} from "./message-actions.mjs";
 import { test, expect } from "./source-fixture.mjs";
 import { watchPageErrors } from "./page-errors.mjs";
 
@@ -16,28 +20,29 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
     .locator("[data-message-id]")
     .filter({ hasText: "Historic" });
   const plus = root
-    .getByRole("group", { name: "Message actions" })
+    .getByRole("group", { name: "Message actions", includeHidden: true })
     .getByRole("button", {
       name: "Add reaction",
       exact: true,
+      includeHidden: true,
     });
   // Every message exposes first-reaction controls, not just previously reacted rows.
   const rows = page.locator("[data-message-id]");
   await expect(rows).toHaveCount(6);
   for (const row of await rows.all()) {
-    await row.hover();
+    await hoverMessage(row);
     await expect(
       row
-        .getByRole("group", { name: "Message actions" })
+        .getByRole("group", { name: "Message actions", includeHidden: true })
         .getByRole("button", { name: "Add reaction", exact: true }),
     ).toBeVisible();
   }
   await expect(
     page
-      .getByRole("group", { name: "Message actions" })
+      .getByRole("group", { name: "Message actions", includeHidden: true })
       .getByRole("button", { name: "Add reaction", exact: true }),
   ).toHaveCount(6);
-  await root.hover();
+  await hoverMessage(root);
   const shortcut = root.getByRole("button", {
     name: "React with 👍",
     exact: true,
@@ -48,7 +53,7 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
   });
   // Visibility precedes the toolbar's entrance animation settling.
   await root
-    .getByRole("group", { name: "Message actions" })
+    .getByRole("group", { name: "Message actions", includeHidden: true })
     .evaluate((bar) =>
       Promise.all(bar.getAnimations().map((animation) => animation.finished)),
     );
@@ -74,21 +79,30 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
   expect(await shortcut.boundingBox()).toEqual(shortcutBox);
   expect(await neighbor.boundingBox()).toEqual(neighborBox);
 
-  const actions = root.getByRole("group", { name: "Message actions" });
-  const actionsBefore = await actions.boundingBox();
-  const plusBefore = await plus.boundingBox();
+  const actions = root.getByRole("group", {
+    name: "Message actions",
+    includeHidden: true,
+  });
+  // Visibility-hidden anchors still have geometry; Playwright's boundingBox
+  // deliberately returns null for them. Measure the real DOM box instead.
+  const bounds = (element) =>
+    element.evaluate((node) => {
+      const { x, y, width, height } = node.getBoundingClientRect();
+      return { x, y, width, height };
+    });
+  const actionsBefore = await bounds(actions);
+  const plusBefore = await bounds(plus);
   await plus.click();
   const search = page.locator('em-emoji-picker input[type="search"]');
   await expect(search).toBeVisible();
   // Mounting the portaled picker must not introduce another flex gap.
-  await expect.poll(() => actions.boundingBox()).toEqual(actionsBefore);
-  await expect.poll(() => plus.boundingBox()).toEqual(plusBefore);
+  await expect.poll(() => bounds(actions)).toEqual(actionsBefore);
+  await expect.poll(() => bounds(plus)).toEqual(plusBefore);
   await search.hover();
   await search.focus();
-  await expect(root.getByRole("group", { name: "Message actions" })).toHaveCSS(
-    "opacity",
-    "1",
-  );
+  await expect(
+    root.getByRole("group", { name: "Message actions", includeHidden: true }),
+  ).toHaveCSS("visibility", "hidden");
   const padding = await search.evaluate((input) => {
     const field = input.parentElement.getBoundingClientRect();
     const picker = input
@@ -110,7 +124,7 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
   await search.press("Escape");
   await expect(search).toHaveCount(0);
   await expect(plus).toBeFocused();
-  await root.hover();
+  await hoverMessage(root);
   await plus.click();
   await search.fill("party");
   const custom = page
@@ -140,7 +154,7 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
   ]);
   expect(event.tags.filter(([name]) => name === "e")).toHaveLength(1);
   for (const length of [62, 63, 64]) {
-    await root.hover();
+    await hoverMessage(root);
     await plus.click();
     const boundarySearch = page.locator('em-emoji-picker input[type="search"]');
     const shortcode = "a".repeat(length);
@@ -158,7 +172,7 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
   await expect(plus).toHaveCount(0);
   await page.evaluate(() => window.emojiFixture.archive(false));
   await expect(plus).toHaveCount(1);
-  await root.hover();
+  await hoverMessage(root);
   const boundaryEvents = await page.evaluate(() =>
     window.emojiFixture.report.publications.slice(1).map(({ event }) => event),
   );
@@ -167,7 +181,7 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
   );
   expect(boundaryEvents.every(({ kind }) => kind === 7)).toBe(true);
   await page.evaluate(() => window.emojiFixture.rejectReaction());
-  await root.hover();
+  await hoverMessage(root);
   await plus.click();
   await page
     .locator("em-emoji-picker button")
@@ -202,7 +216,7 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
     .click();
   await expect(
     root.getByRole("button", {
-      name: ":party:: You",
+      name: ":party:: 2 people",
       exact: true,
     }),
   ).toBeVisible();
@@ -222,9 +236,9 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
   ).toHaveCount(0);
   for (const width of [360, 768, 1280]) {
     await page.setViewportSize({ width, height: 900 });
-    await root.hover();
+    await hoverMessage(root);
     const box = await root
-      .getByRole("group", { name: "Message actions" })
+      .getByRole("group", { name: "Message actions", includeHidden: true })
       .boundingBox();
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(width);
@@ -236,7 +250,7 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
     .filter({ hasText: "Broken" });
   const reactionRow = emptyRow.locator('[class*="_reactions_"]');
   await expect(reactionRow).toHaveCSS("margin-top", "0px");
-  await emptyRow.hover();
+  await hoverMessage(emptyRow);
   const quick = emptyRow.getByRole("button", { name: /^React with / }).first();
   const chosen = (await quick.getAttribute("aria-label")).replace(
     "React with ",
@@ -267,7 +281,7 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
   await expect(sole).toHaveCount(0);
   await expect(reactionRow).toHaveCSS("margin-top", "0px");
   // Repeat the keyboard path on successful removal as well as rollback.
-  await emptyRow.hover();
+  await hoverMessage(emptyRow);
   await emptyRow
     .getByRole("button", { name: `React with ${chosen}`, exact: true })
     .click();
@@ -277,6 +291,42 @@ test("reaction plus opens a visible emoji-only picker, restores focus and publis
   await expect(sole).toHaveCount(0);
   await expect(stableAction).toBeFocused();
   expect(errors.unexplained()).toEqual([]);
+});
+
+// Browser-only: top-layer preview hit-testing can obstruct the pointer retry.
+test("keyboard removal keeps pointer retry reachable after a rejected deletion", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 520, height: 950 });
+  await page.goto("/tests/fixtures/emoji.html?reactions&single-reaction");
+  await page.evaluate(() =>
+    document.documentElement.style.setProperty("--buzz-text-scale", "2"),
+  );
+  const row = page.locator("[data-message-id]").first();
+  const pill = row.locator('button[data-reaction="👍"]');
+  await pill.click();
+  await expect(pill).toHaveAttribute("aria-pressed", "true");
+  await expect(pill).toHaveAttribute("aria-disabled", "false");
+  await page.mouse.move(0, 0);
+  await pill.press("Tab");
+  await pill.focus();
+  const preview = page.locator('.buzz-preview-card[role="tooltip"][data-open]');
+  await expect(preview).toBeVisible();
+  await page.evaluate(() => window.emojiFixture.rejectReaction());
+  await pill.press("Space");
+  const retry = row.getByRole("button", { name: "Retry reaction" });
+  await expect(retry).toBeVisible();
+  await expect(pill).toBeFocused();
+  await expect(pill).toHaveAttribute("aria-pressed", "true");
+  await expect(preview).toHaveCount(0);
+  await retry.click();
+  await expect(retry).toHaveCount(0);
+  await expect(pill).toHaveAttribute("aria-pressed", "false");
+  await expect(pill).toHaveAttribute("aria-disabled", "false");
+  // Deliberate pointer re-entry still reveals who reacted after recovery.
+  await page.mouse.move(0, 0);
+  await pill.hover();
+  await expect(preview).toBeVisible();
 });
 
 test("one active reaction picker preserves target and focus when switching or unmounting", async ({
@@ -294,22 +344,30 @@ test("one active reaction picker preserves target and focus when switching or un
   const firstRow = rows.nth(1);
   const secondRow = rows.nth(0);
   const first = firstRow
-    .getByRole("group", { name: "Message actions" })
+    .getByRole("group", { name: "Message actions", includeHidden: true })
     .getByRole("button", {
       name: "Add reaction",
       exact: true,
+      includeHidden: true,
     });
   const second = secondRow
-    .getByRole("group", { name: "Message actions" })
+    .getByRole("group", { name: "Message actions", includeHidden: true })
     .getByRole("button", {
       name: "Add reaction",
       exact: true,
+      includeHidden: true,
     });
   const search = page.locator('em-emoji-picker input[type="search"]');
-  await firstRow.hover();
+  await hoverMessage(firstRow);
   await first.click();
   await expect(search).toBeVisible();
-  await secondRow.hover();
+  // Other message toolbars yield until the current picker is dismissed.
+  await hoverMessage(secondRow);
+  await expect(second).toBeHidden();
+  await search.press("Escape");
+  await expect(search).toHaveCount(0);
+  await expect(first).toBeFocused();
+  await hoverMessage(secondRow);
   await second.click();
   await expect(search).toHaveCount(1);
   await expect(search).toBeVisible();
@@ -322,6 +380,17 @@ test("one active reaction picker preserves target and focus when switching or un
   await first.focus();
   await first.press("Enter");
   await expect(search).toBeVisible();
+  // The other toolbar may close entirely rather than remain an invisible
+  // popup anchor. Both states must neither paint nor intercept the pointer.
+  await expectMessageActionsHidden(
+    secondRow.getByRole("group", {
+      name: "Message actions",
+      includeHidden: true,
+    }),
+  );
+  await search.press("Escape");
+  await expect(search).toHaveCount(0);
+  await expect(first).toBeFocused();
   await second.focus();
   await second.press("Enter");
   await expect(search).toHaveCount(1);
@@ -334,7 +403,7 @@ test("one active reaction picker preserves target and focus when switching or un
   await expect(search).toBeVisible();
   await page.evaluate(() => window.emojiFixture.remount());
   await expect(search).toHaveCount(0);
-  await firstRow.hover();
+  await hoverMessage(firstRow);
   await first.click();
   await expect(search).toBeVisible();
   await page.evaluate(() => window.emojiFixture.archive(true));
@@ -362,18 +431,23 @@ test("standalone message gallery hosts clipboard success and failure toasts", as
     });
   });
   await page.goto("/tests/fixtures/message-gallery.html");
-  const row = page.locator("[data-message-id]").first();
+  const row = page
+    .getByRole("region", { name: "Plain text", exact: true })
+    .locator('[data-message-id="text"]');
   const notifications = page.getByRole("region", {
     name: "App notifications",
   });
   const copy = async () => {
-    await row.hover();
+    await hoverMessage(row);
     await row
       .getByRole("button", { name: "More message actions", exact: true })
       .click();
+    // This test covers toast hosting, not pointer hit-testing. A pointer click
+    // can race the popup's first placement, and Playwright's scroll retries
+    // then move the page under the open menu. The keyboard path avoids both.
     await page
       .getByRole("menuitem", { name: "Copy message", exact: true })
-      .click();
+      .press("Enter");
   };
   await copy();
   await expect(

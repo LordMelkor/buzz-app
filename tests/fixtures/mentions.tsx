@@ -5,13 +5,16 @@ import { StrictMode, useState, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { finalizeEvent } from "nostr-tools";
 import { Context } from "@deepseek-ai/cordis";
+import { emptySync } from "../../src/features/communities/known-communities";
 import { createPluginManager } from "../../src/plugins/manager";
 import { PagesService } from "../../src/features/pages/service";
 import { PanelsService } from "../../src/features/panels/service";
+import { ShortcutsService } from "../../src/features/shortcuts/service";
 import { SettingsCardsService } from "../../src/features/settings/service";
 import { provideNavigation } from "../../src/features/navigation/service";
 import { ConversationService } from "../../src/features/conversation/service";
 import { bundledPlugins } from "../../src/bundled";
+import { conversationFeatures } from "../../src/app/conversation-features";
 import { bindNames } from "../../src/features/identity-names/service";
 import { createAgentDirectory } from "../../src/features/identity-names/testing";
 import { createRelaySession } from "../../src/features/relay/session";
@@ -28,6 +31,7 @@ import {
 import { matchesEvent } from "../../src/features/relay/projection";
 import type { RelayEvent } from "../../src/features/relay/events";
 
+const showSettings = new URLSearchParams(location.search).has("settings");
 const viewer = keypair(),
   relay = keypair(),
   first = keypair(),
@@ -36,6 +40,9 @@ const viewer = keypair(),
 let members = [viewer.pubkey, first.pubkey, second.pubkey];
 let time = 1700000000;
 const publications: RelayEvent[] = [];
+let replaceRecipients = (
+  _people: readonly { pubkey: string; name: string }[],
+): boolean => false;
 let incoming = (_events: readonly RelayEvent[]) => {};
 let releaseProfiles = () => {};
 let libraryReads = 0;
@@ -301,12 +308,12 @@ const disabledCalls: {
 }[] = [];
 const plugins = createPluginManager(context, {
   bundled: [
-    ...bundledPlugins.filter(({ manifest }) =>
-      [
-        "buzz.emoji",
-        "buzz.mentions",
-        ...(channels ? ["buzz.channels", "buzz.links"] : []),
-      ].includes(manifest.id),
+    // This harness deliberately makes the real providers optional to exercise
+    // contribution removal and stale callbacks. The app always loads them.
+    ...conversationFeatures,
+    ...bundledPlugins.filter(
+      ({ manifest }) =>
+        channels && ["buzz.channels", "buzz.links"].includes(manifest.id),
     ),
     {
       manifest: {
@@ -320,7 +327,18 @@ const plugins = createPluginManager(context, {
           ctx.conversation.registerTool({
             id: "probe",
             title: "Disabled command probe",
-            component: ({ disabled, insertText, insertMention }) => {
+            component: ({
+              disabled,
+              insertText,
+              insertMention,
+              replaceRecipients: replace,
+            }) => {
+              useLayoutEffect(() => {
+                replaceRecipients = replace;
+                return () => {
+                  replaceRecipients = () => false;
+                };
+              }, [replace]);
               useLayoutEffect(() => {
                 if (disabled)
                   disabledCalls.push({
@@ -348,9 +366,21 @@ if (channels) {
   new PagesService(context);
   new PanelsService(context);
   new SettingsCardsService(context);
+  new ShortcutsService(context);
   provideNavigation(context);
   // Channels requires Agents for its page/settings, neither mounted here.
   context.provide("agents", {});
+  context.provide("communityReader", {
+    subscribe: () => () => {},
+    snapshot: () => ({
+      status: "unavailable",
+      relayAvailable: false,
+      profile: { name: "", picture: "" },
+      memberships: [],
+      selected: null,
+      sync: emptySync(),
+    }),
+  });
   // Only the composer is mounted; the Channels page never consumes this service.
   context.provide("relay", {
     snapshot: () => ({ session: namedSession }),
@@ -370,6 +400,8 @@ Object.assign(window, {
     first: first.pubkey,
     second: second.pubkey,
     publications,
+    replaceRecipients: (people: readonly { pubkey: string; name: string }[]) =>
+      replaceRecipients(people),
     disabledCalls,
     change: (action: "enable" | "disable", id: string) =>
       plugins.change(action, id),
@@ -470,9 +502,7 @@ function Fixture() {
           {...(thread ? { threadRootId: "a".repeat(64) } : {})}
         />
       </div>
-      {new URLSearchParams(location.search).has("settings") && (
-        <AgentSettings />
-      )}
+      {showSettings && <AgentSettings />}
     </main>
   );
 }

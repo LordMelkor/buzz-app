@@ -3,8 +3,14 @@ export type LocalWorkState =
   | "working"
   | "done"
   | "error"
-  | "superseded";
-export type WorkOutcome = Readonly<{ ok: boolean; error?: string }>;
+  | "superseded"
+  | "stopped";
+/** `stopped`: the owner's Stop ended the turn, as its harness reports it. */
+export type WorkOutcome = Readonly<{
+  ok: boolean;
+  error?: string;
+  stopped?: true;
+}>;
 /** A harness step: its own tool name and, when known, what it acts on. */
 export type WorkStep = Readonly<{ tool: string; target?: string }>;
 export type LocalWork = Readonly<{
@@ -20,12 +26,23 @@ export type LocalWork = Readonly<{
   step?: WorkStep;
   /** The owner hid this error here; the outcome remains as evidence. */
   dismissed?: true;
+  /** Its harness can stop the turn it is in. */
+  stoppable?: true;
 }>;
+const settled = (state: LocalWorkState) =>
+  state === "done" ||
+  state === "error" ||
+  state === "superseded" ||
+  state === "stopped";
 export type LocalAgentSource = {
   work(): readonly LocalWork[];
   subscribeWork(listener: () => void): () => void;
   /** Hides one already-seen error on this device; never changes its outcome. */
   dismissError?(work: Pick<LocalWork, "scope" | "agent" | "messageId">): void;
+  /** Stops the turn this unsettled request is in, then shows it stopped. */
+  interrupt?(
+    work: Pick<LocalWork, "scope" | "agent" | "messageId">,
+  ): Promise<void>;
 };
 
 /** App-owned local facts. No relay publication, inference, polling or process control. */
@@ -33,6 +50,8 @@ export function createLocalAgentActivity() {
   let work: readonly LocalWork[] = [];
   const workListeners = new Set<() => void>();
   const entries = new Map<symbol, LocalWork>();
+  /** How to stop each stoppable request's turn, until it settles. */
+  const stops = new Map<symbol, () => Promise<void>>();
   const publish = () => {
     work = Object.freeze([...entries.values()]);
     for (const listener of workListeners) listener();
@@ -60,11 +79,34 @@ export function createLocalAgentActivity() {
           return;
         }
     },
+    async interrupt({ scope, agent, messageId }) {
+      for (const [id, row] of entries) {
+        const stop = stops.get(id);
+        if (
+          !stop ||
+          row.scope !== scope ||
+          row.agent !== agent ||
+          row.messageId !== messageId
+        )
+          continue;
+        await stop();
+        const current = entries.get(id);
+        if (!current || settled(current.state)) return;
+        stops.delete(id);
+        const { step: _step, stoppable: _stoppable, ...rest } = current;
+        entries.set(id, Object.freeze({ ...rest, state: "stopped" }));
+        publish();
+        return;
+      }
+    },
   };
   return {
     reader,
     begin(
-      input: Omit<LocalWork, "state" | "startedAt" | "error" | "dismissed">,
+      input: Omit<
+        LocalWork,
+        "state" | "startedAt" | "error" | "dismissed" | "stoppable"
+      >,
     ) {
       // Keep the newest accepted handling of one exact message; late completions
       // retain their own token and cannot overwrite its replacement.
@@ -73,18 +115,19 @@ export function createLocalAgentActivity() {
           row.scope === input.scope &&
           row.agent === input.agent &&
           row.messageId === input.messageId
-        )
+        ) {
           entries.delete(id);
+          stops.delete(id);
+        }
       // Display budget only, independent of execution. Old settled evidence goes first.
       if (entries.size >= 512) {
         const victim =
-          [...entries].find(
-            ([, row]) =>
-              row.state === "done" ||
-              row.state === "error" ||
-              row.state === "superseded",
-          ) ?? entries.entries().next().value;
-        if (victim) entries.delete(victim[0]);
+          [...entries].find(([, row]) => settled(row.state)) ??
+          entries.entries().next().value;
+        if (victim) {
+          entries.delete(victim[0]);
+          stops.delete(victim[0]);
+        }
       }
       const id = Symbol();
       entries.set(
@@ -98,13 +141,8 @@ export function createLocalAgentActivity() {
         step?: WorkStep,
       ) => {
         const current = entries.get(id);
-        if (
-          !current ||
-          current.state === "done" ||
-          current.state === "error" ||
-          current.state === "superseded"
-        )
-          return;
+        if (!current || settled(current.state)) return;
+        if (settled(state)) stops.delete(id);
         const next = step ?? (state === "working" ? current.step : undefined);
         if (
           current.state === state &&
@@ -113,11 +151,12 @@ export function createLocalAgentActivity() {
           current.step?.target === next?.target
         )
           return;
-        const { step: _step, ...rest } = current;
+        const { step: _step, stoppable, ...rest } = current;
         entries.set(
           id,
           Object.freeze({
             ...rest,
+            ...(stoppable && !settled(state) ? { stoppable } : {}),
             state,
             ...(error ? { error: error.slice(0, 500) } : {}),
             ...(next ? { step: next } : {}),
@@ -142,12 +181,22 @@ export function createLocalAgentActivity() {
         },
         finish: (result: WorkOutcome) =>
           update(
-            result.ok ? "done" : "error",
+            result.stopped ? "stopped" : result.ok ? "done" : "error",
             result.ok
               ? undefined
               : result.error || "Could not finish this request",
           ),
+        /** The harness's way to stop this request's turn, offered as Stop. */
+        interruptible: (stop: () => Promise<void>) => {
+          const current = entries.get(id);
+          if (!current || settled(current.state)) return;
+          stops.set(id, stop);
+          if (current.stoppable) return;
+          entries.set(id, Object.freeze({ ...current, stoppable: true }));
+          publish();
+        },
         remove: () => {
+          stops.delete(id);
           if (entries.delete(id)) publish();
         },
       };
@@ -160,6 +209,7 @@ export function createLocalAgentActivity() {
           (!agent || row.agent === agent)
         ) {
           entries.delete(id);
+          stops.delete(id);
           changed = true;
         }
       if (changed) publish();
@@ -185,7 +235,14 @@ export function localActivity(
       (!threadRootId || row.threadRootId === threadRootId),
   );
   const agents = new Map<string, LocalWork>();
-  const rank = { superseded: 0, done: 0, error: 1, waiting: 2, working: 3 };
+  const rank = {
+    superseded: 0,
+    stopped: 0,
+    done: 0,
+    error: 1,
+    waiting: 2,
+    working: 3,
+  };
   for (const row of rows) {
     const previous = agents.get(row.agent);
     if (!previous || rank[row.state] > rank[previous.state])
@@ -197,6 +254,7 @@ export function localWorkLabel(
   row: Pick<LocalWork, "state" | "error" | "step">,
 ) {
   if (row.state === "superseded") return "Continued on a later message";
+  if (row.state === "stopped") return "Stopped";
   return row.state === "waiting"
     ? "Received · waiting to start"
     : row.state === "working"

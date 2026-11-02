@@ -2,7 +2,7 @@ import { test, expect } from "./source-fixture.mjs";
 
 // Stacking order requires actual browser computed styles.
 test("later reply avatars stack above earlier avatars", async ({ page }) => {
-  await page.goto("/tests/fixtures/message-gallery.html?bubble=blue");
+  await page.goto("/tests/fixtures/message-gallery.html?accent=blue");
   const avatars = page.locator(
     '[data-message-id="thread"] [data-avatar-stack] > [data-avatar-shape]',
   );

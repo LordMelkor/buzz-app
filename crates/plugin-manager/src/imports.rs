@@ -1,14 +1,17 @@
 //! Read-only acquisition. Preview owns immutable artifacts; installation never rereads a source.
 use crate::{
-    artifact_from_parts, err, hash, icon_revision, Catalog, Manager, Manifest, Release,
-    ReloadSource, Result, LIMIT, MAX_ICON_BYTES, MAX_README_BYTES,
+    artifact_from_parts, err, hash, icon_revision,
+    managed::{valid_commit, valid_reference},
+    Catalog, GitSource, InstallSource, Manager, Manifest, Release, ReloadSource, Result, BASE64,
+    LIMIT, MAX_ICON_BYTES, MAX_README_BYTES,
 };
+use base64::Engine as _;
 use nostr::event::Event;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -44,7 +47,9 @@ pub struct Preview {
 pub struct PreparedImport {
     pub preview: Preview,
     folder_root: Option<PathBuf>,
+    git_source: Option<GitSource>,
     artifacts: BTreeMap<String, Release>,
+    unbuilt: Vec<(String, Option<String>, String)>,
 }
 impl PreparedImport {
     fn new(source: String, commit: Option<String>, folder_root: Option<PathBuf>) -> Result<Self> {
@@ -59,7 +64,9 @@ impl PreparedImport {
                 warnings: vec![],
             },
             folder_root,
+            git_source: None,
             artifacts: BTreeMap::new(),
+            unbuilt: vec![],
         })
     }
     fn add(&mut self, path: String, artifact: Result<Release>) -> Result<()> {
@@ -95,11 +102,43 @@ impl PreparedImport {
             }
             Err(reason) => {
                 if self.preview.warnings.len() < MAX_PLUGINS {
-                    self.preview.warnings.push(format!("{path}: {reason}"));
+                    let folder = if path == "." {
+                        "Selected folder"
+                    } else {
+                        &path
+                    };
+                    self.preview.warnings.push(format!("{folder}: {reason}"));
                 }
             }
         }
         Ok(())
+    }
+    // A source manifest without code can be the parent of its built output.
+    // Defer only that case until discovery can match the same plugin ID below it.
+    fn add_unbuilt(&mut self, path: String, manifest: Result<String>, reason: String) {
+        let (id, reason) = match manifest {
+            Ok(text) => (
+                serde_json::from_str::<Manifest>(&text).ok().map(|m| m.id),
+                reason,
+            ),
+            Err(error) => (None, error),
+        };
+        self.unbuilt.push((path, id, reason));
+    }
+    fn finish(mut self) -> Result<Self> {
+        for (path, id, reason) in std::mem::take(&mut self.unbuilt) {
+            let found_build = id.is_some_and(|id| {
+                self.preview.candidates.iter().any(|candidate| {
+                    candidate.manifest.id == id
+                        && candidate.path != path
+                        && (path == "." || Path::new(&candidate.path).starts_with(&path))
+                })
+            });
+            if !found_build {
+                self.add(path, Err(reason))?;
+            }
+        }
+        Ok(self)
     }
     pub fn install(&self, manager: &Manager, token: &str, path: &str) -> Result<Catalog> {
         if token != self.preview.token {
@@ -112,10 +151,160 @@ impl PreparedImport {
         let source = self
             .folder_root
             .clone()
-            .map(|root| ReloadSource::folder(root, path.to_owned()))
-            .transpose()?;
+            .map(|root| ReloadSource::folder(root, path.to_owned()).map(InstallSource::Folder))
+            .transpose()?
+            .or_else(|| {
+                self.git_source.clone().map(|mut source| {
+                    source.path = path.to_owned();
+                    InstallSource::Git(source)
+                })
+            });
         manager.install_artifact(release, source)
     }
+}
+
+#[derive(Deserialize)]
+pub struct FolderUpload {
+    pub source: String,
+    pub files: Vec<ImportFile>,
+}
+
+#[derive(Deserialize)]
+pub struct ImportFile {
+    pub path: String,
+    pub text: Option<String>,
+    pub base64: Option<String>,
+}
+
+/// Browser drops supply package contents, never trusted local filesystem paths.
+/// Reuse the folder reader and signature checks, without retaining a reload source.
+pub fn prepare_upload(upload: FolderUpload) -> Result<PreparedImport> {
+    if upload.source.is_empty()
+        || upload.source.len() > 255
+        || upload.source.chars().any(char::is_control)
+    {
+        return Err("Invalid dropped folder name".into());
+    }
+    if upload.files.len() > MAX_ENTRIES {
+        return Err("Folder exceeds 20,000 entries; choose a smaller folder".into());
+    }
+    let scratch = tempfile::tempdir().map_err(err)?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut bytes = 0usize;
+    for file in upload.files {
+        let parts: Vec<_> = file.path.split('/').collect();
+        if parts.len() > 33
+            || file.path.len() > 4096
+            || parts.iter().any(|part| {
+                part.is_empty()
+                    || *part == "."
+                    || *part == ".."
+                    || part.contains(['\\', ':'])
+                    || part.chars().any(char::is_control)
+            })
+            || !matches!(
+                parts.last().copied(),
+                Some(
+                    "manifest.json"
+                        | "plugin.js"
+                        | "plugin.artifact.json"
+                        | "plugin.signature.json"
+                        | "README.md"
+                        | "icon.png"
+                        | "icon.jpg"
+                )
+            )
+            || !seen.insert(file.path.clone())
+        {
+            return Err("Invalid or duplicate dropped plugin path".into());
+        }
+        let name = parts.last().copied().unwrap();
+        let icon = matches!(name, "icon.png" | "icon.jpg");
+        let limit = match name {
+            "README.md" => MAX_README_BYTES,
+            "icon.png" | "icon.jpg" => MAX_ICON_BYTES,
+            _ => LIMIT as usize,
+        };
+        let contents = match (file.text, file.base64) {
+            (Some(text), None) => text.into_bytes(),
+            (None, Some(encoded)) if icon && encoded.len() <= limit.div_ceil(3) * 4 => {
+                BASE64.decode(encoded).map_err(err)?
+            }
+            _ => return Err("Invalid dropped plugin file encoding".into()),
+        };
+        bytes = bytes
+            .checked_add(contents.len())
+            .ok_or("Dropped folder is too large")?;
+        if contents.len() > limit || bytes > MAX_PREVIEW_BYTES {
+            return Err("Dropped plugin files exceed their file or 32 MiB total limit".into());
+        }
+        let path = scratch.path().join(&file.path);
+        fs::create_dir_all(path.parent().ok_or("Invalid dropped plugin path")?).map_err(err)?;
+        // Also reject aliases on case-insensitive filesystems instead of overwriting.
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(err)?
+            .write_all(&contents)
+            .map_err(err)?;
+    }
+    let mut prepared = prepare_folder(scratch.path())?;
+    prepared.folder_root = None;
+    prepared.preview.source = format!("Dropped folder: {}", upload.source);
+    Ok(prepared)
+}
+
+/// Resolve the installed source natively; callers cannot supply an arbitrary path.
+pub fn prepare_saved_folder(manager: &Manager, id: &str) -> Result<PreparedImport> {
+    let plugin = manager
+        .catalog()?
+        .plugins
+        .into_iter()
+        .find(|plugin| plugin.manifest.id == id)
+        .ok_or("Plugin is not installed")?;
+    let Some(InstallSource::Folder(source)) = plugin.update_source else {
+        return Err("Plugin has no saved folder source".into());
+    };
+    let mut prepared = prepare_folder(&source.root)?;
+    if !prepared
+        .preview
+        .candidates
+        .iter()
+        .any(|candidate| candidate.path == source.path && candidate.manifest.id == id)
+    {
+        let prefix = if source.path == "." {
+            "Selected folder"
+        } else {
+            &source.path
+        };
+        return Err(prepared
+            .preview
+            .warnings
+            .iter()
+            .find(|warning| warning.starts_with(&format!("{prefix}:")))
+            .cloned()
+            .unwrap_or_else(|| {
+                "The saved folder no longer contains this plugin at its installed path.".into()
+            }));
+    }
+    prepared
+        .preview
+        .candidates
+        .retain(|candidate| candidate.path == source.path && candidate.manifest.id == id);
+    prepared.artifacts.retain(|path, _| path == &source.path);
+    Ok(prepared)
+}
+
+/// No preview is retained, installed, or published to the native import slot.
+pub fn check_saved_folder(manager: &Manager, id: &str) -> Result<String> {
+    let prepared = prepare_saved_folder(manager, id)?;
+    prepared
+        .preview
+        .candidates
+        .first()
+        .map(|candidate| candidate.revision.clone())
+        .ok_or_else(|| "Saved source has no candidate".into())
 }
 
 pub fn prepare_folder(directory: &Path) -> Result<PreparedImport> {
@@ -142,6 +331,7 @@ pub fn prepare_folder(directory: &Path) -> Result<PreparedImport> {
         }
         let mut has_manifest = false;
         let mut has_release = false;
+        let mut has_code = false;
         for entry in directory
             .read_dir(if relative.as_os_str().is_empty() {
                 Path::new(".")
@@ -160,6 +350,9 @@ pub fn prepare_folder(directory: &Path) -> Result<PreparedImport> {
             if name == "manifest.json" {
                 has_manifest = true;
             }
+            if name == "plugin.js" {
+                has_code = true;
+            }
             if name == "plugin.artifact.json" || name == "plugin.signature.json" {
                 has_release = true;
             }
@@ -175,6 +368,14 @@ pub fn prepare_folder(directory: &Path) -> Result<PreparedImport> {
         }
         if has_manifest || has_release {
             let path = candidate_path(&relative)?;
+            if !has_release && !has_code {
+                prepared.add_unbuilt(
+                    path,
+                    read_source_file(&directory, &relative.join("manifest.json")),
+                    format!("Missing file: {}", relative.join("plugin.js").display()),
+                );
+                continue;
+            }
             let artifact = read_package(&directory, &relative).and_then(|release| {
                 if has_release && release.signature.is_none() {
                     Err("Signed plugin release disappeared during folder scan".into())
@@ -189,7 +390,7 @@ pub fn prepare_folder(directory: &Path) -> Result<PreparedImport> {
         .preview
         .candidates
         .sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(prepared)
+    prepared.finish()
 }
 
 pub(crate) fn read_package(directory: &cap_std::fs::Dir, relative: &Path) -> Result<Release> {
@@ -301,9 +502,16 @@ fn read_optional_source_bytes(
 }
 
 fn read_source_bytes(directory: &cap_std::fs::Dir, path: &Path, limit: usize) -> Result<Vec<u8>> {
+    let read_error = |error: std::io::Error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            format!("Missing file: {}", path.display())
+        } else {
+            format!("Could not read {}: {error}", path.display())
+        }
+    };
     if !directory
         .symlink_metadata(path)
-        .map_err(err)?
+        .map_err(read_error)?
         .file_type()
         .is_file()
     {
@@ -316,15 +524,15 @@ fn read_source_bytes(directory: &cap_std::fs::Dir, path: &Path, limit: usize) ->
         use cap_std::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    let file = directory.open_with(path, &options).map_err(err)?;
-    if !file.metadata().map_err(err)?.is_file() {
+    let file = directory.open_with(path, &options).map_err(read_error)?;
+    if !file.metadata().map_err(read_error)?.is_file() {
         return Err("Plugin files must be regular files".into());
     }
     let mut bytes = Vec::new();
     file.into_std()
         .take(limit as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(err)?;
+        .map_err(read_error)?;
     if bytes.len() > limit {
         return Err(format!("{} exceeds its size limit", path.display()));
     }
@@ -338,10 +546,14 @@ pub fn repository_url(input: &str) -> Result<String> {
     if input.len() > 2048 {
         return Err("Repository URL is too long".into());
     }
-    let expanded = if input.starts_with("git@") && !input.contains("://") {
-        let (host, path) = input
-            .split_once(':')
-            .ok_or("Expected git@host:owner/repository.git")?;
+    let scp = input.split_once(':').filter(|(authority, _)| {
+        !input.contains("://")
+            && !authority.contains('/')
+            && authority
+                .split_once('@')
+                .is_some_and(|(user, host)| !user.is_empty() && !host.is_empty())
+    });
+    let expanded = if let Some((host, path)) = scp {
         format!("ssh://{host}/{path}")
     } else if input.starts_with("github.com/") {
         format!("https://{input}")
@@ -378,15 +590,21 @@ pub fn repository_url(input: &str) -> Result<String> {
 struct Git {
     scratch: tempfile::TempDir,
     deadline: Instant,
+    ssh_auth_sock: Option<PathBuf>,
     /// Repository URL and its NIP-98 token. Git sends the header only to that URL prefix.
     authorization: Option<(String, String)>,
+    federated_header: Option<String>,
+    retired: Option<Box<dyn Fn() -> bool + Send>>,
 }
 impl Git {
     fn new() -> Result<Self> {
         Ok(Self {
             scratch: tempfile::tempdir().map_err(err)?,
             deadline: Instant::now() + Duration::from_secs(60),
+            ssh_auth_sock: None,
             authorization: None,
+            federated_header: None,
+            retired: None,
         })
     }
     fn command(&self) -> Command {
@@ -398,6 +616,9 @@ impl Git {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
+        }
+        if let Some(socket) = &self.ssh_auth_sock {
+            command.env("SSH_AUTH_SOCK", socket);
         }
         let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
         command
@@ -424,23 +645,52 @@ impl Git {
         if let Some((url, token)) = &self.authorization {
             // Environment, not argv: other processes cannot read the token from `ps`.
             // No redirects, so the header never follows the request to another URL.
-            for (index, (key, value)) in [
+            let mut settings = vec![
                 (
                     format!("http.{url}.extraHeader"),
                     format!("Authorization: Nostr {token}"),
                 ),
                 ("http.followRedirects".into(), "false".into()),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            ];
+            if let Some(header) = &self.federated_header {
+                settings.push((
+                    format!("http.{url}.extraHeader"),
+                    format!("Nostr-Federated-Identity: {header}"),
+                ));
+            }
+            command.env("GIT_CONFIG_COUNT", settings.len().to_string());
+            for (index, (key, value)) in settings.into_iter().enumerate() {
                 command
                     .env(format!("GIT_CONFIG_KEY_{index}"), key)
                     .env(format!("GIT_CONFIG_VALUE_{index}"), value);
             }
-            command.env("GIT_CONFIG_COUNT", "2");
         }
         command
+    }
+    #[cfg(any(target_os = "macos", all(test, unix)))]
+    fn use_block_ssh_agent(&mut self, repository: &str, home: &Path) -> Result<()> {
+        use std::os::unix::fs::FileTypeExt;
+
+        let url = url::Url::parse(repository).map_err(err)?;
+        if url.scheme() != "ssh"
+            || url.host_str() != Some("github.com")
+            || url.username() != "org-49461806"
+            || url.port().is_some_and(|port| port != 22)
+            || !url.path().starts_with("/squareup/")
+        {
+            return Ok(());
+        }
+        // Block's SSH config selects this agent, but imports do not execute SSH config.
+        let socket = home.join("Library/Application Support/block-ssh-agent/agent.sock");
+        match fs::metadata(&socket) {
+            Ok(metadata) if metadata.file_type().is_socket() => {
+                self.ssh_auth_sock = Some(socket);
+                Ok(())
+            }
+            Ok(_) => Err("Block SSH agent path is not a socket".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("Cannot read Block SSH agent socket: {error}")),
+        }
     }
     fn run(&self, args: &[&str], limit: u64) -> Result<Vec<u8>> {
         let mut command = self.command();
@@ -448,6 +698,12 @@ impl Git {
         self.run_command(command, limit)
     }
     fn run_command(&self, mut command: Command, limit: u64) -> Result<Vec<u8>> {
+        if self.retired.as_ref().is_some_and(|retired| retired()) {
+            return Err("Repository authorization retired".into());
+        }
+        if Instant::now() >= self.deadline {
+            return Err("Repository import exceeded 60 seconds".into());
+        }
         let output = tempfile::tempfile().map_err(err)?;
         let errors = tempfile::tempfile().map_err(err)?;
         command
@@ -459,10 +715,19 @@ impl Git {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
+        if self.retired.as_ref().is_some_and(|retired| retired()) {
+            return Err("Repository authorization retired".into());
+        }
+        if Instant::now() >= self.deadline {
+            return Err("Repository import exceeded 60 seconds".into());
+        }
         let mut child = command
             .spawn()
             .map_err(|e| format!("Could not start Git: {e}. Install Git to load repositories."))?;
         let result = (|| loop {
+            if self.retired.as_ref().is_some_and(|retired| retired()) {
+                return Err("Repository authorization retired".into());
+            }
             if Instant::now() >= self.deadline {
                 return Err("Repository import exceeded 60 seconds".into());
             }
@@ -476,6 +741,9 @@ impl Git {
             }
             if let Some(status) = child.try_wait().map_err(err)? {
                 if !status.success() {
+                    if self.federated_header.is_some() {
+                        return Err("Git could not read the protected repository".into());
+                    }
                     let text = read_output(errors, 4096)?;
                     return Err(format!(
                         "Git could not read this repository: {}",
@@ -503,11 +771,17 @@ impl Git {
         }
         result
     }
-    fn read_plugins(&self, source: String) -> Result<PreparedImport> {
+    fn read_plugins(&self, source: String, pinned: Option<&str>) -> Result<PreparedImport> {
         let commit = String::from_utf8(self.run(&["-C", "repository", "rev-parse", "HEAD"], 1024)?)
             .map_err(err)?
             .trim()
             .to_string();
+        if pinned.is_some_and(|pinned| !commit.eq_ignore_ascii_case(pinned)) {
+            return Err(format!(
+                "The repository reference is at commit {commit}, not the required commit {}. The reference has moved; ask whoever manages this recommendation to update it.",
+                pinned.unwrap_or_default()
+            ));
+        }
         let tree = self.run(
             &["-C", "repository", "ls-tree", "-rz", "--full-tree", "HEAD"],
             2 * 1024 * 1024,
@@ -589,10 +863,19 @@ impl Git {
                 continue;
             };
             let Some(code_oid) = blobs.get(&format!("{parent}plugin.js")) else {
-                prepared.add(
-                    display.into(),
-                    Err("No built plugin.js beside manifest.json; build the plugin first".into()),
-                )?;
+                let reason = "No built plugin.js beside manifest.json; build the plugin first";
+                if symlinks.contains(&format!("{parent}plugin.js")) {
+                    prepared.add(display.into(), Err(reason.into()))?;
+                } else {
+                    prepared.add_unbuilt(
+                        display.into(),
+                        self.read_blob(manifest_oid).and_then(|bytes| {
+                            String::from_utf8(bytes)
+                                .map_err(|_| "manifest.json must be UTF-8".into())
+                        }),
+                        reason.into(),
+                    );
+                }
                 continue;
             };
             let artifact = (|| {
@@ -629,7 +912,7 @@ impl Git {
             })();
             prepared.add(display.into(), artifact)?;
         }
-        Ok(prepared)
+        prepared.finish()
     }
 
     fn read_blob(&self, oid: &str) -> Result<Vec<u8>> {
@@ -646,21 +929,42 @@ impl Git {
     }
 }
 
+/// A full commit ID that a Git import must resolve to. A distinct type keeps it from being
+/// confused with the adjacent authorization strings.
+#[derive(Clone, Copy, Debug)]
+pub struct RequiredCommit<'a>(&'a str);
+impl<'a> RequiredCommit<'a> {
+    pub fn parse(commit: &'a str) -> Result<Self> {
+        if valid_commit(commit) {
+            Ok(Self(commit))
+        } else {
+            Err("Required commit must be a full 40 or 64 digit hexadecimal object ID".into())
+        }
+    }
+}
+
 /// `authorization` is a NIP-98 token that the caller signed for exactly this repository URL.
 pub fn prepare_git(
     repository: &str,
     reference: &str,
     authorization: Option<&str>,
 ) -> Result<PreparedImport> {
+    prepare_git_authorized(repository, reference, None, authorization, None, None)
+}
+/// Native FI remains native: headers are scoped to this repository through environment config.
+/// `required` refuses a reference that no longer resolves to exactly that commit, and is the
+/// only case where the installed commit is recorded in the saved source.
+pub fn prepare_git_authorized(
+    repository: &str,
+    reference: &str,
+    required: Option<RequiredCommit<'_>>,
+    authorization: Option<&str>,
+    federated_header: Option<&str>,
+    retired: Option<Box<dyn Fn() -> bool + Send>>,
+) -> Result<PreparedImport> {
     let url = repository_url(repository)?;
     let reference = reference.trim();
-    if !reference.is_empty()
-        && (reference.starts_with('-')
-            || reference.len() > 200
-            || !reference
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c)))
-    {
+    if !reference.is_empty() && !valid_reference(reference) {
         return Err("Enter a branch or tag name using letters, digits, dots, underscores, slashes or hyphens".into());
     }
     let mut git = Git::new()?;
@@ -675,6 +979,21 @@ pub fn prepare_git(
         }
         git.authorization = Some((url.clone(), token.into()));
     }
+    if let Some(header) = federated_header {
+        if authorization.is_none()
+            || header.len() > 8192
+            || !header.starts_with("Bearer ")
+            || header.chars().any(|c| c.is_control())
+        {
+            return Err("Invalid federated repository authorization".into());
+        }
+        git.federated_header = Some(header.into());
+    }
+    git.retired = retired;
+    #[cfg(target_os = "macos")]
+    if let Some(home) = dirs::home_dir() {
+        git.use_block_ssh_agent(&url, &home)?;
+    }
     let mut args = vec![
         "clone",
         "--depth=1",
@@ -688,7 +1007,32 @@ pub fn prepare_git(
     }
     args.extend(["--", &url, "repository"]);
     git.run(&args, LIMIT)?;
-    git.read_plugins(url)
+    let mut prepared = git.read_plugins(url.clone(), required.map(|required| required.0))?;
+    if git.retired.as_ref().is_some_and(|retired| retired()) {
+        return Err("Repository authorization retired".into());
+    }
+    prepared.git_source = Some(git_source(
+        url,
+        reference,
+        required,
+        prepared.preview.commit.as_deref(),
+    ));
+    Ok(prepared)
+}
+/// Only a pinned import records its commit: an unpinned source stays readable by older
+/// Buzz versions, which reject unknown registry fields.
+fn git_source(
+    repository: String,
+    reference: &str,
+    required: Option<RequiredCommit<'_>>,
+    read: Option<&str>,
+) -> GitSource {
+    GitSource {
+        repository,
+        reference: reference.into(),
+        path: ".".into(),
+        commit: required.and(read).map(str::to_owned),
+    }
 }
 fn read_output(mut file: File, limit: u64) -> Result<Vec<u8>> {
     use std::io::{Seek, SeekFrom};
@@ -732,6 +1076,87 @@ fn directory_size(root: &Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn uploaded(files: &[(&str, &str)]) -> FolderUpload {
+        FolderUpload {
+            source: "example".into(),
+            files: files
+                .iter()
+                .map(|(path, text)| ImportFile {
+                    path: (*path).into(),
+                    text: Some((*text).into()),
+                    base64: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn dropped_folder_uses_reviewed_snapshot_without_a_temporary_reload_source() {
+        let prepared = prepare_upload(uploaded(&[
+            (
+                "dist/manifest.json",
+                r#"{"id":"example.drop","name":"Drop","apiVersion":1}"#,
+            ),
+            ("dist/plugin.js", "export function apply() {}"),
+        ]))
+        .unwrap();
+        assert_eq!(prepared.preview.source, "Dropped folder: example");
+        assert_eq!(prepared.preview.candidates[0].path, "dist");
+        assert!(prepared.folder_root.is_none());
+        let home = tempfile::tempdir().unwrap();
+        let manager = Manager::open(Some(home.path().into()), "test", false).unwrap();
+        let installed = prepared
+            .install(&manager, &prepared.preview.token, "dist")
+            .unwrap();
+        let plugin = installed
+            .plugins
+            .iter()
+            .find(|p| p.manifest.id == "example.drop")
+            .unwrap();
+        assert!(!plugin.enabled);
+        assert!(!plugin.reloadable);
+        assert!(plugin.update_source.is_none());
+        manager.change("enable", "example.drop").unwrap();
+        assert_eq!(
+            manager.module("example.drop", &plugin.revision).unwrap(),
+            "export function apply() {}"
+        );
+    }
+
+    #[test]
+    fn dropped_folder_rejects_escaping_duplicate_and_oversized_inputs() {
+        for path in [
+            "../plugin.js",
+            "/plugin.js",
+            "a/../../plugin.js",
+            "C:/plugin.js",
+            "a\\plugin.js",
+            "a//plugin.js",
+            "a/./plugin.js",
+            "other.txt",
+        ] {
+            assert!(prepare_upload(uploaded(&[(path, "")])).is_err(), "{path}");
+        }
+        assert!(prepare_upload(uploaded(&[("plugin.js", ""), ("plugin.js", "")])).is_err());
+        let large = "x".repeat(LIMIT as usize + 1);
+        assert!(prepare_upload(uploaded(&[("plugin.js", &large)])).is_err());
+    }
+
+    #[test]
+    fn dropped_folder_does_not_fall_back_from_an_incomplete_signed_pair() {
+        let prepared = prepare_upload(uploaded(&[
+            (
+                "manifest.json",
+                r#"{"id":"example.drop","name":"Drop","apiVersion":1}"#,
+            ),
+            ("plugin.js", "export {}"),
+            ("plugin.artifact.json", "{}"),
+        ]))
+        .unwrap();
+        assert!(prepared.preview.candidates.is_empty());
+        assert!(prepared.preview.warnings[0].contains("Incomplete signed plugin release pair"));
+    }
+
     fn decode_content_icon(encoded: Option<&str>) -> Option<Vec<u8>> {
         use base64::Engine as _;
         encoded.map(|value| {
@@ -748,6 +1173,99 @@ mod tests {
             .unwrap();
         bytes
     }
+    #[test]
+    fn dropped_assets_match_folder_package_and_survive_install() {
+        let root = tempfile::tempdir().unwrap();
+        let package = plugin(root.path(), "dist", "example.assets");
+        let png = png();
+        let mut jpg = vec![];
+        image::codecs::jpeg::JpegEncoder::new(&mut jpg)
+            .write_image(&[128, 128, 128], 1, 1, ExtendedColorType::Rgb8)
+            .unwrap();
+        fs::write(package.join("README.md"), "# Hello").unwrap();
+        fs::write(package.join("icon.png"), &png).unwrap();
+        fs::write(package.join("icon.jpg"), &jpg).unwrap();
+        let folder = prepare_folder(&package).unwrap();
+        let mut upload = uploaded(&[
+            (
+                "manifest.json",
+                &fs::read_to_string(package.join("manifest.json")).unwrap(),
+            ),
+            (
+                "plugin.js",
+                &fs::read_to_string(package.join("plugin.js")).unwrap(),
+            ),
+            ("README.md", "# Hello"),
+        ]);
+        for (name, bytes) in [("icon.png", &png), ("icon.jpg", &jpg)] {
+            upload.files.push(ImportFile {
+                path: name.into(),
+                text: None,
+                base64: Some(BASE64.encode(bytes)),
+            });
+        }
+        let dropped = prepare_upload(upload).unwrap();
+        assert!(dropped.preview.warnings.is_empty());
+        let candidate = &dropped.preview.candidates[0];
+        assert_eq!(candidate.revision, folder.preview.candidates[0].revision);
+        let home = tempfile::tempdir().unwrap();
+        let manager = Manager::open(Some(home.path().into()), "test", false).unwrap();
+        dropped
+            .install(&manager, &dropped.preview.token, ".")
+            .unwrap();
+        let content = manager
+            .content("example.assets", &candidate.revision)
+            .unwrap();
+        assert_eq!(content.readme.as_deref(), Some("# Hello"));
+        assert_eq!(decode_content_icon(content.icon_png.as_deref()), Some(png));
+        assert_eq!(decode_content_icon(content.icon_jpg.as_deref()), Some(jpg));
+    }
+
+    #[test]
+    fn dropped_assets_reject_invalid_encodings_and_enforce_asset_limits() {
+        for (path, text, base64) in [
+            ("icon.png", None, Some("!".into())),
+            ("icon.png", Some("text".into()), Some("AA==".into())),
+            ("icon.png", None, None),
+            ("plugin.js", None, Some("AA==".into())),
+            ("README.md", Some("x".repeat(MAX_README_BYTES + 1)), None),
+            (
+                "icon.jpg",
+                None,
+                Some(BASE64.encode(vec![0; MAX_ICON_BYTES + 1])),
+            ),
+        ] {
+            assert!(
+                prepare_upload(FolderUpload {
+                    source: "invalid".into(),
+                    files: vec![ImportFile {
+                        path: path.into(),
+                        text,
+                        base64
+                    }],
+                })
+                .is_err(),
+                "{path}"
+            );
+        }
+        // Valid base64 still has to pass the package's real image validator.
+        let mut invalid = uploaded(&[
+            (
+                "manifest.json",
+                r#"{"id":"example.invalid","name":"Invalid","apiVersion":1}"#,
+            ),
+            ("plugin.js", "export {}"),
+        ]);
+        invalid.files.push(ImportFile {
+            path: "icon.png".into(),
+            text: None,
+            base64: Some("AA==".into()),
+        });
+        let prepared = prepare_upload(invalid).unwrap();
+        assert!(prepared.preview.candidates.is_empty());
+        assert_eq!(prepared.preview.warnings.len(), 1);
+    }
+
     fn plugin(root: &Path, folder: &str, id: &str) -> PathBuf {
         let path = root.join(folder);
         fs::create_dir_all(&path).unwrap();
@@ -764,6 +1282,90 @@ mod tests {
         path
     }
     #[test]
+    fn source_parent_and_matching_build_are_one_discovery_across_import_sources() {
+        let git = Git::new().unwrap();
+        git.run(&["init", "--template=", "repository"], LIMIT)
+            .unwrap();
+        let repo = git.scratch.path().join("repository");
+        plugin(&repo, "", "example.one");
+        fs::remove_file(repo.join("plugin.js")).unwrap();
+        plugin(&repo, "dist", "example.one");
+        let broken = plugin(&repo, "broken", "example.one");
+        fs::remove_file(broken.join("plugin.js")).unwrap();
+        let other = plugin(&repo, "other", "example.other");
+        fs::remove_file(other.join("plugin.js")).unwrap();
+        plugin(&repo, "other/dist", "example.different");
+        fs::create_dir_all(repo.join("malformed")).unwrap();
+        fs::write(repo.join("malformed/manifest.json"), "{}").unwrap();
+        plugin(&repo, "malformed/dist", "example.one");
+        let paths = [
+            "manifest.json",
+            "dist/manifest.json",
+            "dist/plugin.js",
+            "broken/manifest.json",
+            "other/manifest.json",
+            "other/dist/manifest.json",
+            "other/dist/plugin.js",
+            "malformed/manifest.json",
+            "malformed/dist/manifest.json",
+            "malformed/dist/plugin.js",
+        ];
+        let upload = FolderUpload {
+            source: "fixture".into(),
+            files: paths
+                .iter()
+                .map(|path| ImportFile {
+                    path: (*path).into(),
+                    text: Some(fs::read_to_string(repo.join(path)).unwrap()),
+                    base64: None,
+                })
+                .collect(),
+        };
+        git.run(&["-C", "repository", "add", "."], LIMIT).unwrap();
+        git.run(
+            &[
+                "-C",
+                "repository",
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "fixture",
+            ],
+            LIMIT,
+        )
+        .unwrap();
+        for prepared in [
+            prepare_folder(&repo).unwrap(),
+            prepare_upload(upload).unwrap(),
+            git.read_plugins("fixture".into(), None).unwrap(),
+        ] {
+            assert_eq!(prepared.preview.candidates.len(), 3);
+            assert_eq!(prepared.preview.warnings.len(), 3);
+            for folder in ["broken:", "other:", "malformed:"] {
+                assert!(prepared
+                    .preview
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.starts_with(folder)));
+            }
+        }
+        // With no valid build, a source-only manifest still explains why import failed.
+        fs::remove_file(repo.join("dist/plugin.js")).unwrap();
+        fs::remove_file(repo.join("malformed/dist/plugin.js")).unwrap();
+        let missing = prepare_folder(&repo).unwrap();
+        assert!(missing
+            .preview
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("Selected folder:")));
+    }
+
+    #[test]
     fn folder_discovers_nested_dist_and_installs_exact_preview_without_execution() {
         let root = tempfile::tempdir().unwrap();
         let source = plugin(root.path(), "pages/one/dist", "example.one");
@@ -777,7 +1379,10 @@ mod tests {
         assert_eq!(prepared.preview.candidates[0].path, "pages/one/dist");
         assert!(prepared.preview.candidates[0].readme_revision.is_some());
         assert!(prepared.preview.candidates[0].icon_png_revision.is_some());
-        assert_eq!(prepared.preview.warnings.len(), 1);
+        assert_eq!(
+            prepared.preview.warnings,
+            ["Selected folder: Missing file: plugin.js"]
+        );
         let home = tempfile::tempdir().unwrap();
         let manager = Manager::open(Some(home.path().into()), "test", false).unwrap();
         assert!(prepared
@@ -833,6 +1438,135 @@ mod tests {
             .unwrap();
         assert!(installed.enabled);
         assert!(installed.previous.is_some());
+    }
+    #[test]
+    fn remembered_sources_follow_revision_updates_rollback_and_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let source = plugin(root.path(), "dist", "example.remembered");
+        let home = tempfile::tempdir().unwrap();
+        let manager = Manager::open(Some(home.path().into()), "test", false).unwrap();
+        let folder = prepare_folder(root.path()).unwrap();
+        let first = folder
+            .install(&manager, &folder.preview.token, "dist")
+            .unwrap();
+        let first = first
+            .plugins
+            .iter()
+            .find(|p| p.manifest.id == "example.remembered")
+            .unwrap();
+        let folder_source = first.update_source.clone();
+        assert!(first.reloadable);
+        // The serialized folder shape is unchanged, so pre-existing registry entries still read.
+        let old_shape =
+            serde_json::json!({"root": root.path().canonicalize().unwrap(), "path": "dist"});
+        assert_eq!(
+            serde_json::from_value::<InstallSource>(old_shape).unwrap(),
+            folder_source.clone().unwrap()
+        );
+        manager.change("enable", "example.remembered").unwrap();
+        fs::write(source.join("plugin.js"), "export const updated = true;").unwrap();
+        let mut git = prepare_folder(root.path()).unwrap();
+        git.folder_root = None;
+        git.git_source = Some(GitSource {
+            repository: "https://example.com/plugins".into(),
+            reference: "release/one".into(),
+            path: ".".into(),
+            commit: None,
+        });
+        let next = git.install(&manager, &git.preview.token, "dist").unwrap();
+        let next = next
+            .plugins
+            .iter()
+            .find(|p| p.manifest.id == "example.remembered")
+            .unwrap();
+        assert!(next.enabled);
+        assert!(!next.reloadable);
+        let git_source = Some(InstallSource::Git(GitSource {
+            repository: "https://example.com/plugins".into(),
+            reference: "release/one".into(),
+            path: "dist".into(),
+            commit: None,
+        }));
+        assert_eq!(next.update_source, git_source);
+        let reopened = Manager::open(Some(home.path().into()), "test", false).unwrap();
+        let catalog = reopened.catalog().unwrap();
+        assert_eq!(
+            catalog
+                .plugins
+                .iter()
+                .find(|p| p.manifest.id == "example.remembered")
+                .unwrap()
+                .update_source,
+            git_source
+        );
+        assert!(reopened
+            .reload_live("example.remembered")
+            .err()
+            .unwrap()
+            .contains("reloadable folder"));
+        let rolled = reopened.change("rollback", "example.remembered").unwrap();
+        let rolled = rolled
+            .plugins
+            .iter()
+            .find(|p| p.manifest.id == "example.remembered")
+            .unwrap();
+        assert!(rolled.enabled);
+        assert!(rolled.reloadable);
+        assert_eq!(rolled.update_source, folder_source);
+        assert!(rolled.previous.is_none());
+        assert!(reopened
+            .change("rollback", "example.remembered")
+            .err()
+            .unwrap()
+            .contains("No previous revision"));
+        // Updating again creates a new rollback target and remembers the Git source again.
+        let updated = git.install(&reopened, &git.preview.token, "dist").unwrap();
+        let updated = updated
+            .plugins
+            .iter()
+            .find(|p| p.manifest.id == "example.remembered")
+            .unwrap();
+        assert!(updated.previous.is_some());
+        assert_eq!(updated.update_source, git_source);
+    }
+    #[test]
+    fn git_sources_record_the_installed_commit_and_still_read_without_one() {
+        let legacy = serde_json::json!({
+            "repository": "https://example.com/plugins",
+            "reference": "main",
+            "path": "dist"
+        });
+        let parsed: InstallSource = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(matches!(
+            &parsed,
+            InstallSource::Git(GitSource { commit: None, .. })
+        ));
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), legacy);
+
+        let commit = "a".repeat(40);
+        let root = tempfile::tempdir().unwrap();
+        plugin(root.path(), "dist", "example.pinned");
+        let mut git = prepare_folder(root.path()).unwrap();
+        git.folder_root = None;
+        git.git_source = Some(GitSource {
+            repository: "https://example.com/plugins".into(),
+            reference: "main".into(),
+            path: ".".into(),
+            commit: Some(commit.clone()),
+        });
+        let home = tempfile::tempdir().unwrap();
+        let manager = Manager::open(Some(home.path().into()), "test", false).unwrap();
+        let catalog = git.install(&manager, &git.preview.token, "dist").unwrap();
+        let installed = catalog
+            .plugins
+            .iter()
+            .find(|p| p.manifest.id == "example.pinned")
+            .unwrap();
+        let Some(InstallSource::Git(source)) = &installed.update_source else {
+            panic!("expected a Git source");
+        };
+        assert_eq!(source.commit.as_deref(), Some(commit.as_str()));
+        assert_eq!(source.path, "dist");
     }
     #[test]
     fn folder_skips_hidden_descendants_but_accepts_a_hidden_selection() {
@@ -893,7 +1627,7 @@ mod tests {
         )
         .unwrap();
         let folder = prepare_folder(&repo).unwrap();
-        let committed = git.read_plugins("fixture".into()).unwrap();
+        let committed = git.read_plugins("fixture".into(), None).unwrap();
         for prepared in [folder, committed] {
             assert_eq!(prepared.preview.candidates.len(), 1);
             assert_eq!(prepared.preview.warnings.len(), 3);
@@ -997,6 +1731,14 @@ mod tests {
             repository_url("git@github.com:block/plugins.git").unwrap(),
             "ssh://git@github.com/block/plugins.git"
         );
+        assert_eq!(
+            repository_url("org-49461806@github.com:squareup/buzz-context-manager.git").unwrap(),
+            "ssh://org-49461806@github.com/squareup/buzz-context-manager.git"
+        );
+        assert_eq!(
+            repository_url("dev.user@git.example.org:team/repo.git").unwrap(),
+            "ssh://dev.user@git.example.org/team/repo.git"
+        );
         assert!(repository_url("https://git.example.org/team/repo.git").is_ok());
         for input in [
             "/tmp/repo",
@@ -1008,10 +1750,118 @@ mod tests {
             "https://github.com/block/repo/tree/main/plugins",
             "--upload-pack=bad",
             "ssh://-oProxyCommand=bad/repo",
+            "-oProxyCommand=bad@github.com:owner/repo.git",
+            "user@-host:owner/repo.git",
+            "user@github.com:owner/repo.git?token=secret",
+            "user@github.com:owner/repo.git#fragment",
+            "user@github.com:owner/repo.git extra",
+            "/tmp/user@github.com:owner/repo.git",
+            "user@github.com:",
         ] {
             assert!(repository_url(input).is_err(), "{input}");
         }
         assert!(prepare_git("block/plugins", "--upload-pack=bad", None).is_err());
+    }
+    #[test]
+    fn required_commits_are_validated_before_any_git_work() {
+        for valid in ["a".repeat(40), "A".repeat(40), "0123456789abcdef".repeat(4)] {
+            assert!(RequiredCommit::parse(&valid).is_ok(), "{valid}");
+        }
+        for invalid in [
+            "",
+            "main",
+            "abc123",
+            &"a".repeat(39),
+            &"a".repeat(41),
+            &"a".repeat(63),
+            &"a".repeat(65),
+            &"g".repeat(40),
+            " ".repeat(40).as_str(),
+        ] {
+            let error = RequiredCommit::parse(invalid).err().unwrap();
+            assert!(error.contains("40 or 64 digit"), "{invalid:?}");
+        }
+    }
+    #[test]
+    fn only_pinned_imports_record_the_installed_commit() {
+        let head = "a".repeat(40);
+        let url = "https://github.com/acme/plugins".to_owned();
+        let pinned = git_source(
+            url.clone(),
+            "v1",
+            Some(RequiredCommit::parse(&head).unwrap()),
+            Some(&head),
+        );
+        assert_eq!(pinned.commit.as_deref(), Some(head.as_str()));
+        let unpinned = git_source(url, "v1", None, Some(&head));
+        assert_eq!(unpinned.commit, None);
+        assert!(!serde_json::to_string(&unpinned).unwrap().contains("commit"));
+    }
+    #[test]
+    fn pins_match_full_object_ids_of_either_hash_length() {
+        let commit = |git: &Git| {
+            git.run(&["-C", "repository", "add", "."], LIMIT).unwrap();
+            git.run(
+                &[
+                    "-C",
+                    "repository",
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-m",
+                    "fixture",
+                ],
+                LIMIT,
+            )
+            .unwrap();
+        };
+        for (format, length) in [("sha1", 40), ("sha256", 64)] {
+            let git = Git::new().unwrap();
+            git.run(
+                &[
+                    "init",
+                    "--template=",
+                    &format!("--object-format={format}"),
+                    "repository",
+                ],
+                LIMIT,
+            )
+            .unwrap();
+            plugin(
+                &git.scratch.path().join("repository"),
+                "dist",
+                "example.one",
+            );
+            commit(&git);
+            let head = git
+                .read_plugins("fixture".into(), None)
+                .unwrap()
+                .preview
+                .commit
+                .unwrap();
+            assert_eq!(head.len(), length, "{format}");
+            assert!(git.read_plugins("fixture".into(), Some(&head)).is_ok());
+            assert!(git
+                .read_plugins("fixture".into(), Some(&head.to_uppercase()))
+                .is_ok());
+            let other = if length == 40 { 64 } else { 40 };
+            let lookalike = if length == 64 {
+                head[..40].to_owned()
+            } else {
+                format!("{head}{}", "0".repeat(24))
+            };
+            for wrong in [lookalike, "0".repeat(other)] {
+                let refused = git.read_plugins("fixture".into(), Some(&wrong));
+                assert!(
+                    refused.err().unwrap().contains("not the required commit"),
+                    "{format} {wrong}"
+                );
+            }
+        }
     }
     #[test]
     fn git_reads_committed_blobs_without_checkout_filters_symlinks_or_scripts() {
@@ -1062,7 +1912,16 @@ mod tests {
             "uncommitted change",
         )
         .unwrap();
-        let prepared = git.read_plugins("fixture".into()).unwrap();
+        let prepared = git.read_plugins("fixture".into(), None).unwrap();
+        let head = prepared.preview.commit.clone().unwrap();
+        assert!(git
+            .read_plugins("fixture".into(), Some(&head.to_uppercase()))
+            .is_ok());
+        let refused = git
+            .read_plugins("fixture".into(), Some(&"0".repeat(40)))
+            .err()
+            .unwrap();
+        assert!(refused.contains(&head) && refused.contains("not the required commit"));
         assert_eq!(prepared.preview.candidates.len(), 2);
         assert!(prepared
             .preview
@@ -1115,6 +1974,76 @@ mod tests {
             Some(png().as_slice())
         );
     }
+    #[test]
+    fn saved_folder_checks_preserve_install_and_other_previews() {
+        let root = tempfile::tempdir().unwrap();
+        let source = plugin(root.path(), "dist", "example.checked");
+        let home = tempfile::tempdir().unwrap();
+        let manager = Manager::open(Some(home.path().into()), "test", false).unwrap();
+        let pending = prepare_folder(root.path()).unwrap();
+        let installed = pending
+            .install(&manager, &pending.preview.token, "dist")
+            .unwrap();
+        let original = installed
+            .plugins
+            .iter()
+            .find(|p| p.manifest.id == "example.checked")
+            .unwrap()
+            .revision
+            .clone();
+        assert_eq!(
+            check_saved_folder(&manager, "example.checked").unwrap(),
+            original
+        );
+        fs::write(
+            source.join("plugin.js"),
+            "export function activate() { /* changed */ }",
+        )
+        .unwrap();
+        assert_ne!(
+            check_saved_folder(&manager, "example.checked").unwrap(),
+            original
+        );
+        // A read never installs bytes or invalidates an unrelated captured preview.
+        let current = manager.catalog().unwrap();
+        assert_eq!(
+            current
+                .plugins
+                .iter()
+                .find(|p| p.manifest.id == "example.checked")
+                .unwrap()
+                .revision,
+            original
+        );
+        pending
+            .install(&manager, &pending.preview.token, "dist")
+            .unwrap();
+        assert!(check_saved_folder(&manager, "missing").is_err());
+        assert!(check_saved_folder(&manager, "buzz.channels").is_err());
+    }
+
+    #[test]
+    fn saved_folder_checks_report_build_errors_and_do_not_substitute_siblings() {
+        let root = tempfile::tempdir().unwrap();
+        let source = plugin(root.path(), "dist", "example.checked");
+        let home = tempfile::tempdir().unwrap();
+        let manager = Manager::open(Some(home.path().into()), "test", false).unwrap();
+        let pending = prepare_folder(root.path()).unwrap();
+        pending
+            .install(&manager, &pending.preview.token, "dist")
+            .unwrap();
+        plugin(root.path(), "other", "example.checked");
+        let bound = prepare_saved_folder(&manager, "example.checked").unwrap();
+        assert_eq!(bound.preview.candidates.len(), 1);
+        assert!(bound
+            .install(&manager, &bound.preview.token, "other")
+            .is_err());
+        fs::remove_file(source.join("plugin.js")).unwrap();
+        let error = check_saved_folder(&manager, "example.checked").unwrap_err();
+        assert!(error.contains("dist:"), "{error}");
+        assert!(error.contains("plugin.js"), "{error}");
+    }
+
     #[test]
     fn signed_folder_import_load_reload_and_publisher_continuity() {
         let root = tempfile::tempdir().unwrap();
@@ -1278,6 +2207,7 @@ mod tests {
         let mut git = Git::new().unwrap();
         let repository = format!("{base}/git/{}/plugin", "a".repeat(64));
         git.authorization = Some((repository.clone(), "dG9rZW4=".into()));
+        git.federated_header = Some("Bearer fixture-assertion".into());
         for url in [
             repository,
             format!("{base}/git/{}/plugin-other", "a".repeat(64)),
@@ -1288,7 +2218,7 @@ mod tests {
                     LIMIT,
                 )
                 .unwrap_err();
-            assert!(error.contains("error: 302"), "{error}");
+            assert_eq!(error, "Git could not read the protected repository");
         }
         let seen = requests.join().unwrap();
         let authorization = |head: &Vec<String>| {
@@ -1297,6 +2227,13 @@ mod tests {
         };
         assert!(seen[0][0].contains("/plugin/info/refs"), "{:?}", seen[0]);
         assert!(authorization(&seen[0]));
+        assert_eq!(
+            seen[0]
+                .iter()
+                .filter(|line| *line == "Nostr-Federated-Identity: Bearer fixture-assertion")
+                .count(),
+            1
+        );
         // A sibling whose name shares the prefix is a different repository.
         assert!(
             seen[1][0].contains("/plugin-other/info/refs"),
@@ -1304,6 +2241,9 @@ mod tests {
             seen[1]
         );
         assert!(!authorization(&seen[1]));
+        assert!(!seen[1]
+            .iter()
+            .any(|line| line.starts_with("Nostr-Federated-Identity:")));
     }
     #[test]
     fn rejects_malformed_authorization_before_running_git() {
@@ -1313,6 +2253,89 @@ mod tests {
                 .unwrap();
             assert_eq!(error, "Invalid repository authorization");
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn block_agent_socket_reaches_git() {
+        use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let socket = home
+            .path()
+            .join("Library/Application Support/block-ssh-agent/agent.sock");
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let _agent = UnixListener::bind(&socket).unwrap();
+        let mut git = Git::new().unwrap();
+        git.use_block_ssh_agent(
+            "ssh://org-49461806@github.com/squareup/plugin.git",
+            home.path(),
+        )
+        .unwrap();
+
+        let bin = home.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let executable = bin.join("git");
+        fs::write(&executable, "#!/bin/sh\n/usr/bin/printenv SSH_AUTH_SOCK\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut command = git.command();
+        command.env("PATH", &bin);
+        let output = git.run_command(command, 1024).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap().trim(),
+            socket.to_str().unwrap()
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn block_agent_selection_is_limited_to_squareup_ssh() {
+        use std::os::unix::net::UnixListener;
+
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let socket = home
+            .path()
+            .join("Library/Application Support/block-ssh-agent/agent.sock");
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let _agent = UnixListener::bind(&socket).unwrap();
+        for repository in [
+            "https://github.com/squareup/plugin.git",
+            "ssh://git@github.com/squareup/plugin.git",
+            "ssh://org-49461806@github.com/other/plugin.git",
+            "ssh://org-49461806@github.com.example/squareup/plugin.git",
+            "ssh://org-49461806@github.com:2222/squareup/plugin.git",
+        ] {
+            let mut git = Git::new().unwrap();
+            let before = git
+                .command()
+                .get_envs()
+                .map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned())))
+                .collect::<Vec<_>>();
+            git.use_block_ssh_agent(repository, home.path()).unwrap();
+            let after = git
+                .command()
+                .get_envs()
+                .map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned())))
+                .collect::<Vec<_>>();
+            assert_eq!(before, after, "{repository}");
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn block_agent_may_be_absent_but_must_be_a_socket_when_present() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let mut git = Git::new().unwrap();
+        let repository = "ssh://org-49461806@github.com/squareup/plugin.git";
+        git.use_block_ssh_agent(repository, home.path()).unwrap();
+        assert!(git.ssh_auth_sock.is_none());
+        let socket = home
+            .path()
+            .join("Library/Application Support/block-ssh-agent/agent.sock");
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        fs::write(&socket, "").unwrap();
+        assert_eq!(
+            git.use_block_ssh_agent(repository, home.path())
+                .unwrap_err(),
+            "Block SSH agent path is not a socket"
+        );
     }
     #[test]
     fn git_deadline_and_output_limits_fail() {

@@ -150,6 +150,7 @@ function Content({
               />
             )}
             <IconButton
+              hint="familiar"
               size="toolbar"
               ref={hide}
               onClick={close}

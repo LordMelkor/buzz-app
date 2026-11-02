@@ -1,6 +1,7 @@
 [package]
 name = "buzz-agent-controller"
 version = "0.1.0"
+license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.89"
 
@@ -16,6 +17,7 @@ hmac = "0.12"
 base64 = "0.22"
 nostr = { version = "=0.45.5", default-features = false, features = ["std", "nip44", "os-rng"] }
 getrandom = "0.3"
+buzz-credential-store = { path = "../credential-store" }
 url = "2"
 secp256k1 = { version = "0.31", default-features = false, features = ["std"] }
 bech32 = "0.11"
@@ -27,6 +29,3 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
 nix = { version = "0.31", features = ["user"] }
-
-[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
-buzz-credential-store = { path = "../credential-store" }

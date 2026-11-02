@@ -68,7 +68,8 @@ export function PanelSubviewHost({
 export function PanelSubview(props: {
   title: string;
   backLabel: string;
-  onBack(): void;
+  /** `keepOwner`: a tabbed host is clearing the owner's detail tabs. */
+  onBack(options?: { keepOwner?: boolean }): void;
   children: ReactNode;
 }) {
   const tabbed = !!usePanelTabHost();

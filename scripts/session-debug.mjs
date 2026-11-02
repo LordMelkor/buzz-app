@@ -92,9 +92,21 @@ export async function createInspector({
   rates = {},
 }) {
   const home = homedir();
+  // Buzz's Codex home (see src/bundled/codex/codex.sh), then the user's,
+  // which holds threads from older Buzz builds.
+  const buzzCodex =
+    process.platform === "darwin"
+      ? join(home, "Library/Application Support/Buzz/codex-home")
+      : join(
+          process.env.XDG_DATA_HOME || join(home, ".local/share"),
+          "buzz/codex-home",
+        );
+  const userCodex = process.env.CODEX_HOME || join(home, ".codex");
   roots ??= [
-    join(process.env.CODEX_HOME || join(home, ".codex"), "sessions"),
-    join(process.env.CODEX_HOME || join(home, ".codex"), "archived_sessions"),
+    ...[buzzCodex, userCodex].flatMap((codex) => [
+      join(codex, "sessions"),
+      join(codex, "archived_sessions"),
+    ]),
     join(process.env.CLAUDE_CONFIG_DIR || join(home, ".claude"), "projects"),
   ];
   traceRoot ??= join(home, ".buzz", "session-debug");

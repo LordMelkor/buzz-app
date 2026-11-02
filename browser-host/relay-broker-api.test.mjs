@@ -2,6 +2,7 @@ import { createConsola } from "consola";
 import { Context } from "@deepseek-ai/cordis";
 import { HostService } from "../src/features/host/service.ts";
 import { authTagOwner } from "../src/features/agents/owner-attestation.ts";
+import { publishAgentRecord } from "../src/features/agents/relay-removal.ts";
 import { logSocketFrame } from "../src/features/developer/traffic.ts";
 import { getLogger, setLogLevel } from "../src/features/developer/logging.ts";
 import { brokerSocket, openBrokerSocket } from "../tests/broker-socket.mjs";
@@ -414,10 +415,15 @@ test("Git authorization signs only this community's exact repository URL", async
   }
 });
 
-test("saved icon discovery survives join-policy failure without changing join discovery", async () => {
+test("saved community presentation survives join-policy failure without changing join discovery", async () => {
   const icon = "https://images.example/icon@2x.png";
   const h = await harness((call) => {
-    if (call.url === fixtureRelayUrl) return Response.json({ icon });
+    if (call.url === fixtureRelayUrl)
+      return Response.json({
+        icon,
+        name: "Published",
+        description: "Not projected",
+      });
     if (call.url === `${fixtureRelayUrl}/api/join-policy`)
       return new Response("unavailable", { status: 503 });
     return new Response(null, { status: 404 });
@@ -425,7 +431,7 @@ test("saved icon discovery survives join-policy failure without changing join di
   try {
     const iconResponse = await h.get("icon-info");
     expect(iconResponse.status).toBe(200);
-    expect(await iconResponse.json()).toEqual({ icon });
+    expect(await iconResponse.json()).toEqual({ icon, name: "Published" });
     expect(h.calls.map(({ url }) => url)).toEqual([fixtureRelayUrl]);
 
     const joinResponse = await h.get("info");
@@ -1625,178 +1631,120 @@ test("presence snapshot progresses while an ordinary response body is held", asy
     await h.close();
   }
 });
-test.each([undefined, "22222222-2222-4222-8222-222222222222"])(
-  "real outbox creates, invites and sends without Sessions support (parent: %s)",
-  async (parent) => {
-    const h = await harness(
-      (call) =>
-        Response.json(
-          call.url.endsWith("/events")
-            ? { accepted: true, event_id: call.body.id }
-            : [],
-        ),
-      { channelCreation: true },
-    );
-    let owner;
-    let traffic;
-    try {
-      const transport = await connectBrokerTransport(h.base);
-      traffic = await openBrokerSocket(transport);
-      expect(transport.writer.kinds).toContain(9007);
-      expect(transport.writer.kinds).not.toContain(9050);
-      owner = createOutbox(transport.viewer, transport.writer, {
-        load: () => [],
-        save: () => {},
-      });
-      const id = "11111111-1111-4111-8111-111111111111";
-      const creationId = owner.outbox.send({
-        kind: 9007,
-        content: "",
-        tags: [
-          ["h", id],
-          ["name", "Work"],
-          ["visibility", "private"],
-          ["channel_type", "stream"],
-          [
-            "about",
-            `Buzz session (buzz.sessions/v1)${parent ? `\nparent:${parent}` : ""}`,
-          ],
-          ...(parent ? [] : [["ttl", "600"]]),
-        ],
-      });
-      await vi.waitFor(() =>
-        expect(
-          owner.local.snapshot().find((row) => row.event.id === creationId)
-            ?.delivery,
-        ).toBe("accepted"),
-      );
-      const creation = owner.local
-        .snapshot()
-        .find((row) => row.event.id === creationId)?.event;
-      expect(creation).toBeDefined();
-      const fixtureKey = new Uint8Array(32);
-      fixtureKey[31] = 7;
-      for (const ttl of ["", "0", "+1", "1\n", "2147483648"]) {
-        const invalid = {
-          ...creation,
-          tags: [
-            ...creation.tags.filter(
-              ([key]) => key !== "ttl" && key !== "client-id",
-            ),
-            ["ttl", ttl],
-          ],
-        };
-        expect((await h.post("sign", invalid)).status).toBe(400);
-        const signed = finalizeEvent(structuredClone(invalid), fixtureKey);
-        expect((await h.post("publish", signed)).status).toBe(400);
-      }
-      if (parent) {
-        const invalid = {
-          ...creation,
-          tags: [
-            ...creation.tags.filter(([key]) => key !== "client-id"),
-            ["ttl", "600"],
-          ],
-        };
-        expect((await h.post("sign", invalid)).status).toBe(400);
-        expect(
-          (
-            await h.post(
-              "publish",
-              finalizeEvent(structuredClone(invalid), fixtureKey),
-            )
-          ).status,
-        ).toBe(400);
-      }
-      const temporaryCreationId = owner.outbox.send({
-        kind: 9007,
-        content: "",
-        tags: [
-          ["h", "33333333-3333-4333-8333-333333333333"],
-          ["name", "Standup"],
-          ["visibility", "open"],
-          ["channel_type", "stream"],
-          ["ttl", "604800"],
-        ],
-      });
-      await vi.waitFor(() =>
-        expect(
-          owner.local
-            .snapshot()
-            .find((row) => row.event.id === temporaryCreationId)?.delivery,
-        ).toBe("accepted"),
-      );
-      const invitationId = owner.outbox.send({
-        kind: 9000,
-        content: "",
-        tags: [
-          ["h", id],
-          ["p", "a".repeat(64)],
-        ],
-      });
-      await vi.waitFor(() =>
-        expect(
-          owner.local.snapshot().find((row) => row.event.id === invitationId)
-            ?.delivery,
-        ).toBe("accepted"),
-      );
-      const messageId = owner.outbox.send({
-        kind: 9,
-        content: "Hello",
-        tags: [
-          ["h", id],
-          ["p", "a".repeat(64)],
-        ],
-      });
-      await vi.waitFor(() =>
-        expect(
-          owner.local.snapshot().find((row) => row.event.id === messageId)
-            ?.delivery,
-        ).toBe("accepted"),
-      );
-      expect(h.publications.map((event) => event.kind)).toEqual([
-        9007, 9007, 9000, 9,
-      ]);
-      const denied = await h.post("sign", {
-        kind: 9050,
-        created_at: 1700000000,
-        content: JSON.stringify({ action: "create", title: "Work" }),
-        tags: [["h", id]],
-      });
-      expect(denied.status).toBe(400);
-    } finally {
-      owner?.dispose();
-      traffic?.dispose();
-      await h.close();
-    }
-  },
-);
-
-test.each(["sign", "publish"])(
-  "%s rejects truncated channel creation tags as a client error",
-  async (route) => {
-    const h = await harness(success, { channelCreation: true });
-    try {
-      const required = [
-        ["h", "11111111-1111-4111-8111-111111111111"],
+test("real outbox creates, invites and sends", async () => {
+  const h = await harness(
+    (call) =>
+      Response.json(
+        call.url.endsWith("/events")
+          ? { accepted: true, event_id: call.body.id }
+          : [],
+      ),
+    { channelCreation: true },
+  );
+  let owner;
+  let traffic;
+  try {
+    const transport = await connectBrokerTransport(h.base);
+    traffic = await openBrokerSocket(transport);
+    expect(transport.writer.kinds).toContain(9007);
+    owner = createOutbox(transport.viewer, transport.writer, {
+      load: () => [],
+      save: () => {},
+    });
+    const id = "11111111-1111-4111-8111-111111111111";
+    const creationId = owner.outbox.send({
+      kind: 9007,
+      content: "",
+      tags: [
+        ["h", id],
         ["name", "Work"],
+        ["visibility", "private"],
+        ["channel_type", "stream"],
+        ["ttl", "600"],
+        ["t", "buzz.solo"],
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(
+        owner.local.snapshot().find((row) => row.event.id === creationId)
+          ?.delivery,
+      ).toBe("accepted"),
+    );
+    const creation = owner.local
+      .snapshot()
+      .find((row) => row.event.id === creationId)?.event;
+    expect(creation).toBeDefined();
+    const fixtureKey = new Uint8Array(32);
+    fixtureKey[31] = 7;
+    for (const ttl of ["", "2147483648"]) {
+      const invalid = {
+        ...creation,
+        tags: [
+          ...creation.tags.filter(
+            ([key]) => key !== "ttl" && key !== "client-id",
+          ),
+          ["ttl", ttl],
+        ],
+      };
+      expect((await h.post("sign", invalid)).status).toBe(400);
+      const signed = finalizeEvent(structuredClone(invalid), fixtureKey);
+      expect((await h.post("publish", signed)).status).toBe(400);
+    }
+    const temporaryCreationId = owner.outbox.send({
+      kind: 9007,
+      content: "",
+      tags: [
+        ["h", "33333333-3333-4333-8333-333333333333"],
+        ["name", "Standup"],
         ["visibility", "open"],
         ["channel_type", "stream"],
-      ];
-      for (let length = 0; length < required.length; length++) {
-        const response = await h.post(route, {
-          kind: 9007,
-          created_at: 1700000000,
-          content: "",
-          tags: required.slice(0, length),
-        });
-        expect(response.status).toBe(400);
-      }
-    } finally {
-      await h.close();
-    }
-  },
-);
+        ["ttl", "604800"],
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(
+        owner.local
+          .snapshot()
+          .find((row) => row.event.id === temporaryCreationId)?.delivery,
+      ).toBe("accepted"),
+    );
+    const invitationId = owner.outbox.send({
+      kind: 9000,
+      content: "",
+      tags: [
+        ["h", id],
+        ["p", "a".repeat(64)],
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(
+        owner.local.snapshot().find((row) => row.event.id === invitationId)
+          ?.delivery,
+      ).toBe("accepted"),
+    );
+    const messageId = owner.outbox.send({
+      kind: 9,
+      content: "Hello",
+      tags: [
+        ["h", id],
+        ["p", "a".repeat(64)],
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(
+        owner.local.snapshot().find((row) => row.event.id === messageId)
+          ?.delivery,
+      ).toBe("accepted"),
+    );
+    expect(h.publications.map((event) => event.kind)).toEqual([
+      9007, 9007, 9000, 9,
+    ]);
+  } finally {
+    owner?.dispose();
+    traffic?.dispose();
+    await h.close();
+  }
+});
 
 test("member addition works without channel creation, while role elevation remains rejected", async () => {
   const h = await harness(success);
@@ -1822,7 +1770,19 @@ test("member addition works without channel creation, while role elevation remai
       ).toBe("accepted"),
     );
     expect(h.publications).toHaveLength(1);
-    for (const role of ["owner", "admin", "member"]) {
+    const participantId = owner.outbox.send({
+      kind: 9000,
+      content: "",
+      tags: [...tags, ["role", "member"]],
+    });
+    await vi.waitFor(() =>
+      expect(
+        owner.local.snapshot().find((row) => row.event.id === participantId)
+          ?.delivery,
+      ).toBe("accepted"),
+    );
+    expect(h.publications).toHaveLength(2);
+    for (const role of ["owner", "admin", "guest"]) {
       const denied = await h.post("sign", {
         kind: 9000,
         content: "",
@@ -2070,6 +2030,171 @@ test("message/reaction deletions pass real signing and publication without admit
   }
 });
 
+test("agent profile saves publish owner-signed listings through the broker outbox", async () => {
+  const h = await harness(success);
+  let traffic;
+  let owner;
+  try {
+    const transport = await connectBrokerTransport(h.base);
+    traffic = await openBrokerSocket(transport);
+    owner = createOutbox(transport.viewer, transport.writer, {
+      load: () => [],
+      save: () => {},
+    });
+    const entry = {
+      pubkey: "ab".repeat(32),
+      name: "Renamed agent",
+      picture: "https://example.com/new.png",
+      runtime: "block.builderlab/builderlab",
+      prior: {
+        content: {
+          name: "Old name",
+          picture: "https://example.com/old.png",
+          parallelism: 2,
+          respond_to: "mentions",
+        },
+        tags: [
+          ["d", "ab".repeat(32)],
+          ["runtime", "block.builderlab/builderlab"],
+          ["legacy-setting", "kept"],
+        ],
+      },
+    };
+    const record = await publishAgentRecord(
+      { outbox: owner.outbox },
+      entry,
+      new AbortController().signal,
+    );
+    expect(h.publications).toHaveLength(1);
+    const published = h.publications[0];
+    expect(verifyEvent(published)).toBe(true);
+    expect(published).toMatchObject({
+      kind: 30177,
+      pubkey: transport.viewer,
+      content: JSON.stringify(record.content),
+    });
+    expect(JSON.parse(published.content)).toEqual({
+      name: entry.name,
+      picture: entry.picture,
+      parallelism: 2,
+      respond_to: "mentions",
+    });
+    expect(published.tags).toEqual([
+      ["d", entry.pubkey],
+      ["runtime", entry.runtime],
+      ["legacy-setting", "kept"],
+      ["client-id", expect.any(String)],
+    ]);
+    expect(owner.outbox.snapshot()).toEqual([]);
+    const stranger = finalizeEvent({ ...published }, generateSecretKey());
+    expect((await h.post("publish", stranger)).status).toBe(400);
+    expect(
+      (await h.post("publish", { ...published, sig: "00".repeat(64) })).status,
+    ).toBe(400);
+    expect(h.publications).toHaveLength(1);
+  } finally {
+    owner?.dispose();
+    traffic?.dispose();
+    await h.close();
+  }
+});
+
+test("agent record signing refuses malformed coordinates, content and timestamps", async () => {
+  const h = await harness(success);
+  const content = { name: "Agent", parallelism: 1, respond_to: "owner-only" };
+  const template = {
+    kind: 30177,
+    created_at: 1700000000,
+    content: JSON.stringify(content),
+    tags: [["d", "ab".repeat(32)]],
+  };
+  try {
+    const signed = await h.post("sign", template);
+    expect(signed.status).toBe(200);
+    expect(verifyEvent(await signed.json())).toBe(true);
+    for (const invalid of [
+      { tags: [] },
+      { tags: [...template.tags, ...template.tags] },
+      { tags: [["d", "AB".repeat(32)]] },
+      { tags: [["d", "agent"]] },
+      { tags: [["d", "ab".repeat(32), "extra"]] },
+      { tags: [null] },
+      { tags: [...template.tags, ["extra", 1]] },
+      { created_at: -1 },
+      { created_at: 1.5 },
+      { content: "not JSON" },
+      { content: "null" },
+      { content: "[]" },
+      ...[
+        { name: "Agent" },
+        { ...content, name: " " },
+        { ...content, parallelism: undefined },
+        { ...content, parallelism: -1 },
+        { ...content, parallelism: 1.5 },
+        { ...content, parallelism: "1" },
+        { ...content, respond_to: undefined },
+        { ...content, respond_to: null },
+        { ...content, respond_to: [] },
+      ].map((body) => ({ content: JSON.stringify(body) })),
+    ])
+      expect((await h.post("sign", { ...template, ...invalid })).status).toBe(
+        400,
+      );
+    expect(h.publications).toEqual([]);
+  } finally {
+    await h.close();
+  }
+});
+
+test.each(["a", "é"])(
+  "agent record signing admits publishable UTF-8 boundary frames with %s content",
+  async (character) => {
+    const h = await harness(success);
+    try {
+      await h.start();
+      const content = (prompt) =>
+        JSON.stringify({
+          name: "Agent",
+          parallelism: 0,
+          respond_to: "owner-only",
+          system_prompt: prompt,
+        });
+      const template = {
+        kind: 30177,
+        created_at: 1700000000,
+        content: content(""),
+        tags: [["d", "ab".repeat(32)]],
+      };
+      const baseline = await h.post("sign", template);
+      expect(baseline.status).toBe(200);
+      const signedTemplate = await baseline.json();
+      const size = (event) =>
+        Buffer.byteLength(JSON.stringify(["EVENT", event]));
+      const room = 64 * 1024 - size(signedTemplate);
+      const bytes = Buffer.byteLength(character);
+      const prompt =
+        character.repeat(Math.floor(room / bytes)) + "a".repeat(room % bytes);
+      const largest = { ...template, content: content(prompt) };
+      const signed = await h.post("sign", largest);
+      expect(signed.status).toBe(200);
+      const event = await signed.json();
+      expect(verifyEvent(event)).toBe(true);
+      expect(size(event)).toBe(64 * 1024);
+      expect((await h.post("publish", event)).status).toBe(200);
+      expect(h.publications).toEqual([JSON.parse(JSON.stringify(event))]);
+
+      const oversized = { ...template, content: content(`${prompt}a`) };
+      expect(size({ ...event, content: oversized.content })).toBe(
+        64 * 1024 + 1,
+      );
+      expect((await h.post("sign", oversized)).status).toBe(400);
+      expect(h.publications).toHaveLength(1);
+    } finally {
+      await h.close();
+    }
+  },
+);
+
 test("agent record deletions sign and publish only the viewer's own kind 30177 coordinate", async () => {
   const h = await harness((call) =>
     Response.json({ accepted: true, event_id: call.body.id }),
@@ -2190,6 +2315,13 @@ test("status signing and publication preserve scoped replacements and explicit c
           ["expiration", "1700086400"],
         ],
       },
+      {
+        content: "Celebrating",
+        tags: [
+          ["d", "general"],
+          ["emoji", ":party:", "https://emoji.test/party.svg"],
+        ],
+      },
       { content: "", tags: [["d", "general"]] },
     ]) {
       const response = await h.post("sign", {
@@ -2262,7 +2394,7 @@ test("status signing and publication preserve scoped replacements and explicit c
         (await h.post("publish", finalizeEvent(template, secret))).status,
       ).toBe(400);
     }
-    expect(h.publications).toHaveLength(2);
+    expect(h.publications).toHaveLength(3);
   } finally {
     await h.close();
   }
@@ -3517,19 +3649,23 @@ test("details routes are narrow, require the live owner, and do not widen lifecy
       expect(signed).toMatchObject(change);
       await transport.channelDetails.publish(signed, signal);
     }
-    for (const ttl of ["1", "2147483647", ""]) {
+    for (const role of ["member", "guest"]) {
       const change = {
         ...template,
-        tags: [...template.tags.slice(0, 2), ["ttl", ttl]],
+        tags: [...template.tags, ["join_role", role]],
       };
+      expect((await h.post("sign", change)).status).toBe(400);
+      expect((await h.post("channel-lifecycle-sign", change)).status).toBe(400);
       const signed = await transport.channelDetails.sign(change, signal);
       expect(signed).toMatchObject(change);
       await transport.channelDetails.publish(signed, signal);
     }
     for (const tags of [
-      [...template.tags.slice(0, 2), ["ttl", "+1"]],
-      [...template.tags.slice(0, 2), ["ttl", "1\n"]],
-      [...template.tags.slice(0, 2), ["ttl", "1"], ["ttl", ""]],
+      [...template.tags, ["join_role", "admin"]],
+      [...template.tags, ["join_role", "guest"], ["join_role", "member"]],
+      [...template.tags.slice(0, 3), ["ttl", "+1"]],
+      [...template.tags.slice(0, 3), ["ttl", "1\n"]],
+      [...template.tags.slice(0, 3), ["ttl", "1"], ["ttl", ""]],
       [template.tags[0], ["ttl", "1"], template.tags[1]],
     ]) {
       const change = { ...template, tags };
@@ -3555,13 +3691,13 @@ test("details routes are narrow, require the live owner, and do not widen lifecy
     expect(reopened).toMatchObject(reopening);
     expect((await h.post("publish", reopened)).status).toBe(400);
     await transport.channelDetails.publish(reopened, signal);
-    expect(h.publications).toHaveLength(7);
+    expect(h.publications).toHaveLength(6);
     const foreign = finalizeEvent(
       structuredClone(template),
       new Uint8Array(32).fill(5),
     );
     expect((await h.post("channel-details-publish", foreign)).status).toBe(400);
-    expect(h.publications).toHaveLength(7);
+    expect(h.publications).toHaveLength(6);
   } finally {
     live?.dispose();
     await h.close();

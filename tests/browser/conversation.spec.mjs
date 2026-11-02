@@ -283,12 +283,14 @@ test("independent packed author consumer and native-installed contribution survi
     await expect(recipients).toHaveCount(1);
     const withMention = await draft.evaluate((element) => element.value);
     const textarea = await draft.elementHandle();
-    await page.evaluate(() =>
-      window.conversationFixture.change("disable", "buzz.mentions"),
-    );
+    expect(
+      await page.evaluate(() =>
+        window.conversationFixture.change("disable", "buzz.mentions"),
+      ),
+    ).toBe(false);
     await expect(
       page.getByRole("button", { name: "Mention a member", exact: true }),
-    ).toHaveCount(0);
+    ).toHaveCount(1);
     await expect(draft).toHaveJSProperty("value", withMention);
     await expect(recipients).toHaveCount(1);
     expect(await textarea.evaluate((el) => el.isConnected)).toBe(true);
@@ -303,12 +305,6 @@ test("independent packed author consumer and native-installed contribution survi
       "value",
       withMention.replace("@Member", ""),
     );
-    await page.evaluate(() =>
-      window.conversationFixture.change("enable", "buzz.mentions"),
-    );
-    await expect(
-      page.getByRole("button", { name: "Mention a member", exact: true }),
-    ).toHaveCount(1);
     await draft.fill("Channels draft");
     await draft.focus();
     await draft.evaluate((el) => el.setSelectionRange(2, 5));
@@ -342,34 +338,24 @@ test("independent packed author consumer and native-installed contribution survi
     const historic = page.locator('img[src*="history.png"]');
     await expect(historic).toHaveCount(1);
     await expect(page.locator('img[src*="reaction.png"]')).toHaveCount(1);
-    await page.evaluate(() =>
-      window.conversationFixture.change("disable", "buzz.emoji"),
-    );
+    expect(
+      await page.evaluate(() =>
+        window.conversationFixture.change("disable", "buzz.emoji"),
+      ),
+    ).toBe(false);
     await expect(
       page.getByRole("button", { name: "Emoji and GIFS", exact: true }),
-    ).toHaveCount(0);
-    await expect(page.locator("em-emoji-picker")).toHaveCount(0);
-    await expect(historic).toHaveCount(0);
-    await expect(
-      page.getByText("History :party:", { exact: true }),
-    ).toBeVisible();
+    ).toHaveCount(1);
+    await expect(page.locator("em-emoji-picker")).toHaveCount(1);
+    await expect(historic).toHaveCount(1);
+    await expect(page.locator('img[src*="reaction.png"]')).toHaveCount(1);
+    await page.keyboard.press("Escape");
     expect(await textarea.evaluate((el) => el.isConnected)).toBe(true);
     await expect(draft).toHaveJSProperty("value", "Channels draft");
-    // Plugin-independent recovery when the catalog is unavailable.
+    // A failed refresh keeps the loaded catalog; plugin-independent sends
+    // still resolve its tags without asking for message preparation retry.
     await page.evaluate(() => window.conversationFixture.fail(true));
     await draft.fill(":party:");
-    await draft.press("Enter");
-    await expect(
-      page.getByRole("button", { name: "Retry message preparation" }),
-    ).toBeVisible();
-    await page.evaluate(() => window.conversationFixture.fail(false));
-    await page
-      .getByRole("button", { name: "Retry message preparation" })
-      .click();
-    await expect(
-      page.getByRole("button", { name: "Retry message preparation" }),
-    ).toHaveCount(0);
-    await expect(draft).toHaveJSProperty("value", ":party:");
     await draft.press("Enter");
     await expect
       .poll(() =>
@@ -381,9 +367,10 @@ test("independent packed author consumer and native-installed contribution survi
         () => window.conversationFixture.report.signed[0].tags,
       ),
     ).toContainEqual(["emoji", "party", "https://a.test/media/current.png"]);
-    await page.evaluate(() =>
-      window.conversationFixture.change("enable", "buzz.emoji"),
-    );
+    await expect(
+      page.getByRole("button", { name: "Retry message preparation" }),
+    ).toHaveCount(0);
+    await page.evaluate(() => window.conversationFixture.fail(false));
     await expect(
       page.getByRole("button", { name: "Emoji and GIFS", exact: true }),
     ).toHaveCount(1);
@@ -391,11 +378,13 @@ test("independent packed author consumer and native-installed contribution survi
     await draft.fill("reject :party:");
     await draft.press("Enter");
     // Delivery feedback intentionally waits 10 seconds; leave time for the UI timer.
-    await expect(page.getByRole("button", { name: /Retry/ })).toBeVisible({
-      timeout: 15_000,
+    const retryDelivery = page.getByRole("button", {
+      name: "Retry",
+      exact: true,
     });
+    await expect(retryDelivery).toBeVisible({ timeout: 15_000 });
     await page.evaluate(() => window.conversationFixture.replace());
-    await page.getByRole("button", { name: /Retry/ }).click();
+    await retryDelivery.click();
     await expect
       .poll(() =>
         page.evaluate(() => window.conversationFixture.report.published.length),

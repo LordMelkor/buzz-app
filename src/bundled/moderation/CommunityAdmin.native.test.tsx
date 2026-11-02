@@ -18,6 +18,7 @@ import { keypair, signed, type Key } from "../../features/relay/testing";
 import type { RelayData } from "../../features/relay/service";
 import { CommunityAdmin } from "./CommunityAdmin";
 import { apply } from "./index";
+import { createCommunityMembership } from "./membership";
 
 const { relayKey } = vi.hoisted(() => ({ relayKey: "f".repeat(64) }));
 
@@ -172,8 +173,11 @@ afterEach(() => {
 it("keeps the Membership card registered in a native build", () => {
   expect(nativeIdentityEnabled()).toBe(true);
   const settingsCards = { register: vi.fn() };
+  const data = relay(owner).relay;
+  const membership = createCommunityMembership(data);
   apply({
-    relay: relay(owner).relay,
+    relay: data,
+    adminAccess: { membership },
     settingsCards,
     effect: vi.fn(),
   } as unknown as Parameters<typeof apply>[0]);
@@ -185,6 +189,7 @@ it("keeps the Membership card registered in a native build", () => {
       component: expect.any(Function),
     }),
   );
+  membership.dispose();
 });
 
 it("lets a native owner add, promote, demote and remove through the host signer", async () => {

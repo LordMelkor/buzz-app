@@ -21,20 +21,75 @@ import type {
   RegisteredAgentType,
 } from "../../features/agents/service";
 import type { Profile } from "../../features/relay/contracts";
-import { AgentBrowse } from "./AgentBrowse";
+import { useState } from "react";
+import {
+  AgentBrowse as Catalog,
+  SharedAgentPanel,
+  type SharedAgentSelection,
+} from "./AgentBrowse";
+import { PanelWorkspace } from "../../features/panels/PanelWorkspace";
+function AgentBrowse(
+  props: ReturnType<typeof importing> & {
+    relay: RelayData;
+    onOpen?: (agent: Agent) => void;
+  },
+) {
+  const [selection, setSelection] = useState<SharedAgentSelection>();
+  return (
+    <>
+      <Catalog
+        relay={props.relay}
+        selectedId={selection?.agent.id}
+        onSelect={setSelection}
+      />
+      {selection && (
+        <section aria-label="Shared agent profile">
+          <PanelWorkspace
+            value={selection.agent.id}
+            select={() => {}}
+            items={[
+              {
+                id: selection.agent.id,
+                label: selection.agent.name,
+                close: () => setSelection(undefined),
+                content: <SharedAgentPanel selection={selection} {...props} />,
+              },
+            ]}
+          />
+        </section>
+      )}
+    </>
+  );
+}
 
 afterEach(cleanup);
 
-const echo = { key: "test/echo", title: "Echo" } as RegisteredAgentType;
+const echo = {
+  key: "test/echo",
+  title: "Echo",
+  defaults: () => ({ config: { model: "default" } }),
+  importShared: (source: { model: string }) => ({ model: source.model }),
+} as RegisteredAgentType;
 const notes = { key: "test/notes", title: "Notes" } as RegisteredAgentType;
-/** Import's props: one type, and an `agents` whose `port` resolves. */
-const importing = (types: readonly RegisteredAgentType[] = [echo]) => ({
-  agents: {
-    port: vi.fn(async () => ({ pubkey: "e".repeat(64) }) as Agent),
-  } as unknown as Agents & { port: ReturnType<typeof vi.fn> },
-  types,
-  onImported: vi.fn(),
-});
+const imported = { pubkey: "e".repeat(64), name: "Shared helper" } as Agent;
+/** Import's props: one type, and an `agents` holding `own` whose `port`
+ * resolves. */
+const importing = (
+  types: readonly RegisteredAgentType[] = [echo],
+  own: readonly Agent[] = [],
+) => {
+  const snapshot = { agents: own };
+  return {
+    agents: {
+      subscribe: () => () => {},
+      snapshot: () => snapshot,
+      types: () => types,
+      port: vi.fn(async () => ({ agent: imported, notes: [] })),
+    } as unknown as Agents & { port: ReturnType<typeof vi.fn> },
+    types,
+    onImported: vi.fn(),
+  };
+};
 
 const shared: EventData = {
   id: "ab".repeat(32),
@@ -84,14 +139,45 @@ it("browses shared agents and opens read-only details", async () => {
   expect(read).toHaveBeenCalledWith([{ kinds: [30175], limit: 200 }], {
     signal: expect.any(AbortSignal),
   });
-  fireEvent.click(screen.getByRole("button", { name: "View details" }));
+  fireEvent.click(screen.getByRole("button", { name: "Shared helper" }));
   expect(
-    await screen.findByRole("dialog", { name: "Shared helper" }),
+    await screen.findByRole("region", { name: "Shared agent profile" }),
   ).toBeVisible();
   expect(screen.getByText("Help with tasks.")).toBeVisible();
   // Unknown to the profile directory, the sharer shows as their short key.
   expect(screen.getByText("Shared by")).toBeVisible();
   expect(screen.getByText(/^npub…/)).toBeVisible();
+});
+
+it("scrolls to an agent selected from elsewhere, not one chosen here", async () => {
+  const scrollIntoView = vi.fn();
+  Element.prototype.scrollIntoView = scrollIntoView;
+  try {
+    const read = vi.fn().mockResolvedValue([shared]);
+    const relay = community(read);
+    const onSelect = vi.fn();
+    const view = render(<Catalog relay={relay} onSelect={onSelect} />);
+    const card = await screen.findByRole("button", { name: "Shared helper" });
+    fireEvent.click(card);
+    const [{ agent }] = onSelect.mock.calls[0] ?? [];
+    view.rerender(
+      <Catalog relay={relay} selectedId={agent.id} onSelect={onSelect} />,
+    );
+    expect(card).toHaveAttribute("aria-current", "true");
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    // As View on a published agent selects it, before its page has loaded.
+    view.unmount();
+    render(<Catalog relay={relay} selectedId={agent.id} onSelect={onSelect} />);
+    const listed = await screen.findByRole("button", { name: "Shared helper" });
+    await vi.waitFor(() =>
+      expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({
+        block: "center",
+      }),
+    );
+    expect(scrollIntoView.mock.contexts[0]).toBe(listed);
+  } finally {
+    Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+  }
 });
 
 it("asks to connect while no community is ready", () => {
@@ -173,9 +259,7 @@ it("shrinks over-budget pages and preserves Load more and explicit retry", async
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
     expect(await screen.findByText("Helper 100")).toBeVisible();
-    expect(
-      screen.getAllByRole("button", { name: "View details" }),
-    ).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /^Helper / })).toHaveLength(2);
     expect(
       screen.queryByRole("button", { name: "Load more" }),
     ).not.toBeInTheDocument();
@@ -242,8 +326,10 @@ it("names the sharer by their profile, with their key on hover", async () => {
   const read = vi.fn().mockResolvedValue([shared]);
   const profiles = directory({ [shared.pubkey]: { name: "Cora" } });
   render(<AgentBrowse relay={community(read, profiles)} {...importing()} />);
-  fireEvent.click(await screen.findByRole("button", { name: "View details" }));
-  const dialog = await screen.findByRole("dialog", { name: "Shared helper" });
+  fireEvent.click(await screen.findByRole("button", { name: "Shared helper" }));
+  const dialog = await screen.findByRole("region", {
+    name: "Shared agent profile",
+  });
   expect(within(dialog).getByText("Cora")).toBeVisible();
   expect(within(dialog).queryByText(/^npub…/)).not.toBeInTheDocument();
   expect(profiles.ensure).toHaveBeenCalledWith([shared.pubkey]);
@@ -264,38 +350,224 @@ it("imports a shared agent through the import path, then hands back", async () =
   ]);
   const props = importing();
   render(<AgentBrowse relay={community(read)} {...props} />);
-  fireEvent.click(await screen.findByRole("button", { name: "View details" }));
-  const dialog = await screen.findByRole("dialog", { name: "Shared helper" });
+  fireEvent.click(await screen.findByRole("button", { name: "Shared helper" }));
+  const dialog = await screen.findByRole("region", {
+    name: "Shared agent profile",
+  });
   expect(within(dialog).queryByLabelText("Import as")).not.toBeInTheDocument();
   fireEvent.click(within(dialog).getByRole("button", { name: "Import" }));
-  await vi.waitFor(() => expect(props.onImported).toHaveBeenCalledOnce());
+  const confirmation = screen.getByRole("dialog", {
+    name: "Shared helper",
+  });
+  // Laid out as the Identity tab: the type it runs as is chosen in place.
+  expect(
+    within(confirmation).getByRole("combobox", { name: "Harness" }),
+  ).toBeVisible();
+  expect(
+    within(confirmation).getByRole("textbox", { name: "Instructions" }),
+  ).toHaveValue("Help with tasks.");
+  expect(props.agents.port).not.toHaveBeenCalled();
+  fireEvent.click(within(confirmation).getByRole("button", { name: "Import" }));
+  await vi.waitFor(() =>
+    expect(props.onImported).toHaveBeenCalledExactlyOnceWith(imported),
+  );
   expect(props.agents.port).toHaveBeenCalledExactlyOnceWith({
     source: "shared",
     type: "test/echo",
     name: "Shared helper",
     picture: "https://example.test/helper.png",
     instructions: "Help with tasks.",
+    config: { model: "test-model" },
   });
 });
 
-it("imports as the chosen type, and keeps the dialog open with the error when it fails", async () => {
+it("says how to import, and undoes edits back to what was shared", async () => {
+  const read = vi.fn().mockResolvedValue([shared]);
+  render(<AgentBrowse relay={community(read)} {...importing()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Shared helper" }));
+  fireEvent.click(screen.getByRole("button", { name: "Import" }));
+  const dialog = screen.getByRole("dialog", { name: "Shared helper" });
+  expect(dialog).toHaveAccessibleDescription(
+    "Import it as is, or edit anything below first. Changes only affect your copy.",
+  );
+  expect(
+    within(dialog).queryByRole("button", { name: "Undo changes" }),
+  ).not.toBeInTheDocument();
+  const instructions = within(dialog).getByRole("textbox", {
+    name: "Instructions",
+  });
+  fireEvent.change(instructions, { target: { value: "Help with less." } });
+  expect(dialog).toHaveAccessibleDescription(
+    "Edited. Changes only affect your copy.",
+  );
+  fireEvent.click(within(dialog).getByRole("button", { name: "Undo changes" }));
+  expect(instructions).toHaveValue("Help with tasks.");
+  expect(
+    within(dialog).getByRole("combobox", { name: "Harness" }),
+  ).toHaveFocus();
+  expect(
+    within(dialog).queryByRole("button", { name: "Undo changes" }),
+  ).not.toBeInTheDocument();
+});
+
+it("offers to open an agent you already have rather than copy it", async () => {
+  const read = vi.fn().mockResolvedValue([
+    {
+      ...shared,
+      content: JSON.stringify({
+        display_name: "Shared helper",
+        model: "test-model",
+        runtime: "test/echo",
+        system_prompt: "Help with tasks.",
+      }),
+    },
+  ]);
+  const mine = {
+    pubkey: "f".repeat(64),
+    name: "Shared helper",
+    type: "test/echo",
+    config: { model: "test-model" },
+  } as unknown as Agent;
+  const props = importing(
+    [
+      {
+        ...echo,
+        exportShared: () => ({ model: "test-model", runtime: "test/echo" }),
+        carry: () => ({ instructions: "Help with tasks." }),
+      } as unknown as RegisteredAgentType,
+    ],
+    [mine],
+  );
+  const onOpen = vi.fn();
+  render(<AgentBrowse relay={community(read)} {...props} onOpen={onOpen} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Shared helper" }));
+  fireEvent.click(screen.getByRole("button", { name: "Import" }));
+  const dialog = screen.getByRole("dialog", { name: "Shared helper" });
+  expect(dialog).toHaveAccessibleDescription("You already have this agent.");
+  expect(
+    within(dialog).queryByRole("button", { name: "Cancel" }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Open Shared helper" }),
+  );
+  expect(onOpen).toHaveBeenCalledExactlyOnceWith(mine);
+  // A second copy stays a choice.
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Import a copy" }),
+  );
+  await vi.waitFor(() => expect(props.onImported).toHaveBeenCalledOnce());
+});
+
+it("refuses a shared agent whose instructions block/buzz would refuse", async () => {
+  const read = vi.fn().mockResolvedValue([
+    {
+      ...shared,
+      content: JSON.stringify({
+        display_name: "Shared helper",
+        model: "test-model",
+        system_prompt: "Help \u202Ewith tasks.",
+      }),
+    },
+  ]);
+  const props = importing();
+  render(<AgentBrowse relay={community(read)} {...props} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Shared helper" }));
+  const panel = await screen.findByRole("region", {
+    name: "Shared agent profile",
+  });
+  fireEvent.click(within(panel).getByRole("button", { name: "Import" }));
+  const confirmation = screen.getByRole("dialog", {
+    name: "Shared helper",
+  });
+  expect(within(confirmation).getByRole("alert")).toHaveTextContent(
+    "Agent instructions contains prohibited invisible or formatting character U+202E",
+  );
+  const confirm = within(confirmation).getByRole("button", { name: "Import" });
+  expect(confirm).toBeDisabled();
+  fireEvent.click(confirm);
+  expect(props.agents.port).not.toHaveBeenCalled();
+});
+
+it("imports as the chosen type, and keeps the panel open with the error when it fails", async () => {
   const read = vi.fn().mockResolvedValue([shared]);
   const props = importing([echo, notes]);
   props.agents.port.mockRejectedValueOnce(
     new Error("Connect to a community first"),
   );
   render(<AgentBrowse relay={community(read)} {...props} />);
-  fireEvent.click(await screen.findByRole("button", { name: "View details" }));
-  const dialog = await screen.findByRole("dialog", { name: "Shared helper" });
-  expect(
-    within(dialog).getByRole("combobox", { name: "Import as" }),
-  ).toBeVisible();
+  fireEvent.click(await screen.findByRole("button", { name: "Shared helper" }));
+  const dialog = await screen.findByRole("region", {
+    name: "Shared agent profile",
+  });
   fireEvent.click(within(dialog).getByRole("button", { name: "Import" }));
-  expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+  const confirmation = screen.getByRole("dialog", {
+    name: "Shared helper",
+  });
+  expect(
+    within(confirmation).queryByRole("button", { name: "Change settings" }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(within(confirmation).getByRole("button", { name: "Import" }));
+  expect(await within(confirmation).findByRole("alert")).toHaveTextContent(
     "Connect to a community first",
   );
   expect(props.onImported).not.toHaveBeenCalled();
   expect(props.agents.port).toHaveBeenCalledWith(
     expect.objectContaining({ source: "shared", type: "test/echo" }),
   );
+});
+
+it("does not silently replace an unavailable shared runtime", async () => {
+  const read = vi.fn().mockResolvedValue([shared]);
+  const props = importing([{ ...echo, importShared: () => undefined }]);
+  render(<AgentBrowse relay={community(read)} {...props} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Shared helper" }));
+  fireEvent.click(screen.getByRole("button", { name: "Import" }));
+  const dialog = screen.getByRole("dialog", { name: "Shared helper" });
+  expect(within(dialog).getByRole("button", { name: "Import" })).toBeDisabled();
+  expect(
+    within(dialog).getByRole("combobox", { name: "Harness" }),
+  ).toBeVisible();
+  expect(props.agents.port).not.toHaveBeenCalled();
+});
+
+it("collapses long instructions and expands them on request", async () => {
+  const read = vi.fn().mockResolvedValue([
+    {
+      ...shared,
+      content: JSON.stringify({
+        display_name: "Shared helper",
+        system_prompt: "Long instructions. ".repeat(100),
+      }),
+    },
+  ]);
+  render(<AgentBrowse relay={community(read)} {...importing()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Shared helper" }));
+  expect(screen.getByRole("region", { name: "Instructions" })).toHaveAttribute(
+    "data-collapsed",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "See more" }));
+  expect(
+    screen.getByRole("region", { name: "Instructions" }),
+  ).not.toHaveAttribute("data-collapsed");
+  expect(screen.getByRole("button", { name: "See less" })).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+});
+
+it("reloads a catalog refused while signed out once the organization signs in", async () => {
+  const { createRecovery } = await import("../../features/relay/recovery");
+  const recovery = createRecovery([]);
+  const read = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("Federated sign-in is required"))
+    .mockResolvedValue([shared]);
+  const relay = community(read);
+  Object.assign(relay.snapshot().session, { recovery });
+  render(<AgentBrowse relay={relay} {...importing()} />);
+  expect(await screen.findByText("Couldn’t load shared agents.")).toBeVisible();
+  act(() => recovery.retryAll());
+  expect(await screen.findByText("Shared helper")).toBeVisible();
+  expect(read).toHaveBeenCalledTimes(2);
+  recovery.dispose();
 });

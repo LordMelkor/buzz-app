@@ -3,8 +3,9 @@ import {
   BellIcon,
   BestieIcon,
   BrowserIcon,
+  ChartBarIcon,
   ChatsCircleIcon,
-  FolderSimpleIcon,
+  NoteIcon,
   GearIcon,
   LightningIcon,
   RobotIcon,
@@ -15,18 +16,16 @@ import type { RegisteredPage } from "../../features/pages/service";
 // Add page identities here; unknown plugins inherit a consistent layout default.
 export const shellPresentation = {
   settings: { label: "Settings", icon: GearIcon, tone: "lavender" },
-  channels: { label: "Multiplayer", icon: ChatsCircleIcon, tone: "lime" },
+  channels: { label: "Messages", icon: ChatsCircleIcon, tone: "lime" },
 } as const;
 
 // Navigation order is host policy, never plugin activation timing. Match full
 // contribution keys so an external page's local ID cannot claim a bundled slot.
 const bundledOrder = [
-  "buzz.me/me",
   "buzz.channels/channels",
   "buzz.inbox/inbox",
   "buzz.reminders/reminders",
   "buzz.bestie/bestie",
-  "buzz.projects/projects",
 ];
 export function orderPages(pages: readonly RegisteredPage[]) {
   const rank = (page: RegisteredPage) => {
@@ -48,10 +47,25 @@ const bundledIcons = new Map<string, typeof BrowserIcon>([
   ["buzz.inbox/inbox", BellIcon],
   ["buzz.reminders/reminders", AlarmIcon],
   ["buzz.bestie/bestie", BestieIcon],
-  ["buzz.projects/projects", FolderSimpleIcon],
   ["buzz.agents/agents", RobotIcon],
   ["buzz.workflows/workflows", LightningIcon],
+  ["buzz.relay-notes/notes", NoteIcon],
+  ["buzz.usage/usage", ChartBarIcon],
 ]);
+/** Resolve host navigation policy once, independently of icons and registrations. */
+export function pagePlacement(page: RegisteredPage) {
+  if (!page.primary) return undefined;
+  switch (page.key) {
+    case "buzz.channels/channels":
+    case "buzz.reminders/reminders":
+    case "buzz.agents/agents":
+    case "buzz.workflows/workflows":
+      return "topbar";
+    default:
+      return page.placement ?? "sidebar";
+  }
+}
+
 type PagePresentation = Readonly<{
   label: string;
   icon: typeof BrowserIcon;
@@ -77,20 +91,12 @@ export function headerPageSelection(
   selected: string,
 ): string {
   const page = pages.find((page) => page.key === selected);
-  if (
-    selected !== "buzz.me/me" &&
-    page &&
-    // Placement applies only to primary pages.
-    (!page.primary ||
-      page.placement === undefined ||
-      page.placement === "sidebar") &&
-    pages.some(
-      (page) =>
-        page.key === "buzz.channels/channels" &&
-        page.primary &&
-        page.placement === "topbar",
-    )
-  )
-    return "buzz.channels/channels";
-  return selected;
+  const placement = page && pagePlacement(page);
+  const messages = pages.find((page) => page.key === "buzz.channels/channels");
+  return page &&
+    (placement === undefined || placement === "sidebar") &&
+    messages &&
+    pagePlacement(messages) === "topbar"
+    ? messages.key
+    : selected;
 }

@@ -2,6 +2,7 @@ import { useChannelIdentityNames } from "../identity-names/react";
 import { useSyncExternalStore, type ReactNode } from "react";
 import { AtIcon, RobotIcon } from "../../shared/design-system/icons/index";
 import type { RelaySession } from "../relay/session";
+import type { ComposerSession } from "./composer-session";
 import type { ChannelList, ChannelSummary, Profile } from "../relay/contracts";
 import { messageReferences } from "./message-references";
 import { MessageLink } from "../conversation/MessageLink";
@@ -20,45 +21,82 @@ const emptyChannels: readonly ReferenceChannel[] = [];
 const emptyAgents: AgentLibrary["identities"] = [];
 export const emptyReferenceDirectory = {
   profiles: emptyProfiles,
+  /** The joined list. Raw `buzz://channel/<id>` links resolve through it
+   * alone, so an unjoined channel takes its exact reference's name. */
   channels: emptyChannels,
+  /** Channels `#name` prose may link: the joined list, then the open channels
+   * a completed public directory read named. */
+  named: emptyChannels,
   agents: emptyAgents,
 };
 const noop = () => () => {};
 const profilesSnapshot = () => emptyProfiles;
 const channelsSnapshot = () => emptyChannels;
 const agentsSnapshot = () => undefined;
-type ChannelLists = Pick<RelaySession["channels"], "list">;
+type ChannelLists = Pick<RelaySession["channels"], "list" | "openDirectory">;
 const referenced = new WeakMap<
   ChannelLists,
-  { list: ChannelList; channels: readonly ReferenceChannel[] }
+  {
+    list: ChannelList;
+    open: readonly ReferenceChannel[];
+    channels: readonly ReferenceChannel[];
+    named: readonly ReferenceChannel[];
+  }
 >();
+const sameReference = (a: ReferenceChannel, b: ReferenceChannel | undefined) =>
+  a.id === b?.id &&
+  a.name === b.name &&
+  a.channelType === b.channelType &&
+  a.private === b.private &&
+  a.archived === b.archived;
+const retained = (
+  next: readonly ReferenceChannel[],
+  prior: readonly ReferenceChannel[] | undefined,
+) =>
+  prior?.length === next.length &&
+  next.every((channel, index) => sameReference(channel, prior[index]))
+    ? prior
+    : next;
 /** Previews and activity replace the list and its summaries on every message.
  * Retain the prior channels while every field a reference reads is unchanged,
- * so mounted rows render only when a label could change. */
+ * so mounted rows render only when a label could change.
+ *
+ * Open channels a completed directory read named follow the joined list in
+ * `named`, so `#name` prose links a channel the viewer has not joined once
+ * the directory is warm, without reading it to render. The joined list owns a
+ * name both carry: the roster's channel links, the directory's duplicate does
+ * not. Id links never see the directory (`channels`): its name can be older
+ * than the exact reference a mounted link resolves. */
 function referenceChannels(queries: ChannelLists) {
   const list = queries.list();
+  const open = queries.openDirectory?.() ?? emptyChannels;
   const prior = referenced.get(queries);
-  if (prior?.list === list) return prior.channels;
-  const channels =
-    prior?.channels.length === list.channels.length &&
-    list.channels.every((channel, index) => {
-      const old = prior.channels[index];
-      return (
-        old?.id === channel.id &&
-        old.name === channel.name &&
-        old.channelType === channel.channelType &&
-        old.private === channel.private &&
-        old.archived === channel.archived
-      );
-    })
-      ? prior.channels
-      : list.channels;
-  referenced.set(queries, { list, channels });
-  return channels;
+  if (prior?.list === list && prior.open === open) return prior;
+  const channels = retained(list.channels, prior?.channels);
+  const joined = new Set(channels.map((channel) => channel.id));
+  const taken = new Set(
+    channels
+      .filter((channel) => !channel.archived)
+      .map((channel) => channel.name),
+  );
+  const named = open.length
+    ? retained(
+        [
+          ...channels,
+          ...open.filter(
+            (channel) => !joined.has(channel.id) && !taken.has(channel.name),
+          ),
+        ],
+        prior?.named,
+      )
+    : channels;
+  const entry = { list, open, channels, named };
+  referenced.set(queries, entry);
+  return entry;
 }
 
 export function useReferenceDirectory(
-  session: RelaySession | undefined,
+  session: RelaySession | ComposerSession | undefined,
   selectedProfiles?: ReadonlyMap<string, Profile>,
 ) {
   const profiles = useSyncExternalStore(
@@ -69,9 +107,18 @@ export function useReferenceDirectory(
     profilesSnapshot,
   );
   const queries = session?.channels;
+  // Two snapshots: each list stays identical while its labels are unchanged,
+  // so a message that only replaces the joined list re-renders no row.
   const channels = useSyncExternalStore(
     queries?.subscribeList ?? noop,
-    queries?.list ? () => referenceChannels(queries) : channelsSnapshot,
+    queries?.list
+      ? () => referenceChannels(queries).channels
+      : channelsSnapshot,
+    channelsSnapshot,
+  );
+  const named = useSyncExternalStore(
+    queries?.subscribeList ?? noop,
+    queries?.list ? () => referenceChannels(queries).named : channelsSnapshot,
     channelsSnapshot,
   );
   const agents = useSyncExternalStore(
@@ -82,6 +129,7 @@ export function useReferenceDirectory(
   return {
     profiles,
     channels,
+    named,
     agents: agents?.identities ?? emptyAgents,
   };
 }
@@ -126,7 +174,7 @@ export function ReferenceText({
   renderText(text: string): ReactNode;
   onOpenLink(url: string): boolean;
   extensions?: ConversationExtensions | undefined;
-  session?: RelaySession | undefined;
+  session?: RelaySession | ComposerSession | undefined;
   scope?: string | undefined;
   channelId?: string | undefined;
   interactive?: boolean;
@@ -136,7 +184,7 @@ export function ReferenceText({
     text,
     mentions,
     directory.profiles,
-    directory.channels,
+    directory.named,
     directory.agents,
   );
   if (!references.length) return renderText(text);
@@ -171,6 +219,7 @@ export function ReferenceText({
           key={reference.start}
           className={styles.link}
           data-mention-kind={reference.kind}
+          data-mention-self={reference.id === session?.viewer ? "" : undefined}
           title={`${reference.kind === "agent" ? "Agent" : "Person"}: ${label}\n${reference.id}`}
         >
           <Icon aria-hidden="true" className={styles.icon} />

@@ -1,16 +1,35 @@
 import type { ActivityTurn } from "./activity";
 import { activityRecords, type ActivityRecord } from "./activity-records";
 
-/** Live request association from explicit captured trigger IDs only. No time/name
- * inference, backfill, or broader channel fallback when the start is missing. */
-export function requestActivity(
+type Parsed = Readonly<{
+  record: ActivityRecord;
+  value: {
+    kind: string;
+    turnId: string;
+    seq: number;
+    timestamp?: unknown;
+    payload?: { triggeringEventIds?: unknown };
+  };
+}>;
+// Snapshot record arrays are immutable and every mounted message row asks about
+// the same agent/channel. Parse each projection once per record array.
+const parsedRecords = new WeakMap<object, Map<string, readonly Parsed[]>>();
+
+function parseRecords(
   records: readonly Omit<ActivityRecord, "envelopeId">[],
   agent: string,
   channelId: string,
-  requestId: string | readonly string[],
-) {
+): readonly Parsed[] {
+  let byScope = parsedRecords.get(records);
+  if (!byScope) {
+    byScope = new Map();
+    parsedRecords.set(records, byScope);
+  }
+  const scope = `${agent}\n${channelId}`;
+  const cached = byScope.get(scope);
+  if (cached) return cached;
   const parsed = activityRecords(records, agent, channelId).flatMap(
-    (record) => {
+    (record): Parsed[] => {
       try {
         const value = JSON.parse(record.plaintext);
         if (
@@ -22,23 +41,25 @@ export function requestActivity(
           value.turnId.length > 256
         )
           return [];
-        return [
-          {
-            record,
-            value: value as {
-              kind: string;
-              turnId: string;
-              seq: number;
-              timestamp?: unknown;
-              payload?: { triggeringEventIds?: unknown };
-            },
-          },
-        ];
+        return [{ record, value }];
       } catch {
         return [];
       }
     },
   );
+  byScope.set(scope, parsed);
+  return parsed;
+}
+
+/** Live request association from explicit captured trigger IDs only. No time/name
+ * inference, backfill, or broader channel fallback when the start is missing. */
+export function requestActivity(
+  records: readonly Omit<ActivityRecord, "envelopeId">[],
+  agent: string,
+  channelId: string,
+  requestId: string | readonly string[],
+) {
+  const parsed = parseRecords(records, agent, channelId);
   const turnIds = new Set<string>();
   const selected: ActivityRecord[] = [];
   const terminal = new Map<string, "ended" | "error">();
@@ -83,7 +104,7 @@ export function requestActivity(
     selected.push(...after.map(({ record }) => record));
     // Match the lifecycle owner's timestamp admission. Raw future/malformed
     // terminal-looking records remain inspectable but cannot classify outcome.
-    const admitted = ({ value, record }: (typeof parsed)[number]) =>
+    const admitted = ({ value, record }: Parsed) =>
       typeof value.timestamp === "string" &&
       Number.isFinite(Date.parse(value.timestamp)) &&
       Date.parse(value.timestamp) <= record.receivedAt + 5000;

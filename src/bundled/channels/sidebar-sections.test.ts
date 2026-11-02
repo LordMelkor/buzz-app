@@ -1,10 +1,24 @@
 import { expect, it } from "vitest";
 import type { ChannelSummary } from "../../features/relay/contracts";
 import {
+  orderContributedSidebarSections,
   isChannelDropSectionKey,
   isChannelSectionKey,
   sidebarSections,
 } from "./sidebar-sections";
+
+it("keeps contributed order stable and lets saved preferences lead", () => {
+  const sections = [
+    { key: "plugin/a" },
+    { key: "plugin/b" },
+    { key: "plugin/c" },
+  ];
+  expect(
+    orderContributedSidebarSections(sections, ["plugin/c", "plugin/a"]).map(
+      ({ key }) => key,
+    ),
+  ).toEqual(["plugin/c", "plugin/a", "plugin/b"]);
+});
 
 const row = (
   id: string,
@@ -52,7 +66,7 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
     row("starred-dm", { channelType: "dm" }),
     row("hidden-dm", { channelType: "dm" }),
     row("forum", { channelType: "forum" }),
-    row("session", { channelType: "session" }),
+    row("solo", { channelType: "solo" }),
   ];
   const preferences = {
     sections: [{ id: "channels", name: "Channels", icon: ":party:", order: 0 }],
@@ -74,7 +88,7 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
       "starred-dm",
       "hidden-dm",
       "forum",
-      "session",
+      "solo",
     ],
   };
   const project = (
@@ -98,7 +112,7 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
       ).toHaveLength(1);
   };
   const expectedProjection = [
-    { key: "starred", ids: ["session", "star", "starred-dm"] },
+    { key: "starred", ids: ["solo", "star", "starred-dm"] },
     { key: "group:channels", ids: ["grouped-dm", "work"] },
     { key: "channels", ids: ["other"] },
     { key: "forums", ids: ["forum"] },
@@ -124,7 +138,7 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
       roster.filter((channel) => channel.id !== "starred-dm"),
       new Set(["hidden-dm"]),
     ).find(({ key }) => key === "starred")?.ids,
-  ).toEqual(["session", "star"]);
+  ).toEqual(["solo", "star"]);
   expect(sidebarSections([])).toEqual([
     { key: "channels", title: "Channels", icon: undefined, rows: [] },
     { key: "dms", title: "Direct messages", icon: undefined, rows: [] },
@@ -135,7 +149,7 @@ it("intersects groups/stars with active authorized streams and movable DMs", () 
     ),
   ).toEqual([
     "other",
-    "session",
+    "solo",
     "star",
     "work",
     "forum",

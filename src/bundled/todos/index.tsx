@@ -36,7 +36,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
       />
     );
   }
-  function Panel({ channelContext, close }: PanelProps) {
+  function Panel({ channelContext, close, context: host }: PanelProps) {
     const state = useSyncExternalStore(ctx.relay.subscribe, ctx.relay.snapshot);
     const isActive = useCallback(
       () => active && ctx.relay.snapshot() === state,
@@ -56,6 +56,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
         context={channelContext}
         close={close}
         active={isActive}
+        onOpenLink={(url) => host?.open(url) ?? false}
       />
     );
   }

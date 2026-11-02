@@ -28,6 +28,7 @@ type MarkdownNode = {
   value?: string;
   url?: string;
   identifier?: string;
+  alt?: string | null;
   children?: MarkdownNode[];
   position?: { start: { offset?: number }; end: { offset?: number } };
 };

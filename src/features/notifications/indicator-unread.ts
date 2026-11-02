@@ -61,7 +61,12 @@ export function bindUnreadIndicator(
       const ids = new Set(
         owned.channels
           .list()
-          .channels.filter((channel) => channel.members?.includes(viewer))
+          .channels.filter(
+            (channel) =>
+              !channel.huddle &&
+              !channel.metadataPending &&
+              channel.members?.includes(viewer),
+          )
           .map((channel) => channel.id),
       );
       for (const [id, stop] of channels) {

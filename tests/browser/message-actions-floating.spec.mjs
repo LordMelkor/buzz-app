@@ -1,4 +1,8 @@
 import { test, expect } from "./fixture.mjs";
+import {
+  expectMessageActionsHidden as hidden,
+  hoverMessage,
+} from "./message-actions.mjs";
 import { open, settle, virtuaIdle, wheel } from "./timeline.mjs";
 
 test.use({
@@ -14,23 +18,61 @@ const shown = (actions) =>
   expect
     .poll(() => actions.evaluate((bar) => bar.matches(":popover-open")))
     .toBe(true);
-
+// The bar sits above its bubble, inside the page.
+const above = (actions) =>
+  expect
+    .poll(() =>
+      actions.evaluate((bar) => {
+        const bubble = bar
+          .closest("[data-layout]")
+          .querySelector("[data-message-action-anchor]")
+          .getBoundingClientRect();
+        const rect = bar.getBoundingClientRect();
+        return (
+          rect.top < bubble.top &&
+          rect.bottom < bubble.bottom &&
+          rect.left >= 0 &&
+          rect.right <= document.documentElement.clientWidth
+        );
+      }),
+    )
+    .toBe(true);
 // Browser-only: measured space, real top-layer hit testing, and responsive
 // placement cannot be established in a DOM emulator.
 for (const own of [true, false]) {
-  test(`actions sit flat beside ${own ? "own" : "received"} bubbles when they fit and lift above in tight panes`, async ({
+  test(`actions stay above ${own ? "own" : "received"} bubbles across pane sizes`, async ({
     page,
     app,
   }) => {
     await open(page, app);
     const first = app.append("primary", "alpha", "Short", true, own);
-    const event = app.append("primary", "alpha", "Room for actions", true, own);
+    const event = app.append("primary", "alpha", "Hi", true, own);
     const row = page.locator(
       `[data-channel-timeline] [data-message-id="${event.id}"]`,
     );
     const actions = actionsFor(row);
     await expect(row.locator("[data-stack-previous]")).toBeVisible();
     await settle(page);
+    // Enter the row's empty side before any bubble hover, then after reveal.
+    const whitespace = await row.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      const bubble = node
+        .querySelector("[data-message-action-anchor]")
+        .getBoundingClientRect();
+      return {
+        x:
+          bubble.left - rect.left > rect.right - bubble.right
+            ? (rect.left + bubble.left) / 2
+            : (bubble.right + rect.right) / 2,
+        y: bubble.top + bubble.height / 2,
+      };
+    });
+    await page.mouse.move(whitespace.x, whitespace.y);
+    await hidden(actions);
+    await hoverMessage(row);
+    await shown(actions);
+    await page.mouse.move(whitespace.x, whitespace.y);
+    await hidden(actions);
     // The first row's wider byline must not pull its short bubble off the
     // continuation's edge. This needs rendered layout, not DOM-only coverage.
     await expect
@@ -61,40 +103,73 @@ for (const own of [true, false]) {
         await row.evaluate((node, direction) => {
           node.dir = direction;
         }, direction);
-        await row.getByText("Room for actions", { exact: true }).hover();
-        await expect(actions).toHaveAttribute("data-placement", "beside");
-        await expect(actions).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-        await expect(actions).toHaveCSS("box-shadow", "none");
-        await expect
-          .poll(() =>
-            actions.evaluate((bar, own) => {
-              const row = bar.closest("[data-layout]");
-              const bubble = row
-                .querySelector("[data-message-action-anchor]")
-                .getBoundingClientRect();
-              const rect = bar.getBoundingClientRect();
-              const rtl = getComputedStyle(row).direction === "rtl";
-              return {
-                gap: Math.round(
-                  rtl !== own
-                    ? bubble.left - rect.right
-                    : rect.left - bubble.right,
-                ),
-                centered:
-                  Math.abs(
-                    rect.top + rect.height / 2 - bubble.top - bubble.height / 2,
-                  ) < 1,
-              };
-            }, own),
-          )
-          .toEqual({ gap: 8, centered: true });
-        await actions
-          .getByRole("button", { name: "React with 👍", exact: true })
-          .hover();
+        await row.getByText("Hi", { exact: true }).hover();
+        await above(actions);
+        await actions.evaluate((bar) =>
+          Promise.all(
+            bar.getAnimations().map((animation) => animation.finished),
+          ),
+        );
+        // A slow diagonal from a short bubble must reach both toolbar ends.
+        for (const label of ["React with 👍", "More message actions"]) {
+          await hoverMessage(row);
+          const button = await actions
+            .getByRole("button", { name: label, exact: true })
+            .boundingBox();
+          await page.mouse.move(
+            button.x + button.width / 2,
+            button.y + button.height / 2,
+            { steps: 30 },
+          );
+          await shown(actions);
+        }
+        // The route to a wider toolbar retains an active hover only. It must
+        // neither summon actions on its own nor catch clicks beneath it.
+        const path = await actions.evaluate((bar) => {
+          const bubble = bar
+            .closest("[data-layout]")
+            .querySelector("[data-message-action-anchor]")
+            .getBoundingClientRect();
+          const toolbar = bar.getBoundingClientRect();
+          const row = bar.closest("[data-layout]").getBoundingClientRect();
+          const y = bubble.top + bubble.height / 2;
+          const fraction =
+            (y - toolbar.bottom) / (bubble.bottom - toolbar.bottom);
+          const left = toolbar.left + (bubble.left - toolbar.left) * fraction;
+          const right =
+            toolbar.right + (bubble.right - toolbar.right) * fraction;
+          return {
+            x:
+              toolbar.left < bubble.left
+                ? (Math.max(left, row.left) + bubble.left) / 2
+                : (bubble.right + Math.min(right, row.right)) / 2,
+            y,
+          };
+        });
+        await page.mouse.move(0, 0);
+        await hidden(actions);
+        await page.mouse.move(path.x, path.y);
+        await hidden(actions);
+        // This point can also cross an avatar. Leave its preview before
+        // targeting the bubble beneath the interactive portal.
+        await page.mouse.move(0, 0);
+        await expect(
+          page.getByRole("dialog", { name: /profile preview$/ }),
+        ).toBeHidden();
+        await hoverMessage(row);
         await shown(actions);
+        await page.mouse.move(path.x, path.y, { steps: 10 });
+        await shown(actions);
+        expect(
+          await actions.evaluate(
+            (bar, point) =>
+              bar.contains(document.elementFromPoint(point.x, point.y)),
+            path,
+          ),
+        ).toBe(false);
         if (direction === "ltr")
           await page.screenshot({
-            path: test.info().outputPath(`message-actions-beside-${mode}.png`),
+            path: test.info().outputPath(`message-actions-above-${mode}.png`),
           });
       }
     }
@@ -103,26 +178,19 @@ for (const own of [true, false]) {
     });
     await page.setViewportSize({ width: 390, height: 950 });
     await settle(page);
-    await row.getByText("Room for actions", { exact: true }).hover();
-    await expect(actions).toHaveAttribute("data-placement", "above");
+    await row.getByText("Hi", { exact: true }).hover();
+    await above(actions);
     await expect(actions).not.toHaveCSS("box-shadow", "none");
+    // Park the pointer first: after the resize, its narrow-pane position can
+    // land on a sidebar activity badge whose hover popover covers the row.
+    await page.mouse.move(0, 0);
     await page.setViewportSize({ width: 1000, height: 1200 });
     await page.locator("html").evaluate((node) => {
       node.style.setProperty("--buzz-text-scale", "2");
     });
     await settle(page);
-    await row.getByText("Room for actions", { exact: true }).hover();
-    await expect(actions).toHaveAttribute("data-placement", "above");
-    await expect
-      .poll(() =>
-        actions.evaluate((bar) => {
-          const rect = bar.getBoundingClientRect();
-          return (
-            rect.left >= 0 && rect.right <= document.documentElement.clientWidth
-          );
-        }),
-      )
-      .toBe(true);
+    await row.getByText("Hi", { exact: true }).hover();
+    await above(actions);
     const menu = actions.getByRole("button", { name: "More message actions" });
     await menu.focus();
     await menu.press("Enter");
@@ -136,7 +204,196 @@ for (const own of [true, false]) {
       node.style.removeProperty("--buzz-text-scale");
     });
     await page.setViewportSize({ width: 1440, height: 950 });
-    await expect(actions).toHaveAttribute("data-placement", "beside");
+    await above(actions);
+  });
+}
+
+// Browser-only: caption and attachment content share one raised action position
+// while retaining native hit testing and an uninterrupted pointer path.
+for (const own of [false, true]) {
+  test(`captioned ${own ? "own" : "received"} attachments keep their actions reachable`, async ({
+    page,
+    app,
+  }) => {
+    await open(page, app);
+    const event = app.append(
+      "primary",
+      "alpha",
+      "A caption\nwith three lines\n[Caption reference](https://example.com/caption)",
+      true,
+      own,
+      undefined,
+      undefined,
+      [
+        [
+          "imeta",
+          "url https://fixture.test/report.pdf",
+          "m application/pdf",
+          "filename report.pdf",
+        ],
+      ],
+    );
+    const row = page.locator(
+      `[data-channel-timeline] [data-message-id="${event.id}"]`,
+    );
+    const attachment = row.locator("[data-message-attachments] > *").first();
+    const caption = row.locator("[data-message-action-anchor]").first();
+    const actions = actionsFor(row);
+    await expect(attachment).toBeVisible();
+    await settle(page);
+    await attachment.hover();
+    await shown(actions);
+    await above(actions);
+    await actions.evaluate((bar) =>
+      Promise.all(bar.getAnimations().map((animation) => animation.finished)),
+    );
+    const target = actions.getByRole("button", {
+      name: "More message actions",
+    });
+    const button = await target.boundingBox();
+    // Travel from the attachment through its caption to the shared toolbar.
+    await page.mouse.move(
+      button.x + button.width / 2,
+      button.y + button.height / 2,
+      { steps: 30 },
+    );
+    await shown(actions);
+    const anchored = await actions.evaluate((bar) =>
+      bar.getBoundingClientRect().toJSON(),
+    );
+    await target.click();
+    await expect(page.getByRole("menu")).toBeVisible();
+    // Opening the menu replays the bar's entry animation, which animates its
+    // gap; the bar returns to its resting width and place a frame after it.
+    await expect
+      .poll(() =>
+        actions.evaluate((bar) => bar.getBoundingClientRect().toJSON()),
+      )
+      .toEqual(anchored);
+    // The open menu's backdrop owns this point; use real pointer travel rather
+    // than asking Playwright to hover the intentionally covered caption.
+    const coveredCaption = await caption.boundingBox();
+    await page.mouse.move(
+      coveredCaption.x + coveredCaption.width / 2,
+      coveredCaption.y + coveredCaption.height / 2,
+    );
+    expect(
+      await actions.evaluate((bar) => bar.getBoundingClientRect().toJSON()),
+    ).toEqual(anchored);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    // Caption and attachment hover share one stable above-message location.
+    await page.mouse.click(0, 0);
+    await caption.hover();
+    await shown(actions);
+    await above(actions);
+    await page.mouse.move(0, 0);
+    await page.setViewportSize({ width: 390, height: 950 });
+    await settle(page);
+    await attachment.hover();
+    await shown(actions);
+    await above(actions);
+    await actions.evaluate((bar) =>
+      Promise.all(bar.getAnimations().map((animation) => animation.finished)),
+    );
+    const reference = row.getByRole("link", { name: "Caption reference" });
+    // The hovered media's toolbar must not take hits from the caption above it.
+    expect(
+      await reference.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return node.contains(
+          document.elementFromPoint(
+            rect.x + rect.width / 2,
+            rect.y + rect.height / 2,
+          ),
+        );
+      }),
+    ).toBe(true);
+    await reference.evaluate((node) =>
+      node.addEventListener(
+        "click",
+        (event) => {
+          event.preventDefault();
+          node.dataset.clicked = "true";
+        },
+        { once: true },
+      ),
+    );
+    await reference.click();
+    await expect(reference).toHaveAttribute("data-clicked", "true");
+    await page
+      .getByRole("textbox", { name: "Message #Alpha", exact: true })
+      .click();
+    const captionBox = await caption.boundingBox();
+    const attachmentBox = await attachment.boundingBox();
+    // Use the interior beside the shorter caption, clear of Chromium's
+    // fractional hit-test expansion at the tiny inter-block margin.
+    const contentGap = {
+      x: own
+        ? (attachmentBox.x + captionBox.x) / 2
+        : (captionBox.x +
+            captionBox.width +
+            attachmentBox.x +
+            attachmentBox.width) /
+          2,
+      y: captionBox.y + captionBox.height / 2,
+    };
+    expect(
+      await row.evaluate((node, point) => {
+        const hit = document.elementFromPoint(point.x, point.y);
+        return (
+          node.contains(hit) &&
+          !!hit?.closest("[data-message-payload]") &&
+          !hit.closest(
+            "[data-message-action-anchor], [data-message-attachments] > *",
+          )
+        );
+      }, contentGap),
+    ).toBe(true);
+    // A gap cannot activate actions, but must retain them after media hover.
+    await page.mouse.move(contentGap.x, contentGap.y);
+    await hidden(actions);
+    await attachment.hover();
+    await shown(actions);
+    await page.mouse.move(contentGap.x, contentGap.y, { steps: 10 });
+    await shown(actions);
+    // Leave both the content and its route to the wider toolbar. Returning to
+    // the content gap alone must not reactivate actions.
+    const raised = await actions.boundingBox();
+    const outside = {
+      x: own
+        ? Math.min(captionBox.x, attachmentBox.x, raised.x) - 4
+        : Math.max(
+            captionBox.x + captionBox.width,
+            attachmentBox.x + attachmentBox.width,
+            raised.x + raised.width,
+          ) + 4,
+      y: contentGap.y,
+    };
+    await page.mouse.move(outside.x, outside.y, { steps: 10 });
+    await hidden(actions);
+    await page.mouse.move(contentGap.x, contentGap.y);
+    await hidden(actions);
+    await attachment.hover();
+    await shown(actions);
+    await page.mouse.move(contentGap.x, contentGap.y, { steps: 10 });
+    await shown(actions);
+    const raisedButton = await target.boundingBox();
+    await page.mouse.move(
+      raisedButton.x + raisedButton.width / 2,
+      raisedButton.y + raisedButton.height / 2,
+      { steps: 30 },
+    );
+    await shown(actions);
+    await target.click();
+    await expect(page.getByRole("menu")).toBeVisible();
+    await page.mouse.move(contentGap.x, contentGap.y);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    await expect(target).toBeFocused();
+    await shown(actions);
+    await page.mouse.move(contentGap.x, contentGap.y + 1);
+    await shown(actions);
   });
 }
 
@@ -173,9 +430,11 @@ test("thread actions and growing reactions paint beyond the scroller without mov
   const row = panel.locator(`[data-message-id="${last.id}"]`);
   const actions = actionsFor(row);
   await expect(row).toBeVisible();
+  await hoverMessage(row);
+  await row.locator("[data-message-action-anchor]").click();
   await settle(page, scroller);
-  // Leave the author line across the bottom edge, with the lifted toolbar
-  // crossing it and the start of the message still reachable by pointer.
+  // Leave the bubble below the bottom edge. Keyboard focus must still expose
+  // its toolbar across that edge; whitespace can no longer reveal it.
   await actions.evaluate((bar) => {
     const anchor = bar
       .closest("[data-layout]")
@@ -189,8 +448,11 @@ test("thread actions and growing reactions paint beyond the scroller without mov
   await settle(page, scroller);
   const restingHeight = (await row.boundingBox()).height;
   const bounds = await scroller.boundingBox();
-  const rowBounds = await row.boundingBox();
-  await page.mouse.move(rowBounds.x + 80, bounds.y + bounds.height - 2);
+  await page.keyboard.press("ArrowRight");
+  await actions
+    .getByRole("button")
+    .first()
+    .evaluate((button) => button.focus({ preventScroll: true }));
   await shown(actions);
   await expect
     .poll(() =>
@@ -220,6 +482,19 @@ test("thread actions and growing reactions paint beyond the scroller without mov
     )
     .toEqual({ anchored: true, crosses: true, hit: true });
   expect((await row.boundingBox()).height).toBe(restingHeight);
+  // Wait for the entrance transform before choosing a pointer hit coordinate.
+  await actions.evaluate((bar) =>
+    Promise.all(bar.getAnimations().map((animation) => animation.finished)),
+  );
+  const toolbarBounds = await actions.boundingBox();
+  // A real padding click switches to pointer input without invoking an action.
+  const padding = {
+    x: toolbarBounds.x + toolbarBounds.width / 2,
+    y: toolbarBounds.y + toolbarBounds.height - 2,
+  };
+  await page.mouse.move(padding.x, padding.y);
+  await page.mouse.click(padding.x, padding.y);
+  await shown(actions);
   // Moving onto the escaped controls must keep the row's reveal state alive.
   const quick = actions.getByRole("button", {
     name: "React with 👍",
@@ -228,7 +503,7 @@ test("thread actions and growing reactions paint beyond the scroller without mov
   const quickBox = await quick.boundingBox();
   await page.mouse.move(
     quickBox.x + quickBox.width / 2,
-    bounds.y + bounds.height + 4,
+    Math.min(quickBox.y + quickBox.height - 1, bounds.y + bounds.height + 1),
   );
   await shown(actions);
   const glyph = quick.locator('[class*="quickReactionGlyph"]');
@@ -272,7 +547,7 @@ test("thread actions and growing reactions paint beyond the scroller without mov
   await expect(actions).toHaveCSS("opacity", "0");
 });
 
-test("compact timeline actions escape the top edge, track scrolling and preserve keyboard order", async ({
+test("compact timeline actions slide under the top edge, track scrolling and preserve keyboard order", async ({
   page,
   app,
   browserName,
@@ -310,6 +585,18 @@ test("compact timeline actions escape the top edge, track scrolling and preserve
       .getByRole("button", { name: /^View .* profile$/ })
       .first();
     await avatar.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(avatar).toBeFocused();
+    const preview = page.getByRole("dialog", { name: /profile preview$/ });
+    await expect(preview).toBeVisible();
+    await page.keyboard.press("Tab");
+    await expect(
+      preview.getByRole("button", { name: "View profile", exact: true }),
+    ).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(preview).toBeHidden();
+    await expect(avatar).toBeFocused();
     await shown(actions);
     await page.keyboard.press("Tab");
     await expect(actions.getByRole("button").first()).toBeFocused();
@@ -331,8 +618,10 @@ test("compact timeline actions escape the top edge, track scrolling and preserve
   // that window, and the raw move below is not retried against a hit target.
   await virtuaIdle(page, scroller);
   const bounds = await scroller.boundingBox();
-  const rowBounds = await row.boundingBox();
-  await page.mouse.move(rowBounds.x + 100, bounds.y + 35);
+  const bubbleBounds = await row
+    .locator("[data-message-action-anchor]")
+    .boundingBox();
+  await page.mouse.move(bubbleBounds.x + bubbleBounds.width / 2, bounds.y + 35);
   await shown(actions);
   await expect
     .poll(() =>
@@ -341,11 +630,12 @@ test("compact timeline actions escape the top edge, track scrolling and preserve
         const edge = bar
           .closest("[data-message-scroller]")
           .getBoundingClientRect().top;
+        const x = rect.x + rect.width / 2;
+        // The part above the edge is clipped: the header keeps its clicks.
         return (
-          rect.top < edge &&
-          [rect.top + 2, rect.bottom - 2].every((y) =>
-            bar.contains(document.elementFromPoint(rect.x + rect.width / 2, y)),
-          )
+          rect.top < edge - 2 &&
+          bar.contains(document.elementFromPoint(x, rect.bottom - 2)) &&
+          !bar.contains(document.elementFromPoint(x, edge - 2))
         );
       }),
     )
@@ -408,7 +698,7 @@ test("keyboard search covers a toolbar under the pointer and restores its action
     /Mac|iPhone|iPad/.test(navigator.platform) ? "Meta" : "Control",
   );
   for (const opener of [composer, reply]) {
-    await row.hover();
+    await hoverMessage(row);
     await shown(actions);
     await opener.focus();
     await reply.hover();
@@ -425,10 +715,8 @@ test("keyboard search covers a toolbar under the pointer and restores its action
     await expect(
       dialog.getByRole("combobox", { name: "Search Buzz" }),
     ).toBeFocused();
-    await expect
-      .poll(() => actions.evaluate((bar) => bar.matches(":popover-open")))
-      .toBe(false);
-    await expect(actions).toHaveCSS("opacity", "0");
+
+    await hidden(actions);
     expect(
       await actions.evaluate(
         (bar, point) =>
@@ -439,7 +727,7 @@ test("keyboard search covers a toolbar under the pointer and restores its action
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(opener).toBeFocused();
-    await row.hover();
+    await hoverMessage(row);
     await reply.hover();
     await shown(actions);
   }
@@ -449,7 +737,7 @@ test("keyboard search covers a toolbar under the pointer and restores its action
   ).toBeVisible();
 });
 
-test("menus and pickers retain actions, but modal dialogs cover them", async ({
+test("menus and pickers retain their anchor but cover actions", async ({
   page,
   app,
 }) => {
@@ -465,12 +753,17 @@ test("menus and pickers retain actions, but modal dialogs cover them", async ({
     `[data-channel-timeline] [data-message-id="${event.id}"]`,
   );
   const actions = actionsFor(row);
-  await row.hover();
+  await hoverMessage(row);
   const trigger = actions.getByRole("button", { name: "More message actions" });
   await trigger.click();
   const menu = page.getByRole("menu");
   await menu.hover();
   await shown(actions);
+  await hidden(actions);
+  await expect(row.locator("[data-layout]")).toHaveAttribute(
+    "data-actions-revealed",
+    "",
+  );
   const composer = page.getByRole("textbox", {
     name: "Message #Alpha",
     exact: true,
@@ -481,7 +774,7 @@ test("menus and pickers retain actions, but modal dialogs cover them", async ({
   await expect(menu).toBeHidden();
   await composer.click();
   await expect(actions).toHaveCSS("opacity", "0");
-  await row.hover();
+  await hoverMessage(row);
   await actions
     .getByRole("button", { name: "Add reaction", exact: true })
     .click();
@@ -489,10 +782,30 @@ test("menus and pickers retain actions, but modal dialogs cover them", async ({
   await expect(search).toBeVisible();
   await search.hover();
   await shown(actions);
+  await hidden(actions);
+  await expect(row.locator("[data-layout]")).toHaveAttribute(
+    "data-actions-revealed",
+    "",
+  );
   await page.mouse.click(composerBox.x + 20, composerBox.y + 10);
   await expect(search).toBeHidden();
   await composer.click();
   await expect(actions).toHaveCSS("opacity", "0");
+  // The plugin restores the external reaction trigger immediately on Escape;
+  // this must not race the toolbar's overlay suppression in either engine.
+  await hoverMessage(row);
+  const reaction = actions.getByRole("button", {
+    name: "Add reaction",
+    exact: true,
+  });
+  await reaction.focus();
+  await reaction.press("Enter");
+  await expect(search).toBeFocused();
+  await hidden(actions);
+  await page.keyboard.press("Escape");
+  await expect(search).toBeHidden();
+  await expect(reaction).toBeFocused();
+  await expect(actions).toBeVisible();
   // Keep the pointer on the row while invoking the dialog by keyboard.
   await row.hover();
   await trigger.focus();
@@ -505,10 +818,7 @@ test("menus and pickers retain actions, but modal dialogs cover them", async ({
     exact: true,
   });
   await expect(dialog).toBeVisible();
-  await expect(actions).toHaveCSS("opacity", "0");
-  await expect
-    .poll(() => actions.evaluate((bar) => bar.matches(":popover-open")))
-    .toBe(false);
+  await hidden(actions);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(trigger).toBeFocused();
   // Pointer dismissal restores focus without pinning an unhovered toolbar.
@@ -523,7 +833,7 @@ test("menus and pickers retain actions, but modal dialogs cover them", async ({
     `[data-channel-timeline] [data-message-id="${own.id}"]`,
   );
   const ownActions = actionsFor(ownRow);
-  await ownRow.hover();
+  await hoverMessage(ownRow);
   await ownActions
     .getByRole("button", { name: "More message actions" })
     .focus();
@@ -536,10 +846,94 @@ test("menus and pickers retain actions, but modal dialogs cover them", async ({
     exact: true,
   });
   await expect(confirmation).toBeVisible();
-  await expect(ownActions).toHaveCSS("opacity", "0");
+  await hidden(ownActions);
   await confirmation
     .getByRole("button", { name: "Cancel", exact: true })
     .click();
+});
+
+// Browser-only: real top-layer visibility and popup interaction through the
+// actual shell and emoji plugin, including suppression under a still pointer.
+test("profile menus and composer pickers keep message hover actions out of the way", async ({
+  page,
+  app,
+}) => {
+  await open(page, app);
+  const event = app.append("primary", "alpha", "Background hover target");
+  const row = page.locator(
+    `[data-channel-timeline] [data-message-id="${event.id}"]`,
+  );
+  const actions = actionsFor(row);
+  const composer = page.getByRole("textbox", {
+    name: "Message #Alpha",
+    exact: true,
+  });
+  const profile = page.getByRole("button", {
+    name: "Your profile",
+    exact: true,
+  });
+  for (const [width, mode] of [
+    [390, "light"],
+    [900, "dark"],
+    [1440, "light"],
+  ]) {
+    await page.setViewportSize({ width, height: 950 });
+    await page.emulateMedia({ colorScheme: mode });
+    await settle(page);
+    await hoverMessage(row);
+    await shown(actions);
+    await profile.focus();
+    await profile.press("Enter");
+    const menu = page.locator("[data-profile-menu]");
+    const appearance = menu.getByRole("menuitem", {
+      name: "Appearance",
+      exact: true,
+    });
+    await expect(appearance).toBeVisible();
+    await hidden(actions);
+    await expect(row.locator("[data-layout]")).not.toHaveAttribute(
+      "data-actions-revealed",
+    );
+    const point = await row
+      .locator("[data-message-action-anchor]")
+      .boundingBox();
+    await page.mouse.move(
+      point.x + point.width / 2,
+      point.y + point.height / 2,
+    );
+    await appearance.click();
+    await expect(
+      page.getByRole("menu", { name: "Appearance", exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await hoverMessage(row);
+    await shown(actions);
+    await expect(actions).toHaveCSS("pointer-events", "auto");
+
+    const emoji = page
+      .locator("form")
+      .filter({ has: composer })
+      .getByRole("button", { name: "Emoji and GIFS", exact: true });
+    await emoji.focus();
+    await emoji.press("Enter");
+    const search = page.getByRole("searchbox", { name: "Search emoji" });
+    await expect(search).toBeVisible();
+    await hidden(actions);
+    await page.mouse.move(
+      point.x + point.width / 2,
+      point.y + point.height / 2,
+    );
+    await search.fill("thumbsup");
+    await page.locator("em-emoji-picker .category button").first().click();
+    await expect(search).toBeHidden();
+    await expect(composer).toContainText("👍");
+    await composer.fill("");
+    await hoverMessage(row);
+    await shown(actions);
+    await expect(actions).toHaveCSS("pointer-events", "auto");
+  }
 });
 
 // Both speakers must leave the opposite avatar column clear at real pane widths.

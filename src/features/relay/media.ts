@@ -30,6 +30,55 @@ export function wasIntended(url: string): boolean {
   }
   return true;
 }
+/** Opening frames captured by video previews, so a remounted virtualized row
+ * reuses its poster instead of seeking and re-encoding. Bounded by encoded
+ * size; disposing session media (cache clear, access purge, teardown) forgets
+ * them and refuses captures that began before. */
+export type OpeningFrame = Readonly<{
+  poster: string;
+  width: number;
+  height: number;
+}>;
+const OPENING_FRAME_BUDGET = 4 * 1024 * 1024;
+const openingFrames = new Map<string, OpeningFrame>();
+let openingFrameBytes = 0;
+let openingFrameScope = 0;
+export function openingFrame(source: string): OpeningFrame | undefined {
+  const frame = openingFrames.get(source);
+  if (!frame) return undefined;
+  // Least recently used is evicted first: a reused frame is never recaptured.
+  openingFrames.delete(source);
+  openingFrames.set(source, frame);
+  return frame;
+}
+export function openingFrameCapture(): number {
+  return openingFrameScope;
+}
+function forgetOpeningFrame(source: string) {
+  const frame = openingFrames.get(source);
+  if (!frame) return;
+  openingFrames.delete(source);
+  openingFrameBytes -= frame.poster.length;
+}
+export function rememberOpeningFrame(
+  source: string,
+  frame: OpeningFrame,
+  capture: number,
+) {
+  if (
+    capture !== openingFrameScope ||
+    frame.poster.length > OPENING_FRAME_BUDGET / 16
+  )
+    return;
+  forgetOpeningFrame(source);
+  openingFrames.set(source, frame);
+  openingFrameBytes += frame.poster.length;
+  for (const oldest of openingFrames.keys()) {
+    if (openingFrameBytes <= OPENING_FRAME_BUDGET) break;
+    forgetOpeningFrame(oldest);
+  }
+}
+
 /** Avatar request warming, the react-native-web Image model: fetch and
  * decode() into detached images, then retain nothing. The browser's own HTTP
  * and decoded-image caches serve the real <img> mounts. Never warms
@@ -41,6 +90,13 @@ export function createMediaPreparation() {
   const active = new Set<HTMLImageElement>();
   const cancellations = new Map<HTMLImageElement, () => void>();
   const startedAt = new Map<string, number>();
+  // Settled loads are not repeated within the intent TTL: every prepare
+  // otherwise reloaded and re-decoded the same cached avatars (and 404s).
+  const settled = new Map<string, number>();
+  const isSettled = (url: string) => {
+    const at = settled.get(url);
+    return at !== undefined && Date.now() - at < INTENT_TTL_MS;
+  };
   let decoded = 0;
   let prefetched = 0;
   function pump() {
@@ -59,6 +115,12 @@ export function createMediaPreparation() {
         active.delete(image);
         cancellations.delete(image);
         pending.delete(url);
+        if (outcome !== "timeout" && outcome !== "cancelled") {
+          settled.delete(url);
+          settled.set(url, Date.now());
+          const oldest = settled.size > 4096 && settled.keys().next().value;
+          if (oldest) settled.delete(oldest);
+        }
         relayDebug(
           "avatar",
           outcome,
@@ -104,7 +166,7 @@ export function createMediaPreparation() {
       queue = [];
       for (const url of [...new Set(urls)].slice(0, 24)) {
         markIntended(url);
-        if (pending.has(url)) continue;
+        if (pending.has(url) || isSettled(url)) continue;
         pending.add(url);
         queue.push(url);
       }
@@ -116,7 +178,7 @@ export function createMediaPreparation() {
       if (disposed || saveData() || typeof Image === "undefined") return;
       for (const url of [...new Set(urls)]) {
         markIntended(url);
-        if (pending.has(url) || queue.includes(url)) continue;
+        if (pending.has(url) || isSettled(url) || queue.includes(url)) continue;
         if (queue.length >= 48) break;
         pending.add(url);
         queue.push(url);
@@ -132,6 +194,11 @@ export function createMediaPreparation() {
     }),
     dispose() {
       disposed = true;
+      // Frames are module-wide, so disposing any session's media (including a
+      // handed-off or stale successor) forgets them all. That only costs reuse.
+      openingFrames.clear();
+      openingFrameBytes = 0;
+      openingFrameScope++;
       queue = [];
       for (const image of active) {
         image.src = "";

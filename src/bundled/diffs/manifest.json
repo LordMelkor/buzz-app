@@ -3,5 +3,8 @@
   "name": "Diff viewer",
   "apiVersion": 1,
   "description": "Render code changes as structured diffs in conversations.",
-  "discovery": { "category": "developer-tools-and-integrations" }
+  "discovery": {
+    "category": "developer-tools-and-integrations",
+    "tags": ["code"]
+  }
 }

@@ -86,7 +86,7 @@ function spoilerDelimiters(content: string): readonly number[] {
   return Object.freeze(positions);
 }
 
-/** Pure, immutable Markdown work whose lifetime is owned by the mounted body. */
+/** Pure, immutable Markdown work; MessageMarkdown keeps recent results. */
 export function prepareMarkdown(content: string): PreparedMarkdown {
   if (content.length > MAX_MARKDOWN_LENGTH)
     return Object.freeze({ kind: "plain", content });

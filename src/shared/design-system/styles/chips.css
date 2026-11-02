@@ -31,6 +31,11 @@
       color var(--duration-state) var(--easing-state);
   }
 
+  .inline-chip[data-kind="person"],
+  .inline-chip[data-kind="agent"] {
+    border-radius: var(--radius-pill);
+  }
+
   button.inline-chip {
     cursor: pointer;
   }
@@ -54,6 +59,57 @@
   .inline-chip[data-state="unresolved"] {
     background: var(--surface-inset);
     color: var(--text-metadata);
+  }
+
+  /**
+   * Resolving reference: a mention committed before the client could decide
+   * on its recipient. The sigil keeps its exact advance width and baseline but
+   * paints transparent, and the spinner sits in its box, so settling into a
+   * recipient (or back into text) moves nothing. The spinner names its own
+   * colour because it would otherwise inherit the transparent one.
+   */
+  .inline-chip-trigger {
+    position: relative;
+  }
+
+  .inline-chip-trigger[data-loading] {
+    color: transparent;
+  }
+
+  .inline-chip-spinner {
+    /* Set like a glyph of the name, not in the sigil's line box. An inline
+       SVG's baseline is its bottom edge, so `bottom` offsets from the text
+       baseline itself; Chromium rounds a font's ascent and descent to whole
+       px, so any offset from the content box drifts with size, while this
+       holds at every scale. Tabler's notch inks 20/24 of its box, so 0.75em
+       draws a 0.625em arc. Centring it on the cap-height midline (`cap` is the
+       font's own: Inter 0.727em) rests its foot 0.05em above the baseline and
+       its crown just under the cap height, between the x-height and the
+       capitals, where an inline glyph reads as part of the word. The `@`
+       centred it 0.08em lower: its ink descends 0.19em below the baseline. */
+    position: relative;
+    display: inline-block;
+    vertical-align: baseline;
+    width: 0.75em;
+    height: 0.75em;
+    /* Advances nothing: the transparent `@` keeps the width, and the arc is
+       centred in its advance. 0.966em is the `@` advance of the token font
+       (Inter); a percentage cannot replace it, since it would need absolute
+       positioning, which measures `bottom` from the trigger's content box
+       (baseline + rounded descent) rather than the baseline, so the arc
+       would sink by the descent and drift with size. A chip in another font
+       keeps the arc's height and baseline but may centre it off the `@`. */
+    margin-right: -0.75em;
+    left: calc((-0.966em - 0.75em) / 2);
+    bottom: calc(0.5cap - 0.375em);
+    color: var(--text-standard);
+    animation: inline-chip-spin 1s linear infinite;
+  }
+
+  @keyframes inline-chip-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .inline-chip-label {
@@ -114,6 +170,10 @@
       transition-duration: 0ms;
     }
     .inline-chip-qualifier[data-reveal] {
+      animation: none;
+    }
+    /* A still notch reads as "waiting" without motion. */
+    .inline-chip-spinner {
       animation: none;
     }
   }

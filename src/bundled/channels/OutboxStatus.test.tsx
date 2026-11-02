@@ -10,13 +10,25 @@ import {
 } from "@testing-library/react";
 import {
   createOutbox,
+  PublishRejected,
   type Outbox,
   type OutgoingEvent,
 } from "../../features/relay/outbox";
-import { keypair, signed } from "../../features/relay/testing";
+import {
+  keypair,
+  metadata,
+  roster,
+  signed,
+} from "../../features/relay/testing";
+import { createRelaySession } from "../../features/relay/session";
+import { matchesEvent } from "../../features/relay/projection";
+import type { RelayEvent } from "../../features/relay/events";
 import type { RelayWriter } from "../../features/relay/transport";
 import { createRelayProfiler } from "../../features/relay/profiling";
-import { sessionLinkMessage } from "../../features/sessions/share";
+import {
+  grantSoloChatAccess,
+  soloChatLinkMessage,
+} from "../../features/solo/share";
 import { OutboxStatus } from "./OutboxStatus";
 
 afterEach(cleanup);
@@ -31,6 +43,7 @@ const invitation = {
 } as OutgoingEvent;
 function show(item: OutgoingEvent) {
   const retry = vi.fn();
+  const add = vi.fn(async () => {});
   const items = [item];
   const outbox = {
     snapshot: () => items,
@@ -38,13 +51,19 @@ function show(item: OutgoingEvent) {
     retry,
     dismiss: vi.fn(),
   } as unknown as Outbox;
-  render(<OutboxStatus outbox={outbox} profiling={createRelayProfiler()} />);
+  render(
+    <OutboxStatus
+      outbox={outbox}
+      profiling={createRelayProfiler()}
+      memberAdditions={{ add }}
+    />,
+  );
   fireEvent.click(screen.getByText("Outbox · 1 items"));
-  return retry;
+  return { retry, add };
 }
 
 it("does not offer generic retry for guarded invitations from either profile or composer", () => {
-  const retry = show({ ...invitation, guarded: true });
+  const { retry } = show({ ...invitation, guarded: true });
   expect(
     screen.queryByRole("button", { name: "Retry" }),
   ).not.toBeInTheDocument();
@@ -71,7 +90,13 @@ it("does not show private feedback body or generic retry in the channel outbox",
     retry,
     dismiss: vi.fn(),
   } as unknown as Outbox;
-  render(<OutboxStatus outbox={outbox} profiling={createRelayProfiler()} />);
+  render(
+    <OutboxStatus
+      outbox={outbox}
+      profiling={createRelayProfiler()}
+      memberAdditions={{ add: vi.fn(async () => {}) }}
+    />,
+  );
   fireEvent.click(screen.getByText("Outbox · 0 items"));
   expect(screen.queryByText(/private report/)).not.toBeInTheDocument();
   expect(
@@ -81,14 +106,174 @@ it("does not show private feedback body or generic retry in the channel outbox",
 });
 
 it("preserves generic retry for legacy unguarded invitations", () => {
-  const retry = show(invitation);
+  const { retry } = show(invitation);
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(retry).toHaveBeenCalledWith("invite");
 });
 
+it("routes an ordinary addition retry through fresh membership checks", async () => {
+  const { retry, add } = show({
+    ...invitation,
+    event: {
+      ...invitation.event,
+      tags: [
+        ["h", "channel"],
+        ["p", "person"],
+        ["role", "member"],
+      ],
+    },
+    recovery: { key: "member-add:channel:person", value: "1" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(add).toHaveBeenCalledExactlyOnceWith("channel", "person"),
+  );
+  expect(retry).not.toHaveBeenCalled();
+});
+
+it.each(
+  (["failed", "unknown", "admitted"] as const).flatMap((failure) =>
+    [false, true].map((restart) => ({ failure, restart })),
+  ),
+)(
+  "Diagnostics recovers a Solo-agent $failure receipt (restart: $restart)",
+  async ({ failure, restart }) => {
+    const viewer = keypair(),
+      relay = keypair(),
+      agent = keypair();
+    const channelId = "11111111-1111-4111-8111-111111111111";
+    let members = [viewer.pubkey];
+    let clock = 1_700_000_000;
+    let interrupted = true;
+    let records: readonly OutgoingEvent[] = [];
+    const sign = vi.fn<RelayWriter["sign"]>(async (template) =>
+      signed(viewer, template),
+    );
+    const publish = vi.fn(async (_event: RelayEvent) => {
+      if (interrupted && failure === "failed")
+        throw new PublishRejected("Not committed");
+      if (!interrupted || failure === "admitted") {
+        members = [viewer.pubkey, agent.pubkey];
+        clock++;
+      }
+      if (interrupted) throw new Error("Receipt lost");
+    });
+    const create = () =>
+      createRelaySession(
+        {
+          channelIdentity: true,
+          viewer: viewer.pubkey,
+          relayAuthor: relay.pubkey,
+          media: () => undefined,
+          readAgentLibrary: async () => ({
+            definitions: [],
+            identities: [{ pubkey: agent.pubkey, name: "Agent" }],
+          }),
+          writer: { kinds: [9000], sign, publish },
+          query: async (filters) =>
+            [
+              metadata(relay, channelId, "Chat", clock, [
+                ["t", "stream"],
+                ["t", "buzz.solo"],
+                ["private"],
+              ]),
+              roster(relay, channelId, members, clock),
+            ].filter((event) =>
+              filters.some((filter) => matchesEvent(event, filter)),
+            ),
+        },
+        {
+          outboxStorage: {
+            load: () => structuredClone(records),
+            save: (next) => {
+              records = structuredClone(next);
+            },
+          },
+        },
+      );
+    let owner = create();
+    const ready = async () => {
+      await owner.session.outbox?.ready();
+      owner.session.channels.ensureList();
+      await waitFor(() =>
+        expect(owner.session.channels.list().status).toBe("ready"),
+      );
+      await owner.session.agentChoices.refresh();
+    };
+    try {
+      await ready();
+      // A new ordinary Solo addition still cannot admit an agent.
+      await expect(
+        owner.session.memberAdditions.add(channelId, agent.pubkey),
+      ).rejects.toThrow(/tagging them/);
+      expect(publish).not.toHaveBeenCalled();
+      await expect(
+        grantSoloChatAccess(
+          owner.session,
+          channelId,
+          [agent.pubkey],
+          new Map(),
+          new AbortController().signal,
+          () => {},
+          true,
+        ),
+      ).rejects.toThrow();
+      const original = records[0];
+      assert.exists(original);
+      expect(original).toMatchObject({
+        recovery: { key: `member-add:${channelId}:${agent.pubkey}` },
+        delivery: failure === "failed" ? "failed" : "unknown",
+      });
+      expect(original.event.tags).toContainEqual(["role", "bot"]);
+      expect(original.guarded).not.toBe(true);
+      if (restart) {
+        owner.dispose();
+        owner = create();
+        await ready();
+      }
+      interrupted = false;
+      const outbox = owner.session.outbox;
+      assert.exists(outbox);
+      const view = render(
+        <OutboxStatus
+          outbox={outbox}
+          profiling={owner.session.profiling}
+          memberAdditions={owner.session.memberAdditions}
+        />,
+      );
+      try {
+        fireEvent.click(screen.getByText("Outbox · 1 items"));
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+        await waitFor(() =>
+          expect(
+            records.find((item) => item.event.id === original.event.id)
+              ?.acknowledged,
+          ).toBe(true),
+        );
+        expect(publish.mock.calls.map(([event]) => event.id)).toEqual(
+          failure === "admitted"
+            ? [original.event.id]
+            : [original.event.id, original.event.id],
+        );
+        expect(sign).toHaveBeenCalledOnce();
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        // A completed receipt no longer supplies admission context.
+        await expect(
+          owner.session.memberAdditions.add(channelId, agent.pubkey),
+        ).rejects.toThrow(/tagging them/);
+        expect(publish).toHaveBeenCalledTimes(failure === "admitted" ? 1 : 2);
+      } finally {
+        view.unmount();
+      }
+    } finally {
+      owner.dispose();
+    }
+  },
+);
+
 // The recovery page deliberately has no source inventory or encoder: deleted
 // agents and teams must not be needed to finish an already journaled delivery.
-it.each(["agent", "team", "session"] as const)(
+it.each(["agent", "team", "solo", "agent-share"] as const)(
   "retries and acknowledges a restored %s share without its deleted source",
   async (kind) => {
     const viewer = keypair();
@@ -120,19 +305,22 @@ it.each(["agent", "team", "session"] as const)(
         {
           kind: 9,
           content:
-            kind === "session"
-              ? sessionLinkMessage("deleted-source")
+            kind === "solo"
+              ? soloChatLinkMessage("deleted-source")
               : "Snapshot attachment",
           tags: [["h", "dm"]],
         },
         {
           key:
-            kind === "session"
-              ? "session-share-link:deleted-source:dm"
-              : // Shares queued by the removed snapshot dialog.
-                `snapshot-share:${kind}:deleted-source`,
+            kind === "solo"
+              ? "solo-share-link:deleted-source:dm"
+              : kind === "agent-share"
+                ? // Sent from Share, for one copy and recipient.
+                  `agent-share:${"a".repeat(64)}:${"b".repeat(64)}:${"0".repeat(40)}`
+                : // Shares queued by the removed snapshot dialog.
+                  `snapshot-share:${kind}:deleted-source`,
           value:
-            kind === "session"
+            kind === "solo" || kind === "agent-share"
               ? "1"
               : JSON.stringify({
                   people: [{ pubkey: "b".repeat(64), name: "Recipient" }],
@@ -155,7 +343,11 @@ it.each(["agent", "team", "session"] as const)(
       await restored.outbox.ready();
       const outbox = restored.outbox;
       render(
-        <OutboxStatus outbox={outbox} profiling={createRelayProfiler()} />,
+        <OutboxStatus
+          outbox={outbox}
+          profiling={createRelayProfiler()}
+          memberAdditions={{ add: vi.fn(async () => {}) }}
+        />,
       );
       fireEvent.click(screen.getByText("Outbox · 1 items"));
       fireEvent.click(

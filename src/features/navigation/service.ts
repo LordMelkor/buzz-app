@@ -9,7 +9,7 @@ import {
 } from "./controller";
 import { createBrowserHistory } from "./browser-history";
 import { createMemoryHistory } from "./history";
-import type { JsonValue, OpenTarget } from "./targets";
+import { targetKey, type JsonValue, type OpenTarget } from "./targets";
 import type { RelayData, RelaySnapshot } from "../relay/service";
 
 export type PageNavigation = Readonly<{
@@ -18,6 +18,17 @@ export type PageNavigation = Readonly<{
   signal: AbortSignal;
   /** Suppress destination autofocus when the opening control retains focus. */
   focus?: NavigationFocus;
+  /** Back/Forward returned to this visit. A consumer that kept its state may
+   * restore it rather than replay the visit's opening. */
+  traversal?: true;
+  /** This visit's state under a consumer's key, kept for Back/Forward until
+   * the shared store evicts it. */
+  position(key: string): JsonValue | undefined;
+  /** Usable after this presentation is revoked, so leaving can record it.
+   * Every visit and consumer shares one store that keeps the latest 100
+   * entries, so use few keys and small values: never drafts, message bodies,
+   * credentials or authorization. */
+  savePosition(key: string, value: JsonValue): void;
   /** Bind a domain subtree to the exact connection it renders, without another visit. */
   forSession(relay: RelayData, connection: RelaySnapshot): PageNavigation;
   /** Resolve the pending visit's default destination without replacing its caller. */
@@ -44,34 +55,98 @@ export function provideNavigation(
     controller.dispose();
     positions.clear();
   });
+  const position = (id: string) => positions.get(id);
+  function savePosition(id: string, value: JsonValue) {
+    positions.delete(id);
+    positions.set(id, value);
+    while (positions.size > 100) {
+      const first = positions.keys().next().value;
+      if (first) positions.delete(first);
+    }
+  }
   return {
     ...controller,
-    /** Bounded per-visit state; never drafts, message bodies, credentials or authorization. */
-    position(id: string) {
-      return positions.get(id);
-    },
-    savePosition(id: string, value: JsonValue) {
-      positions.delete(id);
-      positions.set(id, value);
-      while (positions.size > 100) {
-        const first = positions.keys().next().value;
-        if (first) positions.delete(first);
-      }
-    },
-    request(attempt: OpenAttempt, owner: PresentationOwner) {
+    position,
+    savePosition,
+    request(
+      attempt: OpenAttempt,
+      owner: PresentationOwner,
+      retainUnderSettings = false,
+    ) {
+      let active = attempt;
+      let suspended = false;
+      let resolution: OpenTarget | undefined;
+      let completion:
+        | Extract<OpenResult, { status: "opened" | "failed" }>
+        | undefined;
+      const retainedSignal = retainUnderSettings
+        ? new AbortController().signal
+        : attempt.signal;
+      const visit = (key: string) => JSON.stringify([attempt.entry.id, key]);
+      const sameVisit = (next: OpenAttempt) =>
+        next.entry.id === attempt.entry.id &&
+        targetKey(next.entry.target) === targetKey(attempt.entry.target);
+      const current = () => {
+        const state = controller.navigation.snapshot();
+        return (
+          !state.ingress && state.attempt === active && !active.signal.aborted
+        );
+      };
       const presentation = bindPresentation(
         {
           entryId: attempt.entry.id,
           target: attempt.entry.target,
-          signal: attempt.signal,
-          focus: attempt.focus ?? "content",
-          resolve: (target) => controller.resolve(attempt, target),
-          complete: (result) => controller.complete(attempt, result),
+          signal: retainedSignal,
+          ...(attempt.traversal && { traversal: attempt.traversal }),
+          get focus() {
+            return active === attempt
+              ? (attempt.focus ?? "content")
+              : "preserve";
+          },
+          position: (key) => position(visit(key)),
+          savePosition: (key, value) => savePosition(visit(key), value),
+          resolve: (target) => {
+            if (
+              retainUnderSettings &&
+              controller.navigation.snapshot().entry.target.kind === "settings"
+            ) {
+              resolution = target;
+              return false;
+            }
+            return current() && controller.resolve(active, target);
+          },
+          complete: (result) => {
+            const state = controller.navigation.snapshot();
+            if (retainUnderSettings && state.entry.target.kind === "settings") {
+              completion = result;
+              return false;
+            }
+            const accepted = current() && controller.complete(active, result);
+            if (accepted) completion = result;
+            return accepted;
+          },
         },
         {
-          valid: () =>
-            controller.navigation.snapshot().attempt === attempt &&
-            owner.valid(),
+          valid: () => {
+            if (!owner.valid()) return false;
+            if (current()) return true;
+            const state = controller.navigation.snapshot();
+            if (
+              retainUnderSettings &&
+              !state.ingress &&
+              state.entry.target.kind === "settings"
+            ) {
+              suspended = true;
+              return true;
+            }
+            return (
+              retainUnderSettings &&
+              suspended &&
+              !state.ingress &&
+              sameVisit(state.attempt) &&
+              !state.attempt.signal.aborted
+            );
+          },
           subscribe(listener) {
             const stopOwner = owner.subscribe(listener);
             const stopAttempt = controller.navigation.subscribe(listener);
@@ -82,7 +157,27 @@ export function provideNavigation(
           },
         },
       );
-      return presentation;
+      return {
+        ...presentation,
+        /** Resume only the original visit; retained content cannot acknowledge Settings. */
+        resume(next: OpenAttempt) {
+          if (
+            !retainUnderSettings ||
+            !suspended ||
+            presentation.request.signal.aborted ||
+            !sameVisit(next) ||
+            next !== controller.navigation.snapshot().attempt ||
+            next.signal.aborted ||
+            !owner.valid()
+          )
+            return false;
+          active = next;
+          suspended = false;
+          if (resolution) controller.resolve(active, resolution);
+          else if (completion) controller.complete(active, completion);
+          return true;
+        },
+      };
     },
   };
 }
@@ -121,7 +216,12 @@ function bindPresentation(
     entryId: parent.entryId,
     target: parent.target,
     signal: lifetime.signal,
-    focus: parent.focus ?? "content",
+    ...(parent.traversal && { traversal: parent.traversal }),
+    get focus() {
+      return parent.focus ?? "content";
+    },
+    position: parent.position,
+    savePosition: parent.savePosition,
     resolve: (target) => valid() && parent.resolve(target),
     complete: (result) => valid() && parent.complete(result),
     forSession(relay, connection) {

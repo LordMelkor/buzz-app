@@ -108,6 +108,7 @@ it("shows a Codex turn's request, steering, tools and reply in the shared transc
     }),
     expect.objectContaining({ type: "message", text: "Done", posted: true }),
     expect.objectContaining({ type: "message", text: "Fixed." }),
+    expect.objectContaining({ type: "status", text: "Context compaction" }),
   ]);
   const [channelTurn] = codexTurns(
     [turn({ status: "interrupted", completedAt: null, items: [] })],
@@ -120,9 +121,28 @@ it("shows a Codex turn's request, steering, tools and reply in the shared transc
   expect(channelTurn).not.toHaveProperty("endedAt");
 });
 
-const agent = { pubkey: "a".repeat(64), name: "Sol" };
+const agent = { key: "a".repeat(64), name: "Sol" };
 const lookup = { agent, channelId: "channel", name: "dev", root };
 
+it.each([
+  ["summary only", { summary: ["Plan"] }, "Plan"],
+  ["content only", { content: ["Raw"] }, "Raw"],
+  ["both", { summary: ["Plan"], content: ["Raw"] }, "Plan\n\nRaw"],
+  ["both, repeated", { summary: ["Same"], content: ["Same"] }, "Same"],
+  [
+    "summary with its own repeat",
+    { summary: ["check", "retry", "check"], content: ["retry", "Raw"] },
+    "check\n\nretry\n\ncheck\n\nRaw",
+  ],
+])("shows Codex reasoning from its %s", (_, reasoning, text) => {
+  const [mapped] = codexTurns(
+    [turn({ items: [{ type: "reasoning", id: "r1", ...reasoning }] })],
+    conversation,
+  );
+  expect(mapped?.items).toEqual([
+    expect.objectContaining({ type: "thought", text }),
+  ]);
+});
 it("shows the command the model wrote, not the login shell running it", () => {
   expect(shellCommand("/bin/zsh -lc 'git diff --stat'")).toBe(
     "git diff --stat",
@@ -132,6 +152,31 @@ it("shows the command the model wrote, not the login shell running it", () => {
     `sed -n '1,9p' a | grep "$x"`,
   );
   expect(shellCommand("pnpm test")).toBe("pnpm test");
+});
+
+it("shows a reply posted in a subthread as the agent's message", () => {
+  const [mapped] = codexTurns(
+    [
+      turn({
+        items: [
+          {
+            type: "dynamicToolCall",
+            id: "d1",
+            namespace: "buzz",
+            tool: "reply_in_subthread",
+            arguments: { parent: root, text: "Nested" },
+            status: "completed",
+            contentItems: [{ type: "inputText", text: "sent" }],
+            success: true,
+          },
+        ],
+      }),
+    ],
+    conversation,
+  );
+  expect(mapped?.items).toEqual([
+    expect.objectContaining({ type: "message", text: "Nested", posted: true }),
+  ]);
 });
 
 it("keeps a send that failed or has not finished as a tool call", () => {
@@ -178,13 +223,28 @@ it("keeps a send that failed or has not finished as a tool call", () => {
 });
 
 /** An app-server answering `thread/turns/list` as the test says, and
- * `thread/list` from `threads` as Codex searches names. */
+ * `thread/list` from `threads` as Codex searches names: only the default
+ * provider's threads, here none, unless asked for every provider's. */
 function server(
   list: (params: Record<string, unknown>) => Wire,
   threads: { id: string; name: string; updatedAt: number }[] = [],
+  rollout?: string,
 ) {
   const sent: Wire[] = [];
   const spawn = vi.fn(async (_id: string, options?: HostProcessOptions) => {
+    if (_id === "read") {
+      // Match the desktop host's process-directory contract.
+      if (options?.cwd && !options.cwd.startsWith("/"))
+        throw new Error("The process directory must be absolute");
+      if (rollout === undefined) options?.onStderr?.("file unavailable");
+      else options?.onStdout?.(btoa(rollout));
+      return {
+        write: async () => {},
+        end: async () => {},
+        kill: async () => {},
+        exited: Promise.resolve(rollout === undefined ? 1 : 0),
+      };
+    }
     let exit!: (code: number) => void;
     const exited = new Promise<number>((resolve) => {
       exit = resolve;
@@ -198,15 +258,20 @@ function server(
         const reply =
           wire.method === "thread/turns/list"
             ? list(params)
-            : wire.method === "thread/list"
-              ? {
-                  result: {
-                    data: threads.filter((thread) =>
-                      thread.name.includes(String(params.searchTerm)),
-                    ),
-                  },
-                }
-              : { result: {} };
+            : wire.method === "thread/read"
+              ? { result: { thread: { path: "/sessions/rollout.jsonl" } } }
+              : wire.method === "thread/list"
+                ? {
+                    result: {
+                      data: threads.filter(
+                        (thread) =>
+                          Array.isArray(params.modelProviders) &&
+                          !params.modelProviders.length &&
+                          thread.name.includes(String(params.searchTerm)),
+                      ),
+                    },
+                  }
+                : { result: {} };
         options?.onStdout?.(`${JSON.stringify({ id: wire.id, ...reply })}\n`);
       },
       end: async () => exit(0),
@@ -230,6 +295,57 @@ const paged =
       },
     };
   };
+
+it("loads the recorded script through the declared file reader, and reports unavailable details", async () => {
+  const rollout = [
+    { type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } },
+    {
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        call_id: "script",
+        name: "exec",
+        input: "text(42)",
+      },
+    },
+    {
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: "script",
+        output: "42",
+      },
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join("\n");
+  const { spawn } = server(paged([turn({ items: [] })]), [], rollout);
+  const read = await readTranscript(
+    spawn,
+    { ...lookup, threadId: "thread-1" },
+    new AbortController().signal,
+  );
+  expect(spawn).toHaveBeenCalledWith(
+    "read",
+    expect.objectContaining({ args: ["/sessions/rollout.jsonl"] }),
+  );
+  expect(read?.turns[0]?.items).toMatchObject([
+    { title: "exec", input: "text(42)", output: "42" },
+  ]);
+  const unavailable = server(paged([turn()]));
+  const fallback = await readTranscript(
+    unavailable.spawn,
+    { ...lookup, threadId: "thread-1" },
+    new AbortController().signal,
+  );
+  expect(fallback?.turns[0]?.items[0]).toMatchObject({
+    type: "status",
+    text: expect.stringContaining("CodeMode scripts could not be loaded"),
+  });
+  expect(fallback?.turns[0]?.items).toContainEqual(
+    expect.objectContaining({ title: "pnpm test" }),
+  );
+});
 
 it("reads the latest turns oldest first, a turn per request, and closes its app-server", async () => {
   const { spawn, sent } = server(
@@ -298,7 +414,7 @@ it("reads turns that each fit app-server's output frame but together do not", as
 });
 
 it("merges the threads other builds started, found by tag or by their earlier name", async () => {
-  const tag = sessionTag(agent.pubkey, lookup);
+  const tag = sessionTag(agent.key, lookup);
   const title = `Buzz #dev · thread ${root.slice(0, 8)} · Sol`;
   const threads = [
     { id: "tagged", name: `Renamed · ${tag}`, updatedAt: 3 },
@@ -354,8 +470,8 @@ it("merges the threads other builds started, found by tag or by their earlier na
   expect(
     sent.filter((w) => w.method === "thread/list").map((w) => w.params),
   ).toEqual([
-    { searchTerm: tag, limit: 50 },
-    { searchTerm: title, limit: 50 },
+    { searchTerm: tag, modelProviders: [], limit: 50, useStateDbOnly: true },
+    { searchTerm: title, modelProviders: [], limit: 50, useStateDbOnly: true },
   ]);
   // With no saved thread, the newest one found for it is the conversation's.
   await expect(

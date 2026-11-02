@@ -11,8 +11,115 @@ import { assert, afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ConversationPresentation } from "../conversation/ConversationPresentation";
 import { ComposerAttachments } from "./ComposerAttachments";
 import type { DraftAttachment } from "./attachment-draft";
+import { AttachmentDownloadContext } from "./AttachmentDownloadContext";
+import { apply as installVoiceNotes } from "../../bundled/voice-notes";
+import type { AttachmentRenderer } from "../conversation/contracts";
+import { AttachmentView } from "../conversation/AttachmentView";
+import { ComposerAttachmentViewer } from "./ComposerAttachmentViewer";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
+
+it.each([false, true])(
+  "never enables saving for an uploaded voice draft, including disabled=%s",
+  async (disabled) => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    let renderer!: AttachmentRenderer;
+    installVoiceNotes({
+      conversation: {
+        registerTool: () => {},
+        registerAttachment: (value: AttachmentRenderer) => {
+          renderer = value;
+        },
+      },
+    } as unknown as Parameters<NonNullable<typeof installVoiceNotes>>[0]);
+    const entries = [
+      { ...renderer, key: "voice/player", pluginId: "voice", revision: "1" },
+    ];
+    const registry = { snapshot: () => entries, subscribe: () => () => {} };
+    const url = `https://relay.test/media/${"a".repeat(64)}.wav`;
+    const source = `buzz-media://localhost/${encodeURIComponent(url)}`;
+    const item: DraftAttachment = {
+      id: "voice",
+      file: new File(["sample"], "voice-note-sample.wav", {
+        type: "audio/wav",
+      }),
+      status: "ready",
+      voice: { duration: 1, waveform: [0.5] },
+      uploaded: {
+        url,
+        name: "voice-note-sample.wav",
+        type: "audio/wav",
+        size: 6,
+        sha256: "a".repeat(64),
+      },
+    };
+    render(
+      <AttachmentDownloadContext value={true}>
+        <ComposerAttachments
+          items={[item]}
+          disabled={disabled}
+          remove={() => {}}
+          retry={() => {}}
+          media={() => source}
+          renderers={registry}
+        />
+      </AttachmentDownloadContext>,
+    );
+    await act(async () => {});
+    expect(
+      screen.queryByRole("button", { name: "Download voice note" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Play voice note" }),
+    ).toBeTruthy();
+    cleanup();
+    render(
+      <AttachmentDownloadContext value={true}>
+        <ComposerAttachmentViewer
+          items={[item]}
+          selected={item.id}
+          select={() => {}}
+          media={() => source}
+          renderers={registry}
+          restoreFocus={{ current: null }}
+          close={() => {}}
+        />
+      </AttachmentDownloadContext>,
+    );
+    await act(async () => {});
+    expect(
+      screen.getByRole("button", { name: "Play voice note" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Download voice note" }),
+    ).toBeNull();
+    cleanup();
+    render(
+      <AttachmentDownloadContext value={true}>
+        <AttachmentView
+          registry={registry}
+          attachment={{
+            url,
+            kind: "audio",
+            voiceNote: true,
+            name: "voice-note-sample.wav",
+          }}
+          source={source}
+          fallback={<span>Fallback</span>}
+        />
+      </AttachmentDownloadContext>,
+    );
+    expect(
+      screen.getByRole("button", { name: "Download voice note" }),
+    ).toBeTruthy();
+  },
+);
 
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
@@ -287,6 +394,33 @@ it("removes immediately without playing a poof sound", () => {
   view.rerender(<ComposerAttachments {...props} items={[]} />);
   expect(audio).not.toHaveBeenCalled();
   expect(document.querySelector("[data-attachment-poof]")).toBeNull();
+});
+
+it("shows a returning draft at once and animates only attachments picked later", async () => {
+  const props = {
+    disabled: false,
+    remove: vi.fn(),
+    retry: vi.fn(),
+    media: () => undefined,
+  };
+  const item = (name: string): DraftAttachment => ({
+    id: name,
+    file: new File(["text"], name),
+    status: "queued",
+  });
+  const row = (name: string) =>
+    screen.getByText(name).closest("li") as HTMLElement;
+  const view = render(
+    <ComposerAttachments {...props} items={[item("restored.txt")]} />,
+  );
+  // The composer remounted with this draft (switching back to a channel).
+  expect(row("restored.txt").style.opacity).toBe("1");
+  view.rerender(<ComposerAttachments {...props} items={[]} />);
+  view.rerender(
+    <ComposerAttachments {...props} items={[item("picked.txt")]} />,
+  );
+  expect(row("picked.txt").style.opacity).toBe("0");
+  await waitFor(() => expect(row("picked.txt").style.opacity).toBe("1"));
 });
 
 it("dismisses draft preview while retaining the original file and preview URL", async () => {
@@ -656,4 +790,57 @@ it("compacts media beside non-media chips and restores media-only previews after
   expect(screen.getByRole("list").hasAttribute("data-compact-media")).toBe(
     false,
   );
+});
+
+it("keeps the local thumbnail until the uploaded image has loaded", () => {
+  vi.stubGlobal(
+    "URL",
+    Object.assign(URL, {
+      createObjectURL: vi.fn(() => "blob:local"),
+      revokeObjectURL: vi.fn(),
+    }),
+  );
+  const item: DraftAttachment = {
+    id: "image",
+    file: new File(["png"], "photo.png", { type: "image/png" }),
+    status: "uploading",
+  };
+  const props = {
+    disabled: false,
+    remove: vi.fn(),
+    retry: vi.fn(),
+    media: (url: string) => `/media?url=${url}`,
+  };
+  const view = render(<ComposerAttachments {...props} items={[item]} />);
+  const sources = () =>
+    Array.from(view.container.querySelectorAll("img"), (image) =>
+      image.getAttribute("src"),
+    );
+  fireEvent.load(view.container.querySelector("img") as HTMLImageElement);
+  expect(sources()).toEqual(["blob:local"]);
+  view.rerender(
+    <ComposerAttachments
+      {...props}
+      items={[
+        {
+          ...item,
+          status: "ready",
+          uploaded: {
+            url: "https://relay.test/photo.webp",
+            name: "photo.webp",
+            type: "image/webp",
+            size: 8,
+            sha256: "a".repeat(64),
+          },
+        },
+      ]}
+    />,
+  );
+  const canonical = "/media?url=https://relay.test/photo.webp";
+  expect(sources()).toEqual(["blob:local", canonical]);
+  const incoming = view.container.querySelectorAll("img")[1];
+  assert.exists(incoming);
+  fireEvent.load(incoming);
+  expect(sources()).toEqual([canonical]);
+  expect(view.container.querySelector("img")).toBe(incoming);
 });

@@ -4,6 +4,202 @@ import type { LiveCallbacks } from "./live";
 import { keypair, roster, signed, scriptedTransport } from "./testing";
 
 afterEach(() => vi.useRealTimers());
+
+function sender(socketPublication = true) {
+  const viewer = keypair(),
+    relay = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  let live!: LiveCallbacks;
+  const durable = vi.fn(async () => {});
+  const publish = vi.fn(
+    async (_event: ReturnType<typeof signed>, _signal: AbortSignal) => "",
+  );
+  const sign = vi.fn(
+    async (template: Parameters<typeof signed>[1], _signal: AbortSignal) =>
+      signed(viewer, template),
+  );
+  const owner = createRelaySession(
+    {
+      ...wire.transport,
+      writer: { kinds: [9], sign, publish: durable },
+      subscribe(callbacks) {
+        live = callbacks;
+        return {
+          update() {},
+          retry() {},
+          dispose() {},
+          ...(socketPublication ? { publish } : {}),
+        };
+      },
+    },
+    { outboxStorage: { load: () => [], save() {} } },
+  );
+  live.state({ status: "connected", routes: [] });
+  live.receive([roster(relay, "dm", [viewer.pubkey])]);
+  return { owner, live, publish, sign, durable, viewer, relay };
+}
+
+it("skips typing when a host has only a durable writer", async () => {
+  const h = sender(false);
+  try {
+    await h.owner.session.typing.send(
+      "dm",
+      undefined,
+      new AbortController().signal,
+    );
+    expect(h.sign).not.toHaveBeenCalled();
+    expect(h.durable).not.toHaveBeenCalled();
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it("publishes empty scoped pulses on the live socket without durable outbox admission", async () => {
+  const h = sender();
+  try {
+    const signal = new AbortController().signal;
+    await h.owner.session.typing.send("dm", undefined, signal);
+    await h.owner.session.typing.send("dm", "a".repeat(64), signal);
+    expect(h.publish.mock.calls.map(([event]) => event)).toMatchObject([
+      {
+        kind: 20002,
+        content: "",
+        tags: [["h", "dm"]],
+        pubkey: h.viewer.pubkey,
+      },
+      {
+        kind: 20002,
+        content: "",
+        tags: [
+          ["h", "dm"],
+          ["e", "a".repeat(64), "", "reply"],
+        ],
+      },
+    ]);
+    expect(h.owner.session.outbox?.supports(20002)).toBe(false);
+    expect(h.owner.session.outbox?.snapshot()).toEqual([]);
+    expect(h.durable).not.toHaveBeenCalled();
+    expect(h.owner.session.typing.snapshot()).toEqual([]);
+    const before = h.sign.mock.calls.length;
+    await h.owner.session.typing.send("other-dm", undefined, signal);
+    await h.owner.session.typing.send("dm", "", signal);
+    await h.owner.session.typing.send("dm", "bad-root", signal);
+    h.live.state({ status: "retrying", routes: [] });
+    await h.owner.session.typing.send("dm", undefined, signal);
+    expect(h.sign).toHaveBeenCalledTimes(before);
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it("keeps incoming activity readable for a guest without publishing their typing", async () => {
+  const h = sender();
+  try {
+    h.live.receive([
+      signed(h.relay, {
+        kind: 39002,
+        created_at: 1700000001,
+        content: "",
+        tags: [
+          ["d", "dm"],
+          ["p", h.viewer.pubkey, "", "guest"],
+        ],
+      }),
+    ]);
+    await h.owner.session.typing.send(
+      "dm",
+      undefined,
+      new AbortController().signal,
+    );
+    expect(h.sign).not.toHaveBeenCalled();
+    expect(h.publish).not.toHaveBeenCalled();
+    h.live.receive([
+      signed(keypair(), {
+        kind: 20002,
+        created_at: Math.floor(Date.now() / 1000),
+        content: "",
+        tags: [["h", "dm"]],
+      }),
+    ]);
+    expect(h.owner.session.typing.snapshot()).toHaveLength(1);
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it.each([
+  "conversation",
+  "access",
+  "demotion",
+  "disconnect",
+  "cache",
+  "dispose",
+])("drops a pulse whose signing crosses %s retirement", async (transition) => {
+  const h = sender(),
+    controller = new AbortController();
+  let release!: () => void, started!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const signing = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  h.sign.mockImplementationOnce(async (template) => {
+    started();
+    await gate;
+    return signed(h.viewer, template);
+  });
+  const pending = h.owner.session.typing.send(
+    "dm",
+    undefined,
+    controller.signal,
+  );
+  try {
+    await signing;
+    if (transition === "conversation") controller.abort();
+    else if (transition === "demotion")
+      h.live.receive([
+        signed(h.relay, {
+          kind: 39002,
+          created_at: 1700000001,
+          content: "",
+          tags: [
+            ["d", "dm"],
+            ["p", h.viewer.pubkey, "", "guest"],
+          ],
+        }),
+      ]);
+    else if (transition === "access")
+      h.live.receive([roster(h.relay, "dm", [], 1_800_000_000)]);
+    else if (transition === "disconnect") {
+      h.live.state({ status: "retrying", routes: [] });
+      h.live.state({ status: "connected", routes: [] });
+    } else if (transition === "cache") await h.owner.clearCache();
+    else h.owner.dispose();
+  } finally {
+    release();
+  }
+  await pending;
+  expect(h.publish).not.toHaveBeenCalled();
+  h.owner.dispose();
+});
+
+it("rejects a signer that changes the requested typing scope", async () => {
+  const h = sender();
+  try {
+    h.sign.mockImplementationOnce(async (template) =>
+      signed(h.viewer, { ...template, tags: [["h", "other-dm"]] }),
+    );
+    await h.owner.session.typing.send(
+      "dm",
+      undefined,
+      new AbortController().signal,
+    );
+    expect(h.publish).not.toHaveBeenCalled();
+  } finally {
+    h.owner.dispose();
+  }
+});
 it("owns one ephemeral projection across views; purges on access, disconnect, cache and disposal", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(1_800_000_000_000);

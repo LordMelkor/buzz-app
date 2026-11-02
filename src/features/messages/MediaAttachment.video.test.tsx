@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -50,6 +51,36 @@ function mockPlayback(element: HTMLVideoElement) {
   Object.defineProperty(element, "pause", { configurable: true, value: pause });
   return { play, pause };
 }
+
+it.each([true, false])(
+  "opens compact videos without inline playback (source available: %s)",
+  (available) => {
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    const open = vi.fn();
+    const view = render(
+      <MediaAttachment
+        attachment={videoAttachment}
+        media={() => (available ? "https://media.test/video.mp4" : undefined)}
+        compact
+        overlayCount={3}
+        onOpenReview={open}
+        label="View all 6 photos and videos, starting at item 4"
+      />,
+    );
+    const link = view.getByRole("link", {
+      name: "View all 6 photos and videos, starting at item 4",
+    });
+    expect(link).toHaveTextContent("+3");
+    expect(view.queryByRole("button", { name: "Play video" })).toBeNull();
+    if (available)
+      expect(view.container.querySelector("video")).toHaveAttribute(
+        "preload",
+        "metadata",
+      );
+    fireEvent.click(link);
+    expect(open).toHaveBeenCalledWith(videoAttachment, 0);
+  },
+);
 
 it("tracks received video play, pause, time updates, and review handoff", () => {
   const onPlayback = vi.fn();
@@ -423,4 +454,118 @@ it("keeps fallback or valid geometry when decoded video dimensions are unavailab
     dimensions(width, height);
     expect(video.style.getPropertyValue("--media-ratio")).toBe("640 / 360");
   }
+});
+
+function mountCapturable(url: string) {
+  const view = render(
+    <MediaAttachment attachment={{ url, kind: "video" }} media={media} />,
+  );
+  const video = view.container.querySelector("video");
+  if (!video) throw new Error("Missing video");
+  let time = 0;
+  const seek = vi.fn((value: number) => {
+    time = value;
+  });
+  Object.defineProperty(video, "currentTime", {
+    configurable: true,
+    get: () => time,
+    set: seek,
+  });
+  for (const [key, value] of [
+    ["videoWidth", 1280],
+    ["videoHeight", 720],
+    ["duration", 4],
+  ] as const)
+    Object.defineProperty(video, key, { configurable: true, value });
+  return { ...view, video, seek };
+}
+
+// jsdom's FileReader encodes the stubbed "frame" JPEG blob.
+const FRAME = `data:image/jpeg;base64,${btoa("frame")}`;
+function stubCanvas(context: boolean) {
+  const drawImage = vi.fn();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+    (context ? { drawImage } : null) as unknown as CanvasRenderingContext2D,
+  );
+  const toBlob = vi
+    .spyOn(HTMLCanvasElement.prototype, "toBlob")
+    .mockImplementation((callback) =>
+      callback(new Blob(["frame"], { type: "image/jpeg" })),
+    );
+  return { drawImage, toBlob };
+}
+
+it("reuses a captured opening frame when a virtualized preview remounts", async () => {
+  const { drawImage, toBlob } = stubCanvas(true);
+  const url = "https://fixture.test/remount.mp4";
+  const first = mountCapturable(url);
+  expect(first.video).not.toHaveAttribute("poster");
+  fireEvent.loadedData(first.video);
+  expect(first.seek).toHaveBeenCalledWith(0.1);
+  fireEvent.seeked(first.video);
+  await waitFor(() => expect(first.video).toHaveAttribute("poster", FRAME));
+  first.unmount();
+
+  const second = mountCapturable(url);
+  expect(second.video).toHaveAttribute("poster", FRAME);
+  expect(second.video.style.getPropertyValue("--media-ratio")).toBe(
+    "1280 / 720",
+  );
+  fireEvent.loadedData(second.video);
+  fireEvent.seeked(second.video);
+  expect(second.seek).not.toHaveBeenCalled();
+  expect(drawImage).toHaveBeenCalledTimes(1);
+  expect(toBlob).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ["a timecode seek", true, 12],
+  ["an undrawn canvas", false, 0.1],
+])("keeps %s capture with its own mount", async (_, context, seekedAt) => {
+  stubCanvas(context);
+  const url = `https://fixture.test/${seekedAt}-${context}.mp4`;
+  const first = mountCapturable(url);
+  fireEvent.loadedData(first.video);
+  first.video.currentTime = seekedAt;
+  fireEvent.seeked(first.video);
+  await waitFor(() => expect(first.video).toHaveAttribute("poster", FRAME));
+  first.unmount();
+
+  const second = mountCapturable(url);
+  expect(second.video).not.toHaveAttribute("poster");
+  fireEvent.loadedData(second.video);
+  expect(second.seek).toHaveBeenCalledWith(0.1);
+});
+
+it("keeps the opening frame when a later seek follows before its encode finishes", async () => {
+  const { toBlob } = stubCanvas(true);
+  const pending: Array<() => void> = [];
+  toBlob.mockImplementation((callback) => {
+    const frame = pending.length ? "later" : "frame";
+    pending.push(() => callback(new Blob([frame], { type: "image/jpeg" })));
+  });
+  const url = "https://fixture.test/reordered.mp4";
+  const first = mountCapturable(url);
+  fireEvent.loadedData(first.video);
+  fireEvent.seeked(first.video);
+  first.video.currentTime = 12;
+  fireEvent.seeked(first.video);
+  expect(toBlob).toHaveBeenCalledTimes(1);
+  for (const complete of pending) complete();
+  await waitFor(() => expect(first.video).toHaveAttribute("poster", FRAME));
+  first.unmount();
+
+  expect(mountCapturable(url).video).toHaveAttribute("poster", FRAME);
+});
+
+it("lets a later seek capture after an encode fails", async () => {
+  const { toBlob } = stubCanvas(true);
+  toBlob.mockImplementationOnce((callback) => callback(null));
+  const first = mountCapturable("https://fixture.test/retry.mp4");
+  fireEvent.loadedData(first.video);
+  fireEvent.seeked(first.video);
+  first.video.currentTime = 12;
+  fireEvent.seeked(first.video);
+  await waitFor(() => expect(first.video).toHaveAttribute("poster", FRAME));
+  expect(toBlob).toHaveBeenCalledTimes(2);
 });

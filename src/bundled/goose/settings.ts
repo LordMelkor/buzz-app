@@ -4,21 +4,23 @@
 import {
   pickSettings,
   type SettingsSchema,
+  withSynced,
 } from "../../features/agents/agent-config";
-import type { Config } from "./runtime";
+import { type Config, DEFAULT_CONFIG } from "./runtime";
 
 export const syncedSettingsSchema = {
   model: "string",
   provider: "string",
+  effort: "string",
   scope: ["thread", "channel"],
 } as const satisfies SettingsSchema;
 
 export const syncedSettings = (config: Config) =>
   pickSettings(syncedSettingsSchema, config);
 
-/** Synced fields override; everything else stays this device's. */
+/** Synced fields come only from `settings`, a left-out one from the default;
+ * everything else stays this device's. */
 export const withSyncedSettings = (
   config: Config,
   settings: Readonly<Record<string, string>>,
-): Config =>
-  ({ ...config, ...pickSettings(syncedSettingsSchema, settings) }) as Config;
+): Config => withSynced(syncedSettingsSchema, DEFAULT_CONFIG, config, settings);

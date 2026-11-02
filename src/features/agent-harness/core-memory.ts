@@ -66,7 +66,7 @@ export function coreOf(listing: MemoryListing) {
 export function coreMemorySection(memory: string | null | undefined) {
   const body =
     memory === null
-      ? "No core memory found. Use `mem_set` with slug `core` to create one (it will hold your identity, rules, and goals across sessions). Ask your user about yourself."
+      ? "No core memory found. Use `mem_set` with slug `core` to create one (it will hold your identity, lessons, and goals across sessions). Ask your user about yourself."
       : memory?.trim();
   return body ? `<core-memory>\n${body}\n</core-memory>` : "";
 }

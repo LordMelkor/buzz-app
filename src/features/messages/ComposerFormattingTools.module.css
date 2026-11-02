@@ -3,7 +3,7 @@
   flex: 1;
   min-width: 0;
   position: relative;
-  min-height: calc(var(--size-control-sm) + var(--space-1));
+  min-height: var(--size-control-sm);
   align-items: center;
   gap: var(--space-1);
 }
@@ -31,13 +31,6 @@
 .close {
   flex-shrink: 0;
 }
-.trailing {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: var(--space-2);
-  margin-inline-start: var(--space-1);
-}
 .divider {
   width: 1px;
   height: 1.25rem;
@@ -50,6 +43,8 @@
   flex: 1;
   min-width: 0;
   overflow-x: auto;
+  /* Keep focus-ring space outside the control row without changing its height. */
+  margin-block: calc(-1 * var(--space-half));
 }
 .options {
   border: 0;

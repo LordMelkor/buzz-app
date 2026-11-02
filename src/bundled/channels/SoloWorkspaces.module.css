@@ -1,0 +1,401 @@
+.conversationIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-5);
+  flex: 0 0 var(--space-5);
+}
+
+.chatRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.nameEditor {
+  min-width: 0;
+  padding-inline-start: var(--session-row-inset);
+}
+
+.nameEditorRow {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(var(--space-1) + var(--space-half));
+}
+
+.nameEditorRow > .conversationIcon {
+  height: var(--session-action-size);
+  color: var(--text-subtle);
+}
+
+.nameEditorField {
+  min-width: 0;
+  flex: 1;
+}
+
+.chatRow > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.listMessage {
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  line-height: 1.6;
+  margin: var(--space-1) var(--space-3);
+}
+
+.project[data-drop-target] {
+  border-radius: var(--radius-row);
+  background: var(--affordance-panel-hover);
+}
+.projectHeading {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: start;
+  /* Like NavigationItem, this disclosure is navigation, not document text. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+.projectHeading span {
+  overflow-wrap: anywhere;
+}
+.projectHeading svg {
+  flex-shrink: 0;
+}
+.organizedRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+/* The enclosing row owns the hover and selection surface, including actions. */
+.organizedRow > :first-child {
+  --interaction-row-hover: transparent;
+  --interaction-selected: transparent;
+  --interaction-pressed: transparent;
+  flex: 1;
+  min-width: 0;
+}
+/* Show more and Show less are text actions sharing one row: Show more aligns
+   with the chat icons and titles; Show less ends on the row inset. */
+.showMore {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-inline: var(--channel-row-fill-start, 0) var(--channel-row-fill-end, 0);
+}
+.showMore > [data-solo-show-more-expand] {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  padding-inline-start: calc(
+    var(--space-2) -
+    var(--channel-row-fill-start, 0%)
+  );
+}
+.showMore > [data-solo-show-more-fold] {
+  flex: 0 0 auto;
+  width: auto;
+  padding-inline-end: var(--session-row-inset);
+}
+.sidebarContents .organizedRow > div > [data-variant="row"] {
+  /* Status paints in the row-owned action slot outside the select button.
+     Only the label clips text; clipping the button would hide that status. */
+  overflow: visible;
+}
+
+.sidebarContents {
+  --project-icon-size: 0.9375rem;
+  /* Rows and project headers share one height and one trailing slot. */
+  /* The compact sidebar row height (Channels' .sidebar rows), as in Berd. */
+  --session-action-size: calc(var(--space-6) + var(--space-1));
+  /* Match the channel sidebar's leading and trailing content inset. */
+  --session-row-inset: var(--space-2);
+  /* A 1rem glyph centered in the trailing slot lands on the row inset. */
+  --session-trailing-offset: calc(
+    var(--session-row-inset) -
+    (var(--session-action-size) - 1rem) /
+    2
+  );
+  /* One row-edge coordinate for status and overflow, including the gutter. */
+  --session-trailing-end: calc(
+    var(--session-trailing-offset) +
+    var(--channel-row-fill-end, 0%)
+  );
+}
+[data-solo-row-action] {
+  opacity: 0;
+  pointer-events: auto;
+}
+.organizedRow [data-solo-row-action] {
+  width: var(--session-action-size);
+  height: var(--session-action-size);
+  margin-inline-end: var(--session-trailing-end);
+}
+.organizedRow:is(
+    :hover,
+    [data-context-menu-present],
+    :has(:focus-visible),
+    :has([aria-expanded="true"][aria-haspopup="menu"])
+  )
+  [data-solo-row-action] {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  [data-solo-row-action] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* The surface paints beneath the row's content without positioning it, so the
+   trailing indicators measure from the row's end, under the hover action. */
+.organizedRow {
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--radius-row);
+}
+.organizedRow::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset-block: 0;
+  inset-inline: var(--channel-row-fill-start, 0) var(--channel-row-fill-end, 0);
+  border-radius: inherit;
+  pointer-events: none;
+}
+.organizedRow:is(
+  :hover,
+  [data-context-menu-present],
+  :has(:focus-visible),
+  :has([aria-expanded="true"][aria-haspopup="menu"])
+):not(:has([aria-current="page"]))::before {
+  background: var(--affordance-panel-hover);
+}
+.organizedRow:has([aria-current="page"])::before {
+  background: var(--surface-sidebar-selected);
+}
+/* Bold is Solo's only unread cue, as on Team rows. */
+.organizedRow [data-channel-unread-title="true"] {
+  color: var(--text-navigation-unread);
+  font-weight: var(--type-weight-semibold);
+}
+.organizedRow:has([aria-current="page"]) [data-channel-unread-title="true"] {
+  color: var(--text-row-selected);
+}
+
+.organizedRow {
+  margin-bottom: var(--space-half);
+}
+.chatRow {
+  overflow: hidden;
+  white-space: nowrap;
+}
+.projectPanel {
+  height: var(--collapsible-panel-height);
+  overflow: hidden;
+}
+.project[data-animate] .projectPanel {
+  transition: height 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.projectPanel:is([data-starting-style], [data-ending-style]) {
+  height: 0;
+}
+.projectHeading[aria-expanded="false"] > :last-child {
+  transform: rotate(-90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .project[data-animate] .projectPanel {
+    transition: none;
+  }
+}
+
+/* Match row text to the actual folder artwork inside its centered icon slot. */
+.organizedRow {
+  --space-control-inset: calc(
+    var(--space-2) +
+    (var(--space-5) - var(--project-icon-size)) /
+    2
+  );
+}
+
+/* Status and the row menu share one fixed trailing slot. */
+.organizedRow {
+  position: relative;
+}
+.organizedRow [data-channel-activity] {
+  position: absolute;
+  inset-inline-end: calc(
+    (var(--session-action-size) - 0.375rem) /
+    2 +
+    var(--session-trailing-end)
+  );
+  top: 50%;
+  transform: translateY(-50%);
+  margin: 0;
+  pointer-events: none;
+}
+.organizedRow:is(
+    :hover,
+    [data-context-menu-present],
+    :has(:focus-visible),
+    :has([aria-expanded="true"][aria-haspopup="menu"])
+  )
+  [data-channel-activity] {
+  opacity: 0;
+}
+@media (hover: none) {
+  .organizedRow [data-channel-activity] {
+    opacity: 0;
+  }
+}
+
+/* Project menus share the channel header's trailing action slots. */
+.projectHeader > [data-solo-overflow-action] {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  inset-inline-end: calc(var(--space-1) + var(--size-control-sm));
+}
+.projectHeader:is(
+    :hover,
+    [data-context-menu-present],
+    :focus-within,
+    :has([aria-expanded="true"][aria-haspopup="menu"])
+  )
+  > [data-solo-overflow-action] {
+  opacity: 1;
+}
+
+/* Working flows in the row, so the title reserves exactly the pill. */
+.organizedRow [class~="navigation-item-trailing"] {
+  display: flex;
+  align-items: center;
+}
+.organizedRow [data-solo-working-indicator] {
+  pointer-events: none;
+}
+.organizedRow [data-solo-working-indicator]:empty {
+  display: none;
+}
+.organizedRow [data-solo-shared] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--session-action-size);
+  height: var(--session-action-size);
+  color: var(--text-row-subtle);
+}
+.organizedRow:has([aria-current="page"]) [data-solo-shared] {
+  color: var(--text-row-selected-subtle);
+}
+
+/* Pointer rows show one trailing occupant at rest: working, then thread
+   activity, then Shared. On hover, focus or open, Shared stays in place as the
+   access control and the menu takes the slot before it. Nothing reserves
+   title width unless it is visible. Touch keeps status and the menu side by
+   side in the flow above. */
+@media (hover: hover) {
+  .organizedRow :is([data-solo-row-action], [data-solo-shared]) {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    inset-inline-end: var(--session-trailing-end);
+    margin: 0;
+  }
+  /* Separate rules: the build wraps a list of :has() selectors in :is(), and
+     WebKit restyles the whole document for each change under a non-subject
+     :has() inside :is(). */
+  .organizedRow:has([data-channel-activity]) [data-solo-shared] {
+    opacity: 0;
+  }
+  .organizedRow:has([data-solo-working-indicator]:not(:empty))
+    :is([data-channel-activity], [data-solo-shared]) {
+    opacity: 0;
+  }
+  /* Hidden Shared takes no clicks or focus meant for what shows instead. */
+  .organizedRow:has(
+    [data-channel-activity],
+    [data-solo-working-indicator]:not(:empty)
+  ) [data-solo-shared] {
+    visibility: hidden;
+  }
+  /* Shared never moves under the pointer; the menu opens beside it. */
+  .organizedRow:is(
+    :hover,
+    [data-context-menu-present],
+    :has(:focus-visible),
+    :has([aria-expanded="true"][aria-haspopup="menu"])
+  ) [data-solo-shared] {
+    opacity: 1;
+    visibility: visible;
+  }
+  .organizedRow:has([data-solo-shared]) [data-solo-row-action] {
+    inset-inline-end: calc(
+      var(--session-trailing-end) +
+      var(--session-action-size)
+    );
+  }
+  .sidebarContents
+    .organizedRow:has([data-channel-activity], [data-solo-shared])
+    > div
+    > [data-variant="row"] {
+    padding-inline-end: calc(
+      var(--session-action-size) +
+      var(--session-trailing-offset)
+    );
+  }
+  /* The row button already sits inside the gutter fill, so its padding
+     measures from the painted edge without adding the fill again. The pill
+     ends on the row inset, the overflow glyph's trailing edge.
+     Hover ties this rule's specificity, so it must stay after it. */
+  .sidebarContents
+    .organizedRow
+    > div
+    > [data-variant="row"]:has([data-solo-working-indicator]:not(:empty)) {
+    padding-inline-end: var(--session-row-inset);
+  }
+  .sidebarContents
+    .organizedRow:is(
+      :hover,
+      [data-context-menu-present],
+      :has(:focus-visible),
+      :has([aria-expanded="true"][aria-haspopup="menu"])
+    )
+    > div
+    > [data-variant="row"] {
+    padding-inline-end: calc(
+      var(--session-action-size) +
+      var(--session-trailing-offset)
+    );
+  }
+  .sidebarContents
+    .organizedRow:has([data-solo-shared]):is(
+      :hover,
+      [data-context-menu-present],
+      :has(:focus-visible),
+      :has([aria-expanded="true"][aria-haspopup="menu"])
+    )
+    > div
+    > [data-variant="row"] {
+    padding-inline-end: calc(
+      var(--session-action-size) *
+      2 +
+      var(--session-trailing-offset)
+    );
+  }
+  .organizedRow:is(
+      :hover,
+      [data-context-menu-present],
+      :has(:focus-visible),
+      :has([aria-expanded="true"][aria-haspopup="menu"])
+    )
+    [data-solo-working-indicator] {
+    display: none;
+  }
+}

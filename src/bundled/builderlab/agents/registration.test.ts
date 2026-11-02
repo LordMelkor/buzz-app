@@ -51,3 +51,17 @@ it("refuses corrupt pending records and preserves a newer intent when clearing",
     "Could not read",
   );
 });
+it("replays the picture a pending creation was first made with", () => {
+  const a = registrationIntent(target, "account", "Helper", "https://a.png");
+  expect(a.picture).toBe("https://a.png");
+  const replay = registrationIntent(
+    target,
+    "account",
+    "Helper",
+    "https://b.png",
+  );
+  expect(replay).toEqual(a);
+  expect(
+    registrationIntent(target, "account", "Plain").picture,
+  ).toBeUndefined();
+});

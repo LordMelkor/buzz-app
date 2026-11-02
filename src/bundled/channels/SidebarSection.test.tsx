@@ -15,6 +15,67 @@ import { SidebarSection } from "./SidebarSection";
 
 afterEach(cleanup);
 
+it("chooses a filter with the keyboard and appends hidden channels below its options", async () => {
+  const user = userEvent.setup();
+  const change = vi.fn();
+  const select = vi.fn();
+  const toggle = vi.fn();
+  render(
+    <SidebarSection
+      sectionKey="channels"
+      title="Channels"
+      open={false}
+      onToggle={toggle}
+      filter={{ value: "unreads", change }}
+      channels={{ rows: [{ id: "quiet", name: "Quiet channel" }], select }}
+    >
+      <p>No channels match this filter.</p>
+    </SidebarSection>,
+  );
+  const trigger = screen.getByRole("button", {
+    name: "More actions for Channels",
+  });
+  await user.click(trigger);
+  expect(
+    within(
+      await screen.findByRole("menu", { name: "More actions for Channels" }),
+    ).getAllByRole("menuitem")[0],
+  ).toHaveTextContent("Filter");
+  await user.keyboard("{ArrowDown}{ArrowRight}");
+  expect(
+    await screen.findByRole("menuitemradio", { name: "Unreads" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await user.click(
+    screen.getByRole("menuitemradio", { name: /Active in the last/ }),
+  );
+  expect(change).not.toHaveBeenCalled();
+  await user.click(await screen.findByRole("button", { name: "Apply" }));
+  expect(change).toHaveBeenCalledExactlyOnceWith("active", 30 * 86400);
+  await waitFor(() => expect(trigger).toHaveFocus());
+  await user.click(trigger);
+  await user.click(await screen.findByRole("menuitem", { name: "Filter" }));
+  const quiet = await screen.findByRole("menuitem", { name: "Quiet channel" });
+  expect(
+    within(screen.getByRole("group", { name: "No unread messages" })).getByRole(
+      "menuitem",
+      { name: "Quiet channel" },
+    ),
+  ).toBe(quiet);
+  const popup = quiet.closest('[role="menu"]');
+  expect(popup?.querySelectorAll('[role^="menuitem"]')).toHaveLength(4);
+  expect(popup?.querySelector('[role="separator"]')).toBeInTheDocument();
+  expect(
+    screen
+      .getByRole("menuitemradio", { name: /Active in the last/ })
+      .compareDocumentPosition(quiet) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  // jsdom has no submenu geometry; browser checks own pointer travel/focus.
+  fireEvent.click(quiet);
+  expect(select).toHaveBeenCalledExactlyOnceWith("quiet");
+  expect(toggle).toHaveBeenCalledExactlyOnceWith(true);
+  expect(change).toHaveBeenCalledOnce();
+});
+
 it.each([true, false])(
   "keeps Starred creation independent of collapse and respects availability (%s)",
   async (available) => {
@@ -79,15 +140,12 @@ function Section({
 }
 it("keeps section actions independent of disclosure and supports menu keyboard dismissal", async () => {
   const user = userEvent.setup();
-  render(<Section />);
+  render(<Section sort={{ value: "alpha", change: vi.fn() }} />);
   expect(screen.getByRole("button", { name: "General" })).toBeVisible();
   const trigger = screen.getByRole("button", {
     name: "More actions for Channels",
   });
-  await user.click(trigger);
-  await user.click(
-    await screen.findByRole("menuitem", { name: "Collapse section" }),
-  );
+  await user.click(screen.getByLabelText("Channels"));
   expect(
     screen.getByLabelText("Channels").closest("details"),
   ).not.toHaveAttribute("open");
@@ -95,6 +153,9 @@ it("keeps section actions independent of disclosure and supports menu keyboard d
   expect(section).not.toHaveAttribute("data-menu-open");
   await user.click(trigger);
   await waitFor(() => expect(screen.getByRole("menu")).toHaveFocus());
+  expect(
+    screen.queryByRole("menuitem", { name: "Expand section" }),
+  ).not.toBeInTheDocument();
   expect(section).toHaveAttribute("data-menu-open");
   await user.keyboard("{Escape}");
   await waitFor(() =>
@@ -118,7 +179,9 @@ it("keeps one controlled actions menu, closes it after sorting, and restores tri
     name: "More actions for Channels",
   });
   expect(actions).toHaveTextContent("Sort");
-  expect(actions).toHaveTextContent("Collapse section");
+  expect(
+    within(actions).queryByRole("menuitem", { name: "Collapse section" }),
+  ).not.toBeInTheDocument();
   await user.keyboard("{ArrowDown}{ArrowRight}");
   await user.click(
     await screen.findByRole("menuitemradio", { name: "Recent" }),
@@ -315,7 +378,7 @@ it("never offers removal for built-in sections even when a callback is supplied"
   await user.click(
     screen.getByRole("button", { name: "More actions for Channels" }),
   );
-  await screen.findByRole("menuitem", { name: "Collapse section" });
+  await screen.findByRole("menu", { name: "More actions for Channels" });
   expect(screen.queryByRole("menuitem", { name: "Remove section" })).toBeNull();
   expect(remove).not.toHaveBeenCalled();
 });
@@ -381,7 +444,93 @@ it("never offers moves without a move capability", async () => {
   await user.click(
     screen.getByRole("button", { name: "More actions for Channels" }),
   );
-  await screen.findByRole("menuitem", { name: "Collapse section" });
+  await screen.findByRole("menu", { name: "More actions for Channels" });
   expect(screen.queryByRole("menuitem", { name: "Move up" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Move down" })).toBeNull();
+});
+
+it("keeps hidden-channel navigation available when filter choices are read-only", async () => {
+  const user = userEvent.setup();
+  const change = vi.fn();
+  const select = vi.fn();
+  render(
+    <SidebarSection
+      sectionKey="channels"
+      title="Channels"
+      open
+      onToggle={() => {}}
+      filter={{ value: "unreads", disabled: true, change }}
+      channels={{ rows: [{ id: "quiet", name: "Quiet channel" }], select }}
+    >
+      <p>No channels match this filter.</p>
+    </SidebarSection>,
+  );
+  await user.click(
+    screen.getByRole("button", { name: "More actions for Channels" }),
+  );
+  expect(screen.queryByRole("menuitem", { name: "View All" })).toBeNull();
+  await user.click(await screen.findByRole("menuitem", { name: "Filter" }));
+  for (const choice of await screen.findAllByRole("menuitemradio"))
+    expect(choice).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Quiet channel" }),
+  );
+  expect(select).toHaveBeenCalledExactlyOnceWith("quiet");
+  expect(change).not.toHaveBeenCalled();
+});
+
+it("renames a saved section from its menu and keeps the dialog open on failure", async () => {
+  const user = userEvent.setup();
+  const rename = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValue(undefined);
+  render(
+    <SidebarSection
+      sectionKey="group:work"
+      title="Work"
+      open
+      onToggle={() => {}}
+      onRename={rename}
+    >
+      <p>Rows</p>
+    </SidebarSection>,
+  );
+  const trigger = screen.getByRole("button", { name: "More actions for Work" });
+  await user.click(trigger);
+  await user.click(
+    await screen.findByRole("menuitem", { name: "Rename section" }),
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Rename section" });
+  const input = within(dialog).getByRole("textbox", { name: "Section name" });
+  expect(input).toHaveValue("Work");
+  await user.clear(input);
+  await user.type(input, " Projects ");
+  await user.click(within(dialog).getByRole("button", { name: "Rename" }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("offline");
+  await user.click(within(dialog).getByRole("button", { name: "Rename" }));
+  expect(rename).toHaveBeenNthCalledWith(2, "Projects");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(trigger).toHaveFocus());
+});
+
+it("offers rename only for saved sections with a rename writer", async () => {
+  const user = userEvent.setup();
+  render(
+    <SidebarSection
+      sectionKey="channels"
+      title="Channels"
+      open
+      onToggle={() => {}}
+      onRename={() => {}}
+      move={{}}
+    >
+      <p>Rows</p>
+    </SidebarSection>,
+  );
+  await user.click(
+    screen.getByRole("button", { name: "More actions for Channels" }),
+  );
+  await screen.findByRole("menuitem", { name: "Move up" });
+  expect(screen.queryByRole("menuitem", { name: "Rename section" })).toBeNull();
 });

@@ -239,7 +239,7 @@ export function useToastNotification() {
   return (
     title: string,
     tone: "success" | "error" | "info",
-    action?: { label: string; onClick(): void },
+    action?: { label: string; onClick(): void; timeout?: number },
   ) =>
     String(
       toast.custom(
@@ -264,7 +264,11 @@ export function useToastNotification() {
             )}
           </ToastCard>
         ),
-        { id: crypto.randomUUID(), toasterId, duration: action ? 8000 : 4000 },
+        {
+          id: crypto.randomUUID(),
+          toasterId,
+          duration: action ? (action.timeout ?? 8000) : 4000,
+        },
       ),
     );
 }

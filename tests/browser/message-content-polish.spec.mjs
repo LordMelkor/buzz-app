@@ -1,5 +1,5 @@
 import { test, expect } from "./source-fixture.mjs";
-import { BUBBLE_COLORS } from "../../src/shared/theme/bubble-color.ts";
+import { ACCENTS } from "../../src/shared/theme/accent.ts";
 import { apcaContrast, wcagRatio } from "../../scripts/design-system/apca.mjs";
 
 const specimen = (page, id) => page.locator(`[aria-labelledby="label-${id}"]`);
@@ -40,6 +40,73 @@ async function expectReadable(locator) {
   ).toBeGreaterThanOrEqual(4.5);
 }
 
+// An own table-only message drops its bubble fill but keeps its reactions in
+// the bubble, so the grouped count must take the panel's ink, not the bubble's.
+test("reactions under an unboxed own table stay contained and readable", async ({
+  page,
+}) => {
+  await page.goto("/tests/fixtures/emoji.html?reactions&table-reactions");
+  const row = page
+    .locator("[data-message-id]")
+    .filter({ has: page.getByRole("table") });
+  const count = row.getByRole("button", { name: "👍: 9 people" });
+  await expect(count).toContainText("9");
+  // Browser layout: an unboxed table has no padding for a reaction outdent.
+  await expect
+    .poll(async () => {
+      const table = await row.getByRole("table").boundingBox();
+      const strip = await row
+        .getByRole("group", { name: "Reactions", exact: true })
+        .boundingBox();
+      return (
+        !!table &&
+        !!strip &&
+        strip.x >= table.x &&
+        strip.x + strip.width <= table.x + table.width
+      );
+    })
+    .toBe(true);
+
+  for (const theme of ["light", "dark"])
+    for (const level of ["touch", "high"])
+      for (const color of ACCENTS) {
+        await page.locator("html").evaluate(
+          (element, { theme, level, color }) => {
+            Object.assign(element.dataset, {
+              colorMode: theme,
+              colorLevel: level,
+              accent: color,
+            });
+          },
+          { theme, level, color },
+        );
+        // Theme changes fade the chip's colors; measure the settled pair.
+        await page.evaluate(() =>
+          Promise.all(
+            document.getAnimations().map((motion) => motion.finished),
+          ),
+        );
+        await expectReadable(count);
+      }
+});
+
+for (const theme of ["light", "dark"]) {
+  test(`standalone table and diff hover stays transparent in ${theme}`, async ({
+    page,
+  }) => {
+    await page.goto(
+      `/tests/fixtures/message-gallery.html?group=references&theme=${theme}`,
+    );
+    for (const id of ["table-received", "table-links", "code-diff"]) {
+      const example = specimen(page, id);
+      const bubble = example.locator("[data-message-action-anchor]");
+      await bubble.hover();
+      await expect(example.locator("[data-actions-revealed]")).toBeVisible();
+      await expect(bubble).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    }
+  });
+}
+
 for (const theme of ["light", "dark"]) {
   test(`message references and inset surfaces remain legible in ${theme}`, async ({
     page,
@@ -72,9 +139,9 @@ for (const theme of ["light", "dark"]) {
       spoiler.getByRole("link", { name: "release notes", exact: true }),
     ).toBeVisible();
 
-    for (const color of BUBBLE_COLORS) {
+    for (const color of ACCENTS) {
       await page.locator("html").evaluate((element, color) => {
-        element.dataset.bubbleColor = color;
+        element.dataset.accent = color;
       }, color);
       await page.mouse.move(0, 0);
       const bubble = own.locator("[data-message-action-anchor][data-own]");
@@ -95,10 +162,10 @@ for (const theme of ["light", "dark"]) {
       await expectReadable(
         spoiler.getByRole("link", { name: "release notes", exact: true }),
       );
-      if (color === "neutral") {
+      if (color === "chartreuse") {
         await page.mouse.move(0, 0);
         await own.screenshot({
-          path: info.outputPath(`neutral-message-${theme}.png`),
+          path: info.outputPath(`chartreuse-message-${theme}.png`),
         });
       }
       await expectReadable(
@@ -137,6 +204,38 @@ for (const theme of ["light", "dark"]) {
     });
   });
 }
+
+test("long links wrap inside their bubble in a narrow pane", async ({
+  page,
+}, info) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto("/tests/fixtures/message-gallery.html?group=references");
+  await page.evaluate(() => document.fonts.ready);
+  await page
+    .getByRole("button", { name: "Narrow preview", exact: true })
+    .click();
+  const long = specimen(page, "long-links");
+  const bubble = long.locator("[data-message-action-anchor]");
+  const links = long.getByRole("link");
+  await expect(links).toHaveCount(2);
+  // Every line box of every link stays within the bubble's edges.
+  await expect
+    .poll(() =>
+      bubble.evaluate((element) => {
+        const edge = element.getBoundingClientRect();
+        return [...element.querySelectorAll("a")].flatMap((link) =>
+          [...link.getClientRects()]
+            .filter((line) => line.left < edge.left || line.right > edge.right)
+            .map((line) => `${link.textContent}: ${line.left}-${line.right}`),
+        );
+      }),
+    )
+    .toEqual([]);
+  await long.screenshot({ path: info.outputPath("long-links.png") });
+  // A wrapped link still opens its destination.
+  await links.first().click();
+  await expect(long.getByRole("status")).toContainText("Sample link selected");
+});
 
 test("file anchors and native download buttons stay readable and keyboard reachable", async ({
   page,

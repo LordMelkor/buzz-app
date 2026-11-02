@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
+import { act, cleanup, renderHook } from "@testing-library/react";
+import type { RelaySession } from "../relay/session";
+import { useChannelTabState } from "../../bundled/channels/useChannelTabState";
 import { recordReaction } from "../messages/quick-reactions";
 import { readView, writeView } from "../../shared/view-state";
 import { purgeCommunityDeviceState } from "./device-state";
+import { localCommunityNameKey } from "./names";
+import { repositoriesKey } from "./repositories";
 
 // The relay's stores record what they are asked to forget, in order.
 const relay = vi.hoisted(() => ({
@@ -30,6 +35,13 @@ vi.mock("../relay/outbox-storage", () => ({
   purgeOutboxStorage: (scope: string) => record("outbox", scope),
 }));
 
+vi.mock("../artifact-storage/store", () => ({
+  purgeArtifactStorage: (viewer: string, origin: string) =>
+    typeof indexedDB === "undefined"
+      ? Promise.resolve()
+      : record("artifacts", viewer, origin),
+}));
+
 const viewer = "a".repeat(64);
 const other = "b".repeat(64);
 const origin = "https://left.example";
@@ -39,6 +51,7 @@ const reactions = (scope: string) => `buzz.quick-reactions.v1:${scope}`;
 const follows = (scope: string) => `buzz.thread-follows.v1:${scope}`;
 
 afterEach(() => {
+  cleanup();
   localStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -48,6 +61,10 @@ afterEach(() => {
 
 it("forgets every store partitioned to the left community and viewer, and nothing else", async () => {
   const scope = `${origin}:${viewer}`;
+  localStorage.setItem(repositoriesKey(origin, viewer), "/code");
+  localStorage.setItem(repositoriesKey(origin, other), "/other-account");
+  localStorage.setItem(localCommunityNameKey(origin, viewer), "Local nickname");
+  localStorage.setItem(localCommunityNameKey(origin, other), "Other account");
   writeView(scope, "draft:general", "unsent");
   writeView(scope, "channel", "general");
   writeView(`${kept}:${viewer}`, "draft:general", "another community");
@@ -61,6 +78,16 @@ it("forgets every store partitioned to the left community and viewer, and nothin
   localStorage.setItem(follows(scope), "[]");
   localStorage.setItem(follows(`${kept}:${viewer}`), "[]");
   expect(await purgeCommunityDeviceState(origin, viewer)).toEqual([]);
+  expect(
+    localStorage.getItem(localCommunityNameKey(origin, viewer)),
+  ).toBeNull();
+  expect(localStorage.getItem(localCommunityNameKey(origin, other))).toBe(
+    "Other account",
+  );
+  expect(localStorage.getItem(repositoriesKey(origin, viewer))).toBeNull();
+  expect(localStorage.getItem(repositoriesKey(origin, other))).toBe(
+    "/other-account",
+  );
   expect(localStorage.getItem(follows(scope))).toBeNull();
   expect(localStorage.getItem(follows(`${kept}:${viewer}`))).toBe("[]");
   expect(readView(scope, "draft:general", "")).toBe("");
@@ -112,6 +139,7 @@ it("purges the relay's heads, read state and outbox for the exact partition, in 
     ["heads.close"],
     ["read state", `${origin}:${viewer}`],
     ["outbox", `${origin}:${viewer}`],
+    ["artifacts", viewer, origin],
   ]);
 });
 
@@ -128,10 +156,15 @@ it("reports each failed relay store by name, closes heads and still clears the o
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   const heads = new Error("heads blocked");
   const reads = new Error("read state blocked");
-  relay.fail.set("heads.clear", heads).set("read state", reads);
+  const artifacts = new Error("artifacts blocked");
+  relay.fail
+    .set("heads.clear", heads)
+    .set("read state", reads)
+    .set("artifacts", artifacts);
   expect(await purgeCommunityDeviceState(origin, viewer)).toEqual([
     { store: "channel heads", error: heads },
     { store: "read state", error: reads },
+    { store: "artifacts", error: artifacts },
   ]);
   expect(relay.calls.map(([name]) => name)).toEqual([
     "heads",
@@ -139,9 +172,68 @@ it("reports each failed relay store by name, closes heads and still clears the o
     "heads.close",
     "read state",
     "outbox",
+    "artifacts",
   ]);
   expect(warn.mock.calls).toEqual([
     [`Couldn't clear channel heads for ${origin} on this device`, heads],
     [`Couldn't clear read state for ${origin} on this device`, reads],
+    [`Couldn't clear artifacts for ${origin} on this device`, artifacts],
   ]);
+});
+
+it("leave purges retained tab visit addresses before same-window rejoin and rejects late writes", async () => {
+  const left = `https://${crypto.randomUUID()}.example`;
+  const scope = `${left}:${viewer}`;
+  const mount = (scope: string, account = viewer) =>
+    renderHook(() =>
+      useChannelTabState({ scope, viewer: account } as RelaySession, "alpha"),
+    );
+  const old = mount(scope);
+  const otherAccount = mount(`${left}:${other}`, other);
+  const otherCommunity = mount(`${kept}:${viewer}`);
+  for (const hook of [old, otherAccount, otherCommunity])
+    act(() => {
+      hook.result.current.enterVisit("profile:detail", undefined, true, {
+        channelId: "alpha",
+        target: "nostr:profile",
+      });
+      hook.result.current.enterVisit("thread:thread", {
+        channelId: "alpha",
+        messageId: "reply",
+        rootId: "verified",
+      });
+    });
+  expect(await purgeCommunityDeviceState(left, viewer)).toEqual([]);
+  act(() =>
+    old.result.current.enterVisit("late:detail", undefined, true, {
+      channelId: "alpha",
+      target: "nostr:profile",
+    }),
+  );
+  const rejoined = mount(scope);
+  expect(
+    rejoined.result.current.detailVisits("alpha", "nostr:profile"),
+  ).toEqual([]);
+  expect(rejoined.result.current.threadVisits("alpha", "verified")).toEqual([]);
+  act(() => rejoined.result.current.select("new-selection"));
+  // A further successor must not rediscover metadata in the purged old store.
+  const successor = mount(scope);
+  expect(
+    successor.result.current.detailVisits("alpha", "nostr:profile"),
+  ).toEqual([]);
+  expect(successor.result.current.threadVisits("alpha", "verified")).toEqual(
+    [],
+  );
+  for (const [partition, account] of [
+    [`${left}:${other}`, other],
+    [`${kept}:${viewer}`, viewer],
+  ] as const) {
+    const retained = mount(partition, account);
+    expect(
+      retained.result.current.detailVisits("alpha", "nostr:profile"),
+    ).toEqual(["profile"]);
+    expect(retained.result.current.threadVisits("alpha", "verified")).toEqual([
+      "thread",
+    ]);
+  }
 });

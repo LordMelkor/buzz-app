@@ -244,11 +244,11 @@ export function mountEmojiMart({
       max-width: 2rem !important;
       max-height: 2rem !important;
     }
+    /* Fixed columns keep short search rows aligned with Mart's padded category rows. */
     .scroll .category > :not(.sticky) > .flex {
+      display: grid;
+      grid-template-columns: repeat(${perLine}, ${emojiButtonSize}px);
       justify-content: space-between;
-    }
-    .scroll .category button {
-      flex-shrink: 0;
     }
     #nav button {
       position: relative;

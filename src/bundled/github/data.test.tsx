@@ -1,12 +1,14 @@
 import { assert, afterEach, expect, it, vi } from "vitest";
-import { loadGitHubDetails } from "./data";
+import { GitHubRateLimited, loadGitHubDetails } from "./data";
+import { GitHubError } from "./gh";
+import { loadGitHubObject } from "./object";
 import { parseGitHubReference } from "./references";
 
 afterEach(() => vi.unstubAllGlobals());
-const reference = parseGitHubReference(
-  "https://github.com/block/buzz/pull/23#issuecomment-1",
-);
+const reference = parseGitHubReference("https://github.com/block/buzz/pull/23");
+const issue = parseGitHubReference("https://github.com/block/buzz/issues/23");
 assert.exists(reference);
+assert.exists(issue);
 it("loads PR details and preserves merged state, branches, and change counts", async () => {
   const fetch = vi.fn().mockResolvedValue(
     new Response(
@@ -69,6 +71,31 @@ it.each([
   await expect(
     loadGitHubDetails(reference, new AbortController().signal),
   ).rejects.toThrow(String(message));
+});
+
+it("says when GitHub's public limit resets, an hour on when it does not say", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response(null, {
+        status: 429,
+        headers: { "x-ratelimit-reset": String(Date.now() / 1000 + 1800) },
+      }),
+    )
+    .mockResolvedValueOnce(new Response(null, { status: 403 }));
+  vi.stubGlobal("fetch", fetch);
+  try {
+    const signal = new AbortController().signal;
+    const told = await loadGitHubDetails(reference, signal).catch((e) => e);
+    expect(told).toBeInstanceOf(GitHubRateLimited);
+    expect(told.resetAt).toBe(Date.now() + 1800_000);
+    const untold = await loadGitHubDetails(reference, signal).catch((e) => e);
+    expect(untold).toBeInstanceOf(GitHubRateLimited);
+    expect(untold.resetAt).toBe(Date.now() + 3600_000);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("does not expose check head plumbing on non-PR objects", async () => {
@@ -215,5 +242,37 @@ it.each([null, "bad", undefined])(
     expect(data.state).toBe("Merged");
     expect(data.mergedAt).toBeUndefined();
     expect(data.mergedByUrl).toBeUndefined();
+  },
+);
+
+it.each(["public", "gh"])(
+  "recovers a transient %s GitHub read quietly",
+  async (source) => {
+    vi.useFakeTimers();
+    try {
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 502 }))
+        .mockImplementation(async () => Response.json({ title: "Recovered" }));
+      vi.stubGlobal("fetch", request);
+      const gh = vi
+        .fn()
+        .mockRejectedValueOnce(new GitHubError("down", "SERVICE_UNAVAILABLE"))
+        .mockRejectedValue(new Error("stop"));
+      // Pull requests are the store's; the panel reads the rest this way.
+      const pending = loadGitHubObject(
+        issue,
+        new AbortController().signal,
+        source === "gh" ? gh : undefined,
+      );
+      const settled = pending.catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(1000);
+      if (source === "public")
+        expect((await pending).details.title).toBe("Recovered");
+      else expect(await settled).toMatchObject({ message: "stop" });
+      expect(source === "gh" ? gh : request).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   },
 );

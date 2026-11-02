@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RelayEvent } from "./events";
+import type { ReadFilter, RelayEvent } from "./events";
 import {
   createReminders,
   parseNotBefore,
@@ -240,4 +240,259 @@ it("does not mark a session ready when it is disposed while an empty reply is ac
   queueMicrotask(() => controller.abort());
   await read;
   expect(model.capability.snapshot().status).toBe("loading");
+});
+
+describe("reminder history paging", () => {
+  // Distinct coordinates, newest first, as the relay returns heads.
+  const heads = (prefix: string, count: number, newest: number) =>
+    Array.from({ length: count }, (_, i) =>
+      wire(
+        `${prefix}${String(i).padStart(3, "0")}`,
+        newest - i,
+        "done",
+        `${prefix}${i}`,
+      ),
+    );
+  function walker(
+    serve: (filter: ReadFilter) => RelayEvent[] | Promise<RelayEvent[]>,
+  ) {
+    const filters: ReadFilter[] = [];
+    const statuses: string[] = [];
+    const decoded: string[] = [];
+    const model = createReminders({
+      viewer,
+      signal: new AbortController().signal,
+      host: {
+        decode: async (events) => {
+          decoded.push(...events.map((e) => e.id));
+          return events.map((e) => ({
+            eventId: e.id,
+            content: JSON.parse(e.content),
+          }));
+        },
+        sign: async () => wire("e", 1, "pending", "d"),
+      },
+      query: async ([filter]) => {
+        if (!filter) return [];
+        filters.push(filter);
+        return serve(filter);
+      },
+      publish: async () => {},
+    });
+    model.capability.subscribe(() =>
+      statuses.push(model.capability.snapshot().status),
+    );
+    return {
+      model,
+      filters,
+      statuses,
+      decoded,
+      snapshot: model.capability.snapshot,
+    };
+  }
+  // Scripted replies in order, whatever the filter asks.
+  const paged = (...replies: (RelayEvent[] | Promise<RelayEvent[]>)[]) =>
+    walker(() => replies.shift() ?? []);
+  // A relay holding `all`: serves pages in its query order by cursor and limit.
+  const served = (events: RelayEvent[]) => {
+    const all = [...events].sort(
+      (a, b) =>
+        b.created_at - a.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
+    return walker((filter) =>
+      all
+        .filter(
+          (e) =>
+            filter.until === undefined ||
+            e.created_at < filter.until ||
+            (e.created_at === filter.until && e.id > (filter.before_id ?? "")),
+        )
+        .slice(0, filter.limit),
+    );
+  };
+  function deferred() {
+    let resolve: (events: RelayEvent[]) => void = () => {};
+    let reject: (error: Error) => void = () => {};
+    const promise = new Promise<RelayEvent[]>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("reads one page when the list fits in a page, even exactly", async () => {
+    const h = paged(heads("a", 200, 1_000));
+    await h.model.recover();
+    expect(h.filters).toEqual([
+      { kinds: [30300], authors: [viewer], limit: 201 },
+    ]);
+    expect(h.snapshot()).toMatchObject({ status: "ready", hydrated: true });
+    expect(h.snapshot().reminders).toHaveLength(200);
+  });
+
+  it("pages from the last head until a short page, staying loading until then", async () => {
+    // The page's oldest time is tied, so the cursor is its highest ID; the
+    // event past the page shows at once and heads page two, where it merges.
+    const past = wire("s", 801, "done", "s");
+    const first = [
+      ...heads("a", 198, 1_000),
+      wire("f1", 802, "done", "t1"),
+      wire("f0", 802, "done", "t0"),
+      past,
+    ];
+    const rest = deferred();
+    const h = paged(first, rest.promise);
+    const read = h.model.recover();
+    await vi.waitFor(() => expect(h.filters).toHaveLength(2));
+    expect(h.statuses).toEqual(["loading"]);
+    expect(h.snapshot()).toMatchObject({ status: "loading", hydrated: true });
+    expect(h.snapshot().reminders).toHaveLength(201);
+    expect(h.snapshot().reminders.some((r) => r.id === "s")).toBe(true);
+    expect(h.filters[1]).toEqual({
+      kinds: [30300],
+      authors: [viewer],
+      limit: 201,
+      until: 802,
+      before_id: "f1",
+    });
+    rest.resolve([past, wire("old", 10, "pending", "old")]);
+    await read;
+    expect(h.statuses).toEqual(["loading", "ready"]);
+    expect(h.snapshot()).toMatchObject({ status: "ready", hydrated: true });
+    expect(h.snapshot().reminders).toHaveLength(202);
+    expect(h.snapshot().reminders.find((r) => r.id === "old")?.status).toBe(
+      "pending",
+    );
+  });
+
+  it("keeps landed pages when a later page fails and restarts from the top", async () => {
+    const h = paged(
+      heads("a", 201, 1_000),
+      Promise.reject(new Error("rejected")),
+      [wire("old", 10, "pending", "old")],
+    );
+    await h.model.recover();
+    expect(h.snapshot()).toMatchObject({
+      status: "ready",
+      hydrated: true,
+      error: "rejected",
+    });
+    expect(h.snapshot().reminders).toHaveLength(201);
+    await h.model.capability.refresh();
+    expect(h.filters[2]).not.toHaveProperty("until");
+    expect(h.snapshot()).toMatchObject({ status: "ready", hydrated: true });
+    expect(h.snapshot().error).toBeUndefined();
+  });
+
+  it("abandons a walk when recovery restarts it", async () => {
+    const stale = deferred();
+    const fresh = deferred();
+    const h = paged(heads("a", 201, 1_000), stale.promise, fresh.promise);
+    const abandoned = h.model.recover();
+    await vi.waitFor(() => expect(h.filters).toHaveLength(2));
+    const restarted = h.model.recover();
+    await vi.waitFor(() => expect(h.filters).toHaveLength(3));
+    expect(h.filters[2]).not.toHaveProperty("until");
+    stale.resolve([wire("old", 10, "pending", "old")]);
+    await abandoned;
+    expect(h.snapshot().status).toBe("loading");
+    expect(h.snapshot().reminders.some((r) => r.id === "old")).toBe(false);
+    fresh.resolve([]);
+    await restarted;
+    expect(h.snapshot().status).toBe("ready");
+  });
+
+  // Page one has landed and page two is in flight when the connection drops.
+  async function dropBetweenPages() {
+    const rest = deferred();
+    const h = paged(heads("a", 201, 1_000), rest.promise, [
+      wire("old", 10, "pending", "old"),
+    ]);
+    const dropped = h.model.recover();
+    await vi.waitFor(() => expect(h.filters).toHaveLength(2));
+    h.model.stale();
+    return { h, rest, dropped };
+  }
+
+  it("keeps loading when the connection drops between pages, until recovery's own walk ends", async () => {
+    const { h, rest, dropped } = await dropBetweenPages();
+    // The short page still lands and shows, but it cannot end the walk: live
+    // edits made during the outage could not reach this session.
+    rest.resolve([wire("old", 10, "pending", "old")]);
+    await dropped;
+    expect(h.statuses).not.toContain("ready");
+    expect(h.snapshot()).toMatchObject({ status: "loading", hydrated: true });
+    expect(h.snapshot().reminders).toHaveLength(202);
+    await h.model.recover();
+    expect(h.filters).toHaveLength(3);
+    expect(h.filters[2]).not.toHaveProperty("until");
+    expect(h.snapshot()).toMatchObject({ status: "ready", hydrated: true });
+    expect(h.snapshot().error).toBeUndefined();
+  });
+
+  it("reports a page whose retries ran out during an outage like any failed read, until recovery's own walk ends", async () => {
+    const { h, rest, dropped } = await dropBetweenPages();
+    // A plain Error is final (not retryable), standing in for exhausted retries.
+    rest.reject(new Error("socket closed"));
+    await dropped;
+    // The rows stay up under Retry; with `error` set the list never counts as
+    // complete, so the plugin's saved check time cannot move.
+    expect(h.snapshot()).toMatchObject({
+      status: "ready",
+      hydrated: true,
+      error: "socket closed",
+    });
+    expect(h.snapshot().reminders).toHaveLength(201);
+    await h.model.recover();
+    expect(h.filters).toHaveLength(3);
+    expect(h.filters[2]).not.toHaveProperty("until");
+    expect(h.snapshot()).toMatchObject({ status: "ready", hydrated: true });
+    expect(h.snapshot().error).toBeUndefined();
+    expect(h.snapshot().reminders).toHaveLength(202);
+  });
+
+  it("ends on a page holding only the event past the previous one", async () => {
+    const h = served(heads("h", 201, 1_000));
+    await h.model.recover();
+    expect(h.filters).toHaveLength(2);
+    expect(h.filters[1]).toMatchObject({ until: 801, before_id: "h199" });
+    // The event past page one comes back on page two but decrypts once.
+    expect(h.decoded).toHaveLength(201);
+    expect(h.statuses).toEqual(["loading", "ready"]);
+    expect(h.snapshot()).toMatchObject({ status: "ready", hydrated: true });
+    expect(h.snapshot().reminders).toHaveLength(201);
+  });
+
+  it("completes a list of exactly the page bound", async () => {
+    const h = served(heads("h", 10_000, 20_000));
+    await h.model.recover();
+    expect(h.filters).toHaveLength(50);
+    expect(h.snapshot()).toMatchObject({ status: "ready", hydrated: true });
+    expect(h.snapshot().error).toBeUndefined();
+    expect(h.snapshot().reminders).toHaveLength(10_000);
+  });
+
+  it("stops at the page bound and reports a longer list as partial", async () => {
+    const h = served(heads("h", 10_001, 20_000));
+    await h.model.recover();
+    expect(h.filters).toHaveLength(50);
+    expect(h.snapshot()).toMatchObject({
+      status: "ready",
+      hydrated: true,
+      error: "Too many reminders to load",
+    });
+    // Everything read shows, including the event past the last page.
+    expect(h.snapshot().reminders).toHaveLength(10_001);
+  });
+
+  it("fails a page that does not advance the cursor", async () => {
+    const first = heads("a", 201, 1_000);
+    const h = paged(first, first);
+    await h.model.recover();
+    expect(h.filters).toHaveLength(2);
+    expect(h.snapshot()).toMatchObject({
+      status: "ready",
+      error: "Reminder paging did not advance",
+    });
+  });
 });

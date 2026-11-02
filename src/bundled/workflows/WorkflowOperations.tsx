@@ -9,7 +9,7 @@ import type {
 import { ConfirmAction } from "./ConfirmAction";
 import { confirmedDeletion, deletionStatus } from "./editor-model";
 
-const messages = {
+export const messages = {
   save: {
     pending: "Saving configuration…",
     succeeded: "Configuration saved.",

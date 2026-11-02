@@ -6,6 +6,7 @@ import {
   render,
   screen,
 } from "@testing-library/react";
+import { PREVIEW_REST_MS } from "../../shared/design-system/ui/hoverIntent";
 import { afterEach, expect, it, vi } from "vitest";
 import { MessageLink } from "./MessageLink";
 import { ConversationPresentation } from "./ConversationPresentation";
@@ -52,6 +53,7 @@ it("withholds a body-bearing preview and does not reopen its exact reader on rec
   const profiles = new Map();
   const list = { channels: [{ id: "channel", name: "General" }] };
   const session = {
+    unread: undefined,
     thread,
     profiles: {
       snapshot: () => profiles,
@@ -77,7 +79,8 @@ it("withholds a body-bearing preview and does not reopen its exact reader on rec
   );
   const view = render(tree(true));
   fireEvent.mouseEnter(screen.getByRole("link", { name: "Source link" }));
-  await act(() => vi.advanceTimersByTimeAsync(250));
+  fireEvent.mouseMove(screen.getByRole("link", { name: "Source link" }));
+  await act(() => vi.advanceTimersByTimeAsync(PREVIEW_REST_MS));
   expect(screen.getByText("Referenced body")).toBeTruthy();
   expect(thread).toHaveBeenCalledOnce();
   view.rerender(tree(false));

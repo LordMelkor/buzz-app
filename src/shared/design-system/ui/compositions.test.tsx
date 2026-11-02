@@ -1,3 +1,4 @@
+import { SidebarNavigation } from "./SidebarNavigation";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { afterEach, expect, test, vi } from "vitest";
@@ -7,9 +8,12 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
+import { ModalWindowDragProvider } from "./ModalWindowDrag";
+import { AlertDialog } from "./AlertDialog";
 import { Dialog } from "./Dialog";
 import { Button } from "./Button";
 import { Input } from "./Input";
@@ -17,6 +21,7 @@ import { Field } from "./Field";
 import { Tooltip } from "./Tooltip";
 import { Tabs } from "./Tabs";
 import { NavigationItem } from "./NavigationItem";
+import { NavigationSection } from "./NavigationSection";
 
 afterEach(cleanup);
 
@@ -99,35 +104,123 @@ test("button titles use the shared hint while preserving refs and activation", a
   expect(button).toHaveAccessibleName("Send");
 });
 
-test("pending dialogs reject close and Escape, then allow dismissal once released", async () => {
-  const user = userEvent.setup();
-  const change = vi.fn();
-  const content = (pending: boolean) => (
-    <Dialog
-      open
-      onOpenChange={change}
-      preventClose={pending}
-      title="Edit notes"
-    >
+test.each(["body", "actions", "override"] as const)(
+  "confirmation preserves %s initial focus and keeps Close keyboard reachable",
+  async (target) => {
+    const user = userEvent.setup();
+    const confirm = createRef<HTMLButtonElement>();
+    function Example() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <Button onClick={() => setOpen(true)}>Open confirmation</Button>
+          {open && (
+            <AlertDialog
+              title="Confirm change"
+              description="Review before continuing."
+              onClose={() => setOpen(false)}
+              initialFocus={target === "override" ? confirm : undefined}
+              actions={
+                <>
+                  <Button onClick={() => setOpen(false)}>Cancel</Button>
+                  <Button ref={confirm}>Confirm</Button>
+                </>
+              }
+            >
+              {target === "body" && <Input aria-label="Private key" />}
+            </AlertDialog>
+          )}
+        </>
+      );
+    }
+    render(<Example />);
+    await user.tab();
+    await user.keyboard("{Enter}");
+    const expected =
+      target === "body"
+        ? screen.getByRole("textbox", { name: "Private key" })
+        : screen.getByRole("button", {
+            name: target === "override" ? "Confirm" : "Cancel",
+          });
+    await waitFor(() => expect(expected).toHaveFocus());
+    if (target === "override") await user.tab({ shift: true });
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(
+      screen.getByRole("button", { name: "Open confirmation" }),
+    ).toHaveFocus();
+  },
+);
+
+test("pending confirmation with no available actions focuses the popup", async () => {
+  render(
+    <AlertDialog
+      title="Saving"
+      description="Please wait."
+      pending
+      onClose={() => {}}
+      actions={<Button disabled>Cancel</Button>}
+    />,
+  );
+  await waitFor(() => expect(screen.getByRole("alertdialog")).toHaveFocus());
+  expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+});
+
+test.each(["dialog", "alertdialog"] as const)(
+  "pending %s rejects outside click, close and Escape, then allows dismissal once released",
+  async (role) => {
+    const user = userEvent.setup();
+    const change = vi.fn();
+    const fields = (
       <Field label="Name">
         <Input />
       </Field>
-    </Dialog>
-  );
-  const view = render(content(true));
-  expect(screen.getByRole("dialog", { name: "Edit notes" })).toBeVisible();
-  expect(screen.getByRole("dialog", { name: "Edit notes" })).toHaveAttribute(
-    "aria-modal",
-    "true",
-  );
-  expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
-  await user.click(screen.getByRole("textbox", { name: "Name" }));
-  await user.keyboard("{Escape}");
-  expect(change).not.toHaveBeenCalled();
-  view.rerender(content(false));
-  await user.keyboard("{Escape}");
-  expect(change).toHaveBeenCalledWith(false);
-});
+    );
+    const content = (pending: boolean) =>
+      role === "dialog" ? (
+        <Dialog
+          open
+          onOpenChange={change}
+          preventClose={pending}
+          title="Edit notes"
+        >
+          {fields}
+        </Dialog>
+      ) : (
+        <AlertDialog
+          title="Edit notes"
+          description="Confirm your changes."
+          pending={pending}
+          onClose={() => change(false)}
+          actions={<Button>Save</Button>}
+        >
+          {fields}
+        </AlertDialog>
+      );
+    const view = render(content(true));
+    expect(screen.getByRole(role, { name: "Edit notes" })).toBeVisible();
+    expect(screen.getByRole(role, { name: "Edit notes" })).toHaveAttribute(
+      "aria-modal",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    await user.click(
+      document.querySelector(".buzz-dialog-backdrop") as Element,
+    );
+    await user.click(screen.getByRole("textbox", { name: "Name" }));
+    await user.keyboard("{Escape}");
+    expect(change).not.toHaveBeenCalled();
+    view.rerender(content(false));
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(change).toHaveBeenCalledWith(false);
+    change.mockClear();
+    await user.keyboard("{Escape}");
+    expect(change).toHaveBeenCalledWith(false);
+  },
+);
 
 test("dialog close button closes the controlled frame", async () => {
   const user = userEvent.setup();
@@ -466,17 +559,30 @@ test("centered nested pointer-dismissal owns a backdrop and leaves the parent op
   expect(parent).not.toHaveBeenCalled();
 });
 
-test("outside dismissal remains opt-in", async () => {
-  const user = userEvent.setup();
-  const change = vi.fn();
-  render(
-    <Dialog open title="Editor" onOpenChange={change}>
-      <Button>Save</Button>
-    </Dialog>,
-  );
-  await user.click(document.querySelector(".buzz-dialog-backdrop") as Element);
-  expect(change).not.toHaveBeenCalled();
-});
+test.each([undefined, false])(
+  "outside dismissal defaults on and honors explicit opt-out (%s)",
+  async (dismissOnOutsideClick) => {
+    const user = userEvent.setup();
+    const change = vi.fn();
+    render(
+      <Dialog
+        open
+        title="Editor"
+        onOpenChange={change}
+        {...(dismissOnOutsideClick === undefined
+          ? {}
+          : { dismissOnOutsideClick })}
+      >
+        <Button>Save</Button>
+      </Dialog>,
+    );
+    await user.click(
+      document.querySelector(".buzz-dialog-backdrop") as Element,
+    );
+    if (dismissOnOutsideClick === false) expect(change).not.toHaveBeenCalled();
+    else expect(change).toHaveBeenCalledExactlyOnceWith(false);
+  },
+);
 
 test("dialog steps keep one labelled modal and make outgoing controls inert", async () => {
   const content = (confirm: boolean) => (
@@ -561,4 +667,180 @@ test("selected tab reactivation is opt-in and distinct from value changes", asyn
   await user.keyboard("{Enter}");
   expect(change).toHaveBeenCalledExactlyOnceWith("two");
   expect(reselect).toHaveBeenCalledTimes(3);
+});
+
+test("navigated dialogs keep section selection and nested dismissal inside one named modal", async () => {
+  const user = userEvent.setup();
+  function Example() {
+    const [open, setOpen] = useState(false);
+    const [section, setSection] = useState("General");
+    const [confirm, setConfirm] = useState(false);
+    return (
+      <>
+        <Button onClick={() => setOpen(true)}>Open preferences</Button>
+        <Dialog
+          open={open}
+          onOpenChange={setOpen}
+          title="Preferences"
+          navigation={{
+            label: "Preference sections",
+            content: (
+              <SidebarNavigation>
+                <NavigationSection label="App">
+                  {["General", "Notifications"].map((label) => (
+                    <NavigationItem
+                      key={label}
+                      label={label}
+                      selected={section === label}
+                      onClick={() => setSection(label)}
+                    />
+                  ))}
+                </NavigationSection>
+              </SidebarNavigation>
+            ),
+          }}
+        >
+          <h2>{section} preferences</h2>
+          <Button onClick={() => setConfirm(true)}>Reset preferences</Button>
+          <Dialog
+            open={confirm}
+            onOpenChange={setConfirm}
+            title="Confirm reset"
+          >
+            <p>Reset this device?</p>
+          </Dialog>
+        </Dialog>
+      </>
+    );
+  }
+  render(<Example />);
+  const trigger = screen.getByRole("button", { name: "Open preferences" });
+  await user.click(trigger);
+  const modal = await screen.findByRole("dialog", { name: "Preferences" });
+  const nav = within(modal).getByRole("navigation", {
+    name: "Preference sections",
+  });
+  await user.click(within(nav).getByRole("button", { name: "Notifications" }));
+  expect(
+    within(modal).getByRole("heading", { name: "Notifications preferences" }),
+  ).toBeVisible();
+  expect(
+    within(nav).getByRole("button", { name: "Notifications" }),
+  ).toHaveAttribute("aria-current", "page");
+  await user.click(
+    within(modal).getByRole("button", { name: "Reset preferences" }),
+  );
+  const nested = await screen.findByRole("dialog", { name: "Confirm reset" });
+  await waitFor(() =>
+    expect(nested).toContainElement(document.activeElement as HTMLElement),
+  );
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Confirm reset" })).toBeNull(),
+  );
+  expect(modal).toBeVisible();
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Preferences" })).toBeNull(),
+  );
+  expect(trigger).toHaveFocus();
+});
+
+test.each(["dialog", "contained", "alert"] as const)(
+  "%s distinguishes a title-bar click from an actual window drag",
+  async (kind) => {
+    const user = userEvent.setup();
+    const close = vi.fn();
+    const canDrag = vi.fn().mockReturnValue(true);
+    const startDragging = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    render(
+      <ModalWindowDragProvider value={{ canDrag, startDragging }}>
+        {kind !== "alert" ? (
+          <Dialog
+            open
+            title="Modal"
+            onOpenChange={close}
+            {...(kind === "contained" ? { container } : {})}
+          >
+            <Button>Inside</Button>
+          </Dialog>
+        ) : (
+          <AlertDialog
+            title="Modal"
+            description="Confirm"
+            onClose={close}
+            actions={<Button>Cancel</Button>}
+          />
+        )}
+      </ModalWindowDragProvider>,
+    );
+    const backdrop = document.querySelector(".buzz-dialog-backdrop");
+    if (!backdrop) throw new Error("Missing modal backdrop");
+    const mouse = {
+      pointerType: "mouse",
+      pointerId: 1,
+      button: 0,
+      clientX: 50,
+      clientY: 20,
+    };
+    const pointerEvent = (
+      type: string,
+      extra: Record<string, unknown> = {},
+    ) => {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        ...mouse,
+        ...extra,
+      });
+      Object.defineProperties(event, {
+        pointerType: { value: "mouse" },
+        pointerId: { value: 1 },
+      });
+      fireEvent(backdrop, event);
+    };
+    pointerEvent("pointerdown", { buttons: 1 });
+    pointerEvent("pointermove", { buttons: 1, clientX: 53 });
+    expect(startDragging).not.toHaveBeenCalled();
+    pointerEvent("pointermove", { buttons: 1, clientX: 54 });
+    pointerEvent("pointermove", { buttons: 1, clientX: 60 });
+    expect(startDragging).toHaveBeenCalledTimes(1);
+    pointerEvent("pointerup");
+    fireEvent.click(backdrop);
+    expect(close).not.toHaveBeenCalled();
+    // The next ordinary click must not inherit the previous drag's close fence.
+    await user.click(backdrop);
+    if (kind !== "alert") expect(close).toHaveBeenCalledExactlyOnceWith(false);
+    else expect(close).not.toHaveBeenCalled();
+    container.remove();
+  },
+);
+
+test("tab strips mark the edges that have tabs scrolled past them", () => {
+  render(
+    <Tabs
+      value="a"
+      onValueChange={() => {}}
+      label="Overflowing tabs"
+      variant="navigation"
+      items={[
+        { value: "a", label: "First" },
+        { value: "b", label: "Second" },
+      ]}
+    />,
+  );
+  const list = screen.getByRole("tablist", { name: "Overflowing tabs" });
+  expect(list).not.toHaveAttribute("data-overflow-start");
+  expect(list).not.toHaveAttribute("data-overflow-end");
+  Object.defineProperty(list, "scrollWidth", { value: 300 });
+  Object.defineProperty(list, "clientWidth", { value: 100 });
+  fireEvent.scroll(list);
+  expect(list).not.toHaveAttribute("data-overflow-start");
+  expect(list).toHaveAttribute("data-overflow-end");
+  list.scrollLeft = 200;
+  fireEvent.scroll(list);
+  expect(list).toHaveAttribute("data-overflow-start");
+  expect(list).not.toHaveAttribute("data-overflow-end");
 });

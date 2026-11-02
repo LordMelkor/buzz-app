@@ -9,7 +9,11 @@ import { safeLinkUrl, scanMarkdown } from "../relay/message-content";
 import { composerSchema, projectComposerDocument } from "./composer-document";
 import { composerMarkdown } from "./composer-markdown";
 import { messageLinkParts } from "./message-link-parts";
-import { serializeNode } from "./selection-copy";
+import {
+  copyDocument,
+  serializeNode,
+  spoilerDelimiter,
+} from "./selection-copy";
 
 /** The identity locator a whole source is: `[@Name](nostr:npub…)`. */
 export function identityLink(
@@ -131,12 +135,11 @@ function humanised(node: EditorNode): EditorNode {
  * handler and other rich editors. */
 export function composerClipboard(doc: EditorNode, document: Document) {
   const fragment = serializer.serializeFragment(doc.content, { document });
-  // Spoilers have no HTML; keep their delimiters as text.
-  for (const spoiler of [...fragment.querySelectorAll("[data-spoiler]")]) {
-    spoiler.prepend("||");
-    spoiler.append("||");
-    spoiler.replaceWith(...spoiler.childNodes);
-  }
+  // Spoilers have no HTML of their own: their delimiters stay visible inside
+  // the mark's span, marked so this app's paste reads the mark alone.
+  for (const spoiler of fragment.querySelectorAll("[data-spoiler]"))
+    for (const position of ["afterbegin", "beforeend"] as const)
+      spoiler.insertAdjacentHTML(position, spoilerDelimiter);
   // Line breaks inside prose are whitespace to HTML; code blocks keep theirs.
   const walker = document.createTreeWalker(fragment, NodeFilter.SHOW_TEXT);
   const breaks: Text[] = [];
@@ -162,13 +165,30 @@ export function composerClipboard(doc: EditorNode, document: Document) {
   };
 }
 
-/** Markdown for this app's own `text/html` payload; other HTML is never read. */
-export function buzzCopyMarkdown(html: string): string | undefined {
+/** This app's own `text/html` payload as editor content; other HTML is never
+ * read. Its blocks and marks paste as they are, while anchors and line breaks
+ * become source text: the host's decorations decide which links are chips, as
+ * for typed source, and paragraphs keep line breaks as text. */
+export function buzzCopyDocument(html: string): EditorNode | undefined {
   if (!html.includes("data-buzz-copy")) return;
   const copy = new DOMParser()
     .parseFromString(html, "text/html")
     .querySelector("[data-buzz-copy]");
-  return copy ? serializeNode(copy, "markdown") : undefined;
+  return (copy && sourced(copyDocument(copy))) ?? undefined;
+}
+
+function sourced(node: EditorNode): EditorNode | null {
+  if (node.isText) return node;
+  // The schema refuses empty text nodes; a leaf without text contributes none.
+  if (node.isLeaf)
+    return node.textContent
+      ? composerSchema.text(node.textContent, node.marks)
+      : null;
+  return node.copy(
+    Fragment.fromArray(
+      node.content.content.flatMap((child) => sourced(child) ?? []),
+    ),
+  );
 }
 
 /** External HTML contributes web links, never Buzz identity metadata or styling. */
@@ -178,8 +198,9 @@ export function externalLinkMarkdown(
 ): string | undefined {
   if (!html) return;
   const body = new DOMParser().parseFromString(html, "text/html").body;
+  // Rules and checkboxes would copy as Markdown source; they are styling here.
   for (const node of body.querySelectorAll(
-    "script, style, template, iframe, object",
+    "script, style, template, iframe, object, hr, input",
   ))
     node.remove();
   let linked = false;
@@ -197,7 +218,7 @@ export function externalLinkMarkdown(
     // Keep text and line boundaries; importing other rich formatting is separate.
     if (/^(STRONG|B|EM|I|S|DEL|CODE)$/.test(element.tagName))
       element.replaceWith(...element.childNodes);
-    else if (/^(UL|OL|LI|BLOCKQUOTE|PRE)$/.test(element.tagName)) {
+    else if (/^(UL|OL|LI|BLOCKQUOTE|PRE|H[1-6])$/.test(element.tagName)) {
       const block = body.ownerDocument.createElement("div");
       block.append(...element.childNodes);
       element.replaceWith(block);

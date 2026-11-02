@@ -5,7 +5,9 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type Ref,
 } from "react";
+import { isApplePlatform } from "../../features/shortcuts/format";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { SidebarIcon, DotsThreeIcon } from "../../shared/design-system/icons";
 import { Panel } from "../../shared/design-system/ui/Panel";
@@ -14,13 +16,14 @@ import type { SettingsCards } from "../../features/settings/service";
 import type { RegisteredPage } from "../../features/pages/service";
 import type { AccountActionsService } from "../../features/account-actions/service";
 import type { Communities } from "../../features/communities/service";
+import type { FederatedIdentity } from "../../features/federated-identity/service";
 import type { InviteLink } from "../../features/communities/invite-link";
 import type { OpenTarget } from "../../features/navigation/targets";
-import { CommunityRail } from "../../features/communities/CommunityRail";
+import { CommunityPicker } from "../../features/communities/CommunityPicker";
 import { ProfileButton } from "./ProfileButton";
 import type { Appearance } from "../../shared/theme/service";
 import { PageSearch, type SearchServices } from "./PageSearch";
-import { headerPageSelection, orderPages } from "./presentation";
+import { headerPageSelection, pagePlacement, orderPages } from "./presentation";
 import { PageNavigation } from "./PageNavigation";
 import type { NavigationOpenOptions } from "../../features/navigation/controller";
 import {
@@ -30,7 +33,7 @@ import {
 } from "../../shared/design-system/ui/Popover";
 import { PanelFrame } from "../../features/panels/PanelFrame";
 import { macTitleBarDragHandlers } from "./title-bar";
-import { WindowControls } from "./WindowControls";
+import { hasIntegratedWindowControls, WindowControls } from "./WindowControls";
 
 const macDesktop = isTauri() && /Mac/i.test(navigator.platform);
 const titleBarDragProps = macDesktop ? macTitleBarDragHandlers : {};
@@ -42,19 +45,24 @@ export function AppShell({
   onSelect,
   tone,
   workspace,
+  workspaceRef,
   sidebar,
   communities,
   invite,
   onInviteClose,
   settingsCards,
+  federatedIdentity,
   accountActions,
   appearance,
+  pluginRecommendations = 0,
   searchServices,
   navigationControls,
   onCommunitySelect,
   onOpenTarget,
   launchers,
   companion,
+  creationAction,
+  creationInSidebar = true,
   children,
 }: {
   pages: readonly RegisteredPage[];
@@ -66,13 +74,18 @@ export function AppShell({
   ) => void;
   tone: string;
   workspace?: boolean;
-  sidebar?: (pages: ReactNode) => ReactNode;
+  /** Centered modal frame below window chrome. */
+  workspaceRef?: Ref<HTMLDivElement>;
+  sidebar?: (pages: ReactNode, creationAction: ReactNode) => ReactNode;
   communities: Communities;
   invite?: (InviteLink & { requestId: number }) | undefined;
   onInviteClose?: ((requestId: number) => void) | undefined;
   settingsCards?: SettingsCards | undefined;
+  federatedIdentity?: FederatedIdentity | undefined;
   accountActions: AccountActionsService;
   appearance: Appearance;
+  /** Managed plugin recommendations awaiting review, pointed out beside Plugins. */
+  pluginRecommendations?: number;
   searchServices?: SearchServices;
   navigationControls?: ReactNode;
   onCommunitySelect?: (id: string | null) => void;
@@ -80,11 +93,19 @@ export function AppShell({
   onOpenTarget?: (target: OpenTarget) => void;
   launchers?: ReactNode;
   companion?: ReactNode;
+  creationAction?: (
+    open: boolean,
+    onOpenChange: (open: boolean) => void,
+    triggerContainer: HTMLElement | null,
+  ) => ReactNode;
+  creationInSidebar?: boolean;
   children: ReactNode;
 }) {
   const fillsWorkspace = workspace || selected === "settings";
-  const channelsNavigation =
-    selected === "buzz.channels/channels" || selected === "buzz.agents/agents";
+  const [creationContainer, setCreationContainer] =
+    useState<HTMLDivElement | null>(null);
+  const [creationOpen, setCreationOpen] = useState(false);
+  const channelsNavigation = selected === "buzz.channels/channels";
   const [narrow, setNarrow] = useState(
     () => window.matchMedia("(max-width: 650px)").matches,
   );
@@ -95,26 +116,42 @@ export function AppShell({
     query.addEventListener("change", update);
     return () => query.removeEventListener("change", update);
   }, []);
-  const meNavigation = selected === "buzz.me/me";
   const collapsibleSidebar =
     channelsNavigation ||
-    meNavigation ||
     selected === "settings" ||
-    pages.some((page) => page.key === selected && page.primary);
-  const sidebarLabel = meNavigation
-    ? "Solo sidebar"
-    : channelsNavigation
-      ? "Channel sidebar"
-      : "sidebar";
+    pages.some(
+      (page) => page.key === selected && (page.primary || !!page.sidebar),
+    );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [navigationOpen, setNavigationOpen] = useState(false);
   const navigationToggle = useRef<HTMLButtonElement>(null);
   const visibleSidebar = narrow ? navigationOpen : sidebarOpen;
+  useEffect(
+    () =>
+      searchServices?.shortcuts.registerHost({
+        id: "new",
+        title: "Open New menu",
+        binding: { key: "n", mod: true },
+        order: 75,
+        allowInEditable: true,
+        when: () =>
+          !!creationAction &&
+          !!creationContainer?.querySelector("button:not(:disabled)") &&
+          (isApplePlatform(navigator.platform) ||
+            !document.activeElement?.closest(".xterm")),
+        run: () => {
+          setSidebarOpen(true);
+          setNavigationOpen(true);
+          setCreationOpen(true);
+        },
+      }),
+    [searchServices, creationAction, creationContainer],
+  );
   const toggleLabel = narrow
     ? navigationOpen
       ? "Hide navigation"
       : "Show navigation"
-    : `${sidebarOpen ? "Hide" : "Show"} ${sidebarLabel}`;
+    : `${sidebarOpen ? "Hide" : "Show"} sidebar`;
   // biome-ignore lint/correctness/useExhaustiveDependencies: Only a navigation attempt closes the drawer.
   useEffect(() => {
     if (navigationOpen && navigationToggle.current?.getClientRects().length) {
@@ -127,11 +164,7 @@ export function AppShell({
   // sidebar subtree instead of re-rendering every row on each click.
   const navigation = useMemo(() => {
     const sidebarPages = orderPages(
-      pages.filter(
-        (page) =>
-          page.primary &&
-          (page.placement === undefined || page.placement === "sidebar"),
-      ),
+      pages.filter((page) => pagePlacement(page) === "sidebar"),
     );
     const pageNavigation = sidebarPages.length ? (
       <nav aria-label="Pages" className="shell-pages">
@@ -143,7 +176,12 @@ export function AppShell({
       </nav>
     ) : null;
     return sidebar ? (
-      sidebar(pageNavigation)
+      sidebar(
+        pageNavigation,
+        creationAction && creationInSidebar && (
+          <div ref={setCreationContainer} />
+        ),
+      )
     ) : (
       <div className="shell-sidebar-default">
         <Panel as="aside" aria-label="Page sidebar">
@@ -151,30 +189,33 @@ export function AppShell({
         </Panel>
       </div>
     );
-  }, [pages, selected, onSelect, sidebar]);
+  }, [pages, selected, onSelect, sidebar, creationAction, creationInSidebar]);
   const headerPages = useMemo(
     () =>
       orderPages(
         pages.filter(
           (page) =>
-            page.primary &&
-            (page.placement === "topbar" || page.placement === "toolbar"),
+            pagePlacement(page) === "topbar" ||
+            pagePlacement(page) === "toolbar",
         ),
       ),
     [pages],
   );
-  const topbarPages = headerPages.filter((page) => page.placement === "topbar");
+  const topbarPages = headerPages.filter(
+    (page) => pagePlacement(page) === "topbar",
+  );
   const selectedHeader = headerPageSelection(pages, selected);
   const selectedTopbarPage = topbarPages.some(
     (page) => page.key === selectedHeader,
   );
   const panelKey = selectedTopbarPage ? selectedHeader : selected;
   const toolbarPages = headerPages.filter(
-    (page) => page.placement === "toolbar",
+    (page) => pagePlacement(page) === "toolbar",
   );
   const headerRef = useRef<HTMLElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLDivElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
   const toolbarRef = useRef<HTMLElement>(null);
   const overflowTrigger = useRef<HTMLButtonElement>(null);
@@ -198,7 +239,10 @@ export function AppShell({
         (toolbarRef.current?.offsetWidth ?? 0) +
         parseFloat(style.paddingRight) +
         gap;
-      const center = topbarRef.current?.offsetWidth ?? 0;
+      const center =
+        (topbarRef.current?.offsetWidth ?? 0) +
+        (searchRef.current?.offsetWidth ?? 0) +
+        gap;
       const compact =
         narrow ||
         2 * (Math.max(left, right) + gap) + center > header.clientWidth;
@@ -220,6 +264,7 @@ export function AppShell({
       historyRef.current,
       actionsRef.current,
       topbarRef.current,
+      searchRef.current,
       toolbarRef.current,
     ]) {
       if (element) observer.observe(element);
@@ -262,6 +307,9 @@ export function AppShell({
       </a>
       <header
         ref={headerRef}
+        data-buzz-window-drag={
+          macDesktop || hasIntegratedWindowControls() || undefined
+        }
         data-compact-pages={compactPages || undefined}
         data-tauri-drag-region={macDesktop ? undefined : true}
         {...titleBarDragProps}
@@ -269,12 +317,16 @@ export function AppShell({
       >
         <div
           ref={historyRef}
-          className="shell-communities"
+          className="shell-history"
+          data-buzz-window-drag={
+            macDesktop || hasIntegratedWindowControls() || undefined
+          }
           data-tauri-drag-region={macDesktop ? undefined : true}
           {...titleBarDragProps}
         >
           {(collapsibleSidebar || narrow) && (
             <IconButton
+              hint="familiar"
               ref={navigationToggle}
               data-shell-sidebar-toggle=""
               data-highlight-expanded="false"
@@ -292,24 +344,88 @@ export function AppShell({
             />
           )}
           {navigationControls}
+          {creationAction && !creationInSidebar && (
+            <div ref={setCreationContainer} />
+          )}
         </div>
-        {topbarPages.length > 0 && (
-          <nav
-            ref={topbarRef}
-            aria-label="Topbar pages"
-            className="shell-topbar-pages"
-            aria-hidden={compactPages}
-            inert={compactPages}
-          >
-            <PageNavigation
-              pages={topbarPages}
-              selected={selectedHeader}
-              currentPage={selected}
+        <div className="shell-center-capsule shell-capsule">
+          <div className="shell-page-switcher chrome-navigation">
+            {headerPages.length > 0 && (
+              <PopoverRoot
+                open={overflowOpen && compactPages}
+                onOpenChange={setOverflowOpen}
+              >
+                <PopoverTrigger
+                  render={
+                    <IconButton
+                      hint="familiar"
+                      ref={overflowTrigger}
+                      data-shell-pages-overflow=""
+                      aria-label="More pages"
+                      title="More pages"
+                      variant="ghost"
+                      icon={<DotsThreeIcon size={16} aria-hidden="true" />}
+                    />
+                  }
+                />
+                <PopoverPopup
+                  size="compact"
+                  padding="list"
+                  align="end"
+                  aria-label="More pages"
+                  finalFocus={() =>
+                    compactPages
+                      ? overflowTrigger.current
+                      : ((
+                          topbarRef.current ?? toolbarRef.current
+                        )?.querySelector<HTMLButtonElement>("button") ??
+                        document.getElementById("main-content"))
+                  }
+                >
+                  <nav
+                    ref={overflowPages}
+                    aria-label="Header pages"
+                    className="shell-pages"
+                  >
+                    <PageNavigation
+                      pages={headerPages}
+                      selected={selectedHeader}
+                      currentPage={selected}
+                      onSelect={(key) => {
+                        setOverflowOpen(false);
+                        onSelect(key);
+                      }}
+                    />
+                  </nav>
+                </PopoverPopup>
+              </PopoverRoot>
+            )}
+            {topbarPages.length > 0 && (
+              <nav
+                ref={topbarRef}
+                aria-label="Topbar pages"
+                className="shell-topbar-pages"
+                aria-hidden={compactPages}
+                inert={compactPages}
+              >
+                <PageNavigation
+                  pages={topbarPages}
+                  selected={selectedHeader}
+                  currentPage={selected}
+                  onSelect={onSelect}
+                  placement="topbar"
+                />
+              </nav>
+            )}
+          </div>
+          <div ref={searchRef} className="shell-search-action shell-capsule">
+            <PageSearch
+              pages={pages}
               onSelect={onSelect}
-              placement="topbar"
+              services={searchServices}
             />
-          </nav>
-        )}
+          </div>
+        </div>
         <div
           className="shell-actions"
           data-tauri-drag-region={macDesktop ? undefined : true}
@@ -331,151 +447,109 @@ export function AppShell({
               />
             </nav>
           )}
-          {headerPages.length > 0 && (
-            <PopoverRoot
-              open={overflowOpen && compactPages}
-              onOpenChange={setOverflowOpen}
-            >
-              <PopoverTrigger
-                render={
-                  <IconButton
-                    ref={overflowTrigger}
-                    data-shell-pages-overflow=""
-                    aria-label="More pages"
-                    title="More pages"
-                    variant="ghost"
-                    icon={<DotsThreeIcon size={16} aria-hidden="true" />}
-                  />
-                }
-              />
-              <PopoverPopup
-                size="compact"
-                padding="list"
-                align="end"
-                aria-label="More pages"
-                finalFocus={() =>
-                  compactPages
-                    ? overflowTrigger.current
-                    : ((
-                        topbarRef.current ?? toolbarRef.current
-                      )?.querySelector<HTMLButtonElement>("button") ??
-                      document.getElementById("main-content"))
-                }
-              >
-                <nav
-                  ref={overflowPages}
-                  aria-label="Header pages"
-                  className="shell-pages"
-                >
-                  <PageNavigation
-                    pages={headerPages}
-                    selected={selectedHeader}
-                    currentPage={selected}
-                    onSelect={(key) => {
-                      setOverflowOpen(false);
-                      onSelect(key);
-                    }}
-                  />
-                </nav>
-              </PopoverPopup>
-            </PopoverRoot>
-          )}
           <div ref={actionsRef} className="shell-actions-fixed">
             {launchers}
-            <PageSearch
-              pages={pages}
-              onSelect={onSelect}
-              services={searchServices}
-            />
-            <ProfileButton
-              communities={communities}
-              accountActions={accountActions}
-              settingsSelected={selected === "settings"}
-              appearance={appearance}
-              onSettings={(section) =>
-                onSelect("settings", section ? { section } : undefined)
-              }
-            />
+            <div className="shell-community-switcher">
+              <CommunityPicker
+                communities={communities}
+                invite={invite}
+                onInviteClose={onInviteClose}
+                settingsCards={settingsCards}
+                federatedIdentity={federatedIdentity}
+                onSelect={onCommunitySelect}
+                onOpenTarget={onOpenTarget}
+              />
+              <ProfileButton
+                communities={communities}
+                accountActions={accountActions}
+                settingsSelected={selected === "settings"}
+                appearance={appearance}
+                pluginRecommendations={pluginRecommendations}
+                onSettings={(section) =>
+                  onSelect("settings", section ? { section } : undefined)
+                }
+              />
+            </div>
             <WindowControls />
           </div>
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        <CommunityRail
-          communities={communities}
-          invite={invite}
-          onInviteClose={onInviteClose}
-          settingsCards={settingsCards}
-          onSelect={onCommunitySelect}
-          onOpenTarget={onOpenTarget}
+      <div className="shell-workspace">
+        <div
+          ref={workspaceRef}
+          className="shell-dialog-frame"
+          data-shell-dialog-frame=""
         />
         <div
           className={`shell-body ${selected === "settings" ? "shell-body-settings" : ""}`}
         >
-          <div className="shell-content">
-            <div
-              id="shell-navigation"
-              className="shell-navigation"
-              data-sidebar-collapsible={
-                (collapsibleSidebar && !narrow) || undefined
-              }
-              data-sidebar-open={visibleSidebar || undefined}
-              aria-hidden={(collapsibleSidebar || narrow) && !visibleSidebar}
-              inert={(collapsibleSidebar || narrow) && !visibleSidebar}
-              data-expanded={navigationOpen}
-              onKeyDown={(event) => {
-                if (
-                  event.key === "Escape" &&
-                  navigationOpen &&
-                  !event.defaultPrevented
-                ) {
-                  setNavigationOpen(false);
-                  navigationToggle.current?.focus();
+          <div className="relative flex min-h-0 min-w-0 flex-1">
+            <div className="shell-content">
+              <div
+                id="shell-navigation"
+                className="shell-navigation"
+                data-sidebar-collapsible={
+                  (collapsibleSidebar && !narrow) || undefined
                 }
-              }}
-            >
-              <div className="shell-navigation-content">{navigation}</div>
-            </div>
-            <main
-              id="main-content"
-              tabIndex={-1}
-              className="min-h-0 min-w-0 flex-1"
-            >
-              <Panel as="div" joined>
-                <PanelFrame companion={companion}>
-                  <div
-                    id={`shell-page-${panelKey}`}
-                    {...(!compactPages && selectedTopbarPage
-                      ? {
-                          role: "tabpanel",
-                          "aria-labelledby": `shell-page-${panelKey}-tab`,
-                          tabIndex: 0,
-                          "data-focus-inset": "",
-                        }
-                      : {})}
-                    className={
-                      fillsWorkspace
-                        ? "buzz-tabs-panel h-full min-h-0"
-                        : "buzz-tabs-panel h-full min-h-0 overflow-y-auto px-2 pt-10 pb-8 sm:px-4 sm:pt-14 sm:pb-10"
-                    }
-                  >
+                data-sidebar-open={visibleSidebar || undefined}
+                aria-hidden={(collapsibleSidebar || narrow) && !visibleSidebar}
+                inert={(collapsibleSidebar || narrow) && !visibleSidebar}
+                data-expanded={navigationOpen}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Escape" &&
+                    navigationOpen &&
+                    !event.defaultPrevented
+                  ) {
+                    setNavigationOpen(false);
+                    navigationToggle.current?.focus();
+                  }
+                }}
+              >
+                <div className="shell-navigation-content">{navigation}</div>
+              </div>
+              <main
+                id="main-content"
+                tabIndex={-1}
+                className="min-h-0 min-w-0 flex-1"
+              >
+                <Panel as="div" joined>
+                  <PanelFrame companion={companion}>
                     <div
+                      id={`shell-page-${panelKey}`}
+                      {...(!compactPages && selectedTopbarPage
+                        ? {
+                            role: "tabpanel",
+                            "aria-labelledby": `shell-page-${panelKey}-tab`,
+                            tabIndex: 0,
+                            "data-focus-inset": "",
+                          }
+                        : {})}
                       className={
                         fillsWorkspace
-                          ? "h-full min-h-0"
-                          : "mx-auto w-full max-w-4xl"
+                          ? "buzz-tabs-panel h-full min-h-0"
+                          : "buzz-tabs-panel h-full min-h-0 overflow-y-auto px-2 pt-10 pb-8 sm:px-4 sm:pt-14 sm:pb-10"
                       }
                     >
-                      {children}
+                      <div
+                        className={
+                          fillsWorkspace
+                            ? "h-full min-h-0"
+                            : "mx-auto w-full max-w-4xl"
+                        }
+                      >
+                        {children}
+                      </div>
                     </div>
-                  </div>
-                </PanelFrame>
-              </Panel>
-            </main>
+                  </PanelFrame>
+                </Panel>
+              </main>
+            </div>
           </div>
         </div>
       </div>
+      {creationAction?.(creationOpen, setCreationOpen, creationContainer)}
     </div>
   );
 }

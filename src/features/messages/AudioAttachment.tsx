@@ -20,6 +20,7 @@ import { formatMediaTime } from "./media-timecode";
 import styles from "./Messages.module.css";
 import { useMediaElementSource } from "./use-media-element-source";
 import mediaStyles from "./VideoPlayer.module.css";
+import { MediaDownloadAction } from "./MediaDownloadAction";
 
 const ENDED_DURATION_CORRECTION_MIN_SECONDS = 0.05;
 // Old Buzz voice notes include a 1 fps 16x16 video track, so container
@@ -38,9 +39,11 @@ function finiteDuration(value: number | undefined): number | undefined {
 export function AudioAttachment({
   attachment,
   source,
+  allowDownload = true,
 }: {
   attachment: Attachment;
   source: string;
+  allowDownload?: boolean;
 }) {
   const active = useConversationPresentation();
   const audio = useRef<HTMLAudioElement>(null);
@@ -236,6 +239,13 @@ export function AudioAttachment({
           ? formatMediaTime(duration).padStart(5, "0")
           : "—:—"}
       </span>
+      {allowDownload && (
+        <MediaDownloadAction
+          source={source}
+          name={attachment.name}
+          kind="audio"
+        />
+      )}
     </fieldset>
   );
 }

@@ -379,6 +379,29 @@ it("seeds a first launch to now and keeps communities apart", async () => {
   );
 });
 
+it("notifies a reminder only a later history page holds, saving only after the last page", async () => {
+  const rest = deferred();
+  const full = Array.from({ length: 201 }, (_, i) => wire(`old${i}`, 50));
+  const reads = [Promise.resolve(full), rest.promise];
+  const model = session(() => reads.shift() as Promise<RelayEvent[]>);
+  const { submit, connect } = mount();
+  connect(`a:${viewer}`, model.capability);
+  at(105);
+  await flush();
+  expect(model.capability.snapshot()).toMatchObject({
+    status: "loading",
+    hydrated: true,
+  });
+  expect(checked("a")).toBe("100");
+  at(106);
+  rest.resolve([wire("late", 103)]);
+  await flush();
+  expect(submit).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ sourceKey: "late:103" }),
+  );
+  expect(checked("a")).toBe("106");
+});
+
 // Roster pages per launch shape: "two" puts the channel on page two of 501,
 // "capped" overflows discovery's retained cap on the third page.
 const ROSTERS = { one: 1, empty: 1, two: 2, capped: 3 } as const;

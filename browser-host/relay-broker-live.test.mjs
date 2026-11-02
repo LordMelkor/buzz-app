@@ -15,6 +15,7 @@ import {
 } from "nostr-tools";
 import { createRelaySession } from "../src/features/relay/session.ts";
 import { relayBrokerPlugin } from "./relay-broker.mjs";
+import { ARTIFACT_SYNC_MAX_VIEWS } from "../src/features/relay/artifact-sync-filter.ts";
 import { connectBrokerTransport } from "../src/features/relay/transport.ts";
 import { createOutbox, PublishRejected } from "../src/features/relay/outbox.ts";
 
@@ -108,32 +109,9 @@ async function harness(
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
-  // These existing transport matrices exercise plugin-only observer demand.
-  // Capture-owned demand has its own cases below; configure it through the real API.
-  const archive = async (input) => {
-    const response = await fetch(`${base}/api/relay/archive`, {
-      method: "POST",
-      headers: { Origin: base, "Content-Type": "application/json" },
-      body: JSON.stringify({ viewer: getPublicKey(key), ...input }),
-    });
-    if (!response.ok)
-      throw new Error(`Archive fixture request failed: ${response.status}`);
-    return response.json();
-  };
-  if (!options.archive) {
-    const settings = await archive({ action: "settings" });
-    await archive({
-      action: "configure",
-      observer: false,
-      metrics: false,
-      observerDays: 30,
-      revision: settings.revision,
-    });
-  }
   const controllers = [];
   return {
     key,
-    archive,
     sockets,
     requests,
     publications,
@@ -942,6 +920,55 @@ async function outgoing(transport, content = "socket message") {
     new AbortController().signal,
   );
 }
+
+test("typing signing admits only empty conversation scope and stays outside durable write kinds", async () => {
+  const h = await harness();
+  try {
+    browserFetch(h.base);
+    const transport = await connectBrokerTransport(h.base);
+    expect(transport.writer.kinds).not.toContain(20002);
+    const live = transport.subscribe(callbacks);
+    expect(live.publish).toBeUndefined(); // Agent presence remains unsupported.
+    expect(live.publishTyping).toBeTypeOf("function");
+    live.dispose();
+    const pulse = {
+      kind: 20002,
+      content: "",
+      tags: [["h", "dm"]],
+      created_at: Math.floor(Date.now() / 1000),
+    };
+    expect(
+      await transport.writer.sign(pulse, new AbortController().signal),
+    ).toMatchObject(pulse);
+    for (const change of [
+      { content: "draft" },
+      { tags: [] },
+      {
+        tags: [
+          ["h", "dm"],
+          ["p", getPublicKey(h.key)],
+        ],
+      },
+      {
+        tags: [
+          ["h", "dm"],
+          ["h", "other"],
+        ],
+      },
+    ]) {
+      await expect(
+        transport.writer.sign(
+          { ...pulse, ...change },
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("Signing failed (400)");
+    }
+    expect(h.publications).toEqual([]);
+  } finally {
+    vi.unstubAllGlobals();
+    await h.close();
+  }
+});
 
 test("session outbox publishes and reconciles on its authenticated live socket", async () => {
   const h = await harness(0, undefined, { roster: true });
@@ -1942,8 +1969,8 @@ test("publication diagnostics separate local unsent duplicates from lost socket 
   }
 });
 
-test("host capture persists both kinds without plugin demand, toggles independently, and rejects HTTP envelope injection", async () => {
-  const h = await harness(0, undefined, { archive: true });
+test("live streams request no agent telemetry without plugin demand", async () => {
+  const h = await harness();
   // The transport uses browser Origin headers in production; Node's fetch needs them supplied.
   const original = globalThis.fetch;
   vi.stubGlobal("fetch", (input, init) =>
@@ -1958,84 +1985,148 @@ test("host capture persists both kinds without plugin demand, toggles independen
   let traffic;
   try {
     const transport = await connectBrokerTransport(h.base);
-    const observer = vi.fn();
+    let snapshot;
     traffic = transport.subscribe({
       receive() {},
-      observer,
-      state() {},
+      observer() {},
+      state(value) {
+        snapshot = value;
+      },
       established() {},
     });
-    await until(() => h.requests.some((r) => r.filter.kinds.includes(44200)));
-    let route = h.requests.findLast((r) => r.filter.kinds.includes(44200));
-    const agent = generateSecretKey(),
-      viewer = getPublicKey(h.key),
-      sender = getPublicKey(agent);
-    const frame = (kind, serial) =>
-      finalizeEvent(
-        {
-          kind,
-          created_at: Math.floor(Date.now() / 1000),
-          tags: [
-            ["p", viewer],
-            ["agent", sender],
-            ["frame", "telemetry"],
-          ],
-          content: nip44.v2.encrypt(
-            JSON.stringify({ kind: "turn_started", serial }),
-            nip44.v2.utils.getConversationKey(agent, viewer),
-          ),
-        },
-        agent,
-      );
-    const saved = frame(24200, 1);
-    await route.socket.receive(["EVENT", route.id, saved]);
-    await route.socket.receive(["EVENT", route.id, frame(44200, 2)]);
-    expect(
-      (await h.archive({ action: "read", kind: 24200 })).records.map(
-        (r) => r.id,
-      ),
-    ).toEqual([saved.id]);
-    expect(
-      (await h.archive({ action: "read", kind: 44200 })).records,
-    ).toHaveLength(1);
-    expect(observer).not.toHaveBeenCalled();
-    const settings = await h.archive({ action: "settings" });
-    await h.archive({
-      action: "configure",
-      observer: false,
-      metrics: true,
-      observerDays: 30,
-      revision: settings.revision,
-    });
-    await until(() =>
-      h.requests.some(
-        (r) => r.filter.kinds.length === 1 && r.filter.kinds[0] === 44200,
-      ),
+    // Routes are registered before dispatch, so a live global set is complete.
+    await until(
+      () =>
+        snapshot?.status === "connected" &&
+        ["profiles", "membership"].every((id) =>
+          snapshot.routes.some((r) => r.id === id && r.status === "live"),
+        ),
     );
-    route = h.requests.findLast((r) => r.filter.kinds.includes(44200));
-    await route.socket.receive(["EVENT", route.id, frame(24200, 3)]);
-    await route.socket.receive(["EVENT", route.id, frame(44200, 4)]);
+    expect(snapshot.routes.map((r) => r.id)).not.toContain("observer");
     expect(
-      (await h.archive({ action: "read", kind: 24200 })).records,
-    ).toHaveLength(1);
-    expect(
-      (await h.archive({ action: "read", kind: 44200 })).records,
-    ).toHaveLength(2);
-    for (const body of [
-      { action: "ingest", event: saved },
-      { action: "read", kind: 24200, events: [saved] },
-      { action: "read", kind: 24200, viewer: "f".repeat(64) },
-    ]) {
-      const response = await original(`${h.base}/api/relay/archive`, {
-        method: "POST",
-        headers: { Origin: h.base, "Content-Type": "application/json" },
-        body: JSON.stringify({ viewer, ...body }),
-      });
-      expect(response.status).toBe(400);
-    }
+      h.requests.some((r) =>
+        r.filter.kinds.some((kind) => [24200, 44200].includes(kind)),
+      ),
+    ).toBe(false);
   } finally {
     traffic?.dispose();
     vi.unstubAllGlobals();
+    await h.close();
+  }
+});
+
+test("a sync close that overtakes its open keeps the late open from taking a host slot", async () => {
+  const h = await harness();
+  const post = (path, body) =>
+    fetch(`${h.base}${path}`, {
+      method: "POST",
+      headers: { Origin: h.base, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const filter = {
+    artifact: "current",
+    "#h": ["11111111-1111-4111-8111-111111111111"],
+  };
+  try {
+    const stream = await h.post(["a"]);
+    const streamId = stream.response.headers.get("x-buzz-live-id");
+    await until(() => h.requests.length === 3);
+    const close = await post("/api/relay/stream-artifact-sync-close", {
+      streamId,
+      id: "s1",
+    });
+    expect(close.status).toBe(200);
+    await close.text();
+    const late = await post("/api/relay/stream-artifact-sync", {
+      streamId,
+      id: "s1",
+      filter,
+    });
+    expect(late.status).toBe(409);
+    await late.text();
+    // The remembered close is spent; nothing reached the relay for it.
+    expect(h.requests).toHaveLength(3);
+    const next = await post("/api/relay/stream-artifact-sync", {
+      streamId,
+      id: "s2",
+      filter,
+    });
+    expect(next.status).toBe(200);
+    await next.text();
+    stream.abort();
+  } finally {
+    await h.close();
+  }
+});
+
+test("a stream admits as many syncs as the session does", async () => {
+  const h = await harness();
+  const filter = {
+    artifact: "current",
+    "#h": ["11111111-1111-4111-8111-111111111111"],
+  };
+  const open = async (streamId, id) => {
+    const response = await fetch(`${h.base}/api/relay/stream-artifact-sync`, {
+      method: "POST",
+      headers: { Origin: h.base, "Content-Type": "application/json" },
+      body: JSON.stringify({ streamId, id, filter }),
+    });
+    await response.text();
+    return response.status;
+  };
+  try {
+    const stream = await h.post(["a"]);
+    const streamId = stream.response.headers.get("x-buzz-live-id");
+    await until(() => h.requests.length === 3);
+    for (let i = 0; i < ARTIFACT_SYNC_MAX_VIEWS; i++)
+      expect(await open(streamId, `s${i}`)).toBe(200);
+    expect(await open(streamId, "over")).toBe(429);
+    stream.abort();
+  } finally {
+    await h.close();
+  }
+});
+
+test("a stream with too many unresolved sync closes ends instead of forgetting one", async () => {
+  const h = await harness();
+  const post = async (path, body) => {
+    const response = await fetch(`${h.base}${path}`, {
+      method: "POST",
+      headers: { Origin: h.base, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    await response.text();
+    return response.status;
+  };
+  const filter = {
+    artifact: "current",
+    "#h": ["11111111-1111-4111-8111-111111111111"],
+  };
+  try {
+    const stream = await h.post(["a"]);
+    const streamId = stream.response.headers.get("x-buzz-live-id");
+    await until(() => h.requests.length === 3);
+    const closeSync = (id) =>
+      post("/api/relay/stream-artifact-sync-close", { streamId, id });
+    for (let i = 0; i < 64; i++) expect(await closeSync(`c${i}`)).toBe(200);
+    // The oldest close is still remembered at capacity.
+    expect(
+      await post("/api/relay/stream-artifact-sync", {
+        streamId,
+        id: "c0",
+        filter,
+      }),
+    ).toBe(409);
+    expect(await closeSync("c0")).toBe(200);
+    // One more unresolved close ends the stream rather than forget a record.
+    expect(await closeSync("c64")).toBe(200);
+    for (const id of ["c1", "c64", "fresh"])
+      expect(
+        await post("/api/relay/stream-artifact-sync", { streamId, id, filter }),
+      ).toBe(404);
+    expect(h.requests).toHaveLength(3);
+    stream.abort();
+  } finally {
     await h.close();
   }
 });

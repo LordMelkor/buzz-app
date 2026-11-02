@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getPublicKey, verifyEvent } from "nostr-tools";
 import { readProjectGit } from "./project-git.mjs";
-import { parseGitRead, projectGitHost } from "../src/features/projects/git.ts";
+import { parseGitRead, repoGitHost } from "../src/features/repos/git.ts";
 
 const execute = promisify(execFile),
   key = new Uint8Array(32).fill(3),
@@ -143,7 +143,7 @@ it("reads authenticated Git content and the exact commit through real smart HTTP
     expect(auth.tags).toContainEqual(["method", "GET"]);
     expect(url.pathname).not.toContain("receive-pack");
   }
-  const host = projectGitHost(async () => Response.json(result));
+  const host = repoGitHost(async () => Response.json(result));
   expect(await host.read(input, new AbortController().signal)).toEqual(result);
 });
 it("shows binary content honestly and rejects missing files without a false snapshot", async () => {
@@ -177,7 +177,7 @@ it("distinguishes an authenticated empty repository from a missing revision", as
     diff: null,
   });
   expect(
-    await projectGitHost(async () => Response.json(empty)).read(
+    await repoGitHost(async () => Response.json(empty)).read(
       { owner, dtag: "empty" },
       new AbortController().signal,
     ),

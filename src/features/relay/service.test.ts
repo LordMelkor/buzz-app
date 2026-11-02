@@ -126,3 +126,17 @@ it("times out a stalled connection and releases timers on app disposal", async (
   await ctx.fiber.dispose();
   expect(vi.getTimerCount()).toBe(0);
 });
+it("reconnects a connection the federated session refused once it is signed in", async () => {
+  const ctx = root();
+  const connect = vi
+    .fn<() => Promise<ReadTransport>>()
+    .mockRejectedValueOnce(new Error("Federated sign-in is required"))
+    .mockResolvedValue(transport("viewer"));
+  const data = provideRelay(ctx, connect);
+  await flush();
+  expect(data.snapshot().status).toBe("error");
+  data.reauthorize();
+  await flush();
+  expect(connect).toHaveBeenCalledTimes(2);
+  expect(data.snapshot().status).toBe("ready");
+});

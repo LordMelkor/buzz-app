@@ -1,3 +1,4 @@
+import { hoverMessage } from "./message-actions.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
 import { readJournal } from "./reading.mjs";
@@ -24,7 +25,7 @@ test("manage a channel message, peer unread state, and its thread", async ({
   );
   await expect(row).toBeVisible();
   const trigger = row.getByRole("button", { name: "More message actions" });
-  await row.hover();
+  await hoverMessage(row);
   await trigger.click();
   await page
     .getByRole("menuitem", { name: "Edit message", exact: true })
@@ -114,24 +115,24 @@ test("manage a channel message, peer unread state, and its thread", async ({
     ["Mark unread", "Mark read"],
     ["Mark read", "Mark unread"],
   ]) {
-    await peerRow.hover();
+    await hoverMessage(peerRow);
     await peerTrigger.click();
     await page.getByRole("menuitem", { name: action, exact: true }).click();
     await expect(page.getByRole("alertdialog")).toHaveCount(0);
-    await peerRow.hover();
+    await hoverMessage(peerRow);
     await peerTrigger.click();
     await expect(toggle).toHaveText(next);
     await page.keyboard.press("Escape");
   }
   await expect(page.getByRole("alertdialog")).toHaveCount(0);
-  await row.hover();
+  await hoverMessage(row);
   await row.getByRole("button", { name: "Reply", exact: true }).click();
   const thread = page.getByRole("complementary", {
     name: "Thread",
     exact: true,
   });
   const root = thread.locator(`[data-message-id="${event.id}"]`);
-  await root.hover();
+  await hoverMessage(root);
   await root.getByRole("button", { name: "More message actions" }).click();
   await page
     .getByRole("menuitem", { name: "Edit message", exact: true })
@@ -153,7 +154,7 @@ test("manage a channel message, peer unread state, and its thread", async ({
   for (const width of [900, 390]) {
     await page.setViewportSize({ width, height: 850 });
     await row.scrollIntoViewIfNeeded();
-    await row.hover();
+    await hoverMessage(row);
     await trigger.click();
     await page
       .getByRole("menuitem", { name: "Delete message", exact: true })
@@ -180,7 +181,7 @@ test("manage a channel message, peer unread state, and its thread", async ({
     await expect(trigger).toBeFocused();
     await expect(actions).toHaveCSS("opacity", "1");
   }
-  await row.hover();
+  await hoverMessage(row);
   await trigger.click();
   await page
     .getByRole("menuitem", { name: "Delete message", exact: true })
@@ -208,7 +209,7 @@ test("deleting a thread reply returns focus to the surviving thread composer", a
     `[data-channel-timeline] [data-message-id="${root.id}"]`,
   );
   await expect(channelRow).toBeVisible();
-  await channelRow.hover();
+  await hoverMessage(channelRow);
   await channelRow.getByRole("button", { name: "Reply", exact: true }).click();
   const thread = page.getByRole("complementary", {
     name: "Thread",
@@ -224,7 +225,7 @@ test("deleting a thread reply returns focus to the surviving thread composer", a
   );
   const replyRow = thread.locator(`[data-message-id="${reply.id}"]`);
   await expect(replyRow).toBeVisible();
-  await replyRow.hover();
+  await hoverMessage(replyRow);
   await replyRow.getByRole("button", { name: "More message actions" }).click();
   await page
     .getByRole("menuitem", { name: "Delete message", exact: true })
@@ -238,7 +239,7 @@ test("deleting a thread reply returns focus to the surviving thread composer", a
     thread.getByRole("textbox", { name: "Reply to thread" }),
   ).toBeFocused();
   const rootRow = thread.locator(`[data-message-id="${root.id}"]`);
-  await rootRow.hover();
+  await hoverMessage(rootRow);
   await rootRow.getByRole("button", { name: "More message actions" }).click();
   await page
     .getByRole("menuitem", { name: "Delete message", exact: true })
@@ -264,7 +265,7 @@ test("DM menus edit own messages but never expose destructive actions for peers"
   const channel = await timeline.getAttribute("data-channel-timeline");
   const own = app.append("primary", channel, "Own DM message");
   const row = timeline.locator(`[data-message-id="${own.id}"]`);
-  await row.hover();
+  await hoverMessage(row);
   await row.getByRole("button", { name: "More message actions" }).click();
   await page
     .getByRole("menuitem", { name: "Edit message", exact: true })
@@ -279,7 +280,7 @@ test("DM menus edit own messages but never expose destructive actions for peers"
   await expect(row).toContainText("Corrected DM");
   const peer = app.append("primary", channel, "Peer DM message", true, false);
   const peerRow = timeline.locator(`[data-message-id="${peer.id}"]`);
-  await peerRow.hover();
+  await hoverMessage(peerRow);
   await peerRow.getByRole("button", { name: "More message actions" }).click();
   await expect(
     page.getByRole("menuitem", { name: /^Mark (read|unread)$/ }),
@@ -316,7 +317,7 @@ test("saving an attachment caption preserves its original metadata through the b
     `[data-channel-timeline] [data-message-id="${event.id}"]`,
   );
   await expect(row).toBeVisible();
-  await row.hover();
+  await hoverMessage(row);
   await row.getByRole("button", { name: "More message actions" }).click();
   await page
     .getByRole("menuitem", { name: "Edit message", exact: true })
@@ -393,7 +394,7 @@ test("thread media preserves its tab and draft while modal Escape restores focus
   const row = page.locator(
     `[data-channel-timeline] [data-message-id="${root.id}"]`,
   );
-  await row.hover();
+  await hoverMessage(row);
   await row.getByRole("button", { name: "Reply", exact: true }).click();
   const thread = page.getByRole("complementary", {
     name: "Thread",
@@ -437,7 +438,15 @@ test("thread media preserves its tab and draft while modal Escape restores focus
     await page.keyboard.press("Tab");
     await expect(remove).toBeFocused();
     await page.keyboard.press("Tab");
+    await expect(
+      confirmation.getByRole("button", { name: "Close", exact: true }),
+    ).toBeFocused();
+    await page.keyboard.press("Tab");
     await expect(cancel).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(
+      confirmation.getByRole("button", { name: "Close", exact: true }),
+    ).toBeFocused();
     await page.keyboard.press("Shift+Tab");
     await expect(remove).toBeFocused();
     await page.keyboard.press("Shift+Tab");

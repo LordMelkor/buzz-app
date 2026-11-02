@@ -2,6 +2,7 @@ import type { ConversationHostServices } from "../../features/conversation/Conve
 import { workflowLabel } from "../../features/relay/workflow-attribution";
 import { LightningIcon } from "../../shared/design-system/icons";
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useId,
@@ -14,10 +15,13 @@ import {
 import type { RelayData } from "../../features/relay/service";
 import type { RelaySession } from "../../features/relay/session";
 import type { InboxItem } from "../../features/relay/inbox";
-import { InboxDetail } from "./InboxDetail";
 import { usePanelSplit } from "../../features/panels/usePanelSplit";
 import { DraftsView } from "./DraftsView";
-import type { ConversationExtensions } from "../../features/conversation/contracts";
+import type {
+  ConversationExtensions,
+  PageTabsProps,
+  PageTabTarget,
+} from "../../features/conversation/contracts";
 import type { Navigation } from "../../features/navigation/controller";
 import type { NavigationScope } from "../../features/navigation/targets";
 import { useChannelList, useRelayConnection } from "../../features/relay/react";
@@ -55,6 +59,7 @@ import {
 } from "../../shared/design-system/ui/Menu";
 import styles from "./Inbox.module.css";
 import { dmLabel } from "./dm-label";
+import { channelText } from "../../features/channels/channel-icon";
 import {
   readView,
   subscribeView,
@@ -142,6 +147,30 @@ const targetOf = (item: InboxItem) => ({
   ...(item.rootId ? { rootId: item.rootId } : {}),
 });
 
+/** DMs and a Solo chat's own messages open whole; others open at their message. */
+const tabTarget = (
+  item: InboxItem,
+  channel: { channelType?: string } | undefined,
+): PageTabTarget =>
+  item.target.kind === "channel" ||
+  (channel?.channelType === "solo" && !item.thread)
+    ? { channelId: item.channelId }
+    : {
+        channelId: item.channelId,
+        threadId: item.rootId ?? item.messageId,
+        messageId: item.messageId,
+      };
+
+type Selection = { channelId: string; messageId: string; rootId?: string };
+// The row a tab opened, kept as long as the session's tabs so returning to
+// Inbox still archives and advances from the conversation it restores.
+const selections = new WeakMap<
+  RelaySession,
+  { opened?: PageTabTarget | undefined; target?: Selection | undefined }
+>();
+
+type InboxPageTabs = (props: PageTabsProps) => ReactNode;
+
 /** The open conversation's Archive/Restore, published for the Inbox shortcut. */
 export type ArchiveShortcut = { current?: (() => void) | undefined };
 
@@ -149,12 +178,15 @@ export function InboxPage({
   relay,
   navigator,
   extensions,
+  tabs,
   host,
   archive,
 }: {
   relay: RelayData;
   navigator: Navigation;
   extensions?: ConversationExtensions | undefined;
+  /** The host tab workspace, `conversation.ui.Tabs`, while a plugin provides it. */
+  tabs?: InboxPageTabs | undefined;
   host: ConversationHostServices;
   archive?: ArchiveShortcut | undefined;
 }) {
@@ -175,6 +207,7 @@ export function InboxPage({
             }}
             navigator={navigator}
             extensions={extensions}
+            tabs={tabs}
             host={host}
             archive={archive}
           />
@@ -206,20 +239,56 @@ export function InboxPage({
   );
 }
 
-export function InboxView({
+type InboxViewProps = {
+  session: RelaySession;
+  scope: NavigationScope;
+  navigator: Navigation;
+  extensions?: ConversationExtensions | undefined;
+  tabs?: InboxPageTabs | undefined;
+  host: ConversationHostServices;
+  archive?: ArchiveShortcut | undefined;
+};
+
+const never = () => false;
+
+/** The conversation list is Inbox's first tab; conversations open beside it. */
+export function InboxView({ tabs: Tabs, ...props }: InboxViewProps) {
+  const list = (
+    open: (target: PageTabTarget) => boolean,
+    close: (target: PageTabTarget) => boolean,
+    isOpen: (target: PageTabTarget) => boolean,
+  ) => <InboxList {...props} open={open} close={close} isOpen={isOpen} />;
+  // Without the host tab workspace, rows have nowhere to open.
+  if (!Tabs) return list(never, never, never);
+  return (
+    <Tabs
+      id="inbox"
+      session={props.session}
+      scope={props.session.scope}
+      label="Inbox"
+      icon={<BellIcon size="1rem" />}
+      // Opening reveals a conversation; reading is earned as it is seen.
+      visits={false}
+    >
+      {list}
+    </Tabs>
+  );
+}
+
+function InboxList({
   session,
   scope,
   navigator,
   extensions,
   host,
   archive: archiveShortcut,
-}: {
-  session: RelaySession;
-  scope: NavigationScope;
-  navigator: Navigation;
-  extensions?: ConversationExtensions | undefined;
-  host: ConversationHostServices;
-  archive?: ArchiveShortcut | undefined;
+  open: openTab,
+  close: closeTab,
+  isOpen,
+}: InboxViewProps & {
+  open(target: PageTabTarget): boolean;
+  close(target: PageTabTarget): boolean;
+  isOpen(target: PageTabTarget): boolean;
 }) {
   const split = usePanelSplit(undefined, 316, {
     defaultWidth: 420,
@@ -275,12 +344,22 @@ export function InboxView({
     () => archiveIndex(readArchives(archiveRevision)),
     [archiveRevision],
   );
-  const [selectedTarget, setSelectedTarget] = useState<{
-    channelId: string;
-    messageId: string;
-    rootId?: string;
-  }>();
-  const invokingRow = useRef<HTMLButtonElement | null>(null);
+  // The tab a row opened, which archive closes even after its row regroups.
+  // Selection lasts as long as that tab.
+  const [opened, setOpened] = useState(() => selections.get(session)?.opened);
+  const openRow = (item: InboxItem, channel?: { channelType?: string }) => {
+    const tab = tabTarget(item, channel);
+    const shown = openTab(tab);
+    setOpened(shown ? tab : undefined);
+    return shown;
+  };
+  const showing = !!opened && isOpen(opened);
+  const [selectedTarget, setSelectedTarget] = useState(
+    () => selections.get(session)?.target,
+  );
+  useEffect(() => {
+    selections.set(session, { opened, target: selectedTarget });
+  }, [session, opened, selectedTarget]);
   const fallbackRow = useRef<HTMLButtonElement | null>(null);
   const fallbackControl = useRef<HTMLButtonElement | null>(null);
   const viewFocus = useRef(false);
@@ -297,6 +376,7 @@ export function InboxView({
   const focusRow = useRef<string | undefined>(undefined);
   const workspace = useRef<HTMLDivElement | null>(null);
   const retryFocus = useRef(false);
+  const retiredFocus = useRef(false);
   const retryButton = useCallback((button: HTMLButtonElement | null) => {
     if (!button) return;
     // Capture ownership before removal, not after focus has fallen to body.
@@ -385,35 +465,51 @@ export function InboxView({
       item.messageIds.includes(selectedTarget.messageId),
   );
   const selectedId = selected?.id;
-  const [restoringFocus, setRestoringFocus] = useState(false);
-  useEffect(() => {
-    if (selectedTarget || !restoringFocus || pending) return;
-    const row = invokingRow.current?.isConnected
-      ? invokingRow.current
-      : fallbackRow.current?.isConnected
-        ? fallbackRow.current
-        : fallbackControl.current;
-    row?.focus({ preventScroll: true });
-    invokingRow.current = null;
-    setRestoringFocus(false);
-  }, [selectedTarget, restoringFocus, pending]);
-  const selectedArchived = list.channels.some(
-    (channel) => channel.id === selectedTarget?.channelId && channel.archived,
+  // A room reclassified as a Huddle belongs to its Huddle composer, not Inbox.
+  const selectedRetired = list.channels.some(
+    (channel) =>
+      channel.id === selectedTarget?.channelId &&
+      (channel.archived || channel.huddle || channel.metadataPending),
   );
   useEffect(() => {
     if (
       selectedTarget &&
-      (selectedArchived || (!selected && inbox.status !== "loading"))
+      (selectedRetired || !showing || (!selected && inbox.status !== "loading"))
     ) {
-      if (selectedArchived) {
+      // Restoring the channel does not reopen its conversation.
+      if (selectedRetired && opened && closeTab(opened))
+        retiredFocus.current = true;
+      // A closed tab ends its visit, so reopening the row reads it again.
+      if (selectedRetired || !showing) {
         intentRevision.current++;
         failedMutation.current = undefined;
         setError(undefined);
       }
-      setRestoringFocus(true);
       setSelectedTarget(undefined);
     }
-  }, [selectedTarget, selected, selectedArchived, inbox.status]);
+  }, [
+    selectedTarget,
+    selected,
+    selectedRetired,
+    showing,
+    opened,
+    closeTab,
+    inbox.status,
+  ]);
+  useLayoutEffect(() => {
+    if (!retiredFocus.current) return;
+    retiredFocus.current = false;
+    // Focus the retired tab held, removed or leaving with it, returns to the
+    // filters; focus elsewhere stays.
+    const focused = document.activeElement;
+    if (
+      !(focused instanceof HTMLElement) ||
+      focused === document.body ||
+      !focused.isConnected ||
+      focused.closest('[inert], [hidden], [aria-hidden="true"]')
+    )
+      fallbackControl.current?.focus({ preventScroll: true });
+  });
   useEffect(() => {
     if (menu && !items.some((item) => item.id === menu.id)) setMenu(undefined);
   }, [items, menu]);
@@ -467,9 +563,9 @@ export function InboxView({
           item.messageIds.includes(selectedTarget?.messageId ?? ""))),
   );
   const visible = matching;
-  const archiveView = useRef({ show, visible, selected });
+  const archiveView = useRef({ show, visible, selected, opened });
   useLayoutEffect(() => {
-    archiveView.current = { show, visible, selected };
+    archiveView.current = { show, visible, selected, opened };
   });
   const profileKey = [
     ...new Set([
@@ -573,7 +669,7 @@ export function InboxView({
       if (retrySync && active.current) await session.unread.retrySync();
     });
   }
-  function archive(item: InboxItem, value: boolean, navigate = value) {
+  function archive(item: InboxItem, value: boolean) {
     // Archive captures the conversation, not just the activity-filter projection.
     const conversation = session.unread
       .inbox()
@@ -626,20 +722,30 @@ export function InboxView({
           leaves && index >= 0
             ? (current.visible[index + 1] ?? current.visible[index - 1])
             : undefined;
-        const open =
-          current.selected?.channelId === item.channelId &&
-          current.selected.messageIds.includes(item.messageId);
         updateArchive(archiveScope, conversation, value, at);
         setMenu(undefined);
         if (!leaves) return;
-        // Archiving the selected row advances; unselected actions leave the reader alone.
-        if (navigate && open && next) {
-          advanced = next;
-          setSelectedTarget(targetOf(next));
-        } else if (navigate && open) {
-          setRestoringFocus(true);
+        const channelOf = (row: InboxItem) =>
+          session.channels
+            .list()
+            .channels.find((entry) => entry.id === row.channelId);
+        // Archiving the open conversation closes its tab and opens the next;
+        // restoring it keeps its tab.
+        if (
+          value &&
+          current.selected?.channelId === item.channelId &&
+          current.selected.messageIds.includes(item.messageId) &&
+          current.opened &&
+          closeTab(current.opened)
+        ) {
+          if (next && openRow(next, channelOf(next))) {
+            advanced = next;
+            setSelectedTarget(targetOf(next));
+            return;
+          }
           setSelectedTarget(undefined);
-        } else focusRow.current = next?.id ?? "";
+        }
+        focusRow.current = next?.id ?? "";
       },
       valid,
       () => {
@@ -678,7 +784,7 @@ export function InboxView({
         !!channel &&
         !!current &&
         !current.cached &&
-        !current.readOnly &&
+        (!current.readOnly || current.viewerRole === "guest") &&
         !current.archived &&
         current.channelType === channel.channelType &&
         !!current.members?.includes(scope.viewer) &&
@@ -730,6 +836,16 @@ export function InboxView({
     refresh(true);
   }
   const canRead = sync.capability === "frontier-sync";
+  // The Archive shortcut acts on the conversation opened last.
+  useLayoutEffect(() => {
+    if (!archiveShortcut || !selected || pending || drafts) return;
+    const current = () => archive(selected, !archived(selected));
+    archiveShortcut.current = current;
+    return () => {
+      if (archiveShortcut.current === current)
+        archiveShortcut.current = undefined;
+    };
+  });
   const loading =
     list.status === "idle" ||
     list.status === "loading" ||
@@ -741,23 +857,22 @@ export function InboxView({
     if (!retryFocus.current) return;
     retryFocus.current = false;
     if (failure || pending || document.activeElement !== document.body) return;
-    const control =
-      workspace.current?.querySelector<HTMLElement>(
-        '[aria-label="Inbox detail"] button[aria-label^="Close "]',
-      ) ?? fallbackControl.current;
-    control?.focus({ preventScroll: true });
+    fallbackControl.current?.focus({ preventScroll: true });
   }, [failure, pending]);
+  function showView(value: ShowFilter) {
+    if (value === show) return;
+    cancelRetry();
+    setSelectedTarget(undefined);
+    setFilter({ show: value });
+  }
+  const filtered =
+    activity !== "all" || senderFilter !== "everyone" || unreadOnly;
   const toolbar = (
     <header className={styles.toolbar}>
       <InboxFilters
         view={drafts ? "drafts" : activity}
         show={show}
-        onShowChange={(value) => {
-          if (value === show) return;
-          cancelRetry();
-          setSelectedTarget(undefined);
-          setFilter({ show: value });
-        }}
+        onShowChange={showView}
         sender={senderFilter}
         unreadOnly={unreadOnly}
         triggerRef={fallbackControl}
@@ -815,11 +930,7 @@ export function InboxView({
           host={host}
         />
       ) : (
-        <div
-          ref={workspace}
-          className={styles.workspace}
-          data-selected={!!selected || undefined}
-        >
+        <div ref={workspace} className={styles.workspace}>
           <div className={styles.listPane}>
             {toolbar}
             <div className={styles.scroll}>
@@ -881,13 +992,23 @@ export function InboxView({
                           : "Mentions, direct messages, and replies in threads you participate in appear here."
                       }
                       action={
-                        show === "archived" && unreadOnly ? (
+                        filtered || show === "archived" ? (
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => setFilter({ attention: "all" })}
+                            onClick={() => {
+                              // Status stays; an unfiltered archive returns to Inbox.
+                              if (filtered)
+                                setFilter({
+                                  activity: "all",
+                                  sender: "everyone",
+                                  attention: "all",
+                                });
+                              else showView("inbox");
+                              fallbackControl.current?.focus();
+                            }}
                           >
-                            Show all archived conversations
+                            {filtered ? "Clear filters" : "Show Inbox"}
                           </Button>
                         ) : undefined
                       }
@@ -925,7 +1046,7 @@ export function InboxView({
                     channel?.channelType === "dm"
                       ? `DM · ${dmName}`
                       : channel
-                        ? `#${channel.name}`
+                        ? channelText(channel)
                         : "Conversation";
                   const unread = hasUnread(item);
                   const rowArchived = archived(item);
@@ -1022,8 +1143,13 @@ export function InboxView({
                                   id={`${previewId}-${item.id}`}
                                   className={`text-body ${unread ? "text-standard" : "text-subtle"} ${styles.preview}`}
                                 >
-                                  {item.messageIds.some((id) =>
-                                    feed.incomplete.includes(id),
+                                  {[
+                                    item.previewMessageId,
+                                    ...item.messageIds,
+                                  ].some(
+                                    (id) =>
+                                      id !== undefined &&
+                                      feed.incomplete.includes(id),
                                   )
                                     ? feed.status === "error"
                                       ? "Preview unavailable. Retry inbox."
@@ -1048,13 +1174,37 @@ export function InboxView({
                                 />
                               )
                             }
-                            onClick={(event) => {
+                            onClick={() => {
+                              if (busy.current) return;
+                              // The selected row reveals its current message in
+                              // its captured tab, even after regrouping would
+                              // open a whole conversation as a thread.
+                              const reselect =
+                                selectedId === item.id &&
+                                opened &&
+                                !opened.threadId !==
+                                  !tabTarget(item, channel).threadId
+                                  ? opened
+                                  : undefined;
+                              if (
+                                reselect
+                                  ? !openTab(reselect)
+                                  : !openRow(item, channel)
+                              )
+                                void navigator.open({
+                                  version: 1,
+                                  kind: "conversation",
+                                  scope,
+                                  channelId: item.channelId,
+                                  messageId: item.messageId,
+                                  ...(item.rootId && {
+                                    threadRootId: item.rootId,
+                                  }),
+                                });
                               // The selected row is the same visit, even when its
                               // current representative changed after reading.
-                              if (busy.current || selectedId === item.id)
-                                return;
+                              if (selectedId === item.id) return;
                               cancelRetry();
-                              invokingRow.current = event.currentTarget;
                               setSelectedTarget(targetOf(item));
                               if (unread && canRead) mutate(item, false);
                             }}
@@ -1109,42 +1259,6 @@ export function InboxView({
               </ul>
             </div>
           </div>
-          {selected && selectedTarget && (
-            <InboxDetail
-              key={`${selectedTarget.channelId}:${selectedTarget.messageId}`}
-              resizeHandle={split.handle}
-              item={selected}
-              target={selectedTarget}
-              session={session}
-              scope={scope}
-              navigator={navigator}
-              extensions={extensions}
-              host={host}
-              channelName={
-                list.channels.find(
-                  (channel) => channel.id === selected.channelId,
-                )?.name ?? "Conversation"
-              }
-              previewIncomplete={
-                selected.messageIds.some((id) => feed.incomplete.includes(id))
-                  ? feed.status === "error"
-                    ? "error"
-                    : "loading"
-                  : undefined
-              }
-              archiveAction={{
-                archived: archived(selected),
-                disabled: pending,
-                run: () => archive(selected, !archived(selected)),
-              }}
-              archiveShortcut={archiveShortcut}
-              onBack={() => {
-                setRestoringFocus(true);
-                cancelRetry();
-                setSelectedTarget(undefined);
-              }}
-            />
-          )}
         </div>
       )}
     </div>

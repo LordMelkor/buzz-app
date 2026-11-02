@@ -28,6 +28,7 @@ export function EmbeddedThread({
     session.channels.subscribeList,
     session.channels.list,
   );
+  const channel = channels.find((item) => item.id === channelId);
   return (
     <ConversationChannel
       key={messageViewKey(session, scope, channelId)}
@@ -39,8 +40,8 @@ export function EmbeddedThread({
       channel={{
         id: channelId,
         name: channelName,
-        channelType: channels.find((channel) => channel.id === channelId)
-          ?.channelType,
+        channelType: channel?.channelType,
+        creator: channel?.creator,
       }}
     >
       <ConversationThread messageId={messageId} />

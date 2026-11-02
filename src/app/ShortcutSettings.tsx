@@ -67,6 +67,7 @@ const EDITOR_CHORDS: readonly KeyBinding[] = [
 const CLIPBOARD_CHORDS: readonly KeyBinding[] = [
   { key: "c", mod: true },
   { key: "v", mod: true },
+  { key: "v", mod: true, shift: true },
   { key: "x", mod: true },
   { key: "a", mod: true },
 ];
@@ -215,7 +216,10 @@ export function ShortcutSettings({
   };
   // Conflicts are decided here, not in the dispatcher: host chords always win
   // there, and plugin ties resolve by sorted key, neither of which is a choice.
-  const capture = (target: Row, { binding, otherPrimary }: CapturedChord) => {
+  const capture = (
+    target: Row,
+    { binding, otherPrimary, code }: CapturedChord,
+  ) => {
     const chord = formatBinding(binding, apple).text;
     const refuse = (message: string) =>
       setNotice({ key: target.key, tone: "error", message });
@@ -229,7 +233,15 @@ export function ShortcutSettings({
       return refuse(
         `Include ${apple ? "Command or Option" : "Control or Alt"} so ordinary typing keeps working.`,
       );
-    if (includes(CLIPBOARD_CHORDS, binding))
+    // Apple's ⌥⇧⌘V browser paste types a layout-specific key, so match the physical V.
+    const applePlainPaste =
+      apple &&
+      code === "KeyV" &&
+      binding.mod &&
+      binding.shift &&
+      binding.alt &&
+      !binding.ctrl;
+    if (includes(CLIPBOARD_CHORDS, binding) || applePlainPaste)
       return refuse(
         `${chord} is reserved for copy, cut, paste and select all. Try another.`,
       );

@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
+import { schnorr } from "@noble/curves/secp256k1.js";
+import { bytesToHex } from "nostr-tools/utils";
 import { expect, it, vi } from "vitest";
+import { eventDto } from "./events";
 import { selectProfiles } from "./profile-selection";
 import { foldProfiles } from "./profiles";
 import { createProfileDirectory } from "./profile-directory";
@@ -160,6 +164,43 @@ it("publishes owner-only changes and removal without treating profile claims as 
   }
 });
 
+it("notifies once for a batch of verified owner attestations", async () => {
+  const wire = scriptedTransport(user.pubkey, keypair().pubkey);
+  const reader = createRelayReader(wire.transport);
+  const directory = createProfileDirectory(reader.reader);
+  const owner = keypair();
+  const agents = [keypair(), keypair(), keypair()];
+  const changed = vi.fn();
+  directory.queries.subscribe(changed);
+  try {
+    directory.accept(
+      agents.map((agent) => {
+        const digest = createHash("sha256")
+          .update(`nostr:agent-auth:${agent.pubkey}:`)
+          .digest();
+        const sig = schnorr.sign(new Uint8Array(digest), owner.secret);
+        return eventDto(
+          signed(agent, {
+            kind: 0,
+            content: JSON.stringify({ name: "Agent", is_agent: true }),
+            tags: [["auth", owner.pubkey, "", bytesToHex(sig)]],
+          }),
+        );
+      }),
+    );
+    expect(changed).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(
+        agents.map((agent) => directory.queries.owner?.(agent.pubkey)),
+      ).toEqual(agents.map(() => owner.pubkey)),
+    );
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(2));
+  } finally {
+    directory.dispose();
+    reader.dispose();
+  }
+});
+
 it("reacts to NIP-05-only replacements and removal without asserting verification", () => {
   const wire = scriptedTransport(user.pubkey, keypair().pubkey);
   const reader = createRelayReader(wire.transport);
@@ -215,6 +256,14 @@ it("retains safe inline profile pictures through parsing and media routing", asy
     if (parsed?.picture)
       expect(mediaUrl(parsed.picture, undefined, undefined)).toBe(picture);
   }
+});
+
+it("reuses one event's projection across folds", () => {
+  const head = profile(user, { name: "Mic" }, 1);
+  const parsed = foldProfiles([head]).get(user.pubkey);
+  expect(foldProfiles([head]).get(user.pubkey)).toBe(parsed);
+  const next = foldProfiles([head, profile(user, { name: "Mike" }, 2)]);
+  expect(next.get(user.pubkey)?.name).toBe("Mike");
 });
 
 it("refreshes retained profiles in the background without rolling back signed heads", async () => {
@@ -280,6 +329,88 @@ it("retires pending profile reads before reconnect and fences cache clear/dispos
     resolve([renamed]);
     await disposed;
     expect(directory.queries.snapshot().size).toBe(0);
+  } finally {
+    directory.dispose();
+  }
+});
+
+it("promotes a queued background profile read when foreground demand joins it", async () => {
+  const wire = scriptedTransport(user.pubkey, keypair().pubkey);
+  const reader = createRelayReader(wire.transport);
+  const directory = createProfileDirectory(reader.reader);
+  try {
+    // Unrelated background work holds the reader's only background slot.
+    const held = reader.reader.read([{ kinds: [3], limit: 1 }], {
+      priority: "background",
+    });
+    const enrichment = directory.ensure([user.pubkey], "background");
+    expect(wire.pending).toHaveLength(1);
+    const demanded = directory.ensure([user.pubkey], "foreground");
+    expect(wire.pending).toHaveLength(2);
+    wire.pending[1]?.respond([profile(user, { name: "Mic" })]);
+    await Promise.all([enrichment, demanded]);
+    expect(directory.queries.snapshot().get(user.pubkey)?.name).toBe("Mic");
+    wire.next().respond([]);
+    await held;
+  } finally {
+    directory.dispose();
+    reader.dispose();
+  }
+});
+
+it("records identities a completed read found no profile for, until one arrives", async () => {
+  const other = keypair();
+  const third = keypair();
+  const read = vi.fn(async () => [profile(user, { name: "Mic" })]);
+  const directory = createProfileDirectory({ read });
+  const listener = vi.fn();
+  directory.queries.subscribe(listener);
+  try {
+    await directory.ensure([user.pubkey, other.pubkey]);
+    const absent = directory.queries.unnamed?.();
+    expect(absent).toEqual(new Set([other.pubkey]));
+    // Once for the profile, once for the absence.
+    expect(listener).toHaveBeenCalledTimes(2);
+    // A failed read is not evidence.
+    read.mockRejectedValueOnce(new Error("offline"));
+    await expect(directory.ensure([third.pubkey])).rejects.toThrow("offline");
+    expect(directory.queries.unnamed?.()).toBe(absent);
+    // A profile that arrives later outranks the absence.
+    directory.accept([profile(other, { name: "Nu" })]);
+    expect(directory.queries.snapshot().get(other.pubkey)?.name).toBe("Nu");
+    expect(directory.queries.unnamed?.()).toEqual(new Set());
+    // Clearing forgets the evidence and tells subscribers so.
+    await directory.ensure([third.pubkey]);
+    expect(directory.queries.unnamed?.()).toEqual(new Set([third.pubkey]));
+    listener.mockClear();
+    directory.clear();
+    expect(directory.queries.unnamed?.()).toEqual(new Set());
+    expect(listener).toHaveBeenCalled();
+  } finally {
+    directory.dispose();
+  }
+});
+
+it("records no absence from a read that filled its page", async () => {
+  const other = keypair();
+  // A relay that keeps every kind 0 can fill the page from one author. The
+  // directory does not verify events, so older versions are cheap copies.
+  const head = profile(user, { name: "Mic" }, 1_700_000_500);
+  const versions = Array.from({ length: 500 }, (_, i) => ({
+    ...head,
+    id: i.toString(16).padStart(64, "0"),
+    created_at: head.created_at - i,
+  }));
+  const read = vi.fn(async () => versions);
+  const directory = createProfileDirectory({ read });
+  try {
+    await directory.ensure([user.pubkey, other.pubkey]);
+    expect(directory.queries.snapshot().get(user.pubkey)?.name).toBe("Mic");
+    expect(directory.queries.unnamed?.()).toEqual(new Set());
+    // One short of the limit is complete.
+    read.mockResolvedValueOnce(versions.slice(1));
+    await directory.ensure([other.pubkey]);
+    expect(directory.queries.unnamed?.()).toEqual(new Set([other.pubkey]));
   } finally {
     directory.dispose();
   }

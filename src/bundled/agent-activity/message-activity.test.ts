@@ -8,12 +8,6 @@ function fixture(): Snapshot {
   return {
     status: "listening",
     trimmed: 0,
-    history: "unavailable",
-    hasOlder: false,
-    historyOlder: false,
-    historySkipped: 0,
-    historyAgents: [],
-    capture: "off",
 
     typing: [],
     records: ["agent", "peer"].map((agent) => ({
@@ -22,7 +16,6 @@ function fixture(): Snapshot {
       kind: "turn_started",
       channelIds: ["channel"],
       receivedAt: 1000,
-      historical: false,
       createdAt: 1,
       plaintext: JSON.stringify({
         kind: "turn_started",
@@ -116,19 +109,41 @@ it("never uses typing as message association or resurrects an ended request", ()
   ).toEqual(["agent"]);
 });
 
-it("keeps restored starts out of live message bubbles even if a heartbeat has the same turn ID", () => {
-  const source = fixture();
+it("passes stoppable through from the chosen local row and hides it once stopped", () => {
+  const local = {
+    scope: "scope",
+    agent: "agent",
+    channelId: "channel",
+    messageId: request,
+    threadRootId: request,
+    startedAt: 1000,
+  } as const;
+  const source = (...rows: NonNullable<Snapshot["local"]>): Snapshot => ({
+    ...fixture(),
+    records: [],
+    turns: [],
+    local: rows,
+  });
+  const stoppable = { ...local, state: "working", stoppable: true } as const;
+  expect(
+    messageActivity(source(stoppable), "channel", request)[0],
+  ).toMatchObject({ state: "working", stoppable: true });
   expect(
     messageActivity(
-      {
-        ...source,
-        records: source.records.map((record) => ({
-          ...record,
-          historical: true,
-        })),
-      },
+      source({ ...local, state: "working" }),
       "channel",
       request,
-    ),
+    )[0]?.stoppable,
+  ).toBeUndefined();
+  expect(
+    messageActivity(source({ ...local, state: "stopped" }), "channel", request),
   ).toEqual([]);
+  // A stopped earlier attempt neither shows nor hides a live one on the same message.
+  expect(
+    messageActivity(
+      source({ ...local, state: "stopped" }, stoppable),
+      "channel",
+      request,
+    ).map(({ state, stoppable }) => [state, stoppable]),
+  ).toEqual([["working", true]]);
 });
