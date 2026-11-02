@@ -231,9 +231,14 @@ it("types into a mention-heavy draft without redrawing its chips, which still fo
   // A profile's name and kind reach the chip, which redraws for them alone.
   const [first] = people;
   if (!first) throw new Error("No people");
+  renders.mockClear();
   h.setProfiles(new Map([[first.pubkey, { name: "Renamed", isAgent: true }]]));
   expect(h.identities()).toEqual([
     "agent: Agent Renamed",
     ...people.slice(1).map((person) => `person: Person ${person.name}`),
   ]);
+  // Only the renamed chip drew (twice, under StrictMode).
+  expect(
+    new Set(renders.mock.calls.map(([props]) => props.address.id)),
+  ).toEqual(new Set([first.pubkey]));
 });
