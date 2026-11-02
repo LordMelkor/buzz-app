@@ -90,6 +90,13 @@ export function createMediaPreparation() {
   const active = new Set<HTMLImageElement>();
   const cancellations = new Map<HTMLImageElement, () => void>();
   const startedAt = new Map<string, number>();
+  // Settled loads are not repeated within the intent TTL: every prepare
+  // otherwise reloaded and re-decoded the same cached avatars (and 404s).
+  const settled = new Map<string, number>();
+  const isSettled = (url: string) => {
+    const at = settled.get(url);
+    return at !== undefined && Date.now() - at < INTENT_TTL_MS;
+  };
   let decoded = 0;
   let prefetched = 0;
   function pump() {
@@ -108,6 +115,12 @@ export function createMediaPreparation() {
         active.delete(image);
         cancellations.delete(image);
         pending.delete(url);
+        if (outcome !== "timeout" && outcome !== "cancelled") {
+          settled.delete(url);
+          settled.set(url, Date.now());
+          const oldest = settled.size > 4096 && settled.keys().next().value;
+          if (oldest) settled.delete(oldest);
+        }
         relayDebug(
           "avatar",
           outcome,
@@ -153,7 +166,7 @@ export function createMediaPreparation() {
       queue = [];
       for (const url of [...new Set(urls)].slice(0, 24)) {
         markIntended(url);
-        if (pending.has(url)) continue;
+        if (pending.has(url) || isSettled(url)) continue;
         pending.add(url);
         queue.push(url);
       }
@@ -165,7 +178,7 @@ export function createMediaPreparation() {
       if (disposed || saveData() || typeof Image === "undefined") return;
       for (const url of [...new Set(urls)]) {
         markIntended(url);
-        if (pending.has(url) || queue.includes(url)) continue;
+        if (pending.has(url) || isSettled(url) || queue.includes(url)) continue;
         if (queue.length >= 48) break;
         pending.add(url);
         queue.push(url);

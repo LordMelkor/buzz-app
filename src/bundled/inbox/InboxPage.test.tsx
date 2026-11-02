@@ -641,7 +641,7 @@ it("offers no Archive shortcut while Drafts is shown", async () => {
   await waitFor(() => expect(h.archive.current).toBeUndefined());
 });
 
-it("archives from the row without opening it, remembers filters, and clears an empty unread archive", async () => {
+it("archives from the row without opening it, remembers filters, and resets an empty archive's filters, then its Status", async () => {
   const h = fixture();
   const view = render(h.view);
   await waitFor(() => expect(rows()).toHaveLength(2));
@@ -668,14 +668,78 @@ it("archives from the row without opening it, remembers filters, and clears an e
   expect(rows()).toHaveLength(1);
   await chooseFilter("DMs");
   await screen.findByText("No archived conversations match Unread only");
-  fireEvent.click(
-    screen.getByRole("button", { name: "Show all archived conversations" }),
-  );
+  const filters = screen.getByRole("button", { name: "Inbox filters" });
+  // Clear filters resets Type, From and Unread only, keeping Archived.
+  fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+  await waitFor(() => expect(rows()).toHaveLength(1));
+  expect(filters).toHaveFocus();
+  expect(filters).toHaveTextContent(/^Archived$/);
   expect(screen.getByRole("button", { name: "Unread only" })).toHaveAttribute(
     "aria-pressed",
     "false",
   );
+
+  const [archived] = rows();
+  if (!archived) throw new Error("Missing archived row");
+  fireEvent.click(within(archived).getByRole("button", { name: /^Restore / }));
+  await screen.findByText("No archived conversations in this view");
+  expect(
+    screen.queryByRole("button", { name: "Clear filters" }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Show Inbox" }));
+  await waitFor(() => expect(rows()).toHaveLength(2));
+  expect(filters).toHaveFocus();
+  expect(filters).toHaveTextContent(/^All$/);
+
+  // An unfiltered, empty Inbox has nothing to reset.
+  for (const remaining of [1, 0]) {
+    const [row] = rows();
+    if (!row) throw new Error("Missing Inbox row");
+    const action = within(row).getByRole("button", { name: /^Archive / });
+    await waitFor(() => expect(action).toBeEnabled());
+    fireEvent.click(action);
+    await waitFor(() => expect(rows()).toHaveLength(remaining));
+  }
+  const empty = await screen.findByText("No recent activity in this view");
+  const status = empty.closest<HTMLElement>('[role="status"]');
+  if (!status) throw new Error("Missing empty state");
+  expect(within(status).queryAllByRole("button")).toEqual([]);
 });
+
+it.each([
+  ["DMs", "Activity type"],
+  ["Agents", "Sender"],
+  ["Unread only", "Attention"],
+] as const)(
+  "offers Clear filters when %s empties Inbox, keeping Status",
+  async (label, control) => {
+    const h = fixture();
+    render(h.view);
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    if (control === "Attention")
+      await act(async () => {
+        await h.owner.session.unread.markChannelRead("room");
+      });
+    await chooseFilter(label, control);
+    await screen.findByText(
+      control === "Attention"
+        ? "No unread activity in this view"
+        : "No recent activity in this view",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Show Inbox" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    const filters = screen.getByRole("button", { name: "Inbox filters" });
+    expect(filters).toHaveFocus();
+    expect(filters).toHaveTextContent(/^All$/);
+    expect(screen.getByRole("button", { name: "Unread only" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  },
+);
 
 it.each([
   ["button", true],

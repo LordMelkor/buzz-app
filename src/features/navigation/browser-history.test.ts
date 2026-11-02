@@ -254,6 +254,21 @@ it("invalid addresses settle failure, including retry, until explicit navigation
   });
   controller.dispose();
 });
+it("counts Back/Forward as traversal, not an edited address", () => {
+  const b = browser();
+  const controller = createNavigationController(createBrowserHistory(b.host));
+  const nav = controller.navigation;
+  b.edit(hash(settings));
+  expect(nav.snapshot().entry.target).toEqual(settings);
+  expect(nav.snapshot().attempt.traversal).toBeUndefined();
+  nav.back();
+  expect(nav.snapshot().entry.target).toEqual(homeTarget);
+  expect(nav.snapshot().attempt.traversal).toBe(true);
+  nav.forward();
+  expect(nav.snapshot().entry.target).toEqual(settings);
+  expect(nav.snapshot().attempt.traversal).toBe(true);
+  controller.dispose();
+});
 it("the URL overrides a mismatched restored stamp", () => {
   const b = browser();
   createBrowserHistory(b.host).dispose();

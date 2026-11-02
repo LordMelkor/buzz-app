@@ -86,10 +86,11 @@ async function frame() {
     }
   });
 }
-function mount(bottom = false, revealOnMount = false) {
+function mount(bottom = false, revealOnMount = false, anchorLoaded = true) {
   const viewer = keypair(),
     relay = keypair();
   const target = message(viewer, "c", "Saved reading anchor", 1);
+  const earlier = message(viewer, "c", "Earlier message", 0);
   const owner = createRelaySession(
     scriptedTransport(viewer.pubkey, relay.pubkey).transport,
   );
@@ -106,20 +107,18 @@ function mount(bottom = false, revealOnMount = false) {
     hasMore: false,
     loadingOlder: false,
     error: undefined,
-    rows: [
-      {
-        id: target.id,
-        channelId: "c",
-        authorId: viewer.pubkey,
-        content: target.content,
-        createdAt: 1,
-        mentions: [],
-        participants: [],
-        attachments: [],
-        reactions: [],
-        replyCount: 0,
-      },
-    ],
+    rows: [anchorLoaded ? target : earlier].map((event) => ({
+      id: event.id,
+      channelId: "c",
+      authorId: viewer.pubkey,
+      content: event.content,
+      createdAt: event.created_at,
+      mentions: [],
+      participants: [],
+      attachments: [],
+      reactions: [],
+      replyCount: 0,
+    })),
   };
   const tree = (snapshot: ChannelWindow, revealMessageId?: string) => (
     <StrictMode>
@@ -149,6 +148,16 @@ function mount(bottom = false, revealOnMount = false) {
   return {
     saved: { offset: 900, bottom, anchor: { id: target.id, y: 42 } },
     unmount: result.unmount,
+    /** A reload never runs unmount cleanup; reopen from what storage holds. */
+    reload() {
+      const write = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(() => {});
+      result.unmount();
+      write.mockRestore();
+      scroll.toIndex.mockClear();
+      render(tree(window));
+    },
     reveal() {
       result.rerender(tree(sentWindow, sent.id));
     },
@@ -164,6 +173,12 @@ function mount(bottom = false, revealOnMount = false) {
       // An older-history page lands while the sent row is still revealing.
       result.rerender(
         tree({ ...sentWindow, rows: [older, ...sentWindow.rows] }, sent.id),
+      );
+    },
+    /** The network head lands after the saved head, with the saved row in it. */
+    loadAnchor() {
+      result.rerender(
+        tree({ ...window, rows: [first, { ...first, id: target.id }] }),
       );
     },
     replaceAnchor() {
@@ -582,7 +597,7 @@ it.each([false, true])(
     fireEvent.scroll(feed);
     h.unmount();
     expect(readView("scope", "scroll:c", null)).toEqual(
-      readerInput ? { offset: 900, bottom: false } : h.saved,
+      readerInput ? { bottom: false } : h.saved,
     );
   },
 );
@@ -1000,8 +1015,217 @@ it("scroll completion saves row geometry measured after the last scroll event", 
   fireEvent(region, new Event("scrollend"));
   h.unmount();
   expect(readView("scope", "scroll:c", null)).toEqual({
-    offset: 0,
     bottom: false,
     anchor: { id: h.saved.anchor.id, y: 142 },
   });
+});
+
+it("catching up saves the bottom once scrolling settles, so a reload opens at the latest message", async () => {
+  const h = mount();
+  await frame();
+  expect(scroll.toIndex).toHaveBeenLastCalledWith(0, {
+    align: "start",
+    offset: -42,
+  });
+  const region = screen.getByRole("region", {
+    name: "Channel message history",
+  });
+  fireEvent.wheel(region, { deltaY: 600 });
+  for (const top of [700, 1100, 1400]) {
+    region.scrollTop = top;
+    fireEvent.scroll(region);
+  }
+  // Scroll events update the place in memory only.
+  expect(readView("scope", "scroll:c", null)).toEqual(h.saved);
+  fireEvent(region, new Event("scrollend"));
+  expect(readView("scope", "scroll:c", null)).toMatchObject({ bottom: true });
+  h.reload();
+  await frame();
+  expect(scroll.toIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+  expect(scroll.toIndex).not.toHaveBeenCalledWith(0, {
+    align: "start",
+    offset: -42,
+  });
+});
+
+it.each(["scrollend", "pagehide"])(
+  "a reload reopens the message a reader stopped at, at the same y, saved on %s",
+  async (save) => {
+    const h = mount(true);
+    await frame();
+    const region = screen.getByRole("region", {
+      name: "Channel message history",
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        return new DOMRect(0, this.closest("ol") ? 120 : 0, 800, 100);
+      },
+    );
+    fireEvent.wheel(region, { deltaY: -400 });
+    region.scrollTop = 400;
+    fireEvent.scroll(region);
+    if (save === "scrollend") fireEvent(region, new Event("scrollend"));
+    else fireEvent(window, new Event("pagehide"));
+    h.reload();
+    await frame();
+    expect(scroll.toIndex).toHaveBeenLastCalledWith(0, {
+      align: "start",
+      offset: -120,
+    });
+  },
+);
+
+it("a saved row missing from the first rows stays pending: the reader follows, scrollend keeps the place, and its arrival restores it", async () => {
+  const h = mount(false, false, false);
+  await frame();
+  expect(scroll.toIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+  expect(scroll.toOffset).not.toHaveBeenCalled();
+  const region = screen.getByRole("region", {
+    name: "Channel message history",
+  });
+  // The timeline's own scroll to the end settles; the saved place survives it.
+  region.scrollTop = 1400;
+  fireEvent.scroll(region);
+  fireEvent(region, new Event("scrollend"));
+  expect(readView("scope", "scroll:c", null)).toEqual(h.saved);
+  scroll.toIndex.mockClear();
+  h.loadAnchor();
+  await frame();
+  expect(scroll.toIndex).toHaveBeenLastCalledWith(1, {
+    align: "start",
+    offset: -42,
+  });
+});
+
+/** A focused reader reopening at a saved row the first rows do not hold yet. */
+async function pendingReader() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 800, 500),
+  );
+  vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([
+    new DOMRect(0, 0, 800, 500),
+  ] as unknown as DOMRectList);
+  const owner = createRelaySession(null);
+  owners.push(owner);
+  const catchUp = vi.fn(async () => {}),
+    observe = vi.fn(async () => {});
+  const sync = {
+    ...owner.session.unread.sync(),
+    capability: "frontier-sync" as const,
+  };
+  const session = {
+    ...owner.session,
+    unread: {
+      ...owner.session.unread,
+      sync: () => sync,
+      reading: () => ({ view: () => {}, dispose: () => {}, observe, catchUp }),
+    },
+  };
+  const base = {
+    channelId: "c",
+    authorId: "a".repeat(64),
+    content: "Message",
+    createdAt: 1,
+    mentions: [],
+    participants: [],
+    attachments: [],
+    reactions: [],
+    replyCount: 0,
+  };
+  const tree = (rows: ChannelWindow["rows"]) => (
+    <ChannelTimeline
+      channelId="c"
+      scope="read-restore"
+      queries={session}
+      window={{
+        channelId: "c",
+        status: "ready",
+        freshness: "cached",
+        error: undefined,
+        hasMore: false,
+        loadingOlder: false,
+        rows,
+      }}
+      onOpenLink={() => false}
+    />
+  );
+  writeView("read-restore", "scroll:c", {
+    bottom: false,
+    anchor: { id: "saved", y: 42 },
+  });
+  const latest = { ...base, id: "latest" };
+  const view = render(tree([latest]));
+  await frame();
+  await frame();
+  expect(scroll.toIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+  const history = screen.getByRole("region", {
+    name: "Channel message history",
+  });
+  await act(async () => {
+    history.focus();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    vi.advanceTimersByTime(300);
+  });
+  return {
+    history,
+    catchUp,
+    observe,
+    load() {
+      view.rerender(tree([{ ...base, id: "saved", createdAt: 0 }, latest]));
+    },
+  };
+}
+
+it("following the latest message while a saved row loads reads the rows shown, but does not catch up past the saved row", async () => {
+  try {
+    const h = await pendingReader();
+    expect(h.observe).toHaveBeenCalledWith(["latest"]);
+    expect(h.catchUp).not.toHaveBeenCalled();
+    scroll.toIndex.mockClear();
+    h.load();
+    await frame();
+    expect(scroll.toIndex).toHaveBeenLastCalledWith(0, {
+      align: "start",
+      offset: -42,
+    });
+    expect(h.catchUp).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("reader input retires a loading saved row, so a dwell at the latest message catches up", async () => {
+  try {
+    const h = await pendingReader();
+    expect(h.catchUp).not.toHaveBeenCalled();
+    fireEvent.keyDown(h.history, { key: "ArrowDown" });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(h.catchUp).toHaveBeenCalledWith("latest", undefined);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("a wheel at the bottom that cannot scroll still retires a loading saved row, so the next dwell catches up", async () => {
+  try {
+    const h = await pendingReader();
+    expect(h.catchUp).not.toHaveBeenCalled();
+    // The reader is already at the end: the wheel moves nothing and emits no
+    // scroll event, so only the retired restore can wake the dwell.
+    fireEvent.wheel(h.history, { deltaY: 100 });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(h.catchUp).toHaveBeenCalledWith("latest", undefined);
+  } finally {
+    vi.useRealTimers();
+  }
 });

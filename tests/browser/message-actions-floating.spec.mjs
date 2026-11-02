@@ -258,14 +258,18 @@ for (const own of [false, true]) {
       { steps: 30 },
     );
     await shown(actions);
-    await target.click();
-    await expect(page.getByRole("menu")).toBeVisible();
-    await actions.evaluate((bar) =>
-      Promise.all(bar.getAnimations().map((animation) => animation.finished)),
-    );
     const anchored = await actions.evaluate((bar) =>
       bar.getBoundingClientRect().toJSON(),
     );
+    await target.click();
+    await expect(page.getByRole("menu")).toBeVisible();
+    // Opening the menu replays the bar's entry animation, which animates its
+    // gap; the bar returns to its resting width and place a frame after it.
+    await expect
+      .poll(() =>
+        actions.evaluate((bar) => bar.getBoundingClientRect().toJSON()),
+      )
+      .toEqual(anchored);
     // The open menu's backdrop owns this point; use real pointer travel rather
     // than asking Playwright to hover the intentionally covered caption.
     const coveredCaption = await caption.boundingBox();

@@ -859,17 +859,20 @@ function InboxList({
     if (failure || pending || document.activeElement !== document.body) return;
     fallbackControl.current?.focus({ preventScroll: true });
   }, [failure, pending]);
+  function showView(value: ShowFilter) {
+    if (value === show) return;
+    cancelRetry();
+    setSelectedTarget(undefined);
+    setFilter({ show: value });
+  }
+  const filtered =
+    activity !== "all" || senderFilter !== "everyone" || unreadOnly;
   const toolbar = (
     <header className={styles.toolbar}>
       <InboxFilters
         view={drafts ? "drafts" : activity}
         show={show}
-        onShowChange={(value) => {
-          if (value === show) return;
-          cancelRetry();
-          setSelectedTarget(undefined);
-          setFilter({ show: value });
-        }}
+        onShowChange={showView}
         sender={senderFilter}
         unreadOnly={unreadOnly}
         triggerRef={fallbackControl}
@@ -989,13 +992,23 @@ function InboxList({
                           : "Mentions, direct messages, and replies in threads you participate in appear here."
                       }
                       action={
-                        show === "archived" && unreadOnly ? (
+                        filtered || show === "archived" ? (
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => setFilter({ attention: "all" })}
+                            onClick={() => {
+                              // Status stays; an unfiltered archive returns to Inbox.
+                              if (filtered)
+                                setFilter({
+                                  activity: "all",
+                                  sender: "everyone",
+                                  attention: "all",
+                                });
+                              else showView("inbox");
+                              fallbackControl.current?.focus();
+                            }}
                           >
-                            Show all archived conversations
+                            {filtered ? "Clear filters" : "Show Inbox"}
                           </Button>
                         ) : undefined
                       }

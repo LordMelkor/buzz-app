@@ -424,46 +424,55 @@ test("capsule and companion presentation share mute and leave", async ({
           .map((animation) => animation.finished),
       );
     });
-    // A spring can briefly cross its final size before overshooting. Wait for
-    // Motion to remove the arrival/layout transform, not that transient crossing.
+    // A spring can briefly cross its final size before overshooting, and
+    // Motion can put a sub-pixel transform back on a settled avatar for a
+    // frame or two. Measure in the frame that shows no avatar transform, not
+    // a later one; a separate poll could pass and the snapshot still land on
+    // such a frame.
+    let geometry;
     await expect
-      .poll(() =>
-        roster.evaluate((el) =>
-          [...el.querySelectorAll("[data-huddle-avatar]")].every(
-            (avatar) => getComputedStyle(avatar).transform === "none",
-          ),
-        ),
+      .poll(
+        async () => {
+          geometry = await roster.evaluate((el) => {
+            if (
+              [...el.querySelectorAll("[data-huddle-avatar]")].some(
+                (avatar) => getComputedStyle(avatar).transform !== "none",
+              )
+            )
+              return null;
+            const area = el.getBoundingClientRect();
+            const bounds = (node) => {
+              const rect = node.getBoundingClientRect();
+              return {
+                left: rect.left - area.left,
+                top: rect.top - area.top,
+                right: rect.right - area.left,
+                bottom: rect.bottom - area.top,
+                center: rect.left + rect.width / 2 - area.left,
+              };
+            };
+            return {
+              width: area.width,
+              height: area.height,
+              self: bounds(el.querySelector("[data-self]")),
+              portraitGaps: [
+                ...el.querySelectorAll("[data-self], [data-participant]"),
+              ].map((person) =>
+                Math.abs(
+                  person.getBoundingClientRect().height -
+                    person
+                      .querySelector("[data-huddle-avatar]")
+                      .getBoundingClientRect().height,
+                ),
+              ),
+              peers: [...el.querySelectorAll("[data-participant]")].map(bounds),
+            };
+          });
+          return geometry !== null;
+        },
+        { message: "every huddle avatar settles with no transform" },
       )
       .toBe(true);
-    const geometry = await roster.evaluate((el) => {
-      const area = el.getBoundingClientRect();
-      const bounds = (node) => {
-        const rect = node.getBoundingClientRect();
-        return {
-          left: rect.left - area.left,
-          top: rect.top - area.top,
-          right: rect.right - area.left,
-          bottom: rect.bottom - area.top,
-          center: rect.left + rect.width / 2 - area.left,
-        };
-      };
-      return {
-        width: area.width,
-        height: area.height,
-        self: bounds(el.querySelector("[data-self]")),
-        portraitGaps: [
-          ...el.querySelectorAll("[data-self], [data-participant]"),
-        ].map((person) =>
-          Math.abs(
-            person.getBoundingClientRect().height -
-              person
-                .querySelector("[data-huddle-avatar]")
-                .getBoundingClientRect().height,
-          ),
-        ),
-        peers: [...el.querySelectorAll("[data-participant]")].map(bounds),
-      };
-    });
     const portraits = [geometry.self, ...geometry.peers];
     if (portraits.length > 3) {
       expect(geometry.self.center).toBeCloseTo(geometry.width / 2, 0);

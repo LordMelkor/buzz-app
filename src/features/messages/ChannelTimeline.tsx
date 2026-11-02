@@ -87,7 +87,6 @@ function scrollsHistoryUp(event: KeyboardEvent<HTMLElement>): boolean {
 }
 
 type ReadingPosition = {
-  offset: number;
   bottom: boolean;
   anchor?: { id: string; y: number };
 };
@@ -120,7 +119,6 @@ function positionAt(
     }) ??
     mounted.find((row) => row.getBoundingClientRect().bottom > top);
   return {
-    offset: element.scrollTop,
     bottom:
       element.scrollHeight - element.clientHeight - element.scrollTop < 80,
     ...(row?.dataset.messageId
@@ -216,7 +214,24 @@ function Timeline({
       : readView<ReadingPosition | null>(scope, `scroll:${channelId}`, null),
   );
   const savedPosition = useRef(initialPosition);
+  // Reload and quit never unmount: also save where scrolling settles. Only a
+  // changed place is written; a following reader's own end scrolls are not.
+  const written = useRef<string | undefined>(undefined);
+  const savePosition = useCallback(() => {
+    // A bottom place restores at the latest message; its row is noise.
+    const place = savedPosition.current?.bottom
+      ? { bottom: true }
+      : savedPosition.current;
+    const revision = JSON.stringify(place);
+    if (transient || revision === written.current) return;
+    if (writeView(scope, `scroll:${channelId}`, place))
+      written.current = revision;
+  }, [channelId, scope, transient]);
   const restoredAnchor = useRef<ReadingPosition["anchor"]>(undefined);
+  // The intent under which a saved row absent from the loaded rows still waits
+  // for them: the saved IndexedDB head precedes the network head and notice
+  // rows. The reader follows the bottom meanwhile; their input retires it.
+  const pendingRestore = useRef<number | undefined>(undefined);
   const profiles = useRowProfiles(queries.profiles, window.rows);
   const agentPubkeys = useKnownAgentPubkeys(queries, profiles);
   const visibleRows = useMemo(
@@ -531,7 +546,8 @@ function Timeline({
       // Restoration can scroll before Virtua measures rows beneath the anchor,
       // briefly reaching the estimated bottom. Only reader input may follow.
       if (restoredAnchor.current) position.bottom = false;
-      savedPosition.current = position;
+      if (pendingRestore.current !== intent.current)
+        savedPosition.current = position;
       follow.current = position.bottom;
       measuredPosition.current = {
         offset: element.scrollTop,
@@ -642,11 +658,18 @@ function Timeline({
     complete: completeTarget,
     hold: holdTarget,
   });
+  // A pending saved row is the reader's place: following the latest message
+  // until it loads is not catching up past it.
+  const restoring = useCallback(
+    () => pendingRestore.current === intent.current,
+    [],
+  );
   useReading({
     session: queries,
     channelId,
     scroller,
     settled,
+    restoring,
     latestMessageId: window.rows
       .filter((row) => !row.membership && !row.huddle)
       .at(-1)?.id,
@@ -852,6 +875,8 @@ function Timeline({
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     if (edge.current) observer.observe(edge.current);
+    const page = element.ownerDocument.defaultView;
+    page?.addEventListener("pagehide", savePosition);
     return () => {
       if (gestureFrame.current !== undefined)
         cancelAnimationFrame(gestureFrame.current);
@@ -859,8 +884,8 @@ function Timeline({
       upwardGesture.current = false;
       olderDemand.current = false;
       settled.current = false;
-      if (!transient)
-        writeView(scope, `scroll:${channelId}`, savedPosition.current);
+      page?.removeEventListener("pagehide", savePosition);
+      savePosition();
       observer.disconnect();
       if (handle.current)
         geometry.set(
@@ -871,7 +896,7 @@ function Timeline({
         );
     };
     // Initial signature only; mutations invalidate the saved cache on remount.
-  }, [channelId, geometry, scope, transient]);
+  }, [channelId, geometry, savePosition]);
   // A reveal completes when its scroll runs. Until then it stays pending under
   // the intent that scheduled it: a row update that cancels its frame (an echo,
   // an edit, an older-history prepend) reschedules it, while any newer intent
@@ -941,7 +966,10 @@ function Timeline({
       !size.width ||
       !size.height ||
       !rows.length ||
-      (revealIndex < 0 && settled.current && (!follow.current || prepend))
+      (revealIndex < 0 &&
+        settled.current &&
+        (!follow.current ||
+          (prepend && pendingRestore.current !== intent.current)))
     )
       return;
     // A send supersedes saved reading intent before the first scroll event.
@@ -951,7 +979,7 @@ function Timeline({
       pendingReveal.current = { id: revealMessageId, intent: intent.current };
       follow.current = true;
       restoredAnchor.current = undefined;
-      savedPosition.current = { offset: 0, bottom: true };
+      savedPosition.current = { bottom: true };
       measuredPosition.current = null;
       userScrolled.current = false;
       upwardGesture.current = false;
@@ -959,49 +987,58 @@ function Timeline({
     // virtua attaches its scroller in an effect; wait through the StrictMode probe.
     // A new gesture wins over restoration queued before that gesture.
     const scheduledIntent = intent.current;
-    const restore =
-      !settled.current && savedPosition.current && !savedPosition.current.bottom
+    const saved =
+      (!settled.current || pendingRestore.current === scheduledIntent) &&
+      savedPosition.current &&
+      !savedPosition.current.bottom
         ? savedPosition.current
         : null;
+    const anchor = saved?.anchor;
+    const restoreIndex = anchor
+      ? rows.findIndex(
+          (row) =>
+            row.id === (containedOwners.get(anchor.id) ?? anchor.id) ||
+            row.membershipRows?.some((member) => member.id === anchor.id),
+        )
+      : -1;
+    // Only a loaded row is a place to return to. Until it loads, an opening
+    // reader follows the latest message and the saved row stays pending; a
+    // place without a row to wait for is forgotten. A placed reader stays put.
+    const restore = restoreIndex >= 0 ? saved : null;
+    if (saved && !restore && follow.current) {
+      if (anchor) pendingRestore.current = scheduledIntent;
+      else savedPosition.current = { bottom: true };
+    }
     let observer: MutationObserver | undefined;
     const restorePosition = () => {
       if (intent.current !== scheduledIntent || !handle.current) return;
-      if (restore) {
-        const anchor = restore.anchor;
-        const index = anchor
-          ? rows.findIndex(
-              (row) =>
-                row.id === (containedOwners.get(anchor.id) ?? anchor.id) ||
-                row.membershipRows?.some((member) => member.id === anchor.id),
+      const row = rows[restoreIndex];
+      if (anchor && row) {
+        pendingRestore.current = undefined;
+        restoredAnchor.current = {
+          id: containedOwners.has(anchor.id) ? anchor.id : row.id,
+          y: anchor.y,
+        };
+        const element = scroller.current;
+        const target = containedOwners.has(anchor.id)
+          ? element?.querySelector<HTMLElement>(
+              `[data-message-id="${CSS.escape(anchor.id)}"]`,
             )
-          : -1;
-        const row = rows[index];
-        if (anchor && row) {
-          restoredAnchor.current = {
-            id: containedOwners.has(anchor.id) ? anchor.id : row.id,
-            y: anchor.y,
-          };
-          const element = scroller.current;
-          const target = containedOwners.has(anchor.id)
-            ? element?.querySelector<HTMLElement>(
-                `[data-message-id="${CSS.escape(anchor.id)}"]`,
-              )
-            : undefined;
-          // A contained step shares its virtual row with earlier history.
-          // Once mounted, include that inner offset in the saved placement.
-          const innerOffset =
-            target && element
-              ? target.getBoundingClientRect().top -
-                element.getBoundingClientRect().top +
-                element.scrollTop -
-                size.edgeHeight -
-                handle.current.getItemOffset(index)
-              : 0;
-          handle.current.scrollToIndex(index, {
-            align: "start",
-            offset: innerOffset - anchor.y,
-          });
-        } else handle.current.scrollTo(restore.offset);
+          : undefined;
+        // A contained step shares its virtual row with earlier history.
+        // Once mounted, include that inner offset in the saved placement.
+        const innerOffset =
+          target && element
+            ? target.getBoundingClientRect().top -
+              element.getBoundingClientRect().top +
+              element.scrollTop -
+              size.edgeHeight -
+              handle.current.getItemOffset(restoreIndex)
+            : 0;
+        handle.current.scrollToIndex(restoreIndex, {
+          align: "start",
+          offset: innerOffset - anchor.y,
+        });
         follow.current = false;
       } else if (follow.current) {
         layoutCorrection.current = true;
@@ -1146,11 +1183,15 @@ function Timeline({
       loadNearTop(scroller.current, true);
   }, [loadNearTop]);
   const gesture = (upward = false) => {
+    const restoring = pendingRestore.current === intent.current;
     restoredAnchor.current = undefined;
     layoutCorrection.current = false;
     intent.current++;
     userScrolled.current = true;
     if (scroller.current) recordPosition(scroller.current);
+    // Retiring a pending restore lets the bottom be caught up. Wake dwell: a
+    // wheel or touch at the end cannot scroll, so nothing else would.
+    if (restoring) readingPositioned(scroller.current);
     upwardGesture.current = upward ? "candidate" : false;
     if (gestureFrame.current !== undefined)
       cancelAnimationFrame(gestureFrame.current);
@@ -1228,6 +1269,7 @@ function Timeline({
             layoutCorrection.current && !pointerHeld.current,
           );
         upwardGesture.current = false;
+        savePosition();
       }}
       onFocus={(event) => {
         setFocusedActivityId(
@@ -1321,6 +1363,7 @@ function Timeline({
               element.clientHeight === size.height &&
               !follow.current &&
               !restoredAnchor.current &&
+              pendingRestore.current !== intent.current &&
               heldReader.current?.intent !== intent.current
             )
               // A size change refreshes geometry, never bottom-follow intent.

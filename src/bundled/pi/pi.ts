@@ -2,6 +2,8 @@
 // something needs it, spoken to over stdio, one JSON message a line. Requests
 // go both ways: the plugin asks the host to run turns, and the host asks the
 // plugin to run the Buzz tools, so the process holds no Buzz key.
+import type { AgentProtection } from "../../features/agent-protection/service";
+import { protectionEnvironment } from "../../features/agent-protection/native-bridge";
 import type { Context } from "../../buzz-mcp/client";
 import type {
   HostProcess,
@@ -44,7 +46,7 @@ export type PiHookCall = Readonly<{
 }>;
 type Handlers = Readonly<{
   hook?(call: PiHookCall): Promise<unknown>;
-  tool(call: ToolCall): Promise<ToolResult>;
+  tool(call: ToolCall, signal: AbortSignal): Promise<ToolResult>;
   event(event: PiEvent): void;
   prompt?(call: {
     agent: string;
@@ -78,7 +80,23 @@ type Message = {
   result?: unknown;
   error?: string;
 };
+type RuntimeInfo = {
+  file: string;
+  node: string;
+  codeRoot: string;
+  nodeRoot: string;
+  data: string;
+  auth: string;
+};
+type ProtectedLaunch = {
+  agent: string;
+  gate: AgentProtection;
+  runtime: () => Promise<RuntimeInfo>;
+};
 type Connection = {
+  lifetime: AbortController;
+  /** Security checks and tool calls the host can cancel, by request id. */
+  checks: Map<number | string, AbortController>;
   process: HostProcess;
   calls: Map<
     number,
@@ -92,14 +110,61 @@ export class Pi {
   private connection: Promise<Connection> | undefined;
   private requests = 0;
   private stopped = false;
+  private hosts = new Map<
+    string,
+    Promise<{ key: string; pi: Pi | undefined }>
+  >();
 
   constructor(
     private readonly spawn: () => Spawn,
     private readonly handlers: Handlers,
+    private readonly protection?: (
+      agent: string,
+    ) => AgentProtection | undefined,
+    private readonly protectedLaunch?: ProtectedLaunch,
   ) {}
 
   /** Asks the host, starting it first if it is not running. */
   async request<T>(method: string, params: object = {}): Promise<T> {
+    if (this.stopped) throw new Error("Pi has stopped");
+    const agent = (params as { agent?: string }).agent;
+    if (agent && this.protection) {
+      const gate = this.protection(agent);
+      gate?.assertAvailable();
+      const prior = this.hosts.get(agent);
+      const next = (async () => {
+        const previous = await prior?.catch(() => undefined);
+        if (previous?.key === (gate?.key ?? "")) return previous;
+        if (previous?.pi) await previous.pi.dispose();
+        else if (this.connection) await this.rawRequest("close", { agent });
+        const pi = gate
+          ? new Pi(this.spawn, this.handlers, undefined, {
+              agent,
+              gate,
+              runtime: () => this.rawRequest<RuntimeInfo>("runtime"),
+            })
+          : undefined;
+        return { key: gate?.key ?? "", pi };
+      })();
+      this.hosts.set(agent, next);
+      const child = (await next).pi;
+      if (child) return child.request<T>(method, params);
+    }
+    return this.rawRequest<T>(method, params);
+  }
+  /** Ends the old worker without resolving a possibly newer policy first. */
+  async retire(agent: string) {
+    const prior = this.hosts.get(agent);
+    const retired = (async () => {
+      const previous = await prior?.catch(() => undefined);
+      if (previous?.pi) await previous.pi.dispose();
+      else if (this.connection) await this.rawRequest("close", { agent });
+      return { key: "retired", pi: undefined };
+    })();
+    this.hosts.set(agent, retired);
+    await retired;
+  }
+  private async rawRequest<T>(method: string, params: object = {}): Promise<T> {
     const connection = await this.connect();
     if (connection.gone) throw connection.gone;
     const id = ++this.requests;
@@ -120,8 +185,16 @@ export class Pi {
   /** Stops the host: it closes each agent's storage, then it is killed. */
   async dispose() {
     this.stopped = true;
+    await Promise.all(
+      [...this.hosts.values()].map(async (pending) =>
+        (await pending.catch(() => undefined))?.pi?.dispose(),
+      ),
+    );
+    this.hosts.clear();
     const connection = await this.connection?.catch(() => undefined);
     if (!connection || connection.gone) return;
+    connection.lifetime.abort();
+    for (const check of connection.checks.values()) check.abort();
     await connection.process.end().catch(() => undefined);
     const timer = setTimeout(() => void connection.process.kill(), STOP_MS);
     await connection.process.exited;
@@ -153,11 +226,17 @@ export class Pi {
     let buffer = "";
     let stderr = "";
     const connection: Connection = {
+      lifetime: new AbortController(),
+      checks: new Map(),
       calls: new Map(),
       process: undefined as unknown as HostProcess,
     };
     const handle = (message: Message) => {
-      if (message.method === "ready") ready();
+      if (message.method === "security_cancel") {
+        connection.checks.get((message.params as { id: string }).id)?.abort();
+      } else if (message.method === "security" && message.id !== undefined) {
+        void this.security(connection, message.id, message.params);
+      } else if (message.method === "ready") ready();
       else if (message.method === "event")
         this.handlers.event(message.params as PiEvent);
       else if (
@@ -183,9 +262,70 @@ export class Pi {
     // its packages go on stdin: together they are past Windows' 32 KB
     // command line.
     const windows = /^Win/i.test(globalThis.navigator?.platform ?? "");
-    const starting = this.spawn()(windows ? "node" : "pi-sh", {
-      args: windows ? [launch] : [script, "pi.sh", launch],
-      cwd: "~",
+    const protectedLaunch = this.protectedLaunch;
+    protectedLaunch?.gate.assertAvailable();
+    const runtime = protectedLaunch && (await protectedLaunch.runtime());
+    if (
+      runtime &&
+      (!runtime.node.startsWith("/") ||
+        !runtime.file.startsWith("/") ||
+        !runtime.codeRoot.startsWith("/") ||
+        !runtime.nodeRoot.startsWith("/") ||
+        !runtime.data.startsWith("/") ||
+        !runtime.auth.startsWith("/"))
+    )
+      throw new Error("Invalid protected Pi runtime");
+    const boot =
+      runtime && protectedLaunch
+        ? `
+      import {createHash} from 'node:crypto';
+      import {join} from 'node:path';
+      import {pathToFileURL} from 'node:url';
+      import {builtinModels} from '@earendil-works/pi-ai/providers/all';
+      const {AuthFile,serve}=await import(pathToFileURL(${JSON.stringify(runtime.file)}).href);
+      const key=createHash('sha256').update(${JSON.stringify(protectedLaunch.gate.stateKey)}).digest('hex');
+      const {stop}=serve({data:join(${JSON.stringify(runtime.data)},'protected-v1',key),dir:${JSON.stringify(runtime.auth)},protectedAgent:${JSON.stringify(protectedLaunch.agent)},models:builtinModels({credentials:new AuthFile(join(${JSON.stringify(runtime.auth)},'auth.json'))})});
+      process.on('SIGTERM',stop);
+    `
+        : undefined;
+    const processId = boot ? "pi-protected-sh" : windows ? "node" : "pi-sh";
+    const starting = this.spawn()(processId, {
+      args:
+        boot && runtime
+          ? [
+              'exec "$1" --disable-sigusr1 --input-type=module -e "$2"',
+              "buzz-pi-protected",
+              runtime.node,
+              boot,
+            ]
+          : windows
+            ? [launch]
+            : [script, "pi.sh", launch],
+      cwd: runtime ? runtime.file.slice(0, runtime.file.lastIndexOf("/")) : "~",
+      ...(runtime && protectedLaunch
+        ? {
+            env: {
+              ...protectionEnvironment(protectedLaunch.gate),
+              BASH_ENV: null,
+              ENV: null,
+              NODE_OPTIONS: null,
+              NODE_PATH: null,
+              DYLD_INSERT_LIBRARIES: null,
+              DYLD_LIBRARY_PATH: null,
+              DYLD_FRAMEWORK_PATH: null,
+              LD_PRELOAD: null,
+              LD_LIBRARY_PATH: null,
+            },
+            protection: {
+              readOnlyPaths: [
+                ...protectedLaunch.gate.processProtection.readOnlyPaths,
+                runtime.codeRoot,
+                runtime.nodeRoot,
+              ],
+              hiddenPaths: protectedLaunch.gate.processProtection.hiddenPaths,
+            },
+          }
+        : {}),
       onStdout: (data) => {
         buffer += data;
         let newline = buffer.indexOf("\n");
@@ -213,13 +353,17 @@ export class Pi {
           )
         : error;
     });
-    void connection.process
-      .write(
-        `${JSON.stringify({ host, package: packageJson, lock: packageLock })}\n`,
-      )
-      // A host that never has its source waits for it; it stops instead.
-      .catch(() => void connection.process.kill().catch(() => undefined));
+    if (!protectedLaunch)
+      void connection.process
+        .write(
+          `${JSON.stringify({ host, package: packageJson, lock: packageLock })}\n`,
+        )
+        // A host that never has its source waits for it; it stops instead.
+        .catch(() => void connection.process.kill().catch(() => undefined));
     void connection.process.exited.then((code) => {
+      connection.lifetime.abort();
+      for (const check of connection.checks.values()) check.abort();
+      connection.checks.clear();
       // Before it is ready, its last words are why it could not start, such
       // as Node missing.
       const why = cause(stderr);
@@ -239,6 +383,42 @@ export class Pi {
     return connection;
   }
 
+  private async security(
+    connection: Connection,
+    id: number | string,
+    raw: unknown,
+  ) {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([
+      controller.signal,
+      connection.lifetime.signal,
+    ]);
+    if (connection.checks.has(id)) {
+      await connection.process.kill();
+      return;
+    }
+    connection.checks.set(id, controller);
+    let allowed = false;
+    try {
+      const request = raw as {
+        agent: string;
+        action: Parameters<AgentProtection["check"]>[0];
+      };
+      if (!this.protectedLaunch || request.agent !== this.protectedLaunch.agent)
+        throw new Error("No matching protected agent");
+      await this.protectedLaunch.gate.check(request.action, signal);
+      allowed = !signal.aborted;
+    } catch {
+      /* Native checks fail closed. */
+    } finally {
+      connection.checks.delete(id);
+    }
+    if (!connection.gone)
+      await connection.process
+        .write(`${JSON.stringify({ id, result: allowed })}\n`)
+        .catch(() => undefined);
+  }
+
   /** Runs a Buzz tool the host called, and sends it the result. */
   private async answer(
     connection: Connection,
@@ -247,6 +427,13 @@ export class Pi {
     params: unknown,
   ) {
     let message: Message;
+    // A stopped run or a lost host cancels the Buzz tool it called.
+    const controller = new AbortController();
+    const signal = AbortSignal.any([
+      controller.signal,
+      connection.lifetime.signal,
+    ]);
+    if (method === "tool") connection.checks.set(id, controller);
     try {
       message = {
         id,
@@ -254,7 +441,7 @@ export class Pi {
           method === "hook"
             ? ((await this.handlers.hook?.(params as PiHookCall)) ?? null)
             : method === "tool"
-              ? await this.handlers.tool(params as ToolCall)
+              ? await this.handlers.tool(params as ToolCall, signal)
               : ((await this.handlers.prompt?.(
                   params as { agent: string; request: string },
                 )) ?? false),
@@ -264,6 +451,9 @@ export class Pi {
         id,
         error: error instanceof Error ? error.message : String(error),
       };
+    } finally {
+      if (connection.checks.get(id) === controller)
+        connection.checks.delete(id);
     }
     if (!connection.gone)
       await connection.process

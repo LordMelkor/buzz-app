@@ -210,6 +210,8 @@ async function page(
           threadRootId: root.id,
         },
         signal: new AbortController().signal,
+        position: () => undefined,
+        savePosition() {},
         forSession() {
           return this;
         },

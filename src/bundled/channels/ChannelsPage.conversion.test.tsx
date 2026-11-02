@@ -169,6 +169,8 @@ function fixture() {
       },
     },
     signal: visit.signal,
+    position: () => undefined,
+    savePosition() {},
     forSession: () => navigation,
     complete: () => true,
     resolve: () => true,

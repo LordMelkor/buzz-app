@@ -22,6 +22,16 @@ import { Switch as SharedSwitch } from "../../shared/design-system/ui/Switch";
 import type { Context } from "../../plugins/author";
 import type { Agent, Watch } from "./model";
 import { InstructionsMarkdown } from "./InstructionsMarkdown";
+import { MessageMarkdown } from "../../features/messages/MessageMarkdown";
+import { useReferenceDirectory } from "../../features/messages/ReferenceText";
+import { useChannelIdentityNames } from "../../features/identity-names/react";
+import { MessageRow } from "../../features/messages/MessageRow";
+import { useRowProfiles } from "../../features/relay/react";
+import { buzzLinkTarget } from "../../features/navigation/buzz-links";
+import { rowProfileIds } from "../../features/relay/membership";
+import type { ProfileQueries } from "../../features/relay/profile-directory";
+import type { RelaySession } from "../../features/relay/session";
+import type { AttentionEntry } from "../../features/agents/store";
 
 import "./AttentionPage.css";
 
@@ -96,6 +106,11 @@ const suggestions = [
   "Check this channel every morning at 9",
 ];
 const button = { variant: "ghost" as const, size: "sm" as const };
+const noProfiles: ProfileQueries = {
+  snapshot: () => new Map(),
+  subscribe: () => () => {},
+  ensure: async () => {},
+};
 
 /** Uses the host’s controls and surface roles. */
 export function createTab({
@@ -207,6 +222,130 @@ export function createTab({
       </Button>
     );
   }
+  /** A recent event that was a message, shown as the conversation shows it. */
+  function Message({
+    entry,
+    author,
+    channel,
+    session,
+    scope,
+  }: {
+    entry: AttentionEntry;
+    author: string;
+    channel: string;
+    session?: RelaySession | undefined;
+    scope?: string | undefined;
+  }) {
+    const row = React.useMemo(
+      () => ({
+        id: entry.id ?? `${author}:${entry.at}`,
+        channelId: channel,
+        authorId: author,
+        createdAt: entry.at,
+        content: entry.text,
+        mentions: entry.mentions ?? [],
+        mentionReferences: entry.mentionReferences ?? [],
+        participants: [],
+        attachments: [],
+        reactions: [],
+        replyCount: 0,
+      }),
+      [entry, author, channel],
+    );
+    const queries = session?.profiles ?? noProfiles;
+    React.useEffect(
+      () =>
+        void queries.ensure(rowProfileIds(row), "background").catch(() => {}),
+      [queries, row],
+    );
+    const profiles = useRowProfiles(queries, [row]);
+    const resolve = useChannelIdentityNames(session, channel);
+    const profile = profiles.get(author);
+    const name = resolve(author, profile?.name ?? "");
+    const at = scope?.lastIndexOf(":") ?? -1;
+    return h(
+      "li",
+      null,
+      h(MessageRow, {
+        row,
+        profile: name ? { ...profile, name } : profile,
+        participantProfiles: profiles,
+        // Names and references only: the full session offers the row's controls.
+        references: session,
+        // Only a stored event id makes a link to the message.
+        scope: entry.id ? scope : undefined,
+        media: session?.media ?? (() => undefined),
+        onOpenLink: (url) => {
+          const target =
+            scope &&
+            at > 0 &&
+            buzzLinkTarget(url, {
+              communityOrigin: scope.slice(0, at),
+              viewer: scope.slice(at + 1),
+            });
+          if (!target) return false;
+          void navigation.open(target);
+          return true;
+        },
+        day: false,
+        retry: undefined,
+        layout: "thread",
+      }),
+    );
+  }
+  /** One recent output, or an event that was not a message, with its time. */
+  function Entry({
+    entry,
+    session,
+    scope,
+    command,
+  }: {
+    entry: AttentionEntry;
+    session?: RelaySession | undefined;
+    scope?: string | undefined;
+    command: boolean;
+  }) {
+    const directory = useReferenceDirectory(session);
+    const { author, channel } = entry;
+    if (author && channel && !command)
+      return h(Message, { entry, author, channel, session, scope });
+    return h(
+      "li",
+      null,
+      h(
+        "p",
+        { className: "text-caption text-subtle" },
+        relativeTimestamp(entry.at),
+      ),
+      command
+        ? h("pre", { className: "text-caption text-standard" }, entry.text)
+        : session
+          ? h(
+              "div",
+              { className: "text-body-sm" },
+              h(MessageMarkdown, {
+                row: {
+                  id: `${entry.at}`,
+                  authorId: entry.author ?? "",
+                  createdAt: entry.at,
+                  channelId: entry.channel ?? "",
+                  content: entry.text,
+                  mentions: [],
+                  participants: [],
+                  attachments: [],
+                  reactions: [],
+                  replyCount: 0,
+                },
+                directory,
+                session,
+                media: session.media,
+                onOpenLink: () => false,
+                interactive: false,
+              }),
+            )
+          : h("p", { className: "text-body-sm" }, entry.text),
+    );
+  }
   function Subscription({
     agent,
     slug,
@@ -214,6 +353,7 @@ export function createTab({
     name,
     find,
     scope,
+    session,
     returnFocus,
   }: {
     agent: Agent;
@@ -222,6 +362,7 @@ export function createTab({
     name(id: string): string;
     find(id: string): Channel | undefined;
     scope?: string | undefined;
+    session?: RelaySession | undefined;
     returnFocus: React.RefObject<HTMLElement | null>;
   }) {
     const row = React.useRef<HTMLLIElement>(null);
@@ -236,6 +377,8 @@ export function createTab({
     const action = useAction();
     const detailsId = React.useId();
     const history = agent.attentionHistory?.[slug];
+    const command =
+      watch.type === "source" && watch.provider === "attention/command";
     const woke = history?.lastWokeAt
       ? `Last woke ${relativeTimestamp(history.lastWokeAt)}`
       : undefined;
@@ -524,24 +667,38 @@ export function createTab({
             ),
           (watch.type === "event" || watch.type === "source") &&
             section(
-              watch.type === "source" && watch.provider === "attention/command"
-                ? "Recent output"
-                : "Recent events",
-              h(
-                watch.type === "event" ? "p" : "pre",
-                {
-                  className:
-                    watch.type === "event"
-                      ? "text-body-sm whitespace-pre-wrap"
-                      : "text-caption text-standard",
-                },
-                (watch.type === "event" && history?.output
-                  ? recentMessages(history.output)
-                  : history?.output) ||
-                  (watch.type === "event"
-                    ? "No matched messages recorded yet."
-                    : "No output recorded yet."),
-              ),
+              command ? "Recent output" : "Recent events",
+              history?.events?.length
+                ? h(
+                    "ol",
+                    { className: "attention-list attention-recent" },
+                    ...history.events
+                      .map((entry, index) =>
+                        h(Entry, {
+                          key: index,
+                          entry,
+                          session,
+                          scope,
+                          command,
+                        }),
+                      )
+                      .reverse(),
+                  )
+                : h(
+                    watch.type === "event" ? "p" : "pre",
+                    {
+                      className:
+                        watch.type === "event"
+                          ? "text-body-sm whitespace-pre-wrap"
+                          : "text-caption text-standard",
+                    },
+                    (watch.type === "event" && history?.output
+                      ? recentMessages(history.output)
+                      : history?.output) ||
+                      (watch.type === "event"
+                        ? "No matched messages recorded yet."
+                        : "No output recorded yet."),
+                  ),
             ),
           watch.type === "event" &&
             (technicalFilters ||
@@ -646,11 +803,13 @@ export function createTab({
     agent,
     channels,
     scope,
+    session,
     returnFocus,
   }: {
     agent: Agent;
     channels: readonly Channel[];
     scope?: string | undefined;
+    session?: RelaySession | undefined;
     returnFocus: React.RefObject<HTMLElement | null>;
   }) {
     const action = useAction();
@@ -798,6 +957,7 @@ export function createTab({
                 name,
                 find,
                 scope,
+                session,
                 returnFocus,
               }),
             ),
@@ -933,6 +1093,7 @@ export function createTab({
               returnFocus: page,
               channels,
               scope: connection.scope,
+              session: connection.session,
             })
           : h(
               "p",

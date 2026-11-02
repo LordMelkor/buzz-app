@@ -14,13 +14,14 @@ test.beforeAll(async () => {
   });
   await server.listen();
   origin = server.resolvedUrls.local[0];
+  // A new server transforms the fixture's modules, Tailwind's globals.css
+  // among them, during its first navigation. On a slow runner that took longer
+  // than the navigation timeout, so transform them before any test navigates.
+  await server.warmupRequest("/tests/fixtures/voice-notes.tsx");
+  await server.waitForRequestsIdle();
 });
 test.afterAll(async () => {
   await server?.close();
-});
-test.afterEach(async ({ page }) => {
-  // Media routes read fixture blobs from the page; finish them before it closes.
-  await page.unrouteAll({ behavior: "wait" });
 });
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/relay/media?*", async (route) => {

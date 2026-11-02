@@ -314,6 +314,8 @@ it.each(["icons", "", "two\nlines"])(
           entryId: snapshot.entry.id,
           target: snapshot.entry.target,
           signal: snapshot.attempt.signal,
+          position: () => undefined,
+          savePosition() {},
           forSession: () => request,
           resolve: () => false,
           complete: (result) => controller.complete(snapshot.attempt, result),

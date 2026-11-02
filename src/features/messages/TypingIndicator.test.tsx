@@ -252,8 +252,6 @@ it("never chooses one thread from simultaneous work and deduplicates public and 
         threadRootId: root,
         working: true,
         startedAt: 1,
-        timestamp: 1,
-        expiresAt: 100,
       },
     ],
   });
@@ -357,8 +355,6 @@ it.each([null, undefined])(
                 threadRootId: undefined,
                 working: true,
                 startedAt: 1,
-                timestamp: 1,
-                expiresAt: 100,
               },
             ],
           }

@@ -1,6 +1,12 @@
 // The real codex.sh switching releases in a throwaway home, as Buzz builds
 // sharing one folder do.
-import { execFile, spawn } from "node:child_process";
+import {
+  type ExecFileOptions,
+  execFile,
+  type PromiseWithChild,
+  spawn,
+} from "node:child_process";
+import { once } from "node:events";
 import { watch } from "node:fs";
 import {
   chmod,
@@ -22,13 +28,44 @@ import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import script from "./codex.sh?raw";
 
-const run = promisify(execFile);
+const execFileAsync = promisify(execFile);
 const homes: string[] = [];
+const runs: PromiseWithChild<unknown>[] = [];
 afterEach(async () => {
+  // A test that times out can leave launchers running, which would write into
+  // its home as it is removed. Each stopped here is expected to fail. Taking
+  // its homes off `homes` first makes `run` refuse any its body starts later.
+  const removing = homes.splice(0);
   await Promise.all(
-    homes.splice(0).map((home) => rm(home, { recursive: true, force: true })),
+    runs.splice(0).map(async (running) => {
+      const { child } = running;
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      running.catch(() => {});
+      const exited = once(child, "exit");
+      child.kill();
+      await exited;
+    }),
+  );
+  await Promise.all(
+    removing.map((home) => rm(home, { recursive: true, force: true })),
   );
 });
+
+/** Runs `file`, which `afterEach` stops if the test leaves it running. */
+function run(
+  file: string,
+  args: readonly string[],
+  options: ExecFileOptions = {},
+) {
+  // A timed-out test's body goes on after `afterEach`. Started in its home,
+  // codex.sh would make folders there again.
+  const home = options.env?.HOME;
+  if (home !== undefined && !homes.includes(home))
+    throw new Error(`${home} is removed: its test has ended`);
+  const running = execFileAsync(file, args, { ...options, encoding: "utf8" });
+  runs.push(running);
+  return running;
+}
 
 /** Buzz's codex folder in a new home, holding fake `releases` with `current`. */
 async function disk(releases: readonly string[], current?: string) {
@@ -123,10 +160,16 @@ const waiting = (pid: number | undefined) =>
 it("waits for a switch in progress, and goes on once its holder is killed", async () => {
   const { dir, step, selected } = await disk(["0.1.0", "0.2.0"], "0.1.0");
   const holder = await hold(join(dir, ".lock"));
-  const switching = step("use", "0.2.0");
-  await waiting(switching.child.pid);
-  expect(await selected()).toBe("codex-cli 0.1.0");
-  holder.kill("SIGKILL");
+  // A timeout while `hold` waits lets `afterEach` remove the home first;
+  // `step` then throws, and the holder must still be killed.
+  let switching: ReturnType<typeof step>;
+  try {
+    switching = step("use", "0.2.0");
+    await waiting(switching.child.pid);
+    expect(await selected()).toBe("codex-cli 0.1.0");
+  } finally {
+    holder.kill("SIGKILL");
+  }
   await switching;
   expect(await selected()).toBe("codex-cli 0.2.0");
 });
@@ -134,11 +177,15 @@ it("waits for a switch in progress, and goes on once its holder is killed", asyn
 it("leaves the release in use when its switch's release is pruned while it waits", async () => {
   const { dir, step, selected } = await disk(["0.1.0", "0.2.0"], "0.2.0");
   const holder = await hold(join(dir, ".lock"));
-  const switching = step("use", "0.1.0");
-  await waiting(switching.child.pid);
-  // The holder's own prune removes the older release this switch named.
-  await rm(join(dir, "0.1.0"), { recursive: true });
-  holder.kill("SIGKILL");
+  let switching: ReturnType<typeof step>;
+  try {
+    switching = step("use", "0.1.0");
+    await waiting(switching.child.pid);
+    // The holder's own prune removes the older release this switch named.
+    await rm(join(dir, "0.1.0"), { recursive: true });
+  } finally {
+    holder.kill("SIGKILL");
+  }
   await expect(switching).rejects.toThrow("0.1.0 is no longer downloaded");
   expect(await selected()).toBe("codex-cli 0.2.0");
 });
@@ -150,12 +197,14 @@ it("starts the release in use when switches prune the one it read", async () => 
   );
   // Complete home setup before observing the release-read boundary.
   await step("run", "--version");
-  // A `cat` that stops after its first read, of `current`, until `go`.
+  // A `cat` that stops after its first read, of `current`, until `go`. It also
+  // stops once a timed-out test's home is removed, or after 30 s in case the
+  // worker died before removing it.
   const bin = join(home, "bin");
   await mkdir(bin);
   await writeFile(
     join(bin, "cat"),
-    `#!/bin/sh\n/bin/cat "$@"\n[ -e "${bin}/read" ] && exit\n: >"${bin}/read"\nuntil [ -e "${bin}/go" ]; do sleep 0.05; done\n`,
+    `#!/usr/bin/env bash\n/bin/cat "$@"\n[ -e "${bin}/read" ] && exit\n: >"${bin}/read"\nuntil [ -e "${bin}/go" ] || [ ! -d "${bin}" ] || [ "$SECONDS" -ge 30 ]; do sleep 0.05; done\n`,
   );
   await chmod(join(bin, "cat"), 0o755);
   let observed!: () => void;
@@ -191,7 +240,9 @@ it("starts the release in use when switches prune the one it read", async () => 
     expect((await launching).stdout.trim()).toBe("codex-cli 0.3.0");
   } finally {
     watcher.close();
-    await writeFile(join(bin, "go"), "");
+    // Fails once `afterEach` has removed a timed-out test's home.
+    await writeFile(join(bin, "go"), "").catch(() => {});
+    launching.child.kill();
     await launching.catch(() => {});
   }
 });
@@ -358,9 +409,10 @@ it("leaves the shared sign-in alone when another run hands it over while it wait
   await f.step("run");
   await signIn(f.own, "signed in");
   const holder = await hold(`${f.dir}-home.lock`);
-  const waiter = f.step("run");
+  let waiter: ReturnType<typeof f.step>;
   let handed: number;
   try {
+    waiter = f.step("run");
     await waiting(waiter.child.pid);
     // The run holding the lock hands the sign-in over and links it again.
     await writeFile(join(f.codex, "auth.json"), "signed in");

@@ -105,6 +105,9 @@ export type MessageRowProps = {
   staticMentions?: boolean | undefined;
   getThreadRoot?: (() => ChannelMessage | undefined) | undefined;
   session?: RelaySession | undefined;
+  /** Resolves names, channels and mentions where the row is shown without
+   * `session`, which would also offer its controls. */
+  references?: RelaySession | undefined;
   scope?: string | undefined;
   unread?: UnreadCapability | undefined;
   extensions?: ConversationExtensions | undefined;
@@ -174,6 +177,7 @@ function MessageRowContent({
   renderMessage,
   getThreadRoot,
   session,
+  references = session,
   scope,
   unread,
   extensions,
@@ -207,8 +211,8 @@ function MessageRowContent({
   agentPubkeys,
 }: MessageContentProps) {
   const [avatarFocused, setAvatarFocused] = useState(false);
-  const resolveName = useChannelIdentityNames(session, row.channelId);
-  const directory = useReferenceDirectory(session, participantProfiles);
+  const resolveName = useChannelIdentityNames(references, row.channelId);
+  const directory = useReferenceDirectory(references, participantProfiles);
   const reactions = row.reactions;
   const threadUnread = useThreadUnread(
     row.replyCount > 0 && onOpenThread ? unread : undefined,
@@ -539,7 +543,7 @@ function MessageRowContent({
   ) : (
     <MessageMarkdown
       directory={directory}
-      session={session}
+      session={references}
       scope={scope}
       row={displayRow}
       extensions={extensions}
@@ -1031,7 +1035,7 @@ function MessageRowContent({
                     <MessageMarkdown
                       key={card.start}
                       directory={directory}
-                      session={session}
+                      session={references}
                       scope={scope}
                       row={{
                         ...shown,
@@ -1394,6 +1398,7 @@ export const MessageRow = memo(function AudienceMessageRow(
 
 function AgentsMessageRow(props: MessageRowProps) {
   const { row, session, media, participantProfiles, agentPubkeys } = props;
+  const references = props.references ?? session;
   const [open, setOpen] = useState(false);
   const activity = props.recordedActivity;
   const bubble =
@@ -1410,8 +1415,8 @@ function AgentsMessageRow(props: MessageRowProps) {
   useEffect(() => {
     if (open) return keepMounted?.(row.id);
   }, [open, keepMounted, row.id]);
-  const resolveName = useChannelIdentityNames(session, row.channelId);
-  const directory = useReferenceDirectory(session, participantProfiles);
+  const resolveName = useChannelIdentityNames(references, row.channelId);
+  const directory = useReferenceDirectory(references, participantProfiles);
   const { recipients, body } = useMemo(
     () =>
       addressedMessage(

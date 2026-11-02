@@ -7,7 +7,7 @@
 // Buzz tools, signed by the agent's native-held key. The runtime reports a
 // turn that fails; what Pi writes without `send` stays in local activity.
 import { isFinalMessage } from "../../buzz-mcp/session-tools";
-import { appClient } from "../../buzz-mcp/app-client";
+import { appClient, readFile } from "../../buzz-mcp/app-client";
 import type { Context } from "../../buzz-mcp/client";
 import { content, errorText } from "../../buzz-mcp/rpc";
 import {
@@ -176,6 +176,7 @@ type Entry = {
 
 export class PiRuntime {
   private readonly agents = new Map<AgentKey, Entry>();
+  private readonly revisions = new Map<AgentKey, number>();
   private readonly memoryReads = new MemoryReads();
   private readonly controls = new SessionControls(() => this.notify());
   private readonly listeners = new Set<() => void>();
@@ -183,6 +184,8 @@ export class PiRuntime {
   private readonly views = new Map<AgentKey, readonly number[]>();
   /** The agents of this type that run here now. */
   private running = new Set<AgentKey>();
+  /** Agents with a protection binding, which never use the shared host. */
+  private bound = new Set<AgentKey>();
   /** Each agent's conversations as Pi's storage and this app run's
    * deliveries know them, by key; read from storage once, when first asked. */
   private readonly known = new Map<
@@ -221,26 +224,46 @@ export class PiRuntime {
       listener: () => void,
     ) => () => void = () => () => {},
   ) {
-    this.pi = new Pi(() => this.spawn, {
-      tool: (call) => this.tool(call),
-      hook: (call) => {
-        if (!this.agents.has(call.agent))
-          throw new Error("Pi hook agent is no longer active");
-        return (
-          this.hook?.(
-            call.agent,
-            String(call.conversation),
-            call.event,
-            call.input,
-          ) ?? Promise.resolve(null)
-        );
+    this.pi = new Pi(
+      () => this.spawn,
+      {
+        tool: (call, signal) => this.tool(call, signal),
+        hook: (call) => {
+          if (!this.agents.has(call.agent))
+            throw new Error("Pi hook agent is no longer active");
+          return (
+            this.hook?.(
+              call.agent,
+              String(call.conversation),
+              call.event,
+              call.input,
+            ) ?? Promise.resolve(null)
+          );
+        },
+        event: (event) => this.event(event),
+        prompt: ({ agent, request }) =>
+          this.agents.get(agent)?.receipts.get(request)?.prompt?.() ??
+          Promise.resolve(undefined),
       },
-      event: (event) => this.event(event),
-      prompt: ({ agent, request }) =>
-        this.agents.get(agent)?.receipts.get(request)?.prompt?.() ??
-        Promise.resolve(undefined),
-    });
+      (pubkey) => {
+        const protection = (
+          this.agents.get(pubkey)?.handle ?? this.handle(pubkey)
+        )?.protection;
+        if (!protection && this.bound.has(pubkey))
+          throw new Error("The agent isn't connected yet. Try again shortly.");
+        return protection;
+      },
+    );
     this.setup = new PiSetup(this.pi);
+  }
+
+  async retire(pubkey: string) {
+    const entry = this.agents.get(pubkey);
+    if (entry) {
+      entry.closed = true;
+    }
+    this.agents.delete(pubkey);
+    await this.pi.retire(pubkey);
   }
 
   /** Brings the runtime in line with this type's agents. A removed one's
@@ -249,14 +272,19 @@ export class PiRuntime {
     const current = new Set(agents.map((agent) => agent.key));
     // Its storage may be open for a turn or only for listing its sessions.
     for (const agent of new Set([...this.running, ...this.agents.keys()]))
-      if (!current.has(agent)) {
-        const entry = this.agents.get(agent);
-        if (entry) entry.closed = true;
-        this.agents.delete(agent);
-        void this.pi.request("close", { agent }).catch(() => undefined);
-      }
+      if (!current.has(agent)) void this.retire(agent).catch(() => undefined);
     this.running = current;
+    this.bound = new Set(
+      agents.filter((agent) => agent.protection).map((agent) => agent.key),
+    );
     for (const agent of agents) {
+      const revision = agent.protectionRevision ?? 0;
+      const previous = this.revisions.get(agent.key);
+      this.revisions.set(agent.key, revision);
+      if (previous !== undefined && previous !== revision) {
+        void this.retire(agent.key).catch(() => undefined);
+        continue;
+      }
       const entry = this.agents.get(agent.key);
       if (!entry) continue;
       entry.config = config(agent.config);
@@ -441,7 +469,8 @@ export class PiRuntime {
     };
     if (action === "interrupt") {
       this.controls.interrupt(control);
-      this.agents.get(agent.key)?.policies.get(key)?.cancel();
+      const entry = this.agents.get(agent.key);
+      entry?.policies.get(key)?.cancel();
       return act();
     }
     if (this.sessionState(agent, place) !== "idle")
@@ -453,7 +482,9 @@ export class PiRuntime {
   }
 
   dispose() {
-    for (const entry of this.agents.values()) entry.closed = true;
+    for (const entry of this.agents.values()) {
+      entry.closed = true;
+    }
     this.agents.clear();
     void this.pi.dispose();
   }
@@ -658,7 +689,7 @@ export class PiRuntime {
       });
     const policy = {
       topLevel,
-      cancel() {
+      cancel: () => {
         interrupted = true;
         prior?.cancel();
       },
@@ -678,6 +709,7 @@ export class PiRuntime {
     workingUntil(settled);
     // Stop on its activity stops the run the request is in.
     interruptible?.(async () => {
+      interrupted = true;
       await handed;
       if (!submitted) return;
       await this.pi.request("abort", {
@@ -686,7 +718,8 @@ export class PiRuntime {
       });
     });
     void settled.then(async (result) => {
-      if (!result.ok) await this.report(agent, where, result.error ?? "");
+      if (!result.ok && !interrupted && !entry.closed)
+        await this.report(agent, where, result.error ?? "");
     });
   }
 
@@ -748,16 +781,31 @@ export class PiRuntime {
   }
 
   /** Runs a Buzz tool for Pi, for the conversation that called it. */
-  async tool(call: ToolCall): Promise<ToolResult> {
+  async tool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
     const entry = this.agents.get(call.agent);
     const client =
       entry?.handle &&
       appClient(entry.handle, {
+        protectionContext: () =>
+          this.pi.request("protectionContext", {
+            agent: call.agent,
+            conversation: call.conversation,
+          }),
         relayAuthor: this.reads(call.agent)?.relayAuthor?.(),
         signingAuthority: this.reads(call.agent)?.workflowAuthority(),
-        read: (path) => this.readFile(path, { cwd: entry.config.workspace }),
+        read: (path) =>
+          entry.handle?.protection
+            ? readFile(
+                this.spawn,
+                entry.config.workspace,
+                path,
+                signal,
+                entry.handle.protection.processProtection,
+              )
+            : this.readFile(path, { cwd: entry.config.workspace }),
         memories: (slug) => this.memories(call.agent, slug),
         remembered: () => this.forgetMemory(call.agent),
+        ...(signal ? { signal } : {}),
       });
     try {
       const reply = await callSessionTool(

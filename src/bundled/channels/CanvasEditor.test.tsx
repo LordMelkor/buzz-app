@@ -9,11 +9,16 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { StrictMode } from "react";
+import { StrictMode, useLayoutEffect } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { keypair, signed } from "../../features/relay/testing";
-import { readView, viewRevision, writeView } from "../../shared/view-state";
+import {
+  clearView,
+  readView,
+  viewRevision,
+  writeView,
+} from "../../shared/view-state";
 import { CanvasEditor } from "./CanvasEditor";
 import type { ChannelCanvas } from "../../features/channel-templates/capability";
 
@@ -402,6 +407,84 @@ const editor = () => ({
   read: vi.fn(async () => head),
   save: vi.fn(async () => edited),
 });
+it("keeps a self-retired draft retired when editing precedes the loaded render's effects", async () => {
+  writeView(scope, `canvas-draft-v1:${channelId}`, {
+    content: "Recovered",
+    base: head.id,
+  });
+  const canvas = editor();
+  render(
+    <div data-panel-workspace data-testid="workspace">
+      <button type="button">Canvas tab</button>
+      <div data-testid="canvas-mount" />
+    </div>,
+  );
+  const host = screen.getByTestId("workspace");
+  const tab = screen.getByRole("button", { name: "Canvas tab" });
+  tab.focus();
+  // Focus handoff precedes retirement's passive effect. Send a native input
+  // within that handoff; nesting RTL's act wrapper inside the effect is invalid.
+  host.addEventListener("focusin", (event) => {
+    if (!(event.target instanceof HTMLTextAreaElement)) return;
+    Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value",
+    )?.set?.call(event.target, "Saved");
+    event.target.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  render(
+    <CanvasEditor
+      canvas={canvas}
+      profiles={profiles}
+      scope={scope}
+      channelId={channelId}
+    />,
+    { container: screen.getByTestId("canvas-mount") },
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("textbox", { name: "Canvas Markdown" }),
+    ).toHaveValue("Saved"),
+  );
+  expect(viewRevision(scope, `canvas-draft-v1:${channelId}`)).toBeNull();
+  expect(canvas.read).toHaveBeenCalledOnce();
+});
+it.each([head, edited])(
+  "reconciles a draft cleared externally before mounting effects with head $content",
+  async (current) => {
+    writeView(scope, `canvas-draft-v1:${channelId}`, {
+      content: "Recovered",
+      base: head.id,
+    });
+    const canvas = editor();
+    canvas.read.mockResolvedValue(current);
+    function Mount() {
+      useLayoutEffect(() => {
+        // A peer clears the recovered draft after render, before passive effects.
+        clearView(scope, `canvas-draft-v1:${channelId}`);
+      }, []);
+      return (
+        <CanvasEditor
+          canvas={canvas}
+          profiles={profiles}
+          scope={scope}
+          channelId={channelId}
+        />
+      );
+    }
+    render(<Mount />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("textbox", { name: "Canvas Markdown" }),
+      ).toHaveValue(current.content),
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save Canvas" })).toBeEnabled();
+    expect(viewRevision(scope, `canvas-draft-v1:${channelId}`)).toBeNull();
+    expect(canvas.read).toHaveBeenCalledTimes(2);
+  },
+);
+
 async function twoEditors(third?: ReturnType<typeof editor>) {
   const saved = edited;
   const first = editor();

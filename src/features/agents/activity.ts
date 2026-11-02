@@ -38,6 +38,8 @@ type Typing = Readonly<{
   working: boolean;
   expiresAt: number;
 }>;
+/** Published typing: a pulse that only refreshes its clock changes nothing. */
+type TypingEntry = Omit<Typing, "timestamp" | "expiresAt">;
 const TYPING_FRESH_MS = 8000;
 type Snapshot = Readonly<{
   status:
@@ -49,7 +51,7 @@ type Snapshot = Readonly<{
   records: readonly RawRecord[];
   turns: readonly ActivityTurn[];
   local?: readonly LocalWork[];
-  typing: readonly Typing[];
+  typing: readonly TypingEntry[];
   trimmed: number;
 }>;
 type Turn = Omit<ActivityTurn, "state" | "requests"> & {
@@ -131,6 +133,9 @@ export function createAgentActivity(
     turn.unresolvedTriggers = unresolved;
     turn.requests = Object.freeze(requests);
   }
+  function typingKey(entries: readonly TypingEntry[]) {
+    return JSON.stringify(entries.map((entry) => JSON.stringify(entry)).sort());
+  }
   function publish() {
     const localWork =
       local && !closed
@@ -159,7 +164,12 @@ export function createAgentActivity(
     const known = liveAgents;
     for (const [key, entry] of typing)
       if (now >= entry.expiresAt || !known.has(entry.agent)) typing.delete(key);
-    const typers = [...typing.values()].filter((entry) => entry.working);
+    const typers = [...typing.values()]
+      .filter((entry) => entry.working)
+      .map(
+        ({ agent, channelId, threadRootId, startedAt, working }): TypingEntry =>
+          Object.freeze({ agent, channelId, threadRootId, startedAt, working }),
+      );
     const visible = [...turns.values()].map(
       (turn): ActivityTurn =>
         Object.freeze({
@@ -206,7 +216,8 @@ export function createAgentActivity(
       snapshot.records === records &&
       snapshot.trimmed === trimmed &&
       JSON.stringify(snapshot.turns) === JSON.stringify(visible) &&
-      JSON.stringify(snapshot.typing) === JSON.stringify(typers)
+      // Each pulse re-inserts its key for eviction recency: compare as a set.
+      typingKey(snapshot.typing) === typingKey(typers)
     )
       return;
     snapshot = Object.freeze({

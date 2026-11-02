@@ -1004,3 +1004,179 @@ it("keeps technical data out of message summaries and avoids repeating the desti
   expect(screen.queryByText("No additional filters")).toBeNull();
   expect(screen.queryByText("Event kinds: 9")).toBeNull();
 });
+
+it("lists each recent event apart, shown as a chat message from its author", () => {
+  const author = "b".repeat(64);
+  const casey = "c".repeat(64);
+  const now = Math.floor(Date.now() / 1000);
+  const output = (text: string, at: number) => ({ at, text });
+  const agent = {
+    key: "membership-a",
+    pubkey: "a".repeat(64),
+    owner: viewer,
+    relay: origin,
+    name: "Ada",
+    attentionEnabled: true,
+    timers: {},
+    attentionHistory: {
+      "watch/messages": {
+        events: [
+          {
+            id: "1".repeat(64),
+            at: now - 120,
+            author,
+            channel,
+            text: "**Release** is ready: [notes](https://example.com/notes).",
+          },
+          {
+            id: "2".repeat(64),
+            at: now - 60,
+            author,
+            channel,
+            text: "Tagged `v2`.",
+          },
+          {
+            id: "3".repeat(64),
+            at: now - 30,
+            author,
+            channel,
+            text: "Ask @Casey in #Beta.",
+            mentions: [casey],
+          },
+        ],
+      },
+      "watch/build": {
+        events: [output("first", now - 60), output("**second**", now)],
+      },
+    },
+    attention: {
+      "interest/release": {
+        slug: "interest/release",
+        value: { type: "interest", instructions: "Follow releases." },
+      },
+      "watch/messages": {
+        slug: "watch/messages",
+        value: {
+          type: "event",
+          name: "Release messages",
+          enabled: true,
+          interest_id: "release",
+          channels: [channel],
+          kinds: [9],
+          since: 0,
+        },
+      },
+      "watch/build": {
+        slug: "watch/build",
+        value: {
+          type: "source",
+          name: "Build",
+          enabled: true,
+          interest_id: "release",
+          provider: "attention/command",
+          config: { command: "make" },
+        },
+      },
+    },
+  };
+  const list = {
+    channels: [
+      { id: channel, name: "Releases" },
+      { id: "beta", name: "Beta" },
+    ],
+  };
+  const queries = {
+    ensureList() {},
+    subscribeList: () => () => {},
+    list: () => list,
+  };
+  const profiles = new Map([
+    [author, { name: "alex" }],
+    [casey, { name: "Casey" }],
+  ]);
+  // Profile reads fail while the session closes; rows must not leave that
+  // unhandled. A plain function, as a mock would observe the rejection itself.
+  const reads: unknown[][] = [];
+  const ensure = (...args: unknown[]) => {
+    reads.push(args);
+    return Promise.reject(new Error("closed"));
+  };
+  const names = {
+    resolve: (pubkey: string, fallback?: string) =>
+      pubkey === author ? "Alex" : fallback,
+    subscribe: () => () => {},
+    snapshot: () => 0,
+  };
+  const connection = {
+    status: "ready",
+    ...community,
+    session: {
+      channels: queries,
+      names,
+      profiles: {
+        snapshot: () => profiles,
+        subscribe: () => () => {},
+        ensure,
+      },
+      media: () => undefined,
+    },
+  };
+  const snapshot = { status: "ready", running: [agent] };
+  const ctx = {
+    agents: {
+      presentWatch: () => undefined,
+      snapshot: () => snapshot,
+      subscribe: () => () => {},
+    },
+    relay: { snapshot: () => connection, subscribe: () => () => {} },
+  } as unknown as Context;
+  render(
+    React.createElement(createTab(ctx), { agent: { key: "membership-a" } }),
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: "Details for Release messages" }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Details for Build" }));
+  const recent = (heading: string) =>
+    screen
+      .getByRole("heading", { name: heading })
+      .parentElement?.querySelector("ol");
+  const [messages, build] = [recent("Recent events"), recent("Recent output")];
+  if (!messages || !build) throw new Error("Missing recent events");
+  const events = within(messages).getAllByRole("listitem");
+  // Newest first, each its own chat message with its author's byline.
+  expect(
+    events.map((item) =>
+      item.querySelector("[data-message-id]")?.getAttribute("data-message-id"),
+    ),
+  ).toEqual(["3".repeat(64), "2".repeat(64), "1".repeat(64)]);
+  // Each row reads the profiles it names, so its mentions resolve.
+  expect(reads).toContainEqual([[author, casey], "background"]);
+  for (const item of events)
+    expect(within(item).getByText("Alex").tagName).toBe("STRONG");
+  // Its tags and the community's channels give a message its references.
+  const tagged = events[0] as HTMLElement;
+  expect(
+    within(tagged)
+      .getByText("Casey", { selector: "[data-mention-kind]" })
+      .getAttribute("data-mention-kind"),
+  ).toBe("person");
+  expect(
+    within(tagged).getByRole("link", { name: "#Beta" }).getAttribute("href"),
+  ).toBe("buzz://channel/beta");
+  expect(within(events[2] as HTMLElement).getByText("Release").tagName).toBe(
+    "STRONG",
+  );
+  expect(
+    within(events[2] as HTMLElement)
+      .getByRole("link", { name: "notes" })
+      .getAttribute("href"),
+  ).toBe("https://example.com/notes");
+  expect(within(events[1] as HTMLElement).getByText("v2").tagName).toBe("CODE");
+  // Command output stays as it was printed.
+  expect(
+    within(build)
+      .getAllByRole("listitem")
+      .map((item) => item.querySelector("pre")?.textContent),
+  ).toEqual(["**second**", "first"]);
+});

@@ -206,6 +206,8 @@ it.each([false, true])(
         "11111111-1111-4111-8111-111111111111",
       ),
       signal: new AbortController().signal,
+      position: () => undefined,
+      savePosition() {},
       forSession: () => navigation,
       complete: () => true,
       resolve: () => true,

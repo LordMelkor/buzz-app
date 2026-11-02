@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
 import { homedir } from "node:os";
+import { realpathSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,6 +20,7 @@ import {
 import {
   clampThinkingLevel,
   getSupportedThinkingLevels,
+  getSystemMessageText,
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
@@ -30,6 +32,7 @@ import {
   Harness,
   hook,
   ToolTask,
+  ProviderDoc,
   SessionFailed,
   section,
   UsageDoc,
@@ -40,6 +43,190 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import lockfile from "proper-lockfile";
+
+/** Protected Pi uses the same snapshots for review and execution. The model
+ * barrier is inside Models.applyAuth, before every provider dispatch, including
+ * compaction and retry/recovery paths. Unsupported payload hooks fail closed. */
+export function protectModels(models, inspect, conversationFor) {
+  const requests = new Set([
+    "stream",
+    "complete",
+    "streamSimple",
+    "completeSimple",
+    "generateImages",
+    "classify",
+  ]);
+  const deferred = new Set([
+    "streamDeferred",
+    "fetchDeferred",
+    "cancelDeferred",
+  ]);
+  return new Proxy(models, {
+    get(target, name) {
+      if (deferred.has(name))
+        return () => {
+          throw new Error(
+            "Protected Pi does not support deferred provider requests",
+          );
+        };
+      const method = Reflect.get(target, name);
+      if (!requests.has(name))
+        return typeof method === "function" ? method.bind(target) : method;
+      return (model, input, options = {}) => {
+        if (
+          options.onPayload ||
+          options.transformHeaders ||
+          options.samplingParams ||
+          options.deferred ||
+          model.samplingParams ||
+          model.samplingParamsByThinkingLevel
+        )
+          throw new Error(
+            "Protected Pi cannot review this provider payload override",
+          );
+        const selected = structuredClone(model),
+          content = structuredClone(input);
+        // Telemetry spans hold functions and only observe the request.
+        const { signal, apiKey, headers, env, telemetry, ...data } = options;
+        const settings = structuredClone(data);
+        return method.call(target, selected, content, {
+          ...settings,
+          signal,
+          telemetry,
+          apiKey,
+          headers: structuredClone(headers),
+          env: structuredClone(env),
+          transformHeaders: async (assembled) => {
+            signal?.throwIfAborted();
+            const session = await conversationFor(settings.sessionId);
+            if (!Array.isArray(content.messages))
+              throw new Error(
+                "Protected Pi requires explicit conversation messages",
+              );
+            // Provider settings and tool schemas are not conversation text.
+            // Keep dynamic instructions and every native message as distinct sources.
+            for (const [source, value] of [
+              ["instructions", content.systemPrompt ?? ""],
+              ...content.messages.map((message) => [
+                "message",
+                message.role === "system"
+                  ? { role: "system", content: getSystemMessageText(message) }
+                  : message,
+              ]),
+            ]) {
+              await inspect(
+                {
+                  kind: "context",
+                  session: String(session),
+                  content: { source, value },
+                },
+                signal,
+              );
+            }
+            signal?.throwIfAborted();
+            return assembled;
+          },
+        });
+      };
+    },
+  });
+}
+
+/** Hold all native tool output until reviewed, including streaming progress,
+ * diagnostics and thrown errors. Wrapping execute also covers safe replay. */
+export function protectTool(tool, inspect, preceding = async () => []) {
+  return {
+    ...tool,
+    async execute(original, api, signalled) {
+      const args = structuredClone(original);
+      const session = String(api.conversationId);
+      const signal = signalled.abortSignal;
+      const conversation = structuredClone(await preceding(api, signalled));
+      await inspect(
+        {
+          kind: "tool",
+          session,
+          content: { title: tool.name, arguments: args, conversation },
+          ...(typeof args.command === "string"
+            ? { command: args.command }
+            : {}),
+        },
+        signal,
+      );
+      const decoder = new TextDecoder();
+      let text = "",
+        bytes = 0,
+        details;
+      const diagnostics = [];
+      const bound = (value) => {
+        bytes += Buffer.byteLength(
+          typeof value === "string" ? value : JSON.stringify(value),
+        );
+        if (bytes > 256 * 1024)
+          throw new Error("Protected Pi tool output exceeds the review limit");
+      };
+      let result;
+      try {
+        result = await tool.execute(
+          args,
+          {
+            ...api,
+            outputWindow: undefined,
+            output(chunk, skipped) {
+              if (skipped)
+                throw new Error("Protected Pi cannot review omitted output");
+              const value =
+                typeof chunk === "string"
+                  ? decoder.decode() + chunk
+                  : decoder.decode(chunk, { stream: true });
+              bound(value);
+              text += value;
+            },
+            retainedOutput: () => ({ text, truncated: false }),
+            diagnostic(value) {
+              const copy = structuredClone(value);
+              bound(copy);
+              diagnostics.push(copy);
+            },
+            async details(value) {
+              const copy = structuredClone(value);
+              bound(copy);
+              details = copy;
+            },
+          },
+          signalled,
+        );
+        text += decoder.decode();
+        result = {
+          ...result,
+          output: result.output ?? (text ? [{ type: "text", text }] : []),
+          diagnostics: [...diagnostics, ...(result.diagnostics ?? [])],
+          ...(result.details !== undefined
+            ? { details: result.details }
+            : details !== undefined
+              ? { details }
+              : {}),
+        };
+      } catch (error) {
+        if (signal?.aborted)
+          throw new Error("Protected Pi action was cancelled");
+        result = {
+          isError: true,
+          output: [
+            {
+              type: "text",
+              text: error instanceof Error ? error.message : String(error),
+            },
+          ],
+        };
+      }
+      result = structuredClone(result);
+      await inspect({ kind: "tool-result", session, content: result }, signal);
+      signal?.throwIfAborted();
+      return result;
+    },
+  };
+}
 
 const context = BACKGROUND_CONTEXT;
 /** Stores a document whole after this many changes, so reading it replays
@@ -396,6 +583,7 @@ export function serve({
   data,
   models,
   packages = { extensions: [], errors: [] },
+  protectedAgent,
   dir = piDir(),
   input = process.stdin,
   output = process.stdout,
@@ -406,13 +594,31 @@ export function serve({
   /** Agents whose storage failed and that nothing has opened again. */
   const failed = new Set();
   const calls = new Map();
+  const reviews = new Map();
   let called = 0;
   const write = (message) => output.write(`${JSON.stringify(message)}\n`);
   const notify = (method, params) => write({ method, params });
-  const call = (method, params) =>
+  const call = (method, params, signal) =>
     new Promise((resolve, reject) => {
+      signal?.throwIfAborted();
       const id = `h${++called}`;
-      calls.set(id, { resolve, reject });
+      const cancel = () => {
+        calls.delete(id);
+        write({ method: "security_cancel", params: { id } });
+        reject(new Error("Protected Pi action was cancelled"));
+      };
+      const clear = () => signal?.removeEventListener("abort", cancel);
+      calls.set(id, {
+        resolve: (value) => {
+          clear();
+          resolve(value);
+        },
+        reject: (error) => {
+          clear();
+          reject(error);
+        },
+      });
+      signal?.addEventListener("abort", cancel, { once: true });
       write({ id, method, params });
     });
 
@@ -445,6 +651,8 @@ export function serve({
 
   async function open(agent, lost) {
     if (!AGENT_KEY.test(agent)) throw new Error("Not an agent key");
+    if (protectedAgent && agent !== protectedAgent)
+      throw new Error("This protected host belongs to another agent");
     const path = join(data, "agents", `${agent}.sqlite`);
     // An agent's storage holds its conversations: only its owner may read
     // it, however an earlier build made it.
@@ -474,17 +682,93 @@ export function serve({
         await chmod(file, 0o600).catch((error) => {
           if (error.code !== "ENOENT") throw error;
         });
+      if (
+        protectedAgent &&
+        (packages.extensions.length || packages.providers?.length)
+      )
+        throw new Error("Protected Pi does not load user packages");
       const registry = createRegistry();
-      registry.install(CodingTools);
+      const inspect = async (action, signal) => {
+        if (
+          process.env[
+            {
+              context: "BUZZ_SECURITY_CONTEXT",
+              tool: "BUZZ_SECURITY_TOOL",
+              "tool-result": "BUZZ_SECURITY_TOOL_RESULT",
+            }[action.kind]
+          ] === "0"
+        )
+          action = {
+            kind: action.kind,
+            session: action.session,
+            content: null,
+          };
+        const result = await call("security", { agent, action }, signal);
+        if (result !== true)
+          throw new Error("Pi action denied by its protection policy");
+      };
+      const install = (extension) => {
+        if (
+          protectedAgent &&
+          (extension.tasks?.length ||
+            extension.hooks?.length ||
+            extension.wraps?.length)
+        )
+          throw new Error("Unsupported protected Pi extension");
+        registry.install(
+          protectedAgent
+            ? {
+                ...extension,
+                tools: extension.tools?.map((tool) =>
+                  protectTool(tool, inspect, async (api, context) => {
+                    const conversation = await harness.conversation(
+                      api.conversationId,
+                      context,
+                    );
+                    if (!conversation)
+                      throw new Error(
+                        "The tool's preceding conversation is unavailable",
+                      );
+                    return (await conversation.context(context)).messages;
+                  }),
+                ),
+              }
+            : extension,
+        );
+      };
+      const conversations = new Set();
+      const sessions = new Map();
+      let harness;
+      const conversationFor = async (sessionId) => {
+        if (typeof sessionId !== "string" || !sessionId)
+          throw new Error("Protected model request has no session");
+        if (!sessions.has(sessionId)) {
+          for (const conversation of conversations) {
+            const document = await harness.snapshot(
+              ProviderDoc,
+              conversation,
+              context,
+            );
+            if (document?.sessionId)
+              sessions.set(document.sessionId, conversation);
+          }
+        }
+        if (!sessions.has(sessionId))
+          throw new Error("Protected model request has an unknown session");
+        return sessions.get(sessionId);
+      };
+      install(CodingTools);
       // Loads the Buzz tools that are deferred when the model asks for them.
-      registry.install(createToolSearchExtension());
-      for (const extension of packages.extensions) registry.install(extension);
+      install(createToolSearchExtension());
+      for (const extension of packages.extensions) install(extension);
       /** Conversations with a task Pi parked, which the next wait stops. */
       const parked = new Set();
-      const harness = await Harness.open(
+      harness = await Harness.open(
         await openNodeSqliteStorage(path),
         {
-          models,
+          models: protectedAgent
+            ? protectModels(models, inspect, conversationFor)
+            : models,
           registry,
           settings: SETTINGS,
           env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? homedir() }),
@@ -502,6 +786,8 @@ export function serve({
         agent,
         harness,
         registry,
+        install,
+        conversations,
         release,
         tools: "",
         /** Each conversation's `core` memory as its latest turn read it,
@@ -520,8 +806,12 @@ export function serve({
         closing: false,
       };
       const places = (await harness.snapshot(Places, context)) ?? {};
-      for (const place of Object.values(places))
+      for (const place of Object.values(places)) {
+        conversations.add(place.conversation);
         opened.contexts.set(place.conversation, place.context);
+      }
+      for (const submission of (await harness.inspect(context)).submissions)
+        conversations.add(submission.conversationId);
       return opened;
     } catch (error) {
       await release().catch(() => undefined);
@@ -537,7 +827,14 @@ export function serve({
       // leaves its runs to it. Opening again says the agent is open there.
       const opened = open(agent, () => {
         forget();
-        void opened.then(shut, () => undefined);
+        void opened
+          .then(shut, () => undefined)
+          .catch((error) =>
+            console.error(
+              "Pi could not close after losing storage custody",
+              error,
+            ),
+          );
       });
       started = opened;
       failed.delete(agent);
@@ -554,7 +851,9 @@ export function serve({
             console.error("Pi's storage failed for an agent", end.error);
             if (agents.get(agent) === opened) failed.add(agent);
             forget();
-            void shut(ready);
+            void shut(ready).catch((error) =>
+              console.error("Pi could not close an agent", error),
+            );
           }),
         forget,
       );
@@ -595,30 +894,32 @@ export function serve({
           { tag: false },
         ),
       ],
-      hooks: [
-        hook(ToolTask, {
-          beforeTool: (input, api, context) =>
-            awaitWithContext(
-              call("hook", {
-                agent: opened.agent,
-                conversation: api.conversationId,
-                event: "beforeTool",
-                input,
-              }),
-              context,
-            ).then((value) => value ?? undefined),
-          afterTool: (input, result, api, context) =>
-            awaitWithContext(
-              call("hook", {
-                agent: opened.agent,
-                conversation: api.conversationId,
-                event: "afterTool",
-                input: { call: input, result },
-              }),
-              context,
-            ).then((value) => value ?? undefined),
-        }),
-      ],
+      hooks: protectedAgent
+        ? []
+        : [
+            hook(ToolTask, {
+              beforeTool: (input, api, context) =>
+                awaitWithContext(
+                  call("hook", {
+                    agent: opened.agent,
+                    conversation: api.conversationId,
+                    event: "beforeTool",
+                    input,
+                  }),
+                  context,
+                ).then((value) => value ?? undefined),
+              afterTool: (input, result, api, context) =>
+                awaitWithContext(
+                  call("hook", {
+                    agent: opened.agent,
+                    conversation: api.conversationId,
+                    event: "afterTool",
+                    input: { call: input, result },
+                  }),
+                  context,
+                ).then((value) => value ?? undefined),
+            }),
+          ],
       tools: tools.map((tool) =>
         defineTool({
           name: `${PREFIX}${tool.name}`,
@@ -629,13 +930,17 @@ export function serve({
             // Given up when the run is stopped, so closing the agent does
             // not wait on Buzz.
             const result = await awaitWithContext(
-              call("tool", {
-                agent: opened.agent,
-                conversation: api.conversationId,
-                context: opened.contexts.get(api.conversationId) ?? {},
-                name: tool.name,
-                arguments: args,
-              }),
+              call(
+                "tool",
+                {
+                  agent: opened.agent,
+                  conversation: api.conversationId,
+                  context: opened.contexts.get(api.conversationId) ?? {},
+                  name: tool.name,
+                  arguments: args,
+                },
+                signalled.abortSignal,
+              ),
               signalled,
             );
             return {
@@ -817,6 +1122,79 @@ export function serve({
   }
 
   const methods = {
+    async review(turn) {
+      if (protectedAgent)
+        throw new Error("Security inference runs outside requesting workers");
+      if (
+        typeof turn.id !== "string" ||
+        reviews.has(turn.id) ||
+        reviews.size >= 16 ||
+        !turn.prompt ||
+        typeof turn.prompt.system !== "string" ||
+        typeof turn.prompt.input !== "string" ||
+        Buffer.byteLength(JSON.stringify(turn.prompt)) > 768 * 1024
+      )
+        throw new Error("Invalid security review request");
+      const controller = new AbortController();
+      const signal = AbortSignal.any([
+        controller.signal,
+        AbortSignal.timeout(TEST_TIMEOUT_MS),
+      ]);
+      reviews.set(turn.id, controller);
+      try {
+        const { found, model } = await choose(turn);
+        signal.throwIfAborted();
+        const reply = await models.completeSimple(
+          found,
+          {
+            // Pi's models have no response-format option and cannot be made to
+            // call a tool, so the schema can only be stated in the prompt.
+            systemPrompt: turn.prompt.outputSchema
+              ? `${turn.prompt.system}\n\nReply with only JSON that matches this JSON Schema, and no other text:\n${JSON.stringify(turn.prompt.outputSchema)}`
+              : turn.prompt.system,
+            messages: [
+              {
+                role: "user",
+                content: turn.prompt.input,
+                timestamp: Date.now(),
+              },
+            ],
+          },
+          { maxTokens: 1024, maxRetries: 0, signal },
+        );
+        signal.throwIfAborted();
+        if (reply.stopReason === "error" || reply.stopReason === "aborted")
+          throw new Error(
+            reply.errorMessage || "Security model did not answer",
+          );
+        return {
+          text: reply.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join(""),
+          model: { provider: model.provider, id: model.modelId },
+        };
+      } finally {
+        reviews.delete(turn.id);
+      }
+    },
+    "cancel-review"({ id }) {
+      reviews.get(id)?.abort();
+    },
+    runtime() {
+      if (protectedAgent)
+        throw new Error("Protected hosts cannot bootstrap another host");
+      const file = fileURLToPath(import.meta.url),
+        node = realpathSync(process.execPath);
+      return {
+        file,
+        node,
+        codeRoot: dirname(dirname(file)),
+        nodeRoot: dirname(dirname(node)),
+        data,
+        auth: dir,
+      };
+    },
     async providers() {
       const providers = [];
       for (const provider of models.getProviders()) {
@@ -865,6 +1243,10 @@ export function serve({
     },
     /** Asks the model for one short reply. */
     async test(turn) {
+      if (protectedAgent)
+        throw new Error(
+          "Test providers in Pi setup, outside the protected worker",
+        );
       const { found, model } = await choose(turn);
       const reply = await models.completeSimple(
         found,
@@ -891,7 +1273,7 @@ export function serve({
       const opened = await opening(agent);
       const listed = JSON.stringify([tools, hint]);
       if (opened.tools !== listed) {
-        opened.registry.install(buzz(opened, tools, hint));
+        opened.install(buzz(opened, tools, hint));
         opened.tools = listed;
       }
     },
@@ -929,6 +1311,13 @@ export function serve({
         })),
         ...(page.next ? { next: page.next } : {}),
       };
+    },
+    /** The native conversation snapshot used for a final publication review. */
+    async protectionContext({ agent, conversation }) {
+      const { harness } = await agentOf(agent);
+      const found = await harness.conversation(conversation, context);
+      if (!found) throw new Error("The protected conversation is unavailable");
+      return structuredClone((await found.context(context)).messages);
     },
     /** The usage Pi recorded for a conversation, by `<provider>/<model>`:
      * its answers', and the requests that left no answer, such as
@@ -978,6 +1367,7 @@ export function serve({
             };
           }, context);
         }
+        opened.conversations.add(conversation.id);
         opened.contexts.set(conversation.id, tools);
         const { busy } = await watch(opened, conversation.id);
         if (reply)
@@ -1022,6 +1412,7 @@ export function serve({
         { ownership: { kind: "ownerless" } },
         context,
       );
+      opened.conversations.add(conversation.id);
       return submit(opened, conversation, turn, false);
     },
     /** The requests of runs Pi has not finished, with where each one's tools
@@ -1135,21 +1526,23 @@ export function serve({
      * opens again. */
     async close({ agent }) {
       const opening = agents.get(agent);
+      await shut(await opening?.catch(() => undefined));
       agents.delete(agent);
       failed.delete(agent);
-      await shut(await opening?.catch(() => undefined));
     },
   };
 
   async function shut(opened) {
-    if (!opened || opened.closing) return;
-    opened.closing = true;
-    for (const { stream } of opened.watched.values())
-      await stream.stop().catch(() => undefined);
-    await opened.harness.close(context).catch((error) => {
-      console.error("Pi could not close an agent", error);
-    });
-    await opened.release().catch(() => undefined);
+    if (!opened) return;
+    if (!opened.closing)
+      opened.closing = (async () => {
+        for (const { stream } of opened.watched.values()) await stream.stop();
+        await opened.harness.close(context);
+        // A compromised lock may already be released. Native execution has
+        // ended above; releasing ownership is cleanup, not its acknowledgement.
+        await opened.release().catch(() => undefined);
+      })();
+    await opened.closing;
   }
 
   async function handle({ id, method, params }) {
@@ -1167,7 +1560,8 @@ export function serve({
 
   let stopping;
   const stop = () => {
-    stopping ??= Promise.all(
+    for (const review of reviews.values()) review.abort();
+    stopping ??= Promise.allSettled(
       [...agents.values()].map((opening) =>
         opening.then(shut, () => undefined),
       ),

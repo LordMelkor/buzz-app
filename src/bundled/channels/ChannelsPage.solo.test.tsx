@@ -285,6 +285,8 @@ function fixture({
     entryId: "visit",
     target: target?.(scope) ?? conversationTarget(scope, id),
     signal: abort.signal,
+    position: () => undefined,
+    savePosition() {},
     forSession: () => navigation,
     complete,
     resolve: () => true,

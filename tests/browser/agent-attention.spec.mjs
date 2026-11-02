@@ -6,7 +6,7 @@ const runtimeSwitch = (page) =>
 // Real browser focus and scroll geometry are outside jsdom.
 test("The Attention tab fits both themes and sizes and manages existing watches by keyboard", async ({
   page,
-}) => {
+}, testInfo) => {
   await page.goto("/tests/fixtures/agent-attention.html");
   const pane = page.getByRole("region", { name: "Attention", exact: true });
   await expect(pane).toBeVisible();
@@ -14,6 +14,17 @@ test("The Attention tab fits both themes and sizes and manages existing watches 
     .getByRole("button", { name: "Details for Release discussion" })
     .click();
   await expect(page.getByText(/The release is ready for review/)).toBeVisible();
+  const messages = page.locator(".attention-recent > li [data-message-id]");
+  await expect(messages).toHaveCount(3);
+  await expect(messages.first().getByText("Alex")).toBeVisible();
+  await expect(
+    messages.first().getByRole("link", { name: "release doc" }),
+  ).toHaveAttribute("href", "https://example.com/release");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({
+    path: testInfo.outputPath("watching-recent-events.png"),
+    fullPage: true,
+  });
   for (const theme of ["light", "dark"]) {
     for (const width of [390, 1280]) {
       await page.setViewportSize({ width, height: 900 });

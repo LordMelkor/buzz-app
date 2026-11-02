@@ -28,10 +28,8 @@ test("only current channel-wide work appears, once per agent, and clears on end"
     agent,
     channelId,
     threadRootId,
-    timestamp: 1,
     startedAt: 1,
     working: true,
-    expiresAt: 2,
   });
   const active: Snapshot = {
     status: "listening",
@@ -132,10 +130,8 @@ test("links only a current turn to its single captured message", () => {
             agent,
             channelId: "design",
             threadRootId: undefined,
-            timestamp: 60000,
             startedAt: 1000,
             working: true,
-            expiresAt: 68000,
           },
         ],
       },
