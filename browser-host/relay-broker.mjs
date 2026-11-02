@@ -2809,6 +2809,18 @@ export function relayBrokerPlugin({
               const conflict =
                 failure?.sent === false &&
                 failure.refusal?.startsWith("conflict:");
+              // Answer a proven validation refusal as the relay's HTTP API does,
+              // 400 with its bounded text, so every publish path shows the same
+              // reason. The text goes to this client only, never to the log.
+              if (
+                failure?.sent === false &&
+                failure.reason?.startsWith("invalid:") &&
+                !(
+                  readPublishing &&
+                  failure.refusal === READ_STATE_TIMESTAMP_REFUSAL
+                )
+              )
+                return json(res, 400, { error: failure.reason });
               return json(res, conflict ? 409 : 503, {
                 error:
                   failure?.sent === false &&

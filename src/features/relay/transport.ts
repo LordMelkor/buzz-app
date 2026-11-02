@@ -1543,8 +1543,8 @@ const KEPT_PREFIXES = new Set(["rate-limited", "conflict", "auth-required"]);
 /** The relay's own `{error}` text for a refused write. Admission otherwise
  * reduces every upstream body to a status summary, so a signed publish asks
  * it to keep this one, bounded by `readApiFailure`. A gateway or VPN edge
- * can answer the same statuses with JSON `{error}`; only text that starts
- * with a NIP-01 prefix is the relay's. */
+ * can answer the same statuses with JSON `{error}`, so only relay-shaped
+ * text (a NIP-01 prefix) is kept. The prefix is a shape, not proof of origin. */
 const refusalText = (body: unknown, status: number) => {
   const error = (body as { error?: unknown } | null)?.error;
   return REFUSAL_STATUSES.includes(status) &&
@@ -1557,7 +1557,7 @@ const refusalText = (body: unknown, status: number) => {
 /** The display text for an HTTP refusal: the relay's own words without their
  * NIP-01 machine prefix. `reason` keeps the raw text for classification. Text
  * with a prefix writers match on (`conflict:`, `rate-limited:`) is shown as
- * sent. Anything else was not the relay's, so the status summary stays. */
+ * sent. Text without a prefix is not relay-shaped, so the status summary stays. */
 function refusalMessage(status: number, reason: string | undefined) {
   const prefix = reason ? NIP01_PREFIX.exec(reason) : null;
   if (!reason || !prefix) return `Relay rejected the message (${status})`;

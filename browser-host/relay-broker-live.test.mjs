@@ -1055,6 +1055,11 @@ test("production interest controls preserve socket/global routes and pending wri
 test.each([
   ["restricted: not a member", true, "Relay request failed (503)"],
   [
+    'invalid: an open channel named "Launch" already exists',
+    true,
+    'An open channel named "Launch" already exists',
+  ],
+  [
     "error: internal server error",
     false,
     "Relay delivery could not be confirmed (503)",
@@ -1828,13 +1833,20 @@ test.each([
       ]);
       await h.sockets[0].receive(["OK", event.id, false, reason]);
       const response = await result;
-      expect(response.status).toBe(503);
-      expect(await response.json()).toEqual({
-        error: summary.startsWith("rate-limited:")
-          ? summary
-          : "Socket publication could not be confirmed",
-        ...(!sent ? { sent: false } : {}),
-      });
+      // A proven validation refusal answers this client as the relay's HTTP
+      // API does, with its own text; the log keeps only the safe summary.
+      const validation = !sent && reason.startsWith("invalid:");
+      expect(response.status).toBe(validation ? 400 : 503);
+      expect(await response.json()).toEqual(
+        validation
+          ? { error: reason }
+          : {
+              error: summary.startsWith("rate-limited:")
+                ? summary
+                : "Socket publication could not be confirmed",
+              ...(!sent ? { sent: false } : {}),
+            },
+      );
       expect(lines).toContain(
         `publication id=${event.id} kind=9000 stage=socket sent=${sent} reason=Relay publication not confirmed refusal=${summary}`,
       );
