@@ -56,7 +56,8 @@ performs DNS verification. Ordinary human profiles have no agent fields.
 
 ## Boundaries
 
-- Shared message UI recognizes author-avatar targets and identity-bound mentions.
+- Shared message UI recognizes author-avatar and byline-name targets and
+  identity-bound mentions.
   Ordinary `canOpenLink` / `onOpenLink` props advertise availability and dispatch.
   Channels resolves active contributions at click time and owns the right slot.
 - `nostr:npub…` is the exact public-key target, with no relay hint or authority.

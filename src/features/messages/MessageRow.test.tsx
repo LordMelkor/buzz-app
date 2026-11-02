@@ -193,6 +193,107 @@ it("tells link handlers the thread a reply was opened from", () => {
   }
 });
 
+it.each([
+  { agentEnvelope: false, scheme: "nostr:npub1" },
+  { agentEnvelope: true, scheme: "buzz:agent-profile:" },
+])(
+  "opens the author's profile from the byline name: %j",
+  ({ agentEnvelope, scheme }) => {
+    const authorId = "ab".repeat(32);
+    const open = vi.fn(() => true);
+    try {
+      renderMessage({
+        row: {
+          ...row,
+          authorId,
+          ...(agentEnvelope ? { agentEnvelope: true as const } : {}),
+        },
+        profile: { name: "Mic" },
+        onOpenLink: open,
+        canOpenLink: () => true,
+      });
+      const name = screen.getByRole("button", { name: "Mic" });
+      // Text with a role, so a selection can start on it; the avatar stays
+      // the group's only tab stop.
+      expect(name.tagName).toBe("SPAN");
+      expect(name).toHaveAttribute("tabindex", "-1");
+      expect(name).not.toHaveAttribute("data-profile-target");
+      fireEvent.click(name);
+      // Focused first, so closing the profile can return here.
+      expect(name).toHaveFocus();
+      const target = profileTarget(authorId, { agent: agentEnvelope });
+      expect(target?.startsWith(scheme)).toBe(true);
+      expect(open).toHaveBeenCalledExactlyOnceWith(target, { rootId: "root" });
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+it("treats a click that selected the name as a selection, and opens from Enter or Space", () => {
+  const open = vi.fn(() => true);
+  try {
+    renderMessage({
+      row: { ...row, authorId: "ab".repeat(32) },
+      profile: { name: "Mic" },
+      onOpenLink: open,
+      canOpenLink: () => true,
+    });
+    const name = screen.getByRole("button", { name: "Mic" });
+    const selection = document.getSelection();
+    if (!selection) throw new Error("jsdom selection missing");
+    // A double-click or drag leaves the name selected when the click lands.
+    selection.selectAllChildren(name);
+    fireEvent.click(name);
+    expect(open).not.toHaveBeenCalled();
+    selection.removeAllRanges();
+    fireEvent.click(name);
+    expect(open).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(name, { key: "a" });
+    expect(open).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(name, { key: "Enter" });
+    // Space must not also scroll the timeline: the default is cancelled.
+    expect(fireEvent.keyDown(name, { key: " " })).toBe(false);
+    expect(open).toHaveBeenCalledTimes(3);
+  } finally {
+    cleanup();
+  }
+});
+
+it("keeps the byline name plain where profiles cannot open or the byline is screen-reader only", () => {
+  const props = {
+    row: { ...row, authorId: "ab".repeat(32) },
+    profile: { name: "Mic" },
+    canOpenLink: () => true,
+  };
+  try {
+    const { rerender } = renderMessage({
+      ...props,
+      canOpenLink: () => false,
+    });
+    expect(screen.getByText("Mic").closest('[role="button"]')).toBeNull();
+    rerender(
+      <MessageRow
+        {...props}
+        media={() => undefined}
+        onOpenLink={() => true}
+        day={false}
+        retry={undefined}
+        stackPrevious
+      />,
+    );
+    // The continuation still has its avatar, but its byline is text only.
+    expect(
+      screen.getByRole("button", { name: "View Mic profile" }),
+    ).toBeInTheDocument();
+    const name = screen.getByText("Mic");
+    expect(name.closest(".sr-only")).toBeInTheDocument();
+    expect(name.closest('[role="button"]')).toBeNull();
+  } finally {
+    cleanup();
+  }
+});
+
 it("keeps plain agent presence without avatar activity, and omits human presence from messages", () => {
   const agentRow = { ...row, authorId: "a".repeat(64) };
   const subscribe = vi.fn(() => () => {});
@@ -2186,7 +2287,11 @@ it("presents automation, links the owner and discloses the separate relay signer
       onOpenLink: open,
       canOpenLink: () => true,
     });
-    expect(screen.getByText("Workflow")).toBeTruthy();
+    // The automation label stays plain; only the owner opens a profile.
+    expect(
+      screen.getByText("Workflow").closest('button, [role="button"]'),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Wes" })).toBeNull();
     expect(document.querySelector("[data-viewer-message]")).toBeNull();
     expect(document.querySelector("[data-own]")).toBeNull();
     fireEvent.click(

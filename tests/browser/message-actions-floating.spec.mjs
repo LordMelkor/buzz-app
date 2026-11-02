@@ -210,6 +210,64 @@ for (const own of [true, false]) {
 
 // Browser-only: caption and attachment content share one raised action position
 // while retaining native hit testing and an uninterrupted pointer path.
+// A first-of-group received message's name opens the sender's profile, so the
+// bar moves off it. Browser-only: whether a bar beside the bubble still meets
+// a slow diagonal, and whether the name beneath takes the click, are top-layer
+// hit tests on measured geometry.
+test("actions clear a short received message's name and stay reachable beside it", async ({
+  page,
+  app,
+}) => {
+  await open(page, app);
+  // An own message first, so the received "ok" starts a group with a byline.
+  app.append("primary", "alpha", "Mine", true, true);
+  const event = app.append("primary", "alpha", "ok", true, false);
+  const row = page.locator(
+    `[data-channel-timeline] [data-message-id="${event.id}"]`,
+  );
+  const actions = actionsFor(row);
+  const name = row.locator("strong > [role='button']");
+  await expect(name).toBeVisible();
+  await settle(page);
+  await hoverMessage(row);
+  await shown(actions);
+  await actions.evaluate((bar) =>
+    Promise.all(bar.getAnimations().map((animation) => animation.finished)),
+  );
+  const [nameBox, bar] = await Promise.all([
+    name.boundingBox(),
+    actions.boundingBox(),
+  ]);
+  // The bar is at the name's height but entirely beside it.
+  expect(bar.y + bar.height).toBeGreaterThan(nameBox.y);
+  expect(bar.x).toBeGreaterThan(nameBox.x + nameBox.width);
+  // A slow diagonal from the bubble crosses the byline to either end.
+  for (const label of ["React with 👍", "More message actions"]) {
+    await hoverMessage(row);
+    const button = await actions
+      .getByRole("button", { name: label, exact: true })
+      .boundingBox();
+    await page.mouse.move(
+      button.x + button.width / 2,
+      button.y + button.height / 2,
+      { steps: 30 },
+    );
+    await shown(actions);
+  }
+  // The byline keeps the hover only: with the bar shown, the name itself
+  // still takes the click and opens the profile.
+  await hoverMessage(row);
+  await name.hover();
+  await shown(actions);
+  const author = await name.innerText();
+  await name.click();
+  await expect(
+    page
+      .getByRole("complementary", { name: "Profile", exact: true })
+      .getByRole("heading", { name: author, exact: true }),
+  ).toBeVisible();
+});
+
 for (const own of [false, true]) {
   test(`captioned ${own ? "own" : "received"} attachments keep their actions reachable`, async ({
     page,

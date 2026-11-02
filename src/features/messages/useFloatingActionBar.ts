@@ -103,6 +103,8 @@ export function useFloatingActionBar(
   const contentBounds = useRef<{
     content: DOMRect;
     toolbar: DOMRect;
+    /** Byline band from the content to a bar moved off the author's name. */
+    clearance: DOMRect | null;
   } | null>(null);
 
   useEffect(() => {
@@ -133,7 +135,7 @@ export function useFloatingActionBar(
         !row.contains(target)
       )
         return false;
-      const { content, toolbar } = bounds;
+      const { content, toolbar, clearance } = bounds;
       const { clientX: x, clientY: y } = event;
       if (
         target.closest("[data-message-payload]") &&
@@ -141,6 +143,17 @@ export function useFloatingActionBar(
         x <= content.right &&
         y >= content.top &&
         y <= content.bottom
+      )
+        return true;
+      // A bar moved off the author's name no longer meets the content's top
+      // edge: the byline band from the content to the bar keeps the hover on
+      // the way to either end.
+      if (
+        clearance &&
+        x >= clearance.left &&
+        x <= clearance.right &&
+        y >= clearance.top &&
+        y <= clearance.bottom
       )
         return true;
       if (y < toolbar.bottom || y > content.bottom) return false;
@@ -314,6 +327,10 @@ export function useFloatingActionBar(
           Math.max(whole.bottom, rect.bottom) - top,
         );
       }
+      // The author's name opens a profile; the bar must not cover it.
+      const author = row
+        .querySelector("[data-message-author]")
+        ?.getBoundingClientRect();
       if (covered(anchor)) {
         hide();
         return;
@@ -365,10 +382,33 @@ export function useFloatingActionBar(
       bar.style.clipPath =
         hidden > 0 ? `inset(${hidden}px -100vmax -100vmax)` : "";
       const left = rtl ? whole.left - overlap : whole.right - width + overlap;
-      const placedLeft = Math.max(start, Math.min(left, end - width));
+      // Over a short message the bar would cover the name, so it clears the
+      // name on the side with room. A mirrored row keeps its place: its bar
+      // already ends at the avatar.
+      const cleared =
+        author?.width &&
+        author.bottom > paintedTop &&
+        author.top < top &&
+        !row.hasAttribute("data-viewer-message")
+          ? rtl
+            ? Math.min(left, author.left - gap - width)
+            : Math.max(left, author.right + gap)
+          : left;
+      const placedLeft = Math.max(start, Math.min(cleared, end - width));
+      const toolbar = new DOMRect(placedLeft, paintedTop, width, height);
+      const clearanceLeft = Math.min(whole.left, toolbar.left);
       contentBounds.current = {
         content: whole,
-        toolbar: new DOMRect(placedLeft, paintedTop, width, height),
+        toolbar,
+        clearance:
+          cleared === left
+            ? null
+            : new DOMRect(
+                clearanceLeft,
+                paintedTop,
+                Math.max(whole.right, toolbar.right) - clearanceLeft,
+                height,
+              ),
       };
       bar.style.top = `${top}px`;
       bar.style.left = `${placedLeft}px`;

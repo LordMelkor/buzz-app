@@ -209,6 +209,23 @@
   font-weight: var(--type-weight-medium);
   min-width: 0;
 }
+/* The name opens a profile but stays the byline's text at rest; the link
+   shows only under a fine pointer or keyboard focus. */
+.authorLink {
+  cursor: pointer;
+}
+@media (hover: hover) and (pointer: fine) {
+  .authorLink:hover {
+    color: var(--text-link);
+    text-decoration: underline;
+  }
+}
+html[data-keyboard-navigation] .authorLink:focus-visible {
+  color: var(--text-link);
+  text-decoration: underline;
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
 .authorAgentIcon {
   display: inline-block;
   width: 1em;
