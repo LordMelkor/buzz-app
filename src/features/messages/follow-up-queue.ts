@@ -236,6 +236,11 @@ function createQueue(session: RelaySession) {
       }
       storage.sending(entry.id, false);
     }
+    const remaining = (waits.get(entry.channelId) ?? []).filter(
+      (wait) => wait.message !== dismissed,
+    );
+    if (remaining.length) waits.set(entry.channelId, remaining);
+    else waits.delete(entry.channelId);
     entry.deliveryId = undefined;
     entry.dismissedDelivery = undefined;
     entry.sending = false;
@@ -450,11 +455,13 @@ function createQueue(session: RelaySession) {
             storage.claim(entry.channelId, handoff);
             handoffs.set(entry.channelId, handoff);
           }
-          waitForMessage(entry, previous.event.id);
           await session.outbox.recover(
             previous.event.id,
             followUpRecovery(entry.id),
-            () => storage.remove(entry.id),
+            () => {
+              storage.remove(entry.id);
+              waitForMessage(entry, previous.event.id);
+            },
           );
           entries = entries.filter((item) => item !== entry);
           return;
@@ -469,6 +476,20 @@ function createQueue(session: RelaySession) {
       validating.add(entry.id);
       if (entry.beforeRelease) await entry.beforeRelease();
       validating.delete(entry.id);
+      const owner =
+        storage && entry.message ? await storage.owner() : undefined;
+      const predecessor =
+        storage && entry.message ? storage.handoff(entry.channelId) : null;
+      const livePredecessor =
+        storage &&
+        predecessor &&
+        !requested.has(entry.id) &&
+        !predecessor.complete &&
+        !handoffFinished(predecessor) &&
+        predecessor.id !== handoffs.get(entry.channelId)?.id &&
+        (await storage.isLive(predecessor));
+      // Ownership queries can yield to pauses, removals, and new activity.
+      // Keep the final publication guards and claim in one synchronous step.
       if (!entries.includes(entry)) return;
       if (
         !requested.has(entry.id) &&
@@ -480,21 +501,13 @@ function createQueue(session: RelaySession) {
         awaitingChoices = true;
         return;
       }
-      entry.beforePublish?.();
-      requested.get(entry.id)?.();
       if (storage && entry.message) {
-        const predecessor = storage.handoff(entry.channelId);
         const first = storage
           .load()
           .find((row) => row.channelId === entry.channelId);
         if (
           !requested.has(entry.id) &&
-          (first?.id !== entry.id ||
-            (predecessor !== null &&
-              !predecessor.complete &&
-              !handoffFinished(predecessor) &&
-              predecessor.id !== handoffs.get(entry.channelId)?.id &&
-              (await storage.isLive(predecessor))))
+          (first?.id !== entry.id || livePredecessor)
         ) {
           entries = entries.map((item) =>
             item === entry
@@ -509,12 +522,16 @@ function createQueue(session: RelaySession) {
           );
           return;
         }
+      }
+      entry.beforePublish?.();
+      requested.get(entry.id)?.();
+      if (storage && entry.message) {
         // Retain the claim after removing the row: storage events and agent
         // activity in another window may both arrive after this handoff.
         storage.claim(entry.channelId, {
           id: entry.id,
           recipients: entry.recipients,
-          owner: await storage.owner(),
+          ...(owner ? { owner } : {}),
         });
         claimed = true;
         storage.sending(entry.id, true);
@@ -533,7 +550,7 @@ function createQueue(session: RelaySession) {
             id: entry.id,
             message: id,
             recipients: entry.recipients,
-            owner: await storage.owner(),
+            ...(owner ? { owner } : {}),
           };
           handoffs.set(entry.channelId, handoff);
           storage.claim(entry.channelId, handoff);

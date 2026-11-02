@@ -1637,6 +1637,65 @@ it("keeps a restored mixed resume cohort paused when an unarmed request is aband
   expect(h.send).not.toHaveBeenCalled();
 });
 
+it.each(["liveness", "owner"])(
+  "keeps a restored mixed resume cohort paused when abandonment races the %s check",
+  async (check) => {
+    const other = "d".repeat(64);
+    fixture().enqueue({ ...message, recipients: [agent, other] });
+    const h = fixture();
+    await h.owner.ready;
+    h.choices(true, [agent, other]);
+    h.refresh.mockResolvedValue({
+      ...(await h.refresh()),
+      members: [viewer, agent, other],
+    });
+    h.finish();
+    const storage = followUpStorage(scope);
+    storage.claim("chat", {
+      id: "earlier-row",
+      message: "earlier-request",
+      recipients: [agent],
+      owner: "closed-window",
+    });
+    let reached!: () => void;
+    const checking = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    if (check === "liveness") {
+      vi.spyOn(navigator.locks, "query").mockImplementation(async () => {
+        reached();
+        await gate;
+        return { held: [], pending: [] };
+      });
+    } else {
+      const request = navigator.locks.request.bind(navigator.locks);
+      vi.spyOn(navigator.locks, "request").mockImplementation((...args) => {
+        if (args[0].startsWith("buzz-follow-up-window:")) {
+          reached();
+          return gate.then(() => request(...args));
+        }
+        return request(...args);
+      });
+    }
+    h.queue.resumeAfter(agent, { original: "chat" });
+    h.work("original", "done");
+    try {
+      await checking;
+      h.queue.pauseAfter(other, { unsupported: "chat" });
+      expect(h.queue.snapshot()[0]?.restored).toBe(true);
+    } finally {
+      release();
+      await storage.lockChat("chat", async () => {});
+    }
+    expect(h.queue.snapshot()[0]?.restored).toBe(true);
+    expect(h.send).not.toHaveBeenCalled();
+  },
+);
+
 it.each(["completion", "activity"])(
   "keeps a successor automatic when predecessor %s precedes removal",
   async (evidence) => {
@@ -1934,6 +1993,16 @@ it.each(["send", "storage", "after-lookup"])(
             item.event.id !== old.event.id,
         ),
     ).toBe(true);
+    if (trigger === "after-lookup") {
+      const replacement = stale.send.mock.results[0]?.value as string;
+      expect(replacement).not.toBe(old.event.id);
+      stale.enqueue({ ...message, text: "Successor" });
+      stale.finish();
+      stale.work(replacement, "done");
+      await vi.waitFor(() => expect(stale.send).toHaveBeenCalledTimes(2));
+      expect(stale.send.mock.calls[1]?.[1]).toBe("Successor");
+      await vi.waitFor(() => expect(stale.queue.snapshot()).toEqual([]));
+    }
   },
 );
 
