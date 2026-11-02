@@ -324,6 +324,7 @@ it("shows the promoted DM's shared unread pip, clears when read, and follows rep
       },
     },
     {
+      readStateFloor: () => 0,
       readPublisherLock: async (_signal, work) => work(),
       readStateStorage: {
         async update(change) {
