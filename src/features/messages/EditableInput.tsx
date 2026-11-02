@@ -496,6 +496,7 @@ export function EditableInput({
       return projected.value;
     };
     const tokenViews = () => refresh((revision) => revision + 1);
+    let formats: string | undefined;
     const selected = () => {
       const { from, to, empty, $from } = editor.state.selection;
       const active = inlineFormats
@@ -511,10 +512,13 @@ export function EditableInput({
           return present;
         })
         .map(({ mark }) => mark);
-      current.current.onFormatsChange([
-        ...active,
-        ...activeBlockFormats(editor.state),
-      ]);
+      const next = [...active, ...activeBlockFormats(editor.state)];
+      // Every transaction lands here; an unchanged toolbar state must not
+      // re-render the whole composer once more per keystroke.
+      if (next.join() !== formats) {
+        formats = next.join();
+        current.current.onFormatsChange(next);
+      }
       editor.dom.dispatchEvent(new Event("select"));
     };
     const normalize = new Plugin({
@@ -1712,6 +1716,8 @@ export function EditableInput({
           selected();
         },
         nodeViews: {
+          // Tokens also come and go in transactions the normalizer appends,
+          // which report no change of their own; render each new host's artwork.
           token(node, _view, getPos) {
             const dom = document.createElement("span");
             dom.className = tokenClass.current;
@@ -1723,11 +1729,13 @@ export function EditableInput({
               pending: node.attrs.pending,
               position: getPos,
             });
+            tokenViews();
             return {
               dom,
               ignoreMutation: () => true,
               destroy() {
                 hosts.current.delete(dom);
+                tokenViews();
               },
             };
           },
