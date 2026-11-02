@@ -358,6 +358,8 @@ function crossTokenLine(
 type PendingChip = { id: string; name: string };
 // Pending chip ids outlive an editor: a host keeps its resolvers across remounts.
 let pendingChips = 0;
+// Token hosts are keyed so one chip leaving keeps every later chip mounted.
+let tokenHosts = 0;
 export type EditableInputProps = Omit<
   HTMLAttributes<ComposerInputElement>,
   "onChange" | "onInput"
@@ -425,6 +427,7 @@ export function EditableInput({
     new Map<
       HTMLElement,
       {
+        key: string;
         source: string;
         resource: ComposerResource | null;
         pending: PendingChip | null;
@@ -1724,6 +1727,7 @@ export function EditableInput({
             dom.contentEditable = "false";
             dom.dataset.source = node.attrs.source;
             hosts.current.set(dom, {
+              key: `token-${++tokenHosts}`,
               source: node.attrs.source,
               resource: node.attrs.resource,
               pending: node.attrs.pending,
@@ -2500,6 +2504,7 @@ export function EditableInput({
             (decoration?.content ?? host.source)
           ),
           element,
+          host.key,
         );
       })}
     </>

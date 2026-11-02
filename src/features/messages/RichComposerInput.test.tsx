@@ -1,13 +1,17 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useLayoutEffect, useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ComposerFormat, ComposerInputElement } from "./composer-dom";
 import { composerMarkdown } from "./composer-markdown";
 import type { ComposerSession } from "./composer-session";
-import { composerDOMFixture } from "./composer-testing";
+import {
+  composerDOMFixture,
+  longRichDraft,
+  pasteRichDraft,
+} from "./composer-testing";
 import { mentionDraft, type MentionDraft } from "./mention-draft";
 import { MessageMarkdown } from "./MessageMarkdown";
 import { RichComposerInput } from "./RichComposerInput";
@@ -27,43 +31,6 @@ vi.mock("../relay/message-content", async (importOriginal) => {
 
 composerDOMFixture();
 afterEach(cleanup);
-
-/** A long status update as Buzz copies it: nine bold section titles, each over
- * a list. Each of the 38 items opens with a pull request link; the last lists
- * eight. Placeholder prose only. */
-function statusUpdate() {
-  const words = "alpha bravo charlie delta echo foxtrot golf hotel".split(" ");
-  const prose = (seed: number) =>
-    Array.from(
-      { length: 5 + (seed % 9) },
-      (_, i) => words[(seed + i) % words.length],
-    ).join(" ");
-  const pull = (n: number, label = `#${n}`) =>
-    `<a href="https://github.com/example/app/pull/${n}">${label}</a>`;
-  let html = "";
-  let n = 100;
-  const sections = [3, 5, 4, 6, 3, 8, 4, 3, 2];
-  sections.forEach((items, section) => {
-    html += `<p><strong>Section title (${section + 1})</strong></p><ul>`;
-    for (let item = 0; item < items; item++) {
-      n += 7;
-      if (section === sections.length - 1 && item === items - 1) {
-        const pulls = Array.from({ length: 8 }, (_, i) => pull(n + i));
-        html += `<li>${pulls.join(", ")}</li>`;
-        continue;
-      }
-      const extra = [
-        " ⚠️ check",
-        " “quoted” isn’t",
-        " ⌘K",
-        " &lt;Name&gt; in #general",
-      ][item % 4];
-      html += `<li>${pull(n, item % 3 ? `#${n}` : `repo #${n}`)} ${prose(n)}${extra}</li>`;
-    }
-    html += "</ul>";
-  });
-  return `<div data-buzz-copy>${html}</div>`;
-}
 
 function mount() {
   const ref = createRef<ComposerInputElement>();
@@ -110,27 +77,27 @@ function mount() {
   render(<Host />, { reactStrictMode: true });
   const input = ref.current;
   if (!input) throw new Error("Editor did not mount");
-  return { input, draft: () => draft, commits: () => commits };
+  pasteRichDraft(input, longRichDraft());
+  expect(input.querySelectorAll("[data-source]")).toHaveLength(45);
+  expect(input.querySelectorAll("strong")).toHaveLength(9);
+  expect(input.querySelectorAll("li")).toHaveLength(38);
+  return {
+    input,
+    draft: () => draft,
+    commits: () => commits,
+    pasted: composerMarkdown(draft),
+    /** Each chip's artwork, as its link label. */
+    chips: () =>
+      [...input.querySelectorAll<HTMLElement>("[data-source]")].map(
+        (chip) => [chip.dataset.source, chip.textContent] as const,
+      ),
+  };
 }
+
+const label = (source = "") => source.match(/^\[(.*)\]\(/)?.[1];
 
 it("types into a long rich draft without redrawing its link tokens or reparsing per pass", async () => {
   const h = mount();
-  act(() => {
-    h.input.focus();
-    fireEvent.paste(h.input, {
-      clipboardData: {
-        items: [],
-        types: ["text/plain", "text/html"],
-        getData: (type: string) =>
-          type === "text/html" ? statusUpdate() : "copied text",
-      },
-    });
-  });
-  const tokens = h.input.querySelectorAll("[data-source]").length;
-  expect(tokens).toBe(45);
-  expect(h.input.querySelectorAll("strong")).toHaveLength(9);
-  expect(h.input.querySelectorAll("li")).toHaveLength(38);
-  const pasted = composerMarkdown(h.draft());
   const text = h.draft().text;
   // Prose with later tokens, whose offsets every keystroke shifts.
   const middle = text.indexOf(" bravo", text.length / 2) + 1;
@@ -140,7 +107,7 @@ it("types into a long rich draft without redrawing its link tokens or reparsing 
   const parses = vi.mocked(scanMarkdown);
   // Whole-draft parses, not a token's own source.
   const draftParses = () =>
-    parses.mock.calls.filter(([text]) => text.length > pasted.length / 2)
+    parses.mock.calls.filter(([text]) => text.length > h.pasted.length / 2)
       .length;
   for (const key of "xyz") {
     renders.mockClear();
@@ -153,14 +120,42 @@ it("types into a long rich draft without redrawing its link tokens or reparsing 
     expect(renders).not.toHaveBeenCalled();
     expect(draftParses()).toBe(1);
   }
-  expect(h.input.querySelectorAll("[data-source]")).toHaveLength(tokens);
+  expect(h.input.querySelectorAll("[data-source]")).toHaveLength(45);
   expect(h.draft().text).toBe(
     `${text.slice(0, middle)}xyz${text.slice(middle)}`,
   );
   const sent = composerMarkdown(h.draft());
   expect(sent.split("xyz")).toHaveLength(2);
-  expect(sent.replace("xyz", "")).toBe(pasted);
+  expect(sent.replace("xyz", "")).toBe(h.pasted);
   act(() => h.input.undo(false));
-  expect(composerMarkdown(h.draft())).toBe(pasted);
-  expect(h.input.querySelectorAll("[data-source]")).toHaveLength(tokens);
+  expect(composerMarkdown(h.draft())).toBe(h.pasted);
+  expect(h.input.querySelectorAll("[data-source]")).toHaveLength(45);
+});
+
+it("deletes a chip without redrawing the chips after it, and restores it on undo", async () => {
+  const h = mount();
+  const chips = h.chips();
+  const [first] = chips;
+  if (!first?.[0]) throw new Error("No chip pasted");
+  for (const [source, artwork] of chips) expect(artwork).toBe(label(source));
+  const text = h.draft().text;
+  const start = text.indexOf(first[0]);
+  const end = start + first[0].length;
+  act(() => h.input.setSelectionRange(start, end));
+  const user = userEvent.setup();
+  const renders = vi.mocked(MessageMarkdown);
+  renders.mockClear();
+  await user.keyboard("{Backspace}");
+  // The first host leaves; every later host stays mounted with its artwork.
+  expect(h.chips()).toEqual(chips.slice(1));
+  expect(renders).not.toHaveBeenCalled();
+  expect(h.draft().text).toBe(`${text.slice(0, start)}${text.slice(end)}`);
+  renders.mockClear();
+  act(() => h.input.undo(false));
+  expect(h.chips()).toEqual(chips);
+  expect(composerMarkdown(h.draft())).toBe(h.pasted);
+  // Only the restored chip drew.
+  expect(
+    new Set(renders.mock.calls.map(([props]) => props.row.content)),
+  ).toEqual(new Set([first[0]]));
 });

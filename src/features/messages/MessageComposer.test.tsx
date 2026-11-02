@@ -8,7 +8,12 @@ import { createMemberAdditions } from "../channel-members/operations";
 import { addChannelMember } from "../channel-members/members";
 import "@testing-library/jest-dom/vitest";
 import { mentionHistory } from "./mention-history";
-import { composerDOMFixture, typedDraft } from "./composer-testing";
+import {
+  composerDOMFixture,
+  longRichDraft,
+  pasteRichDraft,
+  typedDraft,
+} from "./composer-testing";
 import { bindNames } from "../identity-names/service";
 import { createAgentDirectory } from "../identity-names/testing";
 import {
@@ -61,6 +66,7 @@ import { ConversationPresentation } from "../conversation/ConversationPresentati
 import { AgentsContext } from "../agents/react";
 import type { Agents } from "../agents/service";
 import { MessageComposer, type MessageComposerProps } from "./MessageComposer";
+import { MessageMarkdown } from "./MessageMarkdown";
 import { MessageEditScope, useMessageEditScope } from "./MessageEditScope";
 import { createRelaySession, type RelaySession } from "../relay/session";
 import { keypair, metadata, roster, signed } from "../relay/testing";
@@ -88,6 +94,12 @@ import { ResourcePicker } from "../../bundled/repos/ResourcePicker";
 import { entityHref } from "../repos/routes";
 import type { Entity, RepositoryHome } from "../repos/destinations";
 import { HELPFUL_HINT_REST_MS } from "../../shared/design-system/ui/hoverIntent";
+
+// Pass-through spy: the real renderer runs; a test counts chip redraws.
+vi.mock("./MessageMarkdown", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./MessageMarkdown")>();
+  return { ...actual, MessageMarkdown: vi.fn(actual.MessageMarkdown) };
+});
 
 composerDOMFixture();
 
@@ -533,6 +545,25 @@ it("publishes typing for text edits but not caret-driven token expansion", () =>
   expect(send).not.toHaveBeenCalled();
   h.fill(`${text}x`);
   expect(send).toHaveBeenCalledTimes(1);
+});
+
+it("types into a long chip-heavy draft without redrawing its link chips", async () => {
+  const h = mount();
+  pasteRichDraft(h.input(), longRichDraft());
+  expect(h.input().querySelectorAll("[data-source]")).toHaveLength(45);
+  const text = h.input().value;
+  const middle = text.indexOf(" bravo", text.length / 2) + 1;
+  act(() => h.input().setSelectionRange(middle, middle));
+  const renders = vi.mocked(MessageMarkdown);
+  renders.mockClear();
+  await h.user.keyboard("xyz");
+  // The composer re-renders per keystroke to save the draft; the chips'
+  // props (emoji, extensions, directory, members) must hold across it.
+  expect(renders).not.toHaveBeenCalled();
+  expect(h.input()).toHaveValue(
+    `${text.slice(0, middle)}xyz${text.slice(middle)}`,
+  );
+  expect(h.input().querySelectorAll("[data-source]")).toHaveLength(45);
 });
 
 it("retires reply controls immediately and preserves the draft when replying again", () => {
