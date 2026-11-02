@@ -2,7 +2,11 @@ import { pauseClock } from "./clock.mjs";
 import { openChannelDetails } from "./channel-details.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open, virtuaIdle } from "./timeline.mjs";
-import { holdReadingFocus, releaseReadingFocus } from "./reading.mjs";
+import {
+  holdReadingFocus,
+  readJournal,
+  releaseReadingFocus,
+} from "./reading.mjs";
 
 test.use({
   productionBroker: true,
@@ -539,15 +543,22 @@ test("thread buttons show observed unread independently, clear only after readin
   await replyComposer.focus();
   await page.clock.runFor(300);
   await expect(replyComposer).toBeFocused();
+  // The isolated message read is durable on this device and never published.
   await expect
     .poll(
-      () =>
-        app.report.readPublications.some(({ blob }) =>
-          Object.hasOwn(blob.contexts, `msg:${directId}`),
+      async () =>
+        Object.hasOwn(
+          (await readJournal(page)).state.frontiers,
+          `msg:${directId}`,
         ),
       { timeout: 12000 },
     )
     .toBe(true);
+  expect(
+    app.report.readPublications.some(({ blob }) =>
+      Object.hasOwn(blob.contexts, `msg:${directId}`),
+    ),
+  ).toBe(false);
   await expect(replyComposer).toBeFocused();
   await expect(other).toHaveAccessibleName(/Observed unread replies/);
   await expect(

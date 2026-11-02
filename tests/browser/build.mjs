@@ -79,6 +79,19 @@ export async function buildApp(
       },
       build: { outDir: join(directory, "dist"), emptyOutDir: true },
     };
+    // Fixture histories are signed in 2023, so the 30-day read floor would read
+    // every one of them. Journeys assert unread behavior, not retention; the
+    // floor itself is covered by read-state unit tests.
+    config.plugins.push({
+      name: "fixture-read-floor",
+      enforce: "pre",
+      transform(code, id) {
+        if (id !== join(root, "src/features/relay/read-state.ts")) return;
+        const seam = "floor = () => now() - READ_RETENTION_SECONDS,";
+        if (!code.includes(seam)) throw new Error("Missing read floor seam");
+        return code.replace(seam, "floor = () => 0,");
+      },
+    });
     if (localAgentActivity)
       config.plugins.push({
         name: "fixture-local-agent",

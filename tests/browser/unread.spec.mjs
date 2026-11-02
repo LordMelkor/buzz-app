@@ -611,8 +611,10 @@ test.describe("local receipt reserve", () => {
       })
       .toBe(stored.revision);
     expect(
-      app.report.readPublications.at(-1).blob.contexts[key],
-    ).toBeUndefined();
+      app.report.readPublications.some(({ blob }) =>
+        Object.hasOwn(blob.contexts, key),
+      ),
+    ).toBe(false);
     await page.reload();
     await openPage(page, "Messages");
     await composer(page).waitFor();
