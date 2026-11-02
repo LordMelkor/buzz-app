@@ -885,6 +885,7 @@ export function createTabs(
     const saved = new Set(conversations.map((row) => row.key));
     const views = new Map(sessions.map((view) => [view.key, view]));
     const unbound = sessions.filter((view) => !saved.has(view.key));
+    const current = here && views.get(here.key);
     const detail = (text: string, status?: string) =>
       status !== "Working" ? (
         <p className="m-0 whitespace-pre-wrap break-words text-body-sm text-subtle">
@@ -908,7 +909,8 @@ export function createTabs(
             session={here}
             searching={searching}
             error={lookupError}
-            status={here && views.get(here.key)?.status}
+            status={current?.status}
+            detail={current?.detail && detail(current.detail, current.status)}
             onView={() => here && show(here)}
           />
         )}

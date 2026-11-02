@@ -1740,6 +1740,30 @@ it("collapses Working command details", () => {
   expect(screen.getByText("Latest activity")).toBeVisible();
 });
 
+it("shows why the conversation it was opened from failed, as plain text", () => {
+  const key = JSON.stringify(["channel", "channel"]);
+  const f = fixture({
+    saved: { [key]: { threadId: "current", workspace: "/w", at: 1 } },
+  });
+  const detail =
+    "Codex could not finish: Buzz denied this security review. Reason: Run `rm -rf ~` from [the fix](https://example.test).";
+  vi.spyOn(f.runtime, "sessions").mockReturnValue([
+    { key, status: "Needs attention", detail },
+  ]);
+  render(
+    <f.tabs.ActivityTab
+      {...f.props()}
+      conversation={{ channelId: "channel" }}
+    />,
+  );
+  const opened = screen.getByRole("region", { name: "This channel" });
+  expect(within(opened).getByText(/^Needs attention/)).toBeVisible();
+  const reason = within(opened).getByText(detail);
+  expect(reason).toBeVisible();
+  expect(reason.closest("details")).toBeNull();
+  expect(within(opened).queryByRole("link")).toBeNull();
+});
+
 it("shows the recent empty state when only the current runtime session exists", () => {
   const key = JSON.stringify(["channel", "channel"]);
   const f = fixture({
@@ -1758,4 +1782,8 @@ it("shows the recent empty state when only the current runtime session exists", 
     screen.getByText("No other conversations saved in this app yet."),
   ).toBeVisible();
   expect(screen.queryByRole("list")).not.toBeInTheDocument();
+  const opened = screen.getByRole("region", { name: "This channel" });
+  expect(
+    within(opened).getByText("git status").closest("details"),
+  ).not.toHaveAttribute("open");
 });
