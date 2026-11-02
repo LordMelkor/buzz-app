@@ -299,14 +299,17 @@ export class DiscoveryState {
     for (const id of this.metadata.keys()) if (this.preview(id)) slots++;
     return slots;
   }
-  /** Metadata held only to show a nonmember channel. Joined, left and denied
-   * channels, a starting chat and a preview a reader holds keep theirs. */
+  /** Public metadata held only to show a nonmember channel. Joined, left and
+   * denied channels, a starting chat and a preview a reader holds keep theirs.
+   * So does private or hidden metadata: it may be the only evidence that an
+   * older public replay is stale. */
   private preview(id: string) {
     return (
       !this.rosters.has(id) &&
       !this.denied.has(id) &&
       !this.starting.has(id) &&
-      !this.pinned(id)
+      !this.pinned(id) &&
+      this.open(id)
     );
   }
   /** Frees the slot of the preview that was answered least recently. Its

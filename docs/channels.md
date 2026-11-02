@@ -1207,8 +1207,9 @@ The port retains the prepared-store implementation and its behavior tests:
   versions present when the scan began. Failure, cancellation, nonadvancing
   cursors and the separate 1,024-entry roster/metadata retention caps leave
   coverage partial. Public previews yield their metadata slots to joined
-  channels, so only channels the viewer joined, left or was denied, and
-  previews still on screen, fill the metadata cap. A joined channel whose name finds no slot stays hidden,
+  channels, so only channels the viewer joined, left or was denied, private
+  or hidden previews, and previews still on screen, fill the metadata cap.
+  A joined channel whose name finds no slot stays hidden,
   not listed by its ID, until a later pass names it and clears the partial
   coverage. Each scan is bounded to three roster-page reads plus at most
   eight 128-channel confirmation reads; metadata failure preserves successful

@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { expect, it } from "vitest";
+import type { ReadFilter, RelayEvent } from "../../features/relay/events";
 import { createRelaySession } from "../../features/relay/session";
 import {
+  type Key,
   keypair,
   message,
   metadata,
@@ -154,8 +156,10 @@ it("resolves from:name on a roster larger than the profile budget when some name
         if (filters.some((filter) => filter.kinds?.includes(9)))
           return wire.transport.query(filters, signal);
         const names = filters.find((filter) => filter.kinds?.includes(0));
+        // The failed batches leave the names partial, so the relay's name
+        // search checks for a namesake among them.
         if (names)
-          return names.authors?.includes(alice.pubkey)
+          return names.search || names.authors?.includes(alice.pubkey)
             ? Promise.resolve([profile(alice, { name: "Alice" })])
             : Promise.reject(new Error("Names unavailable"));
         return Promise.resolve(
@@ -193,6 +197,154 @@ it("resolves from:name on a roster larger than the profile budget when some name
     expect(result.current.messages.map(({ preview }) => preview)).toEqual([
       "hello",
     ]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+/** A key whose hex starts with `digit`, so it sorts to a known side of the
+ * 1,024-id profile budget. */
+function keyStarting(digit: string) {
+  for (;;) {
+    const key = keypair();
+    if (key.pubkey.startsWith(digit)) return key;
+  }
+}
+
+/** A session that has joined "crew" with `members`. Author reads answer from
+ * `profiles` and the relay's name search answers `found`. */
+async function crew(
+  members: readonly string[],
+  profiles: readonly RelayEvent[],
+  found: readonly RelayEvent[],
+) {
+  const viewer = keypair();
+  const relay = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const requested = new Set<string>();
+  const searches: ReadFilter[] = [];
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey, ...members]),
+  ];
+  const owner = createRelaySession(
+    {
+      ...wire.transport,
+      writer: {
+        sign: async (template) => signed(viewer, template),
+        publish: async () => {},
+      },
+      query(filters, signal) {
+        if (filters.some((filter) => filter.kinds?.includes(9)))
+          return wire.transport.query(filters, signal);
+        const names = filters.find((filter) => filter.kinds?.includes(0));
+        if (names?.search) {
+          searches.push(names);
+          return Promise.resolve([...found]);
+        }
+        if (names) {
+          for (const author of names.authors ?? []) requested.add(author);
+          return Promise.resolve(
+            profiles.filter((event) => names.authors?.includes(event.pubkey)),
+          );
+        }
+        return Promise.resolve(
+          discovery.filter((event) =>
+            filters.some((filter) => filter.kinds?.includes(event.kind)),
+          ),
+        );
+      },
+    },
+    { outboxStorage: { load: () => [], save() {} } },
+  );
+  owner.session.channels.ensureList();
+  await waitFor(() =>
+    expect(owner.session.channels.get?.("crew")?.members).toHaveLength(
+      members.length + 1,
+    ),
+  );
+  return { owner, wire, requested, searches };
+}
+
+const near = keyStarting("1");
+const far = keyStarting("f");
+const outsider = keypair();
+const alice = (key: Key) => profile(key, { name: "Alice" });
+// 1,097 keys between the two, so the roster passes the profile budget with
+// `near` inside it and `far` past it.
+const between = Array.from(
+  { length: 1097 },
+  (_, index) => `5${index.toString(16).padStart(63, "0")}`,
+);
+
+it.each([
+  {
+    roster: "namesakes on both sides of the budget",
+    named: [near, far],
+    found: [near, far],
+    author: undefined,
+  },
+  {
+    roster: "only the member past the budget",
+    named: [far],
+    found: [far],
+    author: far,
+  },
+  {
+    roster: "a named member and a namesake outside the channel",
+    named: [near],
+    found: [near, outsider],
+    author: near,
+  },
+])("resolves from:name on $roster", async ({ named, found, author }) => {
+  const { owner, wire, requested, searches } = await crew(
+    [near.pubkey, ...between, far.pubkey],
+    named.map(alice),
+    found.map(alice),
+  );
+  try {
+    const { result } = renderHook(() =>
+      useSearchMessages(owner.session, "from:alice ", "crew"),
+    );
+    if (author) {
+      await waitFor(() => expect(wire.pending).toHaveLength(1));
+      const read = wire.next();
+      expect(read.filters[0]?.authors).toEqual([author.pubkey]);
+      await act(async () => read.respond([]));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.ambiguousAuthor).toBeUndefined();
+    } else {
+      await waitFor(() => expect(result.current.ambiguousAuthor).toBe(true));
+      expect(wire.pending).toHaveLength(0);
+    }
+    expect(requested.has(near.pubkey)).toBe(true);
+    expect(requested.has(far.pubkey)).toBe(false);
+    expect(searches).toHaveLength(1);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("resolves from:name on a fully read roster without a relay name search", async () => {
+  // The viewer and a member the relay answered without a profile are known
+  // unnamed, not missing.
+  const { owner, wire, searches } = await crew(
+    [near.pubkey, between[0] ?? ""],
+    [alice(near)],
+    [alice(near)],
+  );
+  try {
+    const { result } = renderHook(() =>
+      useSearchMessages(owner.session, "from:alice ", "crew"),
+    );
+    await waitFor(() => expect(wire.pending).toHaveLength(1));
+    const read = wire.next();
+    expect(read.filters[0]?.authors).toEqual([near.pubkey]);
+    await act(async () => read.respond([]));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(searches).toHaveLength(0);
   } finally {
     cleanup();
     owner.dispose();

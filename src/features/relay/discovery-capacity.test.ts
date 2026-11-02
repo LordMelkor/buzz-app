@@ -43,3 +43,34 @@ it("evicts the least recently answered preview, never a channel discovery keeps"
   expect(state.overflowRevision).toBe(overflow + 1);
   expect(state.named("e")).toBe(false);
 });
+
+it.each<[string, string[][]]>([
+  ["private", [["private"], ["t", "stream"]]],
+  ["hidden", [["hidden"], ["t", "stream"]]],
+])(
+  "keeps a %s version under pressure so an older public replay cannot restore access",
+  (_, restricted) => {
+    const state = new DiscoveryState(viewer.pubkey, relay.pubkey, 3);
+    state.retain(new Set(), new Map());
+    const version = (created_at: number, tags: string[][]) =>
+      metadata(relay, "x", "x", created_at, tags);
+    const v10 = version(10, [["public"], ["t", "stream"]]);
+    state.accept(v10);
+    state.accept(version(20, restricted));
+    expect(state.canAccess("x")).toBe(false);
+    for (const id of ["a", "b"]) state.accept(open(id));
+    // The restrictive version is the only evidence; it is not a free slot.
+    expect(state.headroom()).toBe(2);
+
+    expect(state.accept(open("c"))).toBe(true);
+    expect(state.named("a")).toBe(false);
+    expect(state.named("x")).toBe(true);
+    expect(state.accept(v10)).toBe(false);
+    expect(state.canAccess("x")).toBe(false);
+    expect(state.get("x")).toBeUndefined();
+
+    // A genuinely newer public version still regrants reading.
+    expect(state.accept(version(30, [["public"], ["t", "stream"]]))).toBe(true);
+    expect(state.get("x")).toMatchObject({ readOnly: true });
+  },
+);
