@@ -443,3 +443,40 @@ it("waits for both helpers to finish and keeps their history available", () => {
   expect(finished.groups[0]?.history).toEqual(rows);
   expect(activityDisplayRows(rows, finished.groups, first.id)).toEqual([first]);
 });
+
+it.each(["working", "waiting", "error"] as const)(
+  "keeps unlinked %s evidence without borrowing completion",
+  (state) => {
+    const request = publicMessage("request", { authorId: "human" });
+    const step = activity("step");
+    const reply = publicMessage("reply");
+    const followup = publicMessage("followup", { authorId: "human" });
+    const rows = [request, step, reply, followup];
+    const projection = activityPresentation(
+      rows,
+      {
+        status: "listening",
+        records: [],
+        turns: [],
+        typing: [],
+        trimmed: 0,
+        local: [
+          {
+            scope: "test",
+            agent: "agent",
+            channelId: "solo",
+            threadRootId: request.id,
+            messageId: request.id,
+            startedAt: 1,
+            state,
+          },
+        ],
+      },
+      new Set(["agent"]),
+    );
+    expect(activityDisplayRows(rows, projection.groups)).toEqual(rows);
+    expect(projection.byRow.get(step.id)?.active).toBe(state === "working");
+    if (state === "working")
+      expect(projection.byRow.get(step.id)?.ownsLive).toBe(true);
+  },
+);

@@ -707,19 +707,21 @@ it.each([
     expect(
       screen.queryByRole("button", { name: /Activity: .*working/ }),
     ).toBeNull();
-    expect(screen.getByText("Checking the fix")).toHaveAttribute(
-      "data-active",
-      "true",
-    );
+    expect(
+      screen.getByText(
+        team ? `${agent.slice(0, 10)}: Checking the fix` : "Checking the fix",
+      ),
+    ).toHaveAttribute("data-active", "true");
     if (!local) {
       f.update([...pulses, entry(agent, secondRoot)]);
       expect(
         screen.getByRole("button", { name: "Activity: Agent working" }),
       ).toBeVisible();
-      expect(screen.getByText("Checking the fix")).toHaveAttribute(
-        "data-active",
-        "true",
-      );
+      expect(
+        screen.getByText(
+          team ? `${agent.slice(0, 10)}: Checking the fix` : "Checking the fix",
+        ),
+      ).toHaveAttribute("data-active", "true");
     }
     f.update(
       [{ pubkey: agent, channelId: "channel", threadRootId: secondRoot }],
@@ -736,9 +738,11 @@ it.each([
     expect(
       screen.getByRole("button", { name: "Activity: Agent working" }),
     ).toBeVisible();
-    expect(screen.getByText("Checking the fix")).not.toHaveAttribute(
-      "data-active",
-    );
+    expect(
+      screen.getByText(
+        team ? `${agent.slice(0, 10)}: Checking the fix` : "Checking the fix",
+      ),
+    ).not.toHaveAttribute("data-active");
     f.update([{ pubkey: agent, channelId: "channel" }], { local: [] });
     view.rerender(renderFlow(false));
     expect(

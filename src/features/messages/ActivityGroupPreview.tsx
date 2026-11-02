@@ -46,6 +46,7 @@ export function ActivityGroupPreview({
   const primary = history[0]?.authorId ?? row.authorId;
   const profile = profiles.get(primary);
   const name = profile?.name ?? primary.slice(0, 10);
+  const speaker = profiles.get(row.authorId)?.name ?? row.authorId.slice(0, 10);
   const text = Array.from(messagePreviewText(row.content).replace(/\s+/g, " "));
   const preview =
     text.length > 280 ? `${text.slice(0, 279).join("")}…` : text.join("");
@@ -62,7 +63,7 @@ export function ActivityGroupPreview({
           className={styles.audienceLine}
           data-collapse={expanded || undefined}
           aria-expanded={expanded}
-          aria-label={`${expanded ? "Collapse" : "Show"} activity history: ${name}: ${preview}`}
+          aria-label={`${expanded ? "Collapse" : "Show"} activity history: ${speaker}: ${preview}`}
           onClick={(event) => {
             event.currentTarget.focus({ preventScroll: true });
             onToggle();
@@ -88,7 +89,9 @@ export function ActivityGroupPreview({
             {expanded ? (
               "Collapse"
             ) : (
-              <ShimmerText active={working || live}>{preview}</ShimmerText>
+              <ShimmerText active={working || live}>
+                {participants.length > 1 ? `${speaker}: ${preview}` : preview}
+              </ShimmerText>
             )}
           </span>
         </button>

@@ -267,6 +267,10 @@ it("keeps the primary avatar on the activity bubble without repeating an anchore
   expect(
     screen.getByRole("img", { name: "Studio assistant, helper" }),
   ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: /Show activity history: helper:/ }),
+  ).toBeVisible();
+  expect(screen.getByText(/helper: Checking the layout/)).toBeVisible();
   view.rerender(
     renderGroup([
       { ...reply, id: "reply" },

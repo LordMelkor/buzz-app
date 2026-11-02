@@ -181,6 +181,30 @@ function mount(bottom = false, revealOnMount = false, anchorLoaded = true) {
         tree({ ...window, rows: [first, { ...first, id: target.id }] }),
       );
     },
+    loadActivityAnchor() {
+      result.rerender(
+        tree({
+          ...window,
+          rows: [
+            first,
+            {
+              ...first,
+              id: target.id,
+              audience: "agents",
+              agentEnvelope: true,
+              content: "Saved work step",
+            },
+            {
+              ...first,
+              id: "last-step",
+              audience: "agents",
+              agentEnvelope: true,
+              content: "Later work step",
+            },
+          ],
+        }),
+      );
+    },
     replaceAnchor() {
       const first = window.rows[0];
       if (!first) throw new Error("Missing fixture row");
@@ -1240,3 +1264,24 @@ it("a wheel at the bottom that cannot scroll still retires a loading saved row, 
     vi.useRealTimers();
   }
 });
+
+it.each([false, true])(
+  "retains delayed activity expansion until arrival unless the reader moves: %s",
+  async (readerMoves) => {
+    const h = mount(false, false, false);
+    await frame();
+    const region = screen.getByRole("region", {
+      name: "Channel message history",
+    });
+    if (readerMoves) fireEvent.wheel(region, { deltaY: -100 });
+    h.loadActivityAnchor();
+    await frame();
+    expect(
+      screen
+        .getByRole("button", { name: /activity history/ })
+        .getAttribute("aria-expanded"),
+    ).toBe(String(!readerMoves));
+    if (!readerMoves)
+      expect(screen.getByText("Saved work step")).not.toBeNull();
+  },
+);

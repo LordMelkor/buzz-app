@@ -76,14 +76,25 @@ function activityStatus(
     : [];
   const settled = (entry: (typeof work)[number]) =>
     ["done", "ended", "superseded", "stopped"].includes(entry.state);
+  // A layout-associated request may prove ongoing work, but cannot prove
+  // completion for an unlinked update. Keep those two evidence paths separate.
+  const pending =
+    snapshot && requestId
+      ? requestWork(snapshot, latest.channelId, requestId).filter(
+          (entry) => participants.includes(entry.agent) && !settled(entry),
+        )
+      : [];
   const complete = participants.every((agent) =>
     work.some((entry) => entry.agent === agent && settled(entry)),
   );
   // Known pending, failed or uncertain work wins over the historical fallback.
   // Without lifecycle evidence, a related public reply only retires the display.
-  const hidden = complete || (!!followedByReply && work.every(settled));
+  const hidden =
+    !pending.length && (complete || (!!followedByReply && work.every(settled)));
   const working = new Set(
-    work.filter((entry) => entry.working).map((entry) => entry.agent),
+    [...work, ...pending]
+      .filter((entry) => entry.working)
+      .map((entry) => entry.agent),
   );
   return {
     hidden,

@@ -1174,51 +1174,63 @@ it("shows nothing later when a stopped hosted turn ends before its 30 seconds", 
   }
 });
 
-it("hands the visible request bubble to the live preview after a reply, even with the composer replacement mounted", () => {
-  const local = createLocalAgentActivity();
-  const f = fixture(local);
-  const typing = [{ pubkey: A, channelId: "c", threadRootId: root }];
-  const session = {
-    ...f.props.session,
-    typing: { snapshot: () => typing, subscribe: () => () => {} },
-  } as unknown as RelaySession;
-  const props = { ...f.props, session };
-  const ui = (representedAgents: string[]) => (
-    <ActivityIndicatorPresentation>
-      <ActivityAccessory {...props} representedAgents={representedAgents} />
-      <TypingPresentation active>
-        <ActivityTypingReplacement {...props} />
-      </TypingPresentation>
-      <TypingIndicator session={session} channelId="c" threadRootId={root} />
-    </ActivityIndicatorPresentation>
-  );
-  const work = local.begin({
-    scope: "test",
-    agent: A,
-    channelId: "c",
-    messageId: root,
-    threadRootId: root,
-  });
-  work.step("Read", "notes.txt");
-  const view = render(ui([]));
-  try {
-    expect(
-      screen.getByRole("button", {
-        name: "View agent activity: Blossom, Reading notes.txt",
-      }),
-    ).toBeVisible();
-    expect(
-      screen.queryByRole("button", { name: "Reading notes.txt" }),
-    ).toBeNull();
-    view.rerender(ui([A]));
-    expect(
-      screen.queryByLabelText("Agent activity on this message"),
-    ).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Reading notes.txt" }),
-    ).toHaveTextContent("Reading notes.txt");
-  } finally {
-    view.unmount();
-    f.dispose();
-  }
-});
+it.each([false, true])(
+  "retains request controls after a reply when stoppable: %s",
+  async (stoppable) => {
+    const local = createLocalAgentActivity();
+    const f = fixture(local);
+    const typing = [{ pubkey: A, channelId: "c", threadRootId: root }];
+    const session = {
+      ...f.props.session,
+      typing: { snapshot: () => typing, subscribe: () => () => {} },
+    } as unknown as RelaySession;
+    const props = { ...f.props, session };
+    const ui = (representedAgents: string[]) => (
+      <ActivityIndicatorPresentation>
+        <ActivityAccessory {...props} representedAgents={representedAgents} />
+        <TypingPresentation active>
+          <ActivityTypingReplacement {...props} />
+        </TypingPresentation>
+        <TypingIndicator session={session} channelId="c" threadRootId={root} />
+      </ActivityIndicatorPresentation>
+    );
+    const work = local.begin({
+      scope: "test",
+      agent: A,
+      channelId: "c",
+      messageId: root,
+      threadRootId: root,
+    });
+    work.step("Read", "notes.txt");
+    const stop = vi.fn(async () => {});
+    if (stoppable) work.interruptible(stop);
+    const view = render(ui([]));
+    try {
+      expect(
+        screen.getByRole("button", {
+          name: "View agent activity: Blossom, Reading notes.txt",
+        }),
+      ).toBeVisible();
+      expect(
+        screen.queryByRole("button", { name: "Reading notes.txt" }),
+      ).toBeNull();
+      view.rerender(ui([A]));
+      if (stoppable) {
+        openBubble();
+        fireEvent.click(screen.getByRole("button", { name: "Stop Blossom" }));
+        await settle();
+        expect(stop).toHaveBeenCalledOnce();
+        return;
+      }
+      expect(
+        screen.queryByLabelText("Agent activity on this message"),
+      ).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Reading notes.txt" }),
+      ).toHaveTextContent("Reading notes.txt");
+    } finally {
+      view.unmount();
+      f.dispose();
+    }
+  },
+);

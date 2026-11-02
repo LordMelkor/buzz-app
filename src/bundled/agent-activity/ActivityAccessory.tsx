@@ -125,7 +125,8 @@ export function ActivityAccessory(props: ActivityProps) {
     .filter(
       (entry) =>
         visible(entry) &&
-        (entry.state === "error" ||
+        (entry.stoppable ||
+          entry.state === "error" ||
           !props.representedAgents?.includes(entry.agent)),
     )
     .map((entry) => {
@@ -185,6 +186,7 @@ export function ActivityAccessory(props: ActivityProps) {
     shown.length ? shown : (leaving ?? (ended ? retained.current : []))
   ).filter(
     (entry) =>
+      entry.stoppable ||
       entry.state === "error" ||
       !props.representedAgents?.includes(entry.agent),
   );

@@ -1,3 +1,4 @@
+import { finalizeEvent } from "nostr-tools";
 import { hoverMessage } from "./message-actions.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
@@ -312,6 +313,38 @@ test("Stop in a channel response activity stops its work", async ({
   const summary = row.getByRole("button", { name: /^View agent activity:/ });
   await expect(summary).toBeVisible();
   await expect(row.getByRole("button", { name: /^Stop/ })).toHaveCount(0);
+  // Recorded updates must not remove the only control that can stop this turn.
+  const key = new Uint8Array(32);
+  key[31] = 1;
+  for (const [index, content] of [
+    "Checking the request",
+    "Checking the final detail",
+  ].entries()) {
+    app.relay.publish(
+      "primary",
+      finalizeEvent(
+        {
+          kind: 40002,
+          content,
+          created_at: request.created_at + index + 1,
+          tags: [
+            ["h", "alpha"],
+            ["audience", "agents"],
+          ],
+        },
+        key,
+      ),
+    );
+  }
+  const history = page.getByRole("button", {
+    name: /Show activity history:.*Checking the final detail/,
+  });
+  await expect(history).toBeVisible();
+  await history.click();
+  await expect(
+    page.getByText("Checking the request", { exact: true }),
+  ).toBeVisible();
+  await expect(summary).toBeVisible();
   await summary.hover();
   const popup = page.getByRole("dialog", {
     name: "Agent activity",

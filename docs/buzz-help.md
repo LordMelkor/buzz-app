@@ -106,6 +106,9 @@ the interface unless an available tool actually supports that action.
 - **Activity**, where the agent type provides it, shows sessions and their
   transcripts in the agent's profile. Working indicators describe current work,
   not a guarantee that an agent is available or that a message was delivered.
+  Expand grouped work updates to read each message; the collapsed excerpt names
+  its speaker. When a running request offers **Stop**, its activity control stays
+  available alongside recorded updates. Stop availability depends on the agent type.
 
 ## Optional features and limits
 

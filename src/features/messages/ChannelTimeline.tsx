@@ -305,18 +305,22 @@ function Timeline({
     [chronologicalRows, activity, targetId, revealMessageId],
   );
   const lastPublicMessage = publicMessageNeighbor(rows, rows.length, -1);
-  // Resolve a saved anchor once, before measuring initial geometry. A bottom
-  // restore ignores it; absent/visible anchors must not expand on later loads.
+  const intent = useRef(0);
+  // Keep expansion pending with scroll restoration until the saved row arrives.
+  // Any newer reader intent cancels both, even before the next history update.
   const [activityRestore, setActivityRestore] = useState(
     initialPosition?.bottom ? undefined : initialPosition?.anchor?.id,
   );
-  if (activityRestore && rows.length > 0) {
-    setActivityRestore(undefined);
-    const older = activity.find((group) =>
-      group.ids.includes(activityRestore),
-    )?.ids;
-    if (older?.includes(activityRestore))
-      setExpandedActivity((expanded) => new Set([...expanded, ...older]));
+  if (activityRestore) {
+    if (intent.current !== 0) setActivityRestore(undefined);
+    else if (chronologicalRows.some((row) => row.id === activityRestore)) {
+      setActivityRestore(undefined);
+      const older = activity.find((group) =>
+        group.ids.includes(activityRestore),
+      )?.ids;
+      if (older)
+        setExpandedActivity((expanded) => new Set([...expanded, ...older]));
+    }
   }
   const disclosures = new Map(
     activity
@@ -451,7 +455,6 @@ function Timeline({
     top: 0,
     y: 0,
   });
-  const intent = useRef(0);
   const heldReader = useRef<
     { id: string; y: number; intent: number } | undefined
   >(undefined);
