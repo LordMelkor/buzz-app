@@ -38,7 +38,8 @@ export const inject = [
   "browser",
   "knownCommunities",
   "decisions",
-  ...(nativeBuilderlab() ? ["federatedIdentity", "navigation"] : []),
+  "navigation",
+  ...(nativeBuilderlab() ? ["federatedIdentity"] : []),
 ];
 export const apply: PluginModule["apply"] = (ctx) => {
   let unavailable = "";
@@ -77,15 +78,10 @@ export const apply: PluginModule["apply"] = (ctx) => {
   const session = legacy ?? createNativeSession(ctx.federatedIdentity);
   ctx.effect(() => () => session.dispose());
   const loginAvailable = browserLoginAvailable() && !unavailable;
+  const openSettings = (section: string) =>
+    void ctx.navigation.open({ version: 1, kind: "settings", section });
   // An FI build signs out where its shared organization sign-in is managed.
-  const openIdentity = legacy
-    ? undefined
-    : () =>
-        void ctx.navigation.open({
-          version: 1,
-          kind: "settings",
-          section: "identity",
-        });
+  const openIdentity = legacy ? undefined : () => openSettings("identity");
   applyApps(ctx, session, loginAvailable, legacy);
   const handoff = (signedIn: boolean) =>
     legacy
@@ -164,7 +160,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
       );
     };
     ctx.agents.register({
-      ...builderlabType(agents, session, ctx.relay, openIdentity),
+      ...builderlabType(agents, session, ctx.relay, openIdentity, openSettings),
       provider: {
         snapshot: () => providerState,
         subscribe: (listener) => {

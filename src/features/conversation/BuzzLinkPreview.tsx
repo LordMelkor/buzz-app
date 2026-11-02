@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../relay/react";
 import { workflowLabel } from "../relay/workflow-attribution";
 import {
   useChannelIdentityNames,
@@ -78,10 +79,12 @@ function PreviewContent({
     session.channels.list,
   );
   const authorId = message?.workflowOwnerId ?? message?.authorId;
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (authorId)
       void session.profiles.ensure([authorId], "background").catch(() => {});
-  }, [session, authorId]);
+  }, [session, authorId, profileGeneration]);
   if (!ready || !message)
     return (
       <span role="status">

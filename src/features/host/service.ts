@@ -32,6 +32,31 @@ export type HostResponse = Readonly<{
   headers: Readonly<Record<string, string>>;
   body: string;
 }>;
+export type HostRequestOnceOptions = Readonly<{
+  callId: string;
+  /** Synchronous final caller check. Only literal true permits dispatch. */
+  isEligible?: () => boolean;
+}>;
+/** GET-only raw bytes from an exact declared HTTPS origin. Desktop only. */
+export type HostByteRequest = Readonly<{
+  url: string;
+  /** Required integer byte cap, 1–16777216. */
+  maxBytes: number;
+  /** 1–30000 milliseconds; defaults to 30000. */
+  timeoutMs?: number;
+}>;
+export type HostByteResponse = Readonly<{
+  status: number;
+  headers: Readonly<Record<string, string>>;
+  body: Uint8Array;
+}>;
+export type HostSavedBytes = Readonly<{
+  path: string;
+  size: number;
+  sha256: string;
+  /** Host wall-clock Unix milliseconds, not a deletion timer. */
+  expiresAt: number;
+}>;
 /** Reusable NIP-OA proof for one agent key; preparing it does not submit it. */
 export type NipOaAuthorization = readonly [
   "auth",
@@ -118,6 +143,20 @@ export interface Host {
    * `host.files`. Desktop only. */
   resolveDirectory?: (path: string) => Promise<string>;
   request(input: HostRequest): Promise<HostResponse>;
+  /** POST-only, desktop and compatible native host required. A repeated call
+   * authority rejects with unknown outcome, never resubmits or caches success. */
+  requestOnce?: (
+    input: HostRequest,
+    options: HostRequestOnceOptions,
+  ) => Promise<HostResponse>;
+  /** No automatic replay protection or text/array fallback. */
+  requestBytes?: (input: HostByteRequest) => Promise<HostByteResponse>;
+  /** Requires host.managedFiles, not host.files. Keep bytes immutable through
+   * hashing/save. An ambiguous failure must not be automatically retried. */
+  saveBytes?: (
+    bytes: Uint8Array,
+    input: Readonly<{ sha256: string }>,
+  ) => Promise<HostSavedBytes>;
   /** Uploads a file as `request` sends a body. Desktop only. */
   upload?: (input: HostUpload) => Promise<HostResponse>;
   prepareRemoteAgentAuthorization?: (
@@ -193,6 +232,17 @@ export async function prepareRemoteAgentAuthorization(
     throw new Error("Invalid remote agent authorization");
   return tag;
 }
+
+type CallContext = Readonly<{ boot: string; page: number }>;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const callContexts = new WeakMap<
+  Context["fiber"],
+  {
+    context: Promise<CallContext>;
+    activation: string;
+    disposed: boolean;
+  }
+>();
 
 export class HostService extends Service implements Host {
   constructor(context: Context) {
@@ -414,6 +464,152 @@ export class HostService extends Service implements Host {
     }).catch(rethrow);
   }
 
+  async requestOnce(
+    input: HostRequest,
+    { callId, isEligible }: HostRequestOnceOptions,
+  ): Promise<HostResponse> {
+    const ctx = this.ctx;
+    const owner = ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("Protected requests require an installed desktop plugin");
+    if (input.method !== "POST" || !UUID.test(callId))
+      throw new Error(
+        "Protected requests require POST and a canonical UUID callId",
+      );
+    let state = callContexts.get(ctx.fiber);
+    const active = () => {
+      if (ctx.fiber.uid === null || state?.disposed)
+        throw new Error("Protected request owner is inactive; outcome unknown");
+    };
+    active();
+    if (!state) {
+      state = {
+        context: invoke<CallContext>("plugin_host_call_context").catch(rethrow),
+        activation: crypto.randomUUID(),
+        disposed: false,
+      };
+      const lifetime = state;
+      ctx.effect(
+        () => () => {
+          lifetime.disposed = true;
+          if (callContexts.get(ctx.fiber) === lifetime)
+            callContexts.delete(ctx.fiber);
+        },
+        "protected host calls",
+      );
+      callContexts.set(ctx.fiber, state);
+    }
+    // Cache failures too: refreshing native authority must never be an implicit retry.
+    const context = await state.context;
+    active();
+    if (
+      !context ||
+      !UUID.test(context.boot) ||
+      !Number.isSafeInteger(context.page) ||
+      context.page < 0
+    )
+      throw new Error(
+        "Compatible native protected-request context is unavailable",
+      );
+    if (isEligible !== undefined) {
+      try {
+        const eligible = isEligible();
+        if (eligible !== true) {
+          // Invalid async callbacks still fail closed; observe any rejection.
+          void Promise.resolve(eligible).catch(() => {});
+          throw new Error();
+        }
+      } catch {
+        throw new Error("Protected request caller eligibility refused");
+      }
+      active();
+    }
+    const result = await invoke<HostResponse>("plugin_host_request", {
+      id: owner.id,
+      revision: owner.revision,
+      request: input,
+      once: { ...context, activation: state.activation, callId },
+    }).catch(rethrow);
+    active();
+    return result;
+  }
+
+  async requestBytes(input: HostByteRequest): Promise<HostByteResponse> {
+    const ctx = this.ctx;
+    const owner = ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("Byte requests require an installed desktop plugin");
+    if (
+      !Number.isInteger(input.maxBytes) ||
+      input.maxBytes < 1 ||
+      input.maxBytes > BYTE_LIMIT ||
+      (input.timeoutMs !== undefined &&
+        (!Number.isInteger(input.timeoutMs) ||
+          input.timeoutMs < 1 ||
+          input.timeoutMs > 30000))
+    )
+      throw new Error("Invalid byte request limits");
+    const lifetime = byteLifetime(ctx);
+    try {
+      const frame = await invoke<unknown>("plugin_host_request_bytes", {
+        id: owner.id,
+        revision: owner.revision,
+        request: input,
+      }).catch(rethrow);
+      lifetime.active();
+      return decodeByteFrame(frame, input.maxBytes);
+    } finally {
+      lifetime.release();
+    }
+  }
+
+  async saveBytes(
+    bytes: Uint8Array,
+    { sha256 }: Readonly<{ sha256: string }>,
+  ): Promise<HostSavedBytes> {
+    const ctx = this.ctx;
+    const owner = ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("Managed saves require an installed desktop plugin");
+    if (
+      !(bytes instanceof Uint8Array) ||
+      bytes.byteLength < 1 ||
+      bytes.byteLength > BYTE_LIMIT ||
+      !/^[0-9a-f]{64}$/.test(sha256)
+    )
+      throw new Error("Invalid managed save bytes or SHA256");
+    const size = bytes.byteLength;
+    const lifetime = byteLifetime(ctx);
+    try {
+      const saved = await invoke<HostSavedBytes>(
+        "plugin_host_save_bytes",
+        bytes,
+        {
+          headers: {
+            "x-buzz-plugin-id": owner.id,
+            "x-buzz-plugin-revision": owner.revision,
+            "x-buzz-sha256": sha256,
+          },
+        },
+      ).catch(rethrow);
+      lifetime.active();
+      if (
+        !saved ||
+        typeof saved.path !== "string" ||
+        !saved.path ||
+        saved.path.includes("\0") ||
+        saved.size !== size ||
+        saved.sha256 !== sha256 ||
+        !Number.isSafeInteger(saved.expiresAt) ||
+        saved.expiresAt <= 0
+      )
+        throw new Error("Invalid managed save result; outcome unknown");
+      return saved;
+    } finally {
+      lifetime.release();
+    }
+  }
+
   async upload(input: HostUpload): Promise<HostResponse> {
     const owner = this.ctx.pluginOwner;
     if (!owner || !isTauri())
@@ -424,6 +620,85 @@ export class HostService extends Service implements Host {
       upload: input,
     }).catch(rethrow);
   }
+}
+
+const BYTE_LIMIT = 16 * 1024 * 1024;
+
+/** Per-operation cooperative lifetime, deliberately independent of POST context. */
+function byteLifetime(ctx: Context) {
+  let disposed = false;
+  const active = () => {
+    if (disposed || ctx.fiber.uid === null)
+      throw new Error("Byte operation owner is inactive; outcome unknown");
+  };
+  active();
+  const release = ctx.effect(
+    () => () => {
+      disposed = true;
+    },
+    "host byte operation",
+  );
+  return { active, release };
+}
+
+function decodeByteFrame(frame: unknown, maxBytes: number): HostByteResponse {
+  // Check transport before creating a view: fallback arrays must not be copied.
+  if (
+    !(frame instanceof ArrayBuffer) ||
+    frame.byteLength < 4 ||
+    frame.byteLength > 4 + 20 * 1024 + maxBytes
+  )
+    throw new Error("A compatible raw byte response is required");
+  const length = new DataView(frame).getUint32(0, false);
+  if (
+    length < 1 ||
+    length > 20 * 1024 ||
+    length > frame.byteLength - 4 ||
+    frame.byteLength - 4 - length > maxBytes
+  )
+    throw new Error("Invalid byte response framing");
+  const metadata: unknown = JSON.parse(
+    new TextDecoder("utf-8", { fatal: true }).decode(
+      new Uint8Array(frame, 4, length),
+    ),
+  );
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata))
+    throw new Error("Invalid byte response metadata");
+  const { status, headers } = metadata as {
+    status: number;
+    headers: Record<string, unknown>;
+  };
+  if (
+    !Number.isInteger(status) ||
+    status < 100 ||
+    status > 599 ||
+    !headers ||
+    typeof headers !== "object" ||
+    Array.isArray(headers)
+  )
+    throw new Error("Invalid byte response status or headers");
+  const entries = Object.entries(headers);
+  const encoder = new TextEncoder();
+  let headerBytes = 0;
+  if (entries.length > 64) throw new Error("Too many byte response headers");
+  for (const [name, value] of entries) {
+    if (
+      !/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name) ||
+      name === "set-cookie" ||
+      typeof value !== "string" ||
+      /[\0\r\n]/.test(value)
+    )
+      throw new Error("Invalid byte response header");
+    headerBytes +=
+      encoder.encode(name).byteLength + encoder.encode(value).byteLength;
+  }
+  if (headerBytes > 16 * 1024)
+    throw new Error("Byte response headers are too large");
+  return {
+    status,
+    headers: headers as Record<string, string>,
+    body: new Uint8Array(frame, 4 + length),
+  };
 }
 
 /** A native command's failure, which arrives as its message, as an Error. */

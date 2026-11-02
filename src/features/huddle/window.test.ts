@@ -622,6 +622,33 @@ it("retries failed profile reads and scopes successes to the relay session", asy
   await h.dispose();
 });
 
+it("reads unchanged participants again after an access purge", async () => {
+  const h = harness();
+  let purges = 0;
+  const ensure = vi.fn(async () => {});
+  h.connection.session = {
+    ...h.connection.session,
+    profiles: {
+      ...h.connection.session.profiles,
+      ensure,
+      generation: () => purges,
+    },
+  };
+  h.set({ ...h.call.snapshot(), participants: ["ab".repeat(32)] });
+  h.release();
+  await h.companion.open();
+  await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(1));
+  // Same participants after success: no new demand.
+  h.set({ ...h.call.snapshot() });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(ensure).toHaveBeenCalledTimes(1);
+  // A purge drops their names; the same participants are a new demand.
+  purges++;
+  h.set({ ...h.call.snapshot() });
+  await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(2));
+  await h.dispose();
+});
+
 it("releases discussion subscriptions when reopening the companion fails", async () => {
   const h = harness();
   const stopWindow = vi.fn();

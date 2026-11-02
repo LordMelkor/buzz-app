@@ -127,10 +127,10 @@ test("channel menu mute/read persist without selecting the row; failed mute rema
   await expect(failure).toHaveCount(0);
   await expect(menu).toHaveCount(0);
   await expect(beta).toBeFocused();
-  await expect(badge(beta)).toHaveAttribute(
-    "aria-label",
-    /^6 observed unread messages/,
-  );
+  await expect(badge(beta)).toHaveCount(0);
+  await expect(
+    beta.locator("xpath=ancestor::*[@data-channel-sidebar-row]"),
+  ).not.toHaveAttribute("data-ordinary", "true");
   await expect
     .poll(() => app.report.sidebarPublications?.at(-1))
     .toMatchObject({

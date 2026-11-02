@@ -288,6 +288,8 @@ export function createChannelStore(
   let discoveryObserved = false;
   // Profile bursts rewrite the whole startup record; save at most once per 500ms.
   let discoverySave: ReturnType<typeof setTimeout> | undefined;
+  // Participant profiles in the last startup snapshot, by identity.
+  let savedProfiles: ReadonlyMap<string, RelayEvent | undefined> = new Map();
   let preparing = false;
   let warming = false;
   const notify = (listeners: Iterable<Listener> | undefined) => {
@@ -1078,25 +1080,27 @@ export function createChannelStore(
     discoverySave = undefined;
     if (!persistence?.writeStartup || !discovery || !transport || disposed)
       return;
+    savedProfiles = new Map(
+      [
+        ...new Set(
+          discovery
+            .channels()
+            .filter((channel) => !channel.cached)
+            .flatMap((channel) => channel.participants ?? []),
+        ),
+      ]
+        .slice(0, 1024)
+        .map((id) => [id, directory.event(id)]),
+    );
     void persistence
       .writeStartup({
         discovery: {
           savedAt: now(),
           relayAuthor: transport.relayAuthor,
           events: discovery.savedEvents(),
-          profiles: [
-            ...new Set(
-              discovery
-                .channels()
-                .filter((channel) => !channel.cached)
-                .flatMap((channel) => channel.participants ?? []),
-            ),
-          ]
-            .slice(0, 1024)
-            .flatMap((id) => {
-              const event = directory.event(id);
-              return event ? [event] : [];
-            }),
+          profiles: [...savedProfiles.values()].filter(
+            (event) => event !== undefined,
+          ),
         },
       })
       .catch(() => {});
@@ -3015,7 +3019,12 @@ export function createChannelStore(
     }
     for (const state of windows.values()) setWindow(state, {});
     setList(list);
-    if (discoveryObserved && !discoverySave)
+    // Only a saved participant's profile changes the startup snapshot.
+    if (
+      discoveryObserved &&
+      !discoverySave &&
+      [...savedProfiles].some(([id, event]) => directory.event(id) !== event)
+    )
       discoverySave = setTimeout(saveDiscovery, 500);
   });
   const unsubscribeLocal = local?.subscribe(() => {

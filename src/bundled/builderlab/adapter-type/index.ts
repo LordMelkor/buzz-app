@@ -27,6 +27,7 @@ export function builderlabType(
   session: BuilderlabSession,
   relay: RelayData,
   openIdentity?: () => void,
+  openSettings?: (section: string) => void,
 ): AgentType {
   const scope = () => ({
     target: oauthTarget(),
@@ -115,7 +116,7 @@ export function builderlabType(
         id: "activity",
         title: "Activity",
         role: "activity",
-        component: createActivityTab(relay),
+        component: createActivityTab(relay, openSettings),
       },
     ],
     remote: {

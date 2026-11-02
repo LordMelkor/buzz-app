@@ -7,7 +7,10 @@ import {
   usePanelTabTitle,
 } from "../../features/panels/PanelWorkspace";
 import { useAgentOwnerEvidence } from "../../features/profiles/useAgentOwnerEvidence";
-import { UserStatusDisplay } from "../../features/user-status/StatusDisplay";
+import { StatusDisplay } from "../../features/user-status/StatusDisplay";
+import { StatusEditor } from "../../features/user-status/StatusEditor";
+import { useStatusEditor } from "../../features/user-status/useStatusEditor";
+import { useUserStatus } from "../../features/user-status/useUserStatus";
 import { ProfilePublicMetadata } from "./ProfilePublicMetadata";
 import { relayOrigin } from "../../features/communities/destination";
 import type { Navigation } from "../../features/navigation/controller";
@@ -43,7 +46,10 @@ import {
 } from "../../features/profiles/target";
 import { formatPublicKey } from "../../shared/identity/public-key";
 import { selectProfiles } from "../../features/relay/profile-selection";
-import { useRelayConnection } from "../../features/relay/react";
+import {
+  useProfileGeneration,
+  useRelayConnection,
+} from "../../features/relay/react";
 import type { RelayData } from "../../features/relay/service";
 import type { RelaySession } from "../../features/relay/session";
 import { ProfileAgentIdentity } from "./ProfileAgentIdentity";
@@ -54,15 +60,33 @@ import { PreferenceRow } from "../../shared/design-system/ui/PreferenceRow";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
 import { AgentDelete } from "../../features/agents/AgentManage";
 import { useAgent, useChannelChoices } from "../../features/agents/react";
-import type { Agents, TranscriptRequest } from "../../features/agents/service";
+import type {
+  Agents,
+  AgentViewProps,
+  TranscriptRequest,
+} from "../../features/agents/service";
 import type { CommunityReader } from "../../features/communities/service";
 import { agentSections } from "../../features/agents/tabs";
 import { useAgentSettingsHost } from "../agents/AgentSettingsHost";
+import { conversationOpener } from "../agents/routes";
 import { avatarMedia } from "../../shared/avatar-source";
 import { writeClipboardText } from "../../shared/clipboard";
 
 const noSubscribe = () => () => {};
 const emptyAgentTypes = Object.freeze([]);
+/** This session's community, which targets opened from the panel stay in. */
+function panelCommunity(scope: string | undefined, viewer: string | undefined) {
+  if (!scope || !viewer || !scope.endsWith(`:${viewer}`)) return undefined;
+  try {
+    return {
+      viewer,
+      communityOrigin: relayOrigin(scope.slice(0, -(viewer.length + 1))),
+    };
+  } catch {
+    // This session has no usable navigation scope.
+    return undefined;
+  }
+}
 
 export function ProfilePanel({
   relay,
@@ -115,6 +139,11 @@ export function ProfilePanel({
   if (!pubkey) return <p>Unsupported profile.</p>;
   if (connection.status !== "ready")
     return <p>Connect to a community to view this profile.</p>;
+  // An agent's activity opens a turn's conversation in this community.
+  const openConversation = conversationOpener(
+    navigation,
+    panelCommunity(connection.scope, connection.viewer),
+  );
   if (
     agents &&
     owned &&
@@ -134,6 +163,7 @@ export function ProfilePanel({
         session={connection.session}
         navigation={navigation}
         context={context}
+        openConversation={openConversation}
         close={close}
       />
     );
@@ -151,6 +181,7 @@ export function ProfilePanel({
       communities={communities}
       scope={connection.scope}
       viewer={connection.viewer}
+      openConversation={openConversation}
       close={close}
     />
   );
@@ -165,6 +196,7 @@ function OwnedAgentProfile({
   session,
   navigation,
   context,
+  openConversation,
   close,
 }: {
   agents: Agents;
@@ -176,6 +208,7 @@ function OwnedAgentProfile({
   session: RelaySession;
   navigation: Navigation | undefined;
   context: PanelProps["context"];
+  openConversation: AgentViewProps["openConversation"];
   close(): void;
 }) {
   const { types } = useAgents(agents);
@@ -195,6 +228,7 @@ function OwnedAgentProfile({
       initialActivity={initialActivity}
       initialTranscript={initialTranscript}
       close={close}
+      openConversation={openConversation}
       conversation={
         context && {
           channelId: context.channelId,
@@ -210,6 +244,11 @@ function OwnedAgentProfile({
           navigation={undefined}
         />
       )}
+      openSettings={
+        navigation &&
+        ((section) =>
+          void navigation.open({ version: 1, kind: "settings", section }))
+      }
     />
   );
 }
@@ -226,6 +265,7 @@ function ProfileDetails({
   communities,
   scope,
   viewer,
+  openConversation,
   close,
 }: {
   agents: Agents | undefined;
@@ -239,6 +279,7 @@ function ProfileDetails({
   navigation: Navigation | undefined;
   scope: string | undefined;
   viewer: string | undefined;
+  openConversation: AgentViewProps["openConversation"];
   close(): void;
 }) {
   const selection = useMemo(
@@ -296,6 +337,7 @@ function ProfileDetails({
           },
           initialTranscript,
           close,
+          ...(openConversation && { openConversation }),
           ...(settings.settingsHost
             ? { settingsHost: settings.settingsHost }
             : {}),
@@ -313,10 +355,14 @@ function ProfileDetails({
   useEffect(() => {
     if (!tabbed) region.current?.focus();
   }, [tabbed]);
+  const profileGeneration = useProfileGeneration(session.profiles);
   // Each target/session owns this completion; shared data work remains session-owned.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt is explicit recovery.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt is explicit recovery; a purge generation rereads.
   useEffect(() => {
     let active = true;
+    // A purge reread must not unmount a focused Retry: keep it pending, and
+    // let success hand its focus to the stable region as an explicit retry does.
+    if (document.activeElement === retryButton.current) setRetrying(true);
     setStatus("loading");
     void session.profiles.ensure([pubkey]).then(
       () => {
@@ -336,7 +382,7 @@ function ProfileDetails({
     return () => {
       active = false;
     };
-  }, [session, pubkey, attempt]);
+  }, [session, pubkey, attempt, profileGeneration]);
   const agentPubkeys = useKnownAgentPubkeys(session, profiles);
   const presence = usePresenceStatus(session.presence, pubkey, true);
   const knownAgent = agentPubkeys.has(pubkey);
@@ -350,14 +396,8 @@ function ProfileDetails({
   const verifiedOwner = ownership.owner;
   const selectedTab =
     requestedTab.startsWith("agent:") && !section ? "info" : requestedTab;
-  let communityOrigin: string | undefined;
-  if (scope && viewer && scope.endsWith(`:${viewer}`)) {
-    try {
-      communityOrigin = relayOrigin(scope.slice(0, -(viewer.length + 1)));
-    } catch {
-      // This session has no usable navigation scope.
-    }
-  }
+  const community = panelCommunity(scope, viewer);
+  const communityOrigin = community?.communityOrigin;
   const npub = profileTarget(pubkey)?.slice(6) ?? pubkey;
   const identityName = useChannelIdentityNames(session, context?.channelId);
   const name = identityName(
@@ -383,9 +423,7 @@ function ProfileDetails({
   usePanelTabTitle(name, tabAvatar);
   // Targets opened from this panel stay in its community.
   const scoped =
-    navigation && viewer && communityOrigin
-      ? { navigation, scope: { viewer, communityOrigin } }
-      : undefined;
+    navigation && community ? { navigation, scope: community } : undefined;
   const {
     available: canMessage,
     opening: openingMessage,
@@ -415,6 +453,12 @@ function ProfileDetails({
       section: "profile",
       scope: scoped.scope,
     });
+  // This panel's session is its community's, so the status saves there.
+  const statusEditor = useStatusEditor(session, viewer);
+  const statusButton = useRef<HTMLButtonElement>(null);
+  const userStatus = useUserStatus(session.statuses, pubkey);
+  const canSetStatus =
+    !!scope && viewer === pubkey && session.statuses.writable;
 
   return (
     <section
@@ -467,10 +511,21 @@ function ProfileDetails({
                 }
               </p>
             )}
-            <UserStatusDisplay session={session} userId={pubkey} />
+            <StatusDisplay session={session} status={userStatus} />
           </div>
-          {(canMessage || canEdit) && (
-            <div className={hero.actions}>
+          {(canSetStatus || canMessage || canEdit) && (
+            <div className={`${hero.actions} ${styles.ownActions}`}>
+              {canSetStatus && (
+                <Button
+                  ref={statusButton}
+                  size="sm"
+                  variant={picture ? "glass" : "subtle"}
+                  aria-haspopup="dialog"
+                  onClick={() => statusEditor.open()}
+                >
+                  {userStatus ? "Update status" : "Set a status"}
+                </Button>
+              )}
               {canMessage && (
                 <Button
                   size="sm"
@@ -638,6 +693,16 @@ function ProfileDetails({
           )}
         />
       </div>
+      {statusEditor.editor && scope && (
+        <StatusEditor
+          session={session}
+          scope={scope}
+          current={statusEditor.editor.current}
+          viewer={statusEditor.editor.viewer}
+          close={statusEditor.close}
+          finalFocus={statusButton}
+        />
+      )}
     </section>
   );
 }

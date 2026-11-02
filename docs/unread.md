@@ -165,9 +165,9 @@ timeline and the thread being read, without reading unopened threads' replies.
 
 The sidebar separates ordinary unread from directed attention. Ordinary backlog
 or local manual intent strengthens the channel label; protected attention alone
-retains its dot without bolding a caught-up channel. DMs retain unread bolding.
+retains its dot without bolding a caught-up channel. Confirmed-muted channels suppress ordinary automatic unread styling and offscreen cues without clearing unread evidence; explicit manual unread, protected attention and unread thread activity remain visible. Pending or failed mute changes do not suppress these cues. DMs retain unread bolding.
 Solo chat labels strengthen for any observed unread message, including mentions,
-broadcasts and relevant replies, so Solo rows omit the attention dot.
+broadcasts and relevant replies, even when muted, so Solo rows omit the attention dot.
 Ordinary unread renders no row marker. DMs, mentions, broadcasts, and
 relevant thread replies add one accent dot; non-DM row numerals are omitted and DM
 avatars are reserved for promoted offscreen cues. Thread activity reuses that dot:

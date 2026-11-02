@@ -3,7 +3,8 @@ import { GearIcon, SquaresFourIcon } from "../../shared/design-system/icons";
 import { useEffect, useSyncExternalStore } from "react";
 import type { AppServices } from "../services";
 import type { SearchDestination, SearchGroup } from "./SearchChoices";
-import { matchRank } from "../../features/search/match";
+import { MatchRank, matchName, matchRank } from "../../features/search/match";
+import { settingsSections } from "../settings-sections";
 import { PreferenceRow } from "../../shared/design-system/ui/PreferenceRow";
 import { SwitchPreferenceRow } from "../../shared/design-system/ui/SwitchPreferenceRow";
 import { Select } from "../../shared/design-system/ui/Select";
@@ -32,6 +33,14 @@ const entries = [
 
 const noSubscribe = () => () => {};
 const noSnapshot = () => null;
+
+/** A section opens Settings on Enter, so letters merely in order do not match
+ * it: "wes" would find Software updates before a person Wes is found. Word
+ * runs still do, as in channel completion. */
+function matchSection(label: string, needle: string) {
+  const found = matchName(label, needle);
+  return found && found.rank <= MatchRank.wordRuns ? found : undefined;
+}
 
 function controlDestination(
   key: string,
@@ -67,11 +76,18 @@ export function useSearchSettings({
   notifications,
   plugins,
   adminAccess,
+  settingsCards,
+  communities,
   navigation,
   close,
+  openSection,
 }: {
   navigation: AppServices["navigation"];
   close: () => void;
+  /** Opens Settings at a section, scoped to the selected community. */
+  openSection: (section: string) => void;
+  settingsCards?: AppServices["settingsCards"] | undefined;
+  communities?: AppServices["communities"] | undefined;
   plugins?: AppServices["plugins"] | undefined;
   adminAccess?: AppServices["adminAccess"] | undefined;
   query: string;
@@ -83,6 +99,16 @@ export function useSearchSettings({
     plugins?.snapshot ?? noSnapshot,
   );
   useEffect(() => adminAccess?.ensure(), [adminAccess]);
+  // The cards snapshot lists only cards whose visibility has settled visible.
+  useEffect(() => settingsCards?.retainVisibility(), [settingsCards]);
+  const cards = useSyncExternalStore(
+    settingsCards?.subscribe ?? noSubscribe,
+    settingsCards?.snapshot ?? noSnapshot,
+  );
+  const client = useSyncExternalStore(
+    communities?.subscribe ?? noSubscribe,
+    communities?.snapshot ?? noSnapshot,
+  );
   const moderationAccess = useSyncExternalStore(
     adminAccess?.subscribe ?? noSubscribe,
     () => adminAccess?.status("buzz.moderation") ?? "unavailable",
@@ -93,69 +119,99 @@ export function useSearchSettings({
   );
   const needle = query.trim().toLowerCase();
   if (!needle) return [];
-  const settings = entries
-    .flatMap((entry) => {
-      if (!(entry.id === "mode" ? appearance : notifications)) return [];
-      const rank = Math.min(
-        matchRank(entry.label, needle) ?? Infinity,
-        matchRank(entry.section, needle) ?? Infinity,
-        (matchRank(entry.keywords + " settings", needle) ?? Infinity) + 1,
-      );
-      if (!Number.isFinite(rank)) return [];
-      const key = "search-setting-" + entry.id;
-      return [
-        {
-          ...controlDestination(
-            key,
-            entry.section,
-            entry.label,
-            entry.id === "mode" && appearance ? (
-              <ColorMode appearance={appearance} />
-            ) : notifications && entry.id !== "mode" ? (
-              <NotificationPreference
-                notifications={notifications}
-                entry={entry}
-              />
-            ) : null,
-            rank,
-          ),
-          run: () => {
-            close();
-            const section =
-              entry.id === "mode" ? "appearance" : "notifications";
-            void navigation
-              .open({ version: 1, kind: "settings", section })
-              .then((result) => {
-                if (result.status !== "opened") return;
-                const target = document.getElementById(`setting-${entry.id}`);
-                const row =
-                  target?.closest<HTMLElement>(".buzz-preference-row") ??
-                  document.getElementById("setting-delivery");
-                if (
-                  !row ||
-                  row.closest('[hidden], [inert], [aria-hidden="true"]')
-                )
-                  return;
-                row.scrollIntoView({ block: "center", behavior: "instant" });
-                const control = row.querySelector<HTMLElement>(
-                  '[role="switch"]:not([aria-disabled="true"]), [role="combobox"]:not([aria-disabled="true"]), button:not(:disabled), input:not(:disabled)',
-                );
-                if (!control) row.tabIndex = -1;
-                (control ?? row).focus({ preventScroll: true });
-                row.classList.remove("settings-search-highlight");
-                void row.offsetWidth;
-                row.classList.add("settings-search-highlight");
-                row.addEventListener(
-                  "animationend",
-                  () => row.classList.remove("settings-search-highlight"),
-                  { once: true },
-                );
-              });
-          },
+  // The same sections as the Settings sidebar, ahead of their own controls.
+  const sections: SearchDestination[] = cards
+    ? settingsSections(
+        cards,
+        client?.memberships.find(({ id }) => id === client.selected),
+      ).groups.flatMap((group) =>
+        group.sections.flatMap((section) => {
+          const match = matchSection(section.label, needle);
+          // A group label such as "Buzz" or "Community" names many sections,
+          // so it ranks a step behind a section's own label, as a plugin's
+          // category does.
+          const rank = Math.min(
+            match?.rank ?? Infinity,
+            (matchSection(group.label, needle)?.rank ?? Infinity) + 1,
+          );
+          if (!Number.isFinite(rank)) return [];
+          return [
+            {
+              key: "search-section-" + section.id,
+              label: section.label,
+              detail: group.label,
+              icon: section.icon ?? GearIcon,
+              rank,
+              ...(match?.positions.length ? { matches: match.positions } : {}),
+              run: () => openSection(section.id),
+            },
+          ];
+        }),
+      )
+    : [];
+  const controls = entries.flatMap((entry) => {
+    if (!(entry.id === "mode" ? appearance : notifications)) return [];
+    const rank = Math.min(
+      matchRank(entry.label, needle) ?? Infinity,
+      matchRank(entry.section, needle) ?? Infinity,
+      (matchRank(entry.keywords + " settings", needle) ?? Infinity) + 1,
+    );
+    if (!Number.isFinite(rank)) return [];
+    const key = "search-setting-" + entry.id;
+    return [
+      {
+        ...controlDestination(
+          key,
+          entry.section,
+          entry.label,
+          entry.id === "mode" && appearance ? (
+            <ColorMode appearance={appearance} />
+          ) : notifications && entry.id !== "mode" ? (
+            <NotificationPreference
+              notifications={notifications}
+              entry={entry}
+            />
+          ) : null,
+          rank,
+        ),
+        run: () => {
+          close();
+          const section = entry.id === "mode" ? "appearance" : "notifications";
+          void navigation
+            .open({ version: 1, kind: "settings", section })
+            .then((result) => {
+              if (result.status !== "opened") return;
+              const target = document.getElementById(`setting-${entry.id}`);
+              const row =
+                target?.closest<HTMLElement>(".buzz-preference-row") ??
+                document.getElementById("setting-delivery");
+              if (
+                !row ||
+                row.closest('[hidden], [inert], [aria-hidden="true"]')
+              )
+                return;
+              row.scrollIntoView({ block: "center", behavior: "instant" });
+              const control = row.querySelector<HTMLElement>(
+                '[role="switch"]:not([aria-disabled="true"]), [role="combobox"]:not([aria-disabled="true"]), button:not(:disabled), input:not(:disabled)',
+              );
+              if (!control) row.tabIndex = -1;
+              (control ?? row).focus({ preventScroll: true });
+              row.classList.remove("settings-search-highlight");
+              void row.offsetWidth;
+              row.classList.add("settings-search-highlight");
+              row.addEventListener(
+                "animationend",
+                () => row.classList.remove("settings-search-highlight"),
+                { once: true },
+              );
+            });
         },
-      ];
-    })
-    .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+      },
+    ];
+  });
+  const settings = [...sections, ...controls].sort(
+    (a, b) => (a.rank ?? 0) - (b.rank ?? 0),
+  );
   const pluginRows =
     plugins && pluginState?.configuration.status === "ready"
       ? pluginState.configuration.catalog.plugins
@@ -244,10 +300,17 @@ export function useSearchSettings({
           })
           .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
       : [];
+  // Each group ranks by its best row, not by its own label, which is just as
+  // generic: "plugins" leads with Manage plugins, not the Plugins switches.
   return [
-    { label: "Settings", destinations: settings },
+    {
+      label: "Settings",
+      rank: settings[0]?.rank ?? Infinity,
+      destinations: settings,
+    },
     {
       label: "Plugins",
+      rank: pluginRows[0]?.rank ?? Infinity,
       destinations: pluginRows,
       notice: (
         <>

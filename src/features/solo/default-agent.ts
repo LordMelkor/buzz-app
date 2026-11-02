@@ -16,13 +16,28 @@ import {
 const KEY = "solo:default-agent";
 type Account = NonNullable<RelaySession["mainAgent"]>;
 const adopted = new WeakMap<Account, Promise<void>>();
-// The account's saved choice once read: undefined when never saved or
-// unreadable.
+const revisions = new WeakMap<Account, number>();
+const revision = (account: Account) => revisions.get(account) ?? 0;
+const advance = (account: Account) => {
+  const next = revision(account) + 1;
+  revisions.set(account, next);
+  return next;
+};
+// The account's saved choice once read: undefined only when a successful read
+// found no record. Read failures are tracked separately.
 const saved = new WeakMap<Account, string | undefined>();
+const readErrors = new WeakMap<Account, string>();
+const readValues = new WeakMap<Account, string | undefined>();
+const readFailures = new WeakMap<Account, string>();
+const failedChoices = new WeakSet<Account>();
 const listeners = new Set<() => void>();
+function notifySaved() {
+  for (const listener of listeners) listener();
+}
 function remember(account: Account, agent: string | undefined) {
   saved.set(account, agent);
-  for (const listener of listeners) listener();
+  readErrors.delete(account);
+  notifySaved();
 }
 function subscribeSaved(listener: () => void) {
   listeners.add(listener);
@@ -37,7 +52,7 @@ function cache(scope: string, agent: string | null) {
   const saves = writeView(scope, KEY, agent);
   if (saves) unsaved.delete(scope);
   else unsaved.set(scope, agent);
-  for (const listener of listeners) listener();
+  notifySaved();
   return saves;
 }
 /** Makes an agent the one new Berd messages are tagged for, on this device. */
@@ -63,18 +78,39 @@ export async function chooseDefaultAgent(
   pubkey: string,
 ) {
   const account = session.mainAgent;
-  if (account) explicit.add(account);
+  if (account) {
+    explicit.add(account);
+  }
   // A choice this device can't cache still applies here, so it is still saved
   // to the account.
   setDefaultAgent(scope, pubkey);
   if (!account) return;
+  const attempt = advance(account);
   try {
     await account.write(pubkey);
   } catch {
+    // Initial-read recovery must not replace an already settled account choice.
+    if (revision(account) === attempt && !saved.has(account)) {
+      if (readValues.has(account)) {
+        remember(account, readValues.get(account));
+      } else if (readFailures.has(account)) {
+        adopted.delete(account);
+        readErrors.set(
+          account,
+          readFailures.get(account) ??
+            "Your Bestie couldn't be read from your account.",
+        );
+        saved.set(account, saved.get(account));
+        notifySaved();
+      } else {
+        failedChoices.add(account);
+      }
+    }
     throw new Error(
       "Your bestie couldn't be saved to your account. Try again.",
     );
   }
+  failedChoices.delete(account);
   remember(account, pubkey);
 }
 
@@ -85,7 +121,7 @@ export function forgetDefaultAgent(pubkey: string) {
   clearViewValue(KEY, pubkey);
   for (const [scope, agent] of unsaved)
     if (agent === pubkey) unsaved.delete(scope);
-  for (const listener of listeners) listener();
+  notifySaved();
 }
 
 /** Adopts the account's saved choice once per session. Settles even when the
@@ -93,15 +129,38 @@ export function forgetDefaultAgent(pubkey: string) {
 function adopt(account: Account, scope: string) {
   let pending = adopted.get(account);
   if (!pending) {
+    const started = revision(account);
     pending = account.read().then(
       (agent) => {
+        readValues.set(account, agent);
+        readFailures.delete(account);
+        if (started !== revision(account)) {
+          if (failedChoices.delete(account)) remember(account, agent);
+          return;
+        }
         const adopts = !explicit.has(account);
         if (adopts && agent !== undefined) cache(scope, agent);
-        remember(account, adopts ? agent : saved.get(account));
+        remember(account, adopts ? agent : (saved.get(account) ?? agent));
       },
-      () => {
+      (cause) => {
         adopted.delete(account);
-        remember(account, saved.get(account));
+        const error =
+          cause instanceof Error
+            ? cause.message
+            : "Your Bestie couldn't be read from your account.";
+        readFailures.set(account, error);
+        if (started !== revision(account)) {
+          if (failedChoices.delete(account)) {
+            readErrors.set(account, error);
+            saved.set(account, saved.get(account));
+            notifySaved();
+          }
+          return;
+        }
+        readErrors.set(account, error);
+        // Solo still settles and can choose a device fallback while offline.
+        saved.set(account, saved.get(account));
+        notifySaved();
       },
     );
     adopted.set(account, pending);
@@ -109,28 +168,56 @@ function adopt(account: Account, scope: string) {
   return pending;
 }
 
-/** Whether the account's saved choice has been read (or couldn't be), and
- * what it is. */
+/** Whether the account read settled, its saved choice, and recoverable failure. */
 function useAdopted(session: RelaySession, scope: string) {
   const account = session.mainAgent;
   useEffect(() => {
     if (account) void adopt(account, scope);
   }, [account, scope]);
-  const read = useSyncExternalStore(subscribeSaved, () =>
-    account ? saved.has(account) : true,
+  const readSnapshot = () => (account ? saved.has(account) : true);
+  const agentSnapshot = () => (account ? saved.get(account) : undefined);
+  const errorSnapshot = () => (account ? readErrors.get(account) : undefined);
+  const read = useSyncExternalStore(subscribeSaved, readSnapshot, readSnapshot);
+  const agent = useSyncExternalStore(
+    subscribeSaved,
+    agentSnapshot,
+    agentSnapshot,
   );
-  const agent = useSyncExternalStore(subscribeSaved, () =>
-    account ? saved.get(account) : undefined,
+  const error = useSyncExternalStore(
+    subscribeSaved,
+    errorSnapshot,
+    errorSnapshot,
   );
-  return { read, agent };
+  return {
+    read,
+    agent,
+    error,
+    retry: () => {
+      if (!account) return;
+      readErrors.delete(account);
+      advance(account);
+      // Keep a newer confirmed choice visible while its account record is reread.
+      if (saved.get(account) === undefined) saved.delete(account);
+      notifySaved();
+      void adopt(account, scope);
+    },
+  };
+}
+
+/** The account-saved choice and its read state. Without an account capability,
+ * the local explicit choice is already authoritative. */
+export function useSavedAgentState(session: RelaySession, scope: string) {
+  const local = useChosenAgent(scope);
+  const account = useAdopted(session, scope);
+  return session.mainAgent
+    ? account
+    : { read: true, agent: local, error: undefined, retry: () => {} };
 }
 
 /** The agent saved as main on the viewer's account, when it has one; without
  * an account record, the agent saved on this device. */
 export function useSavedAgent(session: RelaySession, scope: string) {
-  const local = useChosenAgent(scope);
-  const account = useAdopted(session, scope);
-  return session.mainAgent ? account.agent : local;
+  return useSavedAgentState(session, scope).agent;
 }
 
 function chosenAgent(scope: string) {
@@ -142,6 +229,7 @@ function chosenAgent(scope: string) {
 
 /** The agent explicitly saved as main, whether or not it can be tagged now. */
 export function useChosenAgent(scope: string) {
+  const snapshot = useCallback(() => chosenAgent(scope), [scope]);
   return useSyncExternalStore(
     useCallback(
       (notify) => {
@@ -154,7 +242,8 @@ export function useChosenAgent(scope: string) {
       },
       [scope],
     ),
-    () => chosenAgent(scope),
+    snapshot,
+    snapshot,
   );
 }
 

@@ -24,7 +24,11 @@ import type {
 } from "../../features/conversation/contracts";
 import type { Navigation } from "../../features/navigation/controller";
 import type { NavigationScope } from "../../features/navigation/targets";
-import { useChannelList, useRelayConnection } from "../../features/relay/react";
+import {
+  useChannelList,
+  useProfileGeneration,
+  useRelayConnection,
+} from "../../features/relay/react";
 import { selectProfiles } from "../../features/relay/profile-selection";
 import { useIdentityNames } from "../../features/identity-names/react";
 import { messagePreview } from "../../features/notifications/content";
@@ -601,12 +605,14 @@ function InboxList({
     selection.snapshot,
   );
   const name = useIdentityNames(session.names);
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
     // A settled discovery revision can retire earlier optional profile reads.
     void list.asOf;
+    void profileGeneration;
     if (profileIds.length && list.status === "ready")
       void session.profiles.ensure(profileIds, "background").catch(() => {});
-  }, [session, profileIds, list.status, list.asOf]);
+  }, [session, profileIds, list.status, list.asOf, profileGeneration]);
   useLayoutEffect(() => {
     const id = focusRow.current;
     if (id === undefined || pending) return;

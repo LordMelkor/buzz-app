@@ -28,7 +28,7 @@ import type { ConversationExtensions } from "../conversation/contracts";
 import type { ChannelMessage } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
 import type { ThreadRetarget, ThreadView } from "../relay/threads";
-import { useRowProfiles } from "../relay/react";
+import { useProfileGeneration, useRowProfiles } from "../relay/react";
 import { rowProfileIds } from "../relay/membership";
 import { MessageRow, type MessageLinkOrigin } from "./MessageRow";
 import { continuesMessageGroup } from "./message-grouping";
@@ -653,12 +653,14 @@ function ThreadMessages({
     [snapshot.status, rows, session.viewer],
   );
   const authors = [...new Set(rows.flatMap(rowProfileIds))].sort().join(":");
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (authors)
       void session.profiles
         .ensure(authors.split(":"), "background")
         .catch(() => {});
-  }, [session.profiles, authors]);
+  }, [session.profiles, authors, profileGeneration]);
   const profiles = useRowProfiles(session.profiles, rows);
   const agentPubkeys = useKnownAgentPubkeys(session, profiles);
   const scroller = useRef<HTMLElement>(null);

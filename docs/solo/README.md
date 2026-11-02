@@ -139,12 +139,25 @@ behavior on the label, so a rename touches copy only.
   archive read has settled. A chosen agent missing for another reason is stood in
   for without replacing the choice. Until an agent is explicitly saved as the
   bestie, including for an automatic pick, a stand-in or a failed save, **Make my
-  bestie** stays offered. Nothing is picked until the account record has been read
-  and its archive read has settled, so a new chat is never tagged for a stale
-  pick. A new chat tags the current default once each time it is shown; the tag
-  isn't saved until the draft is edited, so showing an untouched new chat again
-  uses the current default. Archive rereads, failed rereads and reconnects keep
-  the last known archives, so a known deletion is never forgotten and a live
+  bestie** stays offered. When the Bestie plugin is enabled, the explicit
+  account-saved choice also owns its pinned sidebar destination; automatic and
+  stand-in defaults do not. The pinned destination reuses the newest verified
+  one-to-one DM whose only other member is that exact agent, opening one through
+  the shared DM service only when none exists. It is an ordinary DM with the same
+  history, draft, threads and unread state—not a Solo chat or a second message
+  store. While promoted, that DM is omitted from the ordinary Messages inventory;
+  replacing or deleting the Bestie, disabling the plugin, or losing the exact
+  roster match restores the ordinary row. The pinned navigation row adopts the
+  agent's name and avatar. Global search shows the same identity with **Bestie**
+  as supporting text and matches either name; the separate agent result remains
+  a **New chat** action rather than another route to the pinned DM.
+
+  Nothing is picked until the account record has been read and its archive read
+  has settled, so a new chat is never tagged for a stale pick. A new chat tags the
+  current default once each time it is shown; the tag isn't saved until the draft
+  is edited, so showing an untouched new chat again uses the current default.
+  Archive rereads, failed rereads and reconnects keep the last known archives, so
+  a known deletion is never forgotten and a live
   choice never disappears.
   Follow-ups keep all exact agents notified by the previous send, just like
   Team threads, including the shared Remember mentioned agents preference.

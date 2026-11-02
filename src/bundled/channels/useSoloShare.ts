@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import {
   useEffect,
   useMemo,
@@ -179,15 +180,20 @@ export function useSoloShare({
     })();
     return () => controller.abort();
   }, [enabled, chosenChannelId, session, signal, destinationReload]);
+  const profileGeneration = useProfileGeneration(session.profiles);
   const memberKeys =
     enabled && rosterState === "ready" && !source?.cached
       ? source?.members?.join(":")
       : "";
   useEffect(() => {
+    void profileGeneration;
+    if (memberKeys)
+      void session.profiles
+        .ensure(memberKeys.split(":"), "foreground")
+        .catch(() => {});
+  }, [session, memberKeys, profileGeneration]);
+  useEffect(() => {
     if (!memberKeys) return;
-    void session.profiles
-      .ensure(memberKeys.split(":"), "foreground")
-      .catch(() => {});
     // Reuse the existing verified role reader; unknown owner/agent classification
     // stays unlabeled rather than being represented as private.
     void session.memberAdministration.refresh(channelId).catch(() => {});
@@ -197,11 +203,12 @@ export function useSoloShare({
       ? destinationMembers?.join(":")
       : "";
   useEffect(() => {
+    void profileGeneration;
     if (destinationProfileKeys)
       void session.profiles
         .ensure(destinationProfileKeys.split(":"), "foreground")
         .catch(() => {});
-  }, [session, destinationProfileKeys]);
+  }, [session, destinationProfileKeys, profileGeneration]);
   const resolveName = useIdentityNames(session.names);
   const displayKeys = useMemo(
     () => [

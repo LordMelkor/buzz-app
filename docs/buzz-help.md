@@ -44,6 +44,8 @@ the interface unless an available tool actually supports that action.
 - A community invite or address connects someone to a community; creating an
   identity alone does not grant membership. The same identity can be used in
   more than one community.
+- Set or clear your status from the profile menu, or with **Update status** /
+  **Set a status** on your own profile.
 
 ## Conversations and communities
 
@@ -96,14 +98,22 @@ the interface unless an available tool actually supports that action.
 - **Make my bestie** in an agent card's menu chooses the agent initially tagged
   in new Solo chats for that community. It does not replace recipients in an
   existing chat or an edited draft. People can choose a different agent for a
-  particular conversation. Being the bestie does not prove an agent is ready
-  or running.
+  particular conversation. When the optional **Bestie** plugin is on, that saved
+  choice also opens the agent's DM from the left navigation; Messages omits the
+  duplicate row while it is pinned. A verified existing DM stays available if
+  agent discovery fails. If a replacement save fails, the last confirmed Bestie
+  remains selected and the confirmation offers another attempt. Being the bestie
+  does not prove an agent is ready or running.
 - **Settings → Agent setup → Harness defaults** is where supported agent types
   offer installation, sign-in, and default-model controls. Available controls
   depend on the type. Do not assume a provider is configured or signed in.
 - **Activity**, where the agent type provides it, shows sessions and their
-  transcripts in the agent's profile. Working indicators describe current work,
+  transcripts in the agent's profile. A turn's **Thread** or **Channel** label
+  opens that conversation. Working indicators describe current work,
   not a guarantee that an agent is available or that a message was delivered.
+- When a request to an agent running on this device fails, the activity under
+  the message offers **Retry**, which asks the agent again, and **Dismiss**,
+  which hides the failure.
 
 ## Optional features and limits
 

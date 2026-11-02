@@ -3,7 +3,15 @@ export type { AgentHook, AgentHookContext } from "../features/agents/hooks";
 export type { PluginManifest, PluginModule } from "./api";
 export type { SettingsCard, SettingsCards } from "../features/settings/service";
 export type { Context } from "@deepseek-ai/cordis";
-export type { Host, HostRequest, HostResponse } from "../features/host/service";
+export type {
+  Host,
+  HostRequest,
+  HostRequestOnceOptions,
+  HostResponse,
+  HostByteRequest,
+  HostByteResponse,
+  HostSavedBytes,
+} from "../features/host/service";
 export type {
   IdentityNames,
   NamingPolicy,

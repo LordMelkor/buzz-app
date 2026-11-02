@@ -103,14 +103,17 @@ use buzzodz_plugins::{
 use deep_links::{deep_link_take, deep_link_watch, DeepLinks};
 use dock::{dock_permission, unread_indicator_set};
 use host_command::plugin_host_run_command;
-use host_files::{plugin_host_read_file, plugin_host_resolve_directory};
+use host_files::{plugin_host_read_file, plugin_host_resolve_directory, plugin_host_save_bytes};
 use host_mcp::{
     plugin_host_mcp_close, plugin_host_mcp_reply, plugin_host_mcp_serve, HostMcpServers,
 };
 use host_process::{
     plugin_host_process_kill, plugin_host_process_spawn, plugin_host_process_write, HostProcesses,
 };
-use host_request::{plugin_host_request, plugin_host_upload};
+use host_request::{
+    plugin_host_call_context, plugin_host_request, plugin_host_request_bytes, plugin_host_upload,
+    HostCalls,
+};
 use notifications::{notification_show, Notifications};
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
@@ -701,7 +704,10 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         plugin_module,
         plugin_recover,
         plugin_host_run_command,
+        plugin_host_call_context,
         plugin_host_request,
+        plugin_host_request_bytes,
+        plugin_host_save_bytes,
         plugin_host_upload,
         plugin_host_process_spawn,
         plugin_host_process_write,
@@ -1019,6 +1025,7 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("buzz-media", relay::media_protocol)
         .manage(Imports::default())
         .manage(Terminals::default())
+        .manage(HostCalls::default())
         .manage(HostProcesses::default())
         .manage(HostMcpServers::default())
         .manage(OAuthCallbackHost::default())
@@ -1057,6 +1064,7 @@ pub fn run() {
                 eprintln!("OAuth callback cleanup failed: {error}");
             }
             if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                webview.state::<HostCalls>().page_load();
                 webview.state::<pairing::Pairing>().cancel_all();
                 webview.state::<NsecBackupHost>().document_load();
                 webview.state::<relay::Spools>().cancel_all(&webview.state::<relay::Uploads>());

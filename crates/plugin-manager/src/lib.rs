@@ -74,6 +74,9 @@ pub struct HostGrants {
     /// access, without starting a program for it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub files: bool,
+    /// Pathless temporary saves in host-selected private storage; no read access.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub managed_files: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -2014,6 +2017,20 @@ mod tests {
             None
         );
         assert_eq!(serde_json::to_value(&old).unwrap(), manifest);
+        assert!(!old.host.as_ref().unwrap().managed_files);
+        let mut managed = manifest.clone();
+        managed["host"]["managedFiles"] = serde_json::json!(false);
+        let parsed: Manifest = serde_json::from_value(managed.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), manifest);
+        managed["host"]["managedFiles"] = serde_json::json!(true);
+        let parsed: Manifest = serde_json::from_value(managed.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), managed);
+        assert_ne!(
+            artifact_from_text(&manifest.to_string(), "export const x = 1".into()).unwrap(),
+            artifact_from_text(&managed.to_string(), "export const x = 1".into()).unwrap()
+        );
+        managed["host"]["managedFiles"] = serde_json::json!("true");
+        assert!(serde_json::from_value::<Manifest>(managed).is_err());
         for limit in [1, 4096, MAX_HOST_COMMAND_OUTPUT_BYTES] {
             let mut valid = manifest.clone();
             valid["host"]["commands"][0]["maxOutputBytes"] = serde_json::json!(limit);
@@ -2204,7 +2221,7 @@ mod tests {
 
         fs::write(
             source.join("manifest.json"),
-            r#"{"id":"example.page","name":"Example","apiVersion":1,"host":{"commands":[{"id":"second","program":"example-cli","args":["status","--json"],"maxOutputBytes":65536}],"networkOrigins":["https://two.example"]}}"#,
+            r#"{"id":"example.page","name":"Example","apiVersion":1,"host":{"commands":[{"id":"second","program":"example-cli","args":["status","--json"],"maxOutputBytes":65536}],"networkOrigins":["https://two.example"],"managedFiles":true}}"#,
         )
         .unwrap();
         let second = manager
@@ -2217,6 +2234,7 @@ mod tests {
             .revision;
         assert!(manager.host_grants("example.page", &first).is_err());
         let grants = manager.host_grants("example.page", &second).unwrap();
+        assert!(grants.managed_files);
         assert_eq!(grants.commands[0].id, "second");
         assert_eq!(grants.commands[0].max_output_bytes, Some(65536));
         let reopened = Manager::open(Some(temp.path().into()), "test", false).unwrap();
@@ -2346,6 +2364,16 @@ mod tests {
         };
         assert!(error.contains("Load from folder"));
 
+        fs::write(
+            source.join("manifest.json"),
+            r#"{"id":"example.page","name":"Example","apiVersion":1,"host":{"managedFiles":true}}"#,
+        )
+        .unwrap();
+        assert!(manager
+            .reload("example.page")
+            .err()
+            .unwrap()
+            .contains("Load from folder"));
         let catalog = manager.catalog().unwrap();
         let plugin = catalog
             .plugins

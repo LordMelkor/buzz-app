@@ -1095,7 +1095,10 @@ test("Back and Forward return to a root-linked thread's reading place; a fresh l
   const links = page.locator(
     `[data-channel-timeline] [data-message-id="${opener.id}"]`,
   );
-  const rootLink = links.getByRole("link", { name: "Alpha", exact: true });
+  const rootLink = links.getByRole("link", {
+    name: "Fixture Reader in #Alpha",
+    exact: true,
+  });
   const opened = () =>
     expect
       .poll(() =>
@@ -1176,7 +1179,9 @@ test("Back and Forward return to a root-linked thread's reading place; a fresh l
   for (let i = 0; i < 12 && (await gap()) >= 4; i++)
     await wheel(page, 4000, region);
   expect(await gap()).toBeLessThan(4);
-  await links.getByRole("link", { name: "Beta", exact: true }).click();
+  await links
+    .getByRole("link", { name: "Alice Fixture in #Beta", exact: true })
+    .click();
   await expect(panel.getByText("Beta reply", { exact: true })).toBeVisible();
 
   // Back remounts the thread where it was left: the end, not the root.

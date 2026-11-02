@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useIdentityNames } from "../../features/identity-names/react";
 import type { PanelProps } from "../../features/panels/service";
@@ -52,9 +53,11 @@ function OwnerLink({
     selection.snapshot,
     selection.snapshot,
   );
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     void session.profiles.ensure([owner], "background").catch(() => {});
-  }, [session, owner]);
+  }, [session, owner, profileGeneration]);
   const identityName = useIdentityNames(session.names);
   const shown = identityName(
     owner,

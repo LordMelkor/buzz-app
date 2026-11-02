@@ -689,13 +689,18 @@ export function Settings({
     [contributed, departureCommunity],
   );
   const [selected, setSelected] = useState(defaultSection);
-  const departureFocus = useRef(false);
+  // A switch made from inside the content hides or removes the control that
+  // made it, so focus moves into the section it opened.
+  const contentFocus = useRef<string>(undefined);
   useLayoutEffect(() => {
-    if (selected !== "profile" || !departureFocus.current) return;
-    departureFocus.current = false;
-    document
-      .getElementById(navigationPane ? "settings-content" : "main-content")
-      ?.focus({ preventScroll: true });
+    if (selected !== contentFocus.current) return;
+    contentFocus.current = undefined;
+    (selected === "plugins"
+      ? pluginSection.current
+      : document.getElementById(
+          navigationPane ? "settings-content" : "main-content",
+        )
+    )?.focus({ preventScroll: true });
   }, [selected, navigationPane]);
   useEffect(() => {
     if (
@@ -1225,6 +1230,13 @@ export function Settings({
             <DecisionsSettings
               decisions={decisions}
               active={() => selected === "decisions"}
+              onSection={
+                onSection &&
+                ((id) => {
+                  contentFocus.current = id;
+                  onSection(id);
+                })
+              }
             />
           </div>
         )}
@@ -1263,7 +1275,7 @@ export function Settings({
               );
             }}
             onRemoved={() => {
-              departureFocus.current = true;
+              contentFocus.current = "profile";
               if (onSection) onSection("profile");
               else setSelected("profile");
             }}

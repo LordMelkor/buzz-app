@@ -34,7 +34,7 @@ import { formatPublicKey } from "../../shared/identity/public-key";
 // reduced here; MessageRow/MessageComposer retain their own mounted suites.
 vi.mock("../relay/react", () => {
   const profiles = new Map();
-  return { useRowProfiles: () => profiles };
+  return { useProfileGeneration: () => 0, useRowProfiles: () => profiles };
 });
 vi.mock("./MessageRow", () => ({
   MessageRow: ({

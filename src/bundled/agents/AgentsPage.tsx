@@ -72,6 +72,7 @@ import type { RelayData } from "../../features/relay/service";
 import type { Navigation } from "../../features/navigation/controller";
 import { targetKey } from "../../features/navigation/targets";
 import type { PageNavigation } from "../../features/navigation/service";
+import { SettingsSectionLink } from "../../features/navigation/SettingsSectionLink";
 import {
   BrainIcon,
   CheckIcon,
@@ -113,7 +114,12 @@ import { Textarea } from "../../shared/design-system/ui/Textarea";
 import { Tooltip } from "../../shared/design-system/ui/Tooltip";
 import { publicKeyLabels } from "../../shared/identity/public-key";
 import { readView, writeView } from "../../shared/view-state";
-import { agentProviderRoute, agentProviderTarget, agentRoute } from "./routes";
+import {
+  agentProviderRoute,
+  agentProviderTarget,
+  agentRoute,
+  conversationOpener,
+} from "./routes";
 import { writeClipboardText } from "../../shared/clipboard";
 
 const message = (error: unknown) =>
@@ -483,6 +489,10 @@ export function AgentsPage({
     );
   })();
 
+  const openSettings =
+    navigator &&
+    ((section: string) =>
+      void navigator.open({ version: 1, kind: "settings", section }));
   const panel = selected ? (
     selected.unfinished || selected.place === "elsewhere" ? (
       <AgentPeek
@@ -492,6 +502,7 @@ export function AgentsPage({
         type={typeOf(selected)}
         channels={channels}
         onClose={() => browse()}
+        openSettings={openSettings}
       />
     ) : (
       <AgentDetails
@@ -517,6 +528,13 @@ export function AgentsPage({
             : undefined
         }
         onRemoved={() => browse()}
+        openSettings={openSettings}
+        openConversation={conversationOpener(
+          navigator,
+          connection.viewer && connection.origin
+            ? { viewer: connection.viewer, communityOrigin: connection.origin }
+            : undefined,
+        )}
       />
     )
   ) : undefined;
@@ -1250,12 +1268,14 @@ function AgentPeek({
   type,
   channels,
   onClose,
+  openSettings,
 }: {
   agents: Agents;
   agent: Agent;
   type: RegisteredAgentType | undefined;
   channels: readonly ChannelChoice[];
   onClose(): void;
+  openSettings: ((section: string) => void) | undefined;
 }) {
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState("");
@@ -1285,8 +1305,11 @@ function AgentPeek({
             </>
           ) : (
             <>
-              This agent’s harness is unavailable in this client. Check Settings
-              → Plugins or use a build with this harness configured.
+              This agent’s harness is unavailable in this client. Check{" "}
+              <SettingsSectionLink section="plugins" open={openSettings}>
+                Manage plugins
+              </SettingsSectionLink>{" "}
+              or use a build with this harness configured.
             </>
           )}
         </p>

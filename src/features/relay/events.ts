@@ -66,11 +66,14 @@ export function eventsDto(value: unknown): RelayEvent[] {
   return value.map(eventDto);
 }
 
-/** One HTTP connection's bounded proof memo, not an event/result cache. Only a
- * matching content hash AND exact signature can reuse a successful verification.
- * Retains no payload, authorization, freshness or caller-supplied proof symbols. */
-export function createEventVerifier() {
-  const proofs = new ByteLru<string>(2048, 2048 * 192);
+/** One owner's bounded proof memo (an HTTP connection, or a live subscription
+ * across its reconnects), not an event/result cache. Only a matching content
+ * hash AND exact signature can reuse a successful verification. Retains no
+ * payload, authorization, freshness or caller-supplied proof symbols. */
+export function createEventVerifier(entries = 8192) {
+  // Idle sessions periodically re-read the same events. An LRU smaller than that
+  // working set misses on every in-order re-read, so keep it well above it.
+  const proofs = new ByteLru<string>(entries, entries * 192);
   return (value: unknown): RelayEvent =>
     checkedEvent(value, (event): event is VerifiedEvent => {
       if (
@@ -81,7 +84,9 @@ export function createEventVerifier() {
         return true;
       }
       if (!verifyEvent(event)) return false;
-      proofs.set(event.id, event.sig, 192); // fixed ASCII id (64) + signature (128)
+      // A resume never replays an ephemeral event, so its proof would rarely hit.
+      if (event.kind < 20000 || event.kind >= 30000)
+        proofs.set(event.id, event.sig, 192); // fixed ASCII id (64) + signature (128)
       return true;
     });
 }

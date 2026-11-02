@@ -73,7 +73,7 @@ checks, not that an OS banner was displayed or read.
   preference, independently of whether Channels is mounted. Muted channels suppress
   DM and participating-thread alerts; explicit mentions still pass the channel-mute
   gate, not global off/category/read/access/permission gates. This does not introduce
-  a broadcast notification category or change unread badges. Unknown or failed
+  a broadcast notification category. Confirmed mute quiets ordinary channel unread styling and offscreen cues without clearing unread evidence; manual unread, directed attention and unread thread activity remain visible. Solo and DM unread emphasis is preserved. Unread thread cues are distinct from participating-thread alerts, which mute suppresses. Unknown or failed
   preference reads hold non-mention candidates until explicit retry; a confirmed
   mute cancels pending candidates, including an in-flight permission check. Unmute
   does not replay cancelled alerts. Existing shown OS banners are not withdrawn.
@@ -181,7 +181,7 @@ observed unread messages (including thread replies) or explicit channel-unread
 intent. It is not an exact message count or evidence of complete history. Unknown
 and observed-zero both omit the dot. Existing bounded evidence/read-state owns
 startup and updates; this projection adds no relay reads, network subscriptions,
-or storage. Personal space, account/session changes, access loss and host disposal
+or storage. Channel mute does not remove retained unread evidence from this community-wide dot, so muted ordinary backlog can keep it on while the channel's ordinary sidebar cues are quiet. Personal space, account/session changes, access loss and host disposal
 clear or recompute the indicator. Disabling Channels does not stop host ownership.
 Desktop alert preferences do not alter this unread indicator.
 

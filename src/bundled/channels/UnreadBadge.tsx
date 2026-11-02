@@ -12,12 +12,25 @@ import styles from "./Channels.module.css";
 type UnreadSnapshot = ReturnType<RelaySession["unread"]["snapshot"]>;
 
 /** Bold tracks ordinary backlog; protected attention has its own dot. */
-export function ordinaryUnread(snapshot: UnreadSnapshot, dm: boolean) {
+export function ordinaryUnread(
+  snapshot: UnreadSnapshot,
+  dm: boolean,
+  muted = false,
+) {
   const count = snapshot.observedCount ?? 0;
   return (
     snapshot.manual !== "none" ||
-    (dm ? count > 0 : count > (snapshot.attentionCount ?? 0))
+    (dm ? count > 0 : !muted && count > (snapshot.attentionCount ?? 0))
   );
+}
+
+/** Observe only confirmed preferences; optimistic menu intents do not quiet unread. */
+export function useConfirmedMute(session: RelaySession, channelId: string) {
+  const get = useCallback(() => {
+    const snapshot = session.sidebarPreferences.snapshot();
+    return !snapshot.cached && !!snapshot.data?.muted.includes(channelId);
+  }, [session, channelId]);
+  return useSyncExternalStore(session.sidebarPreferences.subscribe, get, get);
 }
 
 /** Unread evidence for one channel's badge. */
@@ -53,10 +66,13 @@ export function useUnreadState(
     getActivity,
     getActivity,
   );
+  const muted = useConfirmedMute(session, channelId);
   const count = snapshot.observedCount;
   const manual = snapshot.manual !== "none";
-  const unread = manual || (count ?? 0) > 0;
-  const ordinary = ordinaryUnread(snapshot, dm);
+  const unread =
+    manual ||
+    ((count ?? 0) > 0 && (dm || !muted || (snapshot.attentionCount ?? 0) > 0));
+  const ordinary = ordinaryUnread(snapshot, dm, muted);
   const threadCount = activity.items?.length ?? 0;
   return { snapshot, activity, count, manual, unread, ordinary, threadCount };
 }
@@ -67,6 +83,7 @@ export function UnreadBadge({
   dm = false,
   label,
   labelUnread = "ordinary",
+  preserveUnread = false,
 }: {
   session: RelaySession;
   channelId: string;
@@ -74,9 +91,22 @@ export function UnreadBadge({
   label?: ReactNode;
   /** Solo labels emphasize every unread message, so attention adds no dot. */
   labelUnread?: "ordinary" | "all";
+  /** Preserve observed evidence for Solo destinations with their own labels. */
+  preserveUnread?: boolean;
 }) {
-  const { snapshot, activity, count, manual, unread, ordinary, threadCount } =
-    useUnreadState(session, channelId, dm);
+  const {
+    snapshot,
+    activity,
+    count,
+    manual,
+    unread: quietUnread,
+    ordinary,
+    threadCount,
+  } = useUnreadState(session, channelId, dm);
+  const unread =
+    labelUnread === "all" || preserveUnread
+      ? manual || (count ?? 0) > 0
+      : quietUnread;
   if (!unread && !threadCount && label === undefined) return null;
   const priority = dm || (snapshot.attentionCount ?? 0) > 0;
   const showUnreadDot =

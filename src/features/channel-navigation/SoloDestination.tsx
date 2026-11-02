@@ -335,7 +335,13 @@ function ConversationUnread() {
   const context = useContext(RegionDestinationContext);
   const state = useContext(ConversationContext);
   if (!context || !state) return null;
-  return <UnreadBadge session={context.session} channelId={state.channel.id} />;
+  return (
+    <UnreadBadge
+      session={context.session}
+      channelId={state.channel.id}
+      preserveUnread
+    />
+  );
 }
 
 /** The shared card; drag-target paint stays a host-owned state. */
@@ -372,7 +378,11 @@ export function RecoveryDestination({ channelId }: { channelId: string }) {
         label={channel.name}
         selected={context.current === channelId}
         trailing={
-          <UnreadBadge session={context.session} channelId={channelId} />
+          <UnreadBadge
+            session={context.session}
+            channelId={channelId}
+            preserveUnread
+          />
         }
         onClick={() => {
           void context.navigator.open(

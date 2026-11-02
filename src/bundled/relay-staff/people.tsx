@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import {
   createContext,
   useContext,
@@ -58,11 +59,12 @@ export function usePeople(
     selection?.subscribe ?? noop,
     selection?.snapshot ?? (() => NONE),
   );
+  const profileGeneration = useProfileGeneration(profiles ?? undefined);
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed by the joined ids
   useEffect(() => {
     if (profiles && ids.length)
       profiles.ensure(ids, "background").catch(() => {});
-  }, [profiles, wanted]);
+  }, [profiles, wanted, profileGeneration]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed by the joined ids
   const labels = useMemo(() => publicKeyLabels(ids), [wanted]);
   return useMemo(() => {

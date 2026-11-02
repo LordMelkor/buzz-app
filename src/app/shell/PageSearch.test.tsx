@@ -676,3 +676,102 @@ it("shows a plugin page's declared icon on its search row", async () => {
   expect(image).toHaveAttribute("src", icon);
   expect(plain.querySelector("img")).toBeNull();
 });
+
+it("opens a Settings section from overall search, never from a conversation's", async () => {
+  const root = new Context();
+  root.provide("pluginStatus", {
+    isActive: () => true,
+    subscribe: () => () => {},
+  });
+  const bindings = createShortcutBindings(window);
+  const shortcuts = new ShortcutsService(root, window, bindings);
+  const connection = { status: "disconnected", generation: 0 };
+  const community = {
+    selected: "primary",
+    viewer: "viewer",
+    memberships: [{ id: "primary", name: "Primary" }],
+  };
+  const navigation = {
+    entry: { target: { kind: "conversation", channelId: "crew" } },
+  };
+  const cards: never[] = [];
+  const release = vi.fn();
+  const retainVisibility = vi.fn(() => release);
+  const services = {
+    shortcuts,
+    shortcutBindings: bindings,
+    navigation: {
+      subscribe: () => () => {},
+      snapshot: () => navigation,
+    },
+    communities: {
+      subscribe: () => () => {},
+      snapshot: () => community,
+      relay: { subscribe: () => () => {}, snapshot: () => connection },
+    },
+    settingsCards: {
+      subscribe: () => () => {},
+      snapshot: () => cards,
+      retainVisibility,
+    },
+  } as unknown as SearchServices;
+  const select = vi.fn();
+  const user = userEvent.setup();
+  try {
+    render(
+      <>
+        <PageSearch pages={[]} onSelect={select} services={services} />
+        <main id="main-content" tabIndex={-1} />
+      </>,
+    );
+    const apple = isApplePlatform(navigator.platform);
+    fireEvent.keyDown(window, { key: "f", metaKey: apple, ctrlKey: !apple });
+    const scoped = await screen.findByRole("dialog", {
+      name: "Search this conversation",
+    });
+    await user.type(
+      within(scoped).getByRole("combobox", {
+        name: "Search this conversation",
+      }),
+      "shortcuts",
+    );
+    expect(
+      within(scoped).queryByRole("group", { name: "Settings" }),
+    ).toBeNull();
+    await user.click(
+      within(scoped).getByRole("button", {
+        name: "Remove This conversation search scope",
+      }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Search Buzz" });
+    expect(
+      within(within(dialog).getByRole("group", { name: "Settings" })).getByRole(
+        "option",
+        { name: /^Shortcuts/ },
+      ),
+    ).toHaveTextContent("Buzz");
+    expect(retainVisibility).toHaveBeenCalled();
+    await user.keyboard("{Enter}");
+    expect(select).toHaveBeenCalledExactlyOnceWith("settings", {
+      section: "shortcuts",
+    });
+    await vi.waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(release).toHaveBeenCalled();
+    // A community section names only its section; select() adds the
+    // selected community's scope.
+    await user.click(screen.getByRole("button", { name: "Search Buzz" }));
+    await user.type(
+      await screen.findByRole("combobox", { name: "Search Buzz" }),
+      "local settings",
+    );
+    await user.click(screen.getByRole("option", { name: /^Local settings/ }));
+    expect(select).toHaveBeenLastCalledWith("settings", {
+      section: "local-settings",
+    });
+  } finally {
+    cleanup();
+    bindings.dispose();
+    await root.fiber.dispose();
+  }
+});

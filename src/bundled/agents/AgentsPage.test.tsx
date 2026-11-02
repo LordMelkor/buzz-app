@@ -43,6 +43,7 @@ import type { OpenTarget } from "../../features/navigation/targets";
 import { PlugIcon, RobotIcon } from "../../shared/design-system/icons";
 import { AgentSettings } from "../../app/AgentSettings";
 import { AgentsPage } from "./AgentsPage";
+import { ActivityTranscript } from "../../features/agents/ActivityTranscript";
 
 vi.mock("../../features/profiles/avatar-upload", async (actual) => ({
   ...(await actual<typeof import("../../features/profiles/avatar-upload")>()),
@@ -2767,23 +2768,63 @@ it("offers New team again when the team being edited disappears", async () => {
 
 it("explains an unavailable harness without claiming the key is on another device", async () => {
   const user = userEvent.setup();
-  setup([
-    {
-      ...agent("Starf", 3),
-      type: "block.builderlab/builderlab",
-      place: "elsewhere",
-    },
-  ]);
+  const navigator = {
+    open: vi.fn(async () => ({ status: "opened" as const })),
+  } as unknown as Navigation;
+  setup(
+    [
+      {
+        ...agent("Starf", 3),
+        type: "block.builderlab/builderlab",
+        place: "elsewhere",
+      },
+    ],
+    { page: { navigator } },
+  );
   const grid = screen.getByRole("grid", { name: "Agents" });
   expect(within(grid).getByText("Harness unavailable")).toBeInTheDocument();
   expect(screen.queryByText("On another device")).not.toBeInTheDocument();
 
   await user.click(within(grid).getByText("Starf"));
-  expect(screen.getByText(/Check Settings → Plugins/)).toBeInTheDocument();
+  expect(screen.getByText(/harness is unavailable/)).toHaveTextContent(
+    "Check Manage plugins or use a build with this harness configured.",
+  );
   expect(screen.queryByText(/another of your devices/)).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Delete agent" }),
   ).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Manage plugins" }));
+  expect(navigator.open).toHaveBeenCalledExactlyOnceWith({
+    version: 1,
+    kind: "settings",
+    section: "plugins",
+  });
+});
+
+it("links a profile whose type's plugin is off to Manage plugins", async () => {
+  const user = userEvent.setup();
+  const navigator = {
+    open: vi.fn(async () => ({ status: "opened" as const })),
+  } as unknown as Navigation;
+  setup([{ ...agent("Lou", 3), type: "test/off" }], { page: { navigator } });
+
+  await user.click(
+    within(screen.getByRole("grid", { name: "Agents" })).getByText("Lou"),
+  );
+  const settings = screen.getByRole("region", { name: "Lou settings" });
+  expect(
+    within(settings).getByText(/provides this agent's type/),
+  ).toHaveTextContent(
+    "Enable the plugin that provides this agent's type in Manage plugins to change its settings.",
+  );
+  await user.click(
+    within(settings).getByRole("button", { name: "Manage plugins" }),
+  );
+  expect(navigator.open).toHaveBeenCalledExactlyOnceWith({
+    version: 1,
+    kind: "settings",
+    section: "plugins",
+  });
 });
 
 it("shows a synced team only where its members are, after switching communities", async () => {
@@ -3498,6 +3539,98 @@ it("opens the owned agent provider Activity tab for the originating conversation
   }
 });
 
+it("opens a turn's thread or channel from its label on the Agents page Activity tab", async () => {
+  const user = userEvent.setup();
+  const ada = agent("Ada", 1);
+  const open = vi.fn(async () => ({ status: "opened" as const }));
+  const navigator = { open } as unknown as Navigation;
+  const view = setup([ada], { page: { navigator } });
+  const owner = createRelaySession(null);
+  const origin = "https://relay.test";
+  const snapshot = {
+    status: "ready" as const,
+    generation: 1,
+    viewer: ada.owner,
+    origin,
+    scope: `${origin}:${ada.owner}`,
+    session: owner.session,
+  };
+  const relay = { ...view.relay, snapshot: () => snapshot };
+  const root = "c".repeat(64);
+  const turn = (turnId: string, threadRootId: string | null) => ({
+    turnId,
+    channelId: "channel-a",
+    threadRootId,
+    triggeringEventIds: [],
+    newSession: false,
+    config: [],
+    startedAt: Date.parse("2026-10-20T12:00:00Z"),
+    endedAt: Date.parse("2026-10-20T12:01:00Z"),
+    partial: false,
+    items: [],
+  });
+  const transcript = { turns: [turn("thread", root), turn("channel", null)] };
+  // Like a harness's Activity tab: it hands the host's opener to the transcript.
+  const Activity = ({ openConversation }: AgentViewProps) => (
+    <ActivityTranscript
+      transcript={transcript}
+      agentName="Ada"
+      state={() => "ended"}
+      openConversation={openConversation}
+    />
+  );
+  const echo = view.agents.types()[0];
+  if (!echo) throw new Error("Missing fixture type");
+  const types = [
+    {
+      ...echo,
+      tabs: [
+        {
+          id: "activity",
+          title: "Activity",
+          role: "activity" as const,
+          component: Activity,
+        },
+      ],
+    },
+  ];
+  view.agents.types = () => types;
+  try {
+    view.rerender(
+      <AgentsPage agents={view.agents} relay={relay} navigator={navigator} />,
+    );
+    await user.click(screen.getByRole("gridcell", { name: /Ada/ }));
+    const profile = await screen.findByRole("region", {
+      name: "Agent profile",
+    });
+    await user.click(within(profile).getByRole("tab", { name: "Activity" }));
+    const scope = { viewer: ada.owner, communityOrigin: origin };
+    await user.click(
+      within(profile).getByRole("button", { name: "Thread cccccccc" }),
+    );
+    // A thread opens at its root message, which names the thread.
+    expect(open).toHaveBeenLastCalledWith({
+      version: 1,
+      kind: "conversation",
+      scope,
+      channelId: "channel-a",
+      messageId: root,
+      threadRootId: root,
+    });
+    await user.click(within(profile).getByRole("button", { name: "Channel" }));
+    expect(open).toHaveBeenLastCalledWith({
+      version: 1,
+      kind: "conversation",
+      scope,
+      channelId: "channel-a",
+    });
+    expect(open).toHaveBeenCalledTimes(2);
+  } finally {
+    view.unmount();
+    owner.dispose();
+  }
+});
+
 it("removes an existing avatar through the image editor and explicit Save", async () => {
   const user = userEvent.setup();
   const { agents } = setup([
@@ -3762,6 +3895,109 @@ it("keeps a failed Bestie replacement visible and retries the account save", asy
   expect(
     await screen.findByRole("gridcell", { name: "Bea, Bestie" }),
   ).toBeVisible();
+});
+
+it("retries a failed replacement in the same dialog after an earlier Bestie save", async () => {
+  const user = userEvent.setup();
+  const ada = agent("Ada", 1);
+  const bea = agent("Bea", 2);
+  const view = setup([ada, bea]);
+  const identities = [ada, bea].map(({ pubkey, name }) => ({
+    pubkey,
+    name,
+    managed: true,
+  }));
+  const choices = {
+    status: "ready",
+    complete: true,
+    pending: false,
+    identities,
+    selectable: identities,
+    archives: { status: "unavailable", archived: [] },
+  };
+  const writes: Array<(failure?: Error) => void> = [];
+  const finishWrite = (failure?: Error) => {
+    const finish = writes.shift();
+    if (!finish) throw new Error("Expected a pending Bestie write");
+    finish(failure);
+  };
+  const mainAgent = {
+    read: async () => ada.pubkey,
+    write: vi.fn(
+      (_pubkey: string) =>
+        new Promise<void>((resolve, reject) => {
+          writes.push((failure) => (failure ? reject(failure) : resolve()));
+        }),
+    ),
+  };
+  const connection = {
+    status: "ready",
+    scope: "bestie-confirmed-retry",
+    session: {
+      mainAgent,
+      agentChoices: {
+        snapshot: () => choices,
+        subscribe: () => () => {},
+        retain: () => () => {},
+      },
+    },
+  };
+  const relay = {
+    snapshot: () => connection,
+    subscribe: () => () => {},
+  } as unknown as RelayData;
+  view.rerender(<AgentsPage agents={view.agents} relay={relay} />);
+  const choose = async (name: string) => {
+    await user.click(
+      within(await screen.findByRole("gridcell", { name })).getByRole(
+        "button",
+        { name: `Actions for ${name}` },
+      ),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Make my bestie" }),
+    );
+    const dialog = await screen.findByRole("alertdialog", {
+      name: `Make ${name} your bestie?`,
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: `Switch to ${name}` }),
+    );
+    return dialog;
+  };
+  try {
+    await screen.findByRole("gridcell", { name: "Ada, Bestie" });
+    await choose("Bea");
+    expect(mainAgent.write).toHaveBeenNthCalledWith(1, bea.pubkey);
+    await act(async () => finishWrite());
+    await screen.findByRole("gridcell", { name: "Bea, Bestie" });
+    const dialog = await choose("Ada");
+    expect(mainAgent.write).toHaveBeenNthCalledWith(2, ada.pubkey);
+    await act(async () => finishWrite(new Error("offline")));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "couldn't be saved",
+    );
+    expect(
+      screen.getByRole("gridcell", { name: "Bea, Bestie", hidden: true }),
+    ).toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Switch to Ada" }),
+    );
+    expect(mainAgent.write).toHaveBeenNthCalledWith(3, ada.pubkey);
+    expect(dialog).toBeVisible();
+    expect(
+      within(dialog).getByRole("button", { name: "Keep Bea" }),
+    ).toBeDisabled();
+    await act(async () => finishWrite());
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("gridcell", { name: "Ada, Bestie" }),
+    ).toBeVisible();
+  } finally {
+    await act(async () => {
+      for (const finish of writes.splice(0)) finish();
+    });
+  }
 });
 
 it("opens deletion from the card's right-click menu", async () => {

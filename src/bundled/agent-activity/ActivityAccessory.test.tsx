@@ -12,6 +12,7 @@ import {
   within,
 } from "@testing-library/react";
 
+import { Profiler } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   ActivityAccessory,
@@ -841,6 +842,105 @@ it("offers no Stop for a local request that cannot be stopped or has failed", ()
   }
 });
 
+it("retries a failed local request from its row, before Dismiss, which begins it again", () => {
+  const local = createLocalAgentActivity();
+  const f = fixture(local);
+  const view = render(<ActivityAccessory {...f.props} />);
+  const retry = vi.fn(() => void begin());
+  function begin() {
+    return local.begin(
+      {
+        scope: "test",
+        channelId: "c",
+        threadRootId: root,
+        messageId: root,
+        agent: A,
+      },
+      retry,
+    );
+  }
+  try {
+    act(() => begin().finish({ ok: false, error: "Provider unavailable" }));
+    openBubble();
+    const again = screen.getByRole("button", { name: "Retry Blossom" });
+    expect(again).toHaveTextContent("Retry");
+    expect(
+      again.compareDocumentPosition(
+        screen.getByRole("button", { name: "Dismiss error from Blossom" }),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    fireEvent.click(again);
+    expect(retry).toHaveBeenCalledOnce();
+    expect(f.props.open).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", {
+        name: "View agent activity: Blossom, Received · waiting to start",
+      }),
+    ).toBeInTheDocument();
+    look();
+    expect(screen.getByText("Received · waiting to start")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry Blossom" }),
+    ).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    f.dispose();
+  }
+});
+
+it("says why a failed request could not be retried, keeping it to try again or dismiss", () => {
+  const local = createLocalAgentActivity();
+  const f = fixture(local);
+  const view = render(<ActivityAccessory {...f.props} />);
+  const retry = vi.fn(() => {
+    throw new Error("Blossom isn't running here.");
+  });
+  const begin = (agent: string, again?: () => void) =>
+    local.begin(
+      {
+        scope: "test",
+        channelId: "c",
+        threadRootId: root,
+        messageId: root,
+        agent,
+      },
+      again,
+    );
+  try {
+    act(() => {
+      begin(A, retry).finish({ ok: false, error: "Provider unavailable" });
+      begin(B).finish({ ok: false, error: "Busy" });
+    });
+    openBubble();
+    // Only a request that can be asked again offers Retry.
+    expect(
+      screen.queryByRole("button", { name: "Retry Bubbles" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Dismiss error from Bubbles" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry Blossom" }));
+    expect(retry).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledExactlyOnceWith(
+      "Couldn’t retry Blossom. Blossom isn't running here.",
+      "error",
+    );
+    expect(screen.getByText("Provider unavailable")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Retry Blossom" }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Dismiss error from Blossom" }),
+    );
+    expect(screen.queryByText("Provider unavailable")).toBeNull();
+    expect(retry).toHaveBeenCalledOnce();
+  } finally {
+    view.unmount();
+    f.dispose();
+  }
+});
+
 it("stops a hosted agent's turn through its provider in this thread", async () => {
   const f = fixture();
   const agents = hosted(true);
@@ -1138,6 +1238,28 @@ it("shows nothing later when a stopped hosted turn ends before its 30 seconds", 
     expect(notStopped()).toBe(0);
     expect(look().queryByText("Stopping…")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    f.dispose();
+  }
+});
+
+it("does not re-render the typing replacement for liveness that leaves its agents unchanged", () => {
+  const f = fixture();
+  const onRender = vi.fn();
+  const view = render(
+    <Profiler id="replacement" onRender={onRender}>
+      <ActivityTypingReplacement {...f.props} />
+    </Profiler>,
+  );
+  try {
+    f.send(A, "here", 1, "turn_started", { triggeringEventIds: [root] });
+    const renders = onRender.mock.calls.length;
+    f.send(A, "here", 2, "turn_liveness");
+    f.send(A, "here", 3, "turn_liveness");
+    expect(onRender).toHaveBeenCalledTimes(renders);
+    f.send(B, "there", 1, "turn_started", { triggeringEventIds: [root] });
+    expect(onRender.mock.calls.length).toBeGreaterThan(renders);
   } finally {
     view.unmount();
     f.dispose();

@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import { archiveHides } from "../../features/relay/identity-archives";
 import { Button as BaseButton } from "@base-ui/react/button";
 import referenceStyles from "../../shared/InlineReference.module.css";
@@ -800,7 +801,8 @@ export function ChannelMembersDialog({
     administration.operation.status === "pending"
   )
     busy.add(administration.operation.change.pubkey);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh retries missing names with the other dialog reads.
+  const profileGeneration = useProfileGeneration(session.profiles);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh retries missing names with the other dialog reads; a purge generation rereads.
   useEffect(() => {
     setNameError("");
     setNamesSettledFor(undefined);
@@ -823,7 +825,7 @@ export function ChannelMembersDialog({
     return () => {
       current = false;
     };
-  }, [session, memberKey, refresh]);
+  }, [session, memberKey, refresh, profileGeneration]);
   const namesBusy =
     namesSettledFor?.session !== session ||
     namesSettledFor?.memberKey !== memberKey;

@@ -1,0 +1,7 @@
+.label[data-bestie-unread] {
+  color: var(--text-navigation-unread);
+  font-weight: var(--type-weight-semibold);
+}
+[data-selected] .label[data-bestie-unread] {
+  color: var(--text-row-selected);
+}

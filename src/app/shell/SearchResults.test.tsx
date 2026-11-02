@@ -31,7 +31,9 @@ import {
   signed,
 } from "../../features/relay/testing";
 import type { LiveCallbacks } from "../../features/relay/live";
+import type { AppServices } from "../services";
 import { SearchResults } from "./SearchResults";
+import { useSearchSettings } from "./SearchSettings";
 import {
   readSearchUsage,
   recordChoice,
@@ -3893,6 +3895,7 @@ function peopleSession(
     name: string;
     username?: string;
     isAgent?: true;
+    ownerPubkey?: string;
   }[] = [],
   agents: readonly {
     pubkey: string;
@@ -4383,6 +4386,85 @@ it("tells uncached directory namesakes apart before a DM opens", async () => {
     owner.dispose();
   }
 });
+
+it("uses readable owners before key suffixes for agent namesakes", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    first = keypair(),
+    second = keypair(),
+    secondOwner = keypair();
+  // The default naming policy, as the bundled plugin registers it.
+  const directory = createAgentDirectory();
+  const owner = createRelaySession(
+    {
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      async query(filters) {
+        return filters.some((filter) => filter.kinds?.includes(0))
+          ? [profile(secondOwner, { display_name: "Morgan" })]
+          : [];
+      },
+    },
+    {
+      identityNames: {
+        bind: (source) =>
+          bindNames(source, {
+            snapshot: () => [directory],
+            subscribe: () => () => {},
+          }),
+      } as IdentityNames,
+    },
+  );
+  const t = peopleSession(
+    owner.session,
+    [
+      {
+        pubkey: first.pubkey,
+        name: "Namesake",
+        isAgent: true,
+        ownerPubkey: viewer.pubkey,
+      },
+      {
+        pubkey: second.pubkey,
+        name: "Namesake",
+        isAgent: true,
+        ownerPubkey: secondOwner.pubkey,
+      },
+    ],
+    [
+      { pubkey: first.pubkey, name: "Namesake", managed: true },
+      { pubkey: second.pubkey, name: "Namesake", managed: true },
+    ],
+  );
+  try {
+    render(
+      <SearchResults
+        session={t.session}
+        query="namesake"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const group = await screen.findByRole("group", { name: "Agents" });
+    await waitFor(() =>
+      expect(within(group).getAllByRole("option")).toHaveLength(2),
+    );
+    expect(
+      await within(group).findByRole("option", {
+        name: /^Morgan’s Namesake/,
+      }),
+    ).toBeVisible();
+    expect(
+      within(group).getByRole("option", {
+        name: /^NamesakeStart a direct message$/,
+      }),
+    ).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
 it.each([true, false])(
   "leads with a new chat for the viewer's agents, then their chats, then their DMs (Solo=%s)",
   async (solo) => {
@@ -4825,6 +4907,227 @@ it("preserves remembered page ranking when inline settings match", async () => {
     cleanup();
     owner.dispose();
     localStorage.clear();
+  }
+});
+
+it.each([
+  ["buzz", "Channels", "buzz-dev", ["IdentityBuzz"]],
+  ["buzz", "People", "Buzz Aldrin", ["IdentityBuzz"]],
+  [
+    "community",
+    "Channels",
+    "community-news",
+    ["ProfileCommunity", "MembershipCommunity admin"],
+  ],
+  [
+    "community",
+    "People",
+    "Community Lead",
+    ["ProfileCommunity", "MembershipCommunity admin"],
+  ],
+  ["labs", "Channels", "labs-crew", ["ExperimentsLabs"]],
+])(
+  "leads %s with %s starting with it, ahead of sections found by their Settings group",
+  async (query, group, name, sections) => {
+    const relay = keypair(),
+      viewer = keypair(),
+      person = keypair();
+    const discovery =
+      group === "Channels"
+        ? [
+            metadata(relay, name, name, 1700000000),
+            roster(relay, name, [viewer.pubkey]),
+          ]
+        : [profile(person, { display_name: name })];
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      query: (filters) =>
+        Promise.resolve(
+          discovery.filter((event) =>
+            filters.some((filter) => matchFilter(filter as Filter, event)),
+          ),
+        ),
+    });
+    const t = peopleSession(owner.session);
+    const cards = [
+      {
+        key: "buzz.moderation/membership",
+        title: "Membership",
+        section: "administration",
+      },
+      { key: "labs.tools/experiments", title: "Experiments", group: "Labs" },
+    ].map((card) => ({
+      ...card,
+      id: card.key.split("/")[1] ?? "",
+      pluginId: card.key.split("/")[0] ?? "",
+      revision: "one",
+      component: () => null,
+    }));
+    const settingsCards = {
+      subscribe: () => () => {},
+      snapshot: () => cards,
+      retainVisibility: () => () => {},
+    } as unknown as AppServices["settingsCards"];
+    const client = {
+      selected: "primary",
+      memberships: [{ id: "primary", name: "Primary" }],
+    };
+    const communities = {
+      subscribe: () => () => {},
+      snapshot: () => client,
+    } as unknown as AppServices["communities"];
+    const openSection = vi.fn();
+    const openConversation = vi.fn();
+    function Palette({ query }: { query: string }) {
+      const inlineSettings = useSearchSettings({
+        query,
+        settingsCards,
+        communities,
+        navigation: {} as AppServices["navigation"],
+        close: () => {},
+        openSection,
+      });
+      return (
+        <SearchResults
+          session={t.session}
+          query={query}
+          onQueryChange={() => {}}
+          input={createRef()}
+          pages={[]}
+          openConversation={openConversation}
+          inlineSettings={inlineSettings}
+        />
+      );
+    }
+    try {
+      const view = render(<Palette query="" />);
+      // The joined list and a profile seen elsewhere are known before the
+      // text is typed, so the name match is there when the Settings rows are.
+      await waitFor(() =>
+        expect(owner.session.channels.list().status).toBe("ready"),
+      );
+      await act(async () => owner.session.profiles.ensure([person.pubkey]));
+      view.rerender(<Palette query={query} />);
+      const [lead] = within(
+        screen.getByRole("group", { name: group }),
+      ).getAllByRole("option");
+      expect(lead).toHaveTextContent(name);
+      // The group label still finds its sections, after the name match.
+      expect(
+        within(screen.getByRole("group", { name: "Settings" }))
+          .getAllByRole("option")
+          .map((option) => option.textContent),
+      ).toEqual(expect.arrayContaining(sections));
+      const groups = screen
+        .getAllByRole("group")
+        .map((element) => element.getAttribute("aria-label"));
+      expect(groups.indexOf(group)).toBeLessThan(groups.indexOf("Settings"));
+      const input = screen.getByRole("combobox", { name: "Search Buzz" });
+      expect(input).toHaveAttribute("aria-activedescendant", lead?.id);
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() =>
+        expect(openConversation).toHaveBeenCalledExactlyOnceWith(
+          group === "Channels" ? name : "started-dm",
+        ),
+      );
+      if (group === "People")
+        expect(t.open).toHaveBeenCalledExactlyOnceWith(
+          [person.pubkey],
+          expect.any(AbortSignal),
+        );
+      expect(openSection).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it("holds an early Enter for a person still being found over a section holding the letters only in order", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query: () => Promise.resolve([]),
+  });
+  // Only the directory knows Champa Rao, so the People row lands when it
+  // answers.
+  const t = peopleSession(owner.session);
+  let answer!: () => void;
+  t.people.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        answer = () =>
+          resolve({
+            people: [{ pubkey: person.pubkey, name: "Champa Rao" }],
+            hasMore: false,
+          });
+      }),
+  );
+  const cards = [
+    {
+      key: "buzz.channels/templates",
+      id: "templates",
+      pluginId: "buzz.channels",
+      title: "Channel templates",
+      group: "App",
+      revision: "one",
+      component: () => null,
+    },
+  ];
+  const settingsCards = {
+    subscribe: () => () => {},
+    snapshot: () => cards,
+    retainVisibility: () => () => {},
+  } as unknown as AppServices["settingsCards"];
+  const openSection = vi.fn();
+  const openConversation = vi.fn();
+  // "wes" finds Software updates the same way, but in the shipped palette
+  // plugin rows still take its early Enter: plugin descriptions hold most
+  // names' letters in order. Of the bundled plugins, controls and a member's
+  // sections, "champ" matched only Channel templates, so this Enter turns on
+  // section matching alone.
+  function Palette() {
+    const inlineSettings = useSearchSettings({
+      query: "champ",
+      settingsCards,
+      navigation: {} as AppServices["navigation"],
+      close: () => {},
+      openSection,
+    });
+    return (
+      <SearchResults
+        session={t.session}
+        query="champ"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={openConversation}
+        inlineSettings={inlineSettings}
+      />
+    );
+  }
+  try {
+    render(<Palette />);
+    await waitFor(() => expect(t.people).toHaveBeenCalled());
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Search Buzz" }), {
+      key: "Enter",
+    });
+    expect(openSection).not.toHaveBeenCalled();
+    expect(openConversation).not.toHaveBeenCalled();
+    await act(async () => answer());
+    await waitFor(() =>
+      expect(openConversation).toHaveBeenCalledExactlyOnceWith("started-dm"),
+    );
+    expect(t.open).toHaveBeenCalledExactlyOnceWith(
+      [person.pubkey],
+      expect.any(AbortSignal),
+    );
+    expect(openSection).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    owner.dispose();
   }
 });
 

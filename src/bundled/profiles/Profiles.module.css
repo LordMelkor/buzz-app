@@ -14,8 +14,13 @@
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
+  /* A centred column fits its content; the unwrapped status would overflow. */
+  max-width: 100%;
   text-align: center;
   overflow-wrap: anywhere;
+}
+.ownActions {
+  flex-direction: column;
 }
 .portrait {
   flex: 0 0 auto;

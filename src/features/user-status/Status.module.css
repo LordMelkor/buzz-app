@@ -93,8 +93,26 @@
 }
 
 .status[data-compact] {
-  max-width: 6rem;
-  flex-shrink: 0;
+  /* Use the line's room and yield it before the adjacent name. The basis is
+     the content, so the width only sets the automatic minimum, min(width,
+     min-content): one image or glyph never shrinks, and longer values keep
+     one grapheme and an ellipsis. The percentage keeps that width out of
+     the line's intrinsic size. Shrink is shared by factor times basis, so
+     the factor is large enough that the name's share rounds to zero; at 999
+     a multi-word name still lost a fraction of a pixel and wrapped. */
+  flex: 0 1000000000 content;
+  width: min(2.5 * var(--user-status-emoji-size, 1.25rem), 100%);
+  min-width: auto;
+}
+.status[data-compact] > .emoji {
+  /* A percentage max-width lets WebKit compress an image's min-content to 0. */
+  max-width: none;
+}
+.status[data-compact] > .emojiFallback {
+  /* Clip the inline axis only, so emoji ink beyond the line box still paints. */
+  min-width: 0;
+  overflow: clip visible;
+  text-overflow: ellipsis;
 }
 
 /* biome-ignore lint/correctness/noUnknownPseudoClass: Status-owned popup portals keep their own scoped geometry. */

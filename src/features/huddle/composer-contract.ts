@@ -13,6 +13,8 @@ export type ComposerSnapshot = {
   canAdd: boolean;
   channels: ReturnType<ComposerSession["channels"]["list"]>;
   profiles: ReturnType<ComposerSession["profiles"]["snapshot"]>;
+  /** The owner's profile purge generation; views reread shown names when it moves. */
+  profileGeneration: number;
   emoji: ReturnType<ComposerSession["emoji"]["snapshot"]>;
   agents: ReturnType<ComposerSession["agentChoices"]["snapshot"]>;
   library: ReturnType<ComposerSession["agentLibrary"]["snapshot"]>;

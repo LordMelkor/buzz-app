@@ -9,6 +9,7 @@ import {
 import { BestieIcon } from "../../shared/design-system/icons";
 import type { PluginModule } from "../../plugins/api";
 import type { Navigation } from "../../features/navigation/controller";
+import type { PageNavigation } from "../../features/navigation/service";
 import { FullPageSurface } from "../../shared/design-system/ui/FullPageSurface";
 import {
   PanelHeader,
@@ -29,6 +30,11 @@ import {
   type RemoteBestie,
 } from "./setup";
 import type { RemoteAgentModel } from "../builderlab/agents/client";
+import { useRelayConnection } from "../../features/relay/react";
+import { useSavedAgentState } from "../../features/solo/default-agent";
+import type { RelayData } from "../../features/relay/service";
+import { PinnedBestie } from "./PinnedBestie";
+import { bestieRoute } from "./routes";
 
 export const inject = [
   "pages",
@@ -71,23 +77,102 @@ export const apply: PluginModule["apply"] = (ctx) => {
     title: "Bestie",
     layout: "workspace",
     primary: true,
-    component: () => {
+    route: { version: 1, validate: (params) => !!bestieRoute(params) },
+    component: ({ navigation: pageNavigation }) => {
       const current = useSyncExternalStore(
         source.subscribe,
         source.snapshot,
         source.snapshot,
       );
       return (
-        <BestiePage
+        <BestieDestination
           bestie={current}
+          relay={ctx.relay}
           navigation={ctx.navigation}
           extensions={ctx.conversation}
           host={ctx}
+          pageNavigation={pageNavigation}
         />
       );
     },
   });
 };
+
+function BestieStatus({ children }: { children: ReactNode }) {
+  return (
+    <div className="h-full min-h-0">
+      <FullPageSurface aria-label="Bestie">
+        <div className="flex h-full min-h-0 flex-col">
+          <PanelHeader
+            title={
+              <PanelHeaderLabel
+                title="Bestie"
+                icon={<BestieIcon size="1rem" />}
+              />
+            }
+          />
+          <Intro>{children}</Intro>
+        </div>
+      </FullPageSurface>
+    </div>
+  );
+}
+
+function BestieDestination({
+  relay,
+  ...props
+}: {
+  bestie?: RemoteBestie | undefined;
+  relay: RelayData;
+  navigation: Navigation;
+  extensions: ConversationExtensions;
+  host: ConversationHostServices;
+  pageNavigation?: PageNavigation | undefined;
+}) {
+  const connection = useRelayConnection(relay);
+  const saved = useSavedAgentState(connection.session, connection.scope ?? "");
+  const established =
+    connection.status === "ready" &&
+    !!connection.viewer &&
+    !!connection.scope?.endsWith(`:${connection.viewer}`);
+  if (!established && !saved.agent)
+    return (
+      <BestieStatus>
+        <p className="m-0 text-body-sm text-muted" role="status">
+          {connection.status === "connecting"
+            ? "Connecting to your Bestie…"
+            : (connection.error ??
+              "Choose a community to continue with your Bestie.")}
+        </p>
+        {connection.status === "error" && (
+          <Button onClick={relay.retry}>Retry connection</Button>
+        )}
+      </BestieStatus>
+    );
+  if (!saved.read || saved.error)
+    return (
+      <BestieStatus>
+        <p
+          className="m-0 text-body-sm text-muted"
+          role={saved.error ? "alert" : "status"}
+        >
+          {saved.error ?? "Loading your Bestie…"}
+        </p>
+        {saved.error && <Button onClick={saved.retry}>Try again</Button>}
+      </BestieStatus>
+    );
+  return saved.agent ? (
+    <PinnedBestie
+      relay={relay}
+      host={props.host}
+      extensions={props.extensions}
+      navigator={props.navigation}
+      navigation={props.pageNavigation}
+    />
+  ) : (
+    <BestiePage {...props} />
+  );
+}
 
 export function BestiePage({
   bestie,

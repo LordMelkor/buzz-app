@@ -232,7 +232,10 @@ export function createHuddleWindow(
         stopProfiles?.();
         stopProfiles = session.profiles.subscribe(sync);
       }
-      const keys = live.participants.map((p) => p.key).join(":");
+      // A purge drops loaded names; its generation makes the same keys a new demand.
+      const keys = live.participants.length
+        ? `${session.profiles.generation?.() ?? 0}|${live.participants.map((p) => p.key).join(":")}`
+        : "";
       if (keys && keys !== ensured && keys !== ensuring) {
         ensuring = keys;
         void session.profiles

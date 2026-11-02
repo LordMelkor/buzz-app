@@ -721,3 +721,29 @@ it.each([
     );
   },
 );
+
+it("carries the owner's profile purge generation so the companion rereads shown names", async () => {
+  const h = harness();
+  let generation = 0;
+  const ensure = vi.fn(async () => {});
+  h.session.profiles = {
+    ...h.session.profiles,
+    snapshot: () => new Map(),
+    ensure,
+    generation: () => generation,
+  };
+  const { client, remote } = await h.connect();
+  expect(remote.profiles.generation?.()).toBe(0);
+  const seen = vi.fn();
+  cleanup.push(remote.profiles.subscribe(seen));
+  await remote.profiles.ensure(["cd".repeat(32)], "background");
+  await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(1));
+  // A purge in the main window advances its generation; the owner publishes.
+  generation = 1;
+  h.owner.refresh();
+  await vi.waitFor(() => expect(remote.profiles.generation?.()).toBe(1));
+  expect(client.snapshot().data?.profileGeneration).toBe(1);
+  expect(seen).toHaveBeenCalled();
+  await remote.profiles.ensure(["cd".repeat(32)], "background");
+  await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(2));
+});

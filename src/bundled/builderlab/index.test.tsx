@@ -20,6 +20,7 @@ import type { BrowserPlatform } from "../../features/browser/platform";
 import { DecisionsService } from "../../features/decisions/service";
 import {
   AgentsService,
+  type Agent,
   type AgentCommunities,
 } from "../../features/agents/service";
 import { AgentDefaults } from "../agents/AgentDefaults";
@@ -134,6 +135,7 @@ it.each([undefined, "", "http://builderlab.example"])(
     const decisions = new DecisionsService(root, localStorage);
     const community = communityFixture(null);
     root.provide("relay", community.relay as never);
+    root.provide("navigation", { open: vi.fn() } as never);
     const knownCommunities = provideKnownCommunities(root, community.viewer);
     const agents = provideAgents(root, community);
     try {
@@ -221,6 +223,7 @@ it.each([undefined, false, true])(
     new DecisionsService(root, localStorage);
     const community = communityFixture(null);
     root.provide("relay", community.relay as never);
+    root.provide("navigation", { open: vi.fn() } as never);
     provideKnownCommunities(root, community.viewer);
     const agents = provideAgents(root, community);
     try {
@@ -372,6 +375,7 @@ it.each([
     new DecisionsService(root, localStorage);
     const community = communityFixture(null);
     root.provide("relay", community.relay as never);
+    root.provide("navigation", { open: vi.fn() } as never);
     provideKnownCommunities(root, community.viewer);
     provideAgents(root, community);
     const backupCalls = () =>
@@ -707,6 +711,7 @@ it.each([
   const decisions = new DecisionsService(root, localStorage);
   const community = communityFixture();
   root.provide("relay", community.relay as never);
+  root.provide("navigation", { open: vi.fn() } as never);
   const knownCommunities = provideKnownCommunities(root, community.viewer);
   const agents = provideAgents(root, community);
   const plugin: PluginInfo = {
@@ -1200,6 +1205,76 @@ it.each([
     expect(requestsTo("delete-agent")).toHaveLength(beforeDelete + 1);
   } finally {
     backupHandoff.resolve();
+    cleanup();
+    await runtime.dispose();
+    await root.fiber.dispose();
+    await community.dispose();
+  }
+});
+
+it("opens Manage plugins from its agents' Activity tab while Agent Activity is off", async () => {
+  const root = new Context();
+  const runtime = new PluginRuntime(root, async () => builderlab);
+  new HostService(root);
+  provideApps(root);
+  new SettingsCardsService(root);
+  new DecisionsService(root, localStorage);
+  const community = communityFixture(null);
+  const activity = {
+    status: "disabled",
+    records: [],
+    turns: [],
+    typing: [],
+    trimmed: 0,
+  };
+  const connection = {
+    status: "ready",
+    session: {
+      agentActivity: { snapshot: () => activity, subscribe: () => () => {} },
+    },
+  };
+  root.provide("relay", {
+    snapshot: () => connection,
+    subscribe: () => () => {},
+  } as never);
+  const navigation = { open: vi.fn() };
+  root.provide("navigation", navigation as never);
+  provideKnownCommunities(root, community.viewer);
+  const agents = provideAgents(root, community);
+  try {
+    runtime.reconcile([
+      {
+        manifest: { ...manifest, apiVersion: 1 },
+        source: "bundled",
+        revision: "bundled",
+        enabled: true,
+        previous: null,
+        reloadable: false,
+        error: null,
+      },
+    ]);
+    await waitFor(() => expect(agents.types()).toHaveLength(1));
+    const Activity = agents
+      .types()[0]
+      ?.tabs?.find((tab) => tab.role === "activity")?.component;
+    if (!Activity) throw new Error("Missing Builderlab Activity tab");
+    render(
+      <Activity
+        agent={
+          { pubkey: "a".repeat(64), name: "Ada", place: "hosted" } as Agent
+        }
+        save={vi.fn()}
+      />,
+    );
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "Manage plugins" }));
+    expect(navigation.open).toHaveBeenCalledExactlyOnceWith({
+      version: 1,
+      kind: "settings",
+      section: "plugins",
+    });
+  } finally {
     cleanup();
     await runtime.dispose();
     await root.fiber.dispose();

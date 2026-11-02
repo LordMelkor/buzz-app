@@ -10,6 +10,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Profiler } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RelaySession } from "../relay/session";
 import type { TypingEntry } from "../relay/typing";
@@ -636,4 +637,82 @@ it("Solo chat ArrowDown exposes retained thread navigation without opening Activ
     undefined,
   );
   expect(trigger).toHaveFocus();
+});
+
+it("does not re-render for activity updates that leave its agents unchanged", () => {
+  const f = fixture();
+  const entries = [entry()];
+  f.update(entries);
+  const onRender = vi.fn();
+  render(
+    <Profiler id="typing" onRender={onRender}>
+      <TypingIndicator session={f.session} channelId="channel" />
+    </Profiler>,
+  );
+  expect(
+    screen.getByRole("button", { name: "Activity: Agent working" }),
+  ).toBeVisible();
+  const renders = onRender.mock.calls.length;
+  f.update(entries, { records: [], turns: [] });
+  f.update(entries, { records: [], turns: [] });
+  expect(onRender).toHaveBeenCalledTimes(renders);
+  f.update([...entries, entry(other, secondRoot)]);
+  expect(
+    screen.getByRole("button", { name: "Activity: 2 agents working" }),
+  ).toBeVisible();
+});
+
+it("updates the open chooser when only an agent's activity changes", async () => {
+  const f = fixture(),
+    user = userEvent.setup();
+  const now = Date.parse("2026-10-08T12:00:00Z");
+  const turns = [
+    {
+      agent,
+      channelId: "channel",
+      turnId: "turn",
+      state: "working" as const,
+      timestamp: now,
+    },
+  ];
+  f.update([], { turns });
+  render(<TypingIndicator session={f.session} channelId="channel" />);
+  await user.click(
+    screen.getByRole("button", { name: "Activity: Agent working" }),
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Working now" });
+  expect(within(dialog).queryByText("Reading")).toBeNull();
+  // Same agent and turn; only the tool it is running changes.
+  f.update([], {
+    turns,
+    records: [
+      {
+        id: "f".repeat(64),
+        agent,
+        createdAt: now / 1000,
+        receivedAt: now,
+        kind: "acp_read",
+        channelIds: ["channel"],
+        plaintext: JSON.stringify({
+          kind: "acp_read",
+          channelId: "channel",
+          turnId: "turn",
+          timestamp: new Date(now).toISOString(),
+          payload: {
+            method: "session/update",
+            params: {
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "call",
+                status: "in_progress",
+                title: "read",
+                kind: "read",
+              },
+            },
+          },
+        }),
+      },
+    ],
+  });
+  expect(within(dialog).getByText("Reading", { exact: true })).toBeVisible();
 });

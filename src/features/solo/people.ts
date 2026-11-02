@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../relay/react";
 import { useEffect, useSyncExternalStore } from "react";
 import { knownAgentPubkeys } from "../agents/known";
 import type { ComposerSession } from "../messages/composer-session";
@@ -95,12 +96,14 @@ export function useSoloMembers(
   )?.members;
   // An agent is recognized from its profile, so load members' profiles.
   const memberKeys = members?.join(",") ?? "";
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (!enabled || !memberKeys) return;
     void session.profiles
       .ensure(memberKeys.split(","), "background")
       .catch(() => {});
-  }, [enabled, memberKeys, session]);
+  }, [enabled, memberKeys, session, profileGeneration]);
   const agents = knownAgentPubkeys(profiles, library);
   return {
     withPeople:
