@@ -114,12 +114,17 @@ With View only, visitors can find the chat by name in Search Buzz or open its
 ordinary chat link. They read without joining and cannot send messages, react or wake agents.
 The relay's ordinary Guest/default-Guest write policy enforces this boundary;
 the absent composer is only its client presentation. View-only access grants no
-membership and adds no sidebar entry for a visitor. The owner keeps the same
-Solo label, conversation ID and private workspace filing.
+membership and adds no sidebar entry for a visitor. **Join** adds a visitor as a
+Guest, listed in People as **Viewing only**, and posts the ordinary join message.
+The chat then appears under Solo/Chats with normal unread tracking; notifications
+follow existing settings and mention/thread rules. It stays read-only. **Leave
+chat** removes membership and the sidebar entry; an open chat can still be read
+without joining. The owner keeps the same Solo label, conversation ID and private
+workspace filing.
 
 Changing back to Private stops nonmembers from reading; it does not remove
-members or change their roles. Guests who joined through the CLI, MCP or another
-client while the chat was View only keep read access until removed in People.
+members or change their roles. Guests who joined while the chat was View only
+keep read access until they leave or are removed in People.
 Reading without joining creates no membership to retain. Neither transition
 changes invitations, creates a share message or adds notifications. Unconfirmed
 publication uses **Check save status**, without automatically resending.

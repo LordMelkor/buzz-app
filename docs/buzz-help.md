@@ -102,6 +102,13 @@ the interface unless an available tool actually supports that action.
   it searches only once that word has at least three characters, even with
   `from:` or `in:`. A shorter last word shows how many characters to type, not
   "no results".
+- **Join** in a View only chat or channel adds you as a viewer, with a sidebar
+  entry and normal unread tracking. Notifications follow your existing settings
+  and mention/thread rules. You appear in People as **Viewing only**, with a join
+  message; you still cannot post or react. Reading without joining stays available.
+  Use **Leave chat** or **Leave channel** to remove your membership and sidebar
+  entry. Joined viewers keep reading after a switch to Private until they leave
+  or are removed in People.
 - **File sharing** is available through **Attach files** in the composer when
   uploads are available. Files and media are shared with the conversation's
   members. Do not promise support for every file type or size.

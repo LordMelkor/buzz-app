@@ -104,6 +104,8 @@ export function SoloToolbar({
   const owner = useSoloOwner(session, channel);
   const [readError, setReadError] = useState<string>();
   const preferences = session.soloPreferences;
+  const canOpenActions =
+    !channel.cached && (!channel.readOnly || channel.viewerRole === "guest");
   return (
     <>
       {region && (
@@ -132,7 +134,7 @@ export function SoloToolbar({
         </>
       )}
       {/* Archived chats keep their lifecycle actions, including Unarchive. */}
-      {!channel.readOnly && !channel.cached && (
+      {canOpenActions && (
         <MenuRoot key={regions.binding?.incarnation ?? "recovery"}>
           <MenuTrigger
             render={

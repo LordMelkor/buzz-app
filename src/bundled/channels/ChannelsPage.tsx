@@ -1886,7 +1886,8 @@ function ChannelWorkspace({
             joinable={
               !current.archived &&
               (current.channelType === "stream" ||
-                current.channelType === "forum")
+                current.channelType === "forum" ||
+                current.channelType === "solo")
             }
             onJoin={() => setJoiningChannel(current.id)}
             onHeightChange={setJoinNoticeHeight}

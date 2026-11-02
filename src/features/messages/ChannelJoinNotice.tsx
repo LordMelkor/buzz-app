@@ -5,7 +5,7 @@ import { Button } from "../../shared/design-system/ui/Button";
 import styles from "./Messages.module.css";
 
 /** Archived and read-only channels share the public preview's lower notice.
- * Member-default public previews offer Join; confirmed membership enables composition.
+ * Public previews offer Join; the admission role determines whether joining enables composition.
  * Confirmed membership can unmount this notice before its run settles, so the
  * page records the join intent when the run starts, not when it resolves. */
 export function ChannelJoinNotice({
@@ -78,7 +78,7 @@ export function ChannelJoinNotice({
     );
   };
   const readOnly = guest || joinRole === "guest";
-  const canJoin = !archived && !readOnly && joinable && !!lifecycle?.available;
+  const canJoin = !archived && !guest && joinable && !!lifecycle?.available;
   return (
     <section
       ref={notice}
@@ -103,11 +103,11 @@ export function ChannelJoinNotice({
             ? `This ${place} is archived`
             : readOnly
               ? joinRole === "guest"
-                ? `This ${place} is read-only`
+                ? `This ${place} is read-only${canJoin ? ". Join to keep it in your sidebar." : ""}`
                 : "Read-only access"
               : canJoin
-                ? "Join channel to send messages"
-                : "You’re previewing this channel"}
+                ? `Join ${place} to send messages`
+                : `You’re previewing this ${place}`}
         </p>
         {canJoin && (
           <Button

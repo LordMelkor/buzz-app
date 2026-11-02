@@ -337,6 +337,7 @@ export const test = base.extend({
     const archivedIds = new Set(lifecycleVisibility.archived);
     const hiddenDmIds = new Set(lifecycleVisibility.hidden);
     let lifecycleTime = 1700000001;
+    const joinedRoles = new Map();
     const rosterIds = [
       ...new Set([
         ...channels,
@@ -1043,6 +1044,7 @@ export const test = base.extend({
       );
       if (preview && rosterKind) {
         const owner = preview.tags.find(([key]) => key === "P")?.[1];
+        if (filter["#p"] && !filter["#p"].includes(owner)) return [];
         return [
           sign(
             rosterKind,
@@ -1161,56 +1163,63 @@ export const test = base.extend({
         return rosterIds
           .filter((id) => !filter["#d"] || filter["#d"].includes(id))
           .map((id) =>
-            sign(39002, [
-              ["d", id],
+            sign(
+              39002,
               [
-                "p",
-                viewer,
-                "",
-                lifecycleRows.some((row) => row.id === id) ||
-                ownSoloChannels.includes(id)
-                  ? lifecycleRole === "nonmember"
-                    ? "member"
-                    : lifecycleRole
-                  : "member",
+                ["d", id],
+                [
+                  "p",
+                  viewer,
+                  "",
+                  joinedRoles.get(id) ??
+                    (lifecycleRows.some((row) => row.id === id) ||
+                    ownSoloChannels.includes(id)
+                      ? lifecycleRole === "nonmember"
+                        ? "member"
+                        : lifecycleRole
+                      : "member"),
+                ],
+                ...(ownSoloChannels.includes(id)
+                  ? soloAgents.map(({ pubkey }) => ["p", pubkey, "", "member"])
+                  : []),
+                ...(ownerAgent && lifecycleRows.some((row) => row.id === id)
+                  ? [["p", ownerAgent, "", "owner"]]
+                  : []),
+                ...(sessionMembers[id] ?? []).map((pubkey) => [
+                  "p",
+                  pubkey,
+                  "",
+                  "member",
+                ]),
+                ...(dmMembers[id]
+                  ? dmMembers[id].map((index) => [
+                      "p",
+                      participants[index],
+                      "",
+                      "member",
+                    ])
+                  : agentPeers && channels.includes(id)
+                    ? participants.map((pubkey) => ["p", pubkey, "", "member"])
+                    : dmLabels && id === "dm-peer"
+                      ? [["p", participants[0], "", "member"]]
+                      : dmLabels && id === "dm-group"
+                        ? participants.map((pubkey) => [
+                            "p",
+                            pubkey,
+                            "",
+                            "member",
+                          ])
+                        : participants
+                            .slice(
+                              dmIds.indexOf(id) * 8,
+                              (dmIds.indexOf(id) + 1) * 8,
+                            )
+                            .map((pubkey) => ["p", pubkey, "", "member"])),
               ],
-              ...(ownSoloChannels.includes(id)
-                ? soloAgents.map(({ pubkey }) => ["p", pubkey, "", "member"])
-                : []),
-              ...(ownerAgent && lifecycleRows.some((row) => row.id === id)
-                ? [["p", ownerAgent, "", "owner"]]
-                : []),
-              ...(sessionMembers[id] ?? []).map((pubkey) => [
-                "p",
-                pubkey,
-                "",
-                "member",
-              ]),
-              ...(dmMembers[id]
-                ? dmMembers[id].map((index) => [
-                    "p",
-                    participants[index],
-                    "",
-                    "member",
-                  ])
-                : agentPeers && channels.includes(id)
-                  ? participants.map((pubkey) => ["p", pubkey, "", "member"])
-                  : dmLabels && id === "dm-peer"
-                    ? [["p", participants[0], "", "member"]]
-                    : dmLabels && id === "dm-group"
-                      ? participants.map((pubkey) => [
-                          "p",
-                          pubkey,
-                          "",
-                          "member",
-                        ])
-                      : participants
-                          .slice(
-                            dmIds.indexOf(id) * 8,
-                            (dmIds.indexOf(id) + 1) * 8,
-                          )
-                          .map((pubkey) => ["p", pubkey, "", "member"])),
-            ]),
+              "",
+              relayKey,
+              lifecycleTime,
+            ),
           );
       if (filter.kinds?.includes(39000))
         return [
@@ -1822,6 +1831,22 @@ export const test = base.extend({
         deliverRoster(OPEN_CHANNEL, community);
         return heldJoin.promise;
       }
+      if (channelLifecycle && event.kind === 9021) {
+        const id = event.tags.find(([key]) => key === "h")?.[1];
+        expect(lifecycleRows.some((row) => row.id === id)).toBe(true);
+        const metadata = answer(community, { kinds: [39000], "#d": [id] })[0];
+        expect(metadata.tags).toContainEqual(["public"]);
+        expect(metadata.tags).not.toContainEqual(["private"]);
+        joinedRoles.set(
+          id,
+          metadata.tags.find(([key]) => key === "join_role")?.[1] ?? "member",
+        );
+        if (!rosterIds.includes(id)) rosterIds.push(id);
+        lifecycleTime++;
+        report.lifecyclePublications ??= [];
+        report.lifecyclePublications.push(event);
+        return;
+      }
       if (
         event.kind === 9002 &&
         ownSoloChannels.includes(event.tags.find(([key]) => key === "h")?.[1])
@@ -2019,7 +2044,7 @@ export const test = base.extend({
                   expect(event.pubkey).toBe(viewer);
                   if (
                     channelLifecycle &&
-                    [9002, 9008, 9022, 41012].includes(event.kind)
+                    [9002, 9008, 9021, 9022, 41012].includes(event.kind)
                   )
                     return acceptReadPublication(community, event);
                   if (event.kind === 30078 || event.kind === 20002)
