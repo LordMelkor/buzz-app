@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { MessageComposerProps } from "../../features/messages/MessageComposer";
 import {
   ConversationComposer,
   ConversationThread,
@@ -30,7 +31,7 @@ export function ChannelPreview({
   onDraftSaved?: () => void;
   label?: string;
   /** Focus the composer when it mounts, as a user-triggered handoff. */
-  autoFocus?: boolean;
+  autoFocus?: MessageComposerProps["autoFocus"];
 }) {
   const { session, channelId } = useConversation();
   const window = useChannelWindow(session.channels, channelId);

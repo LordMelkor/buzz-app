@@ -185,6 +185,52 @@ it("never sends decisions elsewhere while the chosen provider is missing", async
   expect(decide).not.toHaveBeenCalled();
 });
 
+it("uses Builderlab while it is registered, unless the user chose another", async () => {
+  const storage = memory();
+  const { service, plugin } = setup(storage);
+  const typesafe = await plugin("buzz.typesafe", { id: "typesafe" });
+  expect(service.backend()).toBe(DEFAULT_DECISION_PROVIDER);
+  // Builderlab registers only for a signed-in account it allows.
+  let builderlab = await plugin("block.builderlab", { id: "builderlab" });
+  expect(service.backend()).toBe("block.builderlab/builderlab");
+  await builderlab.dispose();
+  expect(service.backend()).toBe(DEFAULT_DECISION_PROVIDER);
+  // A choice of Builderlab falls back to TypeSafe while it is missing.
+  builderlab = await plugin("block.builderlab", { id: "builderlab" });
+  service.setBackend("block.builderlab/builderlab");
+  await builderlab.dispose();
+  expect(service.backend()).toBe(DEFAULT_DECISION_PROVIDER);
+  // A choice of TypeSafe stays when Builderlab registers again, and falls
+  // back to Builderlab while TypeSafe is off.
+  service.setBackend(DEFAULT_DECISION_PROVIDER);
+  builderlab = await plugin("block.builderlab", { id: "builderlab" });
+  expect(service.backend()).toBe(DEFAULT_DECISION_PROVIDER);
+  await typesafe.dispose();
+  expect(service.backend()).toBe("block.builderlab/builderlab");
+  expect(storage.values.get(DECISION_BACKEND_KEY)).toBe(
+    DEFAULT_DECISION_PROVIDER,
+  );
+});
+
+it("removes a provider when the plugin asks, before its scope ends", async () => {
+  const { root, service } = setup();
+  let remove = () => {};
+  const fiber = root
+    .extend({ pluginOwner: { id: "buzz.typesafe", revision: "one" } })
+    .plugin((ctx) => {
+      remove = ctx.decisions.registerProvider(fake({ id: "typesafe" }));
+    });
+  await fiber.await();
+  await flush();
+  expect(service.providers()).toHaveLength(1);
+  remove();
+  expect(service.providers()).toEqual([]);
+  // Ending the scope afterwards is harmless.
+  remove();
+  await fiber.dispose();
+  expect(service.providers()).toEqual([]);
+});
+
 it("restores a saved choice once its provider registers, and survives unreadable storage", async () => {
   const { service, plugin } = setup(
     memory({ [DECISION_BACKEND_KEY]: "b/main" }),
@@ -226,7 +272,9 @@ it("checks requests before any provider sees them", async () => {
       questions: { rate: { type: "score", instructions: "x", levels: ["a"] } },
     },
     { ...request, questions: { ["x".repeat(65)]: request.questions.urgent } },
-  ] as DecisionRequest[])
+    { ...request, community: " " },
+    { ...request, community: 1 },
+  ] as unknown as DecisionRequest[])
     await expect(service.decide(bad)).resolves.toMatchObject({
       reason: "invalid_request",
     });

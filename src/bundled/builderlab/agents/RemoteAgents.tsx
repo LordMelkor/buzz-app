@@ -12,7 +12,7 @@ import { Button } from "../../../shared/design-system/ui/Button";
 import { EmptyState } from "../../../shared/design-system/ui/EmptyState";
 import { InlineHeader } from "../../../shared/design-system/ui/Header";
 import { SettingsGroup } from "../../../shared/design-system/ui/SettingsGroup";
-import type { OAuthSession } from "../oauth/session";
+import type { BuilderlabSession } from "../session";
 import type { AgentClient, RemoteAgent } from "./client";
 
 export function RemoteAgents({
@@ -21,7 +21,7 @@ export function RemoteAgents({
   active,
 }: {
   client: AgentClient;
-  session: OAuthSession;
+  session: BuilderlabSession;
   active(): boolean;
 }) {
   const login = useSyncExternalStore(session.subscribe, session.snapshot);

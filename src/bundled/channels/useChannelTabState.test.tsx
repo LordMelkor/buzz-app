@@ -260,6 +260,7 @@ test("opening a thread selects it, deduplicates its root and restores each chann
       channelId: "alpha",
       messageId: "root-b",
       replyRequest: undefined,
+      focusRequest: 1,
       pane: "side",
     },
   ]);
@@ -276,6 +277,32 @@ test("opening a thread selects it, deduplicates its root and restores each chann
     replyRequest: undefined,
   });
 });
+
+test.each(["main", "side"] as const)(
+  "ordinary openings request reply focus each time in the %s pane; restoration does not",
+  (pane) => {
+    const session = {} as RelaySession;
+    const h = renderHook(() => useChannelTabState(session, "alpha"));
+    const open = () =>
+      h.result.current.openThreadTab("alpha", "root", "root", undefined, pane);
+    act(open);
+    expect(h.result.current.tabs[0]).toMatchObject({ focusRequest: 1, pane });
+    act(open);
+    expect(h.result.current.tabs).toHaveLength(1);
+    expect(h.result.current.tabs[0]).toMatchObject({ focusRequest: 2, pane });
+    act(() => h.result.current.openThreadTab("alpha", "other", "other"));
+    act(open);
+    expect(h.result.current.tabs[0]).toMatchObject({ focusRequest: 3, pane });
+    act(() =>
+      h.result.current.enterVisit("restore", {
+        channelId: "alpha",
+        messageId: "root",
+        rootId: "root",
+      }),
+    );
+    expect(h.result.current.tabs[0]).toMatchObject({ focusRequest: 3, pane });
+  },
+);
 
 // Placement is one channel-owned list: a move reorders or crosses panes
 // without changing the tab's identity, and selection follows it.
@@ -314,7 +341,7 @@ test("moving a thread reorders it within a pane and across panes", () => {
   act(() => h.result.current.openThreadTab("alpha", "a", "a", "focus"));
   expect(
     h.result.current.tabs.find((tab) => tab.id === "thread:alpha:a"),
-  ).toMatchObject({ replyRequest: 1, focusRequest: 1 });
+  ).toMatchObject({ replyRequest: 1, focusRequest: 2 });
 });
 
 // A link's root hint is not identity: the reader's verified root merges a
@@ -895,6 +922,7 @@ test("an agent's tab leaves a page's side panel showing", () => {
     tabs.open("alpha", "r1");
   });
   expect(page.result.current.paneOpen).toBe(true);
+  expect(page.result.current.tabs[0]?.focusRequest).toBeUndefined();
 });
 
 test("an agent's main-pane tab leaves the conversation showing", () => {
@@ -908,7 +936,7 @@ test("an agent's main-pane tab leaves the conversation showing", () => {
   expect(page.result.current).toMatchObject({
     mainSelected: undefined,
     paneOpen: true,
-    tabs: [{ id: "thread:alpha:r1", pane: "main" }],
+    tabs: [{ id: "thread:alpha:r1", pane: "main", focusRequest: undefined }],
   });
   act(() => page.result.current.selectMain("thread:alpha:r1"));
   expect(tabs.list("alpha")).toEqual([

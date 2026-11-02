@@ -897,7 +897,11 @@ test("Create new retains its draft when preferences fail before submission and r
     await page.getByRole("menuitem", { name: "Create new…" }).click();
     const dialog = page.getByRole("dialog", { name: "Move to new section" });
     const field = dialog.getByRole("textbox", { name: "Section name" });
+    // The menu-to-dialog handoff owns initial focus; mounting alone does not
+    // mean WebKit's keyboard insertion has its final destination.
+    await expect(field).toBeFocused();
     await field.fill("Retained launch");
+    await expect(field).toHaveValue("Retained launch");
     const failed = page.waitForResponse(
       (r) =>
         new URL(r.url()).pathname.endsWith("/sidebar-preferences") &&

@@ -190,6 +190,35 @@ fn backup_choice_erase_refuses_a_linked_parent_without_touching_its_destination(
 }
 
 #[test]
+fn wipe_with_kept_agents_preserves_protection_defaults_and_revision() {
+    for remove_agents in [false, true] {
+        let (_dir, paths) = fixture();
+        let identities = paths.app_data.join(AGENTS).join("identities.json");
+        fs::write(&identities, "[]").unwrap();
+        let agents = buzz_agent_controller::AppAgents::open(identities.clone());
+        let owner = "a".repeat(64);
+        agents.upgrade_protection_storage().unwrap();
+        agents
+            .set_protection_defaults(
+                &owner,
+                0,
+                "security.test",
+                Some(serde_json::json!({"injection":true})),
+            )
+            .unwrap();
+        let saved = agents.protection_defaults(&owner).unwrap();
+        mark(&paths, true, remove_agents);
+        finish_pending(&paths, |_| Ok(()), || Ok(())).unwrap();
+        if remove_agents {
+            assert!(!identities.with_file_name("protection.json").exists());
+        } else {
+            let retained = buzz_agent_controller::AppAgents::open(identities);
+            assert_eq!(retained.protection_defaults(&owner).unwrap(), saved);
+        }
+    }
+}
+
+#[test]
 fn wipe_keeps_agents_unless_they_are_removed_too() {
     for remove_agents in [false, true] {
         let (dir, paths) = fixture();

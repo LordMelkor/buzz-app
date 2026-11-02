@@ -13,6 +13,7 @@ import { Field } from "../shared/design-system/ui/Field";
 import { Input } from "../shared/design-system/ui/Input";
 import { Button } from "../shared/design-system/ui/Button";
 import { useToastNotification } from "../shared/design-system/ui/Toast";
+import { writeClipboardText } from "../shared/clipboard";
 
 /** Captured viewer/community; never saves into a newly selected destination. */
 export function CommunityLocalSettings({
@@ -33,7 +34,7 @@ export function CommunityLocalSettings({
     setCopying(true);
     setCopyError("");
     try {
-      await navigator.clipboard.writeText(address);
+      await writeClipboardText(address);
       notify("Community URL copied.", "success");
     } catch {
       setCopyError("Couldn’t copy the URL. Select it and copy manually.");

@@ -312,6 +312,11 @@
   .buzz-select .buzz-select-trigger:has(.buzz-select-leading) {
     padding-inline-start: var(--space-2);
   }
+  /* Give the trailing caret more breathing room than the leading artwork. */
+  .buzz-select[data-variant="compact"]:not([data-appearance="link"])
+  .buzz-button:has(.buzz-select-leading) {
+    padding-inline-end: var(--space-3);
+  }
   .buzz-select-value {
     min-width: 0;
     overflow-wrap: anywhere;
@@ -421,6 +426,11 @@
   .buzz-select-value[data-placeholder] {
     color: var(--text-metadata);
   }
+  .buzz-select
+    :is(:disabled, [data-disabled])
+    .buzz-select-value[data-placeholder] {
+    color: inherit;
+  }
 
   .buzz-input-group {
     display: flex;
@@ -458,7 +468,7 @@
   }
   .buzz-input-trailing {
     display: flex;
-    width: var(--size-control-sm);
+    min-width: var(--size-control-sm);
     flex-shrink: 0;
   }
   .buzz-input-group:has(input:is([data-invalid], [aria-invalid="true"])) {

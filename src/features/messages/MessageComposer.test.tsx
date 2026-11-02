@@ -668,7 +668,166 @@ it("shows a local draft in the cached composer without completion, typing or tra
   }
 });
 
-it("an explicit focus request resumes after the draft's retained mention", () => {
+it.each([true, false])(
+  "reports focused form removal only while it owns focus (focused=%s)",
+  (focused) => {
+    const initial = vi.fn();
+    const latest = vi.fn();
+    const h = mount({ autoFocus: false, onFocusedRemoval: initial });
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    try {
+      if (focused) h.input().focus();
+      else outside.focus();
+      h.retarget({ channelName: "Renamed", onFocusedRemoval: latest });
+      expect(initial).not.toHaveBeenCalled();
+      expect(latest).not.toHaveBeenCalled();
+      h.unmount();
+      expect(initial).not.toHaveBeenCalled();
+      expect(latest).toHaveBeenCalledTimes(focused ? 1 : 0);
+      if (!focused) expect(outside).toHaveFocus();
+    } finally {
+      h.unmount();
+      outside.remove();
+    }
+  },
+);
+
+function archiveToastFixture() {
+  const base = mount({}, undefined, first.pubkey);
+  base.unmount();
+  const summary = (archived = false): ChannelSummary => ({
+    id: "channel",
+    name: "General",
+    channelType: "stream",
+    members: [first.pubkey, second.pubkey],
+    ...(archived ? { archived: true } : {}),
+  });
+  let channel = summary();
+  let list = { status: "ready" as const, channels: [channel] };
+  const session = {
+    ...base.session,
+    channels: {
+      ...base.session.channels,
+      get: () => channel,
+      list: () => list,
+    },
+  };
+  const row = editableMessage();
+  let editScope: ReturnType<typeof useMessageEditScope>;
+  function Probe() {
+    editScope = useMessageEditScope();
+    return null;
+  }
+  const tree = (shown = true) => (
+    <ToastProvider>
+      <MessageEditScope>
+        <Probe />
+        <button type="button">Outside composer</button>
+        {shown && (
+          <MessageComposer
+            session={session}
+            scope="archive-toast"
+            channelId="channel"
+            channelName="General"
+            editMessages={[row]}
+          />
+        )}
+      </MessageEditScope>
+    </ToastProvider>
+  );
+  userEvent.setup();
+  const view = render(tree(), { reactStrictMode: true });
+  const input = () => screen.getByRole("textbox") as ComposerInputElement;
+  return {
+    input,
+    edit() {
+      act(() => editScope?.current?.(row));
+    },
+    fill(text: string) {
+      act(() => {
+        input().focus();
+        input().value = text;
+      });
+      fireEvent.input(input());
+    },
+    remove(archived = true) {
+      channel = summary(archived);
+      list = { ...list, channels: [channel] };
+      view.rerender(tree(false));
+    },
+    restore() {
+      channel = summary();
+      list = { ...list, channels: [channel] };
+      view.rerender(tree());
+    },
+  };
+}
+
+it.each(["draft", "edit"])(
+  "offers the focused archived %s text for copying and restores the saved draft",
+  async (mode) => {
+    const h = archiveToastFixture();
+    const write = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockResolvedValue(undefined);
+    onTestFinished(() => write.mockRestore());
+    h.fill("Saved draft");
+    if (mode === "edit") {
+      h.edit();
+      expect(h.input()).toHaveAccessibleName("Edit message");
+      h.fill("Unsent **edit**");
+    }
+    const text = h.input().value;
+    h.remove();
+    fireEvent.click(await screen.findByRole("button", { name: "Copy text" }));
+    await waitFor(() => expect(write).toHaveBeenCalledWith(text));
+    expect(
+      await screen.findByText("Text copied", { exact: true }),
+    ).toBeVisible();
+    h.restore();
+    expect(h.input()).toHaveValue("Saved draft");
+  },
+);
+
+it.each([
+  { text: "", focused: true, archived: true },
+  { text: "  \n ", focused: true, archived: true },
+  { text: "Saved draft", focused: false, archived: true },
+  { text: "Saved draft", focused: true, archived: false },
+])(
+  "does not offer text for unrelated or empty removal: %j",
+  async ({ text, focused, archived }) => {
+    const h = archiveToastFixture();
+    h.fill(text);
+    if (!focused)
+      screen.getByRole("button", { name: "Outside composer" }).focus();
+    h.remove(archived);
+    await act(async () => {});
+    expect(screen.queryByRole("button", { name: "Copy text" })).toBeNull();
+  },
+);
+
+it("keeps the captured text retryable when clipboard copying fails", async () => {
+  const h = archiveToastFixture();
+  const write = vi
+    .spyOn(navigator.clipboard, "writeText")
+    .mockRejectedValueOnce(new Error("Clipboard unavailable"))
+    .mockResolvedValue(undefined);
+  onTestFinished(() => write.mockRestore());
+  h.fill("Keep this text");
+  h.remove();
+  fireEvent.click(await screen.findByRole("button", { name: "Copy text" }));
+  expect(
+    await screen.findByText("Couldn’t copy text", { exact: true }),
+  ).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+  expect(write).toHaveBeenLastCalledWith("Keep this text");
+  expect(await screen.findByText("Text copied", { exact: true })).toBeVisible();
+});
+
+it("a first focus request starts after the retained mention and later requests preserve selection", () => {
   writeView("scope", "draft:channel", {
     text: "@Honey existing prose",
     recipients: [{ ...first, start: 0, end: 6 }],
@@ -682,7 +841,10 @@ it("an explicit focus request resumes after the draft's retained mention", () =>
   h.retarget({ channelName: "Renamed" });
   expect(h.input().selectionStart).toBe(7);
   h.retarget({ focusRequest: 2 });
-  expect(h.input().selectionStart).toBe(21);
+  expect(h.input().selectionStart).toBe(7);
+  act(() => h.input().setSelectionRange(0, 6));
+  h.retarget({ focusRequest: 3 });
+  expect([h.input().selectionStart, h.input().selectionEnd]).toEqual([0, 6]);
 });
 
 it("autofocuses each selected conversation once without stealing focus on updates", () => {
@@ -709,6 +871,83 @@ it("defers initial focus until a loading conversation enables its composer", () 
   expect(h.input()).not.toHaveFocus();
   h.retarget({ disabled: false });
   expect(h.input()).toHaveFocus();
+});
+
+it("does not mistake a later focused control for a saved draft's opening row", () => {
+  const row = document.createElement("button");
+  const later = document.createElement("button");
+  document.body.append(row, later);
+  try {
+    row.focus();
+    later.focus();
+    const h = mount({ autoFocus: { current: row } });
+    expect(later).toHaveFocus();
+    expect(h.input()).not.toHaveFocus();
+  } finally {
+    row.remove();
+    later.remove();
+  }
+});
+
+it("cancels a deferred draft handoff when another control takes focus and disappears", () => {
+  const row = document.createElement("button");
+  const later = document.createElement("button");
+  document.body.append(row, later);
+  try {
+    row.focus();
+    const h = mount({ autoFocus: { current: row }, disabled: true });
+    later.focus();
+    later.remove();
+    h.retarget({ disabled: false });
+    expect(document.activeElement).toBe(document.body);
+    expect(h.input()).not.toHaveFocus();
+  } finally {
+    row.remove();
+    later.remove();
+  }
+});
+
+it("honors a draft cancellation recorded before its composer mounts", () => {
+  const origin: { current: HTMLElement | null } = { current: null };
+  const h = mount({ autoFocus: origin });
+  expect(h.input()).not.toHaveFocus();
+});
+
+it("honors owner cancellation while the composer waits without a focus event", () => {
+  const row = document.createElement("button");
+  document.body.append(row);
+  const origin: { current: HTMLElement | null } = { current: row };
+  try {
+    row.focus();
+    const h = mount({ autoFocus: origin, disabled: true });
+    origin.current = null;
+    row.remove();
+    h.retarget({ disabled: false });
+    expect(h.input()).not.toHaveFocus();
+  } finally {
+    row.remove();
+  }
+});
+
+it("hands the live draft target to its editor through StrictMode replay", () => {
+  const row = document.createElement("button");
+  document.body.append(row);
+  const origin: { current: HTMLElement | null } = { current: row };
+  const moved = (event: FocusEvent) => {
+    if (event.target !== origin.current) origin.current = null;
+  };
+  document.addEventListener("focusin", moved, true);
+  try {
+    row.focus();
+    writeView("scope", "draft:channel", "Saved draft");
+    const h = mount({ autoFocus: origin });
+    expect(h.input()).toHaveFocus();
+    expect(origin.current).toBe(h.input());
+    expect(h.input().selectionEnd).toBe("Saved draft".length);
+  } finally {
+    document.removeEventListener("focusin", moved, true);
+    row.remove();
+  }
 });
 
 it("does not redo initial focus when a focused composer is disabled and enabled again", () => {
@@ -1502,26 +1741,32 @@ async function mountUploadComposer(
     ]),
   );
   const scope = `https://relay.example.test:${viewer.pubkey}`;
-  const view = render(
+  const composer = (presented = true, shown = true) => (
     <AgentsContext.Provider value={options.agents}>
-      <MessageComposer
-        session={owner.session}
-        scope={scope}
-        channelId="channel"
-        channelName="General"
-        defaultMention={options.defaultMention}
-        requireMention={options.requireMention}
-        {...(options.extensions ? { extensions: options.extensions } : {})}
-        {...(options.threadRootId
-          ? { threadRootId: options.threadRootId }
-          : {})}
-        {...(options.replyParentId
-          ? { replyParentId: options.replyParentId }
-          : {})}
-      />
-    </AgentsContext.Provider>,
-    { reactStrictMode: true, wrapper: ToastProvider },
+      <ConversationPresentation value={presented}>
+        <MessageComposer
+          shown={shown}
+          session={owner.session}
+          scope={scope}
+          channelId="channel"
+          channelName="General"
+          defaultMention={options.defaultMention}
+          requireMention={options.requireMention}
+          {...(options.extensions ? { extensions: options.extensions } : {})}
+          {...(options.threadRootId
+            ? { threadRootId: options.threadRootId }
+            : {})}
+          {...(options.replyParentId
+            ? { replyParentId: options.replyParentId }
+            : {})}
+        />
+      </ConversationPresentation>
+    </AgentsContext.Provider>
   );
+  const view = render(composer(), {
+    reactStrictMode: true,
+    wrapper: ToastProvider,
+  });
   const input = () => within(view.container).getByRole("textbox");
   const form = () => within(view.container).getByRole("form");
   const send = () =>
@@ -1538,8 +1783,136 @@ async function mountUploadComposer(
     sign,
     publish,
     otherMembership,
+    present: (presented: boolean, shown = true) =>
+      view.rerender(composer(presented, shown)),
   };
 }
+
+function pickAttachments(container: HTMLElement, files: readonly File[]) {
+  const picker =
+    container.querySelector<HTMLInputElement>('input[type="file"]');
+  if (!picker) throw new Error("Missing attachment picker");
+  fireEvent.change(picker, { target: { files } });
+}
+
+it("focuses the composer only after the whole picker batch succeeds", async () => {
+  const h = await mountUploadComposer();
+  const trigger = screen.getByRole("button", { name: "Attach files" });
+  trigger.focus();
+  pickAttachments(h.container, [
+    attachmentFile("one.txt"),
+    attachmentFile("two.txt"),
+  ]);
+  await waitFor(() => expect(h.uploadCalls).toHaveLength(1));
+  expect(trigger).toHaveFocus();
+  await act(() =>
+    h.uploadCalls[0]?.result.resolve(uploadDescriptor("one.txt")),
+  );
+  await waitFor(() => expect(h.uploadCalls).toHaveLength(2));
+  expect(trigger).toHaveFocus();
+  await act(() =>
+    h.uploadCalls[1]?.result.resolve(uploadDescriptor("two.txt")),
+  );
+  expect(h.input()).toHaveFocus();
+});
+
+it.each(["before", "after"])(
+  "keeps the picker handoff when focus returns to Attach %s change",
+  async (order) => {
+    const h = await mountUploadComposer();
+    const trigger = screen.getByRole("button", { name: "Attach files" });
+    trigger.focus();
+    if (order === "before") fireEvent.focusIn(trigger);
+    pickAttachments(h.container, [attachmentFile()]);
+    await waitFor(() => expect(h.uploadCalls).toHaveLength(1));
+    if (order === "after") fireEvent.focusIn(trigger);
+    await act(() => h.uploadCalls[0]?.result.resolve(uploadDescriptor()));
+    expect(h.input()).toHaveFocus();
+  },
+);
+
+it("leaves focus alone on picker cancellation or rejected files", async () => {
+  const h = await mountUploadComposer();
+  const trigger = screen.getByRole("button", { name: "Attach files" });
+  trigger.focus();
+  pickAttachments(h.container, []);
+  pickAttachments(h.container, [attachmentFile("empty.txt", "")]);
+  expect(
+    await screen.findByText("Could not attach file", { exact: true }),
+  ).toBeVisible();
+  expect(h.uploadCalls).toHaveLength(0);
+  expect(trigger).toHaveFocus();
+});
+
+it("does not focus after a picker upload fails or is later retried", async () => {
+  const h = await mountUploadComposer();
+  const trigger = screen.getByRole("button", { name: "Attach files" });
+  trigger.focus();
+  pickAttachments(h.container, [attachmentFile()]);
+  await waitFor(() => expect(h.uploadCalls).toHaveLength(1));
+  await act(() => h.uploadCalls[0]?.result.reject(new Error("offline")));
+  expect(trigger).toHaveFocus();
+  fireEvent.click(screen.getByRole("button", { name: "Retry notes.txt" }));
+  await waitFor(() => expect(h.uploadCalls).toHaveLength(2));
+  await act(() => h.uploadCalls[1]?.result.resolve(uploadDescriptor()));
+  expect(trigger).toHaveFocus();
+});
+
+it.each(["inactive", "hidden"])(
+  "cancels picker focus when the conversation becomes %s, including a warm return",
+  async (state) => {
+    const h = await mountUploadComposer();
+    const trigger = screen.getByRole("button", { name: "Attach files" });
+    trigger.focus();
+    pickAttachments(h.container, [attachmentFile()]);
+    await waitFor(() => expect(h.uploadCalls).toHaveLength(1));
+    h.present(state !== "inactive", state !== "hidden");
+    h.present(true);
+    screen.getByRole("button", { name: "Attach files" }).focus();
+    await act(() => h.uploadCalls[0]?.result.resolve(uploadDescriptor()));
+    expect(screen.getByRole("button", { name: "Attach files" })).toHaveFocus();
+  },
+);
+
+it("preserves deliberate focus changes even when focus returns to the picker trigger", async () => {
+  const h = await mountUploadComposer();
+  const trigger = screen.getByRole("button", { name: "Attach files" });
+  trigger.focus();
+  pickAttachments(h.container, [attachmentFile()]);
+  await waitFor(() => expect(h.uploadCalls).toHaveLength(1));
+  h.input().focus();
+  trigger.focus();
+  await act(() => h.uploadCalls[0]?.result.resolve(uploadDescriptor()));
+  expect(trigger).toHaveFocus();
+});
+
+it("does not focus a replacement composer after a late picker completion", async () => {
+  const h = await mountUploadComposer();
+  screen.getByRole("button", { name: "Attach files" }).focus();
+  pickAttachments(h.container, [attachmentFile()]);
+  await waitFor(() => expect(h.uploadCalls).toHaveLength(1));
+  h.unmount();
+  const next = await mountUploadComposer();
+  const trigger = within(next.container).getByRole("button", {
+    name: "Attach files",
+  });
+  trigger.focus();
+  await act(() => h.uploadCalls[0]?.result.resolve(uploadDescriptor()));
+  expect(trigger).toHaveFocus();
+});
+
+it.each([attachByPaste, attachByDrop])(
+  "keeps existing focus behavior for %s uploads",
+  async (attach) => {
+    const h = await mountUploadComposer();
+    const trigger = screen.getByRole("button", { name: "Attach files" });
+    trigger.focus();
+    attach(h.form());
+    await waitFor(() => expect(h.uploadCalls).toHaveLength(1));
+    await act(() => h.uploadCalls[0]?.result.resolve(uploadDescriptor()));
+    expect(trigger).toHaveFocus();
+  },
+);
 
 it("pauses while disabled and resumes attachment Send without Retry when re-enabled", async () => {
   const h = await mountUploadComposer();
@@ -2955,6 +3328,24 @@ const oldBuzzAgents = () => {
   return { agents, port };
 };
 
+it("Enter on import entry keeps the draft without importing or sending", async () => {
+  const { agents, port } = oldBuzzAgents();
+  const h = mount({}, undefined, undefined, agents);
+  fireEvent.click(screen.getByRole("button", { name: "First Honey" }));
+  h.submit();
+  await screen.findByRole("dialog", { name: "Import Honey?" });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus(),
+  );
+  await userEvent.setup().keyboard("{Enter}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(h.input()).toHaveValue("@Honey ");
+  expect(port).not.toHaveBeenCalled();
+  expect(h.messages.send).not.toHaveBeenCalled();
+});
+
 it("imports a mentioned agent an earlier Buzz runs before sending to it", async () => {
   const { agents, port } = oldBuzzAgents();
   const h = mount({}, undefined, undefined, agents);
@@ -3054,8 +3445,10 @@ it("keeps focus on the import action while it runs, fails and finishes", async (
   h.submit();
   await screen.findByRole("dialog", { name: "Import Honey?" });
   const action = screen.getByRole("button", { name: "Import and send" });
-  await waitFor(() => expect(action).toHaveFocus());
-  fireEvent.click(action);
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus(),
+  );
+  await userEvent.setup().click(action);
   expect(action).toHaveAttribute("aria-busy", "true");
   expect(action).toHaveFocus();
   await act(async () => failed.reject(new Error("No disk space.")));
@@ -7567,9 +7960,7 @@ for (const channelType of ["stream", "forum"] as const)
       // block/buzz parity: without permission, Invite is absent, not disabled.
       expect(screen.queryByRole("button", { name: "Invite" })).toBeNull();
       await waitFor(() =>
-        expect(
-          screen.getByRole("button", { name: "Send anyway" }),
-        ).toHaveFocus(),
+        expect(screen.getByRole("button", { name: "Close" })).toHaveFocus(),
       );
       expect(screen.getByRole("dialog")).toHaveTextContent(
         "Honey is not in this channel. You cannot add people to this channel. You can still send without inviting them.",
@@ -7639,7 +8030,7 @@ it.each(["Do nothing", "Invite"])(
   },
 );
 
-it("Enter invites a nonmember before sending", async () => {
+it("Enter on a deliberately focused Invite adds a nonmember before sending", async () => {
   const h = mount();
   const add = vi.fn(async () => {});
   const list = {
@@ -7656,7 +8047,10 @@ it("Enter invites a nonmember before sending", async () => {
   act(() => h.commands().insertMention(first));
   fireEvent.submit(screen.getByRole("form"));
   const invite = screen.getByRole("button", { name: "Invite" });
-  await waitFor(() => expect(invite).toHaveFocus());
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus(),
+  );
+  invite.focus();
   await userEvent.setup().keyboard("{Enter}");
   await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
   expect(add).toHaveBeenCalledWith("channel", first.pubkey);
@@ -7748,7 +8142,7 @@ it.each([
   },
 );
 
-it.each(["close", "escape"])(
+it.each(["close", "escape", "enter"])(
   "%s preserves the captured draft and returns focus without adding or sending",
   async (action) => {
     const h = mount();
@@ -7775,11 +8169,14 @@ it.each(["close", "escape"])(
     );
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Invite" })).toHaveFocus(),
+      expect(screen.getByRole("button", { name: "Close" })).toHaveFocus(),
     );
     if (action === "close")
       fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    else await userEvent.setup().keyboard("{Escape}");
+    else
+      await userEvent
+        .setup()
+        .keyboard(action === "enter" ? "{Enter}" : "{Escape}");
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );

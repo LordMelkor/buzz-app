@@ -143,7 +143,7 @@ function harness(
   }
   return { ...owner, live, wire, publish, Controls };
 }
-it("shows one emoji per person and removes all my duplicate events", async () => {
+it("shows one bubble per emoji, counts unique people, and removes all my duplicate events", async () => {
   const mine = react(),
     duplicate = react(viewer, 3),
     theirs = react(other);
@@ -154,20 +154,17 @@ it("shows one emoji per person and removes all my duplicate events", async () =>
   ).toHaveLength(3);
   expect(
     screen.getByTestId("reaction-row").querySelectorAll("[data-reaction]"),
-  ).toHaveLength(2);
+  ).toHaveLength(1);
   const own = screen.getByRole("button", {
-    name: "👍: You",
+    name: "👍: 2 people",
   });
   expect(own.getAttribute("aria-pressed")).toBe("true");
-  expect(own.textContent).toBe("👍");
-  expect(
-    screen.getByRole("button", { name: `👍: ${other.pubkey.slice(0, 10)}` }),
-  ).toBeTruthy();
+  expect(own.textContent).toBe("👍2");
   fireEvent.mouseEnter(own);
   fireEvent.mouseMove(own);
   const preview = await screen.findByRole("tooltip", {}, { timeout: 2500 });
   expect(preview.textContent).toContain("You");
-  expect(preview.textContent).not.toContain(other.pubkey.slice(0, 10));
+  expect(preview.textContent).toContain(other.pubkey.slice(0, 10));
   fireEvent.click(own);
   const operation = h.session.outbox?.snapshot()[0];
   expect(operation?.event).toMatchObject({
@@ -188,17 +185,20 @@ it("shows one emoji per person and removes all my duplicate events", async () =>
     await flush();
   });
 });
-it("groups at 9 unique people and expands again after my removal", async () => {
+it("keeps one bubble and focus when the count crosses the former grouping threshold", async () => {
   const others = Array.from({ length: 8 }, () => keypair());
   const h = harness(others.map((person) => react(person)));
   const onFocusedRemoval = vi.fn();
   render(<h.Controls onFocusedRemoval={onFocusedRemoval} />);
   const pills = () =>
     screen.getByTestId("reaction-row").querySelectorAll("[data-reaction]");
-  expect(pills()).toHaveLength(8);
-  // A second event from one person must not trigger grouping.
+  expect(pills()).toHaveLength(1);
+  // A second event from one person must not increase the count.
   act(() => h.live.receive([react(others[0], 3)]));
-  expect(pills()).toHaveLength(8);
+  expect(pills()).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "👍: 8 people" }).textContent).toBe(
+    "👍8",
+  );
   act(() => h.live.receive([react()]));
   expect(pills()).toHaveLength(1);
   const group = screen.getByRole("button", { name: "👍: 9 people" });
@@ -213,14 +213,34 @@ it("groups at 9 unique people and expands again after my removal", async () => {
   for (const person of others.slice(2))
     expect(preview.textContent).not.toContain(person.pubkey.slice(0, 10));
   fireEvent.click(group);
-  expect(pills()).toHaveLength(8);
-  expect(onFocusedRemoval).toHaveBeenCalledTimes(1);
+  expect(pills()).toHaveLength(1);
+  expect(document.activeElement).toBe(group);
+  expect(onFocusedRemoval).not.toHaveBeenCalled();
   expect(h.session.outbox?.snapshot()[0]?.event.kind).toBe(5);
   await act(async () => {
     await flush();
     await flush();
   });
 });
+
+it.each([
+  [3, null],
+  [4, "and 1 other"],
+  [5, "and 2 others"],
+] as const)(
+  "pluralizes the preview remainder for %i reactors",
+  async (count, remainder) => {
+    const people = Array.from({ length: count }, () => keypair());
+    const h = harness(people.map((person) => react(person)));
+    render(<h.Controls />);
+    act(() =>
+      screen.getByRole("button", { name: `👍: ${count} people` }).focus(),
+    );
+    const preview = await screen.findByRole("tooltip");
+    if (remainder) expect(within(preview).getByText(remainder)).toBeTruthy();
+    else expect(within(preview).queryByText(/^and /)).toBeNull();
+  },
+);
 
 it("keeps custom emoji URLs separate and updates a grouped count when I join", async () => {
   const people = Array.from({ length: 9 }, () => keypair());
@@ -268,26 +288,27 @@ it("keeps custom emoji URLs separate and updates a grouped count when I join", a
   });
 });
 
-it("keeps focus through local and live grouping transitions without taking it from elsewhere", async () => {
-  const others = Array.from({ length: 8 }, () => keypair());
-  const h = harness(others.map((person) => react(person)));
+it("keeps the same bubble and focus through single and multiple reactor transitions", async () => {
+  const others = [other];
+  const h = harness([react(other)]);
   render(
     <>
       <button type="button">Elsewhere</button>
       <h.Controls />
     </>,
   );
-  const individual = screen.getAllByRole("button", { name: /^👍:/ })[3];
+  const individual = screen.getByRole("button", { name: /^👍:/ });
   if (!individual) throw new Error("Expected an individual reaction");
   act(() => individual.focus());
   fireEvent.click(individual);
-  const group = screen.getByRole("button", { name: "👍: 9 people" });
+  const group = screen.getByRole("button", { name: "👍: 2 people" });
+  expect(group).toBe(individual);
   expect(document.activeElement).toBe(group);
   await act(async () => {
     await flush();
     await flush();
   });
-  // Removing another reactor via a live event expands the same emoji again.
+  // A live removal takes the count back to one without replacing the control.
   const removedPerson = others[0];
   if (!removedPerson) throw new Error("Expected another reactor");
   const removed = react(removedPerson);
@@ -304,10 +325,10 @@ it("keeps focus through local and live grouping transitions without taking it fr
   expect(document.activeElement).toBe(
     screen.getAllByRole("button", { name: /^👍:/ })[0],
   );
-  // A live ninth reactor collapses the focused individual control.
+  // A live second reactor updates the same focused control.
   act(() => h.live.receive([react(keypair(), 4)]));
   expect(document.activeElement).toBe(
-    screen.getByRole("button", { name: "👍: 9 people" }),
+    screen.getByRole("button", { name: "👍: 2 people" }),
   );
   act(() => screen.getByRole("button", { name: "Elsewhere" }).focus());
   act(() => h.live.receive([react(keypair(), 5)]));
@@ -368,7 +389,7 @@ it("keeps emojis visually active but rejects another click while delivery is pen
   );
   await waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
   const pill = screen.getByRole("button", {
-    name: "👍: You",
+    name: "👍: 2 people",
   });
   expect(pill.getAttribute("aria-disabled")).toBe("true");
   expect(pill.hasAttribute("disabled")).toBe(false);
@@ -656,14 +677,15 @@ it("retires reaction previews while retaining the reaction delivery owner", asyn
   }
 });
 
-it("hands focus back when my emoji is removed while another person remains", async () => {
+it("keeps focus on the bubble when my reaction is removed and another person remains", async () => {
   const h = harness([react(), react(other)]);
   const onFocusedRemoval = vi.fn();
   render(<h.Controls onFocusedRemoval={onFocusedRemoval} />);
-  const own = screen.getByRole("button", { name: "👍: You" });
+  const own = screen.getByRole("button", { name: "👍: 2 people" });
   act(() => own.focus());
   fireEvent.click(own);
-  expect(onFocusedRemoval).toHaveBeenCalledTimes(1);
+  expect(onFocusedRemoval).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(own);
   expect(screen.queryByRole("button", { name: "👍: You" })).toBeNull();
   expect(
     screen.getByRole("button", { name: `👍: ${other.pubkey.slice(0, 10)}` }),

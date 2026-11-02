@@ -4,7 +4,10 @@
 // changes with the owner's attention setting.
 import buzzPrompt from "./prompt.md?raw";
 
-export const BUZZ_PROMPT = buzzPrompt.trim();
+export const BUZZ_HELP_PROMPT =
+  "When someone asks how to use Buzz, read buzz_help for product guidance bundled with this version. Check available tools and context before promising a capability.";
+
+export const BUZZ_PROMPT = `${buzzPrompt.trim()}\n\n## Product help\n\n${BUZZ_HELP_PROMPT}`;
 
 /** The turn instruction for a conversation whose messages stay at the
  * channel's top level; the tools refuse a reply into a thread there. */

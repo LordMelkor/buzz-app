@@ -1,3 +1,4 @@
+import { pauseClock } from "./clock.mjs";
 import { openPage } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 import {
@@ -141,7 +142,7 @@ test("production WS → broker → mounted UI delivers messages and retries a pa
   // clicks below must land before that deadline. Pause the page clock before
   // the failure and step it in 250 ms slices: the clicks then land within
   // 250 ms of page time after the 3 s notice delay, inside the 6 s cooldown.
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+  await pauseClock(page, 1000);
   const step = (done) =>
     expect
       .poll(async () => (await done()) || void (await page.clock.runFor(250)), {
@@ -284,7 +285,7 @@ test("automatic recovery restores an empty paused roster without restarting heal
   try {
     await openPage(page, "Messages");
     await expect.poll(() => rosterHeld).toBe(true);
-    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await pauseClock(page, 1000);
   } finally {
     roster.resolve();
   }

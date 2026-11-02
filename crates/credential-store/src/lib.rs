@@ -390,7 +390,7 @@ mod tests;
 /// Erase an indexed session without reading its contents or knowing its schema.
 #[cfg(not(test))]
 pub fn delete_session(service: &str, account: &str) -> Result<()> {
-    if !service.starts_with("dev.local.buzz.foundation.federated-session") {
+    if !service.starts_with("xyz.block.buzz.desktop.federated-session") {
         return Err(Error::Denied);
     }
     let _lock = acquire(&lock_root()?, service, account)?;
@@ -412,7 +412,7 @@ pub fn compare_session(
     expected: Option<&[u8]>,
     replacement: Option<&[u8]>,
 ) -> Result<()> {
-    if !service.starts_with("dev.local.buzz.foundation.federated-session") {
+    if !service.starts_with("xyz.block.buzz.desktop.federated-session") {
         return Err(Error::Denied);
     }
     let _lock = acquire(&lock_root()?, service, account)?;

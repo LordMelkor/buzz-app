@@ -2,9 +2,13 @@
 // route. It uses the plugin's shared Builderlab sign-in; native code owns host HTTP
 // and the kind 24243 binding signature.
 import { invoke } from "@tauri-apps/api/core";
-import type { Host, HostRequest } from "../../../features/host/service";
+import type { HostResponse } from "../../../features/host/service";
 import { oauthTarget } from "../oauth/browser";
-import type { OAuthSession } from "../oauth/session";
+import type {
+  BuilderlabRequest,
+  BuilderlabSession,
+  Credential,
+} from "../session";
 import { boundKey, type Account, type Backend } from "./api";
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -47,16 +51,17 @@ const command = <T>(
   });
 
 export function createNativeBackend(
-  host: Host,
-  session: OAuthSession,
+  session: BuilderlabSession,
   /** Settles once sign-in's automatic identity link has finished. */
   linked: () => Promise<void>,
   bridge: Native = native,
 ): Backend {
-  const api = oauthTarget();
-  const origin = new URL(api).origin;
-  const http = (input: HostRequest) =>
-    host.request(input).catch((error: unknown) => {
+  const origin = new URL(oauthTarget()).origin;
+  const http = (
+    credential: Credential,
+    input: BuilderlabRequest,
+  ): Promise<HostResponse> =>
+    session.request(credential, input).catch((error: unknown) => {
       throw asError(error);
     });
   const parse = (body: string) => {
@@ -81,19 +86,18 @@ export function createNativeBackend(
     body: object,
     credential = session.credential(),
   ): Promise<{ status: number; value: object }> => {
-    const response = await http({
-      url: `${api}${path}`,
+    const response = await http(credential, {
+      path,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-BB-Session-Credential": credential.value,
         Origin: origin,
       },
       body: JSON.stringify(body),
     });
     ensureCurrent(credential);
     if (response.status === 401) {
-      session.signOut();
+      session.expired(credential);
       throw new Error("Your Builderlab session expired. Sign in again.");
     }
     const value = parse(response.body);
@@ -115,13 +119,10 @@ export function createNativeBackend(
     // identity it then shows is settled.
     await linked();
     ensureCurrent(credential);
-    const response = await http({
-      url: `${api}/v1/auth/me`,
-      headers: { "X-BB-Session-Credential": credential.value },
-    });
+    const response = await http(credential, { path: "/v1/auth/me" });
     ensureCurrent(credential);
     if (response.status === 401) {
-      session.signOut();
+      session.expired(credential);
       return null;
     }
     if (response.status < 200 || response.status >= 300)

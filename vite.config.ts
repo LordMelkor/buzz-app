@@ -32,12 +32,33 @@ function sharedBuilderlabUrl() {
   );
 }
 
+/** An FI build signs in to Builderlab through its NIP-FI identity origin and
+ * API base, in the legacy URL's shape (`<url>/api/goose/`). Native builds
+ * read the descriptor from the process only, and so does this. */
+function federatedBuilderlabUrl() {
+  const raw = process.env.BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG;
+  if (!raw) return undefined;
+  const { identityOrigin, apiBasePath } = JSON.parse(raw) as {
+    identityOrigin?: unknown;
+    apiBasePath?: unknown;
+  };
+  // Another API shape is not Builderlab's: its sign-in stays unconfigured.
+  if (
+    typeof identityOrigin !== "string" ||
+    typeof apiBasePath !== "string" ||
+    !apiBasePath.endsWith("/api/goose/")
+  )
+    return "";
+  return `${new URL(identityOrigin).origin}${apiBasePath.slice(0, -"/api/goose/".length)}`;
+}
+
 export default defineConfig(async ({ command, mode }) => {
   const env = loadEnv(mode, ".", "BUZZ_");
   // Native builds consume only process values and repository-root .env.local.
   // Keep this frontend value on the same source so Vite mode files cannot
   // select a different same-origin deployment path.
-  const builderlabUrl = sharedBuilderlabUrl();
+  const federatedUrl = federatedBuilderlabUrl();
+  const builderlabUrl = federatedUrl ?? sharedBuilderlabUrl();
   // The development broker is the dev server's default: it runs whenever the
   // developer has pinned their public key. Production builds (`pnpm build`,
   // `pnpm tauri build`) never load it, regardless of .env.local contents.
@@ -122,6 +143,9 @@ export default defineConfig(async ({ command, mode }) => {
       ),
       "import.meta.env.VITE_BUZZ_COMMUNITY_ALIASES": JSON.stringify(aliases),
       "import.meta.env.VITE_BUZZ_BUILDERLAB_URL": JSON.stringify(builderlabUrl),
+      "import.meta.env.VITE_BUZZ_FEDERATED_IDENTITY": JSON.stringify(
+        federatedUrl === undefined ? "0" : "1",
+      ),
       "import.meta.env.VITE_BUZZ_BUILDERLAB_APPS_DOMAIN":
         JSON.stringify(env.BUZZ_BUILDERLAB_APPS_DOMAIN) ?? "undefined",
       "import.meta.env.VITE_BUZZ_OPEN_RELAY": JSON.stringify(openOrigin),

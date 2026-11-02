@@ -62,6 +62,7 @@ import {
   type LiteralRange,
   type PreparedMarkdown,
 } from "./markdown-preparation";
+import { writeClipboardText } from "../../shared/clipboard";
 
 type MarkdownNode = {
   type: string;
@@ -302,6 +303,44 @@ function remarkLiteralHtml() {
   };
 }
 
+type HtmlNode = {
+  type: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: HtmlNode[];
+};
+/** Lists and quotes the slot descends into, so their last line keeps it. */
+const editedSlotContainers = new Set(["ul", "ol", "li", "blockquote"]);
+/** Leave a slot after the body's last rendered line for the edited marker:
+ * inside a closing paragraph, list item or quote line, else after the last
+ * block, including generated footnotes. Parses are cached by content alone, so
+ * every body has the slot and rendering decides whether to fill it. */
+function rehypeEditedSlot() {
+  return (tree: HtmlNode) => {
+    let parent = tree;
+    for (;;) {
+      const last = parent.children
+        ?.filter((child) => child.type === "element")
+        .at(-1);
+      if (last?.tagName === "p") parent = last;
+      else if (last && editedSlotContainers.has(last.tagName ?? "")) {
+        parent = last;
+        continue;
+      }
+      break;
+    }
+    parent.children = [
+      ...(parent.children ?? []),
+      {
+        type: "element",
+        tagName: "span",
+        properties: { dataEditedSlot: "" },
+        children: [],
+      },
+    ];
+  };
+}
+
 /** Offer only Markdown prose to profile controls and inline plugins. */
 function remarkInlineContent(protectedContent: ProtectedContent) {
   const restore = (value: string) =>
@@ -447,6 +486,7 @@ export function MessageMarkdown({
   participantProfiles,
   largeEmoji = false,
   interactive = true,
+  edited = false,
 }: {
   row: ChannelMessage;
   directory?: typeof emptyReferenceDirectory;
@@ -459,6 +499,8 @@ export function MessageMarkdown({
   participantProfiles?: ReadonlyMap<string, Profile> | undefined;
   largeEmoji?: boolean | undefined;
   interactive?: boolean;
+  /** Mark the body as replaced by an edit, after its last line. */
+  edited?: boolean | undefined;
 }) {
   const resolveName = useChannelIdentityNames(session, row.channelId);
   const prepared = useMemo(
@@ -466,7 +508,12 @@ export function MessageMarkdown({
     [row.content],
   );
   if (prepared.kind === "plain")
-    return <div className={styles.plainText}>{prepared.content}</div>;
+    return (
+      <div className={styles.plainText}>
+        {prepared.content}
+        {edited && <EditedMarker />}
+      </div>
+    );
   return (
     <PreparedMessageMarkdown
       row={row}
@@ -482,8 +529,14 @@ export function MessageMarkdown({
       resolveName={resolveName}
       largeEmoji={largeEmoji}
       interactive={interactive}
+      edited={edited}
     />
   );
+}
+
+/** Metadata, not prose: selection copy omits it like the byline's clock. */
+export function EditedMarker() {
+  return <span className={`${styles.edited} select-none`}> (edited)</span>;
 }
 
 function PreparedMessageMarkdown({
@@ -500,6 +553,7 @@ function PreparedMessageMarkdown({
   resolveName,
   largeEmoji = false,
   interactive = true,
+  edited = false,
 }: Parameters<typeof MessageMarkdown>[0] & {
   prepared: Extract<ReturnType<typeof prepareMarkdown>, { kind: "markdown" }>;
   resolveName: (pubkey: string, fallback: string) => string;
@@ -684,6 +738,7 @@ function PreparedMessageMarkdown({
     img: ({ node: _node, alt }) =>
       alt ? <span className={styles.imageAlt}>{alt}</span> : null,
     span: ({ node: _node, children, ...props }) => {
+      if ("data-edited-slot" in props) return edited ? <EditedMarker /> : null;
       if ((props as Record<string, unknown>)["data-spoiler"] === "true")
         return (
           <MessageSpoiler key={row.content} interactive={interactive}>
@@ -811,6 +866,7 @@ const MarkdownBody = memo(function MarkdownBody({
           [remarkInlineContent, protectedContent],
           remarkLiteralHtml,
         ],
+        rehypePlugins: [rehypeEditedSlot],
         components: markdownComponents,
         skipHtml: true,
         urlTransform: transformUrl,
@@ -932,7 +988,7 @@ function CodeActions({
         onClick={() => {
           setCopying(true);
           void Promise.resolve()
-            .then(() => navigator.clipboard.writeText(code))
+            .then(() => writeClipboardText(code))
             .then(
               () => notify("Copied code to clipboard", "success"),
               () => notify("Failed to copy code", "error"),

@@ -2778,11 +2778,14 @@ it("inbox describes a row by its newest message within the same second", () => {
     metadata(h.relay, "dm", "DM", 11, [["t", "dm"]]),
   ]);
   // Done follows Working by its ms offset alone; its id sorts first.
+  // Re-sign both on each try, so each try succeeds with probability 1/2.
   const pair = (channel: string) => {
-    const done = message(h.alice, channel, "Done", 20, [["ms", "900"]]);
     for (let i = 0; ; i++) {
-      const working = message(h.alice, channel, `Working${"!".repeat(i)}`, 20, [
-        ["ms", "100"],
+      const working = message(h.alice, channel, "Working", 20, [
+        ["ms", String(100 + i)],
+      ]);
+      const done = message(h.alice, channel, "Done", 20, [
+        ["ms", String(900 + i)],
       ]);
       if (working.id > done.id) return [working, done];
     }

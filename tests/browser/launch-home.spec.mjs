@@ -172,12 +172,10 @@ test("default navigation retries failed metadata and accepts a completed empty l
   ).toBe("opening");
   releaseMetadata();
   await expect(
-    page.getByRole("button", { name: "Retry navigation", exact: true }),
+    page.getByRole("button", { name: "Try again", exact: true }),
   ).toBeVisible();
   failMetadata = false;
-  await page
-    .getByRole("button", { name: "Retry navigation", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => window.fixtureNavigation.snapshot().status))
     .toBe("opened");
@@ -278,9 +276,7 @@ test("launch retains plugin-configuration recovery without Home", async ({
   const recoveredChoices = await pageChoices(page, "Messages");
   await expect(pageChoice(recoveredChoices, "Messages")).toBeVisible();
   await page.keyboard.press("Escape");
-  await page
-    .getByRole("button", { name: "Retry navigation", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
   await expect(messages(page)).toBeVisible();
 });
 
@@ -366,7 +362,7 @@ for (const huddle of [false, true]) {
         .toBe("opened");
     } else {
       await expect(
-        page.getByRole("button", { name: "Retry navigation", exact: true }),
+        page.getByRole("button", { name: "Try again", exact: true }),
       ).toBeVisible();
       expect(
         await page.evaluate(() => window.fixtureNavigation.snapshot().status),
@@ -377,7 +373,7 @@ for (const huddle of [false, true]) {
       expect(reads).toHaveLength(0);
       failMetadata = false;
       await page
-        .getByRole("button", { name: "Retry navigation", exact: true })
+        .getByRole("button", { name: "Try again", exact: true })
         .click();
       await expect(messages(page)).toBeVisible();
       await expect

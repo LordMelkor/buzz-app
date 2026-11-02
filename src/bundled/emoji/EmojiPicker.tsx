@@ -445,7 +445,7 @@ export function EmojiPicker({
         if (next) {
           accepted.current = false;
           escapeFocus.current = false;
-          void session.emoji.ensure();
+          void session.emoji.ensure("foreground");
           if (gifs !== true && gifAvailability?.community === community)
             setGifAvailability(undefined);
           setGifDiscoveryRequested(true);

@@ -1,13 +1,14 @@
 /* Global navigation and filters sit above the shared sidebar scrollport. */
 .sidebarControls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   margin-block-end: var(--space-3);
   margin-inline: var(--space-1);
 }
 .sidebarScope {
-  flex: 1;
+  flex: 1 1 10rem;
   min-width: 0;
 }
 .sidebarScopeLabel {
@@ -36,7 +37,11 @@
   flex-direction: column;
   gap: var(--space-half);
 }
-.connectionMessage {
+.connectionStatus {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
   padding: var(--space-8) var(--space-4);
   color: var(--text-subtle);
   font-size: var(--text-body-sm);

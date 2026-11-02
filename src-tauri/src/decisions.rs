@@ -6,6 +6,11 @@
 //!
 //! - `typesafe`: TypeSafe System One with the user's own TypeSafe key, which
 //!   only native code reads (see `jev.rs`).
+//! - `builderlab`: the build's Builderlab (`BUZZ_BUILDERLAB_URL`), with the
+//!   Builderlab sign-in the webview holds. Builds without one have no
+//!   `builderlab` endpoint. It takes System One's request and answer shapes,
+//!   answers with Jev unless asked for another model, and bills the
+//!   request's community, so a call without one is not sent.
 use crate::jev::JevHost;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,9 +18,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
+use zeroize::Zeroizing;
 
 pub(crate) const JEV_MODEL: &str = crate::jev::MODEL;
 const TYPESAFE: &str = "https://api.typesafe.ai/v1/systemone";
+const BUILDERLAB_ROUTE: &str = "v3/builderlab/decisions";
 const INPUT_LIMIT: usize = 128 * 1024;
 const RESPONSE_LIMIT: usize = 64 * 1024;
 const MAX_QUESTIONS: usize = 32;
@@ -29,6 +36,7 @@ const MIN_TIMEOUT: Duration = Duration::from_secs(1);
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Backend {
     Typesafe,
+    Builderlab,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +65,10 @@ pub(crate) struct Request {
     /// How long the caller waits, at most 30 seconds.
     #[serde(default)]
     pub(crate) timeout_ms: Option<u64>,
+    /// The Buzz community (its relay URL) the text comes from. Builderlab
+    /// bills that community and refuses a call without one.
+    #[serde(default)]
+    pub(crate) community: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -84,10 +96,14 @@ pub(crate) enum Answer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Failure {
-    /// `typesafe` has no saved key.
+    /// `typesafe` has no saved key, or `builderlab` no sign-in.
     MissingCredentials,
     /// The provider refused the caller's credentials.
     Unauthorized,
+    /// `builderlab` says the sign-in itself is no longer valid (401). Only
+    /// this ends the shared sign-in; the Builderlab plugin reports it to the
+    /// host as `unauthorized`.
+    SessionExpired,
     /// The questions are malformed, or the service rejected them.
     InvalidRequest,
     InputLimit,
@@ -112,6 +128,16 @@ pub(crate) enum Decided {
 
 pub(crate) struct Endpoints {
     pub(crate) typesafe: String,
+    /// `None` when the build has no Builderlab.
+    pub(crate) builderlab: Option<String>,
+}
+
+/// The decisions route under the build's Builderlab API, whose path keeps any
+/// deployment prefix, as sign-in does.
+fn builderlab_endpoint(origin: &str, api_base_path: &str) -> Option<String> {
+    Some(origin)
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| format!("{origin}{api_base_path}{BUILDERLAB_ROUTE}"))
 }
 
 pub(crate) struct DecisionsHost {
@@ -125,6 +151,10 @@ impl DecisionsHost {
         Self::with(
             Endpoints {
                 typesafe: TYPESAFE.into(),
+                builderlab: builderlab_endpoint(
+                    buzzodz_plugins::BUILDERLAB_ORIGIN,
+                    buzzodz_plugins::BUILDERLAB_API_BASE_PATH,
+                ),
             },
             TIMEOUT,
         )
@@ -139,17 +169,28 @@ impl DecisionsHost {
 
     /// One call to one provider. The wait for a slot, the key read, the call
     /// and the response read share one deadline. Nothing is retried, and a
-    /// failed provider never falls back to another.
+    /// failed provider never falls back to another. `session` is the
+    /// Builderlab sign-in; other providers ignore it.
     pub(crate) async fn decide(
         &self,
         keys: &JevHost,
         backend: Backend,
+        session: Option<Zeroizing<String>>,
         request: Request,
     ) -> Decided {
         let failed = |reason| Decided::Failed { backend, reason };
         if let Err(reason) = validate(&request) {
             return failed(reason);
         }
+        // Builderlab bills the community: without a relay URL for one, the
+        // call is refused before anything is sent.
+        let community = match backend {
+            Backend::Typesafe => None,
+            Backend::Builderlab => match request.community.as_deref().and_then(community_host) {
+                Some(host) => Some(host),
+                None => return failed(Failure::InvalidRequest),
+            },
+        };
         let body = match encode(backend, &request) {
             Ok(body) if body.len() <= INPUT_LIMIT => body,
             Ok(_) => return failed(Failure::InputLimit),
@@ -167,20 +208,35 @@ impl DecisionsHost {
                 .acquire_owned()
                 .await
                 .map_err(|_| Failure::ServiceError)?;
-            let (endpoint, key) = match backend {
+            let client = client().ok_or(Failure::ServiceError)?;
+            let post = match backend {
                 Backend::Typesafe => match keys.key().await {
-                    Ok(Some(key)) => (&self.endpoints.typesafe, key),
+                    Ok(Some(key)) => client
+                        .post(&self.endpoints.typesafe)
+                        .bearer_auth(key.as_str()),
                     Ok(None) => return Err(Failure::MissingCredentials),
                     // Unreadable is not absent: the key may still be saved.
                     Err(_) => return Err(Failure::ServiceError),
                 },
+                Backend::Builderlab => {
+                    let endpoint = self
+                        .endpoints
+                        .builderlab
+                        .as_ref()
+                        .ok_or(Failure::ServiceError)?;
+                    let session = session
+                        .as_ref()
+                        .filter(|s| !s.trim().is_empty())
+                        .ok_or(Failure::MissingCredentials)?;
+                    client
+                        .post(endpoint)
+                        .header("x-bb-session-credential", session.as_str())
+                        .header("x-buzz-community", community.as_deref().unwrap_or_default())
+                }
             };
-            let client = client().ok_or(Failure::ServiceError)?;
-            let response = client
-                .post(endpoint)
+            let response = post
                 .header("content-type", "application/json")
                 .header("accept", "application/json")
-                .bearer_auth(key.as_str())
                 .body(body)
                 .send()
                 .await
@@ -190,8 +246,14 @@ impl DecisionsHost {
                 200 => {}
                 // A redirect is a sign-in page, never an answer.
                 300..=399 | 401 | 403 => {
-                    // The key may have been removed or replaced elsewhere.
-                    keys.forget().await;
+                    if backend == Backend::Typesafe {
+                        // The key may have been removed or replaced elsewhere.
+                        keys.forget().await;
+                    } else if status == 401 {
+                        return Err(Failure::SessionExpired);
+                    }
+                    // A Builderlab 403 or redirect refuses decisions, not the
+                    // sign-in that other Builderlab features share.
                     return Err(Failure::Unauthorized);
                 }
                 400 | 422 => return Err(Failure::InvalidRequest),
@@ -253,8 +315,37 @@ fn validate(request: &Request) -> Result<(), Failure> {
     Ok(())
 }
 
+fn instructions(question: &Question) -> &str {
+    match question {
+        Question::YesNo { instructions }
+        | Question::Choice { instructions, .. }
+        | Question::Score { instructions, .. } => instructions,
+    }
+}
+
 fn encode(backend: Backend, request: &Request) -> Result<Vec<u8>, Failure> {
     let body = match backend {
+        // Builderlab's System One: the question's type is its field. No
+        // `model`, so Jev answers.
+        Backend::Builderlab => {
+            let questions: serde_json::Map<String, Value> = request
+                .questions
+                .iter()
+                .map(|(name, q)| {
+                    let mut question = json!({ "instructions": instructions(q) });
+                    let (key, typed) = match q {
+                        Question::YesNo { .. } => ("noul", json!({})),
+                        Question::Choice { options, .. } => {
+                            ("choice", json!({ "options": options }))
+                        }
+                        Question::Score { levels, .. } => ("score", json!({ "levels": levels })),
+                    };
+                    question[key] = typed;
+                    (name.clone(), question)
+                })
+                .collect();
+            json!({ "state": request.state, "questions": questions })
+        }
         // TypeSafe's own `/v1/systemone`: a `type` and its `criteria`.
         Backend::Typesafe => {
             let questions: serde_json::Map<String, Value> = request
@@ -302,25 +393,41 @@ fn decode(
         .and_then(Value::as_str)
         .ok_or(Failure::InvalidResponse)?
         .to_owned();
-    if model != JEV_MODEL {
+    // TypeSafe is pinned to one model; Builderlab answers on its own.
+    if backend == Backend::Typesafe && model != JEV_MODEL {
         return Err(Failure::InvalidResponse);
     }
-    let raw: BTreeMap<String, &Value> = match (backend, value.get("answers")) {
-        (Backend::Typesafe, Some(Value::Object(map))) => {
-            map.iter().map(|(n, a)| (n.clone(), a)).collect()
-        }
-        _ => return Err(Failure::InvalidResponse),
+    if model.is_empty() {
+        return Err(Failure::InvalidResponse);
+    }
+    let Some(Value::Object(raw)) = value.get("answers") else {
+        return Err(Failure::InvalidResponse);
     };
     let mut answers = BTreeMap::new();
     for (name, question) in &request.questions {
-        let answer = raw.get(name).copied().ok_or(Failure::InvalidResponse)?;
-        // TypeSafe puts the typed body beside a `type` tag.
+        let answer = raw.get(name).ok_or(Failure::InvalidResponse)?;
+        // TypeSafe puts the typed body beside a `type` tag; Builderlab wraps
+        // it under the type's field.
         let (body, kind) = match backend {
             Backend::Typesafe => (answer, answer.get("type").and_then(Value::as_str)),
+            Backend::Builderlab => {
+                let mut typed = ["noul", "choice", "score"]
+                    .into_iter()
+                    .filter_map(|k| answer.get(k).map(|b| (b, Some(k))));
+                match (typed.next(), typed.next()) {
+                    // Exactly one typed body; more than one is ambiguous.
+                    (Some(only), None) => only,
+                    _ => return Err(Failure::InvalidResponse),
+                }
+            }
         };
         let decoded = match (question, kind) {
             (Question::YesNo { .. }, Some("noul")) => Answer::YesNo {
-                probability: unit(body.get("noul"))?,
+                // TypeSafe's value is the field itself; Builderlab's is in it.
+                probability: unit(match backend {
+                    Backend::Typesafe => body.get("noul"),
+                    Backend::Builderlab => body.get("value"),
+                })?,
             },
             (Question::Choice { options, .. }, Some("choice")) => {
                 let choice = body
@@ -390,6 +497,24 @@ fn list_or_map(
     }
 }
 
+/// The community as Builderlab names it: the relay's host, lowercase, with
+/// its port only when not the scheme's default. `None` when it is not a relay
+/// URL.
+fn community_host(community: &str) -> Option<String> {
+    let url = reqwest::Url::parse(community.trim()).ok()?;
+    if !matches!(url.scheme(), "wss" | "ws" | "https" | "http") {
+        return None;
+    }
+    let host = url.host_str()?.trim_end_matches('.');
+    if host.is_empty() {
+        return None;
+    }
+    Some(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    })
+}
+
 async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, Failure> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| Failure::ServiceError)? {
@@ -421,8 +546,10 @@ pub(crate) async fn decide(
     host: tauri::State<'_, DecisionsHost>,
     backend: Backend,
     request: Request,
+    session: Option<String>,
 ) -> Result<Decided, String> {
-    Ok(host.decide(&keys, backend, request).await)
+    let session = session.map(Zeroizing::new);
+    Ok(host.decide(&keys, backend, session, request).await)
 }
 
 #[cfg(test)]

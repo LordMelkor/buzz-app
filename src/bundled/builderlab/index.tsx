@@ -1,6 +1,9 @@
 import { useSyncExternalStore } from "react";
 import type { PluginModule } from "../../plugins/api";
-import { handoffBackupSession } from "../../features/identity/backup";
+import {
+  handoffBackupSession,
+  handoffFederatedBackupSession,
+} from "../../features/identity/backup";
 import { nativeIdentityEnabled } from "../../features/identity/service";
 import { Login } from "./login/Login";
 import {
@@ -9,11 +12,13 @@ import {
   oauthTarget,
 } from "./oauth/browser";
 import { createOAuthSession } from "./oauth/session";
+import { createNativeSession, nativeBuilderlab } from "./session";
 import { createAgentClient } from "./agents/client";
 import { RemoteAgents } from "./agents/RemoteAgents";
 import { builderlabType } from "./adapter-type";
 import { createKnownCommunitiesClient } from "./known-communities/client";
 import { startKnownCommunitiesSync } from "./known-communities/sync";
+import { offerBuilderlabDecisions } from "./decisions";
 import type { AgentProviderSnapshot } from "../../features/agents/service";
 import { Header, InlineHeader } from "../../shared/design-system/ui/Header";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
@@ -32,6 +37,8 @@ export const inject = [
   "panels",
   "browser",
   "knownCommunities",
+  "decisions",
+  ...(nativeBuilderlab() ? ["federatedIdentity", "navigation"] : []),
 ];
 export const apply: PluginModule["apply"] = (ctx) => {
   let unavailable = "";
@@ -43,42 +50,61 @@ export const apply: PluginModule["apply"] = (ctx) => {
         ? error.message
         : "Builderlab sign-in is unavailable.";
   }
-  const session = createOAuthSession(
-    (signal) => {
-      if (!browserLoginAvailable())
-        throw new Error(
-          "Open the Buzz desktop app to sign in with Builderlab.",
-        );
-      return browserCredential(ctx.host, signal);
-    },
-    (credential) => {
-      // Local guest teardown is immediate; the parent logout also revokes every server-side viewer child.
-      void ctx.host
-        .request({
-          url: `${oauthTarget()}/v1/auth/logout`,
-          method: "POST",
-          headers: { "X-BB-Session-Credential": credential.value },
-        })
-        .catch(() => {});
-    },
-  );
+  // An FI build signs in with the native NIP-FI session, whose token stays
+  // in OS secure storage; otherwise the OAuth credential lives in memory.
+  const legacy = nativeBuilderlab()
+    ? undefined
+    : createOAuthSession(
+        (signal) => {
+          if (!browserLoginAvailable())
+            throw new Error(
+              "Open the Buzz desktop app to sign in with Builderlab.",
+            );
+          return browserCredential(ctx.host, signal);
+        },
+        (credential) => {
+          // Local guest teardown is immediate; the parent logout also revokes every server-side viewer child.
+          void ctx.host
+            .request({
+              url: `${oauthTarget()}/v1/auth/logout`,
+              method: "POST",
+              headers: { "X-BB-Session-Credential": credential.value },
+            })
+            .catch(() => {});
+        },
+        ctx.host,
+      );
+  const session = legacy ?? createNativeSession(ctx.federatedIdentity);
   ctx.effect(() => () => session.dispose());
   const loginAvailable = browserLoginAvailable() && !unavailable;
-  applyApps(ctx, session, loginAvailable);
+  // An FI build signs out where its shared organization sign-in is managed.
+  const openIdentity = legacy
+    ? undefined
+    : () =>
+        void ctx.navigation.open({
+          version: 1,
+          kind: "settings",
+          section: "identity",
+        });
+  applyApps(ctx, session, loginAvailable, legacy);
+  const handoff = (signedIn: boolean) =>
+    legacy
+      ? handoffBackupSession(
+          "builderlab",
+          signedIn ? legacy.credential().value : null,
+        )
+      : handoffFederatedBackupSession(
+          signedIn ? ctx.federatedIdentity.snapshot().revision : null,
+        );
   const backupSession = () => {
     if (!nativeIdentityEnabled()) return;
-    handoffBackupSession(
-      "builderlab",
-      session.snapshot().status === "signed-in"
-        ? session.credential().value
-        : null,
-    );
+    handoff(session.snapshot().status === "signed-in");
   };
   ctx.effect(() => {
     const stop = session.subscribe(backupSession);
     return () => {
       stop();
-      if (nativeIdentityEnabled()) handoffBackupSession("builderlab", null);
+      if (nativeIdentityEnabled()) handoff(false);
     };
   });
   // The account's community list follows this sign-in; see docs/communities.md.
@@ -87,12 +113,12 @@ export const apply: PluginModule["apply"] = (ctx) => {
   if (browserLoginAvailable() && !unavailable)
     ctx.effect(() =>
       startKnownCommunitiesSync({
-        client: createKnownCommunitiesClient(ctx.host, session),
+        client: createKnownCommunitiesClient(session),
         session,
         knownCommunities: ctx.knownCommunities,
       }),
     );
-  const agents = createAgentClient(ctx.host, session);
+  const agents = createAgentClient(session);
   if (!unavailable) {
     let providerState: AgentProviderSnapshot = {
       readiness: "attention",
@@ -126,6 +152,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
             available={loginAvailable}
             active={() => true}
             showHeading={false}
+            openIdentity={openIdentity}
           />
           {state.status === "signed-in" &&
             !state.account?.canUseRemoteAgents && (
@@ -137,7 +164,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
       );
     };
     ctx.agents.register({
-      ...builderlabType(agents, session, ctx.relay),
+      ...builderlabType(agents, session, ctx.relay, openIdentity),
       provider: {
         snapshot: () => providerState,
         subscribe: (listener) => {
@@ -149,6 +176,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
       },
     });
     ctx.effect(() => () => stopProvider());
+    // Native `decide` sends the legacy credential; an FI build has none to
+    // hand it, so it does not offer Builderlab decisions.
+    if (legacy) offerBuilderlabDecisions(ctx, legacy, loginAvailable);
     ctx.provide("builderlab", hostedAgentSettings(session, agents));
   }
   // Link the Buzz key at sign-in. Best effort: activation links again and
@@ -169,7 +199,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
   const communities = !nativeIdentityEnabled()
     ? brokerApi
     : loginAvailable
-      ? createApi(createNativeBackend(ctx.host, session, () => linking))
+      ? createApi(createNativeBackend(session, () => linking))
       : null;
   const Communities = ({ active }: { active(): boolean }) => {
     const state = useSyncExternalStore(session.subscribe, session.snapshot);
@@ -209,6 +239,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
                 : "Open the Buzz desktop app to sign in with Builderlab."
             }
             active={active}
+            openIdentity={openIdentity}
           />
         </SettingsGroup>
         <Communities active={active} />

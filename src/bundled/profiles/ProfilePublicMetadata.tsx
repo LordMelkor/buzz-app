@@ -4,6 +4,7 @@ import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { Button } from "../../shared/design-system/ui/Button";
 import { PreferenceRow } from "../../shared/design-system/ui/PreferenceRow";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
+import { writeClipboardText } from "../../shared/clipboard";
 
 export function ProfilePublicMetadata({
   nip05,
@@ -53,7 +54,7 @@ function ProfileCopyField({
               const current = ++generation.current;
               setCopied(false);
               void Promise.resolve()
-                .then(() => navigator.clipboard.writeText(value))
+                .then(() => writeClipboardText(value))
                 .then(
                   () => {
                     if (current !== generation.current) return;

@@ -53,6 +53,7 @@ import {
   type PendingDeletion,
   type Quota,
 } from "./api";
+import { writeClipboardText } from "../../../shared/clipboard";
 
 const card = "mt-6 rounded-xl border border-default p-5";
 const sectionClassName = "mt-section-gap";
@@ -285,7 +286,7 @@ export function HostedCommunities({
     if (!activeRef.current()) return;
     const at = handoffOwner.current;
     const copied = await Promise.resolve()
-      .then(() => navigator.clipboard.writeText(url))
+      .then(() => writeClipboardText(url))
       .then(
         () => true,
         () => false,

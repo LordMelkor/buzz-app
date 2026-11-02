@@ -32,6 +32,17 @@ export type OpenTarget =
     }>
   | Readonly<{
       version: 1;
+      kind: "plugin";
+      pluginId: string;
+      /** Omitted: the plugin's primary page, else its first. */
+      pageId?: string;
+      /** String route data from a link. The resolved page's own validator
+       * decides whether it applies; the page opens without it otherwise. */
+      params?: Readonly<Record<string, string>>;
+      scope?: NavigationScope | null;
+    }>
+  | Readonly<{
+      version: 1;
       kind: "conversation";
       scope: NavigationScope;
       channelId: string;
@@ -50,6 +61,9 @@ const token = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const section = /^[a-z0-9][a-z0-9._-]{0,127}(?:\/[a-z0-9][a-z0-9._-]{0,127})?$/;
 const provider = /^[a-z0-9][a-z0-9._-]{0,127}\/[a-z0-9][a-z0-9._-]{0,127}$/;
 const hex = /^[a-f0-9]{64}$/i;
+const paramKey = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+const MAX_PARAMS = 16;
+const MAX_PARAM_LENGTH = 1024;
 const invalid = () => new Error("Invalid or unsupported navigation target");
 function record(value: unknown): Record<string, unknown> {
   if (
@@ -82,6 +96,20 @@ function boundScope(input: unknown): NavigationScope {
     viewer: text(value.viewer, hex).toLowerCase(),
     communityOrigin: relayOrigin(value.communityOrigin),
   });
+}
+
+function stringParams(input: unknown): Readonly<Record<string, string>> {
+  const value = record(input);
+  const keys = Object.keys(value).sort();
+  if (keys.length > MAX_PARAMS) throw invalid();
+  const result: Record<string, string> = Object.create(null);
+  for (const key of keys) {
+    const item = value[key];
+    if (typeof item !== "string" || item.length > MAX_PARAM_LENGTH)
+      throw invalid();
+    result[text(key, paramKey)] = item;
+  }
+  return Object.freeze(result);
 }
 
 /** Copy, bound and sort JSON before retaining plugin-supplied state. No references survive. */
@@ -179,6 +207,28 @@ export function parseOpenTarget(input: unknown): OpenTarget {
         };
         break;
       }
+      case "plugin":
+        fields(value, [
+          "version",
+          "kind",
+          "pluginId",
+          "pageId",
+          "params",
+          "scope",
+        ]);
+        target = {
+          version: 1,
+          kind: "plugin",
+          pluginId: text(value.pluginId),
+          ...(value.pageId !== undefined ? { pageId: text(value.pageId) } : {}),
+          ...(value.params !== undefined
+            ? { params: stringParams(value.params) }
+            : {}),
+          ...(value.scope !== undefined
+            ? { scope: value.scope === null ? null : boundScope(value.scope) }
+            : {}),
+        };
+        break;
       case "conversation": {
         fields(value, [
           "version",

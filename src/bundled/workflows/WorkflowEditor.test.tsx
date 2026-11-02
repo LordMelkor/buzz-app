@@ -176,7 +176,9 @@ test("form errors follow the editable field and clear when corrected", async () 
   render(<Example />);
   // The dialog's deferred initial focus must finish before typing into a field.
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Close editor" })).toHaveFocus(),
+    expect(
+      screen.getByText("Message helper", { selector: "span" }),
+    ).toHaveFocus(),
   );
   const name = screen.getByRole("textbox", { name: "Workflow name" });
   const save = screen.getByRole("button", { name: "Save changes" });
@@ -251,7 +253,9 @@ test("YAML errors replace help, retain the draft and restore help after recovery
   render(<Example initial="name: [" />);
   // The dialog's deferred initial focus must finish before typing into a field.
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Close editor" })).toHaveFocus(),
+    expect(
+      screen.getByText("Untitled workflow", { selector: "span" }),
+    ).toHaveFocus(),
   );
   // Unreadable YAML has no enabled state to show or change.
   expect(screen.queryByRole("switch")).not.toBeInTheDocument();
@@ -484,4 +488,29 @@ test("editing another Basic condition preserves the untouched literal", async ()
   expect(parse(yaml).trigger.filter).toBe(
     `str_starts_with(trigger_text, "deploy ") && trigger_author == "${"a".repeat(64)}"`,
   );
+});
+
+test("opening an existing workflow focuses its heading without running or saving", async () => {
+  const run = vi.fn();
+  const save = vi.fn();
+  render(
+    <WorkflowEditor
+      yaml={fixtureYaml}
+      onChange={vi.fn()}
+      onSave={save}
+      run={
+        <button type="button" onClick={run}>
+          Run now
+        </button>
+      }
+    />,
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByText("Message helper", { selector: "span" }),
+    ).toHaveFocus(),
+  );
+  await userEvent.setup().keyboard("{Enter}");
+  expect(run).not.toHaveBeenCalled();
+  expect(save).not.toHaveBeenCalled();
 });

@@ -31,10 +31,19 @@ const response = (value: unknown, status = 200): HostResponse => ({
 const viewer = "cd".repeat(32);
 const bound = (pubkey_hex = viewer) => response({ identity: { pubkey_hex } });
 async function fixture(subject = "user", canUseRemoteAgents = true) {
-  const session = createOAuthSession(async () => ({
-    value: "secret",
-    account: { subject, email: "a@example.com", canUseRemoteAgents },
-  }));
+  const session = createOAuthSession(
+    async () => ({
+      value: "secret",
+      account: {
+        subject,
+        email: "a@example.com",
+        canUseRemoteAgents,
+        canUseBuilderlabDecisions: false,
+      },
+    }),
+    undefined,
+    { request: (input) => host.request(input) },
+  );
   await session.signIn();
   const host: Host = {
     runCommand: vi.fn(),
@@ -50,7 +59,7 @@ async function fixture(subject = "user", canUseRemoteAgents = true) {
     session,
     host,
     owner,
-    client: createAgentClient(host, session, owner),
+    client: createAgentClient(session, owner),
     retain: vi.fn(),
     signal: new AbortController().signal,
   };
@@ -538,11 +547,7 @@ it.each(["network", "server", "malformed", "cancel"])(
       }),
     );
     // A fresh consumer after navigation/restart reuses the persisted intent.
-    await createAgentClient(h.host, h.session).register(
-      "Helper",
-      h.signal,
-      h.retain,
-    );
+    await createAgentClient(h.session).register("Helper", h.signal, h.retain);
     const bodies = vi
       .mocked(h.host.request)
       .mock.calls.map(([input]) => JSON.parse(input.body ?? "{}"));
@@ -723,7 +728,7 @@ it("signs out when the identity check finds the session expired", async () => {
 it("attests without linking when there is no native identity", async () => {
   const h = await fixture();
   vi.mocked(h.host.request).mockResolvedValueOnce(response({ status: 1 }));
-  await createAgentClient(h.host, h.session, null).activate(
+  await createAgentClient(h.session, null).activate(
     row.agent_pubkey,
     proof,
     undefined,

@@ -1,6 +1,7 @@
 import { useSoloNavigation } from "../../features/channel-navigation/solo-navigation-react";
 import {
   type ComponentProps,
+  type ReactNode,
   useId,
   useRef,
   useState,
@@ -48,7 +49,10 @@ export function SoloChatMenuItems({
   onRename,
   onLifecycle,
   onReadResult,
+  children,
 }: {
+  /** Additional actions at the end of the first menu group. */
+  children?: ReactNode;
   session: RelaySession;
   channel: ChannelSummary;
   onShare(): void;
@@ -140,6 +144,7 @@ export function SoloChatMenuItems({
             </MenuSubmenuPopup>
           </MenuSubmenu>
         )}
+      {active && children}
       <MenuSeparator />
       {active && (
         <MenuItem

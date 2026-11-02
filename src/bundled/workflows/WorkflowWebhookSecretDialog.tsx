@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "../../shared/design-system/ui/Button";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
 import { ConfirmAction } from "./ConfirmAction";
+import { writeClipboardText } from "../../shared/clipboard";
 
 /** Shown when the user leaves before revealing or copying; the relay cannot re-issue the secret. */
 export const continueWithoutSecret = {
@@ -43,7 +44,7 @@ export function WorkflowWebhookSecretDialog({
   }, [take]);
   const copy = async (value: string, label: "URL" | "secret") => {
     try {
-      await navigator.clipboard.writeText(value);
+      await writeClipboardText(value);
       setNotice({
         text: `${label === "URL" ? "URL" : "Secret"} copied.`,
         error: false,

@@ -88,6 +88,7 @@ const acceptedAwayMeasurements = new Map();
 const META_ROLES = new Set([
   "--text-tertiary",
   "--text-metadata",
+  "--text-metadata-own",
   "--text-row-metadata",
   "--text-row-selected-metadata",
 ]);
@@ -212,6 +213,9 @@ const PAIRS = [
   ["--text-standard", "--affordance-reaction"],
   ["--text-message-own", "--affordance-reaction-own"],
   ["--text-message-own", "--affordance-message-own-hover"],
+  // An arrival cue lays the regular step across the whole bubble.
+  ["--text-standard", "--affordance-message-highlight"],
+  ["--text-message-own", "--affordance-message-own-highlight"],
   ...["subtle", "subtle-hover", "subtle-pressed"].map((state) => [
     "--text-standard",
     `--affordance-${state}`,
@@ -348,6 +352,8 @@ const SITS_ON = new Map([
   ["--affordance-mention-own", "--surface-message-own"],
   ["--affordance-mention-own-hover", "--surface-message-own"],
   ["--affordance-message-own-hover", "--surface-message-own"],
+  ["--affordance-message-highlight", "--surface-message"],
+  ["--affordance-message-own-highlight", "--surface-message-own"],
   ["--affordance-reaction", "--surface-message"],
   ["--affordance-reaction-own", "--surface-message-own"],
 ]);
@@ -538,6 +544,8 @@ const ACCENT_PAIRS = [
   ]),
   ["--text-message-own", "--surface-message-own"],
   ["--text-message-link-own", "--surface-message-own"],
+  ["--text-metadata", "--surface-message"],
+  ["--text-metadata-own", "--surface-message-own"],
   ...["", "-hover", "-pressed"].map((state) => [
     "--text-on-prominent",
     `--affordance-prominent${state}`,
@@ -570,8 +578,9 @@ for (const family of accentFamilies) {
           continue;
         }
         const lc = Math.abs(apcaContrast(text, surface));
+        const target = META_ROLES.has(textRole) ? TARGET_META : TARGET_BODY;
         const wcag = wcagRatio(text, surface);
-        if (lc < TARGET_BODY || wcag < 4.5)
+        if (lc < target || wcag < 4.5)
           failures.push({
             mode: `${family}/${level}/${mode}`,
             textRole,
@@ -579,7 +588,7 @@ for (const family of accentFamilies) {
             surfaceRole,
             surface,
             lc,
-            target: TARGET_BODY,
+            target,
             wcag,
           });
       }

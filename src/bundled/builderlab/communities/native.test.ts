@@ -21,6 +21,7 @@ const credential = (value: string): Credential =>
       subject: "user",
       email: "a@example.com",
       canUseRemoteAgents: false,
+      canUseBuilderlabDecisions: false,
     }),
   });
 
@@ -58,8 +59,12 @@ function setup(
   );
   let token = "token";
   let link = Promise.resolve();
-  const session = createOAuthSession(async () => credential(token));
-  const backend = createNativeBackend(host, session, () => link, {
+  const session = createOAuthSession(
+    async () => credential(token),
+    undefined,
+    host,
+  );
+  const backend = createNativeBackend(session, () => link, {
     invoke: invoke as <T>(n: string, a?: Record<string, unknown>) => Promise<T>,
   });
   const signIn = async (next = "token") => {

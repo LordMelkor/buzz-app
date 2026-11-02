@@ -1,3 +1,8 @@
+import {
+  verifiedProfileFilter,
+  type VerifiedProfileFilter,
+  type VerifiedProfileSink,
+} from "./verified-profile.ts";
 import { getLogger } from "../developer/logging.ts";
 import { logSocketFrame, relayLabel } from "../developer/traffic.ts";
 
@@ -205,6 +210,11 @@ export type LiveSubscription = {
     filter: ArtifactSyncFilter,
     sink: ArtifactSyncSink,
   ): () => void;
+  /** Bounded NIP-FI projection REQ on this community socket. */
+  syncVerifiedProfiles?(
+    filter: VerifiedProfileFilter,
+    sink: VerifiedProfileSink,
+  ): () => void;
   retry(): void;
   dispose(): void;
 };
@@ -357,7 +367,7 @@ export function subscribeRelayTraffic(
       }),
     );
   type SyncWire = {
-    filter: ArtifactSyncFilter;
+    filter: ArtifactSyncFilter | VerifiedProfileFilter;
     sink: ArtifactSyncSink;
     wire?: string;
   };
@@ -1175,6 +1185,25 @@ export function subscribeRelayTraffic(
   return {
     syncArtifacts(filter, sink) {
       const sync: SyncWire = { filter, sink };
+      if (closed) {
+        queueMicrotask(() =>
+          sink.closed("unsupported: relay session disposed"),
+        );
+        return () => {};
+      }
+      syncs.add(sync);
+      queueMicrotask(pump);
+      return () => {
+        if (!syncs.delete(sync)) return;
+        if (sync.wire) {
+          syncWires.delete(sync.wire);
+          send(["CLOSE", sync.wire]);
+        }
+      };
+    },
+    syncVerifiedProfiles(filter, sink) {
+      const checked = verifiedProfileFilter(filter.authors[0], filter["#d"]);
+      const sync: SyncWire = { filter: checked, sink };
       if (closed) {
         queueMicrotask(() =>
           sink.closed("unsupported: relay session disposed"),

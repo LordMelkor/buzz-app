@@ -197,7 +197,7 @@ async fn real_listener_preserves_callback_parameters_and_closes_after_completion
         assert!(response.contains("Cache-Control: no-store"));
         assert!(response.contains("Referrer-Policy: no-referrer"));
         assert!(response.contains("<title>Builderlab sign-in</title>"));
-        assert!(response.contains("<span>Builderlab</span>"));
+        assert!(response.contains("role=\"img\" aria-label=\"Builderlab\""));
         assert!(response.contains(include_str!("../../../public/builderlab-mark.svg")));
         assert!(response.contains("<h1 id=\"heading\">Signing you in…</h1>"));
         assert!(!response.contains("Sign-in received. Return to the app to finish verification."));
@@ -218,6 +218,34 @@ async fn real_listener_preserves_callback_parameters_and_closes_after_completion
         let hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(style));
         assert!(headers.contains(&format!("style-src 'sha256-{hash}'")));
         assert!(headers.contains("default-src 'none'"));
+        assert!(headers.contains("img-src data:;"));
+        assert!(headers.contains("font-src data:;"));
+        let font = style
+            .split_once("url(\"data:font/woff2;base64,")
+            .unwrap()
+            .1
+            .split_once('"')
+            .unwrap()
+            .0;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(font)
+                .unwrap(),
+            include_bytes!("inter-latin.woff2")
+        );
+        let artwork = body
+            .split_once("src=\"data:image/webp;base64,")
+            .unwrap()
+            .1
+            .split_once('"')
+            .unwrap()
+            .0;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(artwork)
+                .unwrap(),
+            include_bytes!("cubes.webp")
+        );
         assert!(headers.contains("base-uri 'none'; frame-ancestors 'none'"));
         assert!(headers.contains(&format!("Content-Length: {}\r\n", body.len())));
         assert!(!headers.contains("unsafe-inline"));

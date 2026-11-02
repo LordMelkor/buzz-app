@@ -1,5 +1,5 @@
 import { PreferenceRow } from "./PreferenceRow";
-import { useId, type ReactNode } from "react";
+import { Fragment, useId, type ReactNode } from "react";
 import { Field } from "./Field";
 import { Select as BaseSelect } from "@base-ui/react/select";
 import { CheckIcon, CaretDownIcon } from "../icons/index";
@@ -7,6 +7,8 @@ import { Button } from "./Button";
 
 export type SelectGroup = {
   label: string;
+  /** Separate this group from the preceding choices. */
+  separator?: boolean;
   options: readonly {
     value: string;
     label: string;
@@ -198,58 +200,63 @@ export function Select({
             >
               <BaseSelect.List>
                 {groups.map((group, groupIndex) => (
-                  <BaseSelect.Group key={group.label}>
-                    {group.label && (
-                      <BaseSelect.GroupLabel className="buzz-select-group-label text-secondary">
-                        {group.label}
-                      </BaseSelect.GroupLabel>
+                  <Fragment key={group.options[0]?.value ?? group.label}>
+                    {groupIndex > 0 && group.separator && (
+                      <BaseSelect.Separator className="buzz-select-separator" />
                     )}
-                    {group.options.map((option, optionIndex) => {
-                      const descriptionId = `${optionDescriptionId}-${groupIndex}-${optionIndex}`;
-                      return (
-                        <BaseSelect.Item
-                          key={option.value}
-                          value={option.value}
-                          disabled={option.disabled}
-                          aria-label={option.label}
-                          aria-describedby={
-                            option.description ? descriptionId : undefined
-                          }
-                          className="buzz-select-option"
-                        >
-                          <span className="buzz-select-option-main">
-                            {option.leading && (
-                              <span
-                                className="buzz-select-leading"
-                                aria-hidden="true"
-                              >
-                                {option.leading}
-                              </span>
-                            )}
-                            <span className="buzz-select-option-content">
-                              <BaseSelect.ItemText>
-                                {option.label}
-                              </BaseSelect.ItemText>
-                              {option.description && (
+                    <BaseSelect.Group>
+                      {group.label && (
+                        <BaseSelect.GroupLabel className="buzz-select-group-label text-secondary">
+                          {group.label}
+                        </BaseSelect.GroupLabel>
+                      )}
+                      {group.options.map((option, optionIndex) => {
+                        const descriptionId = `${optionDescriptionId}-${groupIndex}-${optionIndex}`;
+                        return (
+                          <BaseSelect.Item
+                            key={option.value}
+                            value={option.value}
+                            disabled={option.disabled}
+                            aria-label={option.label}
+                            aria-describedby={
+                              option.description ? descriptionId : undefined
+                            }
+                            className="buzz-select-option"
+                          >
+                            <span className="buzz-select-option-main">
+                              {option.leading && (
                                 <span
-                                  id={descriptionId}
-                                  className="buzz-select-option-description text-body-sm text-subtle"
+                                  className="buzz-select-leading"
+                                  aria-hidden="true"
                                 >
-                                  {option.description}
+                                  {option.leading}
                                 </span>
                               )}
+                              <span className="buzz-select-option-content">
+                                <BaseSelect.ItemText>
+                                  {option.label}
+                                </BaseSelect.ItemText>
+                                {option.description && (
+                                  <span
+                                    id={descriptionId}
+                                    className="buzz-select-option-description text-body-sm text-subtle"
+                                  >
+                                    {option.description}
+                                  </span>
+                                )}
+                              </span>
                             </span>
-                          </span>
-                          <BaseSelect.ItemIndicator
-                            className="buzz-select-indicator"
-                            keepMounted={variant === "compact"}
-                          >
-                            <CheckIcon size={14} aria-hidden="true" />
-                          </BaseSelect.ItemIndicator>
-                        </BaseSelect.Item>
-                      );
-                    })}
-                  </BaseSelect.Group>
+                            <BaseSelect.ItemIndicator
+                              className="buzz-select-indicator"
+                              keepMounted={variant === "compact"}
+                            >
+                              <CheckIcon size={14} aria-hidden="true" />
+                            </BaseSelect.ItemIndicator>
+                          </BaseSelect.Item>
+                        );
+                      })}
+                    </BaseSelect.Group>
+                  </Fragment>
                 ))}
               </BaseSelect.List>
             </BaseSelect.Popup>

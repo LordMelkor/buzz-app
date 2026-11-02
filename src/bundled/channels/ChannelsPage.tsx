@@ -1,9 +1,12 @@
+import type { Conversation } from "../../features/conversation/service";
 import { StartLinkedChat, canStartLinkedChat } from "./StartLinkedChat";
 import {
   readLinkedChat,
   linkedDraftKey,
 } from "../../features/solo/linked-chat";
 import { EmptyState } from "../../shared/design-system/ui/EmptyState";
+import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
+import { TypingDots } from "../../shared/design-system/ui/TypingDots";
 import { profileActivityViewTarget } from "../../features/profiles/target";
 import type { Agents } from "../../features/agents/service";
 import { SoloDraft } from "../../features/solo/SoloDraft";
@@ -69,6 +72,8 @@ import {
 import {
   SidebarRightIcon,
   PlugIcon,
+  CloudOffIcon,
+  LockIcon,
   ChatCircleIcon,
   GearIcon,
 } from "../../shared/design-system/icons/index";
@@ -116,6 +121,7 @@ export type ArchiveShortcut = {
 
 export function ChannelsPage({
   extensions,
+  chatMenus,
   relay,
   panels,
   companion,
@@ -126,6 +132,7 @@ export function ChannelsPage({
   archive,
 }: {
   extensions?: ConversationExtensions | undefined;
+  chatMenus?: Conversation["chatMenus"] | undefined;
   /** For adding a whole team of the owner's agents from the members dialog. */
   agents?: Agents | undefined;
   communities?: CommunityReader | undefined;
@@ -139,6 +146,10 @@ export function ChannelsPage({
 }) {
   const session = useRelayConnection(relay);
   const sessionNavigation = navigation?.forSession(relay, session);
+  // An opening visit's deadline bounds Connecting; once it has settled, a
+  // retrying connection is a failure that keeps trying, not a connection.
+  // Each attempt republishes the connection, so reading it here stays current.
+  const visitSettled = navigator.snapshot().status !== "opening";
   const presentedSession = useRef<
     | {
         scope: typeof session.scope;
@@ -170,27 +181,99 @@ export function ChannelsPage({
     if (!navigation || !sessionNavigation) return;
     if (session.status === "disconnected" && navigation.target.kind === "page")
       sessionNavigation.complete({ status: "opened" });
-    else if (session.status === "error" && !session.cached)
-      sessionNavigation.complete({ status: "failed", reason: "unavailable" });
-  }, [navigation, sessionNavigation, session.status, session.cached]);
+    // A connection that is retrying on its own keeps the visit pending; the
+    // visit deadline bounds the wait and the host reopens it once connected.
+    else if (session.status === "error" && !session.cached && !session.retrying)
+      sessionNavigation.complete(
+        // A refusal is explained in place, beside its own Try again.
+        session.denied
+          ? { status: "failed", reason: "denied", presented: true }
+          : { status: "failed", reason: "unavailable" },
+      );
+  }, [
+    navigation,
+    sessionNavigation,
+    session.status,
+    session.cached,
+    session.retrying,
+    session.denied,
+  ]);
   return (
     <section className={styles.root} aria-label="Channels">
       {session.status !== "ready" && !session.cached ? (
         <PanelFrame companion={companion}>
-          <div className={styles.connect}>
-            <div className={styles.connectIcon}>
-              <PlugIcon size={30} />
+          {session.status === "disconnected" ? (
+            <div className={styles.connect}>
+              <div className={styles.connectIcon}>
+                <PlugIcon size={30} />
+              </div>
+              <h1>Your channels, one conversation.</h1>
+              <p>
+                Use the community picker in the header to choose or add a
+                community. Your profile and settings work without a community.
+              </p>
             </div>
-            <h1>Your channels, one conversation.</h1>
-            <p>
-              {session.status === "disconnected"
-                ? "Use the community picker in the header to choose or add a community. Your profile and settings work without a community."
-                : "Connection details and retry are in the sidebar. Your profile and settings work without a community."}
-            </p>
-          </div>
+          ) : session.status === "error" && session.denied ? (
+            <div role="alert" className={styles.failed}>
+              <EmptyState
+                icon={<LockIcon />}
+                title="You don’t have access to this"
+                description="It belongs to another account or a community you haven’t joined."
+                action={
+                  <Button
+                    type="button"
+                    variant="primary"
+                    onClick={() => relay.retry()}
+                  >
+                    Try again
+                  </Button>
+                }
+              />
+            </div>
+          ) : session.status === "error" &&
+            (!session.retrying || visitSettled) ? (
+            // Usually a failed visit's card covers this page, but a visit that
+            // already opened from cached content keeps it: say so plainly.
+            <div role="alert" className={styles.failed}>
+              <EmptyState
+                icon={<CloudOffIcon />}
+                title="Can’t connect"
+                description={
+                  session.retrying
+                    ? "Check your connection. We’ll keep trying."
+                    : "Check your connection, then try again."
+                }
+                action={
+                  <Button
+                    type="button"
+                    variant="primary"
+                    onClick={() => relay.retry()}
+                  >
+                    Try again
+                  </Button>
+                }
+              />
+            </div>
+          ) : (
+            // Only real connection work animates.
+            <div className={styles.connect}>
+              <LoadingRegion
+                pending
+                label={
+                  <span className={styles.connecting}>
+                    <TypingDots />
+                    Connecting…
+                  </span>
+                }
+              >
+                {null}
+              </LoadingRegion>
+            </div>
+          )}
         </PanelFrame>
       ) : (
         <ChannelWorkspace
+          chatMenus={chatMenus}
           extensions={extensions}
           key={`${session.scope ?? "disconnected"}:${session.generation}`}
           scope={session.scope ?? "disconnected"}
@@ -221,6 +304,7 @@ function LiveNewMessage(
 
 function ChannelWorkspace({
   extensions,
+  chatMenus,
   queries,
   cached,
   relay,
@@ -235,6 +319,7 @@ function ChannelWorkspace({
   archive,
 }: {
   extensions?: ConversationExtensions | undefined;
+  chatMenus?: Conversation["chatMenus"] | undefined;
   agents?: Agents | undefined;
   companion?: ReactNode;
   communities?: CommunityReader | undefined;
@@ -593,6 +678,7 @@ function ChannelWorkspace({
     currentId: string | undefined;
     queries: RelaySession;
     channelType: string | undefined;
+    archived: boolean;
   }>(undefined);
   const continuingVisit =
     committedVisit.current?.currentId === currentId &&
@@ -602,8 +688,9 @@ function ChannelWorkspace({
       currentId,
       queries,
       channelType: current?.channelType,
+      archived: !!current?.archived,
     };
-  }, [currentId, queries, current?.channelType]);
+  }, [currentId, queries, current?.channelType, current?.archived]);
   const tabState = useChannelTabState(
     queries,
     currentId,
@@ -953,6 +1040,7 @@ function ChannelWorkspace({
     conversationToolbar: (channel, open) =>
       channel.channelType === "solo" && (
         <SoloToolbar
+          chatMenus={chatMenus}
           key={channel.id}
           session={queries}
           scope={scope}
@@ -1669,6 +1757,24 @@ function ChannelWorkspace({
       )}
     </ChannelSettingsPanel>
   );
+  const focusArchivedHistory = useCallback(() => {
+    const history = historyContainer.current;
+    if (
+      !currentId ||
+      !queries.channels.get?.(currentId)?.archived ||
+      !history?.isConnected ||
+      history.closest("[inert]")
+    )
+      return;
+    (
+      history.querySelector<HTMLElement>("[data-message-scroller]") ?? history
+    ).focus({ preventScroll: true });
+  }, [currentId, queries.channels]);
+  const channelNotice =
+    !!current &&
+    (current.archived ||
+      (current.readOnly &&
+        (!current.cached || current.viewerRole === "guest")));
   // The conversation: full width for Solo, or the first main-pane tab.
   const body = (
     <>
@@ -1709,24 +1815,25 @@ function ChannelWorkspace({
               : "Select a channel to read it."}
           </div>
         )}
-        {current?.readOnly &&
-          (!current.cached || current.viewerRole === "guest") && (
-            <ChannelJoinNotice
-              key={`join:${current.id}`}
-              ready={contentReadyChannel === current.id}
-              channelId={current.id}
-              guest={current.viewerRole === "guest"}
-              joinRole={current.joinRole}
-              lifecycle={queries.channelLifecycle}
-              joinable={
-                !current.archived &&
-                (current.channelType === "stream" ||
-                  current.channelType === "forum")
-              }
-              onJoin={() => setJoiningChannel(current.id)}
-              onHeightChange={setJoinNoticeHeight}
-            />
-          )}
+        {current && channelNotice && (
+          <ChannelJoinNotice
+            key={`join:${current.id}`}
+            ready={contentReadyChannel === current.id}
+            channelId={current.id}
+            archived={!!current.archived}
+            place={solo ? "chat" : "channel"}
+            guest={current.viewerRole === "guest"}
+            joinRole={current.joinRole}
+            lifecycle={queries.channelLifecycle}
+            joinable={
+              !current.archived &&
+              (current.channelType === "stream" ||
+                current.channelType === "forum")
+            }
+            onJoin={() => setJoiningChannel(current.id)}
+            onHeightChange={setJoinNoticeHeight}
+          />
+        )}
       </section>
       {!cached && (
         <LiveStatus
@@ -1739,7 +1846,7 @@ function ChannelWorkspace({
           onRecovered={
             current
               ? () => {
-                  if (current.readOnly && !current.cached) {
+                  if (channelNotice) {
                     const history = historyContainer.current;
                     const target =
                       history?.querySelector<HTMLElement>(
@@ -1755,11 +1862,15 @@ function ChannelWorkspace({
         />
       )}
       {current &&
+        !current.archived &&
         current.viewerRole !== "guest" &&
         (!current.readOnly || current.cached) && (
           <ConversationComposer
             key={`composer:${current.id}`}
+            onFocusedRemoval={focusArchivedHistory}
             autoFocus={
+              // Remote unarchive restores controls within the reader's current visit.
+              !(continuingVisit && committedVisit.current?.archived) &&
               // Conversion remounts the body, but isn't a new conversation opening.
               // Its dialog hands off focus after closing and releasing modality.
               !(
@@ -1777,11 +1888,7 @@ function ChannelWorkspace({
             }
             trailingTool={
               solo ? (
-                <WorkspaceControl
-                  session={queries}
-                  channelId={current.id}
-                  disabled={!!current.archived}
-                />
+                <WorkspaceControl session={queries} channelId={current.id} />
               ) : undefined
             }
             onSend={onComposerSend}
@@ -1800,7 +1907,6 @@ function ChannelWorkspace({
     >
       {current && membersOpen && (
         <ChannelMembersDialog
-          communityScope={scope}
           key={current.id}
           session={queries}
           channelId={current.id}
@@ -1831,11 +1937,9 @@ function ChannelWorkspace({
           className={`${styles.conversation}${solo ? ` ${styles.soloConversation}` : ""}`}
           style={
             {
-              "--channel-preview-inset":
-                current?.readOnly &&
-                (!current.cached || current.viewerRole === "guest")
-                  ? `calc(${joinNoticeHeight}px + var(--space-3))`
-                  : "0px",
+              "--channel-preview-inset": channelNotice
+                ? `calc(${joinNoticeHeight}px + var(--space-3))`
+                : "0px",
             } as React.CSSProperties
           }
           data-attachment-drop-zone=""
@@ -1906,6 +2010,7 @@ function ChannelWorkspace({
             <>
               {current && solo ? (
                 <SoloHeading
+                  chatMenus={chatMenus}
                   key={`${current.id}:${navigation?.entryId ?? ""}`}
                   session={queries}
                   scope={scope}

@@ -821,6 +821,14 @@ function TabsSpecimen() {
         items={DESTINATIONS}
       />
       <Tabs
+        label="Small segmented filters"
+        variant="segmented"
+        size="sm"
+        value={panelDestination}
+        onValueChange={setPanelDestination}
+        items={DESTINATIONS}
+      />
+      <Tabs
         label="Icon segmented filters"
         variant="segmented-icons"
         value={panelDestination}

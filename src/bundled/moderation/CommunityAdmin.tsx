@@ -46,6 +46,7 @@ import {
   type CommunityMembership,
 } from "./membership";
 import { avatarMedia } from "../../shared/avatar-source";
+import { writeClipboardText } from "../../shared/clipboard";
 
 const DAY = 24 * 60 * 60;
 const EXPIRY = [1, 3, 7, 30].map((days) => ({
@@ -681,8 +682,7 @@ function InviteDialog({
                   return;
                 }
                 if (!url) return;
-                navigator.clipboard
-                  .writeText(url)
+                writeClipboardText(url)
                   .then(() => {
                     setCopied(true);
                     setNotice("Invite link copied.");

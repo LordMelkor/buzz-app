@@ -287,11 +287,12 @@ pub async fn browser_attach(
     bounds: BrowserBounds,
     storage: Option<String>,
     builderlab: Option<builderlab::ViewerAuth>,
+    federated_identity: tauri::State<'_, crate::federated_identity::FederatedIdentity>,
 ) -> Result<String, String> {
     let generation = DOCUMENT_GENERATION.load(Ordering::SeqCst);
     let defer_navigation = builderlab.is_some();
     let bootstrap = match builderlab {
-        Some(auth) => builderlab::prepare(&url, auth).await?,
+        Some(auth) => builderlab::prepare(&url, auth, &federated_identity).await?,
         None => None,
     };
     let handle = app.clone();

@@ -1244,3 +1244,38 @@ fn registry_cannot_restore_plugins_with_built_in_conversation_ids() {
         );
     }
 }
+
+#[test]
+fn managed_policy_lives_beside_profiles_and_never_installs() {
+    use buzzodz_plugins::managed::{Managed, ManagedState};
+    let home = tempfile::tempdir().unwrap();
+    let manager = Manager::open(Some(home.path().into()), "test", false).unwrap();
+    let catalog = manager.catalog().unwrap();
+    assert!(manager.managed(&catalog).is_absent());
+    fs::write(
+        home.path().join("managed-plugins.json"),
+        r#"{"version":1,"source":"Example Org","plugins":[
+            {"id":"example.managed","repository":"https://example.com/plugins","reference":"v1","commit":"0123456789abcdef0123456789abcdef01234567"},
+            {"id":"broken"}
+        ]}"#,
+    )
+    .unwrap();
+    let Managed::Ready {
+        source,
+        plugins,
+        problems,
+        ..
+    } = manager.managed(&catalog)
+    else {
+        panic!("expected a usable policy");
+    };
+    assert_eq!(source, "Example Org");
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0].state, ManagedState::Missing);
+    assert_eq!(problems.len(), 1);
+    let after = manager.catalog().unwrap();
+    assert!(!after
+        .plugins
+        .iter()
+        .any(|plugin| plugin.manifest.id == "example.managed"));
+}

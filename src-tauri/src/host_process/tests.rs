@@ -314,6 +314,63 @@ fn a_bundled_program_runs_from_the_app_bin_never_path() {
 }
 
 #[test]
+fn protected_launch_refuses_path_programs_and_preserves_bundled_resolution() {
+    let store = tempfile::tempdir().unwrap();
+    let mut process: HostProcess =
+        serde_json::from_value(serde_json::json!({"id":"shell", "program":"bash"})).unwrap();
+    assert!(protected_program_path(&process, || unreachable!(), store.path()).is_err());
+    process.bundled = true;
+    process.program = "buzz-agent-command".into();
+    assert_eq!(
+        protected_program_path(
+            &process,
+            || Some(PathBuf::from("/app/resources")),
+            store.path()
+        )
+        .unwrap(),
+        PathBuf::from("/app/resources/bin/buzz-agent-command")
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn artifact_program_requires_exact_executable_and_sibling_bytes() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let executable = root.join("agent");
+    let sibling = root.join("runtime.js");
+    std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(&sibling, "original").unwrap();
+    let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+    let process: HostProcess = serde_json::from_value(serde_json::json!({
+        "id": "agent", "program": "agent", "artifact": {
+            "path": executable.to_str().unwrap(),
+            "sha256": hash(b"#!/bin/sh\nexit 0\n"),
+            "siblings": [{"name": "runtime.js", "sha256": hash(b"original")}]
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        program_path(&process, || unreachable!(), OsStr::new("")),
+        Ok(executable.clone())
+    );
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(program_path(&process, || unreachable!(), OsStr::new("")).is_err());
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(&sibling, "changed").unwrap();
+    assert!(program_path(&process, || unreachable!(), OsStr::new("")).is_err());
+    std::fs::write(&sibling, "original").unwrap();
+    std::fs::remove_file(&executable).unwrap();
+    let target = root.join("actual");
+    std::fs::write(&target, "#!/bin/sh\nexit 0\n").unwrap();
+    symlink(&target, &executable).unwrap();
+    assert!(program_path(&process, || unreachable!(), OsStr::new("")).is_err());
+}
+
+#[test]
 fn process_mcp_connection_has_an_explicit_wire_shape() {
     let connection = serde_json::json!({
         "url": "http://127.0.0.1:1234/mcp",
@@ -328,4 +385,156 @@ fn process_mcp_connection_has_an_explicit_wire_shape() {
     ] {
         assert!(serde_json::from_value::<super::ProcessMcpConnection>(invalid).is_err());
     }
+}
+
+#[tokio::test]
+#[cfg(target_os = "macos")]
+async fn protected_launches_keep_the_startup_agents_root_when_release_storage_appears() {
+    use crate::agent_state::AgentState;
+    use crate::sign_out::legacy_identifier::{agents, CURRENT, DEV, LEGACY};
+    use sha2::{Digest, Sha256};
+    use std::path::Path;
+
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    std::fs::create_dir(base.join(LEGACY)).unwrap();
+    let app_data = base.join(DEV);
+    let startup_root = agents(DEV, &app_data);
+    assert_eq!(startup_root, app_data.join("agents"));
+    let state = AgentState::new(Ok(startup_root.join("state")));
+    state.set("marker", Some("before")).unwrap();
+    let identities = startup_root.join("identities.json");
+    std::fs::write(&identities, "identities").unwrap();
+    let declaration: HostProcess = serde_json::from_value(serde_json::json!({
+        "id": "worker", "program": "worker", "artifact": {
+            "path": "/usr/bin/true",
+            "sha256": format!("{:x}", Sha256::digest(std::fs::read("/usr/bin/true").unwrap()))
+        }
+    }))
+    .unwrap();
+    let protection = ProcessProtection {
+        read_only_paths: vec![],
+        hidden_paths: vec![],
+    };
+    let first_root = state.agents_root().unwrap().to_path_buf();
+    let first_target = protected_program_path(
+        &declaration,
+        || unreachable!(),
+        &first_root.join("artifacts"),
+    )
+    .unwrap();
+    let first_profile = protection.profile(&[first_root]).unwrap();
+    let run = |profile: &str, script: &str, path: &Path| {
+        let mut command = process_command(
+            Path::new("/bin/sh"),
+            None,
+            Some(profile),
+            &[],
+            &[
+                "-c".into(),
+                script.into(),
+                "worker".into(),
+                path.to_str().unwrap().into(),
+            ],
+        );
+        command.env_clear();
+        command
+    };
+    // A contained worker can create this sibling; it must not redirect later launches.
+    let release = base.join(CURRENT);
+    let created = run(&first_profile, "/bin/mkdir \"$1\"", &release)
+        .output()
+        .await
+        .unwrap();
+    assert!(created.status.success(), "{created:?}");
+    assert_eq!(agents(DEV, &app_data), release.join("agents"));
+
+    let second_root = state.agents_root().unwrap().to_path_buf();
+    assert_eq!(second_root, startup_root);
+    let staged = protected_program_path(
+        &declaration,
+        || unreachable!(),
+        &second_root.join("artifacts"),
+    )
+    .unwrap();
+    assert_eq!(staged, first_target);
+    assert!(staged.starts_with(startup_root.join("artifacts")));
+    assert!(!release.join("agents").exists());
+    let second_profile = protection.profile(&[second_root]).unwrap();
+    state.set("marker", Some("after")).unwrap();
+    for profile in [&first_profile, &second_profile] {
+        for path in [
+            identities.clone(),
+            startup_root.join("state/marker"),
+            startup_root.join("artifacts/untrusted"),
+        ] {
+            let write = run(profile, "printf breached > \"$1\"", &path)
+                .output()
+                .await
+                .unwrap();
+            assert!(!write.status.success(), "write allowed: {path:?}");
+        }
+        // The owner can chmod its staged file; the worker's profile must forbid it.
+        let chmod = run(profile, "/bin/chmod u+w \"$1\"", &staged)
+            .output()
+            .await
+            .unwrap();
+        assert!(!chmod.status.success(), "staged artifact was writable");
+    }
+    assert_eq!(std::fs::read_to_string(identities).unwrap(), "identities");
+    assert_eq!(state.load().unwrap()["marker"], "after");
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn snapshot_mcp_and_containment_keep_the_verified_target_and_argument_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let source = root.join("agent");
+    let bytes = std::fs::read("/usr/bin/true").unwrap();
+    std::fs::write(&source, &bytes).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755)).unwrap();
+    use sha2::{Digest, Sha256};
+    let artifact = buzzodz_plugins::ProcessArtifact {
+        path: source.to_str().unwrap().into(),
+        sha256: format!("{:x}", Sha256::digest(&bytes)),
+        siblings: vec![],
+    };
+    let store = root.join("artifacts");
+    let target = artifact::snapshot(&artifact, &store).unwrap();
+    std::fs::write(source, b"replaced original").unwrap();
+    let profile = ProcessProtection {
+        read_only_paths: vec![],
+        hidden_paths: vec![],
+    }
+    .profile(&[root])
+    .unwrap();
+    let helper = std::path::Path::new("/app/resources/bin/buzz-agent-command");
+    let command = process_command(
+        &target,
+        Some(helper),
+        Some(&profile),
+        &["--stdio".into()],
+        &["--session".into()],
+    );
+    assert_eq!(command.as_std().get_program(), "/usr/bin/sandbox-exec");
+    assert_eq!(
+        command.as_std().get_args().collect::<Vec<_>>(),
+        [
+            OsStr::new("-p"),
+            OsStr::new(&profile),
+            helper.as_os_str(),
+            OsStr::new("--launch"),
+            target.as_os_str(),
+            OsStr::new("--stdio"),
+            OsStr::new("--session")
+        ]
+    );
+    assert!(std::process::Command::new("/usr/bin/sandbox-exec")
+        .args(["-p", &profile])
+        .arg(&target)
+        .status()
+        .unwrap()
+        .success());
 }

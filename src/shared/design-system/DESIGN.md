@@ -310,15 +310,15 @@ surface belongs to exactly one bucket, and the timings live in
 timing, change the bucket for everyone.
 
 Inside an open menu, submenus open immediately. A side explanation for grouped
-unavailable choices uses `PopoverTrigger openOnHover="control"` (0.1s). Keep
+unavailable choices uses `PopoverTrigger openOnHover="control"` (0.05s). Keep
 each disabled choice keyboard reachable and connected to the shared description.
 
 | Bucket | Use for | Timing | API |
 | --- | --- | --- | --- |
-| Familiar hint | Naming an icon whose meaning is already obvious: back/forward, close, window controls, sidebar and pane toggles, new (+), more (…), send, attach, copy, download, refresh, delete, mute, reply, add reaction, bold/italic. An obvious icon stays familiar when its hint also shows a shortcut; a disabled one switches to helpful | Rests 1.5s | `Tooltip hint="familiar"`; `Button`/`IconButton` `title` with `hint="familiar"` |
-| Helpful hint | Naming an icon people may not recognize, or adding information the control does not show: an unfamiliar control’s shortcut, why it is disabled (use Hover control for side explanations of grouped unavailable choices in an open menu), an error, a truncated value | Rests 0.5s | `Tooltip`, or `title` on `Button`/`IconButton` (the default) |
-| Preview | Rich content about an object: a profile, link, channel, activity, typing participants, who reacted | Rests 0.6s | `PreviewCard`; `PopoverTrigger openOnHover="preview"` |
-| Hover control | A control that expands in place under the pointer: video volume, playback speed; side explanations for grouped unavailable choices in an open menu | Rests 0.1s | `PopoverTrigger` or `MenuTrigger` with `openOnHover="control"` |
+| Familiar hint | Naming an icon whose meaning is already obvious: back/forward, close, window controls, sidebar and pane toggles, new (+), more (…), send, attach, copy, download, refresh, delete, mute, reply, add reaction, bold/italic. An obvious icon stays familiar when its hint also shows a shortcut; a disabled one switches to helpful | Rests 0.5s | `Tooltip hint="familiar"`; `Button`/`IconButton` `title` with `hint="familiar"` |
+| Helpful hint | Naming an icon people may not recognize, or adding information the control does not show: an unfamiliar control’s shortcut, why it is disabled (use Hover control for side explanations of grouped unavailable choices in an open menu), an error, a truncated value | Rests 0.25s | `Tooltip`, or `title` on `Button`/`IconButton` (the default) |
+| Preview | Rich content about an object: a profile, link, channel, activity, typing participants, who reacted | Rests 0.3s | `PreviewCard`; `PopoverTrigger openOnHover="preview"` |
+| Hover control | A control that expands in place under the pointer: video volume, playback speed; side explanations for grouped unavailable choices in an open menu | Rests 0.05s | `PopoverTrigger` or `MenuTrigger` with `openOnHover="control"` |
 | No hover | A control whose visible text already says what it does | None | Omit `title` |
 
 Hints share the app's `TooltipProvider`: once one is showing, its neighbors open
@@ -687,16 +687,21 @@ panel fill. Use it over artwork, not on ordinary neutral profile headers.
 
 ### Match controls to their surface
 
-The shell groups creation, page tabs, and search in one `chrome-navigation`
-track. Nested chrome tabs retain their selected fill without a second track.
+The shell groups page tabs in one `chrome-navigation` track, with Search as a
+separate adjacent button. Creation sits beside the sidebar scope filters.
+Nested chrome tabs retain their selected fill without a second track.
 Layout and overflow remain shell-owned.
 
 Use `Tabs variant="segmented"` for grouped filters on an opaque surface, with
 a capsule track and raised capsule selection (for example, sidebar scope).
+Segmented tracks default to `size="md"` (40px); `size="sm"` uses the 32px
+control step, paired with `IconButton size="sm"` for adjacent actions.
 Proposed: `Tabs variant="segmented-icons"` uses the same track for icon-only
 avatar choices, retaining accessible labels and titles. Each item supplies an icon.
 Use `Tabs variant="chrome"` for a flat pill selection on the shell and `variant="panel"`
 for an underline on a plain surface. IconButton also provides a `chrome` variant.
+Use `IconButton variant="inset"` for a secondary action beside segmented filters;
+it shares their `surface-inset` fill and retains secondary interaction states.
 Chrome tab and route-navigation groups use the shell's `affordance-chrome` capsule
 (neutral 3 in light mode, distinct from the app background),
 with `affordance-chrome-hover` for an inactive item and `text-chrome-subtle` labels. Selection uses the pane color
@@ -865,6 +870,23 @@ A sidebar unread cue is strong (`prominent`) only when a DM, a mention of you or
 a thread reply waits past its edge; ordinary unread uses the `subtle` Button,
 whose light gray fill holds up over the list where glass would disappear.
 
+Arriving at a message, by link, search, the inbox or closing its thread,
+briefly marks it. A filled bubble takes `affordance-message-highlight` (your
+own, `affordance-message-own-highlight`) as a see-through layer: the regular
+overlay step, about twice hover, in the direction the bubble's chips already
+take, so chips stay readable on top. While the cue shows it replaces hover
+rather than stacking on it. A row without a filled bubble (membership lines,
+emoji-only, attachments, tables and diffs) is washed with
+`surface-message-highlight` instead. The cue is paint-only and
+belongs to the message reveal, so every route that lands on a message gets it;
+a reveal behind a covering panel, restored scroll and your own send do not.
+Each row type marks its paint surface with `data-highlight-surface`, which
+excludes the day divider. The cue waits until the message and the list around
+it have held still for 200ms (at most 1.5s), so it never flashes while a fresh
+channel is still loading, then holds about a second and fades over about a
+second. A repeat arrival restarts the cue. Reduced motion holds the tint the
+same time and removes it without fading.
+
 The message hover toolbar uses the 12px rounded-container radius
 with a 2px inset. Its independent icon actions retain their shared 10px corners.
 
@@ -893,7 +915,8 @@ extra-small capsule uses `text-caption`. For a caption-sized inline choice such 
 the composer's model name, `size="inline"` keeps a 24px minimum target with 4px
 horizontal padding and icon gap, and 12px icons. Pair it with `variant="ghost"`
 for an unframed label; shared hover, disabled, and keyboard focus still apply.
-Compact Selects use `appearance="link"` for a text-and-caret choice, such as channel access, without a capsule or horizontal
+Compact Select buttons with leading artwork use an 8px leading inset and a 12px
+trailing inset, giving the caret room at the edge. Compact Selects use `appearance="link"` for a text-and-caret choice, such as channel access, without a capsule or horizontal
 button inset. It uses regular body-small type and a 24px minimum target with
 the text at its bottom edge, so supporting copy follows without an extra gap;
 it retains the Select's keyboard behavior and focus treatment.
@@ -990,7 +1013,8 @@ hint. The caller owns its column width; in PreferenceRow a compact choice takes 
 most 60% of the row, beyond its min-content width, so a long value ellipsizes
 before the row title loses its words. Other trailing controls keep their width.
 `align="end"` anchors a trailing choice popup to the trigger’s right edge; the
-default remains `start`. Pass `disabled` explicitly when the choice is unavailable. An option may include one concise supporting
+default remains `start`. Set a group's `separator` to insert a divider before that
+group, keeping related choices together. Pass `disabled` explicitly when the choice is unavailable. An option may include one concise supporting
 description; Select shows it as a byline in the popup while the closed trigger
 retains only the option label. For searchable choices, use the shared Combobox parts; keep
 filtering, custom-value commits, and async requests with the feature. Its Control
@@ -1041,7 +1065,8 @@ InputGroup shares the inline frame for SearchField and Combobox. Icons use an
 the input or action,
 while the frame owns the active perimeter stroke. Read-only values can be
 read and copied; disabled actions cannot change a value. Search clear restores
-input focus. Features still own filtering, custom values, and async recovery.
+input focus. SearchField `trailing` places auxiliary actions after Clear inside
+the shared frame. Features still own filtering, custom values, and async recovery.
 
 SearchField, Combobox.Control, and code Textarea default to no autocorrection,
 capitalization, or spellcheck. Callers can override these defaults explicitly.
@@ -1798,10 +1823,10 @@ the same overlay again on top of the strip. Inside your bubble reactions take
 its ink and `affordance-reaction-own`; outside it, under an emoji-only message,
 they keep the standard ink and overlay of the panel they sit on.
 
-Hovering your own message lays a quieter overlay across the whole bubble
-(`affordance-message-own-hover`: black 4% or white 8%), in the same direction as
-its chips, so a bright bubble never takes a white wash in dark mode. Received
-bubbles keep the quiet surface their reaction strip shares and take no hover.
+When message actions show, both received and own bubbles use their
+`surface-message-hover` or `surface-message-own-hover` fill: 5% toward black in
+light mode and 5% toward white in dark mode. This changes only the background,
+without a stroke or an overlay on text and media. Emoji-only messages stay clear.
 
 These pairs have no link-specific contrast exemptions.
 The contrast guard checks APCA and WCAG AA (4.5:1) on opaque text pairs, including

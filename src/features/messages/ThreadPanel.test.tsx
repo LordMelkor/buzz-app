@@ -355,8 +355,10 @@ it("allocation failure exposes an effective retry rather than leaving a spinner"
     })
     .mockReturnValue(h.view);
   h.render();
-  expect(screen.getByRole("alert")).toHaveTextContent("capacity");
-  fireEvent.click(screen.getByRole("button", { name: "Retry thread" }));
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "This thread didn’t load.",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(screen.getByText("root")).toBeVisible();
   expect(screen.queryByRole("alert")).toBeNull();
   expect(h.thread).toHaveBeenCalledTimes(2);
@@ -369,7 +371,7 @@ it("loads history automatically with error-only retry and no routine history con
     [row.authorId],
     "background",
   );
-  for (const name of ["Refresh thread", "Retry thread", "Load more replies"])
+  for (const name of ["Refresh thread", "Try again", "Load more replies"])
     expect(screen.queryByRole("button", { name })).toBeNull();
   expect(screen.queryByText(/Existing history may be incomplete/)).toBeNull();
   expect(h.view.loadMore).not.toHaveBeenCalled();
@@ -382,14 +384,14 @@ it("loads history automatically with error-only retry and no routine history con
   h.snapshot.status = "error";
   h.snapshot.error = "offline";
   h.render();
-  fireEvent.click(screen.getByRole("button", { name: "Retry thread" }));
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(h.view.loadMore).toHaveBeenCalledOnce();
   expect(h.view.refresh).toHaveBeenCalledTimes(2);
   h.snapshot.status = "ready";
   h.snapshot.error = undefined;
   h.snapshot.canLoadMore = false;
   h.render();
-  expect(screen.queryByRole("button", { name: "Retry thread" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   h.snapshot.limited = true;
   h.render();
   expect(screen.getByText("Thread history limit reached.")).toBeVisible();
@@ -397,7 +399,7 @@ it("loads history automatically with error-only retry and no routine history con
   h.snapshot.error = "Thread view exceeded its memory limit.";
   h.render();
   expect(screen.queryByText(/appear automatically/)).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Retry thread" }));
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(h.view.refresh).toHaveBeenCalledTimes(3);
   expect(h.ensure).toHaveBeenCalledOnce();
 });
@@ -414,7 +416,7 @@ it("keeps initial rows pending until positioned, exposes errors, and lets readin
   h.render();
   expect(h.element).not.toHaveAttribute("data-positioning");
   expect(
-    within(h.element).getByRole("button", { name: "Retry thread" }),
+    within(h.element).getByRole("button", { name: "Try again" }),
   ).toBeVisible();
   h.snapshot.status = "loading";
   h.snapshot.error = undefined;
@@ -733,9 +735,7 @@ it("keeps older-page loading quiet and retry between root and replies", () => {
   expect(
     alert.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  fireEvent.click(
-    within(section).getByRole("button", { name: "Retry thread" }),
-  );
+  fireEvent.click(within(section).getByRole("button", { name: "Try again" }));
   expect(h.view.loadMore).toHaveBeenCalledTimes(2);
   expect(h.view.refresh).toHaveBeenCalledOnce();
 
@@ -762,13 +762,11 @@ it("keeps retained-range repair quiet and retry after the replies", () => {
   const reply = screen.getByText("retained reply").closest("article");
   if (!reply) throw new Error("Missing retained reply");
   const alert = within(section).getByRole("alert");
-  expect(alert).toHaveTextContent("repair failed");
+  expect(alert).toHaveTextContent("This thread didn’t load.");
   expect(
     reply.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  fireEvent.click(
-    within(section).getByRole("button", { name: "Retry thread" }),
-  );
+  fireEvent.click(within(section).getByRole("button", { name: "Try again" }));
   expect(h.view.refresh).toHaveBeenCalledTimes(2);
   expect(h.view.loadMore).not.toHaveBeenCalled();
 });
@@ -1134,6 +1132,7 @@ it("ordinary routed loading failure completes as unavailable, never as an opened
   expect(navigation.complete).toHaveBeenCalledExactlyOnceWith({
     status: "failed",
     reason: "unavailable",
+    presented: true,
   });
 });
 it.each(["ready", "unavailable", "error"] as const)(
@@ -1156,6 +1155,7 @@ it.each(["ready", "unavailable", "error"] as const)(
             status: "failed",
             reason:
               targetStatus === "unavailable" ? "not-found" : "unavailable",
+            presented: true,
           },
     );
   },
@@ -1202,6 +1202,41 @@ it("a presented ordinary thread survives the real navigation deadline while hist
     release();
     controller.dispose();
     vi.useRealTimers();
+  }
+});
+it("a routed thread that fails in place keeps its reader and recovers through its own Try again", () => {
+  const controller = createNavigationController(createMemoryHistory());
+  try {
+    const navigation = ordinaryNavigation();
+    void controller.navigation.open(navigation.target);
+    const { attempt } = controller.navigation.snapshot();
+    navigation.signal = attempt.signal;
+    navigation.complete.mockImplementation((result) =>
+      controller.complete(attempt, result),
+    );
+    const h = messagesHarness(navigation);
+    h.snapshot.status = "error";
+    h.snapshot.error = "offline";
+    h.render();
+    expect(controller.navigation.snapshot()).toMatchObject({
+      status: "failed",
+      presented: true,
+    });
+    expect(attempt.signal.aborted).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(h.view.refresh).toHaveBeenCalled();
+    h.snapshot.status = "ready";
+    h.snapshot.error = undefined;
+    h.render();
+    expect(h.view.dispose).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("region", { name: "Thread messages" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(h.element.scrollTop).toBe(3400);
+    h.unmount();
+  } finally {
+    controller.dispose();
   }
 });
 it("revoked ordinary presentation cannot position or complete after loading", () => {
@@ -1267,7 +1302,9 @@ it("without close, the embedded thread keeps its reader but has no close header 
   expect(
     screen.queryByRole("button", { name: "Close thread" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByRole("alert")).toHaveTextContent("fixture unavailable");
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "This thread didn’t load.",
+  );
   fireEvent.keyDown(screen.getByRole("complementary", { name: "Thread" }), {
     key: "Escape",
   });
@@ -1402,11 +1439,15 @@ it.each([
     joinable: false,
   },
   { channelType: "stream" as const, archived: true as const, joinable: false },
+  { channelType: "solo" as const, archived: true as const, joinable: false },
   { channelType: "solo" as const, joinable: false },
 ])(
   "replaces the reply composer for a $channelType preview (joinable: $joinable)",
   ({ joinable, ...metadata }) => {
     const h = messagesHarness();
+    Object.assign(h.props, {
+      soloConversation: metadata.channelType === "solo",
+    });
     const channel: ChannelSummary = {
       id: "channel",
       name: "General",
@@ -1425,16 +1466,68 @@ it.each([
     h.render();
     expect(
       screen.getByRole("region", {
-        name:
-          metadata.joinRole === "guest"
+        name: metadata.archived
+          ? metadata.channelType === "solo"
+            ? "Archived chat"
+            : "Archived channel"
+          : metadata.joinRole === "guest"
             ? "Read-only channel"
             : "Channel preview",
       }),
     ).toBeVisible();
+    if (metadata.archived) {
+      expect(
+        screen.getByText(
+          metadata.channelType === "solo"
+            ? "This chat is archived"
+            : "This channel is archived",
+          { exact: true },
+        ),
+      ).toBeVisible();
+    }
     expect(screen.queryByRole("region", { name: "Composer" })).toBeNull();
     expect(!!screen.queryByRole("button", { name: "Join" })).toBe(joinable);
   },
 );
+
+it("replaces an archived member thread composer and restores it on unarchive", () => {
+  const h = messagesHarness();
+  const channel: ChannelSummary = {
+    id: "channel",
+    name: "General",
+    channelType: "stream",
+  };
+  let list: ChannelList = { status: "ready", channels: [channel] };
+  const listeners = new Set<() => void>();
+  Object.assign(h.session, {
+    channels: {
+      list: () => list,
+      get: () => list.channels[0],
+      subscribeList: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+    channelLifecycle: { available: true, run: vi.fn() },
+  });
+  h.render();
+  expect(screen.getByRole("region", { name: "Composer" })).toBeInTheDocument();
+  act(() => {
+    list = { ...list, channels: [{ ...channel, archived: true }] };
+    for (const listener of listeners) listener();
+  });
+  expect(
+    screen.getByRole("region", { name: "Archived channel" }),
+  ).toHaveTextContent("This channel is archived");
+  expect(screen.queryByRole("region", { name: "Composer" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
+  act(() => {
+    list = { ...list, channels: [channel] };
+    for (const listener of listeners) listener();
+  });
+  expect(screen.getByRole("region", { name: "Composer" })).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Archived channel" })).toBeNull();
+});
 
 it("keeps guest threads readable without a reply composer or Join action across default changes", () => {
   const h = messagesHarness();
@@ -1462,7 +1555,7 @@ it("keeps guest threads readable without a reply composer or Join action across 
   h.render();
   expect(
     screen.getByRole("region", { name: "Read-only channel" }),
-  ).toHaveTextContent("This channel is read-only.");
+  ).toHaveTextContent("This channel is read-only");
   expect(
     screen.getByRole("region", { name: "Thread messages" }),
   ).toBeInTheDocument();
@@ -1608,6 +1701,7 @@ it.each(["unavailable", "error", "cancelled"] as const)(
     expect(next.complete).toHaveBeenCalledWith({
       status: "failed",
       reason: result === "unavailable" ? "not-found" : "unavailable",
+      presented: true,
     });
     if (result === "unavailable") {
       // Retrying can't restore a message that no longer exists.
@@ -1861,7 +1955,9 @@ it("an unrouted retained opening retries allocation locally", () => {
       onRetryNavigation={navigationRetry}
     />,
   );
-  expect(screen.getByRole("alert")).toHaveTextContent("capacity");
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "This thread didn’t load.",
+  );
   fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(screen.getByRole("region", { name: "Composer" })).toBeVisible();
   expect(navigationRetry).not.toHaveBeenCalled();

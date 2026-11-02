@@ -18,14 +18,19 @@ const response = (body: unknown, status = 200): HostResponse => ({
   body: typeof body === "string" ? body : JSON.stringify(body),
 });
 async function fixture(reply: HostResponse | (() => Promise<HostResponse>)) {
-  const session = createOAuthSession(async () => ({
-    value: "secret",
-    account: {
-      subject: "user",
-      email: "a@example.com",
-      canUseRemoteAgents: false,
-    },
-  }));
+  const session = createOAuthSession(
+    async () => ({
+      value: "secret",
+      account: {
+        subject: "user",
+        email: "a@example.com",
+        canUseRemoteAgents: false,
+        canUseBuilderlabDecisions: false,
+      },
+    }),
+    undefined,
+    { request: (input) => host.request(input) },
+  );
   await session.signIn();
   const host: Host = {
     runCommand: vi.fn(),
@@ -34,7 +39,7 @@ async function fixture(reply: HostResponse | (() => Promise<HostResponse>)) {
   return {
     session,
     host,
-    client: createKnownCommunitiesClient(host, session),
+    client: createKnownCommunitiesClient(session),
     signal: new AbortController().signal,
   };
 }

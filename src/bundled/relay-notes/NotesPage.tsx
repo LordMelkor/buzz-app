@@ -222,7 +222,10 @@ export function NotesCommunity({
 }: { session: RelaySession } & NotesNavigation) {
   const choices = useAgentChoices(session);
   const resolveName = useIdentityNames(session.names);
-  const candidates = choices.identities.map((agent) => agent.pubkey);
+  const candidates = useMemo(
+    () => choices.identities.map((agent) => agent.pubkey),
+    [choices.identities],
+  );
   const agents = choices.identities.map((agent) => ({
     pubkey: agent.pubkey,
     picture: agent.avatar,

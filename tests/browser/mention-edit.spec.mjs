@@ -152,6 +152,13 @@ test("focus during the first edit after send preserves the advanced native caret
 
   const firstEdit = await input.evaluate((el) => {
     el.setSelectionRange(el.value.length, el.value.length);
+    // Retain the native edit point before blur releases the DOM caret. The
+    // modeled insertion below must not depend on a blurred editor owning it.
+    const selection = getSelection();
+    const node = selection.focusNode;
+    const offset = selection.focusOffset;
+    if (!(node instanceof Text))
+      throw new Error("Expected editable text caret");
     el.blur();
     const focusedBefore = document.activeElement === el;
     const allowed = el.dispatchEvent(
@@ -165,11 +172,6 @@ test("focus during the first edit after send preserves the advanced native caret
     if (!allowed) throw new Error("First insertion was prevented");
     // Model the native insertion while unfocused. Advancing the real browser
     // Selection returns focus synchronously, before the queued selectionchange.
-    const selection = getSelection();
-    const node = selection.focusNode;
-    const offset = selection.focusOffset;
-    if (!(node instanceof Text))
-      throw new Error("Expected editable text caret");
     node.insertData(offset, "n");
     selection.setBaseAndExtent(node, offset + 1, node, offset + 1);
     const result = {

@@ -233,6 +233,63 @@ it("reads value and selection from one projection per document", async () => {
   }
 });
 
+describe("blurred native selection", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(["MacIntel", "Linux x86_64"])(
+    "releases a WebKit caret while retaining its last native position on %s",
+    (platform) => {
+      vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+      vi.spyOn(navigator, "vendor", "get").mockReturnValue(
+        "Apple Computer, Inc.",
+      );
+      const h = mount("message");
+      const node = h.input.querySelector("p")?.firstChild;
+      if (!node) throw new Error("Editor text unavailable");
+      // Blur can precede the selectionchange which would adopt this caret.
+      document.getSelection()?.collapse(node, 2);
+      act(() => fireEvent.blur(h.input));
+      expect(document.getSelection()?.rangeCount).toBe(0);
+      expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([2, 2]);
+      act(() => h.input.focus());
+      expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([2, 2]);
+    },
+  );
+
+  it("keeps a selected WebKit range available after blur", () => {
+    vi.spyOn(navigator, "vendor", "get").mockReturnValue(
+      "Apple Computer, Inc.",
+    );
+    const h = mount("message");
+    act(() => h.input.setSelectionRange(1, 4));
+    act(() => fireEvent.blur(h.input));
+    expect(document.getSelection()?.toString()).toBe("ess");
+    expect([h.input.selectionStart, h.input.selectionEnd]).toEqual([1, 4]);
+  });
+
+  it("leaves a caret owned by another surface alone", () => {
+    vi.spyOn(navigator, "vendor", "get").mockReturnValue(
+      "Apple Computer, Inc.",
+    );
+    const h = mount("message");
+    const other = document.createTextNode("other surface");
+    document.body.append(other);
+    document.getSelection()?.collapse(other, 2);
+    act(() => fireEvent.blur(h.input));
+    expect(document.getSelection()?.anchorNode).toBe(other);
+    expect(document.getSelection()?.anchorOffset).toBe(2);
+    other.remove();
+  });
+
+  it("leaves Chromium's native caret alone", () => {
+    vi.spyOn(navigator, "vendor", "get").mockReturnValue("Google Inc.");
+    const h = mount("message");
+    act(() => h.input.setSelectionRange(2, 2));
+    act(() => fireEvent.blur(h.input));
+    expect(document.getSelection()?.rangeCount).toBe(1);
+  });
+});
+
 describe("Mac WebKit line breaks", () => {
   let clear: MockInstance<Selection["removeAllRanges"]>;
   beforeEach(() => {

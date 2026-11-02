@@ -382,10 +382,6 @@
   line-height: var(--text-body-sm--line-height);
   cursor: grabbing;
 }
-.channelDragOverlay[data-section-creation-preview] {
-  /* The new-section slot opens below the gap where the pointer first enters. */
-  translate: var(--space-3) calc(-100% - var(--space-3));
-}
 .channelDragOverlay > span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -590,6 +586,24 @@ html[data-keyboard-navigation]
 }
 .connect button {
   margin: var(--space-4) 0;
+}
+.failed {
+  height: 100%;
+  background: var(--surface-panel);
+  display: grid;
+  place-items: center;
+  padding: var(--space-section-gap);
+}
+.failed > * {
+  max-inline-size: 28rem;
+}
+.connecting {
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  letter-spacing: var(--text-body--letter-spacing);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
 }
 .note {
   font-size: var(--text-caption);

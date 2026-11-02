@@ -404,11 +404,25 @@ it("reuses one policy run per candidate scope across mixed case, outside keys, a
     expect(scoped(a)?.name).toBe(suffixed(a));
   }
   expect(resolve).toHaveBeenCalledTimes(12);
+  // Equal candidate sets share outside labels.
+  expect(scoped(c)?.name).toBe(suffixed(c));
+  expect(names.scope([d, b, a])(c)?.name).toBe(suffixed(c));
+  expect(resolve).toHaveBeenCalledTimes(13);
+  // One scope keeps many historical authors' labels at once.
+  const authors = [..."0123456789"].map((digit) => digit.repeat(64));
+  for (const author of [...authors, ...authors]) scoped(author);
+  expect(resolve).toHaveBeenCalledTimes(23);
+  // Membership churn keeps only recent scopes' outside labels.
+  for (const digit of "01234567") names.scope([a, b, d, digit.repeat(64)])(c);
+  expect(resolve).toHaveBeenCalledTimes(31);
+  expect(scoped(c)?.name).toBe(suffixed(c));
+  expect(resolve).toHaveBeenCalledTimes(32);
   profiles = new Map([...profiles, [b, { name: "Blake" }]]);
   for (const listener of listeners) listener();
   expect(scoped(a)?.name).toBe("Alex");
   expect(scoped(b)?.name).toBe("Blake");
-  expect(resolve).toHaveBeenCalledTimes(13);
+  expect(scoped(c)?.name).toBe(suffixed(c));
+  expect(resolve).toHaveBeenCalledTimes(34);
 });
 
 it.each(

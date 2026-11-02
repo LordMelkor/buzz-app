@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Contribution } from "../../plugins/contributions";
@@ -180,7 +187,7 @@ it("takes pull request links from Links, which keeps the rest of GitHub and stan
   expect(
     resolveLink("https://github.com/block/buzz-app/issues/7", [github, links]),
   ).toBe(links);
-  expect(resolveLink(`${pull}#issuecomment-1`, [github, links])).toBe(links);
+  expect(resolveLink(`${pull}#issuecomment-1`, [github, links])).toBe(github);
 
   // Without gh in this host, the state comes from the public API.
   vi.stubGlobal(
@@ -211,6 +218,52 @@ it("takes pull request links from Links, which keeps the rest of GitHub and stan
     "data-link-kind",
     "github",
   );
+});
+
+it("shares one PR badge state across anchors and subpages while keeping each full destination", async () => {
+  const { links, github } = renderers();
+  const fetch = vi.fn<typeof globalThis.fetch>(
+    async () => new Response(JSON.stringify({ state: "closed", merged: true })),
+  );
+  vi.stubGlobal("fetch", fetch);
+  const onOpenLink = vi.fn(() => true);
+  const urls = [
+    pull,
+    `${pull}#top`,
+    `${pull}/commits`,
+    `${pull}/checks?check_run_id=1`,
+    `${pull}/changes#diff-123`,
+  ];
+  const { container } = render(
+    <ToastProvider>
+      {urls.map((url) => (
+        <MessageLink
+          key={url}
+          url={url}
+          registry={registry([links, github])}
+          onOpenLink={onOpenLink}
+          label={url}
+        />
+      ))}
+    </ToastProvider>,
+  );
+  await waitFor(() => {
+    expect(container.querySelectorAll('[data-pr-state="merged"]')).toHaveLength(
+      urls.length,
+    );
+  });
+  expect(fetch).toHaveBeenCalledOnce();
+  expect(fetch.mock.calls[0]?.[0]).toBe(
+    "https://api.github.com/repos/block/buzz-app/pulls/7",
+  );
+  for (const url of urls) {
+    const anchor = screen.getByRole("link", { name: url });
+    expect(anchor).toHaveAttribute("href", url);
+    expect(anchor).toHaveAttribute("data-link-renderer", "buzz.github/pull");
+    expect(anchor).toHaveAttribute("aria-description", "Pull request, merged");
+    fireEvent.click(anchor);
+    expect(onOpenLink).toHaveBeenLastCalledWith(url);
+  }
 });
 
 it("names a pull request link shown as its URL by the URL alone, whatever its state", async () => {

@@ -247,3 +247,41 @@ it.each(["bottom", "side"] as const)(
     expect(open).not.toHaveBeenCalled();
   },
 );
+
+it("keeps the linked PR immediately after the huddle regardless of registration order", () => {
+  const available = [
+    "other/tool",
+    "buzz.github/object",
+    "buzz.huddles/huddles",
+  ].map((key) => ({
+    key,
+    id: key,
+    pluginId: key,
+    revision: "1",
+    title: key,
+    matches: () => false,
+    component: () => null,
+    channelLauncher: () => <button type="button">{key}</button>,
+  }));
+  const panels: Panels = {
+    snapshot: () => available,
+    subscribe: () => () => {},
+    register: () => {},
+    resolve: () => undefined,
+    requestOpen: () => false,
+    handleOpenRequests: () => () => {},
+  };
+  function Harness() {
+    return useChannelPanels(panels, {
+      scope: "scope",
+      viewer: "viewer",
+      channelId: "solo",
+      channelName: "Solo",
+      relayUrl: "wss://example.com",
+    }).launchers;
+  }
+  render(<Harness />);
+  expect(
+    screen.getAllByRole("button").map((button) => button.textContent),
+  ).toEqual(["buzz.huddles/huddles", "buzz.github/object", "other/tool"]);
+});

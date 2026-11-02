@@ -8,6 +8,7 @@ export type GitHubReference = Readonly<{
 /** Exact host parsing: a lookalike domain or credentials can never become a GitHub card. */
 export function parseGitHubReference(
   value: string,
+  { pullSubtargets = false }: { pullSubtargets?: boolean } = {},
 ): GitHubReference | undefined {
   try {
     const url = new URL(value);
@@ -27,16 +28,19 @@ export function parseGitHubReference(
     const base = `https://github.com/${repository}`;
     if (!surface)
       return { url: base, repository, kind: "repository", label: repo };
-    const target = rest.join("/");
+    // Badges identify the parent PR; panel navigation must still preserve
+    // destinations (comments, diffs, checks) the panel cannot show.
+    const parentPull = surface === "pull" && pullSubtargets;
+    const target = rest[0] ?? "";
     if (
       (surface === "pull" || surface === "issues") &&
-      rest.length === 1 &&
+      (rest.length === 1 || parentPull) &&
       /^[1-9]\d*$/.test(target) &&
       // GitHub numbers these with a signed 32-bit integer; past it is no one's.
       Number(target) <= 0x7fffffff
     ) {
       // A link to one comment or review goes to GitHub, which can show it.
-      if (url.hash) return;
+      if (url.hash && !parentPull) return;
       return {
         url: `${base}/${surface}/${target}`,
         repository,

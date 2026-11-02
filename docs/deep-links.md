@@ -26,10 +26,28 @@ The OS ingress accepts the Buzz link forms and nothing else:
 - `buzz://join?relay=<wss-url>&code=<code>[&policy_receipt=<receipt>]`
 - `buzz://connect?relay=<wss-url>`
 - `buzz://add-community?relay=<wss-url>[&name=<name>]`
+- `buzz://plugin?id=<plugin id>[&page=<page id>][&route.<key>=<value>...]`
 
-Both query-based invite and message links also accept a single `/` before `?`,
+Query-based invite, message and plugin links also accept a single `/` before `?`,
 as supplied by Windows URL activation (for example, `buzz://join/?relay=…&code=…`).
 Non-root paths remain unsupported for these forms; channel paths are unchanged.
+
+Plugin page links open a page contributed by an installed, enabled plugin. `id` and
+`page` use the same 1-128 character lowercase token as plugin and page IDs (letters
+`a-z`, digits, `.`, `_`, `-`, not starting with a symbol). Without `page`, the link
+opens the plugin's primary page, or its first page when it has none. Each
+`route.<key>=<value>` parameter (up to 16; keys of 1-64 ASCII letters, digits, `_` or
+`-`; values up to 1,024 characters) becomes a string in the page's route params. The
+page's own `route.validate` decides whether they apply: when the page declares no
+route, or validation fails or throws, the page opens without params, never with
+partial ones. A repeated `id`, `page` or `route.<key>` is ambiguous and rejected like
+any other duplicate. A plugin that is not installed or enabled, or that has no such
+page, fails with the ordinary "This page isn’t available" notice; installing or
+enabling the plugin and choosing **Try again** reopens the same link. The plugin is
+resolved only once the plugin runtime has settled, so a cold-start link waits for
+activation rather than failing early. Like the entity links, the form binds to the
+selected community and viewer, and a link is not authorization for anything the
+page itself guards.
 
 Entity sections are `files`, `commits`, `issues`, `prs`, `contributors`, and
 `channels`; omitting the section opens the overview. Repository commit links add
@@ -46,15 +64,26 @@ selected or no identity is known. `buzz://join` is the separate invitation form.
 It holds through identity setup and opens the
 existing join dialog with the relay and code prefilled; it never claims or saves
 membership until the user completes discovery, policy acceptance, claim and profile
-confirmation. The relay's HTTPS `/invite/<code>` page supplies that `buzz://join`
+confirmation. The first-run welcome screen hands an address (and invite code)
+typed there to the same intent when it enters the app on a restored community
+instead ([identity](identity.md)), so one dialog serves both. The relay's HTTPS `/invite/<code>` page supplies that `buzz://join`
 link; HTTPS itself is not registered as an OS handler. `buzz://connect`
 (the relay website's **Open in Buzz**) and `buzz://add-community` (hosted
 community **Open in Buzz**; `name` is ignored) are the same form without a code:
 they open the join dialog with the relay prefilled or, when this device already
-belongs to that community, switch to it. Malformed join or community links,
-incomplete entity links, unknown hosts and oversize links fail as
-`invalid-target` and show "This destination couldn't open" with **Open Settings**.
-Unsupported links have no Retry action. Nothing is auto-joined. A valid address
+belongs to that community, switch to it. Links that name no destination, such
+as bare `buzz://`, unknown hosts, missing or malformed parameters, malformed join
+or community links, incomplete entity or plugin links and oversize links, show a "This
+link doesn't work" notice. In a running app the notice shows over the current
+page, and history is unchanged. A link that launches the app, read before the
+client is first ready, opens Inbox in the selected community with the notice;
+with Inbox turned off, the notice shows over the start page. A repeat replaces
+the notice, and the next link that names a destination clears it. Without an
+identity, selected community and settled plugin catalog a launch link waits
+for them, and new navigation cancels it. A malformed link that replaces a valid
+one still waiting for Retry also retires that Retry and its failure. A valid link that cannot open yet, or that is
+not yours, keeps its own failure: `unavailable` with Retry, or `denied`.
+Nothing is auto-joined. A valid address
 is never authorization:
 bound targets pass the same viewer, membership and channel checks as in-app
 navigation, so a link into a channel you cannot read still fails `denied`. The
@@ -86,7 +115,7 @@ the correct community before opening it. Original mobile Buzz requires a UUID
 channel identifier; named development channels are supported here but do not imply
 mobile compatibility. The app has no link form of its own beyond the Buzz ones:
 unknown `buzz://` hosts are rejected everywhere, staying plain text in message
-content and failing `invalid-target` at the OS boundary.
+content and showing the notice at the OS boundary.
 
 ## Testing locally
 
@@ -94,8 +123,9 @@ For OS ingress, use a packaged app or debug bundle. Write a link by hand, such a
 `buzz://channel/general` or `buzz://message?channel=general&id=<64-hex event id>`.
 A warm packaged app should come to the front and open the conversation. A cold
 start should launch, show the start page, then open the destination once the
-client is ready. A malformed link such as `buzz://join?relay=example` must show
-the failure notice. Ordinary `just desktop` keeps in-app Buzz links and
+client is ready. A malformed link such as `buzz://` or
+`buzz://join?relay=example` must show the "This link doesn't work" notice over
+the current page when warm, and open Inbox with it on a cold start. Ordinary `just desktop` keeps in-app Buzz links and
 **Copy link**, but external `buzz://` delivery is not a supported development
 contract.
 

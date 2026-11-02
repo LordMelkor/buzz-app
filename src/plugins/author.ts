@@ -147,3 +147,9 @@ export type {
   SoloCardProps,
   SoloDisclosureProps,
 } from "../features/channel-navigation/solo-navigation-contract";
+
+export type {
+  FederatedIdentity,
+  SessionSnapshot,
+  AuthenticatedRequest,
+} from "../features/federated-identity/service";

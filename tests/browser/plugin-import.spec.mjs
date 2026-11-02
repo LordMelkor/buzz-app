@@ -461,7 +461,7 @@ test("Settings controls scale together and keep enlarged labels reachable", asyn
           exact: true,
           includeHidden: true,
         }),
-      ).toHaveAttribute("data-icon-size", "sm");
+      ).toHaveAttribute("data-icon-size", "md");
       await expect
         .poll(() =>
           settingsDialog(page)

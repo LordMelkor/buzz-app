@@ -60,8 +60,8 @@ function copyFor(action: ChannelLifecycleAction, noun: LifecycleNoun) {
   };
 }
 
-// Enter confirms reversible actions; irreversible ones focus Cancel, which
-// stays neutral so it never competes with a red confirm.
+// Reversible actions retain their prominent treatment. Archive still starts
+// on Cancel, so an accidental Enter cannot archive a channel for everyone.
 const reversible = new Set<ChannelLifecycleAction>([
   "archive",
   "unarchive",
@@ -180,7 +180,7 @@ export function ChannelLifecycleDialog({
         size="compact"
         open={!immediate && !busy && !error}
         dismissOnOutsideClick
-        initialFocus={confirms ? confirm : cancel}
+        initialFocus={confirms && action !== "archive" ? confirm : cancel}
         // Cancellation remains sidebar-owned; submission returns to the trigger.
         finalFocus={busy || error ? finalFocus : false}
         onOpenChange={(open) => {

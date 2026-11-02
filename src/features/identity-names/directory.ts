@@ -26,6 +26,18 @@ export function createNameProvider(
           string | undefined,
           { displayFacts: unknown; labels: ReturnType<NamingPolicy["resolve"]> }
         >;
+        // Recently used scopes' labels for historical keys outside them (LRU).
+        // A view can show many, so they stay out of the scope LRU above.
+        outsiders: Map<
+          string | undefined,
+          {
+            displayFacts: unknown;
+            labels: Map<
+              string,
+              ReturnType<ReturnType<NamingPolicy["resolve"]>["get"]>
+            >;
+          }
+        >;
       }
     | undefined;
   const current = (source: NameSource) => {
@@ -80,22 +92,21 @@ export function createNameProvider(
         isAgent: true,
       });
     }
-    base = { inputs, names, identities, scopes: new Map() };
+    base = {
+      inputs,
+      names,
+      identities,
+      scopes: new Map(),
+      outsiders: new Map(),
+    };
     return base;
   };
-  const labels = (
+  const resolveLabels = (
     source: NameSource,
     selection: readonly string[] | undefined,
-    id: string | undefined,
     displayFacts: readonly NamingIdentity[] | undefined,
   ) => {
-    const { identities, scopes } = current(source);
-    const cached = scopes.get(id);
-    if (cached && cached.displayFacts === displayFacts) {
-      scopes.delete(id);
-      scopes.set(id, cached);
-      return cached.labels;
-    }
+    const { identities } = current(source);
     // View-local labels (authored draft text or cross-community management rows)
     // supplement display facts only; they never select recipients or grant control.
     const displayed = (displayFacts ?? []).map((fact) => {
@@ -108,7 +119,7 @@ export function createNameProvider(
       };
     });
     const displayedKeys = new Set(displayed.map((fact) => fact.pubkey));
-    const resolved = policy.resolve(
+    return policy.resolve(
       [
         ...[...identities.values()].filter(
           (row) => !displayedKeys.has(row.pubkey),
@@ -118,6 +129,21 @@ export function createNameProvider(
       source.viewer,
       selection,
     );
+  };
+  const labels = (
+    source: NameSource,
+    selection: readonly string[] | undefined,
+    id: string | undefined,
+    displayFacts: readonly NamingIdentity[] | undefined,
+  ) => {
+    const { scopes } = current(source);
+    const cached = scopes.get(id);
+    if (cached && cached.displayFacts === displayFacts) {
+      scopes.delete(id);
+      scopes.set(id, cached);
+      return cached.labels;
+    }
+    const resolved = resolveLabels(source, selection, displayFacts);
     scopes.delete(id);
     if (scopes.size >= 8) scopes.delete(scopes.keys().next().value);
     scopes.set(id, { displayFacts, labels: resolved });
@@ -134,16 +160,30 @@ export function createNameProvider(
         candidates && new Set(candidates.map((key) => key.toLowerCase()));
       const selection = selected && [...selected].sort();
       const id = selection?.join(":");
+      // Include the requested identity even for historical non-member references.
+      const outside = (selected: ReadonlySet<string>, key: string) => {
+        const { outsiders } = current(source);
+        let scoped = outsiders.get(id);
+        outsiders.delete(id);
+        if (!scoped || scoped.displayFacts !== displayFacts) {
+          scoped = { displayFacts, labels: new Map() };
+          if (outsiders.size >= 8)
+            outsiders.delete(outsiders.keys().next().value);
+        }
+        outsiders.set(id, scoped);
+        if (!scoped.labels.has(key))
+          scoped.labels.set(
+            key,
+            resolveLabels(source, [...selected, key], displayFacts).get(key),
+          );
+        return scoped.labels.get(key);
+      };
       return (pubkey) => {
         const key = pubkey.toLowerCase();
-        // Include the requested identity even for historical non-member references.
-        const outside =
-          selected && !selected.has(key) && [...selected, key].sort();
-        const label = (
-          outside
-            ? labels(source, outside, outside.join(":"), displayFacts)
-            : labels(source, selection, id, displayFacts)
-        ).get(key);
+        const label =
+          selected && !selected.has(key)
+            ? outside(selected, key)
+            : labels(source, selection, id, displayFacts).get(key);
         if (label) return label;
         const name = current(source).names.get(key);
         return name ? { name } : undefined;

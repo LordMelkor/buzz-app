@@ -80,6 +80,7 @@ type Draft = {
   base: string | null;
   input: string;
 };
+const noMembers: readonly string[] = [];
 const empty: Draft = { content: "", original: "", base: null, input: "" };
 const statuses: [Status, string][] = [
   ["todo", "To do"],
@@ -145,7 +146,7 @@ export function TodosPanel({
     (channel) => channel.id === context.channelId,
   )?.members;
   const resolveName = (pubkey: string, fallback: string) =>
-    resolveIdentity(pubkey, fallback, members ?? []);
+    resolveIdentity(pubkey, fallback, members ?? noMembers);
   const key = `todos-draft-v1:${context.channelId}`;
   const [saved] = useState(() => readDraft(context.scope, key));
   const savedDirty = !!saved && saved.content !== saved.original;

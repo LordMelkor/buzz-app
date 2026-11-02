@@ -108,14 +108,18 @@ of whether browser policy permits closing the callback tab.
   listener available.
 - Bounds paths to 1,024 bytes, request reads to 8,192 bytes, each connection to
   five seconds, and the overall attempt to ten minutes.
-- Returns a static, responsive page with Builderlab's mark and label, Buzz design-system
-  shell/panel, spacing and type roles, browser light/dark mode, `no-store`,
-  and `no-referrer`. Its Content Security Policy permits only the exact embedded
-  stylesheet and close-window script by hash, with no external assets or network
+- Returns a static, responsive page matching the web sign-in branding: Builderlab's
+  mark outside a rounded white panel, a pale backdrop and decorative cube artwork.
+  It stays light in either browser theme, with the panel near the top on narrow
+  windows. Responses use `no-store` and `no-referrer`. Its Content Security Policy
+  permits only embedded image/font data and the exact stylesheet and close-window script
+  by hash, with no external assets or network
   requests. A valid callback shows the headline **Signing you in…** and a
   spinner with muted **Closing this window automatically** text for three seconds
   before trying to close its page. The hint reserves its wrapped size through
   script startup and a blocked-close fallback, keeping the panel stationary.
+  Manual-close text aligns with the heading; only automatic-closing text reserves
+  the spinner's space.
   A page wrapper owns the centering grid so additional body elements, such as
   browser-extension containers, cannot introduce rows that displace the panel.
   Its branded panel fades and scales in with a small bounce over the
@@ -130,11 +134,15 @@ of whether browser policy permits closing the callback tab.
   and account validation after receiving the callback, and reports any verification
   failures in the app.
   The standalone stylesheet mirrors the shared roles without loading the app;
-  Inter uses the system fallback when unavailable locally. It does not inherit
+  the app's existing Inter Latin font is embedded, with system fallbacks for other
+  characters. It does not inherit
   the app's Appearance preference. `public/builderlab-mark.svg` is a standalone
-  export of the 16–32px harness artwork, used here at 24px with the same rounded
+  export of the 16–32px harness artwork, used here at 28px with the same rounded
   outline, soft-letter mask and inherited color. It needs no React runtime or
-  dependency on the harness-picker feature; see `NOTICE.md` for provenance.
+  dependency on the harness-picker feature. The cropped `cubes.webp` is embedded
+  in the response rather than fetched from the short-lived listener. The same
+  branded shell serves key-backup restore; federated identity retains its neutral
+  callback. See `NOTICE.md` for artwork provenance.
 
 ## Standards scope
 

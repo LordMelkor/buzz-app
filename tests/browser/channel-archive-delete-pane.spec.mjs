@@ -129,7 +129,7 @@ for (const action of ["archive", "delete"]) {
       );
       await expect(
         dialog.getByRole("button", {
-          name: action === "delete" ? "Cancel" : label,
+          name: "Cancel",
           exact: true,
         }),
       ).toBeFocused();
@@ -220,11 +220,13 @@ for (const action of ["archive", "delete"]) {
             exact: true,
           }),
         ).toBeFocused();
-        await expect(composer).toBeDisabled();
-        await expect(composer).toHaveJSProperty("value", draft);
+        await expect(composer).toHaveCount(0);
+        await expect(
+          page.getByRole("region", { name: "Archived channel", exact: true }),
+        ).toHaveText("This channel is archived");
         await expect(
           page.getByRole("button", { name: "Send message", exact: true }),
-        ).toBeDisabled();
+        ).toHaveCount(0);
       } else {
         await expect(panel).toHaveCount(0);
         await expect(sidebar.locator("button[data-channel-id]")).toHaveCount(0);
@@ -242,11 +244,13 @@ for (const action of ["archive", "delete"]) {
         await expect(
           panel.getByRole("button", { name: "Unarchive channel", exact: true }),
         ).toBeVisible();
-        await expect(composer).toBeDisabled();
-        await expect(composer).toHaveJSProperty("value", draft);
+        await expect(composer).toHaveCount(0);
+        await expect(
+          page.getByRole("region", { name: "Archived channel", exact: true }),
+        ).toHaveText("This channel is archived");
         await expect(
           page.getByRole("button", { name: "Send message", exact: true }),
-        ).toBeDisabled();
+        ).toHaveCount(0);
         await page
           .getByRole("button", {
             name: "Close Channel settings tab",
@@ -290,8 +294,10 @@ for (const action of ["archive", "delete"]) {
           exact: true,
         });
         await expect(restore).toBeVisible();
-        await expect(composer).toBeDisabled();
-        await expect(composer).toHaveJSProperty("value", draft);
+        await expect(composer).toHaveCount(0);
+        await expect(
+          page.getByRole("region", { name: "Archived channel", exact: true }),
+        ).toHaveText("This channel is archived");
         await expect(
           panel.getByRole("button", { name: "Archive channel", exact: true }),
         ).toHaveCount(0);

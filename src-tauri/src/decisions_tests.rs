@@ -94,10 +94,24 @@ async fn server(
     });
     (url, seen)
 }
+#[test]
+fn the_builderlab_endpoint_keeps_the_deployment_path_and_port() {
+    assert_eq!(
+        builderlab_endpoint("https://login.example:8443", "/deployment/api/goose/").as_deref(),
+        Some("https://login.example:8443/deployment/api/goose/v3/builderlab/decisions")
+    );
+    assert_eq!(
+        builderlab_endpoint("https://app.builderlab.xyz", "/api/goose/").as_deref(),
+        Some("https://app.builderlab.xyz/api/goose/v3/builderlab/decisions")
+    );
+    assert_eq!(builderlab_endpoint("", ""), None);
+}
+
 fn decisions(url: &str) -> DecisionsHost {
     DecisionsHost::with(
         Endpoints {
             typesafe: url.into(),
+            builderlab: Some(url.into()),
         },
         TIMEOUT,
     )
@@ -157,7 +171,7 @@ async fn typesafe_sends_the_saved_key_and_reads_tagged_answers() {
     let (url, seen) = server(vec![Some((200, "", reply.to_string()))]).await;
     let (_, keys) = keys(Some("test-key-do-not-use"));
     let result = decisions(&url)
-        .decide(&keys, Backend::Typesafe, every_type())
+        .decide(&keys, Backend::Typesafe, None, every_type())
         .await;
     assert_eq!(result, expected("jev-1.13.0", Backend::Typesafe));
     let (head, body) = seen.lock().unwrap()[0].clone();
@@ -183,7 +197,7 @@ async fn typesafe_without_a_key_sends_nothing() {
     let (url, seen) = server(vec![]).await;
     let (_, keys) = keys(None);
     let result = decisions(&url)
-        .decide(&keys, Backend::Typesafe, every_type())
+        .decide(&keys, Backend::Typesafe, None, every_type())
         .await;
     assert_eq!(
         result,
@@ -211,7 +225,7 @@ async fn malformed_questions_are_refused_before_any_call() {
     ];
     for questions in bad {
         let result = host
-            .decide(&keys, Backend::Typesafe, request(questions.clone()))
+            .decide(&keys, Backend::Typesafe, None, request(questions.clone()))
             .await;
         assert_eq!(
             result,
@@ -225,7 +239,7 @@ async fn malformed_questions_are_refused_before_any_call() {
     let mut empty = request(json!({ "a": { "type": "yes_no", "instructions": "x" } }));
     empty.state = " ".into();
     assert!(matches!(
-        host.decide(&keys, Backend::Typesafe, empty).await,
+        host.decide(&keys, Backend::Typesafe, None, empty).await,
         Decided::Failed {
             reason: Failure::InvalidRequest,
             ..
@@ -234,7 +248,7 @@ async fn malformed_questions_are_refused_before_any_call() {
     let mut huge = request(json!({ "a": { "type": "yes_no", "instructions": "x" } }));
     huge.state = "x".repeat(INPUT_LIMIT);
     assert!(matches!(
-        host.decide(&keys, Backend::Typesafe, huge).await,
+        host.decide(&keys, Backend::Typesafe, None, huge).await,
         Decided::Failed {
             reason: Failure::InputLimit,
             ..
@@ -271,7 +285,7 @@ async fn answers_that_do_not_fit_the_questions_are_invalid() {
     for reply in bad {
         let (url, _) = server(vec![Some((200, "", reply.to_string()))]).await;
         let result = decisions(&url)
-            .decide(&keys, Backend::Typesafe, one())
+            .decide(&keys, Backend::Typesafe, None, one())
             .await;
         assert_eq!(
             result,
@@ -285,7 +299,7 @@ async fn answers_that_do_not_fit_the_questions_are_invalid() {
     let (url, _) = server(vec![Some((200, "", "x".repeat(RESPONSE_LIMIT + 1)))]).await;
     assert!(matches!(
         decisions(&url)
-            .decide(&keys, Backend::Typesafe, one())
+            .decide(&keys, Backend::Typesafe, None, one())
             .await,
         Decided::Failed {
             reason: Failure::InvalidResponse,
@@ -319,7 +333,7 @@ async fn statuses_map_to_one_failure_and_are_not_retried() {
         ])
         .await;
         let (_, keys) = keys(Some("test-key-do-not-use"));
-        let result = decisions(&url).decide(&keys, backend, yes_no()).await;
+        let result = decisions(&url).decide(&keys, backend, None, yes_no()).await;
         assert_eq!(result, Decided::Failed { backend, reason }, "{status}");
         assert_eq!(seen.lock().unwrap().len(), 1, "{status}");
     }
@@ -332,7 +346,7 @@ async fn a_refused_key_is_read_again_on_the_next_call() {
     let host = decisions(&url);
     let yes_no = || request(json!({ "a": { "type": "yes_no", "instructions": "x" } }));
     assert!(matches!(
-        host.decide(&keys, Backend::Typesafe, yes_no()).await,
+        host.decide(&keys, Backend::Typesafe, None, yes_no()).await,
         Decided::Failed {
             reason: Failure::Unauthorized,
             ..
@@ -340,7 +354,7 @@ async fn a_refused_key_is_read_again_on_the_next_call() {
     ));
     *store.key.lock().unwrap() = None;
     assert!(matches!(
-        host.decide(&keys, Backend::Typesafe, yes_no()).await,
+        host.decide(&keys, Backend::Typesafe, None, yes_no()).await,
         Decided::Failed {
             reason: Failure::MissingCredentials,
             ..
@@ -360,7 +374,7 @@ async fn an_unreadable_keychain_is_a_service_error_and_is_read_again() {
     let yes_no = || request(json!({ "a": { "type": "yes_no", "instructions": "x" } }));
     // Not "missing": the key may still be saved.
     assert!(matches!(
-        host.decide(&keys, Backend::Typesafe, yes_no()).await,
+        host.decide(&keys, Backend::Typesafe, None, yes_no()).await,
         Decided::Failed {
             reason: Failure::ServiceError,
             ..
@@ -368,7 +382,7 @@ async fn an_unreadable_keychain_is_a_service_error_and_is_read_again() {
     ));
     *store.unreadable.lock().unwrap() = false;
     assert!(matches!(
-        host.decide(&keys, Backend::Typesafe, yes_no()).await,
+        host.decide(&keys, Backend::Typesafe, None, yes_no()).await,
         Decided::Answered { .. }
     ));
     assert_eq!(seen.lock().unwrap().len(), 1);
@@ -382,7 +396,7 @@ async fn a_stalled_keychain_read_is_inside_the_deadline() {
     slow.timeout_ms = Some(1_000);
     let started = Instant::now();
     let result = decisions("http://127.0.0.1:9/")
-        .decide(&keys, Backend::Typesafe, slow)
+        .decide(&keys, Backend::Typesafe, None, slow)
         .await;
     assert_eq!(
         result,
@@ -401,7 +415,9 @@ async fn the_callers_timeout_bounds_the_call() {
     let mut slow = request(json!({ "a": { "type": "yes_no", "instructions": "x" } }));
     slow.timeout_ms = Some(1_000);
     let started = Instant::now();
-    let result = decisions(&url).decide(&keys, Backend::Typesafe, slow).await;
+    let result = decisions(&url)
+        .decide(&keys, Backend::Typesafe, None, slow)
+        .await;
     assert_eq!(
         result,
         Decided::Failed {
@@ -413,6 +429,262 @@ async fn the_callers_timeout_bounds_the_call() {
     assert_eq!(seen.lock().unwrap().len(), 1);
 }
 
+fn session(value: &str) -> Option<Zeroizing<String>> {
+    Some(Zeroizing::new(value.into()))
+}
+
+/// `request` for a community, as callers send it.
+fn in_community(mut request: Request) -> Request {
+    request.community = Some("wss://Buzz.Example.org/".into());
+    request
+}
+
+#[tokio::test]
+async fn builderlab_sends_the_sign_in_and_community_and_reads_system_one_answers() {
+    let reply = json!({ "model": "jev-1.13.0", "answers": {
+        "urgent": { "noul": { "value": 0.8 } },
+        "topic": { "choice": { "choice": "build", "confidence": 0.9,
+          "probabilities": { "build": 0.95, "other": 0.05 } } },
+        "severity": { "score": { "score": 2.0, "confidence": 0.7,
+          "probabilities": { "0": 0.1, "1": 0.2, "2": 0.7 } } },
+    }, "usage": { "input_tokens": 120, "output_tokens": 3 } });
+    let (url, seen) = server(vec![Some((200, "", reply.to_string()))]).await;
+    let (store, keys) = keys(Some("test-key-do-not-use"));
+    let result = decisions(&url)
+        .decide(
+            &keys,
+            Backend::Builderlab,
+            session("bb-session"),
+            in_community(every_type()),
+        )
+        .await;
+    assert_eq!(result, expected("jev-1.13.0", Backend::Builderlab));
+    let (head, body) = seen.lock().unwrap()[0].clone();
+    assert!(
+        head.contains("x-bb-session-credential: bb-session"),
+        "{head}"
+    );
+    // The relay host, as Builderlab's community allowlist names it.
+    assert!(
+        head.lines()
+            .any(|line| line == "x-buzz-community: buzz.example.org"),
+        "{head}"
+    );
+    // The TypeSafe key is neither read nor sent.
+    assert!(!head.contains("authorization"), "{head}");
+    assert_eq!(*store.reads.lock().unwrap(), 0);
+    // No `model`: Builderlab answers with Jev.
+    assert_eq!(
+        body,
+        json!({ "state": "The build is broken on main.", "questions": {
+            "severity": { "instructions": "How severe?", "score": { "levels": ["low", "medium", "high"] } },
+            "topic": { "instructions": "What is it about?",
+                       "choice": { "options": { "build": "CI or builds", "other": "Anything else" } } },
+            "urgent": { "instructions": "It needs attention now.", "noul": {} },
+        } })
+    );
+    assert!(!serde_json::to_string(&result)
+        .unwrap()
+        .contains("bb-session"));
+}
+
+#[test]
+fn the_community_is_sent_as_its_relay_host() {
+    for (community, host) in [
+        ("wss://buzz.example.org", Some("buzz.example.org")),
+        (
+            " wss://Buzz.Example.org:443/path ",
+            Some("buzz.example.org"),
+        ),
+        ("https://buzz.example.org.", Some("buzz.example.org")),
+        ("ws://localhost:80", Some("localhost")),
+        ("ws://127.0.0.1:3000", Some("127.0.0.1:3000")),
+        ("wss://buzz.example.org:8443", Some("buzz.example.org:8443")),
+        ("buzz.example.org", None),
+        ("", None),
+        ("file:///tmp/relay", None),
+        ("mailto:relay@example.org", None),
+    ] {
+        assert_eq!(community_host(community).as_deref(), host, "{community}");
+    }
+}
+
+#[tokio::test]
+async fn builderlab_without_a_community_sends_nothing_and_typesafe_sends_none() {
+    let (url, seen) = server(vec![]).await;
+    let (_, no_key) = keys(None);
+    for community in [None, Some(""), Some("buzz.example.org")] {
+        let mut request = every_type();
+        request.community = community.map(Into::into);
+        assert_eq!(
+            decisions(&url)
+                .decide(&no_key, Backend::Builderlab, session("bb-session"), request)
+                .await,
+            Decided::Failed {
+                backend: Backend::Builderlab,
+                reason: Failure::InvalidRequest
+            },
+            "{community:?}"
+        );
+    }
+    assert!(seen.lock().unwrap().is_empty());
+
+    let reply =
+        json!({ "model": "jev-1.13.0", "answers": { "a": { "type": "noul", "noul": 0.5 } } });
+    let (url, seen) = server(vec![Some((200, "", reply.to_string()))]).await;
+    let (_, typesafe_keys) = keys(Some("k"));
+    let yes_no = in_community(request(
+        json!({ "a": { "type": "yes_no", "instructions": "x" } }),
+    ));
+    assert!(matches!(
+        decisions(&url)
+            .decide(&typesafe_keys, Backend::Typesafe, None, yes_no)
+            .await,
+        Decided::Answered { .. }
+    ));
+    let (head, body) = seen.lock().unwrap()[0].clone();
+    assert!(!head.contains("x-buzz-community"), "{head}");
+    assert!(body.get("community").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn builderlab_without_a_sign_in_or_an_address_sends_nothing() {
+    let (url, seen) = server(vec![]).await;
+    let (_, keys) = keys(None);
+    for missing in [None, session(" ")] {
+        assert_eq!(
+            decisions(&url)
+                .decide(
+                    &keys,
+                    Backend::Builderlab,
+                    missing,
+                    in_community(every_type())
+                )
+                .await,
+            Decided::Failed {
+                backend: Backend::Builderlab,
+                reason: Failure::MissingCredentials
+            }
+        );
+    }
+    let unconfigured = DecisionsHost::with(
+        Endpoints {
+            typesafe: url.clone(),
+            builderlab: None,
+        },
+        TIMEOUT,
+    );
+    assert_eq!(
+        unconfigured
+            .decide(
+                &keys,
+                Backend::Builderlab,
+                session("bb-session"),
+                in_community(every_type())
+            )
+            .await,
+        Decided::Failed {
+            backend: Backend::Builderlab,
+            reason: Failure::ServiceError
+        }
+    );
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn only_a_builderlab_401_ends_the_sign_in_and_none_touch_the_key() {
+    for (status, reason) in [
+        (401, Failure::SessionExpired),
+        // Refusing decisions is not refusing the sign-in.
+        (403, Failure::Unauthorized),
+        (302, Failure::Unauthorized),
+        (400, Failure::InvalidRequest),
+        (404, Failure::ServiceError),
+        (429, Failure::ServiceError),
+        (503, Failure::ServiceError),
+    ] {
+        let (url, _) = server(vec![Some((status, "", String::new()))]).await;
+        let (store, keys) = keys(Some("k"));
+        let yes_no = in_community(request(
+            json!({ "a": { "type": "yes_no", "instructions": "x" } }),
+        ));
+        assert_eq!(
+            decisions(&url)
+                .decide(&keys, Backend::Builderlab, session("old"), yes_no)
+                .await,
+            Decided::Failed {
+                backend: Backend::Builderlab,
+                reason
+            },
+            "{status}"
+        );
+        assert_eq!(*store.reads.lock().unwrap(), 0);
+        assert_eq!(store.key.lock().unwrap().as_deref(), Some("k"));
+    }
+}
+
+/// An OpenAI model's answer, which Builderlab maps to System One's shape:
+/// any non-empty model name is accepted.
+#[tokio::test]
+async fn builderlab_reads_an_openai_answer_in_system_one_shape() {
+    let reply = r#"{"model":"gpt-6-luna","answers":{"urgent":{"noul":{"value":1.0}},"topic":{"choice":{"choice":"build","confidence":1.0,"probabilities":{"build":1.0,"other":0.0}}},"severity":{"score":{"score":0.28,"confidence":0.58,"probabilities":{"0":0.73,"1":0.26,"2":0.01}}}},"usage":{"input_tokens":392,"output_tokens":0}}"#;
+    let (url, _) = server(vec![Some((200, "", reply.into()))]).await;
+    let (_, keys) = keys(None);
+    let Decided::Answered { model, answers, .. } = decisions(&url)
+        .decide(
+            &keys,
+            Backend::Builderlab,
+            session("s"),
+            in_community(every_type()),
+        )
+        .await
+    else {
+        panic!("not answered");
+    };
+    assert_eq!(model, "gpt-6-luna");
+    assert_eq!(answers["urgent"], Answer::YesNo { probability: 1.0 });
+    assert!(matches!(&answers["topic"], Answer::Choice { choice, .. } if choice == "build"));
+    assert!(
+        matches!(&answers["severity"], Answer::Score { score, probabilities, .. }
+        if (*score - 0.28).abs() < 1e-9 && probabilities.len() == 3)
+    );
+}
+
+#[tokio::test]
+async fn builderlab_answers_that_do_not_fit_are_invalid() {
+    let yes_no = || {
+        in_community(request(
+            json!({ "a": { "type": "yes_no", "instructions": "x" } }),
+        ))
+    };
+    for reply in [
+        // Two typed bodies: ambiguous.
+        json!({ "model": "m", "answers": { "a": { "noul": { "value": 0.1 },
+                "score": { "score": 0.0, "confidence": 0.5 } } } }),
+        // The wrong type for the question.
+        json!({ "model": "m", "answers": { "a": { "score": { "score": 0.0, "confidence": 0.5 } } } }),
+        // TypeSafe's flat value is not Builderlab's.
+        json!({ "model": "m", "answers": { "a": { "noul": 0.1 } } }),
+        // The old OpenAI Decisions list.
+        json!({ "model": "m", "answers": [{ "name": "a", "predicate": { "probability": 0.1 } }] }),
+        json!({ "model": "", "answers": { "a": { "noul": { "value": 0.1 } } } }),
+        json!({ "model": "m", "answers": { "a": { "noul": { "value": 1.5 } } } }),
+    ] {
+        let (url, _) = server(vec![Some((200, "", reply.to_string()))]).await;
+        let (_, keys) = keys(None);
+        assert_eq!(
+            decisions(&url)
+                .decide(&keys, Backend::Builderlab, session("s"), yes_no())
+                .await,
+            Decided::Failed {
+                backend: Backend::Builderlab,
+                reason: Failure::InvalidResponse
+            },
+            "{reply}"
+        );
+    }
+}
+
 #[test]
 fn the_webview_names_backends_and_answers_as_documented() {
     assert_eq!(
@@ -422,6 +694,10 @@ fn the_webview_names_backends_and_answers_as_documented() {
         })
         .unwrap(),
         json!({ "outcome": "failed", "backend": "typesafe", "reason": "missing_credentials" })
+    );
+    assert_eq!(
+        serde_json::to_value(Backend::Builderlab).unwrap(),
+        json!("builderlab")
     );
     assert_eq!(
         serde_json::to_value(Answer::YesNo { probability: 0.5 }).unwrap(),

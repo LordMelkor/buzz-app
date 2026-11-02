@@ -758,10 +758,16 @@ function Timeline({
         if (ended) frame = requestAnimationFrame(() => release());
       });
     });
-    const hold = new MutationObserver(() => {
-      const row = top();
-      if (list.style.height === height) return;
+    const hold = new MutationObserver((mutations) => {
+      // Ignore list-only pointer-events changes during input. A row's offsets
+      // can change even when the sum of its siblings' heights does not.
+      if (
+        list.style.height === height &&
+        !mutations.some((mutation) => mutation.target.parentNode === list)
+      )
+        return;
       height = list.style.height;
+      const row = top();
       const next = logicalTop();
       if (settled.current && !follow.current) {
         let delta =
@@ -794,7 +800,12 @@ function Timeline({
     const end = () => {
       if (intent.current !== since && !pointerHeld.current) done();
     };
-    hold.observe(list, { attributes: true, attributeFilter: ["style"] });
+    // Row measurements can redistribute offsets without changing total height.
+    hold.observe(list, {
+      attributes: true,
+      attributeFilter: ["style"],
+      subtree: true,
+    });
     element.addEventListener("scroll", read);
     element.addEventListener("scrollend", end);
     // A drag can end outside the scroller.

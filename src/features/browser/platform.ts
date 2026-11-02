@@ -86,7 +86,11 @@ export function createBrowserPlatform(): BrowserPlatform {
         url: target,
         bounds,
         storage: storage ?? null,
-        builderlab: builderlab ? { credential: builderlab.credential } : null,
+        builderlab: builderlab
+          ? "federated" in builderlab
+            ? { federated: builderlab.federated }
+            : { credential: builderlab.credential }
+          : null,
       });
       if (builderlab) {
         const close = () => {

@@ -334,7 +334,7 @@ export const fixturePlugins: readonly BundledPlugin[] = [
   {
     manifest: { id: "fixture.session", name: "Session fixture", apiVersion: 1 },
     module: {
-      inject: ["pages", "relay"],
+      inject: ["pages", "relay", "conversation"],
       apply(ctx) {
         const relay = ctx.relay;
         window.fixtureRelay = relay;
@@ -353,6 +353,56 @@ export const fixturePlugins: readonly BundledPlugin[] = [
             <p>Session pending reconnect</p>
           );
         }
+        function ThreadFocusPage({ navigation }: PageProps) {
+          const connection = useSyncExternalStore(
+            relay.subscribe,
+            relay.snapshot,
+          );
+          const Tabs = ctx.conversation.ui.Tabs;
+          const target = navigation?.target;
+          const threadId =
+            target?.kind === "page" ? target.route?.params : undefined;
+          useEffect(() => {
+            navigation?.complete({ status: "opened" });
+          }, [navigation]);
+          if (
+            connection.status !== "ready" ||
+            !Tabs ||
+            typeof threadId !== "string"
+          )
+            return null;
+          return (
+            <Tabs
+              id="focus-fixture"
+              session={connection.session}
+              scope={connection.scope}
+              label="Focus fixture"
+            >
+              {(open) => (
+                <>
+                  <input aria-label="Page draft" />
+                  <button
+                    type="button"
+                    onClick={() => open({ channelId: "beta", threadId })}
+                  >
+                    Open cold thread
+                  </button>
+                </>
+              )}
+            </Tabs>
+          );
+        }
+        ctx.pages.register({
+          id: "thread-focus",
+          title: "Thread focus fixture",
+          primary: true,
+          handlesNavigation: true,
+          route: {
+            version: 1,
+            validate: (params) => typeof params === "string",
+          },
+          component: ThreadFocusPage,
+        });
         ctx.pages.register({
           id: "session",
           title: "Session fixture",

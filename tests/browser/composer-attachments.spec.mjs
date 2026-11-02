@@ -145,14 +145,12 @@ test("picker, pane drop and clipboard files use the same attachment draft and ex
     await expect(form.locator("[data-uploading]")).toHaveCount(0);
     await expect(remove.locator("svg")).toHaveCount(1);
     // Real layout proves attachment cards stay in one horizontal lane.
+    // Offsets ignore the entrance transform still running on the newest card.
     const cards = form
       .getByRole("region", { name: "Attachments", exact: true })
       .getByRole("listitem");
     const boxes = await cards.evaluateAll((items) =>
-      items.map((item) => {
-        const rect = item.getBoundingClientRect();
-        return { top: rect.top, left: rect.left };
-      }),
+      items.map((item) => ({ top: item.offsetTop, left: item.offsetLeft })),
     );
     expect(boxes.every((box) => box.top === boxes[0].top)).toBe(true);
     expect(boxes[1].left).toBeGreaterThan(boxes[0].left);

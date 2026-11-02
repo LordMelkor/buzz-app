@@ -234,22 +234,31 @@ it.each([false, true])(
       </StrictMode>,
     );
     const timeline = await screen.findByLabelText("Channel message history");
-    const form = screen.getByRole("form", { name: "Send a message to Work" });
-    const button = within(form).getByRole("button", { name: "Attach files" });
-    await waitFor(() =>
-      archived ? expect(button).toBeDisabled() : expect(button).toBeEnabled(),
-    );
+    if (archived) {
+      expect(
+        screen.queryByRole("form", { name: "Send a message to Work" }),
+      ).toBeNull();
+      expect(
+        screen.getByRole("region", { name: "Archived chat" }),
+      ).toHaveTextContent("This chat is archived");
+    } else {
+      const form = screen.getByRole("form", { name: "Send a message to Work" });
+      await waitFor(() =>
+        expect(
+          within(form).getByRole("button", { name: "Attach files" }),
+        ).toBeEnabled(),
+      );
+    }
     expect(timeline.closest("form")).toBeNull();
     const over = drop(timeline, "dragOver");
     expect(over.event.defaultPrevented).toBe(true);
     expect(over.transfer.dropEffect).toBe(archived ? "none" : "copy");
     expect(drop(timeline).event.defaultPrevented).toBe(true);
     if (archived) {
-      expect(
-        within(form).queryByRole("region", { name: "Attachments" }),
-      ).toBeNull();
+      expect(screen.queryByRole("region", { name: "Attachments" })).toBeNull();
       expect(h.upload).not.toHaveBeenCalled();
     } else {
+      const form = screen.getByRole("form", { name: "Send a message to Work" });
       await waitFor(() =>
         expect(
           within(form).getByRole("status", { name: "" }),

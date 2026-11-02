@@ -1113,6 +1113,8 @@ it("opens a linked thread from a readable channel through one stable opener", ()
       id: "thread:beta:root",
       channelId: "beta",
       messageId: "reply",
+      revealRequest: 1,
+      focusRequest: undefined,
     });
     expect(linked && tabPane(linked)).toBe("side");
     expect(h.result.current.state.selected).toBe("thread:beta:root");
@@ -1121,6 +1123,14 @@ it("opens a linked thread from a readable channel through one stable opener", ()
     });
     const own = h.result.current.state.tabs[1];
     expect(own && tabPane(own)).toBe("main");
+    expect(own).toMatchObject({ revealRequest: 1, focusRequest: undefined });
+    act(() => {
+      open("beta", "reply", "root");
+    });
+    expect(h.result.current.state.tabs[0]).toMatchObject({
+      revealRequest: 2,
+      focusRequest: undefined,
+    });
     expect(h.result.current.workspace.openLinkedThread).toBe(open);
     h.unmount();
     expect(open("beta", "later", "later")).toBe(false);

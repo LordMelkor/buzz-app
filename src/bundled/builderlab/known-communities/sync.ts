@@ -4,7 +4,7 @@ import {
   type PendingOp,
 } from "../../../features/communities/known-communities";
 import type { KnownCommunities } from "../../../features/communities/service";
-import type { OAuthSession } from "../oauth/session";
+import type { BuilderlabSession } from "../session";
 import type { KnownCommunitiesClient, Refusal, UpdateResult } from "./client";
 
 const backoff = (failures: number) => Math.min(60_000, 1000 * 2 ** failures);
@@ -44,7 +44,7 @@ export function startKnownCommunitiesSync({
   knownCommunities,
 }: {
   client: KnownCommunitiesClient;
-  session: OAuthSession;
+  session: BuilderlabSession;
   knownCommunities: KnownCommunities;
 }) {
   let disposed = false;

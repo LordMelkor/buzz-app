@@ -133,6 +133,27 @@ describe("createBrowserPlatform", () => {
     ]);
   });
 
+  it("sends only the public federated revision for a federated viewer", async () => {
+    sdk.invoke.mockResolvedValueOnce("viewer" as never);
+    const lifetime = new AbortController();
+    const bounds = { x: 0, y: 0, width: 1, height: 1 };
+    await createBrowserPlatform().attach(
+      "https://counter--workspace.apps.example/",
+      bounds,
+      "account",
+      { federated: "revision-1", storage: "account", signal: lifetime.signal },
+    );
+    expect(sdk.invoke.mock.calls[0]).toEqual([
+      "browser_attach",
+      {
+        url: "https://counter--workspace.apps.example/",
+        bounds,
+        storage: "account",
+        builderlab: { federated: "revision-1" },
+      },
+    ]);
+  });
+
   it("rejects an invalid URL before native invocation", async () => {
     const platform = createBrowserPlatform();
     await expect(

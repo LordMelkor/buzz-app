@@ -202,6 +202,18 @@ fn arguments(args: &[String], catalog: &Value) -> Result<(String, Value)> {
 fn main() {
     let result = (|| -> Result<i32> {
         let args: Vec<_> = std::env::args().collect();
+        // App-bundled bootstrap for contained harnesses. Privileged Bash ignores
+        // startup files and imported functions; its path never comes from PATH.
+        #[cfg(unix)]
+        if args.get(1).is_some_and(|arg| arg == "--shell") {
+            use std::os::unix::process::CommandExt;
+            return Err(Command::new("/bin/bash")
+                .args(["-p", "-c"])
+                .args(&args[2..])
+                .exec()
+                .into());
+        }
+
         let connection = serde_json::from_str(
             &std::env::var(CONNECTION).map_err(|_| "An app-held agent connection is required")?,
         )?;

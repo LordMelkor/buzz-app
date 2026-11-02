@@ -91,6 +91,17 @@ edit files there.
 - **In a channel:** @mention the agent. If it isn't in the channel yet, Buzz
   asks whether to **Invite** it.
 
+### 6. Use the command line (optional)
+
+Buzz includes the `buzz` command line client at
+`/Applications/Buzz.app/Contents/Resources/bin/buzz`, so scripts and agents need
+no separate install. To run it as `buzz`, link it into your `PATH`:
+
+```sh
+mkdir -p ~/.local/bin
+ln -sf /Applications/Buzz.app/Contents/Resources/bin/buzz ~/.local/bin/buzz
+```
+
 ## Preview limitations
 
 - Builds come straight from `main`; there's no stable release channel yet.

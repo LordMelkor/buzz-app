@@ -1,5 +1,5 @@
 import type { AgentClient } from "./agents/client";
-import type { OAuthSession } from "./oauth/session";
+import type { BuilderlabSession } from "./session";
 
 /** The hosted-agent settings bundled consumers such as Bestie may change with
  * the hosted type's login. It never exposes the login's credential or the
@@ -16,7 +16,7 @@ export type Builderlab = Readonly<{
 }>;
 
 export function hostedAgentSettings(
-  session: OAuthSession,
+  session: BuilderlabSession,
   agents: AgentClient,
 ): Builderlab {
   const accounts = new WeakMap<object, Readonly<{ subject: string }>>();

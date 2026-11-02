@@ -1,3 +1,9 @@
+import { createVerifiedProfileDirectory } from "./verified-profile-directory";
+import type {
+  VerifiedProfileAuthority,
+  VerifiedProfileFilter,
+  VerifiedProfileSink,
+} from "./verified-profile";
 import { retryRead } from "./read-retry";
 import { attestedOwner } from "../agents/owner-attestation";
 import { hasEventProof } from "./events";
@@ -32,6 +38,16 @@ export function createProfileDirectory(
   reader: RelayReader,
   local?: Pick<Outbox, "snapshot" | "subscribe">,
   notify = (listener: () => void) => listener(),
+  verification?: {
+    authority?: VerifiedProfileAuthority | undefined;
+    refresh?:
+      | ((signal: AbortSignal) => Promise<VerifiedProfileAuthority | null>)
+      | undefined;
+    subscribe(
+      filter: VerifiedProfileFilter,
+      sink: VerifiedProfileSink,
+    ): (() => void) | undefined;
+  },
 ) {
   const events = new ByteLru<RelayEvent>(1024, 2 * 1024 * 1024);
   const owners = new WeakMap<RelayEvent, string>();
@@ -48,8 +64,18 @@ export function createProfileDirectory(
   let snapshot: ReadonlyMap<string, Profile> = new Map();
   // Replaced, never mutated, so stores can compare it like `snapshot`.
   let unnamed: ReadonlySet<string> = new Set();
+  // Keys with kind-0 metadata. A verified-only overlay must not satisfy ensure.
+  let loaded: ReadonlySet<string> = new Set();
   let controller = new AbortController();
   let closed = false;
+  const verified =
+    verification &&
+    createVerifiedProfileDirectory(
+      verification.authority,
+      verification.subscribe,
+      () => publish(),
+      verification.refresh,
+    );
   function accept(incoming: readonly RelayEvent[]) {
     if (closed) return;
     let changed = false;
@@ -90,6 +116,39 @@ export function createProfileDirectory(
         .filter((item) => item.event.kind === 0 && item.delivery !== "failed")
         .map((item) => item.event) ?? []),
     ]);
+    loaded = new Set(next.keys());
+    for (const [id, value] of verified?.snapshot() ?? []) {
+      const { nameIsFallback: _fallback, ...base } = next.get(id) ?? {};
+      next.set(
+        id,
+        Object.freeze({
+          ...base,
+          name: value.displayName,
+          username: value.username,
+          verified: value,
+        }),
+      );
+    }
+    // Qualify all namesakes in the shared directory, including self-declared
+    // names that imitate a verified name. This carries through string consumers.
+    const assertions = [...next].filter(([, profile]) => profile.verified);
+    for (const [id, profile] of next) {
+      const duplicate = assertions.some(
+        ([other, value]) =>
+          other !== id &&
+          ((profile.verified?.displayName ?? profile.name) ===
+            value.verified?.displayName ||
+            (!!profile.verified && profile.username === value.username)),
+      );
+      if (duplicate)
+        next.set(
+          id,
+          Object.freeze({
+            ...profile,
+            name: `${profile.name} (${id.slice(0, 10)})`,
+          }),
+        );
+    }
     for (const [id, value] of next) {
       const old = snapshot.get(id);
       if (
@@ -100,7 +159,8 @@ export function createProfileDirectory(
         old?.about === value.about &&
         old?.nip05 === value.nip05 &&
         old?.isAgent === value.isAgent &&
-        old?.ownerPubkey === value.ownerPubkey
+        old?.ownerPubkey === value.ownerPubkey &&
+        JSON.stringify(old?.verified) === JSON.stringify(value.verified)
       )
         next.set(id, old);
     }
@@ -128,6 +188,7 @@ export function createProfileDirectory(
   ) {
     if (closed) throw new DOMException("Session closed", "AbortError");
     const unique = [...new Set(ids)];
+    verified?.ensure(unique);
     if (!refresh && unique.length > 1024)
       throw new Error("Profile request exceeds the directory budget");
     const signal = controller.signal;
@@ -149,7 +210,7 @@ export function createProfileDirectory(
         }
         waiting.add(batch.work);
       }
-      return !batch && (refresh || !snapshot.has(id));
+      return !batch && (refresh || !loaded.has(id));
     });
     for (let offset = 0; offset < missing.length; offset += PROFILE_PAGE) {
       const authors = missing.slice(offset, offset + PROFILE_PAGE);
@@ -198,6 +259,7 @@ export function createProfileDirectory(
     controller = new AbortController();
     pending.clear();
     events.clear();
+    verified?.clear();
     const forgot = unnamed.size > 0;
     unnamed = new Set();
     publish(forgot);
@@ -235,7 +297,11 @@ export function createProfileDirectory(
     ensure,
     accept,
     clear,
+    connected(value: boolean) {
+      verified?.connected(value);
+    },
     reconnect() {
+      verified?.connected(true);
       // Keep winning signed heads: a lagging or failed read must not roll them back.
       const ids = [...new Set([...events.keys(), ...pending.keys()])];
       controller.abort();
@@ -247,6 +313,7 @@ export function createProfileDirectory(
     stats: () => events.stats(),
     dispose() {
       closed = true;
+      verified?.dispose();
       unsubscribeLocal?.();
       clear();
       listeners.clear();

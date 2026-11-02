@@ -730,11 +730,24 @@ pub(crate) async fn relay_info(community: &str) -> Result<serde_json::Value> {
     serde_json::from_slice(&body).map_err(|_| "Invalid community information".into())
 }
 
+static USER_AGENT: OnceLock<String> = OnceLock::new();
+
+/// Records the app version native relay requests report, once at startup.
+pub(crate) fn set_user_agent(version: impl std::fmt::Display) {
+    let _ = USER_AGENT.set(format!("Buzz/{version}"));
+}
+
+/// `User-Agent` for native relay HTTP and WebSocket requests.
+pub(crate) fn user_agent() -> &'static str {
+    USER_AGENT.get().map_or("Buzz", String::as_str)
+}
+
 fn client() -> Result<&'static reqwest::Client> {
     static CLIENT: OnceLock<std::result::Result<reqwest::Client, reqwest::Error>> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
             let builder = reqwest::Client::builder()
+                .user_agent(user_agent())
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(30));
@@ -1846,7 +1859,7 @@ pub(crate) async fn media_copy_image<R: tauri::Runtime>(
     let pixels = tauri::async_runtime::spawn_blocking(move || clipboard_pixels(response.body()))
         .await
         .map_err(|_| "Could not decode image".to_owned())??;
-    crate::image_clipboard::write_image(&app, pixels.0, pixels.1, pixels.2).await
+    crate::clipboard::write_image(&app, pixels.0, pixels.1, pixels.2).await
 }
 
 /// Persist an authenticated bounded response without replacing an existing file.

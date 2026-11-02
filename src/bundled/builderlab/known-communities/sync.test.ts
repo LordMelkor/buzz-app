@@ -135,6 +135,7 @@ async function fixture({
       subject: account.subject,
       email: "a@example.com",
       canUseRemoteAgents: false,
+      canUseBuilderlabDecisions: false,
     },
   }));
   const dispose = startKnownCommunitiesSync({
@@ -300,21 +301,26 @@ it("halts on a 200 list the real client cannot read, forgetting no membership", 
     memberships: [{ id: "https://primary.example", name: "Primary" }],
     sync: { known: [primary], outbox: [] },
   });
-  const session = createOAuthSession(async () => ({
-    value: "secret",
-    account: {
-      subject: "user",
-      email: "a@example.com",
-      canUseRemoteAgents: false,
-    },
-  }));
+  const session = createOAuthSession(
+    async () => ({
+      value: "secret",
+      account: {
+        subject: "user",
+        email: "a@example.com",
+        canUseRemoteAgents: false,
+        canUseBuilderlabDecisions: false,
+      },
+    }),
+    undefined,
+    { request: (input) => host.request(input) },
+  );
   // A proxy's block page, a truncated or an empty body: a 200 that is no list.
   const host: Host = {
     runCommand: vi.fn(),
     request: vi.fn(async () => ({ status: 200, headers: {}, body: "" })),
   };
   const dispose = startKnownCommunitiesSync({
-    client: createKnownCommunitiesClient(host, session),
+    client: createKnownCommunitiesClient(session),
     session,
     knownCommunities: s.knownCommunities,
   });

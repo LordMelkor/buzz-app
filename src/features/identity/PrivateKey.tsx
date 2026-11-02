@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "../../shared/design-system/ui/Button";
 import { Input } from "../../shared/design-system/ui/Input";
 import type { Identity } from "./service";
+import { writeClipboardText } from "../../shared/clipboard";
 
 // Mount only while Profile is active. Late native results must never repopulate a hidden key.
 export function PrivateKey({
@@ -50,7 +51,7 @@ export function PrivateKey({
       const value = secret || (await identity.exportKey());
       if (current !== generation.current) return;
       if (copy) {
-        await navigator.clipboard.writeText(value);
+        await writeClipboardText(value);
         if (current === generation.current)
           setMessage(
             "Private key copied. Keep it somewhere safe; your clipboard now contains it.",

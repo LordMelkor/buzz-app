@@ -1,6 +1,7 @@
 import { BuilderlabLogoIcon } from "../../../shared/design-system/icons";
 import { createActivityTab } from "./Activity";
 import { createSettingsTab } from "./Instructions";
+import { createProfileActions, createSignInFooter } from "./SignInFooter";
 import { creationConfig, createCreationFields, EMPTY_CREATION } from "./Create";
 import type { AgentType } from "../../../features/agents/service";
 import type { RelayData } from "../../../features/relay/service";
@@ -10,7 +11,7 @@ import {
   type RegistrationIntent,
 } from "../agents/registration";
 import { oauthTarget } from "../oauth/browser";
-import type { OAuthSession } from "../oauth/session";
+import type { BuilderlabSession } from "../session";
 
 const PREFIX = "buzz.builderlab.adapter-identity.v1:";
 type Identity = {
@@ -23,8 +24,9 @@ type Identity = {
 /** Bridge Agents' lifecycle and provider settings to Beekeeper. */
 export function builderlabType(
   client: AgentClient,
-  session: OAuthSession,
+  session: BuilderlabSession,
   relay: RelayData,
+  openIdentity?: () => void,
 ): AgentType {
   const scope = () => ({
     target: oauthTarget(),
@@ -99,13 +101,15 @@ export function builderlabType(
     description: "Sign in to Builderlab when creating an agent.",
     defaults: () => ({ config: { ...EMPTY_CREATION } }),
     Create: createCreationFields(client, session),
+    PanelFooter: createSignInFooter(session),
+    ProfileActions: createProfileActions(session),
     tabs: [
       {
         id: "settings",
         title: "Settings",
         role: "settings",
         splitSettings: true,
-        component: createSettingsTab(client, session),
+        component: createSettingsTab(client, session, openIdentity),
       },
       {
         id: "activity",

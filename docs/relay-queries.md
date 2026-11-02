@@ -134,7 +134,9 @@ for those separate requirements.
 `session.emoji` owns the current community's kind-30030 `d=buzz:custom-emoji`
 member sets. `snapshot()` / `subscribe()` provide an immutable catalog; `ensure()`
 is lazy and background-priority, and `refresh()` explicitly retries. The shared
-composer warms it on mount. Each author's newest complete set replaces their old
+composer warms it on mount. Opening autocomplete or a picker uses foreground
+demand to promote a pending cold load or retry a failed passive load, without reloading
+a ready catalog. A failed foreground attempt keeps its error and explicit Retry action across autocomplete edits. Budget overflow still waits for explicit Retry. Each author's newest complete set replaces their old
 one (including empty removal sets); the union picks newer sets, then smaller URLs,
 for shortcode conflicts. The directory retains at most 500 member sets / 2 MiB.
 A read that reaches the 500-set cap stays usable with an incompleteness error;
@@ -338,10 +340,25 @@ The relay has no text search for channel metadata. For a typed, unscoped palette
 or `#` completion query, `channels.searchPublic(query)` reads relay-authored
 `39000` metadata without applying it, in pages of 500 through the relay's
 `(until, before_id)` cursor until the relay runs out or 20,000 events are read.
+Cold searches and the first search after five minutes replace the full directory.
+Between those full reads, expired searches request changes with `since`, starting
+two minutes before the previous successful read began. Newer signed metadata
+replaces older versions per channel; an empty delta retains unchanged candidates.
+Only complete reads advance that watermark. A failed read keeps the previous
+directory and watermark. Incomplete directories, clock rollback, and a delta
+merge exceeding 20,000 channels fall back to a full read.
 It matches names locally and keeps only explicit active public channels the
 viewer has not joined. Every query in the same session epoch shares one read:
 a query that stops waiting leaves it running for the next, and a finished read
-is reused for 30 seconds, so typing reads the directory once. Names match by
+is reused for 30 seconds, so typing reads the directory once. After expiry,
+the prior directory also supplies candidates while fresh pages arrive. Each
+candidate still needs fresh exact resolution, including a name-match check;
+the completed full read or merged delta supplies the final answer. A completed
+directory read cancels unfinished provisional lookups. A failed provisional
+lookup waits for the directory's final answer rather than failing the search.
+If the directory fails, an in-flight provisional lookup can still supply rows
+before the error; a stalled lookup then waits for its existing transport timeout.
+Names match by
 the joined-channel rule (`matchRank`: exact, prefix, word start, substring,
 word runs, then letters in order), so `buzz community` finds `buzz-community`.
 The best eight are resolved through the same exact `resolve` path as message
@@ -351,12 +368,25 @@ joined-only. Reaching the 20,000-event bound reports partial coverage; read
 failures show a retry.
 The search waits for a ready channel list.
 
+Private/deleted channels may disappear from delta results without a tombstone.
+Contradicted exact matches repair or prune the saved candidates. A delta answer
+that finds a contradiction forces full reconciliation; other verified answers
+can finish, and repaired full reads remain reusable. One local invalidation
+restarts the search immediately. Further invalidations use the
+existing bounded read retry policy. Caller cancellation, cache clearing and
+disposal never trigger this restart. Periodic full reads also repair omissions
+caused by clock skew or replica lag beyond the overlap. The directory remains
+session-local; it is not persisted to disk.
+
 A finished read also names every open channel for `#name` prose in messages
 and drafts, through `channels.openDirectory()`, until a later read completes,
 the cache is cleared, or the session's access changes (dropped names link
 again after the next search); a refresh that is still reading, or that fails,
-keeps the prior names. Rendering never starts the read: a name the joined list
-lacks stays prose on a cold directory and links once a search has warmed it.
+keeps the prior names. Names a delta cannot retract, such as deleted or newly
+private channels, stay until the next successful full read. Until then, such a
+name shared with a newer open channel is ambiguous, so neither links. Rendering
+never starts the read: a name the joined list lacks stays prose on a cold
+directory and links once a search has warmed it.
 The joined list owns a name both carry. Opening such a link resolves the
 channel through `refer`, as any channel-only link does. Raw
 `buzz://channel/<id>` links never take a directory name: outside the joined

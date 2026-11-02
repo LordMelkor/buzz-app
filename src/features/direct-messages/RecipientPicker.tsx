@@ -2,6 +2,7 @@ import { Virtualizer } from "virtua";
 import { Popover } from "@base-ui/react/popover";
 import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useAgentChoices } from "../agents/use-choices";
+import { canMessageAgent } from "../agents/choices";
 import type { RelaySession } from "../relay/session";
 import { MatchedLabel } from "../search/MatchedLabel";
 import { exactName, matchPerson } from "../search/person-match";
@@ -100,18 +101,16 @@ export function RecipientPicker({
     keys,
   } = useMemo(() => {
     const controlled = new Set(
-      agents.identities
-        .filter((agent) => agent.managed)
-        .map((agent) => agent.pubkey),
+      agents.identities.filter(canMessageAgent).map((agent) => agent.pubkey),
     );
     const relationships = peopleRelationships(channels, controlled);
     const inDirectory = new Map(
       people.map((person) => [person.pubkey, person]),
     );
-    // A managed agent's own name, kept for ranking and for Space.
+    // An eligible agent's own name, kept for ranking and for Space.
     const agentName = new Map(
       agents.identities.flatMap((agent) =>
-        agent.managed && agent.name
+        canMessageAgent(agent) && agent.name
           ? [[agent.pubkey, agent.name] as const]
           : [],
       ),
@@ -123,7 +122,7 @@ export function RecipientPicker({
     const byAgentName = query.trim()
       ? agents.identities.flatMap((agent): Recipient[] => {
           if (
-            !agent.managed ||
+            !canMessageAgent(agent) ||
             !agent.name ||
             inDirectory.has(agent.pubkey) ||
             matchPerson(agent.name, query) === undefined

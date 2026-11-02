@@ -142,7 +142,9 @@ test("companion remains usable while Channels connection is pending", async ({
     await page.goto(app.origin);
     await openPage(page, "Messages", { connected: false });
     await expect(
-      page.getByText("Connecting to your relay…", { exact: true }),
+      page
+        .getByRole("complementary", { name: "Sidebar", exact: true })
+        .getByText("Connecting…", { exact: true }),
     ).toBeVisible();
     await button(page, "Notes").click();
     await expect(card(page, "Notes")).toHaveCount(1);

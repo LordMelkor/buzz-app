@@ -232,7 +232,13 @@ it("filters the combined sidebar without navigating or resetting Solo sections",
   await user.click(screen.getByRole("button", { name: "New" }));
   expect(
     (await screen.findAllByRole("menuitem")).map((item) => item.textContent),
-  ).toEqual(["New chat", "New workspace", "New DM", "New channel"]);
+  ).toEqual([
+    "New chat",
+    "New workspace",
+    "New DM",
+    "New channel",
+    "New section",
+  ]);
   await user.click(screen.getByRole("menuitem", { name: "New chat" }));
   expect(f.open).toHaveBeenCalledWith(soloDraftTarget(scope));
   await user.click(solo);
@@ -271,6 +277,39 @@ it.each([
   },
 );
 
+it("creates a sidebar section from New without moving or opening a conversation", async () => {
+  const user = userEvent.setup();
+  const f = fixture(true, true);
+  const create = vi
+    .spyOn(f.session.sidebarPreferences, "createSection")
+    .mockResolvedValue(undefined);
+  const assign = vi.spyOn(f.session.sidebarPreferences, "assign");
+  f.connection({});
+  await user.click(screen.getByRole("button", { name: "New" }));
+  await user.click(
+    await screen.findByRole("menuitem", { name: "New section" }),
+  );
+  const dialog = await screen.findByRole("dialog", {
+    name: "Create new section",
+  });
+  await user.type(
+    within(dialog).getByRole("textbox", { name: "Section name" }),
+    "Projects",
+  );
+  await user.click(within(dialog).getByRole("button", { name: "Create" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "Create new section" }),
+    ).toBeNull(),
+  );
+  expect(create).toHaveBeenCalledExactlyOnceWith({
+    id: expect.any(String),
+    name: "Projects",
+  });
+  expect(assign).not.toHaveBeenCalled();
+  expect(f.open).not.toHaveBeenCalled();
+});
+
 it("keeps unavailable creation actions disabled", async () => {
   const user = userEvent.setup();
   fixture(true);
@@ -279,6 +318,10 @@ it("keeps unavailable creation actions disabled", async () => {
     await screen.findByRole("menuitem", { name: "New workspace" }),
   ).toHaveAttribute("aria-disabled", "true");
   expect(screen.getByRole("menuitem", { name: "New channel" })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
+  expect(screen.getByRole("menuitem", { name: "New section" })).toHaveAttribute(
     "aria-disabled",
     "true",
   );
@@ -354,11 +397,12 @@ it("retains scope across Settings remounts and reveals navigation outside the fi
 });
 
 it.each([
-  ["New workspace", "New workspace"],
-  ["New channel", "Create a channel"],
+  ["New workspace", "New workspace", "Name"],
+  ["New channel", "Create a channel", "Name"],
+  ["New section", "Create new section", "Section name"],
 ])(
   "retains typed %s input through cached reconnect and session replacement",
-  async (item, title) => {
+  async (item, title, inputName) => {
     const f = fixture(true, true);
     const user = userEvent.setup();
     f.connection({ status: "connecting", cached: true });
@@ -366,14 +410,14 @@ it.each([
     await user.click(await screen.findByRole("menuitem", { name: item }));
     const input = within(
       await screen.findByRole("dialog", { name: title }),
-    ).getByRole("textbox", { name: "Name" });
+    ).getByRole("textbox", { name: inputName });
     await user.type(input, "Keep this draft");
     f.connection({ status: "error" });
     expect(input).toHaveValue("Keep this draft");
     f.replaceSession();
     expect(
       within(screen.getByRole("dialog", { name: title })).getByRole("textbox", {
-        name: "Name",
+        name: inputName,
       }),
     ).toHaveValue("Keep this draft");
   },
@@ -773,5 +817,42 @@ it("collapsing the contributed task section keeps ordinary chats visible", async
   } finally {
     view.unmount();
     await h.dispose();
+  }
+});
+
+it("shows Try again beside a settled failure, and Connecting while the connection retries", async () => {
+  const f = fixture(true);
+  const retry = vi.spyOn(f.relay, "retry");
+  const sidebar = () => screen.getByRole("complementary", { name: "Sidebar" });
+  const error = "ReadError: Relay read failed (502)";
+  f.connection({ status: "error", error });
+  expect(within(sidebar()).getByText("Couldn’t load channels.")).toBeVisible();
+  expect(within(sidebar()).queryByText(/ReadError/)).toBeNull();
+  await userEvent
+    .setup()
+    .click(within(sidebar()).getByRole("button", { name: "Try again" }));
+  expect(retry).toHaveBeenCalledOnce();
+  // A refusal is about access, not the connection.
+  f.connection({
+    status: "error",
+    error: "ReadError: Relay read failed (403)",
+    denied: true,
+  });
+  expect(
+    within(sidebar()).getByText("You don’t have access to this community."),
+  ).toBeVisible();
+  expect(within(sidebar()).queryByText("Couldn’t load channels.")).toBeNull();
+  expect(
+    within(sidebar()).getByRole("button", { name: "Try again" }),
+  ).toBeVisible();
+  for (const working of [
+    { status: "connecting" },
+    { status: "error", error, retrying: true },
+  ] as const) {
+    f.connection(working);
+    expect(within(sidebar()).getByText("Connecting…")).toBeVisible();
+    expect(
+      within(sidebar()).queryByRole("button", { name: "Try again" }),
+    ).toBeNull();
   }
 });

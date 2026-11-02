@@ -170,6 +170,11 @@ test("test bodies span the listed test's call; groups, hooks and helpers are out
 
 test("the selection executes every case of a multiline Vitest parameterized test", (t) => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
+  // Vitest only collects files its include globs match under the repository,
+  // so the fixture cannot live in a temp dir. vitest.config.ts excludes it
+  // unless this is set; the Vitest processes below inherit it.
+  process.env.BUZZ_FLAKE_CHECK_FIXTURE = "1";
+  t.after(() => delete process.env.BUZZ_FLAKE_CHECK_FIXTURE);
   const dir = mkdtempSync(
     join(root, "tests/fixtures/design-system/flake-selection-"),
   );

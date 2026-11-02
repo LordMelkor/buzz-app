@@ -1098,3 +1098,44 @@ it("cancels feedback on disconnected community switches even when both sessions 
     vi.useRealTimers();
   }
 });
+
+it.each([
+  [0, null],
+  [1, "1 recommended plugin"],
+  [3, "3 recommended plugins"],
+])(
+  "points to %s managed plugin recommendations beside Plugins",
+  async (count, text) => {
+    const user = userEvent.setup();
+    const subscribe = () => () => {};
+    const actions: readonly [] = [];
+    const state = { profile: { name: "Fixture", picture: "" }, viewer: null };
+    const presence = { status: "online", preference: "auto" };
+    const connection = { status: "unavailable", session: undefined, scope: "" };
+    const communities = {
+      subscribe,
+      snapshot: () => state,
+      presence: { subscribe, snapshot: () => presence },
+      relay: { subscribe, snapshot: () => connection },
+    } as unknown as Communities;
+    render(
+      <ProfileButton
+        communities={communities}
+        accountActions={
+          {
+            subscribe,
+            snapshot: () => actions,
+          } as unknown as AccountActionsService
+        }
+        appearance={testAppearance}
+        settingsSelected={false}
+        pluginRecommendations={count}
+        onSettings={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Your profile" }));
+    const item = await screen.findByRole("menuitem", { name: /Plugins/ });
+    if (text) expect(item).toHaveTextContent(text);
+    else expect(item).not.toHaveTextContent("recommended");
+  },
+);

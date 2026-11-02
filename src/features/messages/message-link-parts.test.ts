@@ -251,3 +251,16 @@ it("bounds repeated unfinished wrappers while retaining a later valid link", () 
     expect(parts.map((part) => part.text).join("")).toBe(`${prefix} Docs`);
   }
 });
+
+it("recognizes bare, wrapped and labelled plugin page links, and not malformed ones", () => {
+  const url =
+    "buzz://plugin?id=com.example.catalog&page=detail&route.slug=hello";
+  for (const text of [url, `<${url}>`, `[Open](${url})`]) {
+    const parts = messageLinkParts(`See ${text}.`);
+    expect(parts.filter((part) => part.url).map((part) => part.url)).toEqual([
+      url,
+    ]);
+  }
+  const malformed = "<buzz://plugin?id=Not.Valid>";
+  expect(messageLinkParts(malformed).some((part) => part.url)).toBe(false);
+});

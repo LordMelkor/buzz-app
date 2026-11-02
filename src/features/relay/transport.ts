@@ -1,3 +1,4 @@
+import type { VerifiedProfileAuthority } from "./verified-profile";
 import type { ReminderHost } from "./reminders";
 import {
   memoryResponseText,
@@ -180,6 +181,12 @@ export interface ReadTransport {
   readonly relayAuthor: string;
   /** Explicit NIP-11 self from this community, never a contact-key fallback. */
   readonly archiveAuthority?: string;
+  /** Optional verified-profile capability from this community's explicit NIP-11 self. */
+  readonly verifiedProfiles?: VerifiedProfileAuthority | undefined;
+  /** Refresh NIP-11; null is an explicit disable, rejection preserves discovery. */
+  readVerifiedProfileAuthority?(
+    signal: AbortSignal,
+  ): Promise<VerifiedProfileAuthority | null>;
   /** Purpose-bound authoritative recency, verified and max 128 channel IDs. */
   channelActivity?(
     channelIds: readonly string[],

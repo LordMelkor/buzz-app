@@ -1,4 +1,5 @@
 import { AvatarStack } from "../../shared/design-system/ui/AvatarStack";
+import { canMessageAgent } from "../agents/choices";
 import { avatarMedia } from "../../shared/avatar-source";
 import { useChannelWindow } from "../relay/react";
 import type { ChannelSummary } from "../relay/contracts";
@@ -257,7 +258,7 @@ export function NewMessage({
     const controlled = new Set(
       session.agentChoices
         .snapshot()
-        .identities.filter((agent) => agent.managed)
+        .identities.filter(canMessageAgent)
         .map((agent) => agent.pubkey),
     );
     if (
@@ -269,7 +270,7 @@ export function NewMessage({
       )
     )
       throw new Error(
-        "A selected agent is no longer available. Remove it or wait for agent controls to reconnect.",
+        "A selected agent is no longer available. Remove it or refresh its details and try again.",
       );
   }
   function change(people: Recipient[]) {

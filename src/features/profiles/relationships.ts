@@ -3,13 +3,13 @@ import type { ChannelSummary } from "../relay/contracts";
 /**
  * How the viewer already relates to each person, for ordering people as
  * destinations (New message recipients, Command-K People). Lower is closer:
- * a one-to-one DM, then a group DM, then one of the viewer's managed agents,
+ * a one-to-one DM, then a group DM, then one of the viewer's messageable agents,
  * then a shared channel, then nobody. This is the destination form of the
  * mention chooser's "channel members first".
  */
 export function peopleRelationships(
   channels: readonly ChannelSummary[],
-  managedAgents: ReadonlySet<string>,
+  messageableAgents: ReadonlySet<string>,
 ) {
   const dms = new Map<string, string>();
   const interacted = new Set<string>();
@@ -29,7 +29,7 @@ export function peopleRelationships(
         ? 0
         : interacted.has(pubkey)
           ? 1
-          : managedAgents.has(pubkey)
+          : messageableAgents.has(pubkey)
             ? 2
             : shared.has(pubkey)
               ? 3

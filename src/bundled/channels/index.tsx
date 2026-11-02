@@ -9,7 +9,6 @@ import { registerCanvas } from "./canvas-panel";
 import { ChannelTemplateSettings } from "./ChannelTemplateSettings";
 import { ChatCircleIcon, CopyIcon } from "../../shared/design-system/icons";
 import { isApplePlatform } from "../../features/shortcuts/format";
-import { soloDraftTarget } from "../../features/channel-navigation/routes";
 import type { ArchiveShortcut } from "./ChannelsPage";
 export const inject = [
   "pages",
@@ -56,22 +55,6 @@ export const apply: PluginModule["apply"] = (ctx) => {
   const panels = ctx.panels;
   const archive: ArchiveShortcut = {};
   ctx.shortcuts.register({
-    id: "new-conversation",
-    title: "New conversation",
-    binding: { key: "n", mod: true },
-    order: 10,
-    allowInEditable: true,
-    // Off Apple platforms, Ctrl+N is shell history in the terminal.
-    when: () =>
-      !!relay.snapshot().scope &&
-      (isApplePlatform(window.navigator.platform) ||
-        !document.activeElement?.closest(".xterm")),
-    run: () => {
-      const { scope } = relay.snapshot();
-      if (scope) void navigator.open(soloDraftTarget(scope));
-    },
-  });
-  ctx.shortcuts.register({
     id: "archive-chat",
     title: "Archive chat",
     // Apple Mail's Archive. Elsewhere Ctrl is Mod, and Ctrl+Shift+A is Home.
@@ -104,6 +87,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     route: { version: 1, validate: isChannelRoute },
     component: ({ companion, navigation }) => (
       <ChannelsPage
+        chatMenus={ctx.conversation.chatMenus}
         navigation={navigation}
         navigator={navigator}
         extensions={extensions}

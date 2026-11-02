@@ -47,6 +47,7 @@ import { useChannelReference } from "./channel-reference";
 import { messageViewKey } from "../messages/view-key";
 import { soloChatLinkName } from "../solo/labels";
 import styles from "./LinkPreview.module.css";
+import { writeClipboardText } from "../../shared/clipboard";
 
 const empty: readonly Contribution<LinkRenderer>[] = [];
 const snapshot = () => empty;
@@ -179,7 +180,7 @@ export function MessageLink({
     setCopying(true);
     setNotice(undefined);
     try {
-      await navigator.clipboard.writeText(url);
+      await writeClipboardText(url);
       setNotice({ text: "Link copied", error: false });
     } catch {
       setNotice({

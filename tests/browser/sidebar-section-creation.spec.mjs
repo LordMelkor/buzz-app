@@ -203,9 +203,9 @@ async function startDrag(page, locator) {
   if (!box) throw new Error("Drag source missing");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2 + 12, box.y + box.height / 2, {
-    steps: 3,
-  });
+  const pointer = { x: box.x + box.width / 2 + 12, y: box.y + box.height / 2 };
+  await page.mouse.move(pointer.x, pointer.y, { steps: 3 });
+  return pointer;
 }
 
 async function dropOnCreate(page) {
@@ -245,12 +245,17 @@ test("only the top channel-section boundary reveals creation, latches, cancels a
   const target = page.locator("[data-create-section-drop]");
   const row = page.locator('[data-channel-id="alpha"]');
   await expect(target).toHaveCount(0);
-  await startDrag(page, row);
-  await expect(page.locator("[data-section-creation-preview]")).toBeVisible();
-  await expect(page.locator("[data-section-creation-preview]")).not.toHaveCSS(
-    "translate",
-    "none",
-  );
+  const pointer = await startDrag(page, row);
+  // The preview stays where the row was grabbed, under the pointer.
+  const preview = page.locator('[class*="channelDragOverlay"]');
+  await expect(preview).toBeVisible();
+  await expect(preview).toHaveCSS("translate", "none");
+  await expect
+    .poll(async () => {
+      const box = await preview.boundingBox();
+      return !!box && box.y <= pointer.y && pointer.y <= box.y + box.height;
+    })
+    .toBe(true);
   await expect(target).toHaveCount(0);
   // Channels is not first when Work exists: its old gap is an ordinary move area.
   const channels = page.locator('[data-sidebar-section="channels"]');
@@ -311,7 +316,6 @@ test("only the top channel-section boundary reveals creation, latches, cancels a
   expect(app.report.sidebarPublications ?? []).toHaveLength(0);
   // A lone saved section is not reorderable and cannot reveal creation.
   await startDrag(page, work);
-  await expect(page.locator("[data-section-creation-preview]")).toHaveCount(0);
   await expect(target).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.mouse.up();

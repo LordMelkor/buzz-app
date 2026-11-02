@@ -34,6 +34,7 @@ export type Credential = Readonly<{
     subject: string;
     email: string;
     canUseRemoteAgents: boolean;
+    canUseBuilderlabDecisions: boolean;
   }>;
 }>;
 
@@ -167,6 +168,8 @@ export async function browserCredential(
         email: typeof account.email === "string" ? account.email.trim() : "",
         canUseRemoteAgents:
           account.capabilities?.can_use_remote_agents === true,
+        canUseBuilderlabDecisions:
+          account.capabilities?.can_use_builderlab_decisions === true,
       }),
     });
   } catch (error) {

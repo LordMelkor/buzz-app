@@ -26,7 +26,7 @@ fn main() {
         println!("cargo:rustc-cfg=buzz_updater_enabled");
     }
     // tauri-build watches only the resource files present when it ran, so watch
-    // the directory too: goose-acp is staged after a first `cargo check`.
+    // the directory too: the ordinary goose-acp is staged after a first `cargo check`.
     println!("cargo:rerun-if-changed=resources/bin");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         build_resources::prepare_executables(
@@ -92,6 +92,9 @@ fn main() {
             "federated_identity_sign_in",
             "federated_identity_cancel_sign_in",
             "federated_identity_sign_out",
+            "federated_identity_register",
+            "federated_identity_unregister",
+            "federated_identity_request",
             "relay_socket_connect",
             "relay_socket_start",
             "relay_socket_send",
@@ -132,6 +135,7 @@ fn main() {
             "media_download",
             "file_download",
             "media_copy_image",
+            "clipboard_write_text",
             "media_stream_base",
             "get_os_idle_seconds",
             "workspace_pick_folder",
@@ -164,6 +168,9 @@ fn main() {
             "oauth_callback_cancel",
             "oauth_callback_complete",
             "app_agent_list",
+            "app_agent_set_protection",
+            "app_agent_protection_defaults",
+            "app_agent_set_protection_defaults",
             "app_agent_create",
             "app_agent_portable",
             "app_agent_port",
@@ -261,10 +268,12 @@ fn configure_enterprise_auth() {
 fn configure_federated_identity() {
     const NAME: &str = "BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG";
     println!("cargo:rerun-if-env-changed={NAME}");
+    println!("cargo:rerun-if-env-changed=BUZZ_BUILDERLAB_URL");
     if let Some(raw) = std::env::var(NAME).ok().filter(|raw| !raw.is_empty()) {
         let config = federated_identity_config::Config::parse(&raw)
             .unwrap_or_else(|error| panic!("{error}"));
         for legacy in [
+            "BUZZ_BUILDERLAB_URL",
             "BUZZ_BUILD_ENTERPRISE_AUTH_RELAYS",
             "BUZZ_BUILD_ENTERPRISE_AUTH_ADAPTER_BASE_URL",
         ] {

@@ -7,7 +7,7 @@
 use std::{fmt, time::Duration};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use reqwest::header::{HeaderValue, CONTENT_TYPE};
+use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Deserializer};
 use url::{Host, Url};
 use zeroize::Zeroizing;
@@ -115,6 +115,7 @@ pub enum Error {
 pub struct Client {
     http: reqwest::Client,
     base_url: Url,
+    header: HeaderName,
     credential: HeaderValue,
 }
 
@@ -128,6 +129,26 @@ impl Client {
     /// Create a client from the service root, including any API path prefix.
     /// Routes are appended to that prefix whether or not it has a trailing slash.
     pub fn new(service_url: &str, credential: &str) -> Result<Self, Error> {
+        Self::build(
+            service_url,
+            HeaderName::from_static("x-bb-session-credential"),
+            credential,
+        )
+    }
+
+    /// Like `new`, but authenticates with `Authorization: Bearer <token>`.
+    pub fn bearer(service_url: &str, token: &str) -> Result<Self, Error> {
+        if token.is_empty() {
+            return Err(Error::InvalidCredential);
+        }
+        Self::build(
+            service_url,
+            AUTHORIZATION,
+            &Zeroizing::new(format!("Bearer {token}")),
+        )
+    }
+
+    fn build(service_url: &str, header: HeaderName, credential: &str) -> Result<Self, Error> {
         let mut base_url = Url::parse(service_url).map_err(|_| Error::InvalidServiceUrl)?;
         let loopback = match base_url.host() {
             Some(Host::Ipv4(ip)) => ip.is_loopback(),
@@ -167,6 +188,7 @@ impl Client {
         Ok(Self {
             http,
             base_url,
+            header,
             credential,
         })
     }
@@ -211,7 +233,7 @@ impl Client {
         let mut response = self
             .http
             .post(url)
-            .header("X-BB-Session-Credential", &self.credential)
+            .header(&self.header, &self.credential)
             .header(CONTENT_TYPE, "application/json")
             .body(body.to_vec())
             .send()

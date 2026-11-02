@@ -12,19 +12,23 @@ import { LinkLabel } from "../links/InlineLink";
 import inlineStyles from "../../shared/InlineReference.module.css";
 import { describePull, stateIcons } from "./pull-state-view";
 import type { PullStates } from "./pull-states";
+import { parseGitHubReference } from "./references";
 import styles from "./GitHub.module.css";
 
 /** A pull request link in a message: the Links label with the pull request's
  * state as its icon, in place of the GitHub logo. */
 export function PullLink({ url, states }: { url: string; states: PullStates }) {
+  const identity =
+    parseGitHubReference(url, { pullSubtargets: true })?.url ?? url;
   // A composer decoration or preview shows what is already known and reads
   // nothing: typing a link mounts one for every prefix of its number.
   const live = useContext(LinkInteractiveContext);
   const subscribe = useCallback(
-    (listener: () => void) => (live ? states.watch(url, listener) : () => {}),
-    [live, states, url],
+    (listener: () => void) =>
+      live ? states.watch(identity, listener) : () => {},
+    [live, states, identity],
   );
-  const read = useSyncExternalStore(subscribe, () => states.get(url));
+  const read = useSyncExternalStore(subscribe, () => states.get(identity));
   const state = typeof read === "object" ? read : undefined;
   // The plain pull request glyph until read, and when it can't be, so the
   // icon doesn't swap when the state arrives.

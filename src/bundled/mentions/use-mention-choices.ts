@@ -12,13 +12,13 @@ import type { MentionRecipient } from "../../features/messages/mention-draft";
 import type { Agent } from "../../features/agents/service";
 import { useAgentChoices } from "../../features/agents/use-choices";
 import { AgentsContext, useAgentsSnapshot } from "../../features/agents/react";
-import { useIdentityNames } from "../../features/identity-names/react";
 import { DraftMentionRoster } from "../../features/messages/draft-mention-roster";
 import { SelectedMentionContext } from "../../features/messages/selected-mention-context";
 import { archivedMention } from "../../features/messages/mention-admission";
 import { mentionHistory } from "../../features/messages/mention-history";
 import { directoryChanges, mentionCandidates } from "./mention-candidates";
 import { useListedChannel } from "../../features/relay/listed-channel";
+import { useNamesRevision } from "../../features/identity-names/react";
 import {
   exactMention,
   matchingMentions,
@@ -223,7 +223,8 @@ export function useMentionChoices(
     lifetime,
   );
   const archives = useMentionArchives(session, open);
-  const resolve = useIdentityNames(session.names);
+  // Labels come from names scopes directly: watch every name change while open.
+  const names = useNamesRevision(session.names, open);
   const [installed, install] = useState<{
     session: ComposerSession;
     key: string;
@@ -278,7 +279,7 @@ export function useMentionChoices(
     void channel;
     void agents;
     void archives;
-    void resolve;
+    void names;
     void revision;
     // A closed or disabled chooser shows nothing, so it names nothing.
     if (!open)
@@ -296,7 +297,7 @@ export function useMentionChoices(
     channel,
     agents,
     archives,
-    resolve,
+    names,
     revision,
   ]);
   // Install membership first; agent discovery must not hide known members.

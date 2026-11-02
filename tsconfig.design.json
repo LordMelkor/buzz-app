@@ -7,5 +7,6 @@
     "vite.message-gallery.config.ts",
     "vite.design.config.ts",
     "vitest.design.config.ts"
-  ]
+  ],
+  "exclude": ["tests/fixtures/design-system/flake-selection-*"]
 }

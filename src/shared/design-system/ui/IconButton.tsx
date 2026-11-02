@@ -5,6 +5,7 @@ type IconButtonVariant =
   | NonNullable<ButtonProps["variant"]>
   | "destructive-quiet"
   | "solid"
+  | "inset"
   | "tint"
   | "chrome"
   | "avatar"
@@ -43,13 +44,15 @@ export function IconButton({
           ? "destructive"
           : variant === "solid"
             ? "prominent"
-            : variant === "tint" ||
-                variant === "chrome" ||
-                variant === "avatar" ||
-                variant === "media" ||
-                variant === "bare"
-              ? "ghost"
-              : variant
+            : variant === "inset"
+              ? "subtle"
+              : variant === "tint" ||
+                  variant === "chrome" ||
+                  variant === "avatar" ||
+                  variant === "media" ||
+                  variant === "bare"
+                ? "ghost"
+                : variant
       }
       size={
         size === "xs" || size === "toolbar"

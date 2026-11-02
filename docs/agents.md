@@ -41,8 +41,9 @@ the usual Create agent form, may edit the name, runtime and settings, and create
 only by submitting it. Closing the form discards the request. Requests are local,
 bounded to 16 and do not survive reload or a change of signed-in owner.
 Approval binds the identity to the requesting agent's owner and community, even
-when another community is selected. Use `members` separately after creation to add
-it to a conversation. Agent tools do not expose draft approval.
+when another community is selected. Add the agent to a conversation separately
+after creation; see the [shared tool definitions](../src/buzz-mcp/tools.ts) for
+the available operations and arguments. Agent tools do not expose draft approval.
 
 `agent_update` submits an unsaved draft of changes to one of the owner's local
 agents in the same community, named by pubkey or exact name: a new name, a type
@@ -54,6 +55,22 @@ request. A type change carries what the new type adopts, as a manual one does. C
 requests share the creation requests' local bound and lifetime.
 Keys stay in native custody. Hosted-provider provisioning and standalone tool
 servers do not support these operations.
+
+## Product help for agents
+
+The read-only `buzz_help` tool returns [the Buzz quick guide](buzz-help.md), bundled
+with this app version. The shared agent prompt tells agents to read it when someone
+asks how to use Buzz; the full guide is not added to every session's initial context.
+Claude, Codex, Goose and Pi use the shared tools. This repository's standalone MCP
+server exposes the same tool and supplies the hint in its server instructions.
+Other remote hosts must adopt the tool themselves. No repository checkout or web
+request is needed to read it.
+
+Keep the guide current in the same change as user-facing behavior. It describes
+implemented features, not plans or internal support procedures. Existing sessions
+may retain their previous prompt or tool list; use **Start a new session** to pick
+up the new guidance. Installing a new build updates the bundled guide, not every
+older app or remote host.
 
 ## Agent Attention
 
@@ -360,6 +377,10 @@ from its saved identities (deleted ones omitted), so it carries Agents' own
 loading and error state. Agents' `snapshot()` is different: it holds only the
 selected community's agents, with their settings.
 
+The source can also carry a separate `hosted` array of completed owned agents
+shown in the selected community. These are DM eligibility evidence for
+`agentChoices`, not local identities for name precedence or process control.
+
 `app/services.ts` composes consumers before Agents exists, through
 `createLocalAgents()`. Until `bind` connects `agents.local`, the snapshot is
 `unavailable`; unbinding returns it there. Two consumers read it directly:
@@ -402,6 +423,17 @@ sources, deduplicated by public key:
   the host's saved Buzz library plus the owner's relay-published records; and
 - the viewer's local agents for this exact community, flagged `managed` with a
   `managedName`.
+
+The same app-owned source also supplies completed hosted agents shown in the
+selected community, separately from local identities. The projection checks their
+owner and community and gives hosted choices `messageable: true`. As with local
+agents, archived identities remain in `identities`; `selectable` and each action's
+existing archive policy govern forward-looking choices.
+`canMessageAgent` accepts that flag or local `managed` evidence. Profile Message,
+search, the DM picker and fresh-send validation use this predicate; hosted agents
+never gain local custody or template-management status from it. Library presence
+alone does not grant DM eligibility. Existing DMs can reopen without agent-control
+evidence, through the normal relay-confirmed DM open.
 
 A snapshot exposes `identities`, `selectable`, `archives`, `definitions`, `status`,
 `pending`, `complete` and a separate `templates` projection. `status: ready` means

@@ -52,7 +52,7 @@ use nsec_backup::{
     nsec_restore_wait, NsecBackupHost,
 };
 use nsec_backup_choice::{nsec_backup_choice, nsec_backup_set_choice};
-mod image_clipboard;
+mod clipboard;
 mod jev;
 mod keep_awake;
 #[cfg(target_os = "macos")]
@@ -70,6 +70,7 @@ mod workspace_folder;
 use legacy_communities::legacy_communities;
 use os_idle::get_os_idle_seconds;
 use repositories_folder::repositories_folder_validate;
+mod relaunch;
 mod relay;
 mod relay_admin;
 mod sign_out;
@@ -360,6 +361,7 @@ async fn plugin_update_preview(
     .await
 }
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn plugin_import_git(
     identity: tauri::State<'_, IdentityHost>,
     fi: tauri::State<'_, federated_identity::FederatedIdentity>,
@@ -368,7 +370,11 @@ async fn plugin_import_git(
     reference: String,
     authorization: Option<String>,
     check_only: Option<bool>,
+    commit: Option<String>,
 ) -> Result<Option<Preview>, String> {
+    if let Some(commit) = &commit {
+        buzzodz_plugins::imports::RequiredCommit::parse(commit)?;
+    }
     let repository = buzzodz_plugins::imports::repository_url(&repository)?;
     let url = url::Url::parse(&repository).map_err(|_| "Invalid repository")?;
     let community = url.origin().ascii_serialization();
@@ -395,9 +401,14 @@ async fn plugin_import_git(
     let result = if check_only == Some(true) {
         // Checks own only their clone; they must never lock or replace Add's preview.
         tauri::async_runtime::spawn_blocking(move || {
+            let required = commit
+                .as_deref()
+                .map(buzzodz_plugins::imports::RequiredCommit::parse)
+                .transpose()?;
             buzzodz_plugins::imports::prepare_git_authorized(
                 &repository,
                 &reference,
+                required,
                 authorization.as_deref(),
                 assertion
                     .as_ref()
@@ -417,9 +428,14 @@ async fn plugin_import_git(
                 Box::new(move || !guard.authorization_session_current(&authorization))
                     as Box<dyn Fn() -> bool + Send>
             });
+            let required = commit
+                .as_deref()
+                .map(buzzodz_plugins::imports::RequiredCommit::parse)
+                .transpose()?;
             buzzodz_plugins::imports::prepare_git_authorized(
                 &repository,
                 &reference,
+                required,
                 authorization.as_deref(),
                 assertion
                     .as_ref()
@@ -507,6 +523,7 @@ async fn plugin_import_install(
 
 fn ready(manager: &Manager, catalog: Catalog) -> InstallationResult {
     InstallationResult::Ready {
+        managed: manager.managed(&catalog),
         catalog,
         external_plugins_paused: manager.external_plugins_paused(),
     }
@@ -541,23 +558,33 @@ async fn plugin_catalog(
 #[tauri::command]
 async fn plugin_change(
     manager: tauri::State<'_, PluginManager>,
+    registrations: tauri::State<'_, federated_identity::access::Registrations>,
     action: String,
     id: String,
 ) -> Result<InstallationResult, String> {
-    with_manager(manager, move |m| {
-        m.change(&action, &id).map(|catalog| ready(&m, catalog))
+    registrations.retire(&id);
+    let plugin = id.clone();
+    let result = with_manager(manager, move |m| {
+        m.change(&action, &plugin).map(|catalog| ready(&m, catalog))
     })
-    .await
+    .await;
+    registrations.retire(&id);
+    result
 }
 #[tauri::command]
 async fn plugin_reload(
     manager: tauri::State<'_, PluginManager>,
+    registrations: tauri::State<'_, federated_identity::access::Registrations>,
     id: String,
 ) -> Result<InstallationResult, String> {
-    with_manager(manager, move |m| {
-        m.reload(&id).map(|catalog| ready(&m, catalog))
+    registrations.retire(&id);
+    let plugin = id.clone();
+    let result = with_manager(manager, move |m| {
+        m.reload(&plugin).map(|catalog| ready(&m, catalog))
     })
-    .await
+    .await;
+    registrations.retire(&id);
+    result
 }
 #[tauri::command]
 async fn plugin_module(
@@ -570,12 +597,16 @@ async fn plugin_module(
 #[tauri::command]
 async fn plugin_recover(
     manager: tauri::State<'_, PluginManager>,
+    registrations: tauri::State<'_, federated_identity::access::Registrations>,
 ) -> Result<InstallationResult, String> {
-    with_manager(manager, |m| m.recover().map(|catalog| ready(&m, catalog))).await
+    registrations.clear();
+    let result = with_manager(manager, |m| m.recover().map(|catalog| ready(&m, catalog))).await;
+    registrations.clear();
+    result
 }
 #[tauri::command]
 async fn update_restart<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
-    app.request_restart();
+    relaunch::request(&app);
     Ok(())
 }
 fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
@@ -609,6 +640,9 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         federated_identity::federated_identity_sign_in,
         federated_identity::federated_identity_cancel_sign_in,
         federated_identity::federated_identity_sign_out,
+        federated_identity::access::federated_identity_register,
+        federated_identity::access::federated_identity_unregister,
+        federated_identity::access::federated_identity_request,
         federated_identity::socket::relay_socket_connect,
         federated_identity::socket::relay_socket_start,
         federated_identity::socket::relay_socket_send,
@@ -649,6 +683,7 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         file_download,
         media_download,
         media_copy_image,
+        clipboard::clipboard_write_text,
         media_stream_base,
         get_os_idle_seconds,
         workspace_pick_folder,
@@ -691,6 +726,9 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         nsec_restore_cancel,
         app_agents::app_agent_list,
         app_agents::app_agent_create,
+        app_agents::app_agent_set_protection,
+        app_agents::app_agent_protection_defaults,
+        app_agents::app_agent_set_protection_defaults,
         app_agents::app_agent_portable,
         app_agents::app_agent_port,
         app_agents::app_agent_rename,
@@ -817,7 +855,8 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(federated_identity)
+        .manage(federated_identity.clone())
+        .manage(federated_identity::access::Registrations::default())
         .manage(federated_identity::socket::Sockets::default())
         .setup(move |app| {
             #[cfg(target_os = "linux")]
@@ -839,6 +878,7 @@ pub fn run() {
                     })?;
                 }
             }
+            relay::set_user_agent(&app.package_info().version);
             app.state::<federated_identity::FederatedIdentity>()
                 .watch(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
@@ -966,7 +1006,7 @@ pub fn run() {
         None => builder,
     };
     builder
-        .manage(image_clipboard::ImageClipboard::default())
+        .manage(clipboard::Clipboard::default())
         .manage(keep_awake::KeepAwake::default())
         .manage(identity)
         .manage(archive::ArchiveHost::default())
@@ -982,7 +1022,7 @@ pub fn run() {
         .manage(HostProcesses::default())
         .manage(HostMcpServers::default())
         .manage(OAuthCallbackHost::default())
-        .manage(NsecBackupHost::default())
+        .manage(NsecBackupHost::default().with_federated_identity(federated_identity))
         .manage(Notifications::default())
         .manage(DeepLinks::default())
         // Plugin storage lives in this identifier's app data, so development
@@ -1022,6 +1062,7 @@ pub fn run() {
                 webview.state::<relay::Spools>().cancel_all(&webview.state::<relay::Uploads>());
                 // Processes belong to the page that started them.
                 webview.state::<Huddles>().stop_all();
+                webview.state::<federated_identity::access::Registrations>().clear();
                 webview.state::<federated_identity::socket::Sockets>().clear();
                 webview.state::<federated_identity::FederatedIdentity>().clear_discoveries();
                 webview.state::<HostProcesses>().stop_all();
@@ -1055,6 +1096,8 @@ pub fn run() {
             }
             if matches!(event, tauri::RunEvent::Exit) {
                 shut_down(app);
+                #[cfg(target_os = "macos")]
+                relaunch::on_exit(app);
             }
         });
 }
@@ -1063,10 +1106,12 @@ pub fn run() {
 pub(crate) fn shut_down<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     app.state::<NsecBackupHost>().close();
     app.state::<federated_identity::FederatedIdentity>().close();
+    app.state::<federated_identity::access::Registrations>()
+        .clear();
     app.state::<federated_identity::socket::Sockets>().clear();
     app.state::<relay::Spools>()
         .cancel_all(&app.state::<relay::Uploads>());
-    app.state::<image_clipboard::ImageClipboard>().release();
+    app.state::<clipboard::Clipboard>().release();
     app.state::<HostProcesses>().shutdown();
     host_command::stop_login_shell_probe();
     app.state::<HostMcpServers>().stop_all();
@@ -1112,6 +1157,7 @@ mod tests {
                 "--invalid".into(),
                 None,
                 Some(check_only),
+                None,
             ))
             .err()
             .unwrap()
@@ -1120,6 +1166,28 @@ mod tests {
         assert!(check(true).contains("branch or tag"));
         drop(pending);
         assert!(check(true).contains("branch or tag"));
+        let pinned = |commit: &str, check_only| {
+            tauri::async_runtime::block_on(super::plugin_import_git(
+                app.state(),
+                app.state(),
+                app.state(),
+                "https://example.invalid/plugins".into(),
+                "main".into(),
+                None,
+                Some(check_only),
+                Some(commit.into()),
+            ))
+            .err()
+            .unwrap()
+        };
+        for commit in ["main", "abc123", &"a".repeat(41), &"g".repeat(40)] {
+            for check_only in [false, true] {
+                assert!(
+                    pinned(commit, check_only).contains("Required commit"),
+                    "{commit}"
+                );
+            }
+        }
         assert_eq!(
             imports.0.lock().unwrap().as_ref().unwrap().preview.token,
             token

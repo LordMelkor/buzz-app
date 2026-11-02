@@ -38,7 +38,7 @@ test("cold destination waits for its enabled provider to activate", async ({
       .poll(() => page.evaluate(() => window.delayFixture.started))
       .toBe(true);
     await expect(page.getByRole("main").getByRole("status")).toHaveText(
-      "Opening destination…",
+      "Loading…",
     );
     await expect
       .poll(() =>
@@ -134,7 +134,7 @@ test("native Settings traversal retains a dirty Profile behind an unavailable pr
   });
   await page.goForward();
   await expect(
-    page.getByText("This destination couldn’t open", { exact: true }),
+    page.getByText("This page isn’t available", { exact: true }),
   ).toBeVisible();
   expect(
     await page.evaluate(() => window.retainedDraftEditor.isConnected),

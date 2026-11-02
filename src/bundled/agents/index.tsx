@@ -1,6 +1,7 @@
 import type { PluginModule } from "../../plugins/api";
 import { registerAttention } from "../../features/agents/attention-command";
 import { registerDiscovery } from "../../features/agents/attention-discovery";
+import { registerDecideTool } from "../../features/decisions/agent-tool";
 import { AgentsPage } from "./AgentsPage";
 import { AgentCardAttachment, isAgentCard } from "./AgentCardAttachment";
 import { availableAgentProviderRoute } from "./routes";
@@ -15,10 +16,12 @@ export const inject = [
   "communityReader",
   "host",
   "conversation",
+  "decisions",
 ];
 export const apply: PluginModule["apply"] = (ctx) => {
   registerAttention(ctx);
   registerDiscovery(ctx.agents);
+  registerDecideTool(ctx.agents, ctx.decisions);
   const { relay, navigation: navigator } = ctx;
   const agents = developerMode ? withImportScenario(ctx.agents) : ctx.agents;
   ctx.conversation.registerAttachment({

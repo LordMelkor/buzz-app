@@ -131,6 +131,7 @@
 
 /* Profile-style identity and shared agent sections in one scrollport. */
 .build {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -138,6 +139,7 @@
   min-width: 0;
 }
 .detailsScroll {
+  --agent-footer-height: 0px;
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -145,6 +147,50 @@
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-5);
+  padding-block-end: calc(var(--space-5) + var(--agent-footer-height));
+  scroll-padding-block-end: calc(var(--space-5) + var(--agent-footer-height));
+}
+.panelFooter {
+  display: grid;
+  box-sizing: border-box;
+  position: absolute;
+  left: 0;
+  width: 100%;
+  bottom: 0;
+  z-index: 2;
+  /* Give the floating surface its own inset, inside the content's border line. */
+  padding: var(--space-5) calc(2 * var(--space-5));
+  pointer-events: none;
+}
+.panelFooter:empty {
+  display: none;
+}
+.panelFooter::before {
+  content: "";
+  position: absolute;
+  inset: 50% 0 0;
+  z-index: -1;
+  background: linear-gradient(to top, var(--surface-panel), transparent);
+}
+.panelFooter > * {
+  grid-area: 1 / 1;
+  pointer-events: auto;
+}
+.identityPortrait {
+  position: relative;
+  width: 8rem;
+  height: 8rem;
+}
+/* Motion drives only artwork; labels and controls retain color. */
+.identityCard > :is([aria-hidden="true"], .identityPortrait) {
+  filter: grayscale(var(--agent-artwork-grayscale, 0));
+}
+.identityCard > .identityPortrait {
+  filter: grayscale(var(--agent-artwork-grayscale, 0))
+    blur(var(--agent-artwork-blur, 0px));
+  /* Independent scale preserves the name editor's motion transform. */
+  scale: var(--agent-artwork-scale, 1);
+  opacity: var(--agent-artwork-opacity, 1);
 }
 .saveFooter {
   flex: none;
@@ -167,11 +213,6 @@
   width: fit-content;
   max-width: 100%;
   margin-inline: auto;
-}
-.identityPortrait {
-  position: relative;
-  width: 8rem;
-  height: 8rem;
 }
 .work {
   min-width: 0;

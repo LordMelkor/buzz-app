@@ -8,8 +8,11 @@
   </head>
   <body data-complete="{{complete}}" data-close-delay="{{closeDelay}}">
     <div class="page">
+      <div class="brand" role="img" aria-label="Builderlab">{{brand}}</div>
+      <div class="artwork" aria-hidden="true">
+        <img src="data:image/webp;base64,{{artwork}}" alt="">
+      </div>
       <main aria-labelledby="heading">
-        <div class="brand">{{brand}}<span>Builderlab</span></div>
         <h1 id="heading">{{heading}}</h1>
         <p>{{message}}</p>
         <p class="hint" role="status">

@@ -30,6 +30,9 @@ export type OpenResult = Readonly<
   | {
       status: "failed";
       reason: OpenFailure;
+      /** The page shows this failure in place, next to what failed; the host
+       * keeps the page on screen instead of replacing it. */
+      presented?: true;
       /** Reopen this visit once, while it is still the one shown: called
        * with that reopen, returns its cancel (see reauthorizedOnce). */
       reauthorize?: (reopen: () => void) => () => void;
@@ -58,6 +61,8 @@ export type NavigationSnapshot = Readonly<{
   attempt: OpenAttempt;
   status: "opening" | OpenResult["status"];
   reason?: OpenFailure;
+  /** The failed page presents its own failure in place. */
+  presented?: true;
   /** An incoming URL failed before it could create a history destination. */
   ingress?: boolean;
   retryable?: boolean;
@@ -159,9 +164,19 @@ export function createNavigationController(
     snapshot = Object.freeze({
       ...snapshot,
       status: result.status,
-      ...(result.status === "failed" ? { reason: result.reason } : {}),
+      ...(result.status === "failed"
+        ? {
+            reason: result.reason,
+            ...(result.presented ? { presented: true as const } : {}),
+          }
+        : {}),
     });
-    if (result.status !== "opened")
+    // A failure presented in place keeps its page's authority until the visit
+    // is left or replaced, as an opened visit does.
+    if (
+      result.status !== "opened" &&
+      !(result.status === "failed" && result.presented)
+    )
       effects.push(() => operation.controller.abort(NAVIGATION_ABORTED));
     const reauthorize = result.status === "failed" && result.reauthorize;
     if (reauthorize)

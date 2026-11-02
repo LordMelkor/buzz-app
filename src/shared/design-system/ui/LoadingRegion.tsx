@@ -9,7 +9,9 @@ export function LoadingRegion({
   statusVisibility = "visible",
 }: {
   pending: boolean;
-  label: string;
+  /** The delayed status. Decorative motion inside it, such as `TypingDots`,
+   * must be hidden from assistive technology so only the text is announced. */
+  label: ReactNode;
   children: ReactNode;
   /** Immediate scoped error/retry; replaces only the reserved feedback slot. */
   feedback?: ReactNode;

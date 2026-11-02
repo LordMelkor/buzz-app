@@ -865,7 +865,7 @@ export function createTabs({
     const { open, show, back } = useOpenTranscript(
       conversation,
       label,
-      initialTranscript && { initial: here, ...initialTranscript },
+      initialTranscript && { initial: here, searching, ...initialTranscript },
       close,
     );
     const rows = (recent.value ?? [])

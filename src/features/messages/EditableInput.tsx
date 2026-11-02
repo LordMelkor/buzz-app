@@ -1919,6 +1919,17 @@ export function EditableInput({
           // a later return to the editor resumes where it was left.
           blur() {
             syncNativeSelection();
+            // WebKitGTK can send Home/End back to a blurred editing root if
+            // its native caret remains there, even with a scrollport focused.
+            // Keep the saved editor caret, but release its native ownership.
+            // A selected range stays available to copy or format after blur.
+            const selection = editor.dom.ownerDocument.getSelection();
+            if (
+              webKit() &&
+              selection?.isCollapsed &&
+              editor.dom.contains(selection.anchorNode)
+            )
+              selection.removeAllRanges();
             return false;
           },
           keyup() {

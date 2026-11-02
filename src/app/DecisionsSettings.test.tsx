@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { Context } from "@deepseek-ai/cordis";
+import type { ReactNode } from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   DEFAULT_DECISION_PROVIDER,
+  DecisionsService,
   type DecisionProviderStatus,
   type RegisteredProvider,
 } from "../features/decisions/service";
@@ -249,4 +252,91 @@ it("offers a lone other provider when TypeSafe is off, and sets it up before cho
   const radio = screen.getByRole("radio", { name: /Provider b/ });
   expect(radio).toBeChecked();
   expect(radio).toHaveFocus();
+});
+
+/** The real service with TypeSafe and a provider the test can remove, as a
+ * Builderlab sign-out does. Its settings have a Sign out button that does. */
+async function withdrawable(typesafe = true) {
+  const root = new Context();
+  root.provide("pluginStatus", {
+    isActive: () => true,
+    subscribe: () => () => {},
+  });
+  const decisions = new DecisionsService(root, undefined);
+  const provider = (id: string, Settings?: () => ReactNode) => ({
+    id,
+    label: id,
+    description: `About ${id}.`,
+    status: () => "ready" as const,
+    subscribe: () => () => {},
+    decide: async () => ({
+      outcome: "failed" as const,
+      reason: "unavailable" as const,
+    }),
+    ...(Settings ? { Settings } : {}),
+  });
+  let remove = () => {};
+  const register = (plugin: string, entry: ReturnType<typeof provider>) =>
+    root
+      .extend({ pluginOwner: { id: plugin, revision: "one" } })
+      .plugin((ctx) => {
+        const stop = ctx.decisions.registerProvider(entry);
+        if (plugin === "block.builderlab") remove = stop;
+      })
+      .await();
+  if (typesafe) await register("buzz.typesafe", provider("typesafe"));
+  await register(
+    "block.builderlab",
+    provider("builderlab", () => (
+      <button type="button" onClick={() => remove()}>
+        Sign out
+      </button>
+    )),
+  );
+  return { decisions, withdraw: () => act(() => remove()) };
+}
+
+it("hands focus to the selected radio when a sign-out removes the focused provider", async () => {
+  const user = userEvent.setup();
+  const { decisions } = await withdrawable();
+  render(<DecisionsSettings decisions={decisions} active={() => true} />);
+  const signOut = screen.getByRole("button", { name: "Sign out" });
+  signOut.focus();
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+  expect(screen.getByRole("radio", { name: /typesafe/ })).toHaveFocus();
+});
+
+it("hands focus to the selected radio when the focused provider's own radio goes", async () => {
+  const { decisions, withdraw } = await withdrawable();
+  render(<DecisionsSettings decisions={decisions} active={() => true} />);
+  screen.getByRole("radio", { name: /builderlab/ }).focus();
+  await withdraw();
+  expect(screen.queryByRole("radio", { name: /builderlab/ })).toBeNull();
+  expect(screen.getByRole("radio", { name: /typesafe/ })).toHaveFocus();
+});
+
+it("leaves focus elsewhere alone when a provider is removed, as by a 401", async () => {
+  const { decisions, withdraw } = await withdrawable();
+  render(
+    <>
+      <button type="button">Elsewhere</button>
+      <DecisionsSettings decisions={decisions} active={() => true} />
+    </>,
+  );
+  const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+  elsewhere.focus();
+  await withdraw();
+  expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+  expect(elsewhere).toHaveFocus();
+});
+
+it("hands focus to the section when the removed provider was the only one", async () => {
+  const user = userEvent.setup();
+  const { decisions } = await withdrawable(false);
+  render(<DecisionsSettings decisions={decisions} active={() => true} />);
+  screen.getByRole("button", { name: "Sign out" }).focus();
+  await user.keyboard("{Enter}");
+  expect(screen.getByRole("status")).toHaveTextContent("Settings > Plugins");
+  expect(screen.getByRole("region", { name: "Decisions API" })).toHaveFocus();
 });

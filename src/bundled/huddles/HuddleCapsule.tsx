@@ -160,6 +160,26 @@ function HuddleCapsuleContent({
       </fieldset>
     );
   }
+  if (call.phase === "connecting")
+    return (
+      <fieldset
+        id="huddle-capsule"
+        tabIndex={-1}
+        className={`${styles.capsule} glass-primary`}
+        ref={focus.requestRef}
+        aria-label="Connecting to Huddle"
+      >
+        <span className={styles.callerName}>Connecting to Huddle…</span>
+        <Button
+          size="sm"
+          variant="destructive"
+          ref={focus.cancel}
+          onClick={() => void huddles.leave()}
+        >
+          Cancel
+        </Button>
+      </fieldset>
+    );
   if (call.phase !== "connected") return null;
   return (
     <div className={styles.capsuleWrap}>

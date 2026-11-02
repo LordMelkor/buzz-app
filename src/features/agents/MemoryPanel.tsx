@@ -35,6 +35,7 @@ import {
   useAgentScopeCommunity,
   type AgentScopeReader,
 } from "./AgentCommunityScope";
+import { writeClipboardText } from "../../shared/clipboard";
 
 export type AgentMemories = RelaySession["agentMemories"];
 type View = ReturnType<AgentMemories["open"]>;
@@ -331,7 +332,7 @@ function MemoryAccordion({ entry }: { entry: MemoryEntry }) {
 function MemoryCopyMenu({ entry }: { entry: MemoryEntry }) {
   const notify = useToastNotification();
   const copy = (value: string, label: "name" | "body") =>
-    navigator.clipboard.writeText(value).then(
+    writeClipboardText(value).then(
       () => notify(`Memory ${label} copied.`, "success"),
       () => notify(`Couldn’t copy the memory ${label}.`, "error"),
     );

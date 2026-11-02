@@ -18,7 +18,9 @@ permissions:
   contents: read
 
 env:
-  BUZZ_BUILDERLAB_URL: ${{ vars.BUZZ_BUILDERLAB_URL || 'https://app.builderlab.xyz' }}
+  # Legacy login origin, only when FI is not configured: the build scripts
+  # reject a nonempty legacy origin alongside the FI descriptor.
+  BUZZ_BUILDERLAB_URL: ${{ !vars.BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG && (vars.BUZZ_BUILDERLAB_URL || 'https://app.builderlab.xyz') || '' }}
   # Public verification inputs; the native build and plugins.updater must match.
   # Candidate-only runs build without the updater.
   BUZZ_UPDATER_PUBLIC_KEY: ${{ !inputs.candidates && 'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDQjQ2RDZFMUEwOERFMTEKUldRUjNnZ2FibTIwTE10QkVaMzFyYkZlY0R4ajhmbFBjdncvNVRCYnNpSm9kaFNBaHQzemZlZHkK' || '' }}
@@ -132,6 +134,13 @@ jobs:
           test "$(lipo -archs "$command")" = arm64 || { echo '::error::buzz-agent-command is not arm64'; exit 1; }
           codesign --verify --strict --verbose=2 \
             -R '=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[subject.OU] = EYF346PHUG' "$command"
+          cli="$app/Contents/Resources/bin/buzz"
+          test -x "$cli" || { echo '::error::Signed app is missing buzz'; exit 1; }
+          test "$(lipo -archs "$cli")" = arm64 || { echo '::error::buzz is not arm64'; exit 1; }
+          codesign --verify --strict --verbose=2 \
+            -R '=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = EYF346PHUG' "$cli"
+          codesign --display --verbose=2 "$cli" 2>&1 | grep 'flags=.*runtime' > /dev/null || { echo '::error::buzz lacks the hardened runtime'; exit 1; }
+          "$cli" --help > /dev/null || { echo '::error::Signed buzz does not run'; exit 1; }
 
       - name: Stage release assets and checksums
         env:
@@ -221,10 +230,26 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          gh release create "v$VERSION" release-assets/* \
-            --target "$SOURCE_SHA" --prerelease --latest=false \
-            --title "Buzz $VERSION (desktop preview)" \
-            --notes "Desktop preview from commit $SOURCE_SHA, built by Actions run $GITHUB_RUN_ID. Includes Apple Silicon macOS (signed and notarized), Windows x64 (unsigned NSIS installer), and Linux x64 (Ubuntu 24.04 deb and AppImage). Windows/Linux still require desktop acceptance. Updater-enabled installs update from the preview feed."
+          # GitHub can fail one call of several (500 publishing the uploaded
+          # draft). Delete a draft a failed try left, then try again. A
+          # published v$VERSION may be an earlier attempt's, already in the
+          # feed, so it is never deleted.
+          for try in 1 2 3; do
+            gh release create "v$VERSION" release-assets/* \
+              --target "$SOURCE_SHA" --prerelease --latest=false \
+              --title "Buzz $VERSION (desktop preview)" \
+              --notes "Desktop preview from commit $SOURCE_SHA, built by Actions run $GITHUB_RUN_ID. Includes Apple Silicon macOS (signed and notarized), Windows x64 (unsigned NSIS installer), and Linux x64 (Ubuntu 24.04 deb and AppImage). Windows/Linux still require desktop acceptance. Updater-enabled installs update from the preview feed." &&
+              exit 0
+            test "$try" -lt 3 || exit 1
+            draft=$(gh release view "v$VERSION" --json isDraft --jq .isDraft) || draft=
+            case "$draft" in
+              true) gh release delete "v$VERSION" --yes || true ;;
+              false)
+                echo "::error::v$VERSION is already published; leaving it in place."
+                exit 1 ;;
+            esac
+            sleep $((try * 15))
+          done
 
   promote_preview:
     name: Promote verified preview
@@ -350,6 +375,9 @@ jobs:
           if (!(Test-Path "$destination\Buzz.exe")) { throw 'App executable missing' }
           if (!(Test-Path "$destination\bin\goose-acp.exe")) { throw 'goose-acp missing' }
           if (!(Test-Path "$destination\bin\buzz-agent-command.exe")) { throw 'buzz-agent-command missing' }
+          if (!(Test-Path "$destination\bin\buzz.exe")) { throw 'buzz missing' }
+          & "$destination\bin\buzz.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'buzz does not run' }
           if ($env:CANDIDATES -ne 'true') {
             $binary = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes("$destination\Buzz.exe"))
             foreach ($value in @($env:BUZZ_UPDATER_PUBLIC_KEY, $env:BUZZ_UPDATER_ENDPOINT)) {
@@ -427,6 +455,8 @@ jobs:
           test -x "$RUNNER_TEMP/deb/usr/bin/Buzz"
           test -x "$RUNNER_TEMP/deb/usr/lib/Buzz Foundation/bin/goose-acp"
           test -x "$RUNNER_TEMP/deb/usr/lib/Buzz Foundation/bin/buzz-agent-command"
+          test -x "$RUNNER_TEMP/deb/usr/lib/Buzz Foundation/bin/buzz"
+          "$RUNNER_TEMP/deb/usr/lib/Buzz Foundation/bin/buzz" --help > /dev/null
           image=$(realpath "${images[0]}")
           mkdir "$RUNNER_TEMP/appimage"
           (cd "$RUNNER_TEMP/appimage" && "$image" --appimage-extract >/dev/null)
@@ -434,6 +464,7 @@ jobs:
           test -x "$RUNNER_TEMP/appimage/squashfs-root/usr/bin/Buzz.bin"
           test -x "$RUNNER_TEMP/appimage/squashfs-root/usr/lib/Buzz Foundation/bin/goose-acp"
           test -x "$RUNNER_TEMP/appimage/squashfs-root/usr/lib/Buzz Foundation/bin/buzz-agent-command"
+          test -x "$RUNNER_TEMP/appimage/squashfs-root/usr/lib/Buzz Foundation/bin/buzz"
           # The updater selects each install's feed entry by its embedded bundle type.
           binaries=("$RUNNER_TEMP/deb/usr/bin/Buzz" "$RUNNER_TEMP/appimage/squashfs-root/usr/bin/Buzz.bin")
           grep -aqF __TAURI_BUNDLE_TYPE_VAR_DEB "${binaries[0]}" || { echo '::error::deb app lacks its bundle type'; exit 1; }

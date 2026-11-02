@@ -6,7 +6,7 @@ import { openHuddleAudio } from "../../features/huddle/audio";
 import { createHuddles } from "../../features/huddle/service";
 import { createHuddleWindow } from "../../features/huddle/window";
 import { HuddleCapsule } from "./HuddleCapsule";
-import { HuddleLauncher } from "./HuddleLauncher";
+import { HuddleLauncher, SoloHuddleMenu } from "./HuddleLauncher";
 import { HuddleCard, huddleTarget, parseHuddleTarget } from "./HuddleCard";
 import { HuddlePanel } from "./HuddlePanel";
 
@@ -67,6 +67,14 @@ export const apply: PluginModule["apply"] = (ctx) => {
     stopRing();
     await Promise.all([companion.dispose(), huddles.dispose()]);
   });
+  ctx.conversation.registerChatMenu((props) => (
+    <SoloHuddleMenu
+      {...props}
+      relay={ctx.relay}
+      huddles={huddles}
+      showWindow={companion.open}
+    />
+  ));
   ctx.panels.register({
     id: "huddles",
     title: "Huddles",

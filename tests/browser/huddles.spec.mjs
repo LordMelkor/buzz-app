@@ -1,3 +1,4 @@
+import { pauseClock } from "./clock.mjs";
 import { chromium } from "@playwright/test";
 import { test, expect } from "./playwright-test.mjs";
 import { createServer } from "./vite-server.mjs";
@@ -534,7 +535,7 @@ test("capsule and companion presentation share mute and leave", async ({
     roster.getByRole("img", { name: /^1 more participants:/ }),
   ).toBeVisible();
   // Hold the 220ms speaking lifetime while checking its rendered contract.
-  await page.clock.pauseAt(new Date(Date.now() + 1000));
+  await pauseClock(page, 1000);
   await page.evaluate(() => window.huddleFixture.speak("cd".repeat(32)));
   const speaker = roster.locator(`[data-participant="${"cd".repeat(32)}"]`);
   const speakerHalo = roster.locator(`[data-speaker="${"cd".repeat(32)}"]`);
@@ -1588,7 +1589,7 @@ test("accepting preserves both request avatars until connected, then moves them 
   await expect
     .poll(() => page.evaluate(() => window.huddleFixture.stats.opens))
     .toBe(1);
-  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await pauseClock(page, 1000);
   await page.evaluate(() => {
     window.huddleMotionFrames = [];
     window.huddleFixture.connect();
@@ -1696,7 +1697,16 @@ test("audio settings mirror device choices between compact and window controls",
     page.getByRole("combobox", { name: "Microphone", exact: true }),
   ).toContainText("USB microphone");
   await page.getByRole("combobox", { name: "Speakers", exact: true }).click();
-  await page.getByRole("option", { name: "Headphones", exact: true }).click();
+  // The popup can flip between a pointer pick's press and release, and Base UI
+  // ignores that split click. The microphone pick above covers the pointer.
+  await expect(
+    page.getByRole("option", { name: "System default", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(
+    page.getByRole("option", { name: "Headphones", exact: true }),
+  ).toHaveAttribute("data-highlighted", "");
+  await page.keyboard.press("Enter");
   await page.keyboard.press("Escape");
   await expect(
     page.getByRole("dialog", { name: "Audio settings", exact: true }),
@@ -1872,7 +1882,7 @@ test("an inactive call error does not suppress the next incoming call", async ({
   ).toContainText("Previous call failed");
   // The real clip may finish while WebKit renders the request. Freeze the
   // repeat timer so the first-play assertion cannot race the next ring.
-  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await pauseClock(page, 1000);
   await page.evaluate(() =>
     window.huddleFixture.request("00000000-0000-4000-8000-000000000099"),
   );
@@ -1985,7 +1995,7 @@ test("portraits can be tossed within the stage and return home, with reduced mot
   // Measure the circular layout, not the rotated artwork's rectangular bounding box.
   const portrait = stage.locator("[data-huddle-avatar]");
   await expect(portrait).toBeVisible();
-  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await pauseClock(page, 1000);
   await expect
     .poll(async () => {
       await page.clock.runFor(16);

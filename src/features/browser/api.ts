@@ -1,11 +1,13 @@
 import type { ComponentType } from "react";
 
-/** One signed-in Builderlab lifetime; never passed to website JavaScript. */
-export type BuilderlabViewerSession = Readonly<{
-  credential: string;
-  storage: string;
-  signal: AbortSignal;
-}>;
+/** One signed-in Builderlab lifetime; never passed to website JavaScript.
+ * `federated` is the public NIP-FI session revision; native holds its token. */
+export type BuilderlabViewerSession = Readonly<
+  ({ credential: string } | { federated: string }) & {
+    storage: string;
+    signal: AbortSignal;
+  }
+>;
 
 export type BrowserViewProps = Readonly<{
   url: string;

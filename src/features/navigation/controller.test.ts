@@ -201,6 +201,23 @@ describe("navigation attempts over one history driver", () => {
     await expect(cancelled).resolves.toEqual({ status: "cancelled" });
     expect(nav.snapshot().entry.target).toEqual(settings);
   });
+  it("keeps a failure presented in place authoritative until its visit is left", async () => {
+    const { host, navigation: nav } = setup();
+    const opened = nav.open(settings);
+    const attempt = nav.snapshot().attempt;
+    host.complete(attempt, {
+      status: "failed",
+      reason: "unavailable",
+      presented: true,
+    });
+    await expect(opened).resolves.toMatchObject({ status: "failed" });
+    expect(nav.snapshot()).toMatchObject({ status: "failed", presented: true });
+    expect(attempt.signal.aborted).toBe(false);
+    expect(host.complete(attempt, { status: "opened" })).toBe(false);
+    void nav.open(page);
+    expect(attempt.signal.reason).toBe(NAVIGATION_ABORTED);
+    expect(nav.snapshot().presented).toBeUndefined();
+  });
   it("rejects invalid targets before cancelling or moving the current intent", async () => {
     const { navigation: nav } = setup();
     void nav.open(settings);

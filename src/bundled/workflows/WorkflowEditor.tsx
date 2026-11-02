@@ -1,7 +1,7 @@
 import { Field } from "../../shared/design-system/ui/Field";
 import { Input } from "../../shared/design-system/ui/Input";
 import { Textarea } from "../../shared/design-system/ui/Textarea";
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { DotsThreeIcon } from "../../shared/design-system/icons";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { Button } from "../../shared/design-system/ui/Button";
@@ -71,6 +71,7 @@ export function WorkflowEditor({
   chooseChannel?: boolean;
 }) {
   const id = useId();
+  const heading = useRef<HTMLSpanElement>(null);
   const [selection, setSelection] = useState<WorkflowSelection>(
     create && !chooseChannel ? { type: "trigger" } : null,
   );
@@ -205,7 +206,12 @@ export function WorkflowEditor({
   return (
     <Dialog
       open
-      title={create ? "Create workflow" : fields.name || "Untitled workflow"}
+      initialFocus={heading}
+      title={
+        <span ref={heading} tabIndex={-1}>
+          {create ? "Create workflow" : fields.name || "Untitled workflow"}
+        </span>
+      }
       closeLabel="Close editor"
       size="wide"
       height="stable-tall"

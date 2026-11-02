@@ -82,11 +82,14 @@ test("excludes a channel-archived conversation across reload without clearing lo
     })
     .click();
   await expect(
+    page.getByRole("region", { name: "Archived channel", exact: true }),
+  ).toHaveText("This channel is archived");
+  await expect(
     page.getByRole("textbox", {
       name: "Message #Lifecycle channel",
       exact: true,
     }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await expect(
     page.locator(`[data-message-id="${app.inboxWindow.root.id}"]`),
   ).toBeVisible();

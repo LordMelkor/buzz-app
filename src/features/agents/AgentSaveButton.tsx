@@ -76,6 +76,9 @@ function editingLineBottom(input: HTMLInputElement | HTMLTextAreaElement) {
 /** The agent sidebar supplies a footer; other hosts retain their inline action. */
 export const AgentSaveFooter = createContext<{
   target: HTMLElement | null;
+  /** Retain recovery content through exit; data-agent-access-required="false"
+   * reserves space without treating a read/save failure as signed out. */
+  setPanelNotice?: (content: ReactNode) => void;
   notice?: ReactNode;
 } | null>(null);
 

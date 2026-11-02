@@ -291,7 +291,7 @@ it("custom emoji reactions are colon-wrapped, bounded, tagged, and retry origina
     h.session.messages.react(root.id, `:${"x".repeat(65)}:`),
   ).toThrow(/long/);
 });
-it("plain sends are immediate and do not acquire a palette; only a send retries a cold load failure", async () => {
+it("plain sends do not acquire a palette; a custom send retries a cold failure while passive demand does not", async () => {
   const h = session();
   const reads = () =>
     h.query.mock.calls.filter(([filters]) =>
@@ -308,7 +308,7 @@ it("plain sends are immediate and do not acquire a palette; only a send retries 
   h.wire.next().fail(new Error("offline"));
   await ready;
   expect(h.session.emoji.snapshot().status).toBe("error");
-  // Mounts and pickers demand the catalog without re-reading a cold failure.
+  // Passive warm-up does not re-read a cold failure.
   void h.session.emoji.ensure();
   await flush();
   expect(h.session.emoji.snapshot().status).toBe("error");
@@ -488,6 +488,50 @@ it("reconnect repairs a previously requested catalog in place, without preloadin
   await flush();
   expect(h.session.emoji.snapshot().entries).toEqual([]);
 });
+it("active catalog demand bypasses queued warm-up and recovers a cold failure without reloading ready data", async () => {
+  vi.useFakeTimers();
+  try {
+    const h = session();
+    void h.session.profiles
+      .ensure([member.pubkey], "background")
+      .catch(() => {});
+    void h.session.emoji.ensure();
+    await vi.advanceTimersByTimeAsync(0);
+    const catalog = () =>
+      h.wire.pending.find(
+        (p) => !p.signal?.aborted && p.filters[0]?.kinds?.includes(30030),
+      );
+    expect(catalog()).toBeUndefined();
+    const active = h.session.emoji.ensure("foreground");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(catalog()).toBeDefined();
+    catalog()?.fail(new Error("catalog unavailable"));
+    await active;
+    expect(h.session.emoji.snapshot().status).toBe("error");
+    await h.session.emoji.ensure();
+    expect(h.session.emoji.snapshot().status).toBe("error");
+    const failed = h.session.emoji.snapshot();
+    const failedReads = h.query.mock.calls.length;
+    // Completion providers remount on each edit. A settled foreground failure
+    // retains its recovery action instead of starting another automatic read.
+    await h.session.emoji.ensure("foreground");
+    await h.session.emoji.ensure("foreground");
+    expect(h.query.mock.calls).toHaveLength(failedReads);
+    expect(h.session.emoji.snapshot()).toBe(failed);
+    const retry = h.session.emoji.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    catalog()?.respond([set()]);
+    await retry;
+    expect(h.session.emoji.snapshot().entries).toEqual([
+      { shortcode: "party", url },
+    ]);
+    const reads = h.query.mock.calls.length;
+    await h.session.emoji.ensure("foreground");
+    expect(h.query.mock.calls).toHaveLength(reads);
+  } finally {
+    vi.useRealTimers();
+  }
+});
 it("exposes read-cap and retained-byte limits rather than evicting replacement evidence", async () => {
   const reader = {
     read: vi.fn(async () => Array(500).fill(set()) as RelayEvent[]),
@@ -512,6 +556,7 @@ it("exposes read-cap and retained-byte limits rather than evicting replacement e
   });
   // Overflow would repeat on every read, so demand and sends leave it to Retry.
   await directory.queries.ensure();
+  await directory.queries.ensure("foreground");
   expect(() => directory.tags(":party:")).toThrow(/Retry message preparation/);
   expect(reader.read).toHaveBeenCalledTimes(1);
   directory.accept([set(member, 1)]);

@@ -33,6 +33,7 @@ import {
   useFloatingActionBar,
   useMessageActionBarReady,
 } from "./useFloatingActionBar";
+import { writeClipboardText } from "../../shared/clipboard";
 
 const AfterMenuClose = createContext<
   ((action: () => void) => void) | undefined
@@ -130,7 +131,7 @@ function MessageActionBarControls({
     setCopying(true);
     setNotice(undefined);
     try {
-      await navigator.clipboard.writeText(text());
+      await writeClipboardText(text());
       setNotice({ text: `${label} copied`, error: false });
     } catch {
       setNotice({

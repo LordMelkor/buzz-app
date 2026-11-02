@@ -42,3 +42,16 @@ export function eventVisibility(
   }
   return visible;
 }
+/** Reads each channel's access once: for a visibility used in one synchronous
+ * pass, where access cannot change. */
+export function accessOnce(canAccess: (channelId: string) => boolean) {
+  const answers = new Map<string, boolean>();
+  return (channelId: string) => {
+    let allowed = answers.get(channelId);
+    if (allowed === undefined) {
+      allowed = canAccess(channelId);
+      answers.set(channelId, allowed);
+    }
+    return allowed;
+  };
+}

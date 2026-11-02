@@ -164,6 +164,46 @@ it("activates and observes CLI changes without any React subscribers", async () 
   await vi.advanceTimersByTimeAsync(1000);
   expect(pages.snapshot()).toHaveLength(0);
 });
+it("publishes the managed policy beside the catalog and follows its changes without activating anything", async () => {
+  const entry = {
+    id: "example.managed",
+    repository: "https://example.com/plugins",
+    reference: "v1",
+    commit: "0".repeat(40),
+    path: ".",
+  };
+  const managed = (state: "missing" | "outdated"): StorageResult => ({
+    ...(ready() as Extract<StorageResult, { status: "ready" }>),
+    managed: {
+      status: "ready",
+      path: "/managed-plugins.json",
+      source: "Example Org",
+      plugins: [{ ...entry, state }],
+      problems: [],
+    },
+  });
+  const { plugins, pages, installation } = harness({
+    getCatalog: vi.fn(async () => managed("missing")),
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const configuration = () => plugins.snapshot().configuration;
+  expect(configuration()).toMatchObject({
+    managed: { plugins: [{ id: "example.managed", state: "missing" }] },
+  });
+  expect(pages.snapshot()).toHaveLength(1);
+  const settled = plugins.snapshot();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(plugins.snapshot()).toBe(settled);
+  vi.mocked(installation.getCatalog).mockResolvedValue(managed("outdated"));
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(configuration()).toMatchObject({
+    managed: { plugins: [{ state: "outdated" }] },
+  });
+  vi.mocked(installation.getCatalog).mockResolvedValue(ready());
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(configuration()).not.toHaveProperty("managed");
+  expect(installation.changePlugin).not.toHaveBeenCalled();
+});
 it("ignores a stale poll after a management change", async () => {
   const { plugins, pages, installation } = harness();
   await vi.advanceTimersByTimeAsync(0);

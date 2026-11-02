@@ -54,7 +54,7 @@ export function createReactionPicker() {
             }
             active?.();
             active = close;
-            void session.emoji.ensure();
+            void session.emoji.ensure("foreground");
             setOpen(true);
           }}
         />

@@ -23,6 +23,10 @@ import { composerDOMFixture } from "../features/messages/composer-testing";
 import * as communityApi from "../features/communities/api";
 import { sidebarFixtureState } from "./sidebar-plugin.fixture";
 
+/** Any variant of the App-owned "page couldn't open" card. */
+const pageFailure =
+  /^(This page isn’t available|Can’t connect|You don’t have access to this|This link doesn’t work)$/;
+
 composerDOMFixture();
 
 // jsdom has no IndexedDB; this flow keeps its message unsent.
@@ -520,9 +524,7 @@ it.each([
     ).toMatchObject({ status: "failed", reason });
   });
   expect(
-    await screen.findByRole("heading", {
-      name: "This destination couldn’t open",
-    }),
+    await screen.findByRole("heading", { name: pageFailure }),
   ).toBeVisible();
   expect(screen.queryByText("Beacon page content")).not.toBeInTheDocument();
   expect(
@@ -619,6 +621,9 @@ it("reopens profile settings from the same session cache while refreshing", asyn
       await read;
       return inspect(...args);
     });
+  // Reopening uses the cached value immediately. Control delayed loading
+  // feedback so a busy runner cannot cross its one-second boundary first.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     await openProfile();
     expect(refresh).toHaveBeenCalledWith(
@@ -630,8 +635,16 @@ it("reopens profile settings from the same session cache while refreshing", asyn
       within(reopened).getByRole("textbox", { name: "Display name" }),
     ).toHaveValue("Community name");
     expect(within(reopened).queryByText(/Loading your profile/)).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(within(reopened).getByText(/Loading your profile/)).toBeVisible();
+    expect(
+      within(reopened).getByRole("textbox", { name: "Display name" }),
+    ).toHaveValue("Community name");
   } finally {
     await act(async () => release());
+    vi.useRealTimers();
   }
 });
 
@@ -866,7 +879,7 @@ it.each(["pending", "unavailable"] as const)(
         provider: "test.sidebar/missing",
       });
     });
-    await screen.findByText("This destination couldn’t open");
+    await screen.findByText(pageFailure);
     act(() => current.navigation.back());
     const name = await screen.findByRole("textbox", { name: "Display name" });
     await waitFor(() => expect(name).toHaveValue("Community name"));
@@ -888,11 +901,13 @@ it.each(["pending", "unavailable"] as const)(
       });
     }
     act(() => current.navigation.forward());
-    await screen.findByText(
-      state === "pending"
-        ? "Opening destination…"
-        : "This destination couldn’t open",
-    );
+    if (state === "pending")
+      await waitFor(() =>
+        expect(
+          document.querySelector('.page-status [aria-busy="true"]'),
+        ).not.toBeNull(),
+      );
+    else await screen.findByText(pageFailure);
     expect(name).toBeInTheDocument();
     expect(name).not.toBeVisible();
     act(() => current.navigation.back());
@@ -932,7 +947,7 @@ it("drops the retained draft after an accepted departure to another account's un
   await user.click(
     within(prompt).getByRole("button", { name: "Discard changes" }),
   );
-  await screen.findByText("This destination couldn’t open");
+  await screen.findByText(pageFailure);
   expect(name).not.toBeInTheDocument();
   act(() => current.navigation.back());
   expect(

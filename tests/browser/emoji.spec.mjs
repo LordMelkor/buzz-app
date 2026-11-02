@@ -15,6 +15,10 @@ test("community picker uses keyboard, proxy thumbnails, event-local history and 
   // Parallel fixtures must not invalidate each other’s optimized lazy imports.
   const cacheDir = await mkdtemp(join(tmpdir(), "buzz-emoji-vite-"));
   let server;
+  let releaseHistoric;
+  const historicFailure = new Promise((resolve) => {
+    releaseHistoric = resolve;
+  });
   try {
     server = await createServer({
       cacheDir,
@@ -26,7 +30,15 @@ test("community picker uses keyboard, proxy thumbnails, event-local history and 
       server: { host: "127.0.0.1", port: 0, strictPort: false },
     });
     const errors = watchPageErrors(page);
+    let historicRequests = 0;
     await page.route("**/emoji-media/**", async (route) => {
+      if (
+        route.request().url().includes("original.png") &&
+        ++historicRequests === 1
+      ) {
+        await historicFailure;
+        return route.fulfill({ status: 503, body: "temporarily unavailable" });
+      }
       if (route.request().url().includes("broken.png"))
         return route.fulfill({ status: 404, body: "missing" });
       return route.fulfill({
@@ -77,6 +89,17 @@ test("community picker uses keyboard, proxy thumbnails, event-local history and 
       page.getByRole("link", { name: "https://example.test/:party" }),
     ).toHaveAttribute("href", "https://example.test/:party");
     const historic = page.locator('img[src*="original.png"]');
+    // A transient media failure must recover while the same message remains mounted.
+    const historicMessage = page.locator("p").filter({ hasText: "Historic" });
+    releaseHistoric();
+    await expect(historicMessage).toContainText(":unknown:party:");
+    const mountedHistoric = await historicMessage.elementHandle();
+    await expect(historic).toHaveCount(1);
+    await expect(historic).toHaveJSProperty("naturalWidth", 22);
+    expect(historicRequests).toBe(2);
+    expect(await mountedHistoric.evaluate((node) => node.isConnected)).toBe(
+      true,
+    );
     const originalSrc = await historic.getAttribute("src");
     expect(originalSrc).toContain("/emoji-media/a/");
     await expect(page.locator('img[src*="reaction.png"]')).toHaveCount(1);
@@ -1071,8 +1094,57 @@ test("community picker uses keyboard, proxy thumbnails, event-local history and 
         () => window.emojiFixture.report.publications.at(-1).event.content,
       ),
     ).toBe("😀 🙏 👏 hello");
+    // A failed passive warm-up must recover when the user requests custom emoji.
+    const cold = `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/emoji.html?cold-error`;
+    await page.goto(cold);
+    await expect
+      .poll(() => page.evaluate(() => window.emojiFixture.status("a")))
+      .toBe("error");
+    await draft().fill(":party");
+    await expect(
+      page.getByRole("option", { name: ":party:", exact: true }),
+    ).toBeVisible();
+    // Continued typing after a foreground failure must retain explicit recovery.
+    await page.goto(cold);
+    await expect
+      .poll(() => page.evaluate(() => window.emojiFixture.status("a")))
+      .toBe("error");
+    await page.evaluate(() => window.emojiFixture.fail(true));
+    await draft().fill(":par");
+    const unavailable = page.getByText(
+      "Community emoji unavailable; Unicode results shown.",
+    );
+    await expect(unavailable).toBeVisible();
+    const failedReads = await page.evaluate(
+      () => window.emojiFixture.report.reads.length,
+    );
+    await draft().press("t");
+    await expect(unavailable).toBeVisible();
+    await draft().press("y");
+    await expect(unavailable).toBeVisible();
+    expect(
+      await page.evaluate(() => window.emojiFixture.report.reads.length),
+    ).toBe(failedReads);
+    await page.evaluate(() => window.emojiFixture.fail(false));
+    await page.getByRole("option", { name: "Retry" }).click();
+    await expect(
+      page.getByRole("option", { name: ":party:", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Community emoji unavailable; Unicode results shown."),
+    ).toHaveCount(0);
+    await page.goto(cold);
+    await expect
+      .poll(() => page.evaluate(() => window.emojiFixture.status("a")))
+      .toBe("error");
+    await picker.click();
+    await expect(
+      page.locator('em-emoji-picker [data-id="buzz-custom"]'),
+    ).toHaveCount(1);
+    await expect(page.getByRole("alert")).toHaveCount(0);
     expect(errors.unexplained()).toEqual([]);
   } finally {
+    releaseHistoric();
     try {
       await server?.close();
     } finally {

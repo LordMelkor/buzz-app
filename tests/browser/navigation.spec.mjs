@@ -208,7 +208,7 @@ test("a retired contributed Settings destination fails promptly on Back", async 
   await page.goBack();
   await expect(
     page.getByRole("alert").getByRole("heading", {
-      name: "This destination couldn’t open",
+      name: "This page isn’t available",
       exact: true,
     }),
   ).toBeVisible({ timeout: 3000 });

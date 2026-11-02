@@ -2,6 +2,43 @@
   "version": "20260925T154625166Z",
   "collections": [
     {
+      "id": "buzzies",
+      "label": "Buzzies",
+      "coverAvatarId": "buzzies-1",
+      "avatarIds": [
+        "buzzies-1",
+        "buzzies-2",
+        "buzzies-3",
+        "buzzies-4",
+        "buzzies-5",
+        "buzzies-6",
+        "buzzies-7",
+        "buzzies-8",
+        "buzzies-9",
+        "buzzies-10",
+        "buzzies-11",
+        "buzzies-12",
+        "buzzies-13",
+        "buzzies-14",
+        "buzzies-15",
+        "buzzies-16",
+        "buzzies-17",
+        "buzzies-18",
+        "buzzies-19",
+        "buzzies-20",
+        "buzzies-21",
+        "buzzies-22",
+        "buzzies-23",
+        "buzzies-24",
+        "buzzies-25",
+        "buzzies-26",
+        "buzzies-27",
+        "buzzies-28",
+        "buzzies-32",
+        "buzzies-33"
+      ]
+    },
+    {
       "id": "fuzzies",
       "label": "Fuzzies",
       "coverAvatarId": "fuzzies-1",
@@ -73,6 +110,576 @@
     }
   ],
   "assets": [
+    {
+      "id": "buzzies-1",
+      "label": "Buzzies 1",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-1.png",
+      "sha256": "1a8bf9323410689382de8d0b6718da8432af15b085c767e5e0f0187e4602b31c",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-1.webm",
+          "sha256": "4a90c8936f933a8018a93ae518812bd5f01853fc5bb06ec13b29edcee62dfe44",
+          "byteSize": 553323
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-1.mp4",
+          "sha256": "ac54d7a1a038371103eba6e72956cadb9a4f21a5f7c7e4d60ce762e3d80130ec",
+          "byteSize": 889220
+        }
+      }
+    },
+    {
+      "id": "buzzies-2",
+      "label": "Buzzies 2",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-2.png",
+      "sha256": "ac0edf1ffa360ee8a12cf12113336c68f397bcc12d1d3a9d5ac914dd643d483e",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-2.webm",
+          "sha256": "0d57aff9c7b5d7f7f38f5297b53c53144709882ab8a788e3264d5050a711cb2e",
+          "byteSize": 476649
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-2.mp4",
+          "sha256": "c7cf6380c02fe85809fcc1343468f10fa147db518f35b0d193adbf64b05f7c7f",
+          "byteSize": 869621
+        }
+      }
+    },
+    {
+      "id": "buzzies-3",
+      "label": "Buzzies 3",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-3.png",
+      "sha256": "f833a6f5213421627968202304bca3f10d6bbf08f79de70aa528a818f318efc3",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-3.webm",
+          "sha256": "224695110e0e9e0d8a0421151543a8489534a7cc26f15d60344661d4b6c321ea",
+          "byteSize": 436441
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-3.mp4",
+          "sha256": "98951f49e05f37796655845d39891ad8bcc603bd093fe5d1e9a63a10e2842a86",
+          "byteSize": 816462
+        }
+      }
+    },
+    {
+      "id": "buzzies-4",
+      "label": "Buzzies 4",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-4.png",
+      "sha256": "244451caf8578d58611924aea418a8b280903a00f2035ff3bf294dee9bca0f4f",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-4.webm",
+          "sha256": "0ade15492b0b1e667a799b798d17924b98b9e09a19aa885c685200576fcb0020",
+          "byteSize": 484786
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-4.mp4",
+          "sha256": "8d9ac3de66e82787357b895684b9730278864bcf91b145d642092ab2a9a40cf5",
+          "byteSize": 855245
+        }
+      }
+    },
+    {
+      "id": "buzzies-5",
+      "label": "Buzzies 5",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-5.png",
+      "sha256": "cd1a907abee050b90d3ff4357ad8478c6e7004b07ce881caa8bd9f8eed43fc1e",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-5.webm",
+          "sha256": "38e6139e0b8fe7a2a9ed2def325e0969c141435ddb307091f45ee83f457aeefd",
+          "byteSize": 511371
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-5.mp4",
+          "sha256": "8e280def42b51104d4197c9f5112c7fbafedfcf57a89faa9e0a5afeed773cce4",
+          "byteSize": 883113
+        }
+      }
+    },
+    {
+      "id": "buzzies-6",
+      "label": "Buzzies 6",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-6.png",
+      "sha256": "1130e056ab05d9c8ae22689cf2e8ba66a9f86eb293743c89cd83fc21149a2f7a",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-6.webm",
+          "sha256": "074b6eb1450b4f5337c9b02d77eada451a03626bcd14e6aa0c7f10c4a483716f",
+          "byteSize": 386108
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-6.mp4",
+          "sha256": "60a14de61fe07acfe5d30e6c1d8404377e44c23975082404d6da5fa797050d06",
+          "byteSize": 798261
+        }
+      }
+    },
+    {
+      "id": "buzzies-7",
+      "label": "Buzzies 7",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-7.png",
+      "sha256": "4fab3101753d4311e0db04ec3b4c807b68b9bd7d4b93e08ef0780a9eee4b54b8",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-7.webm",
+          "sha256": "b4608d0573eb0ae747c59b723d16749e734ddc6335b2e91722440ef3a88378f1",
+          "byteSize": 273149
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-7.mp4",
+          "sha256": "cd246752d1c3b05c666199e8001b1a653f17f33a7a4ee0be615f864446b68dd5",
+          "byteSize": 630595
+        }
+      }
+    },
+    {
+      "id": "buzzies-8",
+      "label": "Buzzies 8",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-8.png",
+      "sha256": "b9b09acb0db67c36c57fc1fedf75f07a189957051d66f2799aa602e2bdd38321",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-8.webm",
+          "sha256": "abc53d27da227dcd53d5ce962b467426a5926de89c75d195ea916819b3a8b784",
+          "byteSize": 336554
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-8.mp4",
+          "sha256": "638347907b30323be765daa3a7486adbbbbcf8a1cc4709361270b59f41240220",
+          "byteSize": 725077
+        }
+      }
+    },
+    {
+      "id": "buzzies-9",
+      "label": "Buzzies 9",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-9.png",
+      "sha256": "d814a7b5da0041e297791a8662e3bb39a320846b22040e86c16b74c709b2bc84",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-9.webm",
+          "sha256": "a07c5b23ba7d95c5a3ce815f82c193f589f27ad8acf8a26b15938d2aa41ccee0",
+          "byteSize": 400700
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-9.mp4",
+          "sha256": "0ed052fdd66692e917011773dccf80d7122b2bb0956fa28a80bff9a6a1238da9",
+          "byteSize": 803816
+        }
+      }
+    },
+    {
+      "id": "buzzies-10",
+      "label": "Buzzies 10",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-10.png",
+      "sha256": "d014fb5ea2b39e4d9b1c9cc0d30ad02291e38e278639daea208f3f709be7ffa2",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-10.webm",
+          "sha256": "346635a538cf6c2ea7a32427e4bbaed6b0b5d60a5c63b1c51da5b3534b364cd7",
+          "byteSize": 492141
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-10.mp4",
+          "sha256": "d0f60130756e3fe955a50c0fba96c6b31aa3d0aa9945b1bb145eafbcfd3ff5f4",
+          "byteSize": 830805
+        }
+      }
+    },
+    {
+      "id": "buzzies-11",
+      "label": "Buzzies 11",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-11.png",
+      "sha256": "7a0b386dafa6fb9ebefc60d3c6abc0b6db7d13ecc6d0f8e2d5cf37bc9fbc1680",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-11.webm",
+          "sha256": "8de6f5c1049ea807be6265971ba85ad2b16cc54b3ae2ad7e84d8941d9d556fed",
+          "byteSize": 423766
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-11.mp4",
+          "sha256": "b2c8781f17a27872b398d7b394bf98a05cb5508843a3d997814472b3ecbab87c",
+          "byteSize": 795686
+        }
+      }
+    },
+    {
+      "id": "buzzies-12",
+      "label": "Buzzies 12",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-12.png",
+      "sha256": "6797c18972a34eb5220790da2d73aec065f4c893a75aba00f7f8cffff489ee87",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-12.webm",
+          "sha256": "f4696b6bdc5eb758cfd407d9db09e12face41cdc05e0af8cf1a28247ff24fac1",
+          "byteSize": 298133
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-12.mp4",
+          "sha256": "bd6169e837f6a11aecb8a4029f3806dc719daa8f04dfbd1451cbf249cbf23a95",
+          "byteSize": 675335
+        }
+      }
+    },
+    {
+      "id": "buzzies-13",
+      "label": "Buzzies 13",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-13.png",
+      "sha256": "71742c7944c89234694b5ac3a14b5d947f601a88cf537a481fbd765782a13d40",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-13.webm",
+          "sha256": "dd36f5a296d773a2ac5521d606e05068cd62d86bdd21fb60f9987a84346f9ea3",
+          "byteSize": 412735
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-13.mp4",
+          "sha256": "b1c0f823ff60863ad8db179fd0419eae3d062402216e9c9378cb5e74c3552266",
+          "byteSize": 766606
+        }
+      }
+    },
+    {
+      "id": "buzzies-14",
+      "label": "Buzzies 14",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-14.png",
+      "sha256": "a31790e0c04f74a3cb259a4a62ea14dc6533f345e4ed1c4dfeea38a5b5db124d",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-14.webm",
+          "sha256": "d6d51dce368c297c0cb1c26002218f38edf6dacccb5b3abeaecd91e4d353391a",
+          "byteSize": 477988
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-14.mp4",
+          "sha256": "17c31fe0911b1b73aafedcd1d2dab67987e111a291d6606d430f2e26ea933116",
+          "byteSize": 856402
+        }
+      }
+    },
+    {
+      "id": "buzzies-15",
+      "label": "Buzzies 15",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-15.png",
+      "sha256": "23ef66704ec40d361ffada6d84df5d495dcf42078deafb9846719d098620e02e",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-15.webm",
+          "sha256": "fd2d6f0c31028ffba0482956de5f4d14a1f5ac9ee9cfa7ba465ee7d01a469369",
+          "byteSize": 382364
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-15.mp4",
+          "sha256": "d412a46af01380895b2f63b5149b79bafb4807fa71bfaf4f4db78701f29a3368",
+          "byteSize": 748346
+        }
+      }
+    },
+    {
+      "id": "buzzies-16",
+      "label": "Buzzies 16",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-16.png",
+      "sha256": "0aa6e5d482dd17fe52351ef270b4cfe42130d84cb17cc4e1ffc21dffb1b98a4f",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-16.webm",
+          "sha256": "8387a6d26a58ebe77a658ffbe4b33f8787434137d4af1b00a0957e66a7127f5f",
+          "byteSize": 365565
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-16.mp4",
+          "sha256": "d2b5c82c98b09203236782e6300ac526e99127ad1ebfd0a1c7c28dca7c0ee2bd",
+          "byteSize": 802979
+        }
+      }
+    },
+    {
+      "id": "buzzies-17",
+      "label": "Buzzies 17",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-17.png",
+      "sha256": "0576c7c8071061804b0479cb742109a215656cad09a27fd1592bfc94bd8fdd5c",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-17.webm",
+          "sha256": "8ee2f74e7e4d11b29ba75d1a6b67169504305ca54346da0001a17ef68c6ef232",
+          "byteSize": 504315
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-17.mp4",
+          "sha256": "9026a4693c816392b8259e3ef3064d0abba579e20589f8272ee97ca0495b5491",
+          "byteSize": 842252
+        }
+      }
+    },
+    {
+      "id": "buzzies-18",
+      "label": "Buzzies 18",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-18.png",
+      "sha256": "75f7aada8aedfc6ab7af6521378f267f63b729c0d415762a28d0fc2fed30af00",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-18.webm",
+          "sha256": "36930460cf467b3cea783fc10be0408940b39bbce756551a7b303128bfe58c0f",
+          "byteSize": 487124
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-18.mp4",
+          "sha256": "147cbfb913deb612638b19deda9d446a546924f119a80e5daae8d3698cd2fc2b",
+          "byteSize": 836063
+        }
+      }
+    },
+    {
+      "id": "buzzies-19",
+      "label": "Buzzies 19",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-19.png",
+      "sha256": "39538ba85fdf9d1977d061c5c5d3ff2ff6c51816b56668fcc678b51ddd2370a6",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-19.webm",
+          "sha256": "e82816e4430104c6f89763868a0cc82646b5847cd0bee4e23e1bba51b69765dd",
+          "byteSize": 486613
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-19.mp4",
+          "sha256": "bd3c59fafc2215b7b7d18e716ed1bd277672a6c95844b8190438579d3c8837d0",
+          "byteSize": 857555
+        }
+      }
+    },
+    {
+      "id": "buzzies-20",
+      "label": "Buzzies 20",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-20.png",
+      "sha256": "d168dedcc4308e9ee3fe38ad66c62dde41351685e4406c87dec0cd24e743266c",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-20.webm",
+          "sha256": "fae0c4dd6128d7c7196b9489784ac07fe5814cc826b04d0084d36917bef5b406",
+          "byteSize": 412484
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-20.mp4",
+          "sha256": "d6f322ee83f517d782f88297db47a677e4e927a81df9a3a6d740a11816ae0e87",
+          "byteSize": 772813
+        }
+      }
+    },
+    {
+      "id": "buzzies-21",
+      "label": "Buzzies 21",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-21.png",
+      "sha256": "e48ccab67ccb8b985801a235937ef379df9c9a4dce687b8a58c1d57c4ba62c8c",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-21.webm",
+          "sha256": "23b9cbbefd374535809a49f3914de1fe3954bbcd52c7c9c4ee3f26ef8ead6fc3",
+          "byteSize": 477946
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-21.mp4",
+          "sha256": "a70f3beba1a4f5c3d949624e88135903fc3792850ffdf416e4e5fa9db6821396",
+          "byteSize": 890676
+        }
+      }
+    },
+    {
+      "id": "buzzies-22",
+      "label": "Buzzies 22",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-22.png",
+      "sha256": "8411d23643cda073d38bc1925e99fb99a344e931e6ac64634692f5abd6b8c771",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-22.webm",
+          "sha256": "8f1aaf0ce27ce2eb803175b2ae1640c73f08bd4657baa15635414b6c8998e5ca",
+          "byteSize": 468507
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-22.mp4",
+          "sha256": "1429904528d0ef11c7372608bdade6ce3ebeff00f83f6f0637df0be9798d73e1",
+          "byteSize": 879177
+        }
+      }
+    },
+    {
+      "id": "buzzies-23",
+      "label": "Buzzies 23",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-23.png",
+      "sha256": "497e399399378b2a8b41af70100df50808fc3a143c0689faf6582d4c52450e3d",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-23.webm",
+          "sha256": "09641dea3c10d058d2d5f4d9e180dfa303980bdc6231f471509fd2f56601b565",
+          "byteSize": 455899
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-23.mp4",
+          "sha256": "5733206bcff4dbed6bf936fb8a9c303dc460336d6cfb7fd272a187d78bc1153f",
+          "byteSize": 837878
+        }
+      }
+    },
+    {
+      "id": "buzzies-24",
+      "label": "Buzzies 24",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-24.png",
+      "sha256": "c34560dd69213514fd0b2acab133f0b3f57c5f6a836b29ac1318d9e6c0139abd",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-24.webm",
+          "sha256": "bd57e59b442e654f7afcab4a7b523efeed72ccf6dfdf0ec44d7c479bb0f38293",
+          "byteSize": 579917
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-24.mp4",
+          "sha256": "cd030f490fc329685b04fc8fc662ae8da39e1fe1e98b8c3545cfcef3ea6ba2a4",
+          "byteSize": 928640
+        }
+      }
+    },
+    {
+      "id": "buzzies-25",
+      "label": "Buzzies 25",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-25.png",
+      "sha256": "cd3fccfeb3ded0b3fedd38fe0def41d83682fe227ceb9745f903f2989fd33395",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-25.webm",
+          "sha256": "ad1cde4e17844fe793517041169c69515859f80554413efd44fd094b7ea6a961",
+          "byteSize": 416011
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-25.mp4",
+          "sha256": "ddd8d0e05f3dcca0b6013cccf4c9393ca3d0a41502da035e37fe773bacbb07a2",
+          "byteSize": 827975
+        }
+      }
+    },
+    {
+      "id": "buzzies-26",
+      "label": "Buzzies 26",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-26.png",
+      "sha256": "f5818ad6838c7691f74e69b87d392201301839e23aab1329f8ad3a97b6b6c9fc",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-26.webm",
+          "sha256": "e7c42fe095a4a1ea612d7d61dec58ff2d123b090cbe80f2f04b21b6c135ef41d",
+          "byteSize": 635101
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-26.mp4",
+          "sha256": "cd45af3d23baaefff4e478bf18bf291ff028be7953fa01bfb39e1ad0a6b17f31",
+          "byteSize": 1026434
+        }
+      }
+    },
+    {
+      "id": "buzzies-27",
+      "label": "Buzzies 27",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-27.png",
+      "sha256": "f999b87327020bf0af17b86ecd341ccdead4cb426ea03c8e1132b98a0c86357b",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-27.webm",
+          "sha256": "2a2487a6ef0d8605d04239ddefffc738f0b1129fff69bd398f71585b9700cab9",
+          "byteSize": 400413
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-27.mp4",
+          "sha256": "0527ddc4cc3605e731146eb0edf1e43c84a5fa68d734ae48b6627505e12a0a4a",
+          "byteSize": 771194
+        }
+      }
+    },
+    {
+      "id": "buzzies-28",
+      "label": "Buzzies 28",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-28.png",
+      "sha256": "5b7ee4da7643bad801d30d155ecd9d8bc5697584bfa23f4d8314b613495a3620",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-28.webm",
+          "sha256": "e44894f8795c111dc04ada4d2aaf42ca23db3fdcaddfef05fe71dbc5878f3486",
+          "byteSize": 464542
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-28.mp4",
+          "sha256": "fb1c250a63040c9a24d635f8f2808ee2e62874b5f530cac2702f80fa2c68ec84",
+          "byteSize": 824442
+        }
+      }
+    },
+    {
+      "id": "buzzies-32",
+      "label": "Buzzies 32",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-32.png",
+      "sha256": "ce97b91a163b42f3ef2345d625a5430adc94970ba8ac510cf150dfb3e7ec9184",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-32.webm",
+          "sha256": "28c52152ba4c67cb15c1acc5054ff00769455d3e16866aef3c1e7a4ee0dc4fcf",
+          "byteSize": 551745
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-32.mp4",
+          "sha256": "881633ff742bf23f0661bde2e00223d54b114076e7d70506c87f1c3d4929c750",
+          "byteSize": 897632
+        }
+      }
+    },
+    {
+      "id": "buzzies-33",
+      "label": "Buzzies 33",
+      "collectionId": "buzzies",
+      "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/poster/buzzies/buzzies-33.png",
+      "sha256": "2c8e3e781671891d34135dc2ea5fbd09c27dc856882993f1d0ec5bb17d1e8359",
+      "animations": {
+        "webm": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/webm/buzzies/buzzies-33.webm",
+          "sha256": "26623dd74f68c499eb0af2000a06a422b66dfdc4b882374ee184d42dca760277",
+          "byteSize": 464556
+        },
+        "hevc": {
+          "url": "https://dwwgwmfqqjotj.cloudfront.net/avatars/20261030T174937230Z/hevc/buzzies/buzzies-33.mp4",
+          "sha256": "7188b075318947fb26e6a9576098a023157f6b26ffab6860173be2a01a678302",
+          "byteSize": 834219
+        }
+      }
+    },
     {
       "id": "fuzzies-1",
       "label": "Fuzzies 1",

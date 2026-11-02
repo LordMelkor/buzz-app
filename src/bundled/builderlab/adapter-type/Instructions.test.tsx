@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import type { RelayData } from "../../../features/relay/service";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useState } from "react";
 import { AgentSaveFooter } from "../../../features/agents/AgentSaveButton";
@@ -15,6 +22,12 @@ import { createOAuthSession } from "../oauth/session";
 import { deferred } from "../test-helpers";
 import { builderlabType } from "./index";
 import { PanelCard } from "../../../features/panels/PanelCard";
+import { createSignInFooter } from "./SignInFooter";
+
+vi.mock("../oauth/browser", async (original) => ({
+  ...(await original<typeof import("../oauth/browser")>()),
+  browserLoginAvailable: () => true,
+}));
 
 const first = "ab".repeat(32);
 const second = "cd".repeat(32);
@@ -60,14 +73,27 @@ beforeEach(() =>
 );
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllEnvs();
 });
-function fixture() {
+async function fixture(signedIn = true) {
   let subject = "account-a";
-  const session = createOAuthSession(async () => ({
+  let email = "a@example.com";
+  let canUseRemoteAgents = true;
+  const acquire = vi.fn(async () => ({
     value: "credential",
-    account: { subject, email: "a@example.com", canUseRemoteAgents: true },
+    account: {
+      subject,
+      email,
+      canUseRemoteAgents,
+      canUseBuilderlabDecisions: false,
+    },
   }));
+  const release = vi.fn();
+  const session = createOAuthSession(acquire, release, {
+    request: (input) => request(input),
+  });
+  if (signedIn) await session.signIn();
   let stored = response();
   const request = vi.fn<Host["request"]>(async ({ url, body }) => {
     if (url.endsWith("/update-agent")) {
@@ -100,7 +126,7 @@ function fixture() {
         }
       : stored;
   });
-  const client = createAgentClient({ request, runCommand: vi.fn() }, session);
+  const client = createAgentClient(session);
   const type = {
     ...builderlabType(client, session, {
       snapshot: () => ({ status: "disconnected", generation: 0 }),
@@ -114,11 +140,25 @@ function fixture() {
   if (!Tab) throw new Error("Missing Builderlab settings");
   return {
     Tab,
+    client,
     type,
     request,
-    changeAccount: () => {
+    session,
+    acquire,
+    release,
+    prepareAccount(next: {
+      subject: string;
+      email: string;
+      canUseRemoteAgents: boolean;
+    }) {
+      subject = next.subject;
+      email = next.email;
+      canUseRemoteAgents = next.canUseRemoteAgents;
+    },
+    changeAccount: async () => {
       subject = "account-b";
       session.signOut();
+      await session.signIn();
     },
   };
 }
@@ -127,10 +167,81 @@ async function loadedInstructions() {
   await waitFor(() => expect(field).toBeEnabled());
   return field;
 }
+it("does not start sign-in or provider reads on mount, then loads after explicit sign-in", async () => {
+  const h = await fixture(false);
+  const signIn = vi.spyOn(h.session, "signIn");
+  renderTabs(h);
+  const harness = screen.getByRole("button", {
+    name: "Change harness from Builderlab",
+  });
+  const mark = harness.querySelector("svg");
+  expect(mark).toHaveAttribute("width", "1.25rem");
+  expect(screen.getByRole("button", { name: "Model:" })).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "Instructions" })).toHaveAttribute(
+    "placeholder",
+    "",
+  );
+  expect(screen.getByRole("textbox", { name: "Instructions" })).toBeDisabled();
+  expect(signIn).not.toHaveBeenCalled();
+  expect(h.request).not.toHaveBeenCalled();
+  await act(() => h.session.signIn());
+  expect(await loadedInstructions()).toHaveValue("First instructions.");
+  expect(
+    screen.getByRole("button", { name: "Change harness from Builderlab" }),
+  ).toBe(harness);
+  expect(harness.querySelector("svg")).toBe(mark);
+  const user = userEvent.setup();
+  await user.type(
+    screen.getByRole("textbox", { name: "Instructions" }),
+    " Draft",
+  );
+  act(() => h.session.signOut());
+  expect(screen.getByRole("textbox", { name: "Instructions" })).toHaveValue(
+    "First instructions. Draft",
+  );
+  expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  const field = screen.getByRole("textbox", { name: "Instructions" });
+  expect(field).toBeDisabled();
+  await user.type(field, " Ignored while signed out");
+  expect(field).toHaveValue("First instructions. Draft");
+  expect(signIn).toHaveBeenCalledTimes(1);
+  await act(() => h.session.signIn());
+  expect(await loadedInstructions()).toBe(field);
+  expect(field).toHaveValue("First instructions. Draft");
+  h.session.dispose();
+});
+
+it("offers retry after a slow settings read and ignores its late result", async () => {
+  const h = await fixture(false);
+  await h.session.signIn();
+  const held = deferred<HostResponse>();
+  h.request.mockReturnValueOnce(held.promise);
+  vi.useFakeTimers();
+  render(<h.Tab agent={agent()} save={vi.fn()} />);
+  await act(() => vi.advanceTimersByTimeAsync(2999));
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  await act(() => vi.advanceTimersByTimeAsync(1));
+  expect(
+    screen.getByRole("button", { name: "Model: Still loading…" }),
+  ).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  vi.useRealTimers();
+  expect(await loadedInstructions()).toHaveValue("First instructions.");
+  const stale = JSON.parse(response().body);
+  stale.agents[0].agent_instructions = "Stale instructions";
+  await act(async () => {
+    held.resolve({ ...response(), body: JSON.stringify(stale) });
+  });
+  expect(screen.getByRole("textbox", { name: "Instructions" })).toHaveValue(
+    "First instructions.",
+  );
+  h.session.dispose();
+});
+
 it.each([false, true])(
   "keeps the full form mounted across settings and catalog loading (catalog fails: %s)",
   async (fails) => {
-    const h = fixture();
+    const h = await fixture();
     const user = userEvent.setup();
     const settings = deferred<HostResponse>();
     const catalog = deferred<HostResponse>();
@@ -232,8 +343,262 @@ it.each([false, true])(
     }
   },
 );
+it("hides a failed settings load and Retry while signed out, then loads after explicit sign-in", async () => {
+  const h = await fixture();
+  h.request.mockResolvedValueOnce({ ...response(), status: 400 });
+  render(<h.Tab agent={agent()} save={vi.fn()} />, { wrapper: StrictMode });
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("HTTP 400");
+  expect(
+    screen.getByRole("region", { name: "Couldn’t load settings" }),
+  ).toContainElement(alert);
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible(),
+  );
+  const before = h.request.mock.calls.length;
+  const signIn = vi.spyOn(h.session, "signIn");
+  act(() => h.session.signOut());
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Instructions" })).toBeDisabled();
+  expect(signIn).not.toHaveBeenCalled();
+  expect(h.request).toHaveBeenCalledTimes(before);
+  await act(() => h.session.signIn());
+  expect(await loadedInstructions()).toHaveValue("First instructions.");
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+// Match the desktop opener's unprevented HTTP(S) anchor activation boundary.
+function observeLogout(
+  session: Awaited<ReturnType<typeof fixture>>["session"],
+) {
+  const opened: { url: string; status: string }[] = [];
+  const opener = (event: MouseEvent) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.altKey
+    )
+      return;
+    const anchor = event
+      .composedPath()
+      .find(
+        (node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement,
+      );
+    if (anchor?.target !== "_blank" || !/^https?:$/.test(anchor.protocol))
+      return;
+    opened.push({ url: anchor.href, status: session.snapshot().status });
+    // The native opener consumes the navigation; jsdom has no system browser.
+    event.preventDefault();
+  };
+  window.addEventListener("click", opener);
+  return { opened, stop: () => window.removeEventListener("click", opener) };
+}
+
+it.each([
+  { canUseRemoteAgents: true, activation: "pointer" },
+  { canUseRemoteAgents: false, activation: "Enter" },
+  { canUseRemoteAgents: true, activation: "Space" },
+])(
+  "signs out before opening browser logout and preserves a mismatched draft ($activation, remote access: $canUseRemoteAgents)",
+  async ({ canUseRemoteAgents, activation }) => {
+    vi.stubEnv(
+      "VITE_BUZZ_BUILDERLAB_URL",
+      "https://staging.builderlab.example:8443/api",
+    );
+    const h = await fixture();
+    const Footer = createSignInFooter(h.session);
+    render(
+      <>
+        <h.Tab agent={agent()} save={vi.fn()} />
+        <Footer />
+      </>,
+    );
+    const field = await loadedInstructions();
+    const user = userEvent.setup();
+    await user.type(field, " Draft");
+    const reads = h.request.mock.calls.length;
+    h.prepareAccount({
+      subject: "account-b",
+      email: "b@example.com",
+      canUseRemoteAgents,
+    });
+    await act(() => h.session.signIn());
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Sign in as a@example.com to edit this agent.",
+    );
+    expect(alert).not.toHaveTextContent("b@example.com");
+    expect(
+      screen.getByRole("region", { name: "Different account needed" }),
+    ).toContainElement(alert);
+    expect(screen.getByRole("button", { name: /^Model:/ })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Thinking" })).toBeDisabled();
+    expect(field).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: /Switch account|Save|^Retry$/ }),
+    ).toBeNull();
+    expect(h.request).toHaveBeenCalledTimes(reads);
+    const retry = screen.getByRole("button", { name: "Use another account" });
+    expect(retry).toHaveAttribute(
+      "href",
+      "https://staging.builderlab.example:8443/logout",
+    );
+    expect(retry).toHaveAttribute("target", "_blank");
+    expect(retry).toHaveAttribute("rel", "noopener noreferrer");
+    const credential = h.session.credential();
+    const viewer = h.session.viewerSession();
+    const releases = h.release.mock.calls.length;
+    const attempts = h.acquire.mock.calls.length;
+    const browser = observeLogout(h.session);
+    try {
+      if (activation === "pointer") await user.click(retry);
+      else {
+        retry.focus();
+        await user.keyboard(activation === "Enter" ? "{Enter}" : " ");
+      }
+      expect(browser.opened).toEqual([
+        {
+          url: "https://staging.builderlab.example:8443/logout",
+          status: "signed-out",
+        },
+      ]);
+      expect(h.session.snapshot().status).toBe("signed-out");
+      expect(() => h.session.credential()).toThrow();
+      expect(() => h.session.viewerSession()).toThrow();
+      expect(viewer.signal.aborted).toBe(true);
+      expect(h.release).toHaveBeenCalledTimes(releases + 1);
+      expect(h.release).toHaveBeenLastCalledWith(credential);
+      expect(h.acquire).toHaveBeenCalledTimes(attempts);
+      expect(
+        screen.getByRole("button", { name: "Sign in to Builderlab" }),
+      ).toBeEnabled();
+      expect(
+        screen.queryByRole("button", { name: "Use another account" }),
+      ).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(field).toBeDisabled();
+      h.prepareAccount({
+        subject: "account-a",
+        email: "a@example.com",
+        canUseRemoteAgents: true,
+      });
+      await user.click(
+        screen.getByRole("button", { name: "Sign in to Builderlab" }),
+      );
+      await waitFor(() => expect(field).toBeEnabled());
+      expect(h.acquire).toHaveBeenCalledTimes(attempts + 1);
+      expect(screen.getByRole("textbox", { name: "Instructions" })).toBe(field);
+      expect(field).toHaveValue("First instructions. Draft");
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    } finally {
+      browser.stop();
+    }
+  },
+);
+
+it("recovers an unloaded no-access account through logout and normal sign-in, retaining ordinary Retry", async () => {
+  const h = await fixture(false);
+  const Footer = createSignInFooter(h.session);
+  render(
+    <>
+      <h.Tab agent={agent()} save={vi.fn()} />
+      <Footer />
+    </>,
+  );
+  h.prepareAccount({
+    subject: "account-b",
+    email: "b@example.com",
+    canUseRemoteAgents: false,
+  });
+  await act(() => h.session.signIn());
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This account can’t access Builderlab agents.",
+  );
+  expect(screen.queryByText(/coming soon/)).toBeNull();
+  expect(screen.getByRole("alert")).not.toHaveTextContent(
+    /used for this agent|set up|created/,
+  );
+  expect(
+    screen.queryByRole("button", { name: /^Retry$|Switch account|Save/ }),
+  ).toBeNull();
+  expect(screen.getByRole("button", { name: /^Model:/ })).toBeDisabled();
+  expect(screen.getByRole("combobox", { name: "Thinking" })).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "Instructions" })).toBeDisabled();
+  expect(h.request).not.toHaveBeenCalled();
+  const user = userEvent.setup();
+  const browser = observeLogout(h.session);
+  try {
+    await user.click(
+      screen.getByRole("button", { name: "Use another account" }),
+    );
+    expect(browser.opened).toEqual([
+      { url: "https://builderlab.example/logout", status: "signed-out" },
+    ]);
+    expect(h.release).toHaveBeenCalledTimes(1);
+    expect(() => h.session.credential()).toThrow();
+    expect(h.acquire).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("button", { name: "Sign in to Builderlab" }),
+    ).toBeEnabled();
+    // Returning the same browser account still offers recovery.
+    await user.click(
+      screen.getByRole("button", { name: "Sign in to Builderlab" }),
+    );
+    expect(h.acquire).toHaveBeenCalledTimes(2);
+    await user.click(
+      await screen.findByRole("button", { name: "Use another account" }),
+    );
+    expect(browser.opened).toHaveLength(2);
+    expect(h.request).not.toHaveBeenCalled();
+    const held = deferred<ReturnType<typeof h.session.credential>>();
+    h.acquire.mockImplementationOnce(() => held.promise);
+    h.request.mockResolvedValueOnce({ ...response(), status: 400 });
+    try {
+      await user.click(
+        screen.getByRole("button", { name: "Sign in to Builderlab" }),
+      );
+      expect(h.acquire).toHaveBeenCalledTimes(3);
+      expect(
+        screen.getByRole("button", { name: "Sign in to Builderlab" }),
+      ).toHaveAttribute("aria-busy", "true");
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Use another account" }),
+      ).toBeNull();
+    } finally {
+      await act(async () =>
+        held.resolve({
+          value: "credential-a",
+          account: {
+            subject: "account-a",
+            email: "a@example.com",
+            canUseRemoteAgents: true,
+            canUseBuilderlabDecisions: false,
+          },
+        }),
+      );
+    }
+    expect(await screen.findByRole("alert")).toHaveTextContent("HTTP 400");
+    expect(
+      screen.queryByRole("button", { name: "Use another account" }),
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(h.acquire).toHaveBeenCalledTimes(3);
+    expect(await loadedInstructions()).toHaveValue("First instructions.");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Use another account" }),
+    ).toBeNull();
+    expect(h.request).toHaveBeenCalledTimes(3);
+  } finally {
+    browser.stop();
+  }
+});
+
 it("retries a failed load and refuses to save a draft through another account", async () => {
-  const h = fixture();
+  const h = await fixture();
   const user = userEvent.setup();
   h.request.mockResolvedValueOnce({ ...response(), status: 400 });
   renderTabs(h);
@@ -253,15 +618,76 @@ it("retries a failed load and refuses to save a draft through another account", 
   await user.type(field, "Changed.");
   await act(async () => h.changeAccount());
   const before = h.request.mock.calls.length;
-  await user.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "account that loaded these settings",
+    "Sign in as a@example.com to edit this agent.",
   );
+  expect(field).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  const form = field.closest("form");
+  if (!form) throw new Error("Missing settings form");
+  fireEvent.submit(form);
   expect(h.request).toHaveBeenCalledTimes(before);
   expect(field).toHaveValue("First instructions.Changed.");
 });
+it("settles an aborted catalog read after switching accounts without losing the draft", async () => {
+  const h = await fixture();
+  const held = deferred<HostResponse>();
+  const request = h.request.getMockImplementation();
+  if (!request) throw new Error("Missing request fixture");
+  const catalog = vi.spyOn(h.client, "modelCatalog");
+  h.request.mockImplementation((input) => {
+    if (input.url.endsWith("/get-model-catalog")) {
+      return held.promise;
+    }
+    return request(input);
+  });
+  render(<h.Tab agent={agent()} save={vi.fn()} />, { wrapper: StrictMode });
+  try {
+    const field = await loadedInstructions();
+    await waitFor(() => expect(catalog).toHaveBeenCalled());
+    expect(field.closest("[aria-busy]")).toHaveAttribute("aria-busy", "true");
+    const user = userEvent.setup();
+    await user.type(field, " Draft");
+    act(() => h.session.signOut());
+    expect(catalog.mock.calls.at(-1)?.[0].aborted).toBe(true);
+    await act(() => h.changeAccount());
+    await waitFor(() =>
+      expect(field.closest("[aria-busy]")).toHaveAttribute(
+        "aria-busy",
+        "false",
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Model: Unavailable" }),
+    ).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Retry models" })).toBeNull();
+    const before = h.request.mock.calls.length;
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Sign in as a@example.com to edit this agent.",
+    );
+    expect(field).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    const form = field.closest("form");
+    if (!form) throw new Error("Missing settings form");
+    fireEvent.submit(form);
+    expect(h.request).toHaveBeenCalledTimes(before);
+    expect(field).toHaveValue("First instructions. Draft");
+  } finally {
+    await act(async () => {
+      held.resolve({ status: 200, headers: {}, body: '{"models":[]}' });
+    });
+  }
+  expect(
+    screen.queryByText(
+      "No models are available. Retry when the catalog is available.",
+    ),
+  ).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Instructions" })).toHaveValue(
+    "First instructions. Draft",
+  );
+});
 it("switching agents hides the old draft and ignores the switched-away read", async () => {
-  const h = fixture();
+  const h = await fixture();
   const user = userEvent.setup();
   const mounted = render(<h.Tab agent={agent()} save={vi.fn()} />, {
     wrapper: StrictMode,
@@ -298,7 +724,10 @@ it("switching agents hides the old draft and ignores the switched-away read", as
   );
 });
 
-function renderTabs(h: ReturnType<typeof fixture>, close?: () => void) {
+function renderTabs(
+  h: Awaited<ReturnType<typeof fixture>>,
+  close?: () => void,
+) {
   function Pane() {
     const agents = { save: vi.fn() } as unknown as Agents;
     const settings = useAgentSettingsHost({
@@ -356,7 +785,7 @@ function renderTabs(h: ReturnType<typeof fixture>, close?: () => void) {
 }
 
 it("dismisses Harness help before allowing Escape to close the agent pane", async () => {
-  const h = fixture();
+  const h = await fixture();
   const user = userEvent.setup();
   const close = vi.fn();
   renderTabs(h, close);
@@ -396,7 +825,7 @@ it("dismisses Harness help before allowing Escape to close the agent pane", asyn
 });
 
 it("keeps hosted instructions on cancellation and resets a confirmed discard", async () => {
-  const h = fixture();
+  const h = await fixture();
   const user = userEvent.setup();
   renderTabs(h);
   expect(screen.queryByRole("tab", { name: "Instructions" })).toBeNull();
@@ -469,7 +898,7 @@ it("keeps hosted instructions on cancellation and resets a confirmed discard", a
 });
 
 it("guards hosted model drafts and a pending model save", async () => {
-  const h = fixture();
+  const h = await fixture();
   const user = userEvent.setup();
   renderTabs(h);
   await loadedInstructions();
@@ -524,7 +953,7 @@ it("guards hosted model drafts and a pending model save", async () => {
 });
 
 it("saves model and instructions together through one footer action", async () => {
-  const h = fixture();
+  const h = await fixture();
   const user = userEvent.setup();
   renderTabs(h);
   const field = await loadedInstructions();
@@ -566,8 +995,8 @@ it("saves model and instructions together through one footer action", async () =
   expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 
-it("keeps runtime settings available without loading Builderlab configuration", () => {
-  const h = fixture();
+it("keeps runtime settings available without loading Builderlab configuration", async () => {
+  const h = await fixture();
   render(
     <h.Tab
       agent={agent()}

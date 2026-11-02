@@ -79,7 +79,7 @@ it("unavailable real thread pane rejects files without attaching to the main com
     </StrictMode>,
   );
   const pane = screen.getByRole("complementary", { name: "Thread" });
-  expect(screen.getByText("Error: Thread unavailable")).toBeInTheDocument();
+  expect(screen.getByText("This thread didn’t load.")).toBeInTheDocument();
   expect(pane.querySelector("form")).toBeNull();
   const over = drag(pane, "dragOver");
   expect(over.event.defaultPrevented).toBe(true);

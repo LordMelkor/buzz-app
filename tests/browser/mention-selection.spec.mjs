@@ -404,13 +404,23 @@ test("selection remains visible on outgoing bubbles and their neutral content", 
         while (getComputedStyle(parent).backgroundColor === "rgba(0, 0, 0, 0)")
           parent = parent.parentElement;
         const selection = getComputedStyle(el, "::selection");
-        const hex = (rgb) =>
-          "#" +
-          rgb
-            .match(/\d+/g)
-            .slice(0, 3)
-            .map((n) => Number(n).toString(16).padStart(2, "0"))
-            .join("");
+        // WebKit serializes mixed hover fills as color(srgb ...), not rgb().
+        // Let the browser resolve CSS colors before comparing the same ratios.
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 1;
+        const context = canvas.getContext("2d");
+        const hex = (color) => {
+          context.clearRect(0, 0, 1, 1);
+          context.fillStyle = color;
+          context.fillRect(0, 0, 1, 1);
+          return (
+            "#" +
+            [...context.getImageData(0, 0, 1, 1).data]
+              .slice(0, 3)
+              .map((value) => value.toString(16).padStart(2, "0"))
+              .join("")
+          );
+        };
         return {
           surface: hex(getComputedStyle(parent).backgroundColor),
           fill: hex(selection.backgroundColor),

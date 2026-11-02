@@ -9,6 +9,12 @@ type BuzzLink =
   | { format: "removed" }
   | { format: "entity"; route: EntityRoute }
   | {
+      format: "plugin";
+      pluginId: string;
+      pageId?: string;
+      params?: Readonly<Record<string, string>>;
+    }
+  | {
       format: "legacy";
       channelId: string;
       messageId?: string;
@@ -23,6 +29,43 @@ export function isBuzzLink(href: string): boolean {
     return new URL(href).protocol === "buzz:";
   } catch {
     return false;
+  }
+}
+
+/** `buzz://plugin?id=<plugin>[&page=<page>][&route.<key>=<value>...]`. Ids and route
+ * data pass the same bounds as the navigation target they become. */
+function parsePluginLink(url: URL, href: string): BuzzLink | null {
+  // Windows can supply an explicit root path before the query; URL normalizes
+  // non-root paths such as /extra/.. to /, so check the raw form too.
+  if (
+    url.pathname !== "" &&
+    (url.pathname !== "/" || !/^buzz:\/\/plugin\/\?/i.test(href))
+  )
+    return null;
+  if (["id", "page"].some((key) => url.searchParams.getAll(key).length > 1))
+    return null;
+  const id = url.searchParams.get("id");
+  const page = url.searchParams.get("page");
+  const params = new Map<string, string>();
+  for (const [name, value] of url.searchParams) {
+    if (!name.startsWith("route.")) continue;
+    const key = name.slice("route.".length);
+    if (params.has(key)) return null;
+    params.set(key, value);
+  }
+  try {
+    const target = parseOpenTarget({
+      version: 1,
+      kind: "plugin",
+      pluginId: id ?? "",
+      ...(page !== null ? { pageId: page } : {}),
+      ...(params.size ? { params: Object.fromEntries(params) } : {}),
+    });
+    if (target.kind !== "plugin") return null;
+    const { version: _version, kind: _kind, scope: _scope, ...link } = target;
+    return { format: "plugin", ...link };
+  } catch {
+    return null;
   }
 }
 
@@ -46,6 +89,7 @@ export function parseBuzzLink(href: string): BuzzLink | null {
       return { format: "removed" };
     const entity = parseEntityLink(url);
     if (entity) return { format: "entity", route: entity };
+    if (url.hostname === "plugin") return parsePluginLink(url, href);
     const channelPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$/;
     const eventPattern = /^[a-f0-9]{64}$/i;
     // Query parameters outside a form's grammar are ignored, values and repeats
@@ -121,10 +165,15 @@ export function buzzLinkTarget(href: string, scope: NavigationScope) {
       scope,
     } as const;
   const { format: _format, ...destination } = link;
-  return parseOpenTarget({
-    version: 1,
-    kind: "conversation",
-    scope,
-    ...destination,
-  });
+  // The link was size-checked without its scope, which can push it past the target limit.
+  try {
+    return parseOpenTarget({
+      version: 1,
+      kind: link.format === "plugin" ? "plugin" : "conversation",
+      scope,
+      ...destination,
+    });
+  } catch {
+    return null;
+  }
 }

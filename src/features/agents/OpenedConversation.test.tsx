@@ -14,13 +14,14 @@ it("keeps the reader's choice when the opened conversation's lookup finishes lat
     resolve = done;
   });
   const { result } = renderHook(() => {
-    const { session } = useOpenedSession<Row>(
+    const { session, searching } = useOpenedSession<Row>(
       [recent],
       conversation,
       () => lookup,
     );
     return useOpenTranscript<Row>(conversation, (row) => row.key, {
       initial: session,
+      searching,
       opening: 1,
       done() {},
     });
@@ -35,23 +36,129 @@ it("keeps the reader's choice when the opened conversation's lookup finishes lat
   expect(result.current.open).toBe(recent);
 });
 
-it("never opens a transcript found only after the conversation was shown", async () => {
+it("opens a transcript its lookup finds after the conversation was shown, once", async () => {
+  let resolve: (row: Row) => void = () => {};
+  const lookup = new Promise<Row>((done) => {
+    resolve = done;
+  });
   const done = vi.fn();
   const { result } = renderHook(() => {
-    const { session } = useOpenedSession<Row>(
+    const { session, searching } = useOpenedSession<Row>(
       [recent],
       conversation,
-      async () => found,
+      () => lookup,
     );
     return useOpenTranscript<Row>(conversation, (row) => row.key, {
       initial: session,
+      searching,
+      opening: 1,
+      done,
+    });
+  });
+  try {
+    expect(result.current.open).toBeUndefined();
+    expect(done).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => resolve(found));
+  }
+  expect(result.current.open).toEqual(found);
+  expect(done).toHaveBeenCalledTimes(1);
+  act(() => result.current.back());
+  expect(result.current.open).toBeUndefined();
+});
+
+it.each(["keydown", "pointerdown", "wheel"] as const)(
+  "keeps the overview when the reader acts (%s) before the lookup finishes",
+  async (input) => {
+    let resolve: (row: Row) => void = () => {};
+    const lookup = new Promise<Row>((done) => {
+      resolve = done;
+    });
+    const done = vi.fn();
+    const { result } = renderHook(() => {
+      const { session, searching } = useOpenedSession<Row>(
+        [recent],
+        conversation,
+        () => lookup,
+      );
+      return useOpenTranscript<Row>(conversation, (row) => row.key, {
+        initial: session,
+        searching,
+        opening: 1,
+        done,
+      });
+    });
+    try {
+      act(() => void document.body.dispatchEvent(new Event(input)));
+      expect(done).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => resolve(found));
+    }
+    expect(result.current.open).toBeUndefined();
+    expect(done).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("drops a pending request when the profile moves to another conversation", async () => {
+  const other = { channelId: "other", rootId: "root" };
+  // Already saved, so it is known as soon as the profile moves to it.
+  const kept: Row = { key: "kept", channelId: "other", root: "root" };
+  const lookups = new Map<string, (row: Row) => void>();
+  const done = vi.fn();
+  const { result, rerender } = renderHook(
+    ({ shown }: { shown: typeof conversation }) => {
+      const { session, searching } = useOpenedSession<Row>(
+        [recent, kept],
+        shown,
+        (place) =>
+          new Promise<Row>((resolve) => {
+            lookups.set(place.channelId, resolve);
+          }),
+      );
+      return useOpenTranscript<Row>(shown, (row) => row.key, {
+        initial: session,
+        searching,
+        opening: 1,
+        done,
+      });
+    },
+    { initialProps: { shown: conversation } },
+  );
+  try {
+    rerender({ shown: other });
+    expect(done).toHaveBeenCalledTimes(1);
+  } finally {
+    await act(async () => {
+      lookups.get("channel")?.(found);
+      lookups.get("other")?.({
+        key: "other",
+        channelId: "other",
+        root: "root",
+      });
+    });
+  }
+  expect(result.current.open).toBeUndefined();
+  expect(done).toHaveBeenCalledTimes(1);
+});
+
+it("settles without opening when the lookup finds no session", async () => {
+  const done = vi.fn();
+  const { result } = renderHook(() => {
+    const { session, searching } = useOpenedSession<Row>(
+      [recent],
+      conversation,
+      async () => undefined,
+    );
+    return useOpenTranscript<Row>(conversation, (row) => row.key, {
+      initial: session,
+      searching,
       opening: 1,
       done,
     });
   });
   await act(async () => {});
   expect(result.current.open).toBeUndefined();
-  expect(done).toHaveBeenCalled();
+  expect(done).toHaveBeenCalledTimes(1);
 });
 
 it("opens the known conversation's transcript once, not again after Back", () => {

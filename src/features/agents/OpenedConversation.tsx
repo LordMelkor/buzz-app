@@ -101,16 +101,22 @@ export function useOpenedSession<T extends Saved>(
 /** The transcript a type's tab shows over itself as a panel subview, titled
  * `title(row)`. It closes when the profile is retargeted to another
  * conversation, and viewing it again brings its tab back in a tabbed host.
- * `request` asks for the conversation's transcript first. It opens by itself
- * only if already known when the conversation is shown, since one found later
- * must not take the reader's focus; `request.done` reports that it was offered.
- * A new `request.opening` asks again, even for the conversation already shown.
- * Closing that tab calls `close`, since it was all that was asked for, unless
- * the host is only clearing the profile's own detail tabs. */
+ * `request` asks for the conversation's transcript first. While its session
+ * is still `searching`, the transcript opens once found, unless the reader
+ * clicks, types or scrolls first, so a late result never takes their place;
+ * `request.done` reports that it was offered. A new `request.opening` asks
+ * again, even for the conversation already shown. Closing that tab calls
+ * `close`, since it was all that was asked for, unless the host is only
+ * clearing the profile's own detail tabs. */
 export function useOpenTranscript<T>(
   conversation: AgentConversation | undefined,
   title: (row: T) => string,
-  request?: { initial: T | undefined; opening: number; done(): void },
+  request?: {
+    initial: T | undefined;
+    searching?: boolean | undefined;
+    opening: number;
+    done(): void;
+  },
   close?: () => void,
 ) {
   const place = conversation
@@ -127,27 +133,55 @@ export function useOpenTranscript<T>(
   const [offered, setOffered] = useState<{ place: string; opening?: number }>({
     place: "",
   });
+  // The place whose asked-for session is still being looked up.
+  const [waiting, setWaiting] = useState<string>();
   const moved = offered.place !== place;
-  if (moved || (opening !== undefined && opening !== offered.opening)) {
+  const fresh = opening !== undefined && opening !== offered.opening;
+  if (moved || fresh) {
     setOffered({ place, ...(opening !== undefined && { opening }) });
+    // Only a new opening asks; moving to another conversation drops it.
     const asked =
-      place && request?.initial !== undefined
+      fresh && place && request?.initial !== undefined
         ? { place, row: request.initial, initial: true as const }
         : undefined;
     if (moved || asked) setShown(asked);
+    setWaiting(
+      fresh && !asked && place && request?.searching ? place : undefined,
+    );
+  } else if (waiting !== undefined) {
+    if (waiting !== place || !request) setWaiting(undefined);
+    else if (request.initial !== undefined) {
+      setWaiting(undefined);
+      setShown({ place, row: request.initial, initial: true });
+    } else if (!request.searching) setWaiting(undefined);
   }
+  const pending = !!place && waiting === place;
+  // The reader's own click, key press or scroll wins over a lookup still
+  // finishing.
+  useEffect(() => {
+    if (!pending) return;
+    const cancel = () => setWaiting(undefined);
+    const events = ["pointerdown", "keydown", "wheel"] as const;
+    for (const type of events)
+      document.addEventListener(type, cancel, { capture: true, passive: true });
+    return () => {
+      for (const type of events)
+        document.removeEventListener(type, cancel, true);
+    };
+  }, [pending]);
   const tabs = usePanelTabHost();
   // A transcript already open in its tab is brought forward when asked again.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: once per opening.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: once per opening, after its lookup.
   useEffect(() => {
-    if (!request) return;
+    if (!request || pending) return;
     if (tabs && shown?.initial && shown.place === place)
       tabs.activate(tabs.owner, title(shown.row));
     request.done();
-  }, [opening]);
+  }, [opening, pending]);
   return {
     open: shown?.place === place ? shown.row : undefined,
     show(row: T) {
+      setWaiting(undefined);
       setShown({ place, row });
       tabs?.activate(tabs.owner, title(row));
     },

@@ -7,7 +7,7 @@ settings:
 patchedDependencies:
   '@base-ui/react@1.9.0': 958237d028ca73b236150c1367b09699dd0d42738be177382595af9b5fd91709
   sonner@2.0.8: 5382cda2bb9248e880166099e960d33a043570b790643cf5238d60c61f7def28
-  virtua@0.53.5: 5b06c19080b1bf5849b1f7d79948cd7b3981f1e687dfc7a9e5ca1ebd88cfcfb3
+  virtua@0.53.5: f6b81136189da2db2367f354b2fb88656187e3f35def7f73d2891433191817f1
 
 importers:
 
@@ -56,8 +56,8 @@ importers:
         specifier: ^2.12.3
         version: 2.12.4
       '@tauri-apps/plugin-updater':
-        specifier: 2.13.3
-        version: 2.13.3
+        specifier: 2.14.1
+        version: 2.14.1
       '@xterm/addon-fit':
         specifier: 0.11.0
         version: 0.11.0
@@ -153,7 +153,7 @@ importers:
         version: 2.0.8(patch_hash=5382cda2bb9248e880166099e960d33a043570b790643cf5238d60c61f7def28)(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       virtua:
         specifier: 0.53.5
-        version: 0.53.5(patch_hash=5b06c19080b1bf5849b1f7d79948cd7b3981f1e687dfc7a9e5ca1ebd88cfcfb3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        version: 0.53.5(patch_hash=f6b81136189da2db2367f354b2fb88656187e3f35def7f73d2891433191817f1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       yaml:
         specifier: 2.9.1
         version: 2.9.1
@@ -811,8 +811,8 @@ packages:
     engines: {node: '>= 10'}
     hasBin: true
 
-  '@tauri-apps/plugin-updater@2.13.3':
-    resolution: {integrity: sha512-CtbA8CZ79WJry2HbRiFGx6WZN7uspho6A4jM+TxmuqwWL2EEfJEMw6BIYgRncIZyqp4vEXw3U/97ZjQ33dKUgg==}
+  '@tauri-apps/plugin-updater@2.14.1':
+    resolution: {integrity: sha512-Hr7nlBm1wT6xbwzjZ/S36YULazu8MNlj5vvOwMl47fXI7HTa5Bjl1PbDEwVHaZTAKzE1VZsUy35UqnbrQxmYQw==}
 
   '@testing-library/dom@10.4.1':
     resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
@@ -2575,7 +2575,7 @@ snapshots:
       '@tauri-apps/cli-win32-ia32-msvc': 2.12.3
       '@tauri-apps/cli-win32-x64-msvc': 2.12.3
 
-  '@tauri-apps/plugin-updater@2.13.3':
+  '@tauri-apps/plugin-updater@2.14.1':
     dependencies:
       '@tauri-apps/api': 2.12.4
 
@@ -3867,7 +3867,7 @@ snapshots:
       '@types/unist': 3.0.3
       vfile-message: 4.0.3
 
-  virtua@0.53.5(patch_hash=5b06c19080b1bf5849b1f7d79948cd7b3981f1e687dfc7a9e5ca1ebd88cfcfb3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  virtua@0.53.5(patch_hash=f6b81136189da2db2367f354b2fb88656187e3f35def7f73d2891433191817f1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     optionalDependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)

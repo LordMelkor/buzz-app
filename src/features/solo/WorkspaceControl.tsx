@@ -15,6 +15,7 @@ import {
   MenuRoot,
   MenuTrigger,
 } from "../../shared/design-system/ui/Menu";
+import styles from "./WorkspaceControl.module.css";
 
 export function WorkspaceControl({
   session,
@@ -68,7 +69,7 @@ export function WorkspaceControl({
   const name = project ? `Workspace: ${project.name}` : "Add workspace";
   if (channelId && regions.excluded.has(channelId)) return null;
   return (
-    <span>
+    <span className={styles.control}>
       <MenuRoot>
         <MenuTrigger
           disabled={
@@ -83,13 +84,14 @@ export function WorkspaceControl({
               variant="ghost"
               size="sm"
               shape={project ? "capsule" : "icon"}
+              style={{ maxWidth: "100%" }}
               aria-label={name}
               title={name}
             >
               <Cube3dSphereIcon size={16} aria-hidden="true" />
               {project && (
                 <>
-                  <span>{project.name}</span>
+                  <span className={styles.name}>{project.name}</span>
                   <CaretDownIcon
                     size={12}
                     className="buzz-dropdown-chevron"

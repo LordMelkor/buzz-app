@@ -815,7 +815,7 @@ test("non-ready sidebar keeps page rows and Retry reachable by pointer scrolling
     exact: true,
   });
   const retry = sidebar.getByRole("button", {
-    name: "Retry channels",
+    name: "Try again",
     exact: true,
   });
   await expect(retry).toBeAttached();

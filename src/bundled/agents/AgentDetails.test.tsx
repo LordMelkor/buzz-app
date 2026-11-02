@@ -12,7 +12,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
-import { useId, useState } from "react";
+import { useId, useState, useSyncExternalStore, type ReactNode } from "react";
 import type {
   Agent,
   Agents,
@@ -22,9 +22,369 @@ import type {
 import type { CommunityReader } from "../../features/communities/service";
 import { AgentSaveButton } from "../../features/agents/AgentSaveButton";
 import { Input } from "../../shared/design-system/ui/Input";
+import { Button } from "../../shared/design-system/ui/Button";
 import { AgentDetails } from "./AgentDetails";
+import { createOAuthSession } from "../builderlab/oauth/session";
+import {
+  AccountRecoverySheet,
+  createProfileActions,
+  createSignInFooter,
+} from "../builderlab/adapter-type/SignInFooter";
+import { deferred } from "../builderlab/test-helpers";
+
+vi.mock("../builderlab/oauth/browser", async (original) => ({
+  ...(await original<typeof import("../builderlab/oauth/browser")>()),
+  browserLoginAvailable: () => true,
+}));
 
 afterEach(cleanup);
+
+it("keeps one provider footer across tabs and measures its changing height for the scroll area", async () => {
+  const signedIn = deferred<void>();
+  const callbacks = new Map<Element, () => void>();
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(private changed: () => void) {}
+      observe(target: Element) {
+        callbacks.set(target, this.changed);
+      }
+      disconnect() {}
+      unobserve() {}
+    },
+  );
+  function Footer() {
+    const [connected, setConnected] = useState(false);
+    return connected ? null : (
+      <section aria-label="Account access">
+        <Button
+          onClick={async () => {
+            await signedIn.promise;
+            setConnected(true);
+          }}
+        >
+          Sign in
+        </Button>
+      </section>
+    );
+  }
+  const agent = {
+    key: "a".repeat(64),
+    pubkey: "a".repeat(64),
+    owner: "f".repeat(64),
+    name: "Ada",
+    type: "test/hosted",
+    place: "hosted",
+    relay: "wss://current.example",
+    config: {},
+    attention: {},
+    skipped: {},
+    timers: {},
+    attentionEnabled: true,
+  } satisfies Agent;
+  const type = {
+    key: agent.type,
+    pluginId: "test",
+    revision: "1",
+    id: "hosted",
+    title: "Hosted",
+    defaults: () => ({ config: {} }),
+    PanelFooter: Footer,
+    ProfileActions: ({ children }: { children: ReactNode }) => (
+      <section aria-label="Profile editing">{children}</section>
+    ),
+    tabs: [
+      {
+        id: "settings",
+        title: "Identity",
+        role: "settings",
+        component: () => <p>Provider settings</p>,
+      },
+      {
+        id: "activity",
+        title: "Activity",
+        role: "activity",
+        component: () => <p>Agent activity</p>,
+      },
+    ],
+  } as RegisteredAgentType;
+  const agents = {
+    subscribe: () => () => {},
+    snapshot: () => ({ agents: [agent] }),
+    configHistory: () => undefined,
+    addedTabs: () => [],
+    memberships: () => [],
+  } as unknown as Agents;
+  render(
+    <AgentDetails
+      agents={agents}
+      agent={agent}
+      type={type}
+      types={[type]}
+      channels={[]}
+      memories={undefined}
+      onRemoved={vi.fn()}
+      messageAction={() => <Button>Message</Button>}
+    />,
+  );
+  const card = screen.getByRole("region", { name: "Account access" });
+  expect(
+    within(screen.getByRole("region", { name: "Profile editing" })).getByRole(
+      "button",
+      { name: "Message" },
+    ),
+  ).toBeVisible();
+  expect(
+    within(screen.getByRole("region", { name: "Profile editing" })).getByRole(
+      "button",
+      { name: "Agent profile actions" },
+    ),
+  ).toBeVisible();
+  const footer = card.parentElement;
+  if (!footer) throw new Error("Missing pane footer");
+  const scroll = footer.previousElementSibling as HTMLElement;
+  const width = vi.spyOn(scroll, "clientWidth", "get").mockReturnValue(420);
+  const left = vi.spyOn(scroll, "clientLeft", "get").mockReturnValue(0);
+  const box = vi.spyOn(footer, "getBoundingClientRect");
+  box.mockReturnValue({ height: 240 } as DOMRect);
+  act(() => callbacks.get(footer)?.());
+  await waitFor(() =>
+    expect(scroll.style.getPropertyValue("--agent-footer-height")).toBe(
+      "240px",
+    ),
+  );
+  expect(footer.style.width).toBe("420px");
+  expect(footer.style.left).toBe("0px");
+  const user = userEvent.setup();
+  for (const name of ["Memory", "Activity", "Settings", "Identity"]) {
+    await user.click(screen.getByRole("tab", { name }));
+    expect(screen.getByRole("region", { name: "Account access" })).toBe(card);
+  }
+  box.mockReturnValue({ height: 320 } as DOMRect);
+  act(() => callbacks.get(footer)?.());
+  await waitFor(() =>
+    expect(scroll.style.getPropertyValue("--agent-footer-height")).toBe(
+      "320px",
+    ),
+  );
+  // Resize/removal of a scrollbar and a left-side scrollbar use the same inset.
+  width.mockReturnValue(460);
+  left.mockReturnValue(12);
+  act(() => callbacks.get(scroll)?.());
+  await waitFor(() => expect(footer.style.width).toBe("460px"));
+  expect(footer.style.left).toBe("12px");
+  const selected = screen.getByRole("tab", { name: "Settings" });
+  await user.click(selected);
+  const signIn = screen.getByRole("button", { name: "Sign in" });
+  act(() => signIn.focus());
+  try {
+    await user.keyboard("{Enter}");
+    expect(signIn).toHaveFocus();
+  } finally {
+    await act(async () => signedIn.resolve());
+  }
+  box.mockReturnValue({ height: 0 } as DOMRect);
+  act(() => callbacks.get(footer)?.());
+  expect(screen.queryByRole("region", { name: "Account access" })).toBeNull();
+  await waitFor(() =>
+    expect(scroll.style.getPropertyValue("--agent-footer-height")).toBe("0px"),
+  );
+  await waitFor(() => expect(selected).toHaveFocus());
+  box.mockRestore();
+  width.mockRestore();
+  left.mockRestore();
+});
+
+it.each([
+  { target: "name", recovery: false },
+  { target: "avatar", recovery: false },
+  { target: "name", recovery: true },
+  { target: "avatar", recovery: true },
+])(
+  "closes the $target editor for account access (recovery: $recovery)",
+  async ({ target, recovery }) => {
+    vi.stubEnv("VITE_BUZZ_BUILDERLAB_URL", "https://builderlab.example");
+    let canUseRemoteAgents = true;
+    const callbacks = new Set<() => void>();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private changed: () => void) {}
+        observe() {
+          callbacks.add(this.changed);
+        }
+        disconnect() {
+          callbacks.delete(this.changed);
+        }
+        unobserve() {}
+      },
+    );
+    const session = createOAuthSession(async () => ({
+      value: "credential",
+      account: {
+        subject: "account",
+        email: "a@example.com",
+        canUseRemoteAgents,
+        canUseBuilderlabDecisions: false,
+      },
+    }));
+    await session.signIn();
+    const signIn = vi.spyOn(session, "signIn");
+    const agent = {
+      key: "a".repeat(64),
+      pubkey: "a".repeat(64),
+      owner: "f".repeat(64),
+      name: "Ada",
+      type: "test/hosted",
+      place: "hosted",
+      relay: "wss://current.example",
+      config: {},
+      attention: {},
+      skipped: {},
+      timers: {},
+      attentionEnabled: true,
+    } satisfies Agent;
+    function RecoverySettings() {
+      const login = useSyncExternalStore(session.subscribe, session.snapshot);
+      return (
+        <AccountRecoverySheet
+          session={session}
+          mismatch={false}
+          active={
+            login.status === "signed-in" &&
+            login.account?.canUseRemoteAgents === false
+          }
+        />
+      );
+    }
+    const type = {
+      key: agent.type,
+      pluginId: "test",
+      revision: "1",
+      id: "hosted",
+      title: "Hosted",
+      defaults: () => ({ config: {} }),
+      PanelFooter: createSignInFooter(session),
+      ProfileActions: createProfileActions(session),
+      tabs: [
+        {
+          id: "settings",
+          title: "Identity",
+          role: "settings",
+          component: RecoverySettings,
+        },
+      ],
+    } as RegisteredAgentType;
+    const agents = {
+      save: vi.fn(),
+      subscribe: () => () => {},
+      snapshot: () => ({ agents: [agent] }),
+      configHistory: () => undefined,
+      addedTabs: () => [],
+      memberships: () => [],
+    } as unknown as Agents;
+    const view = render(
+      <AgentDetails
+        agents={agents}
+        agent={agent}
+        type={type}
+        types={[type]}
+        channels={[]}
+        memories={undefined}
+        onRemoved={vi.fn()}
+        messageAction={() => <Button>Message</Button>}
+      />,
+    );
+    try {
+      const user = userEvent.setup();
+      await user.click(
+        screen.getByRole("button", { name: "Agent profile actions" }),
+      );
+      await user.click(
+        await screen.findByRole("menuitem", { name: `Change ${target}` }),
+      );
+      if (target === "name")
+        expect(
+          screen.getByRole("textbox", { name: "Agent name" }),
+        ).toBeVisible();
+      else
+        expect(
+          screen.getByRole("dialog", { name: "Change avatar" }),
+        ).toBeVisible();
+      if (recovery) {
+        canUseRemoteAgents = false;
+        await act(() => session.signIn());
+      } else act(() => session.signOut());
+      act(() => {
+        for (const callback of callbacks) callback();
+      });
+      await waitFor(() => {
+        expect(
+          screen.queryByRole("textbox", { name: "Agent name" }),
+        ).toBeNull();
+        expect(
+          screen.queryByRole("dialog", { name: "Change avatar" }),
+        ).toBeNull();
+      });
+      if (recovery) {
+        const sheet = await screen.findByRole("region", {
+          name: "Builderlab access unavailable",
+        });
+        const identity = screen.getByRole("complementary", {
+          name: "Ada identity",
+        });
+        const scroll = identity.parentElement;
+        expect(scroll).not.toContainElement(sheet);
+        expect(scroll?.nextElementSibling).toContainElement(sheet);
+        expect(
+          screen.queryByRole("button", { name: "Sign in to Builderlab" }),
+        ).toBeNull();
+      }
+      const attempts = signIn.mock.calls.length;
+      act(() => screen.getByRole("tab", { selected: true }).focus());
+      await user.keyboard("{Enter}");
+      expect(signIn).toHaveBeenCalledTimes(attempts);
+      expect(agents.save).not.toHaveBeenCalled();
+      if (recovery) {
+        const useAnother = screen.getByRole("button", {
+          name: "Use another account",
+        });
+        act(() => useAnother.focus());
+        await user.keyboard("{Enter}");
+        const reconnect = await screen.findByRole("button", {
+          name: "Sign in to Builderlab",
+        });
+        await waitFor(() => expect(reconnect).toHaveFocus());
+        expect(session.snapshot().status).toBe("signed-out");
+        expect(signIn).toHaveBeenCalledTimes(attempts);
+        const selected = screen.getByRole("tab", { selected: true });
+        act(() => selected.focus());
+        await act(() => session.signIn());
+        await screen.findByRole("button", { name: "Use another account" });
+        act(() => session.signOut());
+        await screen.findByRole("button", { name: "Sign in to Builderlab" });
+        expect(selected).toHaveFocus();
+      }
+      canUseRemoteAgents = true;
+      await act(() => session.signIn());
+      act(() => {
+        for (const callback of callbacks) callback();
+      });
+      expect(
+        await screen.findByRole("button", { name: "Agent profile actions" }),
+      ).toBeVisible();
+      expect(screen.queryByRole("textbox", { name: "Agent name" })).toBeNull();
+      expect(
+        screen.queryByRole("dialog", { name: "Change avatar" }),
+      ).toBeNull();
+    } finally {
+      view.unmount();
+      session.dispose();
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  },
+);
 
 function Settings({ agent, save }: AgentViewProps<{ reply: string }>) {
   const form = useId();

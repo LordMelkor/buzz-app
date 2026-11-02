@@ -302,6 +302,12 @@ async fn upgrade(
     let mut request = relay
         .into_client_request()
         .map_err(|_| "Invalid native socket request")?;
+    request.headers_mut().insert(
+        tokio_tungstenite::tungstenite::http::header::USER_AGENT,
+        crate::relay::user_agent()
+            .parse()
+            .map_err(|_| "Invalid native socket request")?,
+    );
     if let Some(assertion) = &assertion {
         request.headers_mut().insert(
             super::assertion::HEADER,
@@ -384,6 +390,13 @@ mod tests {
         let heads = server.heads().await;
         assert!(
             heads[0].to_ascii_lowercase().contains("upgrade: websocket"),
+            "{}",
+            heads[0]
+        );
+        assert!(
+            heads[0]
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("user-agent: Buzz")),
             "{}",
             heads[0]
         );

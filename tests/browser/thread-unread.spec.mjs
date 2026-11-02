@@ -1,3 +1,4 @@
+import { pauseClock } from "./clock.mjs";
 import { openChannelDetails } from "./channel-details.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open, virtuaIdle } from "./timeline.mjs";
@@ -75,7 +76,7 @@ test.describe("mentioned reply priority", () => {
           }),
         root.id,
       );
-    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await pauseClock(page, 1000);
     await page
       .locator(`[data-channel-timeline] [data-message-id="${root.id}"]`)
       .getByRole("button", { name: /^View thread:/ })
@@ -282,7 +283,7 @@ test.describe("mentioned reply priority", () => {
       name: "Message #Alpha",
       exact: true,
     });
-    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await pauseClock(page, 1000);
     await page
       .locator(`[data-channel-timeline] [data-message-id="${root.id}"]`)
       .getByRole("button", { name: /^View thread:/ })
@@ -453,9 +454,9 @@ test("thread buttons show observed unread independently, clear only after readin
   await item.focus();
   await expect(item).toBeFocused();
   // This open only proves the handoff. Its thread must stay unread, so a slow
-  // close must not let the open panel earn reading dwell. Pause just ahead of
-  // the page clock, which keeps flowing during the round trip.
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+  // close must not let the open panel earn reading dwell. Hold the clock before
+  // releasing reading focus, without a sampled-time race during the round trip.
+  await pauseClock(page, 1000);
   await releaseReadingFocus(page);
   await item.press("Enter");
   await expect(
@@ -770,9 +771,7 @@ test("opening a fitting thread reads after unchanged-row continuation without an
       panel.getByText("Unread reply 1", { exact: true }),
     ).toBeInViewport();
     await expect(
-      page.locator(
-        '[role="tab"][data-tab-value^="thread:"][aria-selected="true"]',
-      ),
+      panel.getByRole("textbox", { name: "Reply to thread", exact: true }),
     ).toBeFocused();
     expect(
       await history.evaluate(
@@ -795,9 +794,7 @@ test("opening a fitting thread reads after unchanged-row continuation without an
   await other.click();
   await expect(panel).toHaveCount(1);
   await expect(
-    page.locator(
-      '[role="tab"][data-tab-value^="thread:"][aria-selected="true"]',
-    ),
+    panel.getByRole("textbox", { name: "Reply to thread", exact: true }),
   ).toBeFocused();
   const reply = panel
     .locator("[data-message-id]")

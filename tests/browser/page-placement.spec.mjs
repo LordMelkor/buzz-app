@@ -528,16 +528,15 @@ test("header pages remain reachable without overlap through scale and resize", a
         header.querySelector(selector).getBoundingClientRect();
       return {
         left: rect(".shell-history").right,
-        center: rect(".shell-topbar-pages").toJSON(),
-        create: rect(".shell-create-action").toJSON(),
+        center: rect(".shell-center-capsule").toJSON(),
+        pages: rect(".shell-topbar-pages").toJSON(),
         search: rect(".shell-search-action").toJSON(),
         right: rect(".shell-actions").left,
         width: header.clientWidth,
       };
     });
-    expect(geometry.create.x).toBeGreaterThan(geometry.left);
-    expect(geometry.create.right).toBeLessThanOrEqual(geometry.center.x);
-    expect(geometry.center.right).toBeLessThanOrEqual(geometry.search.x);
+    expect(geometry.center.x).toBeGreaterThan(geometry.left);
+    expect(geometry.pages.right).toBeLessThanOrEqual(geometry.search.x);
     expect(geometry.search.right).toBeLessThan(geometry.right);
     expect(
       Math.abs(

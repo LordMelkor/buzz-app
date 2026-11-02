@@ -126,6 +126,137 @@ it("loads and publishes the selected community profile before updating the local
   expect(inspect).toHaveBeenCalledWith("community-id");
 });
 
+function verifiedProfileSettings(
+  signedName: string,
+  status: "checked" | "cached" | null,
+) {
+  const service = communities();
+  service.snapshot().selected = "community-id";
+  const profiles = new Map<string, unknown>();
+  const listeners = new Set<() => void>();
+  const verify = (next: "checked" | "cached") => {
+    profiles.set(viewer, {
+      name: "Verified Name",
+      verified: {
+        displayName: "Verified Name",
+        username: "verified",
+        issuerLabel: "Block",
+        verifiedAt: 1,
+        status: next,
+        multipleIssuers: false,
+      },
+    });
+    for (const listener of listeners) listener();
+  };
+  if (status) verify(status);
+  const ensure = vi.fn().mockResolvedValue(undefined);
+  vi.spyOn(service.relay, "snapshot").mockReturnValue({
+    status: "ready",
+    viewer,
+    scope: "community-id",
+    generation: 1,
+    session: {
+      viewer,
+      profiles: {
+        snapshot: () => profiles,
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        ensure,
+      },
+    },
+  } as unknown as ReturnType<Communities["relay"]["snapshot"]>);
+  vi.spyOn(communityApi, "inspectProfile").mockResolvedValue({
+    exists: true,
+    existing: {},
+    profile: { name: signedName, picture: "", about: "" },
+  });
+  const publish = vi
+    .spyOn(communityApi, "publishProfile")
+    .mockRejectedValue(new Error("stop"));
+  render(
+    <ProfileSettings
+      communities={service}
+      community={{ id: "community-id", name: "Acme" }}
+    />,
+    { wrapper: ToastProvider },
+  );
+  return {
+    ensure,
+    publish,
+    verify: (next: "checked" | "cached") => act(() => verify(next)),
+  };
+}
+
+it("shows the verified name read-only and keeps the signed name when saving", async () => {
+  const { ensure, publish } = verifiedProfileSettings("Signed name", "checked");
+  const user = userEvent.setup();
+
+  const name = await screen.findByLabelText("Display name");
+  await waitFor(() => expect(name).toHaveValue("Verified Name"));
+  expect(name).toHaveAttribute("readonly");
+  expect(screen.getByText("Name verified by Block")).toBeVisible();
+  expect(ensure).toHaveBeenCalledWith([viewer]);
+  await user.type(
+    screen.getByLabelText("Profile description (optional)"),
+    "Bio",
+  );
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(publish).toHaveBeenCalledWith(
+      "community-id",
+      { name: "Signed name", picture: "", about: "Bio" },
+      {},
+    ),
+  );
+});
+
+it("keeps the signed name when verification arrives after a name edit", async () => {
+  const { publish, verify } = verifiedProfileSettings("Signed name", null);
+  const user = userEvent.setup();
+
+  const name = await screen.findByLabelText("Display name");
+  await waitFor(() => expect(name).toHaveValue("Signed name"));
+  await user.clear(name);
+  await user.type(
+    screen.getByLabelText("Profile description (optional)"),
+    "Bio",
+  );
+  verify("cached");
+
+  expect(name).toHaveValue("Verified Name");
+  expect(name).toHaveAttribute("readonly");
+  expect(screen.getByText("Cached verification from Block")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(publish).toHaveBeenCalledWith(
+      "community-id",
+      { name: "Signed name", picture: "", about: "Bio" },
+      {},
+    ),
+  );
+});
+
+it("keeps an empty signed name editable for repair when verified", async () => {
+  const { publish } = verifiedProfileSettings("", "checked");
+  const user = userEvent.setup();
+
+  const name = await screen.findByLabelText("Display name");
+  await waitFor(() => expect(name).toBeEnabled());
+  expect(name).not.toHaveAttribute("readonly");
+  expect(name).toHaveValue("");
+  await user.type(name, "Repaired");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(publish).toHaveBeenCalledWith(
+      "community-id",
+      { name: "Repaired", picture: "", about: "" },
+      {},
+    ),
+  );
+});
+
 it("keeps a newer profile seed when an older community publication finishes last", async () => {
   const service = communities();
   const olderPublication = deferred();

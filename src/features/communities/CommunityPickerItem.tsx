@@ -32,6 +32,7 @@ import { communityDestination } from "./destination";
 import { communityName } from "./names";
 import type { Membership } from "./service";
 import styles from "./Communities.module.css";
+import { writeClipboardText } from "../../shared/clipboard";
 
 /** The bundled moderation plugin's Membership card, addressed by contribution key. */
 export const MEMBERSHIP_SECTION = "buzz.moderation/membership";
@@ -129,7 +130,7 @@ export function CommunityPickerItem({
     onOpenTarget?.(target);
   };
   const copy = () =>
-    navigator.clipboard.writeText(origin).then(
+    writeClipboardText(origin).then(
       () => notify("Community URL copied.", "success"),
       () => notify("Couldn’t copy the community URL.", "error"),
     );

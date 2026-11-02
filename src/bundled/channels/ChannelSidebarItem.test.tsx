@@ -10,7 +10,7 @@ import {
   screen,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { Profiler, type ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ChannelSummary, Profile } from "../../features/relay/contracts";
 import type { RelaySession } from "../../features/relay/session";
@@ -513,4 +513,45 @@ it("marks a temporary channel with its lifetime and yields the slot to working a
   expect(document.querySelector("[data-channel-temporary]")).toBeNull();
   view.rerender(<ChannelSidebarItem {...itemProps(state.session, false)} />);
   expect(document.querySelector("[data-channel-temporary]")).toBeNull();
+});
+
+it("re-renders a working row for its agents' profiles, not every profile", () => {
+  const agent = "a".repeat(64);
+  let profiles = new Map<string, Profile>([
+    [agent, { name: "Buzzy", isAgent: true }],
+  ]);
+  const listeners = new Set<() => void>();
+  const session = {
+    ...owner().session,
+    profiles: {
+      snapshot: () => profiles,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+  } as unknown as RelaySession;
+  const publish = (next: typeof profiles) =>
+    act(() => {
+      profiles = next;
+      for (const listener of listeners) listener();
+    });
+  let commits = 0;
+  render(
+    <Profiler id="row" onRender={() => commits++}>
+      <ChannelSidebarItem {...itemProps(session, true)} />
+    </Profiler>,
+  );
+  expect(
+    screen.getByRole("img", { name: "Buzzy working in Alpha" }),
+  ).toBeInTheDocument();
+  const settled = commits;
+  publish(new Map([...profiles, ["b".repeat(64), { name: "Bystander" }]]));
+  expect(commits).toBe(settled);
+  publish(
+    new Map([...profiles, [agent, { name: "Buzzy Two", isAgent: true }]]),
+  );
+  expect(
+    screen.getByRole("img", { name: "Buzzy Two working in Alpha" }),
+  ).toBeInTheDocument();
 });

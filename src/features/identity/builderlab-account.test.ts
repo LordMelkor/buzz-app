@@ -23,6 +23,7 @@ const credential: Credential = {
     subject: "user",
     email: "a@example.com",
     canUseRemoteAgents: false,
+    canUseBuilderlabDecisions: false,
   },
 };
 const pubkey = "ab".repeat(32);

@@ -288,6 +288,7 @@ function ClaudeSetupPanel({
                     description="If the browser shows a code to paste, enter it here."
                   >
                     <Input
+                      autoFocus
                       disabled={disabled}
                       value={code}
                       onValueChange={setCode}
@@ -742,7 +743,7 @@ export function createTabs({
     const { open, show, back } = useOpenTranscript(
       conversation,
       label,
-      initialTranscript && { initial: here, ...initialTranscript },
+      initialTranscript && { initial: here, searching, ...initialTranscript },
       close,
     );
     return (

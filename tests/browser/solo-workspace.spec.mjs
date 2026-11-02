@@ -1,3 +1,4 @@
+import { pauseClock } from "./clock.mjs";
 import { pluginAction } from "./plugin-settings.mjs";
 import { generateSecretKey, getPublicKey, verifyEvent } from "nostr-tools";
 import { test, expect } from "./fixture.mjs";
@@ -377,10 +378,7 @@ test("Solo sidebar shares working activity, keyboard preview and local panel nav
   await closeProfile(page).click();
   await expect(alpha).toBeFocused();
   // Hold wall time while pausing so command latency cannot pass the target.
-  const pauseTime = await page.evaluate(() => Date.now());
-  await page.clock.setFixedTime(pauseTime);
-  await page.clock.pauseAt(pauseTime);
-  await page.clock.setSystemTime(pauseTime);
+  await pauseClock(page);
   // Cross the closed trigger, then reopen by keyboard before hover dismissal.
   await alpha.hover();
   await page.mouse.move(0, 0);

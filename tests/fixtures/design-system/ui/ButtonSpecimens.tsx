@@ -645,6 +645,21 @@ export function IconButtonSpecimen() {
         >
           <div className="component-specimen-row">
             <IconButton
+              variant="inset"
+              shape="round"
+              size="md"
+              aria-label="Inset action"
+              icon={<GearIcon aria-hidden="true" />}
+            />
+            <IconButton
+              variant="inset"
+              disabled
+              shape="round"
+              size="md"
+              aria-label="Disabled inset action"
+              icon={<GearIcon aria-hidden="true" />}
+            />
+            <IconButton
               variant="chrome"
               aria-label="Chrome settings"
               icon={<GearIcon aria-hidden="true" />}

@@ -1091,9 +1091,17 @@
   --text-on-selection-own: var(--neutral-1);
   --surface-message: var(--bubble-received);
   --surface-message-own: var(--bubble-neutral);
+  --surface-message-hover: var(--bubble-hover);
+  --surface-message-own-hover: var(--bubble-own-hover);
+  --bubble-hover: color-mix(in srgb, var(--surface-message) 95%, black);
+  --bubble-own-hover: color-mix(in srgb, var(--surface-message-own) 95%, black);
   --text-message-own: var(--text-standard);
   --text-message-link-own: var(--text-link);
   --affordance-message-own-hover: var(--shade-quiet-fill);
+  /* Arriving at a message lays the regular step across its bubble, about
+     twice hover, so the cue never reads as the pointer. */
+  --affordance-message-highlight: var(--shade-fill);
+  --affordance-message-own-highlight: var(--affordance-message-highlight);
   --affordance-reaction: var(--shade-soft-fill);
   --affordance-reaction-own: var(--affordance-reaction);
   /* Mentions are people, not links. Ordinary mentions stay neutral; a mention
@@ -1124,6 +1132,7 @@
   --icon-status-complete: var(--green-10);
   --icon-subtle: var(--text-subtle);
   --icon-subtle-own: var(--icon-subtle);
+  --text-metadata-own: var(--text-metadata);
   --icon-success: var(--green-11);
   --icon-success-own: var(--icon-success);
   --status-online: var(--green-11);
@@ -1221,9 +1230,15 @@
 .dark {
   --surface-message: var(--bubble-received);
   --surface-message-own: var(--bubble-neutral);
+  --surface-message-hover: var(--bubble-hover);
+  --surface-message-own-hover: var(--bubble-own-hover);
+  --bubble-hover: color-mix(in srgb, var(--surface-message) 95%, white);
+  --bubble-own-hover: color-mix(in srgb, var(--surface-message-own) 95%, white);
   --text-message-own: var(--text-standard);
   --text-message-link-own: var(--text-link);
   --affordance-message-own-hover: var(--tint-quiet-fill);
+  --affordance-message-highlight: var(--tint-fill);
+  --affordance-message-own-highlight: var(--affordance-message-highlight);
   --affordance-reaction: var(--tint-soft-fill);
   --affordance-reaction-own: var(--affordance-reaction);
   /* Ordinary mentions tint the dark fill they sit on. A mention of you takes
@@ -1265,6 +1280,7 @@
   --icon-status-complete: var(--green-10);
   --icon-subtle: var(--text-subtle);
   --icon-subtle-own: var(--icon-subtle);
+  --text-metadata-own: var(--text-metadata);
   --icon-success: var(--green-11);
   --icon-success-own: var(--icon-success);
   --status-online: var(--green-11);
@@ -1577,6 +1593,7 @@
   --accent-overlay-hover: var(--accent-overlay-hover-light);
   --accent-overlay-soft: var(--accent-overlay-soft-light);
   --accent-overlay-quiet: var(--accent-overlay-quiet-light);
+  --accent-overlay-highlight: var(--accent-overlay-highlight-light);
   --text-accent: var(--text-standard);
   --border-accent: var(--border-focus);
   --affordance-accent: var(--affordance-subtle);
@@ -1616,6 +1633,7 @@
   --accent-overlay-hover: var(--accent-overlay-hover-dark);
   --accent-overlay-soft: var(--accent-overlay-soft-dark);
   --accent-overlay-quiet: var(--accent-overlay-quiet-dark);
+  --accent-overlay-highlight: var(--accent-overlay-highlight-dark);
   --text-accent: var(--text-standard);
   --border-accent: var(--border-focus);
   --affordance-accent: var(--affordance-subtle);
@@ -1655,6 +1673,7 @@
   --accent-overlay-hover-light: var(--shade-strong-hover-fill);
   --accent-overlay-soft-light: var(--shade-soft-fill);
   --accent-overlay-quiet-light: var(--shade-quiet-fill);
+  --accent-overlay-highlight-light: var(--shade-fill);
   --accent-1-dark: var(--magenta-1-dark);
   --accent-2-dark: var(--magenta-2-dark);
   --accent-3-dark: var(--magenta-3-dark);
@@ -1676,6 +1695,7 @@
   --accent-overlay-hover-dark: var(--shade-strong-hover-fill);
   --accent-overlay-soft-dark: var(--shade-soft-fill);
   --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
 }
 :root[data-accent="iris"],
 [data-accent="iris"] {
@@ -1700,6 +1720,7 @@
   --accent-overlay-hover-light: var(--shade-strong-hover-fill);
   --accent-overlay-soft-light: var(--shade-soft-fill);
   --accent-overlay-quiet-light: var(--shade-quiet-fill);
+  --accent-overlay-highlight-light: var(--shade-fill);
   --accent-1-dark: var(--iris-1-dark);
   --accent-2-dark: var(--iris-2-dark);
   --accent-3-dark: var(--iris-3-dark);
@@ -1721,6 +1742,7 @@
   --accent-overlay-hover-dark: var(--shade-strong-hover-fill);
   --accent-overlay-soft-dark: var(--shade-soft-fill);
   --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
 }
 :root[data-accent="cobalt"],
 [data-accent="cobalt"] {
@@ -1745,6 +1767,7 @@
   --accent-overlay-hover-light: var(--shade-strong-hover-fill);
   --accent-overlay-soft-light: var(--shade-soft-fill);
   --accent-overlay-quiet-light: var(--shade-quiet-fill);
+  --accent-overlay-highlight-light: var(--shade-fill);
   --accent-1-dark: var(--cobalt-1-dark);
   --accent-2-dark: var(--cobalt-2-dark);
   --accent-3-dark: var(--cobalt-3-dark);
@@ -1766,6 +1789,7 @@
   --accent-overlay-hover-dark: var(--shade-strong-hover-fill);
   --accent-overlay-soft-dark: var(--shade-soft-fill);
   --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
 }
 :root[data-accent="bee"],
 [data-accent="bee"] {
@@ -1790,6 +1814,7 @@
   --accent-overlay-hover-light: var(--shade-hover-fill);
   --accent-overlay-soft-light: var(--shade-soft-fill);
   --accent-overlay-quiet-light: var(--shade-quiet-fill);
+  --accent-overlay-highlight-light: var(--shade-fill);
   --accent-1-dark: var(--bee-1-dark);
   --accent-2-dark: var(--bee-2-dark);
   --accent-3-dark: var(--bee-3-dark);
@@ -1811,6 +1836,7 @@
   --accent-overlay-hover-dark: var(--shade-hover-fill);
   --accent-overlay-soft-dark: var(--shade-soft-fill);
   --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
 }
 :root[data-accent="citrus"],
 [data-accent="citrus"],
@@ -1836,6 +1862,7 @@
   --accent-overlay-hover-light: var(--shade-hover-fill);
   --accent-overlay-soft-light: var(--shade-soft-fill);
   --accent-overlay-quiet-light: var(--shade-quiet-fill);
+  --accent-overlay-highlight-light: var(--shade-fill);
   --accent-1-dark: var(--citrus-1-dark);
   --accent-2-dark: var(--citrus-2-dark);
   --accent-3-dark: var(--citrus-3-dark);
@@ -1857,6 +1884,7 @@
   --accent-overlay-hover-dark: var(--shade-hover-fill);
   --accent-overlay-soft-dark: var(--shade-soft-fill);
   --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
 }
 :root[data-accent="mono"],
 [data-accent="mono"] {
@@ -1881,6 +1909,7 @@
   --accent-overlay-hover-light: var(--tint-hover-fill);
   --accent-overlay-soft-light: var(--tint-soft-fill);
   --accent-overlay-quiet-light: var(--tint-quiet-fill);
+  --accent-overlay-highlight-light: var(--tint-fill);
   --accent-1-dark: var(--mono-1-dark);
   --accent-2-dark: var(--mono-2-dark);
   --accent-3-dark: var(--mono-3-dark);
@@ -1902,6 +1931,7 @@
   --accent-overlay-hover-dark: var(--shade-hover-fill);
   --accent-overlay-soft-dark: var(--shade-soft-fill);
   --accent-overlay-quiet-dark: var(--shade-quiet-fill);
+  --accent-overlay-highlight-dark: var(--shade-fill);
 }
 
 /* Vibe changes bubble contrast only. Shared controls retain their neutral roles. */
@@ -1924,6 +1954,7 @@
   --affordance-mention-own: var(--accent-overlay);
   --affordance-mention-own-hover: var(--accent-overlay-hover);
   --affordance-message-own-hover: var(--accent-overlay-quiet);
+  --affordance-message-own-highlight: var(--accent-overlay-highlight);
   --affordance-reaction-own: var(--accent-overlay-soft);
   --text-mention-own: var(--text-message-own);
   --surface-message-own: var(--accent-9);
@@ -1932,6 +1963,7 @@
   --text-on-selection-own: var(--surface-message-own);
   --text-message-link-own: var(--accent-ink);
   --icon-subtle-own: var(--text-message-link-own);
+  --text-metadata-own: var(--text-message-link-own);
   --icon-success-own: var(--text-message-link-own);
   --icon-categorical-purple-own: var(--text-message-link-own);
 }
@@ -1941,6 +1973,7 @@
   --affordance-mention-own: var(--accent-overlay);
   --affordance-mention-own-hover: var(--accent-overlay-hover);
   --affordance-message-own-hover: var(--accent-overlay-quiet);
+  --affordance-message-own-highlight: var(--accent-overlay-highlight);
   --affordance-reaction-own: var(--accent-overlay-soft);
   --text-mention-own: var(--text-message-own);
   --surface-message-own: var(--accent-9);
@@ -1949,6 +1982,7 @@
   --text-on-selection-own: var(--surface-message-own);
   --text-message-link-own: var(--accent-ink);
   --icon-subtle-own: var(--text-message-link-own);
+  --text-metadata-own: var(--text-message-link-own);
   --icon-success-own: var(--text-message-link-own);
   --icon-categorical-purple-own: var(--text-message-link-own);
 }

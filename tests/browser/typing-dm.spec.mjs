@@ -1,3 +1,4 @@
+import { pauseClock } from "./clock.mjs";
 import { test, expect } from "./fixture.mjs";
 import { open } from "./timeline.mjs";
 import { hoverMessage } from "./message-actions.mjs";
@@ -76,7 +77,7 @@ test("DM receive lifecycle isolates participants, channels and threads and expir
   await expect(activity).toContainText("is typing");
   // Signed-time expiry must run without another event arriving.
   await page.clock.install();
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100);
+  await pauseClock(page, 100);
   await page.clock.runFor(8_000);
   await expect(activity).toBeEmpty();
   await page.clock.setSystemTime(Date.now());

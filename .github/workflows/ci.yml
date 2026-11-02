@@ -21,13 +21,13 @@ env:
 jobs:
   javascript:
     if: github.event_name != 'workflow_dispatch'
-    name: JavaScript (${{ matrix.shard }}/3)
+    name: JavaScript (${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -42,13 +42,41 @@ jobs:
         env:
           # Bound contention between suites that sign and verify large fixtures.
           BUZZ_TEST_WORKERS: "2"
-        run: ./bin/node scripts/ci-test-report.mjs kind=vitest report=test-results/ci/vitest.json evidence=test-results/ci/vitest-timing.json title="Vitest shard ${{ matrix.shard }}/3" -- ./bin/pnpm exec vitest run --shard=${{ matrix.shard }}/3 --reporter=default --reporter=json --outputFile=test-results/ci/vitest.json
+        run: ./bin/node scripts/ci-test-report.mjs kind=vitest report=test-results/ci/vitest.json evidence=test-results/ci/vitest-timing.json title="Vitest shard ${{ matrix.shard }}/4" -- ./bin/pnpm exec vitest run --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile=test-results/ci/vitest.json
       - name: Vitest timing evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vitest-timing-${{ matrix.shard }}
           path: test-results/ci
+          retention-days: 7
+
+  agent_protection:
+    if: github.event_name != 'workflow_dispatch'
+    name: Protected agents (macOS)
+    runs-on: macos-15
+    # Native pinned runtime builds add cold compilation to the kernel fixtures.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: agent-protection
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Native approval-state containment
+        run: |
+          mkdir -p test-results/protection
+          set -o pipefail
+          ./bin/cargo test --manifest-path src-tauri/Cargo.toml host_process --lib 2>&1 | tee test-results/protection/native.log
+      - name: Protection test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-protection
+          path: test-results/protection
           retention-days: 7
 
   native:
@@ -69,7 +97,7 @@ jobs:
           sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y dbus-daemon libwebkit2gtk-4.1-dev build-essential libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: native
           save-if: ${{ github.event_name == 'push' }}
@@ -82,8 +110,19 @@ jobs:
       # --workspace includes Tauri, unlike the default Cargo member selection.
       - name: All Rust tests and doctests
         run: ./bin/cargo test --workspace --locked
+      - name: FI Builderlab build and grant tests
+        env:
+          # Fixture authority only; never use a release's real configuration.
+          BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG: '{"version":1,"id":"ci-fi","identityOrigin":"https://identity.example.test","communityHosts":["relay.example.test"],"adapterBase":"https://identity.example.test/api/goose/nip-fa","apiBasePath":"/api/goose/"}'
+          BUZZ_BUILDERLAB_URL: ""
+        run: |
+          ./bin/cargo test -p buzzodz-plugins --lib --locked
+          ./bin/cargo test -p Buzz --lib --locked host_request
+          ./bin/pnpm exec vite build
       - name: Scheduled agent command identity
         run: ./bin/node scripts/test-agent-command.mjs
+      - name: Bundled buzz CLI
+        run: ./bin/node scripts/test-buzz-cli.mjs
       - name: All Node integration tests
         run: ./bin/node --test tests/integration/*.test.mjs
 
@@ -106,7 +145,7 @@ jobs:
           rustup toolchain install $version --profile minimal --component clippy
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "RUSTUP_TOOLCHAIN=$version" >> $env:GITHUB_ENV
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: windows-native
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -180,7 +219,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: browser-fixture
           save-if: ${{ github.event_name == 'push' }}
@@ -201,7 +240,9 @@ jobs:
           name: browser-fixture-${{ github.sha }}-${{ github.run_attempt }}
           path: target/browser-fixture.tar
           if-no-files-found: error
-          retention-days: 1
+          # Re-running failed shards reuses this artifact by ID, so keep it as
+          # long as their evidence.
+          retention-days: 7
 
   browser:
     if: github.event_name != 'workflow_dispatch'
@@ -221,7 +262,7 @@ jobs:
       HOME: /root
       BUZZ_BROWSER_FIXTURE_DIR: target/ci-browser-fixture
     # Playwright sizes file-level shards by test count, not duration, so costly
-    # files can share one. WebKit runs slower, so it gets twelve shards to keep
+    # files can share one. WebKit runs slower, so it gets fourteen shards to keep
     # its slowest well inside this deadline on slower runners, setup included;
     # Chromium keeps nine.
     timeout-minutes: 15
@@ -229,14 +270,16 @@ jobs:
       fail-fast: false
       matrix:
         engine: [chromium, webkit]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         exclude:
           - { engine: chromium, shard: 10 }
           - { engine: chromium, shard: 11 }
           - { engine: chromium, shard: 12 }
+          - { engine: chromium, shard: 13 }
+          - { engine: chromium, shard: 14 }
         include:
           - { engine: chromium, shards: 9 }
-          - { engine: webkit, shards: 12 }
+          - { engine: webkit, shards: 14 }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -418,7 +461,7 @@ jobs:
   required:
     name: ${{ github.event_name == 'workflow_dispatch' && 'Automatic CI (not requested)' || 'CI required' }}
     if: always() && github.event_name != 'workflow_dispatch'
-    needs: [javascript, native, measurements, browser_fixture, browser, media_recorder]
+    needs: [javascript, native, measurements, browser_fixture, browser, media_recorder, agent_protection]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -430,7 +473,8 @@ jobs:
           FIXTURE: ${{ needs.browser_fixture.result }}
           BROWSER: ${{ needs.browser.result }}
           MEDIA_RECORDER: ${{ needs.media_recorder.result }}
+          AGENT_PROTECTION: ${{ needs.agent_protection.result }}
         run: |
-          for result in "$JAVASCRIPT" "$NATIVE" "$MEASUREMENTS" "$FIXTURE" "$BROWSER" "$MEDIA_RECORDER"; do
+          for result in "$JAVASCRIPT" "$NATIVE" "$MEASUREMENTS" "$FIXTURE" "$BROWSER" "$MEDIA_RECORDER" "$AGENT_PROTECTION"; do
             test "$result" = success || exit 1
           done

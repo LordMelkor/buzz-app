@@ -251,9 +251,7 @@ for (const reading of [false, true]) {
           region.locator(`[data-message-id="${last.id}"]`),
         ).toBeInViewport();
         await expect(
-          page.locator(
-            '[role="tab"][data-tab-value^="thread:"][aria-selected="true"]',
-          ),
+          page.getByRole("textbox", { name: "Reply to thread", exact: true }),
         ).toBeFocused();
       }
       const live = app.reply(root.id);
@@ -671,13 +669,14 @@ test("closing an active thread highlights its visible channel origin without scr
   const scroll = await timeline.evaluate((element) => element.scrollTop);
   // Observe paint admission before triggering close; the cue is transient.
   await origin.evaluate((element) => {
+    // The cue paints on the row's filled bubble, or on the row without one.
+    window.arrivalCue = (row) =>
+      [row, ...row.querySelectorAll('[class*="messageBubble"]')]
+        .map((painted) => getComputedStyle(painted, "::after").animationName)
+        .find((name) => name !== "none") ?? "none";
     window.returnHighlightPainted = false;
     const observer = new MutationObserver(() => {
-      if (
-        getComputedStyle(element, "::after").animationName.includes(
-          "return-message-highlight",
-        )
-      ) {
+      if (window.arrivalCue(element).includes("message-highlight")) {
         window.returnHighlightPainted = true;
         observer.disconnect();
       }
@@ -696,11 +695,7 @@ test("closing an active thread highlights its visible channel origin without scr
     .poll(() => timeline.evaluate((element) => element.scrollTop))
     .toBe(scroll);
   await expect
-    .poll(() =>
-      origin.evaluate(
-        (element) => getComputedStyle(element, "::after").animationName,
-      ),
-    )
+    .poll(() => origin.evaluate((element) => window.arrivalCue(element)))
     .toBe("none");
 });
 

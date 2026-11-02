@@ -205,10 +205,36 @@ export function ProfileSettings({
   const persisted =
     community && loaded?.exists ? loaded.profile : client.profile;
   latestPersisted.current = persisted;
-  const profile = previewReady
-    ? (draft ?? persisted)
-    : { name: "", picture: "", about: "" };
-  const hasChanges = draft !== null && !profilesEqual(draft, persisted);
+  const session = selectedProfileSession(communities, communityId);
+  const thumbnailMedia = session?.media;
+  const viewer = session?.viewer;
+  const verified = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) =>
+        session?.profiles.subscribe(listener) ?? (() => {}),
+      [session],
+    ),
+    () =>
+      viewer ? session?.profiles.snapshot().get(viewer)?.verified : undefined,
+  );
+  useEffect(() => {
+    if (viewer) void session?.profiles.ensure([viewer]).catch(() => {});
+  }, [session, viewer]);
+  const verifiedName = verified
+    ? {
+        name: verified.displayName,
+        issuerLabel: verified.issuerLabel,
+        status: verified.status,
+      }
+    : undefined;
+  // Lock the name only over a valid signed name, which every save keeps;
+  // an empty signed name stays editable so it can be repaired.
+  const lockedName = persisted.name.trim() ? verifiedName : undefined;
+  const edited = lockedName
+    ? { ...(draft ?? persisted), name: persisted.name }
+    : (draft ?? persisted);
+  const profile = previewReady ? edited : { name: "", picture: "", about: "" };
+  const hasChanges = draft !== null && !profilesEqual(edited, persisted);
   // A dispatched save continues after Settings closes, so it is not
   // discardable. Before then (the fresh read), closing would drop the edit.
   const discardable = hasChanges && !dispatched;
@@ -217,10 +243,6 @@ export function ProfileSettings({
     onUnsavedChange?.(true);
     return () => onUnsavedChange?.(false);
   }, [discardable, onUnsavedChange]);
-  const thumbnailMedia = selectedProfileSession(
-    communities,
-    communityId,
-  )?.media;
   const backdrop = useAvatarPreview(
     profile.picture,
     community?.id,
@@ -285,7 +307,7 @@ export function ProfileSettings({
                   <AvatarEditor
                     size="compact"
                     value={profile.picture}
-                    name={profile.name}
+                    name={verifiedName?.name ?? profile.name}
                     community={community?.id}
                     {...(thumbnailMedia ? { thumbnailMedia } : {})}
                     disabled={saving || !previewReady}
@@ -303,7 +325,8 @@ export function ProfileSettings({
                 </div>
                 <div className={styles.previewCopy}>
                   <h3 className="text-body-lg">
-                    {profile.name.trim() || "Your profile"}
+                    {verifiedName?.name ??
+                      (profile.name.trim() || "Your profile")}
                   </h3>
                   {profile.about?.trim() ? (
                     <p className={`${styles.about} text-body-sm text-muted`}>
@@ -395,6 +418,7 @@ export function ProfileSettings({
                     profile={profile}
                     showAvatar={false}
                     disabled={saving || !previewReady}
+                    verifiedName={lockedName}
                     onChange={(next) => {
                       setDraft(next);
                       setSaved(false);

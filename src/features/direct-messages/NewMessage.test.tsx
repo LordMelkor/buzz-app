@@ -253,6 +253,47 @@ const recipient = () =>
   screen.getByRole("combobox", { name: "Message recipients" });
 const send = () => screen.getByRole("button", { name: "Send message" });
 
+it("finds a hosted agent by its owned name and sends without local custody", async () => {
+  const t = setup();
+  const [owned] = t.control.snapshot().agents;
+  assert(owned);
+  const hosted = { ...owned, name: "Hosted helper" };
+  t.updateControl({ status: "ready", agents: [], hosted: [hosted] });
+  t.mount();
+  await t.user.type(recipient(), "Hosted helper");
+  await t.user.click(
+    await screen.findByRole("option", { name: "Person 2, Agent" }),
+  );
+  expect(t.directMessages.open).not.toHaveBeenCalled();
+  expect(t.messages.send).not.toHaveBeenCalled();
+  await t.user.type(screen.getByRole("textbox"), "Hello hosted helper");
+  await t.user.click(send());
+  await waitFor(() => expect(t.onStarted).toHaveBeenCalledOnce());
+  expect(t.directMessages.open).toHaveBeenCalledWith(
+    [hosted.pubkey],
+    expect.any(AbortSignal),
+  );
+  expect(t.messages.send).toHaveBeenCalledOnce();
+});
+
+it("revalidates a hosted recipient when its owned evidence disappears", async () => {
+  const t = setup();
+  const hosted = t.control.snapshot().agents;
+  t.updateControl({ status: "ready", agents: [], hosted });
+  t.mount();
+  await t.user.click(
+    await screen.findByRole("option", { name: "Person 2, Agent" }),
+  );
+  await t.user.type(screen.getByRole("textbox"), "Private draft");
+  t.updateControl({ status: "ready", agents: [], hosted: [] });
+  await t.user.click(send());
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "no longer available",
+  );
+  expect(t.directMessages.open).not.toHaveBeenCalled();
+  expect(t.messages.send).not.toHaveBeenCalled();
+});
+
 it("offers only local agents in this community, including cached searches after their list changes", async () => {
   const t = setup();
   const foreign = {

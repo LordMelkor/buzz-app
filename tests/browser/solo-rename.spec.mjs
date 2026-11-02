@@ -355,7 +355,13 @@ test("collapsing a workspace waits for its rename save before hiding the editor"
   await page.getByRole("menuitem", { name: "Move to", exact: true }).hover();
   await page.getByRole("menuitem", { name: "New workspace" }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("textbox", { name: "Workspace name" }).fill("Work");
+  // Wait until the exiting menus are gone and the dialog's initial focus has
+  // settled on the field. The modal hides the menus from role queries.
+  await expect(page.locator('[role="menu"]')).toHaveCount(0);
+  const field = dialog.getByRole("textbox", { name: "Workspace name" });
+  await expect(field).toBeFocused();
+  await field.fill("Work");
+  await expect(field).toHaveValue("Work");
   await dialog.getByRole("button", { name: "Create and move" }).click();
   await expect(dialog).not.toBeVisible();
   const work = sidebar(page).getByRole("button", { name: "Work", exact: true });

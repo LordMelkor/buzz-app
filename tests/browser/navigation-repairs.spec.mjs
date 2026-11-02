@@ -38,13 +38,21 @@ test("Back restores Personal space without inheriting the active community", asy
   ).toBeVisible();
 });
 
-// An invalid address fails again synchronously, so its Retry control stays.
+// A missing page fails again synchronously, so its Retry control stays.
 test("keyboard Retry keeps focus when the retry fails in place", async ({
   page,
   app,
 }) => {
-  await page.goto(`${app.origin}/#buzz=not-json`);
-  const retry = button(page, "Retry navigation");
+  const missing = {
+    version: 1,
+    kind: "page",
+    pluginId: "missing",
+    pageId: "x",
+  };
+  await page.goto(
+    `${app.origin}/#buzz=${encodeURIComponent(JSON.stringify(missing))}`,
+  );
+  const retry = button(page, "Try again");
   await retry.focus();
   await retry.press("Enter");
   await retry.evaluate(
@@ -79,13 +87,18 @@ test("keyboard Retry hands off focus while reconnecting a failed Messages tab op
   const messages = page.getByRole("tab", { name: "Messages", exact: true });
   await messages.focus();
   await messages.press("Enter");
+  // A refused connection is a connection failure, whatever the visit was.
   await expect(
-    page.getByRole("heading", { name: "This destination couldn’t open" }),
+    page.getByRole("heading", { name: "Can’t connect" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Check your connection, then try again."),
   ).toBeVisible();
   expect(requests).toBe(1);
   const visit = await entry(page);
-  const retry = button(page, "Retry navigation");
   const main = page.getByRole("main");
+  // The sidebar offers its own Try again for the channel list.
+  const retry = button(main, "Try again");
   try {
     await retry.focus();
     await retry.press("Enter");
@@ -113,6 +126,35 @@ test("keyboard Retry hands off focus while reconnecting a failed Messages tab op
   await expect(
     page.getByRole("tabpanel", { name: "Messages", exact: true }),
   ).toBeFocused();
+});
+
+test("a refused account is explained as access, in place and in the sidebar", async ({
+  page,
+  app,
+}) => {
+  app.report.relayFailures = [];
+  await page.route("**/api/relay/primary/session", (route) => {
+    app.report.relayFailures.push(route.request().url());
+    return route.fulfill({ status: 403, json: { error: "Forbidden" } });
+  });
+  await page.goto(app.origin);
+  const main = page.getByRole("main");
+  // Messages explains the refusal itself rather than giving network advice.
+  await expect(
+    main.getByRole("heading", { name: "You don’t have access to this" }),
+  ).toBeVisible();
+  await expect(main.getByText(/Check your connection/)).toHaveCount(0);
+  await expect(
+    page.getByText("You don’t have access to this community."),
+  ).toBeVisible();
+  const refusals = app.report.relayFailures.length;
+  await button(main, "Try again").click();
+  await expect
+    .poll(() => app.report.relayFailures.length)
+    .toBeGreaterThan(refusals);
+  await expect(
+    main.getByRole("heading", { name: "You don’t have access to this" }),
+  ).toBeVisible();
 });
 
 test("Skip to content focuses main without adding a visit or dropping Back", async ({
@@ -178,11 +220,15 @@ launchTest(
   async ({ page, app }) => {
     await page.goto(`${app.origin}/#buzz=%7B`);
     const failed = page.getByRole("heading", {
-      name: "This destination couldn’t open",
+      name: "This link doesn’t work",
       exact: true,
     });
     await expect(page.locator("#buzz-launch")).toHaveCount(0);
     await expect(failed).toBeVisible();
+    const card = page.locator('.page-status[role="alert"]');
+    // Opened cold, there is nowhere to go back to: Messages did not fail.
+    await expect(button(card, "Go back")).toHaveCount(0);
+    await expect(button(card, "Go to Messages")).toBeVisible();
     await openPage(page, "Workflows");
     await expect(failed).toBeHidden();
     await page.getByRole("tab", { name: "Agents", exact: true }).click();
@@ -193,11 +239,45 @@ launchTest(
     await page.reload();
     await expect(page.locator("#buzz-launch")).toHaveCount(0);
     await expect(failed).toBeVisible();
-    await button(page, "Go back").click();
+    const history = page.getByRole("navigation", {
+      name: "Navigation history",
+      exact: true,
+    });
+    await button(history, "Go back").click();
     await expect(
       page.getByRole("region", { name: "Agents", exact: true }),
     ).toBeVisible();
-    await button(page, "Go forward").click();
+    await button(history, "Go forward").click();
     await expect(failed).toBeVisible();
+    // Followed from elsewhere in the app, the card returns there.
+    await button(card, "Go back").click();
+    await expect(
+      page.getByRole("region", { name: "Agents", exact: true }),
+    ).toBeVisible();
+    await expect(failed).toBeHidden();
   },
 );
+
+// A page status rule that continues past its :has(), or a :has() list the
+// minifier wraps in :is(), restyles the whole tab panel on every mutation.
+test("page status :has() rules keep :has() on their subject", async ({
+  page,
+  app,
+}) => {
+  await open(page, app);
+  const selectors = await page.evaluate(() => {
+    const found = [];
+    const walk = (rules) => {
+      for (const rule of rules) {
+        if (rule.cssRules) walk(rule.cssRules);
+        const selector = rule.selectorText ?? "";
+        if (selector.includes(":has(") && selector.includes("page-status"))
+          found.push(selector);
+      }
+    };
+    for (const sheet of document.styleSheets) walk(sheet.cssRules);
+    return found;
+  });
+  expect(selectors.length).toBeGreaterThan(0);
+  for (const selector of selectors) expect(selector).toMatch(/:has\([^()]*\)$/);
+});

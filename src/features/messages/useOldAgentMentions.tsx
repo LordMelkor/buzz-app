@@ -30,7 +30,6 @@ export function useOldAgentMentions(
   const [pending, setPending] = useState<Pending>();
   const [type, setType] = useState<string>();
   const importing = useRef(false);
-  const importAction = useRef<HTMLButtonElement>(null);
   // Importing gives the agent a key here, so a hosted type cannot take one.
   const types = agents?.types().filter((item) => !item.remote) ?? [];
   const chosen = types.find((item) => item.key === type) ?? types[0];
@@ -150,7 +149,6 @@ export function useOldAgentMentions(
             : describe(pending.found, !!chosen?.adopt))
         }
         preventClose={!!pending?.busy}
-        initialFocus={importAction}
         finalFocus={() => {
           restoreFocus();
           return false;
@@ -170,7 +168,6 @@ export function useOldAgentMentions(
               </Button>
             )}
             <Button
-              ref={importAction}
               type="button"
               variant="prominent"
               loading={!!pending?.busy}

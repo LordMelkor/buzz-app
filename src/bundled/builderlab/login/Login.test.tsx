@@ -8,6 +8,8 @@ import { Login } from "./Login";
 import { createOAuthSession } from "../oauth/session";
 import type { Credential } from "../oauth/browser";
 import { deferred } from "../test-helpers";
+import { federatedFixture } from "../../../features/federated-identity/testing";
+import { createNativeSession } from "../session";
 
 afterEach(cleanup);
 const credential: Credential = {
@@ -16,6 +18,7 @@ const credential: Credential = {
     subject: "user",
     email: "a@example.com",
     canUseRemoteAgents: true,
+    canUseBuilderlabDecisions: false,
   },
 };
 it("shows a desktop requirement in the browser", () => {
@@ -39,20 +42,31 @@ it("sign-out clears the credential and restores the sign-in action", async () =>
     </StrictMode>,
   );
   const user = userEvent.setup();
+  expect(screen.getByText(/Connect your Builderlab account/)).toBeVisible();
   await user.click(
     screen.getByRole("button", { name: "Sign in with Builderlab" }),
   );
   expect(await screen.findByRole("button", { name: "Sign out" })).toBeEnabled();
+  expect(
+    screen.queryByText(/Connect your Builderlab account/),
+  ).not.toBeInTheDocument();
+  expect(screen.getByText(/stays in memory until you sign out/)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Sign out" }));
   expect(
     screen.getByRole("button", { name: "Sign in with Builderlab" }),
   ).toBeEnabled();
+  expect(screen.getByText(/Connect your Builderlab account/)).toBeVisible();
   expect(() => session.credential()).toThrow("Sign in");
 });
 it("shows a signed-in confirmation when email is unavailable", async () => {
   const session = createOAuthSession(async () => ({
     value: "private-token",
-    account: { subject: "user", email: "", canUseRemoteAgents: true },
+    account: {
+      subject: "user",
+      email: "",
+      canUseRemoteAgents: true,
+      canUseBuilderlabDecisions: false,
+    },
   }));
   render(<Login session={session} available active={() => true} />);
   await userEvent
@@ -136,3 +150,79 @@ it("shows failures and permits retry; inactive contributions cannot start sign-i
   ).toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
+const me = {
+  status: 200,
+  headers: {},
+  body: JSON.stringify({ subject: "user", email: "a@example.com" }),
+};
+it("shows a restore or account read as checking, without a browser step to cancel", async () => {
+  const h = federatedFixture();
+  h.publish({ status: "restoring" });
+  const session = createNativeSession(h.service);
+  render(<Login session={session} available active={() => true} />);
+  const user = userEvent.setup();
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Checking your Builderlab sign-in",
+  );
+  await user.click(screen.getByRole("button", { name: "Checking sign-in" }));
+  const read = deferred<typeof me>();
+  h.request.mockReturnValueOnce(read.promise);
+  act(() => h.publish({ status: "signed-in", revision: "user:1" }));
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Checking your Builderlab sign-in",
+  );
+  await user.click(screen.getByRole("button", { name: "Checking sign-in" }));
+  expect(h.service.cancelSignIn).not.toHaveBeenCalled();
+  await act(async () => read.resolve(me));
+  expect(
+    await screen.findByRole("button", { name: "Sign out" }),
+  ).toBeInTheDocument();
+  // A browser sign-in is still the one pending state that cancels.
+  act(() => h.publish({ status: "signing-in" }));
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Finish sign-in in your browser",
+  );
+  await user.click(screen.getByRole("button", { name: "Cancel sign-in" }));
+  expect(h.service.cancelSignIn).toHaveBeenCalledOnce();
+  session.dispose();
+});
+it.each([true, false])(
+  "moves focus to Identity after an FI retry only when the retry button had it (%s)",
+  async (kept) => {
+    vi.stubEnv("VITE_BUZZ_FEDERATED_IDENTITY", "1");
+    try {
+      const h = federatedFixture();
+      h.request.mockResolvedValueOnce({ status: 403, headers: {}, body: "{}" });
+      h.publish({ status: "signed-in", revision: "user:1" });
+      const session = createNativeSession(h.service);
+      render(
+        <>
+          <Login
+            session={session}
+            available
+            active={() => true}
+            openIdentity={() => {}}
+          />
+          <input aria-label="Elsewhere" />
+        </>,
+      );
+      const retry = await screen.findByRole("button", {
+        name: "Sign in with Builderlab",
+      });
+      const read = deferred<typeof me>();
+      h.request.mockReturnValueOnce(read.promise);
+      const user = userEvent.setup();
+      await user.click(retry);
+      if (!kept) await user.click(screen.getByLabelText("Elsewhere"));
+      await act(async () => read.resolve(me));
+      const identity = await screen.findByRole("button", {
+        name: "Identity → Organization sign-in",
+      });
+      if (kept) expect(identity).toHaveFocus();
+      else expect(screen.getByLabelText("Elsewhere")).toHaveFocus();
+      session.dispose();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  },
+);

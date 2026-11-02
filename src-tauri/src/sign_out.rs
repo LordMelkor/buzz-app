@@ -46,7 +46,14 @@ pub(crate) const AGENT_OWNERSHIP: &str = "dev.local.buzz.agent-ownership";
 /// Their keys live in the keychain. Anything else in these folders (hosting
 /// locks, saved logins, logs, run folders, and whatever is added later) is wiped.
 const KEPT: Kept = &[
-    (AGENTS, &["identities.json", buzz_agent_controller::JOINED]),
+    (
+        AGENTS,
+        &[
+            "identities.json",
+            buzz_agent_controller::JOINED,
+            "protection.json",
+        ],
+    ),
     (migrate_agents::LEGACY, &["identities.json"]),
     (OLD_AGENTS, &["agents.json", "defaults.json"]),
 ];
@@ -893,7 +900,7 @@ pub(crate) async fn sign_out<R: tauri::Runtime>(
         exit_fenced(app.clone())
     })
     .await?;
-    app.request_restart();
+    crate::relaunch::request(&app);
     Ok(())
 }
 

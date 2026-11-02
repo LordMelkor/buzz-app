@@ -48,6 +48,7 @@ Object.assign(window, {
   terminalPanel: {
     written: () => written,
     toggles: () => toggles,
+    spawns: () => serial,
     dispose: () => scope.fiber.dispose(),
     holdClose() {
       closing = new Promise<void>((resolve) => {

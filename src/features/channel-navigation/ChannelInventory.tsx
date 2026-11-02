@@ -1194,10 +1194,7 @@ export function ChannelInventory({
             if (!channel) return null;
             const Icon = channelIcon(channel);
             return (
-              <div
-                className={styles.channelDragOverlay}
-                data-section-creation-preview=""
-              >
+              <div className={styles.channelDragOverlay}>
                 <Icon size={16} />
                 <span>{channel.name}</span>
               </div>

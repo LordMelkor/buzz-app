@@ -29,6 +29,14 @@ export type PluginManifest = Readonly<{
       maxOutputBytes?: number;
     }>[];
     networkOrigins?: readonly string[];
+    /** Separate authority access; ordinary HTTPS grants never authorize a session. */
+    federatedIdentity?: Readonly<{
+      authority: string;
+      operations: readonly Readonly<{
+        method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
+        path: string;
+      }>[];
+    }>;
     /** Programs the plugin may start with `host.spawn`; the caller's
      * arguments follow the declared ones. */
     processes?: readonly Readonly<{
@@ -37,6 +45,13 @@ export type PluginManifest = Readonly<{
       args?: readonly string[];
       /** Run the copy the app ships, never one on PATH. */
       bundled?: boolean;
+      /** Run an installed executable only when its bytes and declared sibling
+       * files match this descriptor. Mutually exclusive with `bundled`. */
+      artifact?: Readonly<{
+        path: string;
+        sha256: string;
+        siblings?: readonly Readonly<{ name: string; sha256: string }>[];
+      }>;
     }>[];
     /** The plugin may serve MCP with `host.serveMcp`, including tools for
      * commands bound to an Attention source run. */
@@ -65,3 +80,9 @@ declare module "@deepseek-ai/cordis" {
     }>;
   }
 }
+
+export type {
+  FederatedIdentity,
+  SessionSnapshot,
+  AuthenticatedRequest,
+} from "../features/federated-identity/service";

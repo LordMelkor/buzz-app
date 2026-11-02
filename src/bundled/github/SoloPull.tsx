@@ -2,6 +2,9 @@ import { useCallback, useState, useSyncExternalStore } from "react";
 import { MenuItem } from "../../shared/design-system/ui/Menu";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { Button } from "../../shared/design-system/ui/Button";
+import { IconButton } from "../../shared/design-system/ui/IconButton";
+import type { ChannelLauncherProps } from "../../features/panels/service";
+import { useRelayConnection } from "../../features/relay/react";
 import type { ChatIconProps } from "../../features/conversation/service";
 import type { RelayData } from "../../features/relay/service";
 import type { RelaySession } from "../../features/relay/session";
@@ -25,6 +28,64 @@ export function SoloPullIcon({
       <Icon size={16} aria-hidden="true" />
       <span className="sr-only">{describePull(pull)}: </span>
     </span>
+  );
+}
+
+/** Reuses the sidebar's linked state and the conversation host's panel opener. */
+export function SoloPullLauncher({
+  relay,
+  pullsFor,
+  context,
+  open,
+  canOpen,
+}: ChannelLauncherProps & {
+  relay: RelayData;
+  pullsFor(session: RelaySession): SoloPulls;
+}) {
+  const connection = useRelayConnection(relay);
+  const list = useChannelList(connection.session.channels);
+  if (
+    list.channels.find((channel) => channel.id === context.channelId)
+      ?.channelType !== "solo" ||
+    connection.scope !== context.scope ||
+    connection.viewer !== context.viewer
+  )
+    return null;
+  return (
+    <SessionPullLauncher
+      pulls={pullsFor(connection.session)}
+      channelId={context.channelId}
+      open={open}
+      canOpen={canOpen}
+    />
+  );
+}
+
+export function SessionPullLauncher({
+  pulls,
+  channelId,
+  open,
+  canOpen,
+}: {
+  pulls: SoloPulls;
+  channelId: string;
+  open(target: string): boolean;
+  canOpen(target: string): boolean;
+}) {
+  const pull = useSoloPull(pulls, channelId);
+  if (!pull) return null;
+  const label = `Open linked ${describePull(pull).toLowerCase()}`;
+  const Icon = stateIcons[pull.state?.state ?? "open"];
+  return (
+    <IconButton
+      size="sm"
+      variant="ghost"
+      aria-label={label}
+      title={label}
+      disabled={!canOpen(pull.url)}
+      icon={<Icon size="1rem" aria-hidden="true" />}
+      onClick={() => open(pull.url)}
+    />
   );
 }
 

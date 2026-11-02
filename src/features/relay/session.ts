@@ -94,7 +94,7 @@ import {
   type RelayEvent,
   type EventData,
 } from "./events";
-import { eventVisibility } from "./event-access";
+import { accessOnce, eventVisibility } from "./event-access";
 import { isTransientFailure, ReadError, readErrorKind } from "./errors";
 import {
   PublishRejected,
@@ -343,7 +343,9 @@ export function createRelaySession(
       ]),
     );
     return eventVisibility(
-      remote ? canReadRemote : canAccess,
+      // Remote visibility filters one accept() batch and is never retained.
+      // Remote access builds the channel's discovery summary: read it once.
+      remote ? accessOnce(canReadRemote) : canAccess,
       // Retained view targets survive shared-cache eviction. They are evidence,
       // not an access grant: eventVisibility still checks every referenced target.
       (id) =>
@@ -774,7 +776,20 @@ export function createRelaySession(
       traffic?.publishPresence?.(status, signal) ?? Promise.resolve(false),
     notify,
   );
-  const profiles = createProfileDirectory(verified, localViews, notify);
+  const profiles = createProfileDirectory(
+    verified,
+    localViews,
+    notify,
+    transport &&
+      (transport.verifiedProfiles || transport.readVerifiedProfileAuthority)
+      ? {
+          authority: transport.verifiedProfiles,
+          refresh: transport.readVerifiedProfileAuthority?.bind(transport),
+          subscribe: (filter, sink) =>
+            traffic?.syncVerifiedProfiles?.(filter, sink),
+        }
+      : undefined,
+  );
   const emoji = createEmojiDirectory(
     verified,
     notify,
@@ -3148,6 +3163,7 @@ export function createRelaySession(
       memoryConnected = snapshot.status === "connected";
       activity.state(snapshot);
       presence.connected(snapshot.status === "connected");
+      profiles.connected(snapshot.status === "connected");
       if (snapshot.status !== "connected") {
         typing.clear();
         memories.clear();

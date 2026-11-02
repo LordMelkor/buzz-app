@@ -144,7 +144,7 @@ export const hasTag = (event: RelayEvent, name: string, value: string) =>
   event.tags.some((entry) => entry[0] === name && entry[1] === value);
 
 /** Later created_at wins; ties break on lower id so replay order cannot flip the result. */
-export function newer<T extends EventData>(
+export function newer<T extends Pick<EventData, "created_at" | "id">>(
   current: T | undefined,
   candidate: T,
 ): T {

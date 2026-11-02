@@ -121,7 +121,8 @@ The CLI prints readable results and reports errors with a nonzero exit code.
 `disable`, `remove`, and
 `rollback` take a plugin ID. New installs start disabled; updates preserve their
 existing enabled state. `recover` backs up management settings and resets to
-bundled defaults, preserving artifacts for reinstallation.
+bundled defaults, preserving artifacts for reinstallation. `managed` prints the
+[managed plugin policy](managed-plugins.md) and how each recommendation stands.
 
 `--home ABSOLUTE_PATH` and `--profile NAME` precede `plugin`. The desktop and CLI
 also read `BUZZODZ_HOME` and `BUZZODZ_PROFILE` (default: `default`). Match these to
@@ -148,6 +149,8 @@ updates retain their enabled state and may run immediately. Repositories must
 include built `manifest.json` + `plugin.js` artifacts—Buzz never runs project builds
 or install scripts. See [import behavior and limits](#loading-from-folders-and-repositories).
 Browser installation is not supported; the browser shows a desktop-only explanation.
+An organization can recommend plugin sources through a policy file next to the profile
+folders; see [managed plugin sources](managed-plugins.md).
 
 ## Emoji and reusable conversation UI
 
@@ -313,6 +316,16 @@ events an agent with its switch on would hear wait to be matched once startup
 ends. Those are dropped for a kind 9 watch last seen with Attention hidden;
 other watches keep no such record, so they still match them. The bundled Agent
 Attention UI plugin calls it.
+
+Protection plugins inject `ctx.agentProtection` to register checks and review
+models and save native owner defaults or per-agent policies. An `AgentType`
+declares `protection` / `protectionUnavailable` and retires native sessions with
+`retire(key)`, where `key` is the membership key. Protected runs receive
+`AgentHandle.protection`; missing providers or enforcement stop them. This
+service shares the trusted-plugin authority described above, not a separate
+plugin permission boundary. The [protection contract](agent-protection.md)
+documents payload capture, missing-provider recovery and the explicit one-way
+storage upgrade, which also affects agents shared with older installed builds.
 
 A plugin, bundled or installed, can add a tool to every agent session in the
 app with `ctx.agents.addTool({ name, description, inputSchema, call })`. `call`
@@ -1013,7 +1026,7 @@ JSON protocol on stdin and stdout, declares it under `host.processes`:
 }
 ```
 
-`ctx.host.spawn(id, { args, cwd, env, agent, onStdout, onStderr })` starts it
+`ctx.host.spawn(id, { args, cwd, env, mcp, protection, onStdout, onStderr })` starts it
 with the caller's `args` after the declared ones, so the declaration names the
 program but not every argument. It returns `{ write, end, kill, exited }`.
 stdout and stderr arrive as UTF-8 text as they are read, not split into lines.
@@ -1024,19 +1037,36 @@ which on macOS also includes `~/.local/bin`. A process declared with
 `"bundled": true` instead runs the copy the app ships in its `bin` resources and
 never searches PATH; the Goose plugin runs `goose-acp` this way.
 
-`agent` names an agent whose type the calling plugin registered. The
-process then runs as that agent, as harness agents do: native puts its key in
-`BUZZ_PRIVATE_KEY` (and `NOSTR_PRIVATE_KEY`), its community in `BUZZ_RELAY_URL`
-and its owner attestation in `BUZZ_AUTH_TAG`, and puts the bundled agent tools,
-including the `buzz` CLI, first on its PATH. The key never enters the WebView,
-but the process can sign any event as the agent; the kind allowlist on
-`publish` does not bound it.
+`mcp` supplies an app-held MCP session URL and headers. The bundled command
+helper initializes that session and supplies an agent-scoped `buzz` tool command
+to the worker. Agent identity, signing authority and tool authorization stay in
+the app; this option does not transfer private identity keys to the worker.
 
 A process lives until it exits, the plugin kills it, the plugin unloads, the
 page reloads or the app exits. `kill` sends SIGTERM to its process group and
 SIGKILL three seconds later; the group is always killed once the process exits,
 so descendants do not outlive it. At most 64 processes run at once. Processes
-run with the user's full access and no sandbox; the import preview says so.
+run with the user's full access by default; the import preview says so.
+`protection: { readOnlyPaths, hiddenPaths }` adds macOS containment for the worker
+and descendants. Both arrays contain absolute existing paths. Read-only paths
+reject writes; hidden paths reject reads and writes. The host adds its application,
+plugin storage and actual Agents folder, blocks Apple Events, and refuses mutable
+development frontends or unsupported operating systems.
+
+Contained launches require an app-bundled executable or an `artifact` descriptor;
+PATH-only entrypoints are refused. Artifact descriptors name an absolute executable,
+its SHA-256, and optional flat sibling files with their hashes. Native launch hashes
+while copying those declared files into a content-addressed generation beneath the
+actual shared Agents folder, then launches that copy. All contained workers are
+prevented from writing this store. Corrupt generations fail closed and are never
+repaired in place. Equivalent Windows path forms are accepted; symlinks remain
+rejected. Control characters in containment paths refuse launch.
+
+This is approval-authority containment, covering the application, controls, private
+approval state, and declared launch files. It does not verify every dependency an
+interpreter loads. Unsandboxed processes running as the same user, including code
+planted for later execution, are outside this boundary; broader isolation belongs
+to Sandpit. Ordinary launches retain their existing PATH and access behavior.
 
 A plugin that declares `"files": true` under `host` reads files and resolves
 directories natively, the same on every platform, rather than starting a
@@ -1056,8 +1086,17 @@ plugins while enabled bundled plugins remain usable.
 
 Builderlab's effective manifest derives its exact origin from the validated
 [`BUZZ_BUILDERLAB_URL` build input](configuration.md#builderlab-url-build-input).
-Its source manifest contains no deployment origins; external plugin declarations
-remain fixed in their installed artifacts.
+With the [FI descriptor](configuration.md#federated-identity-build-input), it
+instead gets a `host.federatedIdentity` grant of exact Builderlab routes and no
+network origins or files. Its source manifest contains no deployment origins;
+external plugin declarations remain fixed in their installed artifacts.
+
+The `federatedIdentity` service forwards a granted operation natively to the
+identity origin with the FI session as `Authorization: Bearer`, scoped to the
+caller's enabled current artifact, a live registration and the session revision
+the call started under. Plugin reload, recovery and enable changes retire
+registrations; a caller registers again once. The token never enters the
+renderer, and an ordinary network origin is never authority to use it.
 
 Requests use the native HTTPS client, so a plugin can declare an exact
 origin without changing the renderer CSP. URLs must use a declared origin; redirects
@@ -1202,10 +1241,13 @@ requires deleting the plugin and adding it again. Git checks remain explicit in 
 pane, using the remembered repository and branch/tag with fresh authorization;
 credentials/tokens are never saved with source metadata. SSH accepts explicit URLs
 and `user@host:owner/repository.git` shorthand, including organization-specific
-usernames. The importer uses the desktop process's inherited `SSH_AUTH_SOCK` and
-known hosts, with interactive prompts and SSH config disabled. If normal Git uses
-an `IdentityAgent` from SSH config, launch the app with that socket in
-`SSH_AUTH_SOCK`; otherwise terminal Git can authenticate while the app cannot. Each check reads metadata from its own temporary clone; only Update retains an
+usernames. On macOS, sources at `ssh://org-49461806@github.com/squareup/…` on
+port 22 use Block's agent when its socket exists at
+`~/Library/Application Support/block-ssh-agent/agent.sock`. Other SSH sources use
+the desktop process's inherited `SSH_AUTH_SOCK`. SSH uses known hosts, with
+interactive prompts and SSH config disabled. For another agent selected by
+`IdentityAgent` in SSH config, launch the app with that socket in `SSH_AUTH_SOCK`.
+Each check reads metadata from its own temporary clone; only Update retains an
 immutable installation preview. The source
 follows the current revision through update and rollback. Rollback requires confirmation
 in Settings and consumes the previous revision: it cannot toggle forward again. The
@@ -1236,10 +1278,14 @@ Discovery never evaluates modules. Git is a required local
 tool: a shallow no-checkout clone reads committed blobs, without hooks, filters,
 submodules, LFS downloads or project scripts. Only HTTPS/SSH are allowed; inherited
 Git config, URL rewrites, credential helpers and interactive prompts are disabled.
-SSH uses the existing agent/known hosts, not user SSH config; password entry, HTTPS
+SSH uses the selected agent and known hosts, not user SSH config; password entry, HTTPS
 private-repo sign-in and custom SSH-config aliases are not supported in this slice.
 Repository URLs/refs are passed as arguments, not a shell command. Private/internal
 HTTPS hosts are not prohibited; this is not a public-network-only policy.
+A caller may require a commit: the import then refuses a reference that resolves to
+anything else, and records that commit in the saved source. An unpinned import records
+no commit, so its registry stays readable by older versions.
+[Managed plugin sources](managed-plugins.md) use this.
 
 Git acquisition has a 60-second deadline (including blob discovery), an observed
 256 MiB repository limit and bounded command output; transport processes are killed
@@ -1314,7 +1360,14 @@ while a new destination truncates the forward branch. Leaving aborts the old
 attempt, and late completion cannot acknowledge a replacement attempt.
 
 Version-1 `OpenTarget` accepts legacy Home targets (resolved to Messages), Settings sections, contributed pages with
-optional versioned JSON routes, and account/community-bound conversations.
+optional versioned JSON routes, plugin links, and account/community-bound conversations.
+A plugin link, `{ kind: "plugin", pluginId, pageId?, params?, scope? }`, is the target
+form of `buzz://plugin?id=…`. It names a plugin and optionally one of its pages, with
+untrusted string `params`. Once the plugin runtime has settled, the host resolves it
+in place to an ordinary page target: the named page, else the plugin's primary page,
+else its first page. `params` become that page's route params only when the page
+declares a route and its `validate` accepts them; otherwise the page opens without
+params. A plugin that is absent, disabled, or lacks the page fails `unavailable`.
 Conversation targets may include `panel: "members"` to restore that channel’s
 Members dialog without replacing its channel/message identity. Unknown panel
 values are rejected; this is presentation state, never mutation or confirmation state.
@@ -1355,8 +1408,10 @@ into versioned route parameters. These are host-matched preview types through
 
 Browser `#buzz=` addresses and session history support reload and Back/Forward.
 Messages recognize the Buzz link forms `buzz://channel/<id>`,
-`buzz://channel/<id>/<event>` and
-`buzz://message?channel=<id>&id=<event>&thread=<optional-root>`. Buzz links carry
+`buzz://channel/<id>/<event>`,
+`buzz://message?channel=<id>&id=<event>&thread=<optional-root>` and
+`buzz://plugin?id=<plugin>&page=<optional-page>&route.<key>=<optional-value>`
+(plugin pages; see [OS deep links](deep-links.md)). Buzz links carry
 no community: they bind to the receiving conversation's community and viewer and
 pass through existing navigation admission and session ownership checks. The app
 has no link form of its own; any other `buzz://` host is rejected everywhere,
@@ -1765,6 +1820,9 @@ takes 2 to 10 level labels, lowest first. A `yes_no` answer is a probability;
 a `choice` answer is the picked value with its confidence; a `score` answer is
 where it falls on the 0-based scale (it can be fractional), with a confidence.
 Probabilities are 0 to 1. `timeoutMs` is clamped to 1 to 30 seconds.
+`community` is the Buzz community (its relay URL) the text comes from. A
+provider that bills the community, such as Builderlab, refuses a request
+without one (`invalid_request`); TypeSafe ignores it.
 
 `decide` never rejects. It resolves with `{ outcome: "failed", reason }` when
 no decision provider is on (`unavailable`), the chosen provider has no
@@ -1774,11 +1832,22 @@ is over 128 KiB (`input_limit`), or the call times out, fails, or returns
 answers that do not fit the questions. A failed call is not retried and never
 falls back to another provider.
 
+Agents ask through the `decisions_ask` tool, which the Agents plugin adds to
+every agent session (`src/features/decisions/agent-tool.ts`). It takes and
+returns TypeSafe's [System One format](https://docs.typesafe.ai/api/system-one.md)
+(`noul`, `choice` and `score` questions with `criteria`), maps it onto
+`decide`, and sends the agent's community. It has no `model`, images, box
+questions or `usage`: the provider the owner chose answers. A failure is a tool
+error that names the reason and what the owner can do about it. Agents on a
+device have at most 4 calls in flight at once, so Attention's classifier keeps
+most of the native client's 16 slots.
+
 ### Decision providers
 
 Providers are plugins too. A plugin offers one with
 `ctx.decisions.registerProvider`; it is listed under Settings > Decisions API
-while the plugin is on, and removed when the plugin stops:
+while the plugin is on, and removed when the plugin stops or calls the function
+`registerProvider` returns:
 
 ```ts
 import type { Context } from "@buzz/author";
@@ -1807,10 +1876,12 @@ the reply. An answer of the wrong type, an unknown choice, a value outside 0 to
 that were not asked are dropped.
 
 The user chooses the provider in Settings > Decisions API, and the choice is
-kept on this device. Until they choose, TypeSafe (`buzz.typesafe/typesafe`)
-answers. Decision text can include private messages, so no other provider gets
-it without that choice: while the chosen provider is not on, decisions are
-`unavailable` and are not sent to another provider. `ctx.decisions.backend()`
+kept on this device. Until they choose, the first default provider that is on
+answers: Builderlab (`block.builderlab/builderlab`), then TypeSafe
+(`buzz.typesafe/typesafe`). The same holds while a chosen default is not on.
+Decision text can include private messages, so no other provider gets it
+without that choice: while a chosen provider that is not a default is not on,
+decisions are `unavailable` and are not sent to another provider. `ctx.decisions.backend()`
 is the answering provider's key (`<plugin id>/<provider id>`), or undefined
 when none is on, and `ctx.decisions.status()` its status. `Decisions` exposes
 no way to choose the provider. `state` and every question go to the provider,
@@ -1819,6 +1890,7 @@ so send only what the decision needs.
 | Provider | Plugin | Credentials |
 |----------|--------|-------------|
 | `buzz.typesafe/typesafe` | TypeSafe (bundled, on by default) | The user's TypeSafe key, kept and read only by native code (`src-tauri/src/decisions.rs`) |
+| `block.builderlab/builderlab` | Builderlab (bundled, in desktop builds with a Builderlab); registered only while the user is signed in to an account Builderlab allows decisions for | The user's Builderlab sign-in, which native code sends with each call. Builderlab answers with Jev and bills the request's `community`; its server allows up to 32 questions per call |
 
 ## In-app keyboard shortcuts
 

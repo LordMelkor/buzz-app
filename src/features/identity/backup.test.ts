@@ -5,6 +5,7 @@ import {
   backUpWith,
   createBackupStatus,
   handoffBackupSession,
+  handoffFederatedBackupSession,
 } from "./backup";
 import { BACKUP_FAILURES } from "./backup-failure";
 
@@ -166,6 +167,40 @@ it("resolves a handoff to its ticket, or null when none is issued or the handoff
     generation: expect.any(Number),
     credential: "token",
   });
+});
+
+it("hands off a federated revision with no credential, sharing the generation counter", async () => {
+  const send = vi.fn<
+    (command: string, args?: Record<string, unknown>) => Promise<unknown>
+  >(async () => 2);
+  await expect(
+    handoffFederatedBackupSession("revision-1", send as Send),
+  ).resolves.toBe(2);
+  await handoffFederatedBackupSession(null, send as Send);
+  await handoffBackupSession("hosted", "token", send as Send);
+  expect(send.mock.calls.map(([, args]) => args)).toEqual([
+    {
+      source: "builderlab",
+      generation: expect.any(Number),
+      credential: null,
+      federated: "revision-1",
+    },
+    {
+      source: "builderlab",
+      generation: expect.any(Number),
+      credential: null,
+      federated: null,
+    },
+    { source: "hosted", generation: expect.any(Number), credential: "token" },
+  ]);
+  const [first = 0, second = 0, third = 0] = send.mock.calls.map(
+    ([, args]) => args?.generation as number,
+  );
+  expect([second - first, third - second]).toEqual([1, 1]);
+  send.mockRejectedValueOnce(new Error("Invalid backup session"));
+  await expect(
+    handoffFederatedBackupSession("stale", send as Send),
+  ).resolves.toBeNull();
 });
 
 type Waiter = Parameters<typeof backUpWith>[0];

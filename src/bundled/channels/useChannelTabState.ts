@@ -184,8 +184,12 @@ function withThread(
         : intent === "select" || intent === "reveal" || intent === "focus"
           ? prior?.replyRequest
           : undefined,
+    // Ordinary user openings resume typing too. Passive restoration and tabs
+    // opened by an agent do not claim focus.
     focusRequest:
-      intent === "focus" ? (prior?.focusRequest ?? 0) + 1 : prior?.focusRequest,
+      intent === "focus" || (attention && intent === undefined)
+        ? (prior?.focusRequest ?? 0) + 1
+        : prior?.focusRequest,
     revealRequest:
       intent === "reveal"
         ? (prior?.revealRequest ?? 0) + 1

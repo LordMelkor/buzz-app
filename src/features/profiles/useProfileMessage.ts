@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { canMessageAgent } from "../agents/choices";
 import type { RelaySession } from "../relay/session";
 
 const noSubscribe = () => () => {};
@@ -28,7 +29,7 @@ export function useProfileMessage({
       !!session?.agentChoices
         .snapshot()
         .identities.some(
-          (choice) => choice.managed && choice.pubkey === pubkey,
+          (choice) => canMessageAgent(choice) && choice.pubkey === pubkey,
         ));
   const ready = useSyncExternalStore(
     enabled && agent

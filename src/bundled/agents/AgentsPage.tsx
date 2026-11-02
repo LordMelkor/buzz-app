@@ -114,6 +114,7 @@ import { Tooltip } from "../../shared/design-system/ui/Tooltip";
 import { publicKeyLabels } from "../../shared/identity/public-key";
 import { readView, writeView } from "../../shared/view-state";
 import { agentProviderRoute, agentProviderTarget, agentRoute } from "./routes";
+import { writeClipboardText } from "../../shared/clipboard";
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -1115,9 +1116,9 @@ function InventoryCard({
       )}
       <MenuItem
         onClick={() => {
-          void navigator.clipboard
-            .writeText(agent.pubkey)
-            .catch((reason) => setError(message(reason)));
+          void writeClipboardText(agent.pubkey).catch((reason) =>
+            setError(message(reason)),
+          );
         }}
       >
         Copy public key

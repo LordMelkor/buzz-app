@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useCallback, useRef, useState } from "react";
 import { SoloRegions } from "./SoloRegions";
 import { ToastProvider } from "../../shared/design-system/ui/Toast";
+import { MenuItem } from "../../shared/design-system/ui/Menu";
 import { SoloHeading } from "../../bundled/channels/SoloHeading";
 import { WorkspaceControl } from "../solo/WorkspaceControl";
 import type { OpenTarget } from "../navigation/targets";
@@ -519,9 +520,22 @@ it("replaces personal filing with a reveal chip and rejects a move selected just
   });
   const reveal = vi.fn();
   const stop = h.service.subscribeReveal(reveal);
+  const menuItems = [
+    {
+      key: "test/huddle",
+      id: "huddle",
+      pluginId: "test",
+      revision: "1",
+      component: () => <MenuItem>Start a huddle</MenuItem>,
+    },
+  ];
   render(
     <ToastProvider>
       <SoloHeading
+        chatMenus={{
+          subscribe: () => () => {},
+          snapshot: () => menuItems,
+        }}
         session={h.session}
         scope={h.scope}
         channel={channel}
@@ -540,6 +554,16 @@ it("replaces personal filing with a reveal chip and rejects a move selected just
   expect(
     await screen.findByRole("menuitem", { name: "Chat settings" }),
   ).toBeInTheDocument();
+  expect(
+    screen.getByRole("menuitem", { name: "Start a huddle" }),
+  ).toBeInTheDocument();
+  const items = screen.getAllByRole("menuitem").map((item) => item.textContent);
+  expect(items.indexOf("Start a huddle")).toBeGreaterThan(
+    items.indexOf("Chat settings"),
+  );
+  expect(items.indexOf("Start a huddle")).toBeLessThan(
+    items.indexOf("Copy link"),
+  );
   expect(
     screen.queryByRole("menuitem", { name: "Move to" }),
   ).not.toBeInTheDocument();

@@ -786,7 +786,7 @@ across cached, parallel jobs rather than running the entire recipe several times
 [Three documented WebKit cases remain local-only](browser-testing.md#ci-coverage-and-local-only-webkit-checks);
 the complete correctness suite still runs with `pnpm test` / `just scan`:
 
-- **JavaScript:** three runners, each with Biome, one TypeScript check and a frontend
+- **JavaScript:** four runners, each with Biome, one TypeScript check and a frontend
   build. Vitest splits all test files across the runners, with two workers each;
   every shard must succeed. Timing artifacts include the shard number.
 - **Rust and tool integration:** workspace formatting, Clippy, all Rust tests and
@@ -795,13 +795,14 @@ the complete correctness suite still runs with `pnpm test` / `just scan`:
   rather than part of pre-push.
 - **Browser measurements:** Chromium then WebKit, serially on an isolated runner.
   It also runs all [perf scenarios](performance.md) once in Chromium.
-- **Browser journeys:** twenty-one runners (nine Chromium and twelve WebKit
+- **Browser journeys:** twenty-three runners (nine Chromium and fourteen WebKit
   file-level shards), each with two workers. They start alongside measurements on separate
   runners; `CI required` still requires both lanes. A separate required Ubuntu
   job builds the native plugin-manager fixture once with Hermit's pinned Cargo.
   It uploads a tar with executable permission, checkout revision and SHA-256
   checksum; shards download by exact same-run artifact ID and verify all three
-  before running. A missing artifact fails CI rather than rebuilding. Local
+  before running. A missing artifact fails CI rather than rebuilding; the artifact
+  is kept for seven days, so failed shards can be re-run within that window. Local
   non-CI journeys retain the locked Cargo build. Each browser test uses its own
   mutable fixture home. No measurements are repeated on shards and no retries
   hide failures.

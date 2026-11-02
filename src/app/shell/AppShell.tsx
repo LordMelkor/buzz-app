@@ -7,6 +7,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
+import { isApplePlatform } from "../../features/shortcuts/format";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { SidebarIcon, DotsThreeIcon } from "../../shared/design-system/icons";
 import { Panel } from "../../shared/design-system/ui/Panel";
@@ -53,6 +54,7 @@ export function AppShell({
   federatedIdentity,
   accountActions,
   appearance,
+  pluginRecommendations = 0,
   searchServices,
   navigationControls,
   onCommunitySelect,
@@ -60,6 +62,7 @@ export function AppShell({
   launchers,
   companion,
   creationAction,
+  creationInSidebar = true,
   children,
 }: {
   pages: readonly RegisteredPage[];
@@ -73,7 +76,7 @@ export function AppShell({
   workspace?: boolean;
   /** Centered modal frame below window chrome. */
   workspaceRef?: Ref<HTMLDivElement>;
-  sidebar?: (pages: ReactNode) => ReactNode;
+  sidebar?: (pages: ReactNode, creationAction: ReactNode) => ReactNode;
   communities: Communities;
   invite?: (InviteLink & { requestId: number }) | undefined;
   onInviteClose?: ((requestId: number) => void) | undefined;
@@ -81,6 +84,8 @@ export function AppShell({
   federatedIdentity?: FederatedIdentity | undefined;
   accountActions: AccountActionsService;
   appearance: Appearance;
+  /** Managed plugin recommendations awaiting review, pointed out beside Plugins. */
+  pluginRecommendations?: number;
   searchServices?: SearchServices;
   navigationControls?: ReactNode;
   onCommunitySelect?: (id: string | null) => void;
@@ -88,10 +93,18 @@ export function AppShell({
   onOpenTarget?: (target: OpenTarget) => void;
   launchers?: ReactNode;
   companion?: ReactNode;
-  creationAction?: ReactNode;
+  creationAction?: (
+    open: boolean,
+    onOpenChange: (open: boolean) => void,
+    triggerContainer: HTMLElement | null,
+  ) => ReactNode;
+  creationInSidebar?: boolean;
   children: ReactNode;
 }) {
   const fillsWorkspace = workspace || selected === "settings";
+  const [creationContainer, setCreationContainer] =
+    useState<HTMLDivElement | null>(null);
+  const [creationOpen, setCreationOpen] = useState(false);
   const channelsNavigation = selected === "buzz.channels/channels";
   const [narrow, setNarrow] = useState(
     () => window.matchMedia("(max-width: 650px)").matches,
@@ -113,6 +126,27 @@ export function AppShell({
   const [navigationOpen, setNavigationOpen] = useState(false);
   const navigationToggle = useRef<HTMLButtonElement>(null);
   const visibleSidebar = narrow ? navigationOpen : sidebarOpen;
+  useEffect(
+    () =>
+      searchServices?.shortcuts.registerHost({
+        id: "new",
+        title: "Open New menu",
+        binding: { key: "n", mod: true },
+        order: 75,
+        allowInEditable: true,
+        when: () =>
+          !!creationAction &&
+          !!creationContainer?.querySelector("button:not(:disabled)") &&
+          (isApplePlatform(navigator.platform) ||
+            !document.activeElement?.closest(".xterm")),
+        run: () => {
+          setSidebarOpen(true);
+          setNavigationOpen(true);
+          setCreationOpen(true);
+        },
+      }),
+    [searchServices, creationAction, creationContainer],
+  );
   const toggleLabel = narrow
     ? navigationOpen
       ? "Hide navigation"
@@ -142,7 +176,12 @@ export function AppShell({
       </nav>
     ) : null;
     return sidebar ? (
-      sidebar(pageNavigation)
+      sidebar(
+        pageNavigation,
+        creationAction && creationInSidebar && (
+          <div ref={setCreationContainer} />
+        ),
+      )
     ) : (
       <div className="shell-sidebar-default">
         <Panel as="aside" aria-label="Page sidebar">
@@ -150,7 +189,7 @@ export function AppShell({
         </Panel>
       </div>
     );
-  }, [pages, selected, onSelect, sidebar]);
+  }, [pages, selected, onSelect, sidebar, creationAction, creationInSidebar]);
   const headerPages = useMemo(
     () =>
       orderPages(
@@ -177,7 +216,6 @@ export function AppShell({
   const historyRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLDivElement>(null);
-  const creationRef = useRef<HTMLDivElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
   const toolbarRef = useRef<HTMLElement>(null);
   const overflowTrigger = useRef<HTMLButtonElement>(null);
@@ -203,11 +241,7 @@ export function AppShell({
         gap;
       const center =
         (topbarRef.current?.offsetWidth ?? 0) +
-        2 *
-          Math.max(
-            creationRef.current?.offsetWidth ?? 0,
-            searchRef.current?.offsetWidth ?? 0,
-          ) +
+        (searchRef.current?.offsetWidth ?? 0) +
         gap;
       const compact =
         narrow ||
@@ -230,7 +264,6 @@ export function AppShell({
       historyRef.current,
       actionsRef.current,
       topbarRef.current,
-      creationRef.current,
       searchRef.current,
       toolbarRef.current,
     ]) {
@@ -311,12 +344,12 @@ export function AppShell({
             />
           )}
           {navigationControls}
+          {creationAction && !creationInSidebar && (
+            <div ref={setCreationContainer} />
+          )}
         </div>
-        <div className="shell-center-capsule shell-capsule chrome-navigation">
-          <div ref={creationRef} className="shell-create-action shell-capsule">
-            {creationAction}
-          </div>
-          <div className="shell-page-switcher">
+        <div className="shell-center-capsule shell-capsule">
+          <div className="shell-page-switcher chrome-navigation">
             {headerPages.length > 0 && (
               <PopoverRoot
                 open={overflowOpen && compactPages}
@@ -431,6 +464,7 @@ export function AppShell({
                 accountActions={accountActions}
                 settingsSelected={selected === "settings"}
                 appearance={appearance}
+                pluginRecommendations={pluginRecommendations}
                 onSettings={(section) =>
                   onSelect("settings", section ? { section } : undefined)
                 }
@@ -515,6 +549,7 @@ export function AppShell({
           </div>
         </div>
       </div>
+      {creationAction?.(creationOpen, setCreationOpen, creationContainer)}
     </div>
   );
 }

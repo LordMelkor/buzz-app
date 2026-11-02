@@ -9,6 +9,19 @@ import { Button } from "../../shared/design-system/ui/Button";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
 import { Input } from "../../shared/design-system/ui/Input";
 
+/**
+ * Removing the focused Retry button leaves focus on the page or the dialog
+ * itself. Return it to the field then, but keep a user's move to Cancel or
+ * Close so Enter still does what they focused.
+ */
+function restoreLostFocus(field: HTMLInputElement | null) {
+  const dialog = field?.closest('[role="dialog"]');
+  const active = field?.ownerDocument.activeElement;
+  if (!active || active === dialog || !dialog?.contains(active)) {
+    field?.focus();
+  }
+}
+
 /** Mounted after the launching menu closes, so focus has one modal owner. */
 export function CreateSidebarSection({
   channelName,
@@ -39,9 +52,16 @@ export function CreateSidebarSection({
   useLayoutEffect(() => {
     // The preference update may remove the focused Retry button. Hand focus
     // back only after React commits that removal, including on fast reads.
-    if (focusRequest) input.current?.focus();
+    if (focusRequest) restoreLostFocus(input.current);
   }, [focusRequest]);
   const needsRecovery = !pending && !writable;
+  const recovering = useRef(needsRecovery);
+  useLayoutEffect(() => {
+    // Background recovery can also remove the Retry button, even while a
+    // click on it is landing.
+    if (recovering.current && writable) restoreLostFocus(input.current);
+    recovering.current = needsRecovery;
+  }, [needsRecovery, writable]);
   const errorId = `${formId}-error`;
   const submit = async () => {
     if (submitted.current || pending || !writable || !name.trim()) return;

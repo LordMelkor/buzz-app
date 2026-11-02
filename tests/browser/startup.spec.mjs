@@ -666,7 +666,7 @@ test.describe("pending startup navigation", () => {
       gate.release();
       await expect(page.locator("#buzz-launch")).toHaveCount(0);
       await expect(
-        page.getByRole("heading", { name: "This destination couldn’t open" }),
+        page.getByRole("heading", { name: "This page isn’t available" }),
       ).toBeVisible();
     } finally {
       gate.release();

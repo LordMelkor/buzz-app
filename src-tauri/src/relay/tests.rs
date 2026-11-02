@@ -519,13 +519,14 @@ fn isolated_agent_ipc_probe() {
     }
     use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
     use tauri::Manager;
+    // The probe owns the spool dir, so it is removed when the probe returns
+    // or panics.
+    let spools = tempfile::tempdir().unwrap();
     let app = mock_builder()
         .manage(IdentityHost::fixture())
         .manage(FederatedIdentity::new().unwrap())
         .manage(Uploads::default())
-        .manage(Spools::new(Ok(
-            std::env::temp_dir().join(format!("buzz-spool-ipc-{}", uuid::Uuid::new_v4()))
-        )))
+        .manage(Spools::new(Ok(spools.path().to_owned())))
         .manage(crate::archive::ArchiveHost::default())
         .invoke_handler(crate::commands())
         .build(crate::app_context())
@@ -3917,7 +3918,13 @@ mod federated_header {
         .await
         .unwrap();
         assert_eq!(response.status, 200);
-        community.assert_carried(&server.heads().await[0]);
+        let head = &server.heads().await[0];
+        assert!(
+            head.lines()
+                .any(|line| line.eq_ignore_ascii_case("user-agent: Buzz")),
+            "{head}"
+        );
+        community.assert_carried(head);
     }
     #[tokio::test]
     async fn http_attaches_for_required_discovery() {

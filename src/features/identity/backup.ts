@@ -13,10 +13,26 @@ export function handoffBackupSession(
   credential: string | null,
   send: Send = invoke,
 ): Promise<number | null> {
+  return handoff({ source, credential }, send);
+}
+
+/** As `handoffBackupSession` for Builderlab under a NIP-FI deployment: only the
+ * public session `revision` crosses IPC, and native resolves the token itself.
+ * `null` hands the slot back. */
+export function handoffFederatedBackupSession(
+  revision: string | null,
+  send: Send = invoke,
+): Promise<number | null> {
+  return handoff(
+    { source: "builderlab", credential: null, federated: revision },
+    send,
+  );
+}
+
+function handoff(args: Record<string, unknown>, send: Send) {
   return send<unknown>("nsec_backup_session", {
-    source,
+    ...args,
     generation: ++generation,
-    credential,
   }).then(
     (ticket) => (typeof ticket === "number" ? ticket : null),
     () => null,

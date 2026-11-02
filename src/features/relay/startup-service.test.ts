@@ -22,27 +22,32 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-function setup() {
+function setup({ saved = true } = {}) {
   const viewer = keypair(),
     relay = keypair();
   const events = [
     roster(relay, "alpha", [viewer.pubkey]),
     metadata(relay, "alpha", "Alpha"),
   ];
-  let startup: SavedStartup | undefined = {
-    discovery: { savedAt: Date.now(), relayAuthor: relay.pubkey, events },
-  };
-  let heads: SavedHead[] = [
-    {
-      channelId: "alpha",
-      savedAt: Date.now(),
-      profiles: [],
-      events: [
-        message(viewer, "alpha", "Saved history", 20),
-        bounds(relay, "alpha", "head", { has_more: false, next_cursor: null }),
-      ],
-    },
-  ];
+  let startup: SavedStartup | undefined = saved
+    ? { discovery: { savedAt: Date.now(), relayAuthor: relay.pubkey, events } }
+    : undefined;
+  let heads: SavedHead[] = !saved
+    ? []
+    : [
+        {
+          channelId: "alpha",
+          savedAt: Date.now(),
+          profiles: [],
+          events: [
+            message(viewer, "alpha", "Saved history", 20),
+            bounds(relay, "alpha", "head", {
+              has_more: false,
+              next_cursor: null,
+            }),
+          ],
+        },
+      ];
   const disk: HeadPersistence = {
     readStartup: vi.fn(async () => structuredClone(startup)),
     writeStartup: vi.fn(async (patch) => {
@@ -120,8 +125,11 @@ it("retains a timed-out cached startup, rejects the late handshake and promotes 
     status: "error",
     cached: true,
     error: expect.stringContaining("timed out"),
+    // A timeout reconnects by itself; navigation waits instead of failing.
+    retrying: true,
   });
   data.retry();
+  expect(data.snapshot().retrying).toBeUndefined();
   await vi.waitFor(() => expect(connections).toHaveLength(2));
   connections[0]?.resolve(source);
   await vi.advanceTimersByTimeAsync(10);
@@ -135,12 +143,34 @@ it("retains a timed-out cached startup, rejects the late handshake and promotes 
     data.snapshot().session.channels.window("alpha").rows[0]?.content,
   ).toBe("Saved history");
 });
+it("bootstraps from disk behind the launch surface only once, not on retries after a failure", async () => {
+  vi.useFakeTimers();
+  const { data } = setup({ saved: false });
+  expect(data.snapshot()).toMatchObject({
+    status: "connecting",
+    restoring: true,
+  });
+  await vi.advanceTimersByTimeAsync(8_001);
+  expect(data.snapshot()).toMatchObject({ status: "error", retrying: true });
+  // Both the automatic reconnect and Try again keep the app on screen.
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(data.snapshot().status).toBe("connecting");
+  expect(data.snapshot().restoring).toBeUndefined();
+  await vi.advanceTimersByTimeAsync(8_001);
+  expect(data.snapshot().status).toBe("error");
+  data.retry();
+  expect(data.snapshot().status).toBe("connecting");
+  expect(data.snapshot().restoring).toBeUndefined();
+});
 it("explicit handshake denial purges saved history instead of retaining offline content", async () => {
   const { data, disk, connections, restored } = setup();
   await restored();
   connections[0]?.reject(new ReadError("denied", "Removed"));
   await vi.waitFor(() => expect(data.snapshot().status).toBe("error"));
   expect(data.snapshot().cached).toBeUndefined();
+  expect(data.snapshot().retrying).toBeUndefined();
+  // Pages explain a refusal as access, not as the connection.
+  expect(data.snapshot().denied).toBe(true);
   expect(data.snapshot().session.channels.list().channels).toEqual([]);
   expect(await disk.readStartup?.()).toBeUndefined();
   expect(await disk.read()).toEqual([]);

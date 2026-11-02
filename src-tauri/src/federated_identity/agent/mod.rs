@@ -62,6 +62,34 @@ pub(super) struct Inner {
         )>,
     >,
 }
+/// A session being installed, holding the wipe transaction open.
+pub(super) struct Prepared {
+    tokens: AgentTokens,
+    /// Whether this preparation itself recorded the pending retirement.
+    marked: bool,
+    _wiping: tokio::sync::OwnedMutexGuard<()>,
+}
+impl Prepared {
+    /// The session will not be installed and nothing of it was persisted:
+    /// withdraw only the retirement this preparation recorded. Every other
+    /// writer of the record holds the wipe lock, which this still holds.
+    pub(super) async fn abandon(self) {
+        if !self.marked {
+            return;
+        }
+        let (retired, at) = (self.tokens.0.retired.clone(), self.tokens.retiring_key());
+        // On failure the retirement stays recorded: a later wipe over-retires.
+        let _ = self
+            .tokens
+            .storage(move |store| {
+                let mut retired = lock(&retired);
+                store.set_pending(&at, false)?;
+                retired.pending = Some(false);
+                Ok(())
+            })
+            .await;
+    }
+}
 #[derive(Default)]
 struct Retired {
     /// The owner's retirements whose grant wipe has completed.
@@ -212,7 +240,7 @@ impl AgentTokens {
     pub(super) async fn preparing_session(
         identity: &FederatedIdentity,
         account: Option<String>,
-    ) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, String> {
+    ) -> Result<Option<Prepared>, String> {
         let Some(inner) = lock(&identity.0.agent_tokens).upgrade() else {
             return Ok(None);
         };
@@ -220,7 +248,7 @@ impl AgentTokens {
         let wiping = tokens.0.wiping.clone().lock_owned().await;
         let keys = tokens.grant_keys().await?;
         let (retired, at) = (tokens.0.retired.clone(), tokens.retiring_key());
-        tokens
+        let marked = tokens
             .storage(move |store| {
                 let mut retired = lock(&retired);
                 let foreign = keys.iter().try_fold(false, |foreign, key| {
@@ -231,14 +259,23 @@ impl AgentTokens {
                             }),
                     )
                 })?;
-                if foreign {
-                    store.set_pending(&at, true)?;
-                    retired.pending = Some(true);
+                if !foreign {
+                    return Ok(false);
                 }
-                Ok(())
+                let before = match retired.pending {
+                    Some(pending) => pending,
+                    None => store.pending(&at)?,
+                };
+                store.set_pending(&at, true)?;
+                retired.pending = Some(true);
+                Ok(!before)
             })
             .await?;
-        Ok(Some(wiping))
+        Ok(Some(Prepared {
+            tokens,
+            marked,
+            _wiping: wiping,
+        }))
     }
     fn slot(&self, agent: &str) -> Arc<AsyncMutex<Slot>> {
         lock(&self.0.slots).entry(agent.into()).or_default().clone()

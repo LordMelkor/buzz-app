@@ -37,10 +37,19 @@ afterEach(() => {
 });
 
 async function fixture(subject = "account-a") {
-  const session = createOAuthSession(async () => ({
-    value: "credential",
-    account: { subject, email: "a@example.com", canUseRemoteAgents: true },
-  }));
+  const session = createOAuthSession(
+    async () => ({
+      value: "credential",
+      account: {
+        subject,
+        email: "a@example.com",
+        canUseRemoteAgents: true,
+        canUseBuilderlabDecisions: false,
+      },
+    }),
+    undefined,
+    { request: (input) => host.request(input) },
+  );
   await session.signIn();
   const request = vi.fn<Host["request"]>();
   const host: Host = {
@@ -58,7 +67,7 @@ async function fixture(subject = "account-a") {
           })
         : request(input),
   };
-  const client = createAgentClient(host, session);
+  const client = createAgentClient(session);
   const type = builderlabType(client, session, relay);
   if (!type.remote) throw new Error("Missing hosted adapter");
   return {
@@ -286,11 +295,14 @@ it("rejects a stop at once when signed out, without signing in or reaching Build
       subject: "account-a",
       email: "a@example.com",
       canUseRemoteAgents: true,
+      canUseBuilderlabDecisions: false,
     },
   }));
-  const session = createOAuthSession(acquire);
+  const session = createOAuthSession(acquire, undefined, {
+    request: (input) => request(input),
+  });
   const request = vi.fn<Host["request"]>();
-  const client = createAgentClient({ runCommand: vi.fn(), request }, session);
+  const client = createAgentClient(session);
   const remote = builderlabType(client, session, relay).remote;
   if (!remote?.interrupt) throw new Error("Missing hosted adapter");
   await expect(remote.interrupt(interruption)).rejects.toThrow(

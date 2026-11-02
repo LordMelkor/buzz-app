@@ -258,3 +258,37 @@ it("keeps explicit Personal space distinct from an unspecified page scope", () =
   expect(targetKey(personal)).not.toBe(targetKey(page));
   expect(() => parseOpenTarget({ ...conversation, scope: null })).toThrow();
 });
+
+it("bounds plugin link targets to plain string params", () => {
+  const link = {
+    version: 1,
+    kind: "plugin",
+    pluginId: "com.example.catalog",
+    pageId: "detail",
+    params: { slug: "a", tab: "b" },
+    scope: { viewer, communityOrigin: "https://relay.example" },
+  } as const;
+  expect(parseOpenTarget(link)).toEqual(link);
+  expect(targetKey({ ...link, params: { tab: "b", slug: "a" } })).toBe(
+    targetKey(link),
+  );
+  const { pageId: _pageId, params: _params, scope: _scope, ...bare } = link;
+  expect(parseOpenTarget(bare)).toEqual(bare);
+  for (const invalid of [
+    { ...bare, pluginId: "Not.Valid" },
+    { ...bare, pageId: "" },
+    { ...bare, params: { n: 1 } },
+    { ...bare, params: { "bad key": "a" } },
+    { ...bare, params: { __proto__x: "a" } },
+    { ...bare, params: { slug: "x".repeat(1025) } },
+    {
+      ...bare,
+      params: Object.fromEntries(
+        Array.from({ length: 17 }, (_, index) => [`k${index}`, "v"]),
+      ),
+    },
+    { ...bare, params: ["a"] },
+    { ...bare, route: { version: 1, params: {} } },
+  ])
+    expect(() => parseOpenTarget(invalid)).toThrow();
+});

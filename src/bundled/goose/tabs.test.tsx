@@ -761,6 +761,91 @@ it("lists the agent's goose sessions and shows one's transcript", async () => {
   expect(screen.getAllByText(/@Gander what's up\?/).length).toBeGreaterThan(0);
 });
 
+it("opens a session transcript its history lookup finds after the profile shows", async () => {
+  // No running session knows the thread, so goose's history finds it only
+  // after the profile is shown.
+  const agent = "c".repeat(64);
+  const context = [
+    "<context>",
+    "Scope: thread",
+    "Session scope: thread",
+    "Channel: general (#chan)",
+    `Thread root: ${"1".repeat(64)}`,
+    `Agent: ${agent}`,
+    "</context>",
+    "",
+    '<buzz-event type="@mention">',
+    "Content: @Gander what's up?",
+    "</buzz-event>",
+  ].join("\n");
+  const fake = fakeSpawn({
+    home: "/home/test",
+    history: [
+      {
+        sessionId: "s1",
+        title: "Gander · #general · 11111111",
+        cwd: "/home/test/.buzz",
+        updatedAt: "2027-01-15T08:00:00Z",
+        conversation: [
+          {
+            role: "user",
+            created: 1_800_000_000,
+            content: [{ type: "text", text: context }],
+            metadata: { userVisible: true },
+          },
+          {
+            role: "assistant",
+            created: 1_800_000_001,
+            content: [
+              {
+                type: "toolRequest",
+                id: "t1",
+                toolCall: {
+                  status: "success",
+                  value: {
+                    name: "buzz__send",
+                    arguments: { text: "Hi from goose", final: true },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  // The runtime keeps one snapshot until its sessions change.
+  const none: never[] = [];
+  const runtime = {
+    subscribe: () => () => {},
+    sessions: () => none,
+  } as unknown as GooseRuntime;
+  const { ActivityTab } = createTabs({
+    setup: new GooseSetup(fake),
+    runtime,
+    history: new GooseHistory(fake),
+  });
+  const done = vi.fn();
+  render(
+    <ActivityTab
+      agent={
+        {
+          key: agent,
+          pubkey: agent,
+          name: "Gander",
+          type: "buzz.goose/goose",
+          owner: "a".repeat(64),
+          config: DEFAULT_CONFIG,
+        } as Agent<Config>
+      }
+      conversation={{ channelId: "chan", rootId: "1".repeat(64) }}
+      initialTranscript={{ opening: 1, done }}
+    />,
+  );
+  expect(await screen.findByText("Hi from goose")).toBeInTheDocument();
+  expect(done).toHaveBeenCalledTimes(1);
+});
+
 it("says it is reading goose's sessions until the list arrives", async () => {
   const fake = fakeSpawn({ home: "/home/test" });
   const history = new GooseHistory(fake);

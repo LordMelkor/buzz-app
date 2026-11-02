@@ -33,6 +33,18 @@ function importLocation(
   return `${source}${separator}${path.replaceAll("/", separator)}`;
 }
 
+export function importRollbackWarning(
+  candidate: { publisher?: string | null; revision: string } | undefined,
+  existing: PluginInfo | undefined,
+) {
+  return candidate?.publisher && existing && !existing.hasSignature
+    ? "You cannot roll back to the unsigned revision after this update."
+    : candidate?.revision === existing?.revision &&
+        existing?.rollbackBlockedReason
+      ? `${existing.rollbackBlockedReason}.`
+      : null;
+}
+
 export function PluginImport({
   initialUpdateAvailable = false,
   plugins,
@@ -382,13 +394,7 @@ export function PluginImport({
       setDiscarding(false);
     }
   }
-  const rollbackWarning =
-    candidate?.publisher && existing && !existing.hasSignature
-      ? "You cannot roll back to the unsigned revision after this update."
-      : candidate?.revision === existing?.revision &&
-          existing?.rollbackBlockedReason
-        ? `${existing.rollbackBlockedReason}.`
-        : null;
+  const rollbackWarning = importRollbackWarning(candidate, existing);
   function prepareReview() {
     if (!imports) return;
     setOpen(true);

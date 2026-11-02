@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -94,14 +95,17 @@ export function useSoloShare({
   const chosen = list.channels.find(
     (item) => item.id === destination && item.id !== channelId,
   );
-  const destinationMembers =
+  const readyMembers =
     chosen &&
     destinationRoster?.id === chosen.id &&
     destinationRoster.status === "ready" &&
-    !chosen.cached &&
-    chosen.members
-      ? [...new Set(chosen.members)]
+    !chosen.cached
+      ? chosen.members
       : undefined;
+  const destinationMembers = useMemo(
+    () => (readyMembers ? [...new Set(readyMembers)] : undefined),
+    [readyMembers],
+  );
   useEffect(() => {
     void rosterReload;
     if (!enabled) return;
@@ -199,9 +203,12 @@ export function useSoloShare({
         .catch(() => {});
   }, [session, destinationProfileKeys]);
   const resolveName = useIdentityNames(session.names);
-  const displayKeys = [
-    ...new Set([...(source?.members ?? []), ...(destinationMembers ?? [])]),
-  ];
+  const displayKeys = useMemo(
+    () => [
+      ...new Set([...(source?.members ?? []), ...(destinationMembers ?? [])]),
+    ],
+    [source?.members, destinationMembers],
+  );
   const labels = new Map(
     displayKeys.map((key) => [
       key,

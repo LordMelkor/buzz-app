@@ -46,6 +46,7 @@ import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { Tabs } from "../../shared/design-system/ui/Tabs";
 import { CopyIcon, FileTextIcon } from "../../shared/design-system/icons";
 import "./repos.css";
+import { writeClipboardText } from "../../shared/clipboard";
 
 type Open = Navigation["open"];
 const labels = {
@@ -601,7 +602,7 @@ function CopyLink({ route }: { route: EntityRoute }) {
         title="Copy link"
         icon={<CopyIcon size={18} />}
         onClick={() =>
-          void navigator.clipboard.writeText(entityHref(route)).then(
+          void writeClipboardText(entityHref(route)).then(
             () => setStatus("Link copied"),
             () => setStatus("Could not copy link"),
           )

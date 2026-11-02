@@ -5,6 +5,7 @@ import { Dialog } from "../../shared/design-system/ui/Dialog";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { MermaidDiagram } from "./MermaidDiagram";
+import { writeClipboardText } from "../../shared/clipboard";
 
 /** Opens a complex diagram at full size, with its source a click away. */
 export function MermaidExpand({ code }: { code: string }) {
@@ -35,7 +36,7 @@ export function MermaidExpand({ code }: { code: string }) {
             onClick={() => {
               setCopying(true);
               void Promise.resolve()
-                .then(() => navigator.clipboard.writeText(code))
+                .then(() => writeClipboardText(code))
                 .then(
                   () => notify("Copied code to clipboard", "success"),
                   () => notify("Failed to copy code", "error"),

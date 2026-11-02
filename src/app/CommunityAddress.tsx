@@ -10,6 +10,7 @@ import { communityIcon } from "../features/communities/community-icon";
 import { NavigationItem } from "../shared/design-system/ui/NavigationItem";
 import { Tooltip } from "../shared/design-system/ui/Tooltip";
 import { useToastNotification } from "../shared/design-system/ui/Toast";
+import { writeClipboardText } from "../shared/clipboard";
 
 /** A community reference is a copy action, not a Settings destination. */
 export function CommunityAddress({
@@ -75,7 +76,7 @@ function CopyAddress({
     const copiedDuring = visit.current;
     setCopied(false);
     try {
-      await navigator.clipboard.writeText(url);
+      await writeClipboardText(url);
       if (current === attempt.current) {
         setCopied(true);
         if (!visible.current || pointerType.current === "touch") {

@@ -111,7 +111,7 @@ it.each(["private", "public"] as const)(
     const edit = access(opposite);
     render(edit.element);
     const control = await screen.findByRole("combobox", {
-      name: "Who can read",
+      name: "General access",
     });
     await vi.waitFor(() => expect(control).toBeEnabled());
     await user.click(control);

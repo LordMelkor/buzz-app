@@ -75,7 +75,7 @@ test.describe("page render failure", () => {
     await openPage(page, "Retry fixture");
     await expect(
       page.getByRole("heading", {
-        name: "This destination couldn’t open",
+        name: "This page isn’t available",
         exact: true,
       }),
     ).toBeVisible();
@@ -85,7 +85,7 @@ test.describe("page render failure", () => {
     await page.evaluate(() => {
       window.fixturePageBroken = false;
     });
-    await button(page, "Retry navigation").click();
+    await button(page, "Try again").click();
     await expect(button(page, "Break fixture page")).toBeVisible();
   });
 });

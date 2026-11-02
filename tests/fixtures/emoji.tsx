@@ -65,6 +65,7 @@ const sessions = ["a", "b"].map((community) => {
   let releaseReaction: (() => void) | undefined;
   let live!: LiveCallbacks;
   let catalogRead: Promise<void> | undefined;
+  let coldFailure = new URLSearchParams(location.search).has("cold-error");
   let releaseCatalogRead: (() => void) | undefined;
   const makeSet = (empty = false) =>
     signed(member, {
@@ -124,6 +125,10 @@ const sessions = ["a", "b"].map((community) => {
         if (filters[0]?.kinds?.includes(30030)) {
           report.reads.push(community);
           await catalogRead;
+          if (coldFailure) {
+            coldFailure = false;
+            throw new Error("Fixture catalog offline");
+          }
           if (fail) throw new Error("Fixture catalog offline");
           return [catalog];
         }

@@ -81,6 +81,12 @@ need no per-worktree setup; see [Git hooks](docs/contributing.md#git-hooks).
 
 ## Engineering standard
 
+When changing user-facing Buzz behavior, update [the agent help guide](docs/buzz-help.md)
+if the change affects how someone uses or understands the app. Keep it concise,
+describe implemented behavior, and distinguish optional or platform-dependent
+features. The `buzz_help` tool bundles this file with the app; it is not fetched
+from the repository at runtime.
+
 Before editing, state the intended outcome and non-goals. Read the owning code,
 callers, and relevant design docs; preserve documented product decisions and
 ownership boundaries. Resolve answerable questions from evidence; ask before

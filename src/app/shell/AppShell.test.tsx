@@ -1,3 +1,10 @@
+import { createPortal } from "react-dom";
+import {
+  MenuRoot,
+  MenuTrigger,
+  MenuPopup,
+  MenuItem,
+} from "../../shared/design-system/ui/Menu";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import {
@@ -870,5 +877,68 @@ it.each([false, true])(
     expect(
       within(nav).queryByRole("tab", { selected: true }),
     ).not.toBeInTheDocument();
+  },
+);
+
+it.each([true, false])(
+  "opens New with Mod+N without navigating (sidebar placement: %s)",
+  async (creationInSidebar) => {
+    const current = createServices();
+    services = current;
+    const select = vi.fn();
+    const create = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <AppShell
+          pages={[]}
+          selected="buzz.channels/channels"
+          navigationAttempt="same-conversation"
+          onSelect={select}
+          tone="default"
+          communities={current.communities}
+          accountActions={current.accountActions}
+          appearance={testAppearance}
+          searchServices={current}
+          creationInSidebar={creationInSidebar}
+          sidebar={(_, action) => (
+            <aside aria-label="Sidebar">
+              {creationInSidebar
+                ? action
+                : "Contributed sidebar without children"}
+            </aside>
+          )}
+          creationAction={(open, onOpenChange, container) => (
+            <MenuRoot open={open} onOpenChange={onOpenChange}>
+              {container &&
+                createPortal(
+                  <MenuTrigger render={<button type="button">New</button>} />,
+                  container,
+                )}
+              <MenuPopup>
+                <MenuItem onClick={create}>New chat</MenuItem>
+              </MenuPopup>
+            </MenuRoot>
+          )}
+        >
+          Current conversation
+        </AppShell>
+      </ToastProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "Hide sidebar" }));
+    fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+    expect(
+      await screen.findByRole("menuitem", { name: "New chat" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Hide sidebar" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(select).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menuitem", { name: "New chat" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("menuitem", { name: "New chat" }));
+    expect(create).toHaveBeenCalledOnce();
   },
 );

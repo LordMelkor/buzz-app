@@ -31,6 +31,7 @@ const release = vi.fn(() => {
 const keepMounted = vi.fn((_id: string) => release);
 afterEach(async () => {
   cleanup();
+  vi.unstubAllGlobals();
   for (const owner of owners.splice(0)) owner.dispose();
   await waitFor(() =>
     expect(release).toHaveBeenCalledTimes(keepMounted.mock.calls.length),
@@ -78,6 +79,33 @@ function mount(publish: (event: RelayEvent) => Promise<void>) {
   return { present: (active: boolean) => view.rerender(tree(active)) };
 }
 
+it("keeps coarse-pointer entry on the dialog until a reason is chosen", async () => {
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    matches: media === "(pointer: coarse)",
+    media,
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent: () => true,
+  }));
+  const publish = vi.fn(async () => {});
+  const user = userEvent.setup();
+  mount(publish);
+  await user.click(
+    screen.getByRole("button", { name: "More message actions" }),
+  );
+  await user.click(await screen.findByRole("menuitem", { name: "Report" }));
+  const dialog = await screen.findByRole("dialog", { name: "Report message" });
+  await waitFor(() => expect(document.activeElement).toBe(dialog));
+  const reason = screen.getByRole("radio", { name: "Spam" });
+  expect(reason.getAttribute("aria-checked")).toBe("false");
+  await user.click(reason);
+  expect(reason.getAttribute("aria-checked")).toBe("true");
+  expect(publish).not.toHaveBeenCalled();
+});
+
 it("reports from the message menu, keeps input after failure and confirms success", async () => {
   const user = userEvent.setup();
   let settle!: (error?: Error) => void;
@@ -92,6 +120,11 @@ it("reports from the message menu, keeps input after failure and confirms succes
   await user.click(trigger);
   await user.click(await screen.findByRole("menuitem", { name: "Report" }));
   const dialog = await screen.findByRole("dialog", { name: "Report message" });
+  await waitFor(() =>
+    expect(document.activeElement).toBe(
+      screen.getByRole("radio", { name: "Spam" }),
+    ),
+  );
   // A virtualized list must not evict the row owning the draft and outcome.
   expect(keepMounted.mock.calls).toEqual([[root.id]]);
   const submit = screen.getByRole("button", { name: "Submit report" });

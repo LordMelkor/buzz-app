@@ -27,6 +27,7 @@ import {
   pairingAvailable,
   type PairingNative,
 } from "../../features/pairing/client";
+import { writeClipboardText } from "../../shared/clipboard";
 
 export function PairingSettings({
   communities,
@@ -104,7 +105,7 @@ export function PairingSettings({
   }
   async function copy(uri: string) {
     try {
-      await navigator.clipboard.writeText(uri);
+      await writeClipboardText(uri);
       setCopied({ uri, failed: false });
     } catch {
       setCopied({ uri, failed: true });

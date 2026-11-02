@@ -60,3 +60,40 @@ it("claims only PR and issue links whose target the pane can show", () => {
   ])
     expect(parseGitHubReference(url), url).toBeUndefined();
 });
+
+it("identifies the parent pull request for badges without claiming its navigation target", () => {
+  const pull = "https://github.com/block/buzz-app/pull/2043";
+  for (const suffix of [
+    "#top",
+    "#issuecomment-123",
+    "?view=all#discussion_r456",
+    "/commits",
+    "/commits/abcdef1#r456",
+    "/checks?check_run_id=1",
+    "/changes",
+    "/files#diff-0123abcd",
+    "/files/abcdef1..0123456",
+    "/activity/",
+  ]) {
+    expect(parseGitHubReference(`${pull}${suffix}`), suffix).toBeUndefined();
+    expect(
+      parseGitHubReference(`${pull}${suffix}`, { pullSubtargets: true }),
+      suffix,
+    ).toEqual(parseGitHubReference(pull));
+  }
+  for (const url of [
+    "https://github.com.evil.test/block/buzz/pull/23/checks",
+    "https://someone@github.com/block/buzz/pull/23#top",
+    "https://github.com:123/block/buzz/pull/23/checks",
+    "http://github.com/block/buzz/pull/23#top",
+    "https://github.com/block/buzz/pull/0/checks",
+    "https://github.com/block/buzz/pull/2147483648#top",
+    "https://github.com/block/buzz/pull/23oops/checks",
+    "https://github.com/block/buzz/issues/12#issuecomment-123",
+    "https://github.com/block/buzz/issues/12/checks",
+  ])
+    expect(
+      parseGitHubReference(url, { pullSubtargets: true }),
+      url,
+    ).toBeUndefined();
+});

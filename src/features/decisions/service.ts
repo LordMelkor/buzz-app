@@ -34,6 +34,10 @@ export type DecisionRequest = Readonly<{
   questions: Readonly<Record<string, DecisionQuestion>>;
   /** How long to wait, 1 to 30 seconds. Defaults to 30. */
   timeoutMs?: number;
+  /** The Buzz community (its relay URL) the text comes from. A provider
+   * that bills the community, such as Builderlab, refuses a request
+   * without one. */
+  community?: string;
 }>;
 
 export type DecisionAnswer =
@@ -139,8 +143,7 @@ export type DecisionProvider = Readonly<{
   /** Its settings, shown under Settings > Decisions API while it is
    * selected. */
   Settings?: ComponentType<{ active(): boolean }>;
-  /** Lower comes first in Settings, and is preferred when the user has not
-   * chosen. Default 0. */
+  /** Lower comes first in Settings. Default 0. */
   order?: number;
 }>;
 
@@ -153,9 +156,10 @@ export interface Decisions {
   /** That provider's status, or `unavailable` when there is none. */
   status(): DecisionProviderStatus | "unavailable";
   subscribe(listener: () => void): () => void;
-  /** Offers a provider while the calling plugin runs. `Decisions` exposes no
-   * way to choose the provider; the user does in Settings. */
-  registerProvider(provider: DecisionProvider): void;
+  /** Offers a provider while the calling plugin runs, or until the returned
+   * function removes it. `Decisions` exposes no way to choose the provider;
+   * the user does in Settings. */
+  registerProvider(provider: DecisionProvider): () => void;
 }
 declare module "@deepseek-ai/cordis" {
   interface Context {
@@ -188,13 +192,21 @@ export const statusOf = (
   }
 };
 
-/** The provider that answers until the user chooses one in Settings. */
+/** The provider that answers when no other default is registered. */
 export const DEFAULT_DECISION_PROVIDER = "buzz.typesafe/typesafe";
+/** Bundled providers that answer, in this order, while the user has not
+ * chosen one or their choice is not registered. Builderlab registers only
+ * for a signed-in account it allows. */
+export const DEFAULT_DECISION_PROVIDERS: readonly string[] = [
+  "block.builderlab/builderlab",
+  DEFAULT_DECISION_PROVIDER,
+];
 
-/** Answers come from the provider the user chose, or TypeSafe until they
- * choose. Decision text can include private messages, so no other provider
- * gets it without that choice: while the chosen provider is not registered,
- * decisions are unavailable rather than sent somewhere else. */
+/** Answers come from the provider the user chose, or the first registered
+ * default until they choose. Decision text can include private messages, so
+ * no other provider gets it without that choice: while a chosen provider
+ * that is not a default is not registered, decisions are unavailable rather
+ * than sent somewhere else. */
 export class DecisionsService extends Service implements Decisions {
   private readonly registry;
   /** The user's choice in Settings; undefined until they make one. */
@@ -245,16 +257,28 @@ export class DecisionsService extends Service implements Decisions {
       };
     });
   }
-  registerProvider(provider: DecisionProvider): void {
+  registerProvider(provider: DecisionProvider): () => void {
     // Registered under the calling plugin's scope, which `this.ctx` is when
     // a plugin calls through its injected `ctx.decisions`.
-    this.registry.register(this.ctx, provider);
+    return this.registry.register(this.ctx, provider);
   }
   /** Host-only: every registered provider, in Settings order. */
   providers = (): readonly RegisteredProvider[] => this.sorted;
   private current(): RegisteredProvider | undefined {
-    const wanted = this.chosen ?? DEFAULT_DECISION_PROVIDER;
-    return this.sorted.find((provider) => provider.key === wanted);
+    const find = (key: string) =>
+      this.sorted.find((provider) => provider.key === key);
+    const chosen = this.chosen === undefined ? undefined : find(this.chosen);
+    if (chosen) return chosen;
+    if (
+      this.chosen !== undefined &&
+      !DEFAULT_DECISION_PROVIDERS.includes(this.chosen)
+    )
+      return undefined;
+    for (const key of DEFAULT_DECISION_PROVIDERS) {
+      const provider = find(key);
+      if (provider) return provider;
+    }
+    return undefined;
   }
   // Bound, so a caller can pass these on, as React's external stores do.
   backend = (): string | undefined => this.current()?.key;
@@ -354,6 +378,8 @@ export function checkRequest(
   request: DecisionRequest,
 ): DecisionFailure | undefined {
   if (!record(request) || !text(request.state) || !record(request.questions))
+    return "invalid_request";
+  if (request.community !== undefined && !text(request.community))
     return "invalid_request";
   const questions = Object.entries(request.questions);
   if (questions.length === 0 || questions.length > MAX_QUESTIONS)

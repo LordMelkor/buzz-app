@@ -415,8 +415,12 @@ async fn reply(stream: &mut TcpStream, status: u16, message: &str, branded: bool
             404 => "Page not found",
             _ => "Sign-in needs attention",
         };
-        let style = include_str!("page.css");
-        let style_hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(style));
+        let style = include_str!("page.css").replace(
+            "{{font}}",
+            &base64::engine::general_purpose::STANDARD.encode(include_bytes!("inter-latin.woff2")),
+        );
+        let style_hash =
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(style.as_bytes()));
         let script = include_str!("page.js");
         let script_hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script));
         // Replace whole HTML comments so the template is valid without parsing placeholders as CSS/JS.
@@ -432,9 +436,13 @@ async fn reply(stream: &mut TcpStream, status: u16, message: &str, branded: bool
                 "{{brand}}",
                 include_str!("../../../public/builderlab-mark.svg"),
             )
+            .replace(
+                "{{artwork}}",
+                &base64::engine::general_purpose::STANDARD.encode(include_bytes!("cubes.webp")),
+            )
             .replace("{{heading}}", heading)
             .replace("{{message}}", if status == 200 { "" } else { message });
-        let policy = format!("default-src 'none'; style-src 'sha256-{style_hash}'; script-src 'sha256-{script_hash}'; base-uri 'none'; frame-ancestors 'none'");
+        let policy = format!("default-src 'none'; img-src data:; font-src data:; style-src 'sha256-{style_hash}'; script-src 'sha256-{script_hash}'; base-uri 'none'; frame-ancestors 'none'");
         (body, policy)
     } else {
         (

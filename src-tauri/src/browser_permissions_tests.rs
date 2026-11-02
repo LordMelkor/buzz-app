@@ -76,6 +76,9 @@ fn native_command_permissions_isolate_webviews() {
         "federated_identity_sign_in",
         "federated_identity_cancel_sign_in",
         "federated_identity_sign_out",
+        "federated_identity_register",
+        "federated_identity_unregister",
+        "federated_identity_request",
         "relay_socket_connect",
         "relay_socket_start",
         "relay_socket_send",
@@ -131,6 +134,7 @@ fn native_command_permissions_isolate_webviews() {
         "media_download",
         "file_download",
         "media_copy_image",
+        "clipboard_write_text",
         "media_stream_base",
         "get_os_idle_seconds",
         "plugin_import_folder",
@@ -159,6 +163,9 @@ fn native_command_permissions_isolate_webviews() {
         "oauth_callback_wait",
         "oauth_callback_cancel",
         "app_agent_list",
+        "app_agent_set_protection",
+        "app_agent_protection_defaults",
+        "app_agent_set_protection_defaults",
         "app_agent_create",
         "app_agent_portable",
         "app_agent_port",
@@ -312,8 +319,8 @@ fn native_command_permissions_isolate_webviews() {
         );
         assert_eq!(
             invoke(huddle.as_ref(), command, local_origin).is_ok(),
-            command == "media_download",
-            "huddle must only acquire the bounded download command: {command}"
+            matches!(command, "media_download" | "clipboard_write_text"),
+            "huddle must only acquire bounded download and text copy: {command}"
         );
         assert!(invoke(huddle.as_ref(), command, "https://example.org").is_err());
         for origin in [local_origin, "https://example.org", "http://localhost:1430"] {

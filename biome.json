@@ -19,7 +19,8 @@
       "!!src-tauri/target",
       "!!src-tauri/gen",
       "!!target",
-      "!!test-results"
+      "!!test-results",
+      "!!tests/fixtures/design-system/flake-selection-*"
     ]
   },
   "formatter": {
@@ -98,6 +99,14 @@
         "!src/bundled/agents/AgentCreateHeader.tsx"
       ],
       "plugins": ["./src/shared/avatar-source.grit"]
+    },
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "!src/**/*.test.{ts,tsx}",
+        "!src/shared/clipboard.ts"
+      ],
+      "plugins": ["./src/shared/clipboard.grit"]
     },
     {
       "includes": [

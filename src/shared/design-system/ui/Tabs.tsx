@@ -106,6 +106,7 @@ export function Tabs<Value extends string>({
   onReselect,
   trailingAction,
   variant = "chrome",
+  size = "md",
   showSelection = true,
   previewValue,
   arrivalValue,
@@ -131,6 +132,8 @@ export function Tabs<Value extends string>({
   onReselect?: (value: Value) => void;
   trailingAction?: ReactNode;
   variant?: TabsVariant;
+  /** Segmented filter track size; other variants retain their own geometry. */
+  size?: "sm" | "md";
   /** Hide the visual selection for a single-view header; tab semantics remain. */
   showSelection?: boolean;
   /** Incoming tab being previewed before a workspace drop is committed. */
@@ -279,6 +282,7 @@ export function Tabs<Value extends string>({
       data-buzz-ui=""
       className={renderPanel ? "buzz-tab-panels" : "buzz-tabs"}
       data-variant={variant}
+      data-size={size}
       data-selection-hidden={!showSelection || undefined}
       value={value}
       onValueChange={(nextValue) => onValueChange(nextValue as Value)}
@@ -287,6 +291,7 @@ export function Tabs<Value extends string>({
         <div
           className="buzz-tabs"
           data-variant={variant}
+          data-size={size}
           data-selection-hidden={!showSelection || undefined}
         >
           {strip}

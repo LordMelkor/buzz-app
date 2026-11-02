@@ -455,6 +455,38 @@ it("opens the conversation's transcript when opened from its activity, once", as
   expect(screen.queryByText("Two files.")).toBeNull();
 });
 
+it("opens a channel's session transcript when opened from one of its threads' activity", async () => {
+  // A Solo chat, DM or channel-scoped agent keeps one session per channel, so
+  // the thread's own lookup finds it only after the profile is shown.
+  localStorage.setItem(
+    "buzz.claude-code.sessions.v1",
+    JSON.stringify({
+      [agent().key]: { channel: { id: "kept", seen: 0, at: 2 } },
+    }),
+  );
+  const transcript = JSON.stringify({
+    type: "assistant",
+    uuid: "u1",
+    timestamp: "2026-10-09T10:00:05Z",
+    message: { content: [{ type: "text", text: "Two files." }] },
+  });
+  const Activity = tab(
+    installed({ files: { "./-Users-me--buzz/kept.jsonl": transcript } }).type,
+    1,
+  );
+  const done = vi.fn();
+  render(
+    <Activity
+      agent={agent()}
+      save={vi.fn()}
+      conversation={{ channelId: "channel", rootId: "e".repeat(64) }}
+      initialTranscript={{ opening: 1, done }}
+    />,
+  );
+  expect(await screen.findByText("Two files.")).toBeVisible();
+  expect(done).toHaveBeenCalledTimes(1);
+});
+
 it("shows the transcript and that sessions may be missing when some history cannot be read", async () => {
   localStorage.setItem(
     "buzz.claude-code.sessions.v1",
@@ -1482,4 +1514,30 @@ it("keeps same-channel recent threads visibly distinguishable", () => {
       expect.stringContaining("Thread ffffffff"),
     ]),
   );
+});
+
+it("focuses the code only when its compact sign-in disclosure is expanded", async () => {
+  const { type } = installed({ loggedIn: false });
+  const Model = type.CreateModel;
+  if (!Model) throw new Error("Missing model controls");
+  const user = userEvent.setup();
+  render(<Model config={DEFAULT_CONFIG} onChange={vi.fn()} disabled={false} />);
+  await user.click(await screen.findByRole("button", { name: "Sign in" }));
+  const dialog = await screen.findByRole("dialog", {
+    name: "Sign in to Claude",
+  });
+  await user.click(within(dialog).getByRole("button", { name: "Sign in" }));
+  const expand = await screen.findByRole("button", { name: "Enter a code" });
+  expect(screen.queryByLabelText("Sign-in code")).toBeNull();
+  await user.click(expand);
+  const code = await screen.findByLabelText("Sign-in code");
+  await waitFor(() => expect(code).toHaveFocus());
+  await user.type(code, "retained-code");
+  await user.click(expand);
+  expect(screen.queryByLabelText("Sign-in code")).toBeNull();
+  await user.click(expand);
+  await waitFor(() =>
+    expect(screen.getByLabelText("Sign-in code")).toHaveFocus(),
+  );
+  expect(screen.getByLabelText("Sign-in code")).toHaveValue("retained-code");
 });

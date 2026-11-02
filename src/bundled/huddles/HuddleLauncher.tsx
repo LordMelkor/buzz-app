@@ -1,3 +1,4 @@
+import type { ChatMenuProps } from "../../features/conversation/service";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ChannelLauncherProps } from "../../features/panels/service";
 import type { RelayData } from "../../features/relay/service";
@@ -22,12 +23,64 @@ import {
 } from "../../shared/design-system/ui/Menu";
 import { ChannelMembersDialog } from "../channels/ChannelMembersDialog";
 import styles from "./Huddles.module.css";
+import { writeClipboardText } from "../../shared/clipboard";
 
 type Props = Pick<
   ChannelLauncherProps,
   "context" | "available" | "openMembers"
-> & { relay: RelayData; huddles: Huddles; showWindow(): Promise<void> };
+> & {
+  relay: RelayData;
+  huddles: Huddles;
+  showWindow(): Promise<void>;
+  menu?: boolean;
+};
 const focusPlayer = () => document.getElementById("huddle-capsule")?.focus();
+
+/** The same call action, contributed to Solo's existing action menus. */
+export function SoloHuddleMenu({
+  session,
+  channelId,
+  relay,
+  huddles,
+  showWindow,
+}: ChatMenuProps & Pick<Props, "relay" | "huddles" | "showWindow">) {
+  const connection = useRelayConnection(relay);
+  const list = useSyncExternalStore(
+    session.channels.subscribeList,
+    session.channels.list,
+  );
+  const channel = list.channels.find((item) => item.id === channelId);
+  if (
+    connection.session !== session ||
+    !connection.scope ||
+    !connection.viewer ||
+    channel?.channelType !== "solo" ||
+    channel.archived ||
+    channel.readOnly ||
+    channel.cached
+  )
+    return null;
+  const context = {
+    scope: connection.scope,
+    viewer: connection.viewer,
+    channelId,
+    channelName: channel.name,
+    relayUrl: connection.scope
+      .slice(0, -(connection.viewer.length + 1))
+      .replace(/^https:/, "wss:")
+      .replace(/^http:/, "ws:"),
+  };
+  return (
+    <HuddleLauncher
+      menu
+      context={context}
+      relay={relay}
+      huddles={huddles}
+      showWindow={showWindow}
+      available={() => relay.snapshot() === connection}
+    />
+  );
+}
 
 export function HuddleLauncher(props: Props) {
   const { context, available, huddles } = props;
@@ -53,6 +106,7 @@ export function HuddleLauncher(props: Props) {
     call.destination.viewer === context.viewer &&
     call.destination.channelId === context.channelId;
   if (parent?.archived) return null;
+  if (props.menu && active) return null;
   if (here && call.id)
     return <ActiveHuddle key={call.id} {...props} callId={call.id} />;
   const joinable =
@@ -63,8 +117,32 @@ export function HuddleLauncher(props: Props) {
       : active
         ? "Show active Huddle"
         : joinable
-          ? `Join active huddle (${incoming.participants} ${incoming.participants === 1 ? "participant" : "participants"})`
-          : "Start or join a huddle";
+          ? parent?.channelType === "solo"
+            ? "Join huddle"
+            : `Join active huddle (${incoming.participants} ${incoming.participants === 1 ? "participant" : "participants"})`
+          : parent?.channelType === "solo"
+            ? "Start a huddle"
+            : "Start or join a huddle";
+  const activate = () => {
+    if (!available()) return;
+    if (call.phase === "connecting") void huddles.leave();
+    else if (active) {
+      if (document.getElementById("huddle-capsule")) focusPlayer();
+      else void props.showWindow().catch(() => {});
+    } else if (joinable) void huddles.join(context, incoming.id);
+    else void huddles.start(context);
+  };
+  if (props.menu)
+    return (
+      <MenuItem onClick={activate}>
+        <MenuIcon>
+          <HeadphonesIcon size={16} />
+        </MenuIcon>
+        {label}
+      </MenuItem>
+    );
+  // Keep active/incoming calls visible; idle Solo calls live in Chat actions.
+  if (parent?.channelType === "solo" && !active && !joinable) return null;
   return (
     <span className={joinable ? styles.activeLauncher : undefined}>
       <IconButton
@@ -74,15 +152,7 @@ export function HuddleLauncher(props: Props) {
         style={joinable ? { color: "var(--status-online)" } : undefined}
         aria-label={label}
         title={label}
-        onClick={() => {
-          if (!available()) return;
-          if (call.phase === "connecting") void huddles.leave();
-          else if (active) {
-            if (document.getElementById("huddle-capsule")) focusPlayer();
-            else void props.showWindow().catch(() => {});
-          } else if (joinable) void huddles.join(context, incoming.id);
-          else void huddles.start(context);
-        }}
+        onClick={activate}
       />
     </span>
   );
@@ -189,7 +259,7 @@ function ActiveHuddle({
                 if (!current()) return;
                 setError(false);
                 try {
-                  await navigator.clipboard.writeText(link);
+                  await writeClipboardText(link);
                   setCopied(true);
                 } catch {
                   setError(true);

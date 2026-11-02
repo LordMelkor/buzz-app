@@ -252,3 +252,67 @@ it("the actual workspace receives session-bound authority, never the page's reus
     await ctx.fiber.dispose();
   }
 });
+
+it("animates Connecting only while a connection is actually under way", async () => {
+  const { render, screen } = await import("@testing-library/react");
+  const retry = vi.fn();
+  const controller = createNavigationController(createMemoryHistory());
+  const page = (snapshot: Partial<RelaySnapshot>) => {
+    const relay = {
+      snapshot: () => ({ scope: "s", generation: 0, ...snapshot }),
+      retry,
+    } as unknown as RelayData;
+    return (
+      <ChannelsPage
+        relay={relay}
+        panels={{} as Panels}
+        navigator={controller.navigation}
+      />
+    );
+  };
+  vi.useFakeTimers();
+  try {
+    // A refusal after cached content opened the visit: nothing is retrying.
+    const view = render(page({ status: "error" }));
+    expect(screen.getByRole("alert").textContent).toContain("Can’t connect");
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(screen.queryByText("Connecting…")).toBeNull();
+    act(() => screen.getByRole("button", { name: "Try again" }).click());
+    expect(retry).toHaveBeenCalledOnce();
+    for (const working of [
+      { status: "connecting" },
+      { status: "error", retrying: true },
+    ] as const) {
+      view.rerender(page(working));
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(screen.getByRole("status").textContent).toContain("Connecting…");
+      expect(screen.queryByRole("alert")).toBeNull();
+    }
+    // Once the visit has settled no deadline ends the wait: between retries,
+    // say it can't connect and keeps trying instead of animating forever.
+    act(() => {
+      controller.complete(controller.navigation.snapshot().attempt, {
+        status: "opened",
+      });
+    });
+    view.rerender(page({ status: "error", retrying: true }));
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(screen.getByRole("alert").textContent).toContain(
+      "We’ll keep trying.",
+    );
+    expect(screen.queryByText("Connecting…")).toBeNull();
+    view.rerender(page({ status: "connecting" }));
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(screen.getByRole("status").textContent).toContain("Connecting…");
+    // A refusal, e.g. after cached content opened, is about access.
+    view.rerender(page({ status: "error", denied: true }));
+    const denied = screen.getByRole("alert");
+    expect(denied.textContent).toContain("You don’t have access to this");
+    expect(denied.textContent).not.toContain("Check your connection");
+    retry.mockClear();
+    act(() => screen.getByRole("button", { name: "Try again" }).click());
+    expect(retry).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});

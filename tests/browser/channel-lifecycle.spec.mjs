@@ -1,5 +1,6 @@
 import { openChannelDetails } from "./channel-details.mjs";
-import { openPage } from "./navigation.mjs";
+import { openPage, settlePanelMotion } from "./navigation.mjs";
+import { frames } from "./timeline.mjs";
 import { test, expect } from "./fixture.mjs";
 async function openLifecycle(page, app) {
   await page.goto(app.origin);
@@ -124,9 +125,7 @@ test("archive confirmation returns focus on cancel and retains the conversation 
     name: "Archive channel: Lifecycle channel",
   });
   await expect(dialog).toBeVisible();
-  await expect(
-    dialog.getByRole("button", { name: "Archive channel" }),
-  ).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   await dialog.screenshot({
     path: testInfo.outputPath("lifecycle-confirmation.png"),
   });
@@ -169,7 +168,7 @@ test("archive confirmation returns focus on cancel and retains the conversation 
       name: "Message #Lifecycle channel",
       exact: true,
     }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   expect(app.report.lifecyclePublications).toHaveLength(1);
   expect(app.report.lifecyclePublications[0].kind).toBe(9002);
   expect(app.report.unexpected).toEqual([]);
@@ -344,8 +343,12 @@ for (const action of ["archive", "hide"]) {
       await expect(destination).toBeVisible();
       if (action === "archive") await expect(page).toHaveURL(exactUrl);
       await expect(rows).toHaveCount(0);
-      if (action === "archive") await expect(composer).toBeDisabled();
-      else await expect(composer).toHaveCount(0);
+      if (action === "archive") {
+        await expect(composer).toHaveCount(0);
+        await expect(
+          page.getByRole("region", { name: "Archived channel", exact: true }),
+        ).toHaveText("This channel is archived");
+      } else await expect(composer).toHaveCount(0);
       await page.reload();
       await expect(destination).toBeVisible();
       if (action === "archive") {
@@ -356,8 +359,12 @@ for (const action of ["archive", "hide"]) {
         ).toBeVisible();
       }
       await expect(rows).toHaveCount(0);
-      if (action === "archive") await expect(composer).toBeDisabled();
-      else await expect(composer).toHaveCount(0);
+      if (action === "archive") {
+        await expect(composer).toHaveCount(0);
+        await expect(
+          page.getByRole("region", { name: "Archived channel", exact: true }),
+        ).toHaveText("This channel is archived");
+      } else await expect(composer).toHaveCount(0);
       expect(
         app.report.lifecyclePublications.map((event) => event.kind),
       ).toEqual([action === "archive" ? 9002 : 41012]);
@@ -505,12 +512,18 @@ test.describe("Solo chat lifecycle", () => {
     await expect(page).not.toHaveURL(url);
     // The retained address must still support archived-history recovery.
     await page.goto(url);
-    await expect(composer).toBeDisabled();
+    await expect(
+      page.getByRole("region", { name: "Archived chat", exact: true }),
+    ).toHaveText("This chat is archived");
+    await expect(composer).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: "Share access", exact: true }),
     ).toHaveCount(0);
     await page.reload();
-    await expect(composer).toBeDisabled();
+    await expect(
+      page.getByRole("region", { name: "Archived chat", exact: true }),
+    ).toHaveText("This chat is archived");
+    await expect(composer).toHaveCount(0);
     await expect(page).toHaveURL(url);
     await page
       .getByRole("navigation", { name: "Subscribed channels" })
@@ -534,7 +547,10 @@ test.describe("Solo chat lifecycle", () => {
     await result.click();
     await expect(search).toHaveCount(0);
     await expect(page).toHaveURL(url);
-    await expect(composer).toBeDisabled();
+    await expect(
+      page.getByRole("region", { name: "Archived chat", exact: true }),
+    ).toHaveText("This chat is archived");
+    await expect(composer).toHaveCount(0);
     await header.click();
     await expect(
       page.getByRole("button", { name: "View members" }),
@@ -583,6 +599,265 @@ test.describe("Solo chat lifecycle", () => {
       ],
       [9008, [["h", "11111111-1111-4111-8111-111111111111"]]],
     ]);
+    expect(app.report.unexpected).toEqual([]);
+  });
+});
+
+// Native focus after a signed remote update removes a form is a browser contract.
+// Each surface exercises editor, toolbar and unrelated focus in one lifecycle.
+test.describe("remote archive focus", () => {
+  test.use({ readState: true, threadUnread: true });
+  for (const surface of ["channel", "thread"]) {
+    test(`remote archive preserves ${surface} focus and offers active unsent text for copying`, async ({
+      page,
+      app,
+    }, testInfo) => {
+      // Intercept only the OS clipboard boundary; the app uses its shared owner.
+      await page.addInitScript(() => {
+        window.copiedArchiveText = [];
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            writeText: async (text) => window.copiedArchiveText.push(text),
+          },
+        });
+      });
+      await page.goto(app.origin);
+      await openPage(page, "Messages");
+      await page
+        .getByRole("navigation", { name: "Subscribed channels" })
+        .locator('button[data-channel-id="alpha"]')
+        .click();
+      const panel = page.getByRole("complementary", {
+        name: "Thread",
+        exact: true,
+      });
+      if (surface === "thread") {
+        const root = app.histories
+          .get("primary/alpha")
+          .find((event) => event.content === "Thread root 0");
+        await page
+          .locator(`[data-channel-timeline] [data-message-id="${root.id}"]`)
+          .getByRole("button", { name: /^View thread:/ })
+          .click();
+      }
+      const owner =
+        surface === "thread" ? panel : page.locator("[data-channel-history]");
+      const history = owner.getByRole("region", {
+        name:
+          surface === "thread" ? "Thread messages" : "Channel message history",
+        exact: true,
+      });
+      const editor =
+        surface === "thread"
+          ? panel.getByRole("textbox", { name: "Reply to thread", exact: true })
+          : page.getByRole("textbox", { name: "Message #Alpha", exact: true });
+      const form = (surface === "thread" ? panel : page).locator(
+        "[data-composer-surface]",
+      );
+      const notice = owner.getByRole("region", {
+        name: "Archived channel",
+        exact: true,
+      });
+      const elsewhere = page.getByRole("button", {
+        name: "Search Buzz",
+        exact: true,
+      });
+      if (surface === "thread") {
+        await settlePanelMotion(page);
+        await expect(history).toHaveAttribute("aria-busy", "false");
+      }
+      let timestamp = Math.floor(Date.now() / 1000);
+      for (const focus of ["editor", "toolbar", "empty", "elsewhere"]) {
+        await expect(editor).toBeVisible();
+        const draft =
+          focus === "empty" ? "" : `Unsent ${surface} **${focus}** text`;
+        await editor.fill(draft);
+        await expect(editor).toHaveJSProperty("value", draft);
+        const target =
+          focus === "elsewhere"
+            ? elsewhere
+            : focus === "toolbar"
+              ? form.getByRole("button", { name: "Attach files", exact: true })
+              : editor;
+        await target.focus();
+        await expect(target).toBeFocused();
+        app.relay.publish(
+          "primary",
+          app.signRelay({
+            kind: 39000,
+            tags: [
+              ["d", "alpha"],
+              ["name", "Alpha"],
+              ["t", "stream"],
+              ["archived", "true"],
+            ],
+            content: "",
+            created_at: ++timestamp,
+          }),
+        );
+        await expect(notice).toHaveText("This channel is archived");
+        await expect(editor).toHaveCount(0);
+        await frames(page);
+        await expect(focus === "elsewhere" ? elsewhere : history).toBeFocused();
+        const copy = page.getByRole("button", {
+          name: "Copy text",
+          exact: true,
+        });
+        if (draft && focus !== "elsewhere") {
+          await expect(copy).toBeInViewport({ ratio: 1 });
+          if (focus === "editor") {
+            const toast = page
+              .locator("[data-sonner-toast]")
+              .filter({ has: copy });
+            await expect(toast).toHaveAttribute("data-mounted", "true");
+            await toast.evaluate((node) =>
+              Promise.all(
+                node
+                  .getAnimations({ subtree: true })
+                  .map((animation) => animation.finished.catch(() => {})),
+              ),
+            );
+            await page.screenshot({
+              path: testInfo.outputPath(`${surface}-archive-copy.png`),
+            });
+            // The toast action remains reachable with the keyboard after handoff.
+            await copy.focus();
+            await copy.press("Enter");
+          } else {
+            await copy.click();
+          }
+          await expect
+            .poll(() => page.evaluate(() => window.copiedArchiveText.at(-1)))
+            .toBe(draft);
+          const success = page.getByRole("dialog", {
+            name: "Text copied",
+            exact: true,
+          });
+          await expect(success).toBeVisible();
+          await success
+            .getByRole("button", { name: "Dismiss notification", exact: true })
+            .click();
+        } else {
+          await expect(copy).toHaveCount(0);
+        }
+        const retainedFocus = focus === "elsewhere" ? elsewhere : history;
+        await retainedFocus.focus();
+        await expect(retainedFocus).toBeFocused();
+        app.relay.publish(
+          "primary",
+          app.signRelay({
+            kind: 39000,
+            tags: [
+              ["d", "alpha"],
+              ["name", "Alpha"],
+              ["t", "stream"],
+            ],
+            content: "",
+            created_at: ++timestamp,
+          }),
+        );
+        await expect(notice).toHaveCount(0);
+        await expect(editor).toHaveJSProperty("value", draft);
+        await frames(page);
+        await expect(retainedFocus).toBeFocused();
+      }
+      expect(app.report.lifecyclePublications ?? []).toHaveLength(0);
+      expect(app.report.unexpected).toEqual([]);
+    });
+  }
+});
+
+// A fresh composer must not override native focus in an already-open archived Solo visit.
+test.describe("remote Solo unarchive", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  test.use({
+    soloChannels: [id],
+    lifecycleVisibility: { archived: [id], hidden: [] },
+  });
+  test("retains history and outside focus when remote unarchive restores composition", async ({
+    page,
+    app,
+  }) => {
+    await page.goto(app.origin);
+    await openPage(page, "Messages");
+    await page
+      .getByRole("button", { name: "Search Buzz", exact: true })
+      .click();
+    const search = page.getByRole("dialog", {
+      name: "Search Buzz",
+      exact: true,
+    });
+    await search
+      .getByRole("combobox", { name: "Search Buzz" })
+      .fill("Lifecycle channel");
+    await search
+      .getByRole("group", { name: "Chats" })
+      .getByRole("option", { name: /Lifecycle channel/ })
+      .click();
+    const notice = page.getByRole("region", {
+      name: "Archived chat",
+      exact: true,
+    });
+    await expect(notice).toHaveText("This chat is archived");
+    const history = page.getByRole("region", {
+      name: "Channel message history",
+      exact: true,
+    });
+    // This minimal archived chat is empty; its settled empty state ends startup.
+    await expect(
+      history.getByRole("heading", { name: "No messages yet.", exact: true }),
+    ).toBeVisible();
+    await expect(history).not.toHaveAttribute(
+      "data-buzz-launch-pending",
+      "settling",
+    );
+    const outside = page.getByRole("button", {
+      name: "Search Buzz",
+      exact: true,
+    });
+    const editor = page.getByRole("textbox", {
+      name: "Message your agents",
+      exact: true,
+    });
+    const tags = [
+      ["d", id],
+      ["name", "Lifecycle channel"],
+      ["t", "stream"],
+      ["t", "buzz.solo"],
+      ["private"],
+      ["P", app.channelMetadata(id, []).pubkey],
+    ];
+    let timestamp = Math.floor(Date.now() / 1000);
+    for (const target of [history, outside]) {
+      await target.focus();
+      await expect(target).toBeFocused();
+      app.relay.publish(
+        "primary",
+        app.signRelay({
+          kind: 39000,
+          tags,
+          content: "",
+          created_at: ++timestamp,
+        }),
+      );
+      await expect(notice).toHaveCount(0);
+      await expect(editor).toBeVisible();
+      await frames(page);
+      await expect(target).toBeFocused();
+      await outside.focus();
+      app.relay.publish(
+        "primary",
+        app.signRelay({
+          kind: 39000,
+          tags: [...tags, ["archived", "true"]],
+          content: "",
+          created_at: ++timestamp,
+        }),
+      );
+      await expect(notice).toHaveText("This chat is archived");
+    }
+    expect(app.report.lifecyclePublications ?? []).toHaveLength(0);
     expect(app.report.unexpected).toEqual([]);
   });
 });

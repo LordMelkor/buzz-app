@@ -21,6 +21,7 @@ mockWindows("main");
 mockIPC((command) => {
   calls.push(command);
   if (command === "identity_restore") return restored;
+  if (command === "identity_legacy_available") return false;
   if (command.startsWith("plugin:window|")) return;
   throw new Error(`Unexpected fixture command: ${command}`);
 });

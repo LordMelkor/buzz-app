@@ -3854,3 +3854,164 @@ it("shows no agent mark or owner for a person", () => {
     view.unmount();
   }
 });
+
+it("marks an edited body after its last line, and leaves an unedited one unmarked", () => {
+  const render = (content: string, edited: boolean) =>
+    renderDom(
+      <MessageRow
+        row={{ ...row, content, ...(edited ? { edited: true as const } : {}) }}
+        profile={undefined}
+        media={() => undefined}
+        onOpenLink={() => false}
+        day={false}
+        retry={undefined}
+      />,
+    );
+  try {
+    render("First\n\nHi how are ya.", true);
+    const inline = screen.getByText("(edited)");
+    expect(inline.parentElement?.tagName).toBe("P");
+    expect(inline.parentElement).toHaveTextContent("Hi how are ya. (edited)");
+    expect(inline.parentElement?.nextElementSibling).toBeNull();
+    cleanup();
+
+    render("Intro\n\n```\ncode\n```", true);
+    const block = screen.getByText("(edited)");
+    expect(block.previousElementSibling?.tagName).toBe("PRE");
+    expect(block.closest("pre, p")).toBeNull();
+    cleanup();
+
+    render("See the note.[^1]\n\n[^1]: Footnote text.", true);
+    expect(screen.getByText("(edited)").previousElementSibling?.tagName).toBe(
+      "SECTION",
+    );
+    cleanup();
+
+    render("Read [the doc][d].\n\n[d]: https://example.com", true);
+    expect(screen.getByText("(edited)").parentElement?.tagName).toBe("P");
+    cleanup();
+
+    render("- one\n- two", true);
+    const item = screen.getByText("(edited)").parentElement;
+    expect(item?.tagName).toBe("LI");
+    expect(item).toHaveTextContent("two (edited)");
+    cleanup();
+
+    render("> quoted line", true);
+    const quoted = screen.getByText("(edited)").parentElement;
+    expect(quoted?.tagName).toBe("P");
+    expect(quoted?.parentElement?.tagName).toBe("BLOCKQUOTE");
+    cleanup();
+
+    // The unboxed table styling selects `table:first-child + .edited:last-child`.
+    render("| Day | Room |\n| --- | --- |\n| Thu | 4B |", true);
+    const afterTable = screen.getByText("(edited)");
+    expect(afterTable.previousElementSibling?.tagName).toBe("TABLE");
+    expect(afterTable.parentElement?.firstElementChild?.tagName).toBe("TABLE");
+    expect(afterTable.nextElementSibling).toBeNull();
+    cleanup();
+
+    render("🎉", true);
+    expect(screen.getByText("(edited)").parentElement).toHaveAttribute(
+      "data-single-emoji",
+    );
+    cleanup();
+
+    renderDom(
+      <MessageRow
+        row={{
+          ...row,
+          content: "",
+          edited: true,
+          attachments: [
+            { url: "https://example.com/notes.txt", kind: "file" as const },
+          ],
+        }}
+        profile={undefined}
+        media={(url) => url}
+        onOpenLink={() => false}
+        day={false}
+        retry={undefined}
+      />,
+    );
+    expect(screen.getByText("(edited)").previousElementSibling).toHaveAttribute(
+      "data-message-attachments",
+    );
+    cleanup();
+
+    renderDom(
+      <MessageRow
+        row={{
+          ...row,
+          content: "+changed",
+          edited: true,
+          diff: { filePath: "a.ts", truncated: false },
+        }}
+        profile={undefined}
+        media={() => undefined}
+        onOpenLink={() => false}
+        day={false}
+        retry={undefined}
+      />,
+    );
+    expect(screen.getByText("(edited)").closest("pre")).toBeNull();
+    cleanup();
+
+    renderDom(
+      <MessageRow
+        row={{ ...row, content: "Done", edited: true, audience: "agents" }}
+        profile={{ name: "Morgarita" }}
+        media={() => undefined}
+        onOpenLink={() => false}
+        day={false}
+        retry={undefined}
+      />,
+    );
+    const line = screen.getByRole("button", {
+      name: "Morgarita: Done (edited)",
+    });
+    expect(within(line).getByText("(edited)")).toBeInTheDocument();
+    fireEvent.click(line);
+    expect(screen.getAllByText("(edited)")).toHaveLength(1);
+    expect(line).not.toContainElement(screen.getByText("(edited)"));
+    cleanup();
+
+    const none: never[] = [];
+    const cards = [
+      {
+        id: "card",
+        title: "Card",
+        key: "fixture.card:card",
+        pluginId: "fixture.card",
+        revision: "one",
+        matches: () => true,
+        component: () => <p>Plugin card</p>,
+      },
+    ];
+    renderDom(
+      <MessageRow
+        row={{ ...row, content: "Card body", edited: true }}
+        profile={undefined}
+        media={() => undefined}
+        onOpenLink={() => false}
+        day={false}
+        retry={undefined}
+        extensions={{
+          tools: { snapshot: () => none, subscribe: () => () => {} },
+          inline: { snapshot: () => none, subscribe: () => () => {} },
+          messages: { snapshot: () => cards, subscribe: () => () => {} },
+        }}
+      />,
+    );
+    // Inside the card's bubble, so above any reactions it holds.
+    expect(screen.getByText("(edited)").parentElement).toBe(
+      screen.getByText("Plugin card").closest("[data-message-action-anchor]"),
+    );
+    cleanup();
+
+    render("Hi how are ya.", false);
+    expect(screen.queryByText("(edited)")).toBeNull();
+  } finally {
+    cleanup();
+  }
+});

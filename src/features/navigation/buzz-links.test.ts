@@ -185,3 +185,87 @@ it.each(["//", "/extra", "/%2F", "/./", "/extra/..", "/%2e/"])(
     ).toBeNull();
   },
 );
+
+const plugin = "buzz://plugin?id=com.example.catalog";
+it("parses plugin page links into a plugin target bound to the receiving community", () => {
+  expect(parseBuzzLink(plugin)).toEqual({
+    format: "plugin",
+    pluginId: "com.example.catalog",
+  });
+  expect(buzzLinkKind(plugin)).toBe("buzz");
+  expect(buzzLinkTarget(plugin, scope)).toEqual({
+    version: 1,
+    kind: "plugin",
+    pluginId: "com.example.catalog",
+    scope,
+  });
+  const full = `${plugin}&page=detail&route.slug=hello%20world&route.tab=notes`;
+  expect(parseBuzzLink(full)).toEqual({
+    format: "plugin",
+    pluginId: "com.example.catalog",
+    pageId: "detail",
+    params: { slug: "hello world", tab: "notes" },
+  });
+  expect(buzzLinkTarget(full, scope)).toEqual({
+    version: 1,
+    kind: "plugin",
+    pluginId: "com.example.catalog",
+    pageId: "detail",
+    params: { slug: "hello world", tab: "notes" },
+    scope,
+  });
+});
+it("treats a plugin link that only overflows once scoped as unopenable", () => {
+  const params = (last: number) =>
+    [...Array(7)].map((_, i) => `&route.p${i}=${"a".repeat(1024)}`).join("") +
+    `&route.last=${"a".repeat(last)}`;
+  let last = 1024;
+  while (!buzzLinkTarget(plugin + params(last), scope)) last -= 1;
+  const link = plugin + params(last);
+  expect(buzzLinkTarget(link, scope)).not.toBeNull();
+  const wide = {
+    ...scope,
+    communityOrigin: `https://${"c".repeat(200)}.example`,
+  };
+  expect(() => buzzLinkTarget(link, wide)).not.toThrow();
+  expect(buzzLinkTarget(link, wide)).toBeNull();
+});
+
+it("ignores unknown plugin link parameters and accepts the Windows root slash", () => {
+  const expected = { format: "plugin", pluginId: "com.example.catalog" };
+  expect(parseBuzzLink(`${plugin}&foo=1&foo=2&route=x`)).toEqual(expected);
+  expect(parseBuzzLink(plugin.replace("plugin?", "plugin/?"))).toEqual(
+    expected,
+  );
+  expect(parseBuzzLink(plugin.replace("buzz:", "BUZZ:"))).toEqual(expected);
+});
+it.each([
+  "buzz://plugin",
+  "buzz://plugin?page=detail",
+  "buzz://plugin?id=",
+  `${plugin}&id=other`,
+  `${plugin}&page=`,
+  `${plugin}&page=a&page=b`,
+  `${plugin}&route.slug=a&route.slug=b`,
+  `${plugin}&route.=a`,
+  `${plugin}&route.bad%20key=a`,
+  `${plugin}&route.slug=${"x".repeat(1025)}`,
+  `${plugin}&${Array.from({ length: 17 }, (_, i) => `route.k${i}=v`).join("&")}`,
+  "buzz://plugin?id=Com.Example",
+  "buzz://plugin?id=.hidden",
+  "buzz://plugin?id=has%20space",
+  "buzz://plugin?id=a/b",
+  `buzz://plugin?id=${"a".repeat(129)}`,
+  `${plugin}&page=Detail`,
+  `${plugin}#fragment`,
+  `${plugin}&route.__proto__=x`,
+  "buzz://plugin:443?id=com.example.catalog",
+  "buzz://user@plugin?id=com.example.catalog",
+  "buzz://plugin/extra?id=com.example.catalog",
+  "buzz://plugin//?id=com.example.catalog",
+  "buzz://plugin/./?id=com.example.catalog",
+  "buzz://plugins?id=com.example.catalog",
+])("rejects a malformed plugin link: %s", (href) => {
+  expect(parseBuzzLink(href), href).toBeNull();
+  expect(buzzLinkTarget(href, scope)).toBeNull();
+});

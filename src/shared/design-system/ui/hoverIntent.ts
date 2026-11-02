@@ -4,19 +4,19 @@
  * DESIGN.md "Hover timing" assigns each surface to one of these buckets.
  */
 /** Hints that add information or name an unfamiliar icon. */
-export const HELPFUL_HINT_REST_MS = 500;
+export const HELPFUL_HINT_REST_MS = 250;
 /** Hints naming an icon whose meaning is already obvious. */
-export const FAMILIAR_HINT_REST_MS = 1500;
+export const FAMILIAR_HINT_REST_MS = 500;
 /** Rich previews cover more of the page, so they wait longer than a hint. */
-export const PREVIEW_REST_MS = 600;
+export const PREVIEW_REST_MS = 300;
 /** Controls that expand in place under the pointer, such as video volume. */
-export const HOVER_CONTROL_REST_MS = 100;
+export const HOVER_CONTROL_REST_MS = 50;
 
 /** A bucket for a popover or menu that opens on hover. */
 export type HoverOpen = "preview" | "control";
 
 /** Rest before opening and grace before closing, per hover-opening bucket. */
 export const hoverOpenTiming = {
-  preview: { delay: PREVIEW_REST_MS, closeDelay: 150 },
-  control: { delay: HOVER_CONTROL_REST_MS, closeDelay: 100 },
+  preview: { delay: PREVIEW_REST_MS, closeDelay: 75 },
+  control: { delay: HOVER_CONTROL_REST_MS, closeDelay: 50 },
 } satisfies Record<HoverOpen, { delay: number; closeDelay: number }>;

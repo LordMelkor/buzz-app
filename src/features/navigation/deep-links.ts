@@ -23,10 +23,28 @@ export type DeepLinkHost = Readonly<{
   navigation: Pick<Navigation, "open" | "snapshot" | "subscribe">;
   /** Host-only: record an ingress that produced no destination. */
   fail(reason: OpenFailure, retry?: () => Promise<OpenResult>): void;
+  /** Explain a link that names no Buzz destination. */
+  rejected(): void;
+  /** A newer link names a destination, so an earlier rejection's notice is stale. */
+  accepted(): void;
+  /** Whether Inbox can open, as the router will decide once startup settles. */
+  inbox: Readonly<{
+    status(): "loading" | "on" | "off";
+    subscribe(listener: () => void): () => void;
+  }>;
   /** Invite presentation belongs to the community switcher, not navigation. */
   invite?: (invite: InviteLink, viewer: string) => void;
 }>;
 type Client = Pick<ClientSnapshot, "status" | "viewer" | "selected">;
+
+// Require the canonical scheme here. The native URL parser may already have
+// normalized its case before this bridge receives it. Every address outside the
+// Buzz link grammar, unknown hosts included, parses to null; the app has no link
+// form of its own beyond the Buzz ones.
+const buzzLink = (url: unknown) =>
+  typeof url === "string" && url.startsWith("buzz:")
+    ? parseBuzzLink(url)
+    : null;
 
 /** Decide what one OS URL means for the signed-in client. The OS ingress accepts
  * the Buzz link forms, `buzz://message?channel=&id=[&thread=]` and
@@ -37,14 +55,7 @@ export function deepLinkStep(
   url: string,
   client: Pick<Client, "viewer" | "selected">,
 ): DeepLinkStep {
-  // Require the canonical scheme here. The native URL parser may already have
-  // normalized its case before this bridge receives it.
-  if (typeof url !== "string" || !url.startsWith("buzz:"))
-    return { fail: "invalid-target" };
-  const link = parseBuzzLink(url);
-  // Every address outside the Buzz link grammar, unknown hosts included, parses
-  // to null and fails here rather than being dropped; the app has no link form
-  // of its own beyond the Buzz ones.
+  const link = buzzLink(url);
   if (!link) return { fail: "invalid-target" };
   try {
     if (!client.viewer || !client.selected) return { fail: "unavailable" };
@@ -72,7 +83,7 @@ export function deepLinkStep(
     return {
       open: parseOpenTarget({
         version: 1,
-        kind: "conversation",
+        kind: link.format === "plugin" ? "plugin" : "conversation",
         scope: {
           viewer: client.viewer,
           communityOrigin: communityDestination(client.selected).url,
@@ -101,6 +112,10 @@ export function bindDeepLinks(
     | {
         url: string;
         invite: InviteLink | null;
+        /** Names no destination, so no account or community binds it. */
+        invalid: boolean;
+        /** Read before the client was first ready: it launched the app. */
+        launch: boolean;
         viewer: string | undefined;
         selected: string | null;
         reported: boolean;
@@ -108,11 +123,48 @@ export function bindDeepLinks(
     | undefined;
   let attempt = host.navigation.snapshot().attempt;
   let client = communities.snapshot();
+  const isReady = (client: Client) =>
+    client.status === "ready" && !!client.viewer && !!client.selected;
+  // Whether the client has been ready since binding: the app is running.
+  let running = isReady(client);
   let clientEpoch = 0;
+  // A malformed link in a running app explains itself over the page the user
+  // is on. One that launched the app opens Inbox, or, with Inbox turned off,
+  // explains itself over the start page. Until the client and Inbox both settle
+  // it waits like any held link, and newer navigation cancels it.
+  const reject = (client: Client, launch: boolean): Promise<OpenResult> => {
+    const scope =
+      client.status === "ready" && client.viewer && client.selected
+        ? {
+            viewer: client.viewer,
+            communityOrigin: communityDestination(client.selected).url,
+          }
+        : undefined;
+    const inbox = launch && scope ? host.inbox.status() : "off";
+    if ((launch && !scope) || inbox === "loading")
+      return Promise.resolve({ status: "failed", reason: "invalid-target" });
+    held = undefined;
+    host.rejected();
+    if (scope && inbox === "on")
+      return host.navigation.open({
+        version: 1,
+        kind: "page",
+        pluginId: "buzz.inbox",
+        pageId: "inbox",
+        scope,
+      });
+    // An earlier link's failure card is superseded too: reopen the page under
+    // it, as its Go back does, so no Retry outlives the intent it recovers.
+    const { ingress, entry } = host.navigation.snapshot();
+    return ingress
+      ? host.navigation.open(entry.target)
+      : Promise.resolve({ status: "cancelled" });
+  };
   const openHeld = (): Promise<OpenResult> => {
     if (closed || !held) return Promise.resolve({ status: "cancelled" });
     const client = communities.snapshot();
     const incoming = held;
+    if (incoming.invalid) return reject(client, incoming.launch);
     if (
       (incoming.viewer && incoming.viewer !== client.viewer) ||
       (!incoming.invite &&
@@ -140,9 +192,10 @@ export function bindDeepLinks(
       held = undefined;
       return host.navigation.open(step.open);
     }
-    if (step.fail !== "unavailable") held = undefined;
-    else incoming.reported = true;
-    host.fail(step.fail, held ? openHeld : undefined);
+    if (step.fail === "invalid-target") return reject(client, incoming.launch);
+    // Only an unbound link fails here; it stays held for Retry.
+    incoming.reported = true;
+    host.fail(step.fail, openHeld);
     attempt = host.navigation.snapshot().attempt;
     return Promise.resolve({ status: "failed", reason: step.fail });
   };
@@ -152,8 +205,9 @@ export function bindDeepLinks(
     held.viewer ??= client.viewer;
     held.selected ??= client.selected;
     if (
-      (held.viewer && held.viewer !== client.viewer) ||
-      (!held.invite && held.selected && held.selected !== client.selected)
+      !held.invalid &&
+      ((held.viewer && held.viewer !== client.viewer) ||
+        (!held.invite && held.selected && held.selected !== client.selected))
     ) {
       held = undefined;
       host.fail("denied");
@@ -173,6 +227,7 @@ export function bindDeepLinks(
         requested = false;
         const started = host.navigation.snapshot().attempt;
         const epoch = clientEpoch;
+        const launch = !running;
         let urls: readonly string[];
         try {
           urls = await shell.take();
@@ -197,13 +252,17 @@ export function bindDeepLinks(
         }
         if (url === undefined) continue;
         const client = communities.snapshot();
+        const invite = parseInviteLink(url);
         held = {
           url,
-          invite: parseInviteLink(url),
+          invite,
+          invalid: !invite && !buzzLink(url),
+          launch,
           viewer: client.viewer,
           selected: client.selected,
           reported: false,
         };
+        if (!held.invalid) host.accepted();
         if (client.status !== "loading") void openHeld();
         else flush();
       }
@@ -220,8 +279,10 @@ export function bindDeepLinks(
     )
       clientEpoch++;
     client = next;
+    running ||= isReady(next);
     flush();
   });
+  const stopInbox = host.inbox.subscribe(flush);
   const stopNavigation = host.navigation.subscribe(() => {
     const next = host.navigation.snapshot();
     // fail() emits synchronously; its ingress marker distinguishes our failure
@@ -241,6 +302,7 @@ export function bindDeepLinks(
     if (closed) return;
     closed = true;
     stopClient();
+    stopInbox();
     stopNavigation();
     stopShell();
     held = undefined;
@@ -280,3 +342,33 @@ export function createDeepLinkShell(): DeepLinkShell | undefined {
     },
   };
 }
+
+/** The latest rejected OS link, for one notice at a time: a repeat replaces it. */
+export function createRejectedLinks() {
+  let current: number | undefined;
+  let next = 0;
+  const listeners = new Set<() => void>();
+  const emit = () => {
+    for (const listener of [...listeners]) listener();
+  };
+  return {
+    snapshot: () => current,
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    reject() {
+      current = ++next;
+      emit();
+    },
+    /** Without an id, clears whichever notice is showing. */
+    clear(id?: number) {
+      if (current === undefined || (id !== undefined && current !== id)) return;
+      current = undefined;
+      emit();
+    },
+  };
+}
+export type RejectedLinks = ReturnType<typeof createRejectedLinks>;

@@ -728,7 +728,7 @@ export function useConversationTabs({
         channelId,
         messageId,
         rootId,
-        undefined,
+        "reveal",
         threadPane ?? (mainThread(channelId) ? undefined : "side"),
       );
       if (

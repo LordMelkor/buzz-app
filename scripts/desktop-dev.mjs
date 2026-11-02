@@ -18,7 +18,7 @@ if (
 const port = values.port === undefined ? undefined : Number(values.port);
 
 const help = forwarded.some((arg) => arg === "--help" || arg === "-h");
-// Stage bundled goose-acp before Tauri compiles, outside its dev-server timeout.
+// Stage the bundled helpers before Tauri compiles, outside its dev-server timeout.
 if (!help) {
   // Stage for the target Tauri is given, as Tauri tells beforeBuildCommand.
   const at = forwarded.findIndex((arg) => arg === "--target" || arg === "-t");
@@ -57,6 +57,20 @@ if (!help) {
   // goose-acp is missing.
   if (goose.status !== 0)
     console.warn("goose-acp did not stage; Goose agents will not start.");
+  const cli = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("./build-buzz-cli.mjs", import.meta.url)), "--dev"],
+    {
+      stdio: "inherit",
+      env: triple
+        ? { ...process.env, TAURI_ENV_TARGET_TRIPLE: triple }
+        : process.env,
+    },
+  );
+  if (cli.error) console.error(cli.error.message);
+  if (cli.signal) process.kill(process.pid, cli.signal);
+  if (cli.status !== 0)
+    console.warn("buzz did not stage; the bundled buzz CLI will be missing.");
 }
 const root = fileURLToPath(new URL("../", import.meta.url));
 const config = desktopOverlay(root);

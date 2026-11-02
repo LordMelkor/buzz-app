@@ -361,11 +361,42 @@ export const ROLE_GROUPS: RoleGroup[] = [
         status: "core",
       },
       {
+        token: "bg-surface-message-hover",
+        variable: "--surface-message-hover",
+        pointsAt:
+          "surface-message mixed 5% toward black in light mode / white in dark mode",
+        use: "Received bubble fill while its actions show; text and media are unchanged.",
+        status: "core",
+      },
+      {
+        token: "bg-surface-message-own-hover",
+        variable: "--surface-message-own-hover",
+        pointsAt:
+          "surface-message-own mixed 5% toward black in light mode / white in dark mode",
+        use: "Own bubble fill while its actions show; text and media are unchanged.",
+        status: "core",
+      },
+      {
         token: "--affordance-message-own-hover",
         variable: "--affordance-message-own-hover",
         pointsAt:
           "black 4% on light bubbles / white 8% on dark ones; at Buzzin’, black 4% on the accent fill (white 8% on Mono in light mode)",
         use: "Overlay across your own bubble while its actions show. It follows the bubble's lightness, as its chips do.",
+        status: "core",
+      },
+      {
+        token: "--affordance-message-highlight",
+        variable: "--affordance-message-highlight",
+        pointsAt: "black 10% light / white 16% dark",
+        use: "Temporary arrival cue across a received bubble; replaces hover while it shows.",
+        status: "core",
+      },
+      {
+        token: "--affordance-message-own-highlight",
+        variable: "--affordance-message-own-highlight",
+        pointsAt:
+          "affordance-message-highlight; at Buzzin’, the accent's regular overlay step on its fill (black 10%, white 16% on Mono in light mode)",
+        use: "Temporary arrival cue across your own bubble. It follows the bubble's lightness, as its chips do.",
         status: "core",
       },
       {
@@ -387,7 +418,7 @@ export const ROLE_GROUPS: RoleGroup[] = [
         token: "bg-surface-message-highlight",
         variable: "--surface-message-highlight",
         pointsAt: "accent step 3",
-        use: "Temporary return-to-message cue; follows the accent color.",
+        use: "Temporary arrival cue on a message without a filled bubble; follows the accent color.",
         status: "core",
       },
       {

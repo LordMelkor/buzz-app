@@ -486,8 +486,10 @@ test.describe("sorting with lifecycle visibility", () => {
     await expect.poll(ids).toEqual(["willow", "maple", "cedar"]);
     // Archive removes the sidebar row, not the selected conversation.
     await expect(page).toHaveURL(conversationUrl);
-    await expect(composer).toBeVisible();
-    await expect(composer).toBeDisabled();
+    await expect(
+      page.getByRole("region", { name: "Archived channel", exact: true }),
+    ).toHaveText("This channel is archived");
+    await expect(composer).toHaveCount(0);
 
     const dm = sidebar.locator(`[data-channel-id="${hiddenId}"]`);
     await dm.click({ button: "right" });
@@ -504,8 +506,10 @@ test.describe("sorting with lifecycle visibility", () => {
     await page.reload();
     await expect.poll(ids).toEqual(["willow", "maple", "cedar"]);
     await expect(page).toHaveURL(conversationUrl);
-    await expect(composer).toBeVisible();
-    await expect(composer).toBeDisabled();
+    await expect(
+      page.getByRole("region", { name: "Archived channel", exact: true }),
+    ).toHaveText("This channel is archived");
+    await expect(composer).toHaveCount(0);
     // Opening Sort proves saved preference decoding and sidebar startup settled.
     await channels
       .getByRole("button", { name: "More actions for Channels" })

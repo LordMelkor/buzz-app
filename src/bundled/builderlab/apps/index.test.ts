@@ -24,7 +24,12 @@ async function setup(
   vi.stubEnv("VITE_BUZZ_BUILDERLAB_URL", url);
   const session = createOAuthSession(async () => ({
     value: "session",
-    account: { subject: "auth0|owner", email: "", canUseRemoteAgents },
+    account: {
+      subject: "auth0|owner",
+      email: "",
+      canUseRemoteAgents,
+      canUseBuilderlabDecisions: false,
+    },
   }));
   await session.signIn();
   const tools = new Map<string, AddedTool>();
@@ -55,7 +60,7 @@ async function setup(
     host: { request: respond, upload: respond },
     agents: { addTool: (tool: AddedTool) => tools.set(tool.name, tool) },
   };
-  applyApps(ctx as never, session, true);
+  applyApps(ctx as never, session, true, session);
   const call = (name: string, args: Record<string, unknown>, context = {}) => {
     const tool = tools.get(name);
     if (!tool) throw new Error(`No tool ${name}`);

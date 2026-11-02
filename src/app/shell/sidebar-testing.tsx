@@ -1,3 +1,4 @@
+import { useState, type ReactNode } from "react";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { act, render } from "@testing-library/react";
@@ -120,6 +121,12 @@ export function fixture(
     viewer,
     channelCreation: { ...base.channelCreation, available: canCreate },
     channels: { ...base.channels, list: () => list, ensureList() {} },
+    sidebarPreferences: {
+      ...base.sidebarPreferences,
+      sectionCreationWritable: canCreate,
+      snapshot: () => preferences,
+      ensure: async () => {},
+    },
     soloPreferences: {
       ...base.soloPreferences,
       sectionCreationWritable: canCreate,
@@ -201,23 +208,29 @@ export function fixture(
     <ToastProvider>
       <ChannelNavigationProvider relay={relay}>
         {combined ? (
-          <>
-            <NewMenu relay={relay} navigator={navigator} agents={agents} />
-            {sidebarVisible && (
-              <PrimarySidebar
-                relay={relay}
-                navigator={navigator}
-                target={target}
-                chatIcons={chatIcons}
-                chatMenus={chatMenus}
-                {...(host.federatedIdentity
-                  ? { federatedIdentity: host.federatedIdentity }
-                  : {})}
-              >
-                <button type="button">Inbox</button>
-              </PrimarySidebar>
-            )}
-          </>
+          <SidebarCreationHost
+            relay={relay}
+            navigator={navigator}
+            agents={agents}
+          >
+            {(creationAction) =>
+              sidebarVisible && (
+                <PrimarySidebar
+                  creationAction={creationAction}
+                  relay={relay}
+                  navigator={navigator}
+                  target={target}
+                  chatIcons={chatIcons}
+                  chatMenus={chatMenus}
+                  {...(host.federatedIdentity
+                    ? { federatedIdentity: host.federatedIdentity }
+                    : {})}
+                >
+                  <button type="button">Inbox</button>
+                </PrimarySidebar>
+              )
+            }
+          </SidebarCreationHost>
         ) : (
           <SoloInventory
             session={snapshot.session}
@@ -234,6 +247,7 @@ export function fixture(
   const rendered = render(tree());
   return {
     session,
+    relay,
     navigate(next: OpenTarget) {
       target = next;
       rendered.rerender(tree());
@@ -283,4 +297,19 @@ export function fixture(
     },
     activitySnapshot: activity,
   };
+}
+
+function SidebarCreationHost({
+  children,
+  ...props
+}: Parameters<typeof NewMenu>[0] & {
+  children: (action: ReactNode) => ReactNode;
+}) {
+  const [container, setContainer] = useState<HTMLDivElement | null>(null);
+  return (
+    <>
+      <NewMenu {...props} triggerContainer={container} />
+      {children(<div ref={setContainer} />)}
+    </>
+  );
 }

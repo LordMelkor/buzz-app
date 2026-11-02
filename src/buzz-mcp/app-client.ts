@@ -4,7 +4,11 @@
 // encrypted.
 import type { BuzzClient, Memories } from "./client";
 import type { AgentHandle, AgentHandoff } from "../features/agents/service";
-import type { HostProcess, HostProcessOptions } from "../features/host/service";
+import type {
+  HostProcess,
+  HostProcessOptions,
+  ProcessProtection,
+} from "../features/host/service";
 type Spawn = (id: string, options?: HostProcessOptions) => Promise<HostProcess>;
 
 /** The largest file a tool reads: the community's upload limit. */
@@ -25,6 +29,7 @@ export function appClient(
     /** Reject operations after the owning turn or community has ended. */
     check?(): void;
     signal?: AbortSignal;
+    protectionContext?(): Promise<unknown>;
   }>,
 ): BuzzClient {
   const check = () => {
@@ -39,6 +44,36 @@ export function appClient(
   };
   const handoff = agent.handoff;
   return {
+    ...(agent.protection
+      ? {
+          protect: async (
+            action: import("../features/agent-protection/service").ProtectionAction,
+          ) => {
+            check();
+            if (
+              action.kind === "tool" &&
+              agent.protection?.phases?.tool !== false
+            ) {
+              if (!options.protectionContext)
+                throw new Error(
+                  "The protected tool has no native conversation context",
+                );
+              action = {
+                ...action,
+                content: {
+                  ...(action.content as object),
+                  conversation: await options.protectionContext(),
+                },
+              };
+            }
+            await agent.protection?.check(
+              action,
+              options.signal ?? new AbortController().signal,
+            );
+            check();
+          },
+        }
+      : {}),
     pubkey: agent.pubkey,
     key: agent.key,
     owner: agent.owner,
@@ -100,9 +135,13 @@ export function appClient(
       check();
       return agent.gitAuth(owner, repo);
     },
-    read: (path) => {
+    read: async (path) => {
       check();
-      return options.read(path);
+      agent.protection?.assertAvailable();
+      const bytes = await options.read(path);
+      check();
+      agent.protection?.assertAvailable();
+      return bytes;
     },
     memories: async (slug) => {
       check();
@@ -162,6 +201,7 @@ export async function readFile(
   cwd: string,
   path: string,
   signal?: AbortSignal,
+  protection?: ProcessProtection,
 ) {
   // `-` would wait on stdin.
   if (path.trim() === "-" || !path.trim())
@@ -170,9 +210,10 @@ export async function readFile(
   let error = "";
   let large = false;
   let child: Awaited<ReturnType<Spawn>> | undefined;
-  child = await spawn("read", {
+  child = await spawn(protection ? "read-protected" : "read", {
     args: [path],
     cwd,
+    ...(protection ? { protection: structuredClone(protection) } : {}),
     onStdout: (data) => {
       output += data;
       if (output.length > (READ_LIMIT / 3) * 4 + 1024 && !large) {

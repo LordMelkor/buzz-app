@@ -675,3 +675,33 @@ it("directory pages rebuild the name index only for people they add", async () =
   view.unmount();
   h.library.dispose();
 });
+
+it("an open chooser relabels choices when only names change", async () => {
+  const h = fixture();
+  let name = "Before";
+  let revision = 0;
+  const listeners = new Set<() => void>();
+  Object.assign(h.session, {
+    names: {
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      snapshot: () => revision,
+      scope: () => () => ({ name, source: "agent-directory" }),
+    },
+  });
+  function Chooser() {
+    const model = useMentionChoices(h.session, "parent", false, "", "open");
+    return <>{model.candidates.map((choice) => choice.label).join(",")}</>;
+  }
+  render(<Chooser />);
+  await waitFor(() => expect(screen.getByText("Before")).toBeInTheDocument());
+  act(() => {
+    name = "After";
+    revision++;
+    for (const listener of listeners) listener();
+  });
+  expect(screen.getByText("After")).toBeInTheDocument();
+  h.library.dispose();
+});

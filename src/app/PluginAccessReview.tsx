@@ -96,6 +96,17 @@ function hostDeclarations(
       icon: GlobeIcon,
       details: <code className={styles.sourcePath}>{origin}</code>,
     })),
+    ...(manifest.host?.federatedIdentity?.operations ?? []).map(
+      (operation) => ({
+        key: `federated:${operation.method} ${operation.path}`,
+        signature: `Federated authority ${manifest.host?.federatedIdentity?.authority}: ${operation.method} ${operation.path}`,
+        title: `Federated authority ${manifest.host?.federatedIdentity?.authority}:`,
+        label: `${operation.method} ${operation.path}`,
+        hint: "Buzz can call this route with your community session for the plugin.",
+        icon: GlobeIcon,
+        details: <code className={styles.sourcePath}>{operation.path}</code>,
+      }),
+    ),
     ...(manifest.host?.processes ?? []).map((process) => ({
       key: `process:${process.id}`,
       signature: `Process ${process.id}: ${JSON.stringify([process.program, ...(process.args ?? [])])}${process.bundled ? " (bundled with Buzz)" : ""} and any further arguments · stdin, full user access`,

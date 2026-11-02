@@ -27,6 +27,7 @@ import {
   ChannelDetailsEditor,
   type ChannelDetailsAction,
 } from "./ChannelDetailsEditor";
+import { writeClipboardText } from "../../shared/clipboard";
 
 export function ChannelSettingsPanel({
   channel,
@@ -299,7 +300,7 @@ function ChannelIdDetail({ id }: { id: string }) {
     setFeedbackOpen(false);
     setState("copying");
     try {
-      await navigator.clipboard.writeText(id);
+      await writeClipboardText(id);
       setState("copied");
       setFeedbackOpen(true);
     } catch {

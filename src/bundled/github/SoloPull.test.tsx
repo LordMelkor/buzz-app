@@ -1,7 +1,7 @@
 import { MenuRoot, MenuPopup } from "../../shared/design-system/ui/Menu";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RelayData } from "../../features/relay/service";
@@ -10,7 +10,13 @@ import type { AddedTool } from "../../buzz-mcp/session-tools";
 import type { BuzzClient } from "../../buzz-mcp/client";
 import { apply } from "./index";
 import type { SoloPull, SoloPulls } from "./solo-pull";
-import { SoloPullIcon, SoloPullLink, SoloPullMenu } from "./SoloPull";
+import {
+  SoloPullIcon,
+  SoloPullLink,
+  SoloPullMenu,
+  SessionPullLauncher,
+  SoloPullLauncher,
+} from "./SoloPull";
 
 afterEach(cleanup);
 
@@ -283,4 +289,83 @@ it("keeps unlink visible but disabled when the connection cannot sign link updat
     "title",
     "Unlinking needs a native desktop relay connection.",
   );
+});
+
+it("opens the current linked PR from the header and removes the shortcut on unlink", async () => {
+  const pulls = fakePulls({
+    [chat]: { url: pull, state: { state: "merged" } },
+  });
+  const open = vi.fn(() => true);
+  const { rerender } = render(
+    <SessionPullLauncher
+      pulls={pulls}
+      channelId={chat}
+      open={open}
+      canOpen={() => true}
+    />,
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Open linked pull request, merged" }),
+  );
+  expect(open).toHaveBeenCalledWith(pull);
+  expect(screen.getByRole("button").querySelector("[data-tone]")).toBeNull();
+  act(() => pulls.linked(chat, `${pull}8`));
+  await userEvent.click(
+    screen.getByRole("button", { name: "Open linked pull request" }),
+  );
+  expect(open).toHaveBeenLastCalledWith(`${pull}8`);
+  rerender(
+    <SessionPullLauncher
+      pulls={pulls}
+      channelId={chat}
+      open={open}
+      canOpen={() => false}
+    />,
+  );
+  expect(screen.getByRole("button")).toBeDisabled();
+  act(() => pulls.linked(chat, null));
+  expect(screen.queryByRole("button")).not.toBeInTheDocument();
+});
+
+it("only mounts the PR shortcut for a Solo in the current community", () => {
+  const { relay, session } = relayWith([
+    { id: chat, channelType: "solo" },
+    { id: team, channelType: "stream" },
+  ]);
+  const state = { ...relay.snapshot(), viewer };
+  const activeRelay = { ...relay, snapshot: () => state };
+  const pullsFor = vi.fn(() => fakePulls({ [chat]: { url: pull } }));
+  const context = {
+    scope: "s",
+    viewer,
+    channelId: team,
+    channelName: "Chat",
+    relayUrl: "wss://example.com",
+  };
+  const props = {
+    relay: activeRelay,
+    pullsFor,
+    context,
+    pressed: false,
+    available: () => true,
+    open: () => true,
+    canOpen: () => true,
+    toggle() {},
+  };
+  const view = render(<SoloPullLauncher {...props} />);
+  expect(pullsFor).not.toHaveBeenCalled();
+  view.rerender(
+    <SoloPullLauncher
+      {...props}
+      context={{ ...context, channelId: chat, scope: "another" }}
+    />,
+  );
+  expect(pullsFor).not.toHaveBeenCalled();
+  view.rerender(
+    <SoloPullLauncher {...props} context={{ ...context, channelId: chat }} />,
+  );
+  expect(pullsFor).toHaveBeenCalledWith(session);
+  expect(
+    screen.getByRole("button", { name: "Open linked pull request" }),
+  ).toBeVisible();
 });

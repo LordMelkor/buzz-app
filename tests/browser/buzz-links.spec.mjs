@@ -698,7 +698,7 @@ test("unavailable messages fail honestly and legacy links still open when Links 
   await expect
     .poll(async () => (await state(page)).entry.target.messageId)
     .toBe("0".repeat(64));
-  await expect(button(page, "Retry navigation")).toBeVisible();
+  await expect(button(page, "Try again")).toBeVisible();
   expect((await state(page)).status).toBe("failed");
 });
 

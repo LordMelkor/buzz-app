@@ -6,17 +6,21 @@ import { NavigationSection } from "../shared/design-system/ui/NavigationSection"
 import { ChatCircleIcon } from "../shared/design-system/icons";
 import type { Communities } from "../features/communities/service";
 import type { SettingsCards } from "../features/settings/service";
+import { RecommendationCount } from "./RecommendationCount";
 import { settingsSections, type SettingsSection } from "./settings-sections";
 
 export function SettingsSidebar({
   cards,
   communities,
   selected,
+  recommendations = 0,
   onSection,
 }: {
   cards: SettingsCards;
   communities: Communities;
   selected?: string;
+  /** Managed plugin recommendations awaiting review. */
+  recommendations?: number;
   onSection: (section: string) => void;
 }) {
   const contributed = useSyncExternalStore(cards.subscribe, cards.snapshot);
@@ -42,6 +46,9 @@ export function SettingsSidebar({
       label={label}
       icon={<Icon aria-hidden="true" size={18} />}
       selected={current === id}
+      {...(id === "plugins" && recommendations > 0
+        ? { trailing: <RecommendationCount count={recommendations} /> }
+        : {})}
       aria-current={current === id ? "page" : undefined}
       onClick={() => onSection(id)}
     />

@@ -388,6 +388,45 @@ it("brings an open transcript's tab back, and closes it when the profile moves",
   expect(tab(transcript)).toHaveAttribute("aria-selected", "true");
 });
 
+it("opens a channel's thread transcript when opened from one of its threads' activity", async () => {
+  // A channel-scoped agent keeps one thread per channel, so the opened
+  // thread's own lookup finds it only after the profile is shown.
+  const f = fixture({
+    saved: {
+      [JSON.stringify(["channel", "channel"])]: {
+        threadId: "kept",
+        workspace: "/w",
+        at: 2,
+      },
+    },
+    turns: () => ({
+      result: {
+        data: [
+          {
+            id: "turn-1",
+            status: "completed",
+            error: null,
+            startedAt: 1,
+            completedAt: 2,
+            items: [{ type: "agentMessage", id: "a", text: "Two files." }],
+          },
+        ],
+        nextCursor: null,
+      },
+    }),
+  });
+  const done = vi.fn();
+  render(
+    <f.tabs.ActivityTab
+      {...f.props()}
+      conversation={{ channelId: "channel", rootId: "e".repeat(64) }}
+      initialTranscript={{ opening: 1, done }}
+    />,
+  );
+  expect(await screen.findByText("Two files.")).toBeVisible();
+  expect(done).toHaveBeenCalledTimes(1);
+});
+
 describe("opened from activity", () => {
   const root = "e".repeat(64);
   const transcript = "general · thread eeeeeeee";

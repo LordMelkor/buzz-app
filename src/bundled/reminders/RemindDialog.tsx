@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ChannelMessage } from "../../features/relay/contracts";
 import type { RelaySession } from "../../features/relay/session";
 import { messagePreview } from "../../features/notifications/content";
@@ -27,6 +27,7 @@ export function RemindDialog({
   session: RelaySession;
   close(): void;
 }) {
+  const fields = useRef<HTMLDivElement>(null);
   const [when, setWhen] = useState(TIME_PRESETS[0]?.label ?? "custom");
   const [note, setNote] = useState("");
   const [date, setDate] = useState(todayDateString);
@@ -64,6 +65,12 @@ export function RemindDialog({
       dismissOnOutsideClick={false}
       onOpenChange={(open) => !open && close()}
       preventClose={pending}
+      initialFocus={(type) =>
+        type === "touch" || window.matchMedia?.("(pointer: coarse)").matches
+          ? (fields.current?.closest<HTMLElement>('[role="dialog"]') ?? null)
+          : (fields.current?.querySelector<HTMLElement>('[role="combobox"]') ??
+            null)
+      }
       title="Remind me"
       description="Choose when to be reminded about this message."
       actions={
@@ -85,7 +92,7 @@ export function RemindDialog({
         </>
       }
     >
-      <div className={styles.form}>
+      <div ref={fields} className={styles.form}>
         <Select
           label="When"
           variant="field"

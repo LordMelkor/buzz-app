@@ -508,7 +508,15 @@ Cancellation returns focus to the originating Settings button (or the sidebar
 fallback if that entry has gone away). Archive retains the current conversation,
 messages, membership and open Settings, replacing Archive with Unarchive after a
 fresh permission read. The conversation stays selected after reload; archived
-write restrictions still apply. When refreshed Settings actions remount, focus
+write restrictions still apply. Archived conversations and their threads replace the
+message composer with the lower archived-channel notice. If that composer owned
+focus, focus moves to the retained message history. Nonempty unsent text, including
+an in-progress message edit, is offered through a host-owned **Copy text** toast;
+empty composers and focus elsewhere do not trigger it. Copy failure retains a retry
+action, and recovery stays available until used or dismissed. Unarchiving restores the
+composer and its saved text draft. A remote unarchive in the same open conversation
+preserves the reader's focus instead of autofocus moving it into the restored composer.
+When refreshed Settings actions remount, focus
 returns to its persistent Settings-tab close control instead of an unrelated sidebar row;
 joined archived channels, including session conversations, remain available by name
 in search, labeled **Archived channel**, but stay out of the sidebar and Recent
@@ -730,31 +738,51 @@ confirmation. The device-local opt-out applies to that Create warning; Continue
 only stages the choice and Create channel performs the write.
 
 Access management lives in the members dialog. It retains the existing member
-list, row menus and confirmed role changes. Roles appear as muted
-text before each row’s ellipsis button; Member and Guest are shown as **Participating**
-and **Viewing only**. The ellipsis menu contains permitted role choices with
+list, row menus and confirmed role changes. Exceptional roles appear as muted
+text before each row’s ellipsis button: **Owner**, **Admin**, and **Viewing only**.
+Ordinary Member and Bot rows have no role caption; verification and access warnings
+remain available. The ellipsis menu contains permitted role choices with
 the verified selection checked, alongside profile/removal actions and the existing role
 confirmation. Immutable roles such as Owner and self remain protected.
-The access row stays below and outside the scrolling member list, without a visible
-section heading. It uses the same avatar slot and type sizes as member rows: a community avatar/lock
-icon, a compact audience Select (**Who can read**) with **Public** / **Private**
-labels, a hint explaining the audience and, for public channels, the selected participation default,
-and a public-only trailing **New people can** Select (Participate / View only), with short
-descriptions of the permitted actions. Audience options show the community avatar and
-lock icon inside the dropdown. When making a private channel public, the confirmation
-includes the same **New people can** dropdown. It starts with the saved public default
-(Participate if absent); the selected role and public visibility publish in a single
-details update after confirmation. Cancel saves neither. Both choices make the full
-history readable by the community; View only limits new people's contributions.
-The audience Select uses the shared text-link
-treatment; the participation Select is outlined and vertically centered against
-the audience row, with its popup aligned to the trigger’s right edge. On narrow screens the role control wraps
-under the audience. The confirmation explains “People already in the channel keep
-their access.”; the note is not a permanent paragraph below the controls.
+General access is the first row in the scrolling member list, with its policy
+icon and explanation on the left and the small, text-only Select button on the right.
+Its popup aligns to the button’s right edge. The row wraps
+when enlarged text needs more room. Access errors, uncertain-save explanations,
+and their recovery actions occupy the full width below this row. Copy link stays
+at the footer’s left and Done at its right. Read failures offer Retry through the existing member-data
+reload path; the persistent Refresh action is removed.
+Hidden status announcements do not receive visible-content spacing or extend the
+footer's scroll area. Refresh marks the data lists busy, while saving and search
+announcements remain outside those busy lists. Reader-only explanations stay
+in the first row of the member list. The people/agents filter is an icon action
+inside the search field’s trailing edge, with the selected group checked in its
+menu and an active button treatment when filtered. Typing a search resets it to All.
+The **General access** Select offers three policies:
+
+| Choice | Reading | New people's admission role |
+| --- | --- | --- |
+| Public | Anyone in the community | Member (Participating) |
+| View only | Anyone in the community | Guest (Viewing only) |
+| Private | Only members | Preserves the saved default; people must be added |
+
+The popup separates Private from the two community-readable policies with a divider.
+Options include concise descriptions and fixed policy icons: Lock for Private,
+Globe for Public, and Eye for View only. The selected policy icon stays beside the
+explanation on the left of the row. The small outlined dropdown button contains
+the selected title and chevron; the entire button opens the choices. Policy
+artwork never falls back to a community initial.
+Public and View only explicitly select both visibility and admission in one confirmed details
+update. Both make the full history readable by the community. Existing members
+keep their individual roles. Private is displayed for every private policy,
+including an older Guest admission default; opening or reselecting it never
+normalizes that stored default. Choosing Public or View only explicitly replaces
+it. The shared editor restricts Solo-labelled chats to Private / View only; a
+legacy public Member policy is shown as **Public (existing)** until changed.
+
 Each selection opens a consequence confirmation. Cancel/Escape returns focus to
 the unchanged Select. **Change access** saves immediately through the existing
 channel-details capability, then reloads signed metadata. Loading, pending and
-unconfirmed saves disable both controls. A pending save shows an inline spinner
+unconfirmed saves disable the control. A pending save shows an inline spinner
 in the leading icon slot instead of a separate visible saving message. A persistent
 live region outside the busy controls announces saving and confirmed completion.
 Rejections offer **Reload access**. Failures before publication identify the initial
@@ -764,14 +792,12 @@ Uncertain results survive closing the dialog and offer **Check save status**,
 which reads without republishing. Opening or checking never writes. Private
 channels with a Guest default remain intact when changing unrelated details.
 
-In the private-channel experiment, the footer omits **New people can** and says
-"Only people you add can read this channel." Ordinary human additions explicitly
-request Member (Participate), including when an older saved admission default is
+For private channels, ordinary human additions explicitly request Member (Participate), including when an older saved admission default is
 Guest. Existing roles are not changed; **Add as** still permits an individual
 View only or Admin choice. Public additions keep their admission-default behavior,
 agents retain Bot, and Solo/system admission is unchanged. The saved default is
-preserved so it reappears when the channel becomes public and the experiment can
-be reverted without a metadata migration.
+preserved while private; explicitly choosing Public or View only selects the
+corresponding admission default without a metadata migration.
 
 Readers see General access as plain text from verified channel discovery metadata,
 without calling the editing capability. Guests and readers of Guest-default channels
@@ -1062,13 +1088,13 @@ another non-owner member:
 Agent identity is independent of channel role. Explicitly promoting a Bot to Admin grants authority to that agent’s own public key and preserves its verified agent identity; the human owner’s roles do not confer authority.
 
 The menu offers **Viewing only** through a deliberate **Set to viewing only**
-confirmation. Participating and Viewing only captions represent each participant's
-verified Member and Guest role; changing the admission default never changes those roles.
-Agent Bot roles retain the contributing presentation.
+confirmation. **Participating** remains the role-menu label for verified Member
+and Bot roles, while **Viewing only** represents Guest. Changing the admission
+default never changes those roles.
 
-The members dialog's General access controls keep reading access and new people's
-contribution access separate. The note explicitly preserves existing participants'
-access; a Guest default leaves designated writers able to contribute.
+The members dialog's General access Select presents reading access and new people's
+contribution access as one policy while preserving their separate relay fields.
+The note explicitly preserves existing participants' access; a Guest default leaves designated writers able to contribute.
 Owners/admins save choices through the existing kind:9002 command. Missing `join_role` means Member, matching legacy relay
 behavior. An unrecognized or malformed explicit default maps to Guest so previews
 fail closed. These defaults never replace a participant's stored role.
@@ -1487,6 +1513,9 @@ direction shrinks the selection by one emoji. Visible shortcode text and emoji
 that cannot be rendered retain ordinary text selection.
 Custom emoji autocomplete adds no trailing space. The native caret uses the
 regular composer text size while the emoji preview remains large.
+
+Message and thread reactions use one bubble per emoji, counting unique people from
+the second reactor; custom emoji with different URLs stay separate.
 
 Message and thread reaction rows have a Lucide smile-plus button after existing
 reactions. Messages without reactions do not show it. The Emoji plugin supplies

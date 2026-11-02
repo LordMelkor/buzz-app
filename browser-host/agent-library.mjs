@@ -97,7 +97,8 @@ export function projectAgentLibrary(raw) {
  * It is versioned once an agent is in several communities, one row in each. */
 export function projectAgentIdentities(raw) {
   if (!Array.isArray(raw)) {
-    if (raw?.version !== 2) throw failure();
+    if (raw?.version !== 2 && raw?.version !== 3 && raw?.version !== 4)
+      throw failure();
     raw = raw.agents;
   }
   if (!Array.isArray(raw) || raw.length > MAX_ROWS) throw failure();

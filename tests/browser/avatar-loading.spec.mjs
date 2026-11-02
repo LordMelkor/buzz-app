@@ -1,3 +1,4 @@
+import { pauseClock } from "./clock.mjs";
 import { test, expect } from "./source-fixture.mjs";
 import { fileURLToPath } from "node:url";
 
@@ -82,7 +83,7 @@ test("shared avatars defer offscreen artwork, omit the referrer and recover from
   await expect(avatar).toContainText("A");
   await expect(image).toHaveCSS("opacity", "0");
   expect(await box()).toEqual(original);
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
+  await pauseClock(page, 1_000);
   release();
   await expect(avatar).toContainText("A");
   await expect(avatar.locator("img")).toHaveCount(0);

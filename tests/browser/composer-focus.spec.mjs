@@ -2,8 +2,75 @@ import { openChannelDetails } from "./channel-details.mjs";
 import { test, expect } from "./fixture.mjs";
 import { openPage } from "./navigation.mjs";
 import { open } from "./timeline.mjs";
+import { createHash } from "node:crypto";
 
 test.use({ productionBroker: true, dmLabels: true, developmentReact: true });
+
+// Browser boundary: the real file chooser and ProseMirror selection must allow
+// typing immediately at the retained caret after a successful picker upload.
+test("a successful picker image upload returns focus with the existing caret", async ({
+  page,
+  app,
+}) => {
+  // A metadata-free GIF keeps the upload bytes identical in both engines.
+  const bytes = Buffer.from(
+    "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+    "base64",
+  );
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  let release;
+  let started;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  const uploading = new Promise((resolve) => {
+    started = resolve;
+  });
+  await page.route("**/api/relay/**/upload", async (route) => {
+    started();
+    await held;
+    await route.fulfill({
+      json: {
+        name: "pixel.gif",
+        url: `https://primary.example/media/${sha256}.gif`,
+        sha256,
+        type: "image/gif",
+        size: bytes.length,
+      },
+    });
+  });
+  await page.route("**/api/relay/**/media?**", (route) =>
+    route.fulfill({ contentType: "image/gif", body: bytes }),
+  );
+  try {
+    await open(page, app);
+    const form = page.getByRole("form", {
+      name: "Send a message to Alpha",
+      exact: true,
+    });
+    const input = form.getByRole("textbox");
+    await input.fill("hello world");
+    await input.press("End");
+    for (let i = 0; i < 5; i++) await input.press("ArrowLeft");
+    const choosing = page.waitForEvent("filechooser");
+    await form
+      .getByRole("button", { name: "Attach files", exact: true })
+      .click();
+    await (await choosing).setFiles({
+      name: "pixel.gif",
+      mimeType: "image/gif",
+      buffer: bytes,
+    });
+    await uploading;
+    release();
+    await expect(form.getByText(/Ready$/)).toHaveCount(1);
+    await expect(input).toBeFocused();
+    await page.keyboard.type("picked ");
+    await expect(input).toHaveText("hello picked world");
+  } finally {
+    release();
+  }
+});
 
 // Browser boundary: real sidebar navigation must hand focus to the mounted
 // ProseMirror editor, including after a warm return; typing must need no click.

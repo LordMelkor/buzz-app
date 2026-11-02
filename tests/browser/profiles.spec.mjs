@@ -430,8 +430,13 @@ test("profile plumbing: exact avatar/mention targets, thread enrichment, lifecyc
     await expect(key).toHaveText(npubs.viewer);
     if (pointerVisit !== "stationary") await page.mouse.move(0, 0);
     if (pointerVisit === "back") {
-      const rect = await avatar.boundingBox();
-      await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      // Profile pushes the avatar aside. Hover waits for it to settle, so the
+      // pointer rests on the pushed avatar, not where Escape puts it back.
+      await avatar.hover();
+      // Complete this hover while Profile is still open. Otherwise its timer
+      // can fire after Escape and legitimately count as a fresh hover visit.
+      await page.clock.runFor(300);
+      await expect(preview).toBeHidden();
     }
     await page.getByRole("region", { name: "Profile details" }).press("Escape");
     await expect(panel).toHaveCount(0);
@@ -825,26 +830,12 @@ test("member rows hand off to Profiles without trapping or losing keyboard focus
       const member = group.getByRole("listitem").first();
       await expect(member).toHaveCSS("padding-inline-end", "0px");
       const header = dialog.locator(".buzz-dialog-header");
-      const refresh = header.getByRole("button", {
-        name: "Refresh member data",
-      });
-      const close = header.getByRole("button", {
-        name: "Close",
-      });
-      await expect(refresh).toHaveAttribute("data-variant", "ghost");
-      await expect(refresh).toHaveAttribute("data-icon-size", "compact");
-      const refreshBounds = await refresh.boundingBox();
-      const closeBounds = await close.boundingBox();
-      expect(refreshBounds.x + refreshBounds.width).toBeLessThanOrEqual(
-        closeBounds.x,
-      );
-      expect(refreshBounds.y).toBe(closeBounds.y);
-      expect(refreshBounds.width).toBe(closeBounds.width);
-      expect(refreshBounds.height).toBe(closeBounds.height);
-      for (const button of [refresh, close]) {
-        await expect(button.locator("svg")).toHaveCSS("width", "16px");
-        await expect(button.locator("svg")).toHaveCSS("height", "16px");
-      }
+      await expect(
+        dialog.getByRole("button", { name: "Refresh member data" }),
+      ).toHaveCount(0);
+      const close = header.getByRole("button", { name: "Close" });
+      await expect(close.locator("svg")).toHaveCSS("width", "16px");
+      await expect(close.locator("svg")).toHaveCSS("height", "16px");
       expect(await body.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(
         false,
       );
@@ -918,13 +909,32 @@ test("member rows hand off to Profiles without trapping or losing keyboard focus
       });
       // With room for a heading and its rows, the heading still pins as soon
       // as the preceding notice scrolls out, without an extra padding slide.
-      await page.setViewportSize({ width, height: 460 });
+      await page.setViewportSize({ width, height: 530 });
+      // Give the collection 9rem: above the 8rem sticky-heading threshold,
+      // while retaining scroll range past its notice. Derive viewport height
+      // from native layout so wrapped recovery content cannot change the state.
+      const contentHeight = () =>
+        list.evaluate((el) => {
+          const style = getComputedStyle(el);
+          return (
+            el.clientHeight -
+            parseFloat(style.paddingTop) -
+            parseFloat(style.paddingBottom)
+          );
+        });
+      const measuredHeight = await contentHeight();
+      await page.setViewportSize({ width, height: 530 + 144 - measuredHeight });
+      await expect.poll(contentHeight).toBe(144);
       await expect(firstHeading).toHaveCSS("position", "sticky");
       const roomyListBounds = await list.boundingBox();
       const roomyHeadingBounds = await firstHeading.boundingBox();
       const roomyLeadingContent = Math.round(
         roomyHeadingBounds.y - roomyListBounds.y,
       );
+      // Prove the fixture can scroll past its notice and exercise pinning.
+      expect(
+        await list.evaluate((el) => el.scrollHeight - el.clientHeight),
+      ).toBeGreaterThanOrEqual(roomyLeadingContent + 16);
       for (const scrollTop of [0, 1, 8, 16]) {
         await list.evaluate((el, top) => {
           el.scrollTop = top;
@@ -945,7 +955,7 @@ test("member rows hand off to Profiles without trapping or losing keyboard focus
       await page.setViewportSize({ width, height: 900 });
       await expect
         .poll(() => list.evaluate((el) => el.clientHeight))
-        .toBeGreaterThan(300);
+        .toBeGreaterThan(roomyListBounds.height);
       await expect(group).toHaveCSS("flex-grow", "0");
       expect((await group.boundingBox()).height).toBeLessThan(
         (await list.boundingBox()).height,

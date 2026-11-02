@@ -4,6 +4,7 @@
 // of the device, community and storage comes through its RunnerHost, so the
 // desktop app and a standalone host run agents with the same code.
 import { bytesToHex } from "nostr-tools/utils";
+import type { ProtectionAction } from "../agent-protection/service";
 import type {
   Agent,
   AgentAttention,
@@ -263,6 +264,7 @@ type Runner = {
   readonly scope: string;
   /** The registration whose `run` it calls; a new one aborts the in-flight run. */
   type: RegisteredAgentType | undefined;
+  protectionRevision: number;
   controller: AbortController;
   /** Events waiting to run in each lane, mentions first; due timers are found
    * when a run starts instead. */
@@ -366,6 +368,7 @@ export type RunnerMember = Readonly<{
   pubkey: string;
   relay: string;
   type: string;
+  protectionRevision?: number | undefined;
   /** The partition its community's activity is kept under. */
   scope: string;
 }>;
@@ -434,6 +437,7 @@ export type RunnerHost = {
   team(key: AgentKey): string;
   /** What its next run starts with, from this device's storage only. */
   start(agent: Agent): Start<unknown>;
+  protection?(agent: Agent): AgentHandle["protection"];
   agentTypes(): ReturnType<NonNullable<AgentHandle["agentTypes"]>>;
   createAgent(
     agent: Agent,
@@ -521,6 +525,8 @@ export class AgentRunners {
   }
 
   private readonly runners = new Map<string, Runner>();
+  /** Holds newly joined memberships while their global provider/policy changes. */
+  private readonly transitions = new Set<string>();
   /** Each agent's last claim or release, which its next waits for. */
   private readonly custody = new Map<string, Promise<void>>();
   /** Agents whose community was live at the last resume. */
@@ -629,7 +635,11 @@ export class AgentRunners {
         if (off) runner.held.clear();
       }
       if (!runner) this.runners.set(identity.key, this.runner(identity, type));
-      else if (runner.type !== type) {
+      else if (
+        runner.type !== type ||
+        runner.protectionRevision !== (identity.protectionRevision ?? 0)
+      ) {
+        runner.protectionRevision = identity.protectionRevision ?? 0;
         runner.controller.abort();
         runner.controller = new AbortController();
         runner.type = type;
@@ -784,8 +794,13 @@ export class AgentRunners {
       throw new Error(
         "This agent is not running in this copy of Buzz. Change its provider in the Buzz app that runs it.",
       );
-    if (held.some((other) => other.transitioning))
+    const pubkey = runner.member.pubkey;
+    if (
+      this.transitions.has(pubkey) ||
+      held.some((other) => other.transitioning)
+    )
       throw new Error(`${name}'s provider is already changing`);
+    this.transitions.add(pubkey);
     for (const other of held) other.transitioning = true;
     try {
       if (!(await this.claimForRetype(runner)))
@@ -795,7 +810,9 @@ export class AgentRunners {
       if (working()) throw answering();
       return await change();
     } finally {
-      for (const other of held) {
+      this.transitions.delete(pubkey);
+      for (const other of this.runners.values()) {
+        if (other.member.pubkey !== pubkey) continue;
         other.transitioning = false;
         void this.drain(other);
       }
@@ -808,7 +825,7 @@ export class AgentRunners {
   }
 
   private runner(
-    { key, pubkey, relay, scope }: RunnerMember,
+    { key, pubkey, relay, scope, protectionRevision }: RunnerMember,
     type: RegisteredAgentType | undefined,
   ): Runner {
     return {
@@ -816,6 +833,7 @@ export class AgentRunners {
       member: { pubkey, relay },
       scope,
       type,
+      protectionRevision: protectionRevision ?? 0,
       controller: new AbortController(),
       queues: { mention: [], watch: [] },
       running: false,
@@ -831,7 +849,7 @@ export class AgentRunners {
       backlog: [],
       working: 0,
       typing: new Map(),
-      transitioning: false,
+      transitioning: this.transitions.has(pubkey),
       held: new Map(),
       notes: new Map(),
       mayHold: true,
@@ -1841,7 +1859,10 @@ export class AgentRunners {
           }
         : { classifier, ...input };
     if (!live()) return undefined;
-    const { pass, result } = await classify(decisions, facts);
+    const { pass, result } = await classify(decisions, {
+      ...facts,
+      community: agent.relay,
+    });
     return pass ? result : undefined;
   }
   /** What `event` wakes now, and whether other matching watches still wait
@@ -2169,11 +2190,16 @@ export class AgentRunners {
       // Every copy of the app on this machine hears the same events; only the
       // one holding the agent runs them. Asked on every wake too, so a copy
       // takes over within a tick of the holder quitting or letting go.
-      if (!(await this.claim(runner))) {
+      const held = await this.claim(runner);
+      if (!held) {
         this.host.activity.clear(runner.scope, runner.member.pubkey);
         runner.activityClaimed = false;
-        this.dropMentions(runner);
-        runner.queues.watch.length = 0;
+        // Only confirmed custody elsewhere discards this copy's work. An
+        // uncertain claim stays closed and retries the same queues on a wake.
+        if (held === false) {
+          this.dropMentions(runner);
+          runner.queues.watch.length = 0;
+        }
         break;
       }
       // Retype may have reserved this idle runner while claim was pending.
@@ -2270,6 +2296,14 @@ export class AgentRunners {
       return run(delivery);
     };
     const completion = Promise.resolve().then(async () => {
+      if (agent.protection) {
+        if (!type.protection || !handle.protection)
+          throw new Error(
+            type.protectionUnavailable ??
+              "This runtime does not support the agent's protection policy",
+          );
+        handle.protection.assertAvailable();
+      }
       const pick = await pickFor(job.trigger, agent, type);
       const start = this.host.start(agent);
       if (!start.ok) throw new Error(start.reason);
@@ -2429,74 +2463,92 @@ export class AgentRunners {
   private handleFor(runner: Runner, agent: Agent, run = false): AgentHandle {
     // Taken now, as a type change replaces the controller.
     const lifetime = runner.controller.signal;
-    return Object.freeze({
-      key: agent.key,
-      pubkey: agent.pubkey,
-      name: agent.name,
-      owner: agent.owner,
-      // What acts as the agent stops with it: a turn still working once it
-      // is deleted, removed from this community or retyped can't.
-      publish: async (event: AgentEventTemplate, check?: () => void) => {
-        lifetime.throwIfAborted();
-        return this.publish(runner, event, lifetime, check);
-      },
-      query: async (filters: readonly object[]) => {
-        lifetime.throwIfAborted();
-        return this.require().query(agent, filters);
-      },
-      searchProfiles: async (query: string, limit: number) => {
-        lifetime.throwIfAborted();
-        return this.require().searchProfiles(agent, query, limit);
-      },
-      upload: async (data: string, mime: string) => {
-        lifetime.throwIfAborted();
-        return this.require().upload(agent, data, mime);
-      },
-      media: async (url: string) => {
-        lifetime.throwIfAborted();
-        return this.require().media(agent, url);
-      },
-      gitAuth: async (owner: string, repo: string) => {
-        lifetime.throwIfAborted();
-        return this.require().gitAuth(agent, owner, repo);
-      },
-      remember: async (slug: string, body: string | null, after: number) => {
-        lifetime.throwIfAborted();
-        const event = await this.require().remember(agent, slug, body, after);
-        this.host.remembered(agent.key, slug, body);
-        return event;
-      },
-      agentTypes: () => this.host.agentTypes(),
-      // Drafts outlive the run's handover deadline, as a turn still working may
-      // submit one, but not the agent or its type.
-      createAgent: async (input: Readonly<{ type: string; name: string }>) => {
-        lifetime.throwIfAborted();
-        return this.host.createAgent(agent, input);
-      },
-      updateAgent: async (input: AgentUpdateInput) => {
-        lifetime.throwIfAborted();
-        return this.host.updateAgent(agent, input);
-      },
-      // Only a run hands off: a plugin's wake through `Agents.handle` would
-      // read as the agent's own.
-      ...(run && {
-        handoff: (handoff: AgentHandoff) => {
-          lifetime.throwIfAborted();
-          this.host.handoff(agent, handoff);
+    const protection = this.host.protection?.(agent);
+    const handle = guarded(
+      {
+        protection: protection && {
+          ...protection,
+          check: (action: ProtectionAction, signal: AbortSignal) =>
+            protection.check(action, AbortSignal.any([lifetime, signal])),
         },
-      }),
-      templates: () => this.host.templates(agent),
-      tabs: () => this.host.tabs(agent),
-      notes: (channelId: string, root?: string) => {
-        const pending = runner.notes.get(channelId) ?? [];
-        const matches = (note: { root: string | undefined }) =>
-          root === undefined || note.root === root;
-        const notes = pending.filter(matches);
-        const kept = pending.filter((note) => !matches(note));
-        if (kept.length) runner.notes.set(channelId, kept);
-        else runner.notes.delete(channelId);
-        return notes.map((note) => note.text);
+        key: agent.key,
+        pubkey: agent.pubkey,
+        name: agent.name,
+        owner: agent.owner,
+        // What acts as the agent stops with it: a turn still working once it
+        // is deleted, removed from this community or retyped can't.
+        publish: async (event: AgentEventTemplate, check?: () => void) => {
+          lifetime.throwIfAborted();
+          return this.publish(runner, event, lifetime, check);
+        },
+        query: async (filters: readonly object[]) => {
+          lifetime.throwIfAborted();
+          return this.require().query(agent, filters);
+        },
+        searchProfiles: async (query: string, limit: number) => {
+          lifetime.throwIfAborted();
+          return this.require().searchProfiles(agent, query, limit);
+        },
+        upload: async (data: string, mime: string) => {
+          lifetime.throwIfAborted();
+          return this.require().upload(agent, data, mime);
+        },
+        media: async (url: string) => {
+          lifetime.throwIfAborted();
+          return this.require().media(agent, url);
+        },
+        gitAuth: async (owner: string, repo: string) => {
+          lifetime.throwIfAborted();
+          return this.require().gitAuth(agent, owner, repo);
+        },
+        remember: async (slug: string, body: string | null, after: number) => {
+          lifetime.throwIfAborted();
+          const event = await this.require().remember(agent, slug, body, after);
+          this.host.remembered(agent.key, slug, body);
+          return event;
+        },
+        agentTypes: () => this.host.agentTypes(),
+        // Drafts outlive the run's handover deadline, as a turn still working may
+        // submit one, but not the agent or its type.
+        createAgent: async (
+          input: Readonly<{ type: string; name: string }>,
+        ) => {
+          lifetime.throwIfAborted();
+          return this.host.createAgent(agent, input);
+        },
+        updateAgent: async (input: AgentUpdateInput) => {
+          lifetime.throwIfAborted();
+          return this.host.updateAgent(agent, input);
+        },
+        // Only a run hands off: a plugin's wake through `Agents.handle` would
+        // read as the agent's own.
+        ...(run && {
+          handoff: (handoff: AgentHandoff) => {
+            lifetime.throwIfAborted();
+            this.host.handoff(agent, handoff);
+          },
+        }),
+        templates: () => this.host.templates(agent),
+        tabs: () => this.host.tabs(agent),
+        notes: (channelId: string, root?: string) => {
+          const pending = runner.notes.get(channelId) ?? [];
+          const matches = (note: { root: string | undefined }) =>
+            root === undefined || note.root === root;
+          const notes = pending.filter(matches);
+          const kept = pending.filter((note) => !matches(note));
+          if (kept.length) runner.notes.set(channelId, kept);
+          else runner.notes.delete(channelId);
+          return notes.map((note) => note.text);
+        },
+        attention: this.attention(agent.key, lifetime),
       },
+      () => lifetime.throwIfAborted(),
+    );
+    return Object.freeze({
+      ...handle,
+      // Compensation for an undelivered request can settle after retirement.
+      // It only returns local notes to this runner; acting as the agent stays
+      // guarded by the old lifetime above.
       restoreNotes: (
         channelId: string,
         notes: readonly string[],
@@ -2508,7 +2560,6 @@ export class AgentRunners {
             ...(runner.notes.get(channelId) ?? []),
           ]);
       },
-      attention: this.attention(agent.key, lifetime),
     });
   }
 
@@ -2646,13 +2697,13 @@ export class AgentRunners {
           (await this.host.custody?.claim(runner.member.pubkey)) ?? false,
         );
       } catch (error) {
-        this.claimed(runner, true);
-        // Answering twice beats not answering at all.
+        this.claimed(runner, false);
+        // Uncertain custody must not admit a stale protection policy.
         console.warn(
           `Agent ${this.host.agent(runner.key)?.name} was not claimed`,
           error,
         );
-        return true;
+        return undefined;
       }
     });
   }
@@ -2856,7 +2907,15 @@ function guarded<T extends object>(target: T, live: () => void): T {
         key,
         typeof value !== "function"
           ? value && typeof value === "object"
-            ? guarded(value, live)
+            ? Array.isArray(value)
+              ? Object.freeze(
+                  value.map((item) =>
+                    item && typeof item === "object"
+                      ? guarded(item, live)
+                      : item,
+                  ),
+                )
+              : guarded(value, live)
             : value
           : value.constructor === AsyncFunction
             ? async (...args: unknown[]) => {

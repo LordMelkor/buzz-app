@@ -462,17 +462,32 @@ test("unknown target fails without channel-head success and retries in the same 
   expect(await openTarget(page, target(app, "e".repeat(64)))).toEqual({
     status: "failed",
     reason: "not-found",
+    presented: true,
   });
+  // The thread shows the failure in place; the conversation stays open.
   await expect(
-    page.getByRole("heading", { name: "This destination couldn’t open" }),
+    thread(page).getByText("This message isn’t available."),
   ).toBeVisible();
   const visit = await page.evaluate(
     () => window.fixtureNavigation.snapshot().entry.id,
   );
-  await page
-    .getByRole("button", { name: "Retry navigation", exact: true })
+  // The failure is presented, so status stays failed; the reads prove retry.
+  const targetReads = () =>
+    app.report.queries.filter(({ filter }) =>
+      [filter.ids, filter["#e"]].some((ids) =>
+        ids?.some((id) => id === "e".repeat(64) || id === "f".repeat(64)),
+      ),
+    ).length;
+  const before = targetReads();
+  expect(before).toBeGreaterThan(0);
+  await thread(page)
+    .getByRole("button", { name: "Try again", exact: true })
     .click();
-  await expect.poll(() => status(page)).toBe("failed");
+  await expect.poll(targetReads).toBeGreaterThan(before);
+  await expect(
+    thread(page).getByText("This message isn’t available."),
+  ).toBeVisible();
+  expect(await status(page)).toBe("failed");
   expect(
     await page.evaluate(() => window.fixtureNavigation.snapshot().entry.id),
   ).toBe(visit);
@@ -1217,7 +1232,7 @@ liveTest(
       0,
     );
     await expect(
-      region.getByRole("button", { name: "Retry thread", exact: true }),
+      region.getByRole("button", { name: "Try again", exact: true }),
     ).toBeVisible();
     await expect(
       page.getByRole("textbox", { name: "Reply to thread", exact: true }),
