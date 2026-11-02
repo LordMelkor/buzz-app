@@ -11,9 +11,10 @@ fn main() -> std::process::ExitCode {
         .is_some_and(legacy_cli_invocation::is_legacy_cli_arg)
     {
         eprintln!(
-            "This executable is the Buzz desktop app. The legacy Buzz CLI is not \
-             included in this app bundle; no CLI command was executed. Update \
-             your script to use a separately installed Buzz CLI."
+            "This executable is the Buzz desktop app; no CLI command was executed. \
+             Use the bundled buzz CLI instead (on macOS: \
+             Buzz.app/Contents/Resources/bin/buzz). Update your script or PATH \
+             to point to that executable."
         );
         return std::process::ExitCode::from(2);
     }

@@ -28,6 +28,7 @@ fn legacy_cli_commands_fail_without_echoing_payloads() {
     for args in [
         vec!["--help"],
         vec!["messages", "send", "--content", "private-message-payload"],
+        vec!["gifs", "search", "private-gif-query"],
         vec!["--private-key=private-key-payload", "messages", "list"],
         vec!["--format", "compact", "channels", "list"],
     ] {
@@ -37,7 +38,9 @@ fn legacy_cli_commands_fail_without_echoing_payloads() {
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(stderr.contains("Buzz desktop app"));
         assert!(stderr.contains("no CLI command was executed"));
+        assert!(stderr.contains("Buzz.app/Contents/Resources/bin/buzz"));
         assert!(!stderr.contains("private-message-payload"));
+        assert!(!stderr.contains("private-gif-query"));
         assert!(!stderr.contains("private-key-payload"));
     }
 }

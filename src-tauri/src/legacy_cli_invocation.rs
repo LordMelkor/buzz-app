@@ -19,6 +19,7 @@ pub(crate) fn is_legacy_cli_arg(arg: &OsStr) -> bool {
             | "canvas"
             | "reactions"
             | "emoji"
+            | "gifs"
             | "dms"
             | "users"
             | "workflows"
@@ -59,6 +60,7 @@ mod tests {
             "canvas",
             "reactions",
             "emoji",
+            "gifs",
             "dms",
             "users",
             "workflows",
@@ -97,6 +99,7 @@ mod tests {
         for arg in [
             "buzz://message?channel=messages&id=help",
             "buzz://channel/general",
+            "buzz://channel/gifs",
             "buzz://join?relay=wss://example.com&code=notes",
             "-psn_0_12345",
             "-NSDocumentRevisionsDebugMode",
