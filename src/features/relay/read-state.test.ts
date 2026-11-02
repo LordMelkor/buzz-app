@@ -952,6 +952,11 @@ describe("durable read-state owner", () => {
     expect(first.snapshot().status).toBe("reconciled");
     const blobs = f.host.publish.mock.calls.length;
     expect(blobs).toBeGreaterThan(1);
+    // Full-state readers reject duplicate coordinates, so each blob is distinct.
+    const coordinates = f.host.publish.mock.calls.map(
+      ([event]) => event.tags.find(([name]) => name === "d")?.[1],
+    );
+    expect(new Set(coordinates).size).toBe(blobs);
     for (const [event] of f.host.publish.mock.calls) {
       const blob = decodeReadState([event], f.key.secret)[0].blob;
       expect(
