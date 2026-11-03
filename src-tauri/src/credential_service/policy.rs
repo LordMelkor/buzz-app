@@ -77,7 +77,7 @@ pub(super) fn classify(
 }
 
 fn nip42(tags: &[Vec<String>], relay: &str) -> Result<(), &'static str> {
-    if !only(tags, "relay").is_some_and(|url| same_origin(url, relay)) {
+    if !only(tags, "relay").is_some_and(|url| same_relay(url, relay)) {
         return Err("NIP-42 auth is signed only for this identity's community");
     }
     only(tags, "challenge")
@@ -109,8 +109,14 @@ fn blossom(tags: &[Vec<String>], created_at: u64, relay: &str) -> Result<(), &'s
     Ok(())
 }
 
+/// Whether `a` and `b` name the same relay after URL normalization: one
+/// host can serve communities at several paths, so the whole URL counts.
+pub(super) fn same_relay(a: &str, b: &str) -> bool {
+    relay_url(a).is_some_and(|a| Some(a) == relay_url(b))
+}
+
 /// Whether `a` and `b` name the same HTTP origin.
-pub(super) fn same_origin(a: &str, b: &str) -> bool {
+fn same_origin(a: &str, b: &str) -> bool {
     origin(a).is_some_and(|a| Some(a) == origin(b))
 }
 
@@ -121,6 +127,17 @@ fn only<'a>(tags: &'a [Vec<String>], name: &str) -> Option<&'a str> {
         .filter(|tag| tag.first().map(String::as_str) == Some(name));
     let value = found.next()?.get(1)?;
     found.next().is_none().then_some(value.as_str())
+}
+
+/// A WebSocket URL, normalized: lowercase host, no default port, `/` for an
+/// empty path.
+fn relay_url(raw: &str) -> Option<Url> {
+    let url = Url::parse(raw).ok()?;
+    (matches!(url.scheme(), "ws" | "wss")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none())
+    .then_some(url)
 }
 
 /// A URL's HTTP origin, with `ws` read as `http` and `wss` as `https`.

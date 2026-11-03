@@ -179,19 +179,23 @@ impl AppAgentHost {
         let incarnation = self.tokens.stamp(&pubkey, &relay)?;
         self.signer_at(pubkey, relay, incarnation, valid_for).await
     }
-    /// The agent, its current incarnation and the owner's retirements, for a
-    /// local caller's token that acts as it from now on.
+    /// The owner's retirements so far, for a local caller's token issued now.
+    pub(crate) fn caller_retirements(&self) -> u64 {
+        self.tokens.retirements()
+    }
+    /// The agent and its current incarnation, for a local caller's token that
+    /// acts as it from now on.
     pub(crate) async fn caller_stamp(
         &self,
         pubkey: String,
         relay: String,
-    ) -> Result<(AppAgent, Stamp, u64), String> {
+    ) -> Result<(AppAgent, Stamp), String> {
         let incarnation = self.tokens.stamp(&pubkey, &relay)?;
-        let retirements = self.tokens.retirements();
-        Ok((self.agent(pubkey, relay).await?, incarnation, retirements))
+        Ok((self.agent(pubkey, relay).await?, incarnation))
     }
-    /// Whether a token stamped by [`Self::caller_stamp`] still acts: the agent
-    /// was not deleted and the owner did not sign out or change account since.
+    /// Whether a token issued at [`Self::caller_retirements`] and bound at
+    /// [`Self::caller_stamp`] still acts: the agent was not deleted and the
+    /// owner did not sign out or change account since.
     pub(crate) fn caller_live(
         &self,
         pubkey: &str,
@@ -380,6 +384,12 @@ impl AppAgentHost {
     }
     pub(crate) fn reopen_row_for_test(&self, pubkey: &str, relay: &str) {
         self.tokens.reopen_row(pubkey, relay).unwrap();
+    }
+    /// Holds every key read until dropped, pausing work that needs a key.
+    pub(crate) fn hold_keys_for_test(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Secret>>> {
+        self.keys()
     }
 }
 

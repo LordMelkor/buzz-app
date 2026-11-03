@@ -210,6 +210,78 @@ async fn signing_out_revokes_every_token() {
 }
 
 #[tokio::test]
+async fn a_spare_issued_before_sign_out_never_acts() {
+    let fixture = fixture();
+    let (issued, token) = issued(&fixture).await;
+    fixture.identity.sign_out().await;
+    assert!(fixture
+        .service
+        .bind(&issued, "p", fixture.agent.pubkey.clone(), RELAY.into())
+        .await
+        .is_err());
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
+    // A token issued after it acts.
+    let (_issued, token) = bound(&fixture).await;
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(reply.0, StatusCode::OK);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Revocation {
+    Exit,
+    Deletion,
+    SignOut,
+}
+
+/// A request admitted before its token is revoked, that then waits for the
+/// agent's key, returns no signature and no plaintext.
+#[tokio::test(flavor = "multi_thread")]
+async fn revocation_while_a_key_is_read_withholds_the_result() {
+    for revocation in [Revocation::Exit, Revocation::Deletion, Revocation::SignOut] {
+        for method in ["sign_event", "nip44_decrypt"] {
+            let fixture = fixture();
+            let (issued, token) = bound(&fixture).await;
+            let owner = fixture.agent.owner.clone();
+            let params = match method {
+                "sign_event" => vec![unsigned(9, json!([]), now())],
+                _ => vec![
+                    owner.clone(),
+                    fixture.key.nip44_encrypt(&owner, "secret").unwrap(),
+                ],
+            };
+            let key = digest(&token);
+            let keys = fixture.host.hold_keys_for_test();
+            let (service, waiting) = (fixture.service.clone(), token.clone());
+            let body = json!({ "id": "1", "method": method, "params": params }).to_string();
+            let request = tokio::spawn(async move {
+                respond(&service, Some(&waiting), Some(1), body.as_bytes()).await
+            });
+            // Admitted: it spent one request of its rate, and now waits for the key.
+            while fixture.service.callers()[&key].tokens >= BURST {
+                tokio::task::yield_now().await;
+            }
+            assert!(!request.is_finished());
+            match revocation {
+                Revocation::Exit => drop(issued),
+                Revocation::Deletion => fixture
+                    .host
+                    .forget_row_for_test(&fixture.agent.pubkey, RELAY),
+                Revocation::SignOut => fixture.identity.sign_out().await,
+            }
+            drop(keys);
+            let reply = request.await.unwrap();
+            assert_eq!(
+                error(&reply),
+                (StatusCode::UNAUTHORIZED, "revoked"),
+                "{revocation:?} {method}"
+            );
+            assert_eq!(reply.1["result"], "", "{revocation:?} {method}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn an_unknown_token_is_revoked_and_a_missing_one_too() {
     let fixture = fixture();
     let reply = ask(&fixture, "not-a-token", "get_public_key", &[]).await;
@@ -354,14 +426,31 @@ fn the_policy_binds_each_proof_to_the_community() {
         ),
         Verdict::Sign
     );
-    assert!(matches!(
+    assert_eq!(
         verdict(
             22242,
-            json!([["relay", "wss://other.example"], ["challenge", "c"]]),
+            json!([["relay", "wss://relay.example:443"], ["challenge", "c"]]),
             NOW
         ),
-        Verdict::Deny(_)
-    ));
+        Verdict::Sign
+    );
+    // Another community on the same host, or not a relay URL at all.
+    for other in [
+        "wss://other.example",
+        "wss://relay.example/other",
+        "wss://relay.example/?community=other",
+        "wss://relay.example:8443",
+        "ws://relay.example",
+        "https://relay.example",
+    ] {
+        assert!(
+            matches!(
+                verdict(22242, json!([["relay", other], ["challenge", "c"]]), NOW),
+                Verdict::Deny(_)
+            ),
+            "{other}"
+        );
+    }
     assert!(matches!(
         verdict(22242, json!([["relay", RELAY]]), NOW),
         Verdict::Deny(_)
@@ -520,10 +609,18 @@ async fn evidence_and_auth_tag_come_from_the_agent() {
         &fixture,
         &token,
         "federated_identity",
-        &["wss://other.example"],
+        &["wss://Relay.Example/"],
     )
     .await;
-    assert_eq!(error(&reply), (StatusCode::FORBIDDEN, "denied"));
+    assert_eq!(reply, (StatusCode::OK, json!({ "id": "1", "result": "" })));
+    for other in [
+        "wss://other.example",
+        "wss://relay.example/other",
+        "https://relay.example",
+    ] {
+        let reply = ask(&fixture, &token, "federated_identity", &[other]).await;
+        assert_eq!(error(&reply), (StatusCode::FORBIDDEN, "denied"), "{other}");
+    }
 }
 
 #[tokio::test(start_paused = true)]

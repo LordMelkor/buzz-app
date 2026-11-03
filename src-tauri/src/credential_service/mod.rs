@@ -7,7 +7,8 @@
 //!   the agent the process serves, once; a spare process is bound when taken.
 //! - The token dies with its process, and stops acting once its agent is
 //!   deleted or the owner signs out or changes account: each request rechecks
-//!   the agent's incarnation and the owner's retirements from binding time.
+//!   the agent's incarnation from binding time and the owner's retirements from
+//!   issue time, on arrival and again before its result is returned.
 //! - Every signature passes the contract's operation policy ([`policy`]).
 //!   Sensitive kinds answer `approval_required` until an approval prompt exists.
 //! - It binds only `127.0.0.1`. `Host` must name the bound address, a request
@@ -77,6 +78,9 @@ struct Inner {
 }
 struct Caller {
     agent: Option<Bound>,
+    /// The owner's retirements when it was issued; any later one revokes it,
+    /// bound or not.
+    retirements: u64,
     /// Its agent was deleted or its owner signed out: it never acts again.
     revoked: bool,
     tokens: f64,
@@ -88,7 +92,6 @@ struct Bound {
     relay: String,
     owner: String,
     incarnation: Stamp,
-    retirements: u64,
 }
 
 /// One issued token, revoked when dropped: with the process it was issued to.
@@ -139,6 +142,7 @@ impl CredentialService {
             key,
             Caller {
                 agent: None,
+                retirements: self.0.agents.caller_retirements(),
                 revoked: false,
                 tokens: BURST,
                 at: Instant::now(),
@@ -164,7 +168,7 @@ impl CredentialService {
         pubkey: String,
         relay: String,
     ) -> Result<(), String> {
-        let (agent, incarnation, retirements) = self.0.agents.caller_stamp(pubkey, relay).await?;
+        let (agent, incarnation) = self.0.agents.caller_stamp(pubkey, relay).await?;
         if agent.agent_type.split_once('/').map(|(owner, _)| owner) != Some(plugin) {
             return Err("The agent is not of this plugin's type".into());
         }
@@ -173,6 +177,15 @@ impl CredentialService {
             .get_mut(&issued.key)
             .filter(|caller| !caller.revoked)
             .ok_or("The process has exited")?;
+        // A spare issued before its owner signed out never acts.
+        if !self
+            .0
+            .agents
+            .caller_live(&agent.pubkey, &agent.relay, incarnation, caller.retirements)
+        {
+            caller.revoked = true;
+            return Err("This Buzz credential was revoked".into());
+        }
         match &caller.agent {
             Some(bound) if bound.pubkey == agent.pubkey && bound.relay == agent.relay => Ok(()),
             Some(_) => Err("The process already acts as another agent".into()),
@@ -182,7 +195,6 @@ impl CredentialService {
                     relay: agent.relay,
                     owner: agent.owner,
                     incarnation,
-                    retirements,
                 });
                 Ok(())
             }
@@ -207,13 +219,15 @@ impl CredentialService {
         Ok(url)
     }
 
-    /// The caller `token` names, once it is bound and still acts, after one
-    /// request of its rate.
-    fn admit(&self, token: &str) -> Result<Bound, Failure> {
-        let key = digest(token);
-        let mut callers = self.callers();
+    /// The caller `token` names and the agent it acts as, once it is bound,
+    /// while it still acts.
+    fn acting<'a>(
+        &self,
+        callers: &'a mut HashMap<[u8; 32], Caller>,
+        token: &str,
+    ) -> Result<(&'a mut Caller, Bound), Failure> {
         let caller = callers
-            .get_mut(&key)
+            .get_mut(&digest(token))
             .filter(|caller| !caller.revoked)
             .ok_or(Failure::revoked())?;
         let Some(bound) = caller.agent.clone() else {
@@ -226,12 +240,20 @@ impl CredentialService {
             &bound.pubkey,
             &bound.relay,
             bound.incarnation,
-            bound.retirements,
+            caller.retirements,
         ) {
             // An issued token lives in its process's entry; it just stops acting.
             caller.revoked = true;
             return Err(Failure::revoked());
         }
+        Ok((caller, bound))
+    }
+
+    /// The caller `token` names, once it is bound and still acts, after one
+    /// request of its rate.
+    fn admit(&self, token: &str) -> Result<Bound, Failure> {
+        let mut callers = self.callers();
+        let (caller, bound) = self.acting(&mut callers, token)?;
         let now = Instant::now();
         caller.tokens =
             (caller.tokens + now.duration_since(caller.at).as_secs_f64() * REFILL).min(BURST);
@@ -314,7 +336,7 @@ impl CredentialService {
                     .map_err(|error| Failure::new("invalid_request", &error))
             }
             ("federated_identity", [relay]) => {
-                if !policy::same_origin(relay, &caller.relay) {
+                if !policy::same_relay(relay, &caller.relay) {
                     return Err(Failure::new(
                         "denied",
                         "This token does not act on that relay",
@@ -520,10 +542,15 @@ async fn respond(
         if message.method == "pair" {
             return Err(Failure::new("unknown_method", "pair is not supported"));
         }
-        let caller = service.admit(token.ok_or(Failure::revoked())?)?;
-        service
+        let token = token.ok_or(Failure::revoked())?;
+        let caller = service.admit(token)?;
+        let result = service
             .call(&caller, &message.method, &message.params)
-            .await
+            .await?;
+        // Its process may have exited, or its agent or owner been retired,
+        // while the key was read: then nothing it made is returned.
+        service.acting(&mut service.callers(), token)?;
+        Ok(result)
     }
     .await;
     match result {
