@@ -1272,7 +1272,12 @@ export function ChannelMembersDialog({
       ? [{ team, missing }]
       : [];
   });
-  const keys = publicKeyLabels([...members, ...candidates.keys()]);
+  // Suffix search scans the whole roster; redo it only when the keys change.
+  const keyList = [...members, ...candidates.keys()].join(":");
+  const keys = useMemo(
+    () => publicKeyLabels(keyList ? keyList.split(":") : []),
+    [keyList],
+  );
   // A naming plugin is optional: same-named rows still need a visible difference.
   const shownNames = new Map<string, number>();
   for (const name of [
@@ -2204,14 +2209,14 @@ export function ChannelMembersDialog({
                 )}
                 {!search.loading && !search.error && !available.length && (
                   <p className="px-control-inset text-body-sm text-subtle">
-                    {search.tooShort
-                      ? `Type at least ${SEARCH_MIN_CHARS} characters to search people.`
-                      : !solo
-                        ? "No other matching people or agents."
-                        : !canAddSoloAgents
-                          ? "No other matching people."
-                          : agentChoices.pending
-                            ? "Loading agents…"
+                    {solo && canAddSoloAgents && agentChoices.pending
+                      ? "Loading agents…"
+                      : search.tooShort
+                        ? `Type at least ${SEARCH_MIN_CHARS} characters to search people.`
+                        : !solo
+                          ? "No other matching people or agents."
+                          : !canAddSoloAgents
+                            ? "No other matching people."
                             : "No other matching people or agents."}
                   </p>
                 )}

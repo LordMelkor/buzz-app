@@ -29,7 +29,7 @@ export function PanelCard({
       className={styles.cardLayout}
       aria-label={panel.title}
       onKeyDown={(event) => {
-        if (event.key === "Escape" && !tabbed) {
+        if (event.key === "Escape" && !event.shiftKey && !tabbed) {
           event.stopPropagation();
           props.close();
         }

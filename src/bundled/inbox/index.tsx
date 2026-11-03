@@ -1,6 +1,7 @@
 import type { PluginModule } from "../../plugins/api";
 import { isApplePlatform } from "../../features/shortcuts/format";
 import { InboxPage, type ArchiveShortcut } from "./InboxPage";
+import { inboxRouteTarget, isInboxRoute, type InboxRoute } from "./route";
 export const inject = [
   "pages",
   "relay",
@@ -25,12 +26,42 @@ export const apply: PluginModule["apply"] = (ctx) => {
     when: () => !!archive.current,
     run: () => archive.current?.(),
   });
+  // Slack's chords for jumping to a filtered Inbox, including from the composer.
+  const open = (
+    id: string,
+    title: string,
+    key: string,
+    order: number,
+    params: InboxRoute,
+  ) =>
+    ctx.shortcuts.register({
+      id,
+      title,
+      binding: { key, mod: true, shift: true },
+      order,
+      allowInEditable: true,
+      run: () => {
+        void navigator.open(inboxRouteTarget(params));
+      },
+    });
+  open("open-unread", "Open unread in Inbox", "a", 20, {
+    activity: "all",
+    attention: "unread",
+  });
+  open("open-threads", "Open threads in Inbox", "t", 30, {
+    activity: "threads",
+  });
+  open("open-mentions", "Open mentions in Inbox", "m", 40, {
+    activity: "mentions",
+  });
+  open("open-dms", "Open DMs in Inbox", "k", 50, { activity: "dms" });
   ctx.pages.register({
     id: "inbox",
     title: "Inbox",
     layout: "workspace",
     primary: true,
-    component: () => (
+    route: { version: 1, validate: isInboxRoute },
+    component: ({ navigation }) => (
       <InboxPage
         host={ctx}
         relay={relay}
@@ -38,6 +69,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
         extensions={ctx.conversation}
         tabs={ctx.conversation.ui.Tabs}
         archive={archive}
+        navigation={navigation}
       />
     ),
   });

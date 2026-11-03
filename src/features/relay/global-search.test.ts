@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { createRelaySession } from "./session";
+import { byteSize } from "./budget";
 import { DiscoveryState } from "./discovery";
 import { ReadError } from "./errors";
 import {
@@ -411,7 +412,11 @@ it("fails closed on the returned-channel cap and metadata capacity without evict
       ),
     ).rejects.toThrow("Too many");
     expect(wire.pending).toHaveLength(0);
-    const state = new DiscoveryState(viewer.pubkey, relay.pubkey, 1);
+    const state = new DiscoveryState(
+      viewer.pubkey,
+      relay.pubkey,
+      byteSize(publicMetadata(relay, "one")),
+    );
     state.retain(new Set(), new Map());
     state.accept(publicMetadata(relay, "one"));
     state.deny("one");
@@ -632,3 +637,50 @@ it.each([false, true])(
     }
   },
 );
+
+it("does not restore a public preview from stale exact metadata after private byte overflow", async () => {
+  const viewer = keypair(),
+    relay = keypair();
+  const first = publicMetadata(relay, "open", [], 1700000000);
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  let live!: LiveCallbacks;
+  const owner = createRelaySession(
+    {
+      ...wire.transport,
+      subscribe(callbacks) {
+        live = callbacks;
+        return { update() {}, retry() {}, dispose() {} };
+      },
+    },
+    { maxDiscoveryBytes: byteSize(first) },
+  );
+  try {
+    live.receive([first]);
+    expect(owner.session.channels.get?.("open")).toMatchObject({
+      readOnly: true,
+    });
+    live.receive([
+      publicMetadata(
+        relay,
+        "open",
+        [["private"], ["name", "A larger private name"]],
+        1700000001,
+      ),
+    ]);
+    expect(owner.session.channels.get?.("open")).toBeUndefined();
+    const lookup = owner.session.channels.resolve?.(["open"]);
+    await flush();
+    wire.next().respond([first]);
+    await lookup;
+    expect(owner.session.channels.get?.("open")).toBeUndefined();
+    const fresh = owner.session.channels.resolve?.(["open"]);
+    await flush();
+    wire.next().respond([publicMetadata(relay, "open", [], 1700000002)]);
+    await fresh;
+    expect(owner.session.channels.get?.("open")).toMatchObject({
+      readOnly: true,
+    });
+  } finally {
+    owner.dispose();
+  }
+});

@@ -13,6 +13,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type ComponentPropsWithRef,
   type MouseEvent,
   type ReactNode,
 } from "react";
@@ -150,7 +151,21 @@ export function Tabs<Value extends string>({
     <>
       <BaseTabs.List ref={list} className="buzz-tabs-list" aria-label={label}>
         {showSelection && variant !== "navigation" && (
-          <BaseTabs.Indicator className="buzz-tabs-indicator" />
+          <BaseTabs.Indicator
+            className="buzz-tabs-indicator"
+            render={
+              variant === "segmented" || iconOnly
+                ? (props, state) => (
+                    <SegmentedIndicator
+                      {...props}
+                      value={value}
+                      left={state.activeTabPosition?.left}
+                      width={state.activeTabSize?.width}
+                    />
+                  )
+                : undefined
+            }
+          />
         )}
         {items.map((item) => (
           <TabMenu
@@ -310,6 +325,32 @@ export function Tabs<Value extends string>({
           </BaseTabs.Panel>
         ))}
     </BaseTabs.Root>
+  );
+}
+
+/** Base UI re-renders this on measurements as well as selection changes. */
+function SegmentedIndicator({
+  value,
+  left,
+  width,
+  ...props
+}: ComponentPropsWithRef<"span"> & {
+  value: string | null;
+  left: number | undefined;
+  width: number | undefined;
+}) {
+  const [layout, setLayout] = useState({ value, left, width, animate: false });
+  if (
+    layout.value !== value ||
+    layout.left !== left ||
+    layout.width !== width
+  ) {
+    // Keep the travelling selection, but apply geometry-only changes at once,
+    // including window resizing, text scaling and resizing during a slide.
+    setLayout({ value, left, width, animate: layout.value !== value });
+  }
+  return (
+    <span {...props} data-selection-change={layout.animate || undefined} />
   );
 }
 

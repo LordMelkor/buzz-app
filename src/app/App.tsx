@@ -89,6 +89,7 @@ export function App({ services }: { services: AppServices }) {
             identity={services.identity}
             communities={services.communities}
             invites={services.invites}
+            federatedIdentity={services.firstRunFederatedIdentity}
           >
             <LaunchSignIn identity={services.federatedIdentity}>
               <ConnectedApp services={services} />
@@ -734,6 +735,7 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
                     notifications={services.notifications}
                     updates={services.updates}
                     navigation={route.request}
+                    installRequests={services.pluginInstallRequests}
                     navigationPane
                     onDeparturePending={(pending) => {
                       const client = services.communities.snapshot();

@@ -175,7 +175,10 @@ import { readInterrupted, writeInterrupted } from "./interrupted";
 import { AttentionSources, type AttentionProducer } from "./attention-sources";
 import { type AddedTool, BUZZ_SESSION } from "../../buzz-mcp/session-tools";
 import { nameSoloChat } from "./solo-chat-name";
-import { forgetDefaultAgent } from "../solo/default-agent";
+import {
+  clearDeletedDefaultAgent,
+  forgetDefaultAgent,
+} from "../solo/default-agent";
 
 /** Where an agent runs: `here`, with its key on this device; `hosted`, by its
  * type's provider; or `elsewhere`, on another of the owner's devices. Only an
@@ -3623,6 +3626,14 @@ export class AgentsService extends Service implements Agents {
     // one that is not stays listed here with Forget.
     const shown = this.selectedOrigin();
     const rows = this.liveRows(pubkey);
+    const roleBindings = [
+      ...new Map(
+        rows.flatMap((row) => {
+          const binding = this.bindingOf(row);
+          return binding ? [[binding.scope, binding] as const] : [];
+        }),
+      ).values(),
+    ];
     const unfinished = `${identity.name} isn't deleted yet and may still be in some channels. It stays stopped; Delete it again to finish.`;
     // Left its home, which keeps its config: that is archived first, so a
     // failure leaves it listed here to Delete again.
@@ -3666,6 +3677,17 @@ export class AgentsService extends Service implements Agents {
     // Drops its settings.
     await this.refresh();
     forgetDefaultAgent(pubkey);
+    const failed: string[] = [];
+    for (const binding of roleBindings)
+      try {
+        await clearDeletedDefaultAgent(binding.session, binding.scope, pubkey);
+      } catch {
+        failed.push(binding.origin);
+      }
+    if (failed.length)
+      throw new Error(
+        `${identity.name} was deleted, but Buzz couldn't clear it as your Bestie in ${failed.join(", ")}. Open Bestie to choose another.`,
+      );
   }
   /** Archives the config channel in the agent's home community, which it is
    * no longer a member of. Nothing to do when its config never synced. */
@@ -3929,7 +3951,13 @@ export class AgentsService extends Service implements Agents {
       await this.writeUnfinished(
         this.unfinished.filter((setup) => setup.pubkey !== pubkey),
       );
-      await handOnMainAgent(binding.session, pubkey);
+      try {
+        await handOnMainAgent(binding.session, pubkey);
+      } catch {
+        throw new Error(
+          `${agent.name} was deleted, but Buzz couldn't clear it as your Bestie. Open Bestie to choose another.`,
+        );
+      }
     });
   }
   private async exclusive<T>(pubkey: string, step: () => Promise<T>) {
@@ -5474,6 +5502,7 @@ async function leaveCommunity(
 async function handOnMainAgent(session: RelaySession, pubkey: string) {
   await session.agentChoices.refresh(true, { fresh: true });
   forgetDefaultAgent(pubkey);
+  await clearDeletedDefaultAgent(session, session.scope, pubkey);
 }
 /** The membership's community, as its owner knows it. */
 /** The origin of the agent's home community, as native saved it on the row:

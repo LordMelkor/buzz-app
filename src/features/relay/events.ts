@@ -108,20 +108,20 @@ export function createEventVerifier(
   };
   const settle = async (
     events: readonly PreparedEvent[],
-  ): Promise<RelayEvent[]> => {
+  ): Promise<(RelayEvent | undefined)[]> => {
     const pending = events.filter((event) => !proven(event));
     const valid = pending.length
       ? await signatures(
           pending.map(({ id, pubkey, sig }) => ({ id, pubkey, sig })),
         )
       : [];
-    if (
-      valid.length !== pending.length ||
-      valid.some((signed) => signed !== true)
-    )
-      throw invalidEvent();
-    pending.forEach(remember);
+    if (valid.length !== pending.length) throw invalidEvent();
+    const rejected = new Set(
+      pending.filter((_, index) => valid[index] !== true),
+    );
     return events.map((event) => {
+      if (rejected.has(event)) return undefined;
+      remember(event);
       event[verifiedSymbol] = true;
       return admit(event as VerifiedEvent);
     });
@@ -137,8 +137,10 @@ export type PreparedEvent = Event & { readonly [prepared]: true };
 export type EventVerifier = ((value: unknown) => RelayEvent) & {
   native?: {
     prepare(value: unknown): PreparedEvent;
-    /** One bad signature rejects the whole response, as `verify` does per event. */
-    settle(events: readonly PreparedEvent[]): Promise<RelayEvent[]>;
+    /** One result per input; invalid signatures have no proof. Host failures reject. */
+    settle(
+      events: readonly PreparedEvent[],
+    ): Promise<(RelayEvent | undefined)[]>;
   };
 };
 

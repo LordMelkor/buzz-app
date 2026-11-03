@@ -177,6 +177,13 @@ export const TOOLS: readonly Tool[] = [
   ),
   tool("edit", "Edit your message.", { id: str, text: str }, ["id", "text"]),
   tool(
+    "delete",
+    "Delete one of your own messages: only the message with this id, never another author's.",
+    { id: str },
+    ["id"],
+    { readOnlyHint: false, destructiveHint: true },
+  ),
+  tool(
     "react",
     "React to a message.",
     { id: str, emoji: str, off: { type: "boolean" } },
@@ -569,6 +576,26 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
       ],
     });
     return "edited";
+  },
+
+  async delete(tools, args) {
+    const { client } = tools;
+    const id = required(args, "id");
+    const target = await tools.event(id);
+    const channel = tag(target, "h");
+    if (!channel) throw new Error(`${id} is not a channel message.`);
+    if (target.pubkey !== client.pubkey)
+      throw new Error("Only your own messages can be deleted.");
+    await client.publish({
+      kind: 5,
+      content: "",
+      tags: [
+        ["h", channel],
+        ["e", id],
+        ["k", String(target.kind)],
+      ],
+    });
+    return "deleted";
   },
 
   async react(tools, args) {
@@ -2308,7 +2335,7 @@ async function start(tools: Tools, channel: string, name: string) {
   return created;
 }
 
-/** The repository's URL and a Git command with its header. */
+/** The repository's URL and a Git command with its headers, one per line. */
 async function access(
   gitAuth: NonNullable<BuzzClient["gitAuth"]>,
   event: BuzzEvent,
@@ -2316,8 +2343,11 @@ async function access(
   const { url, header } = await gitAuth(event.pubkey, tag(event, "d") ?? "");
   return [
     `${tag(event, "name") ?? tag(event, "d")}: ${url}`,
-    "For the next 60 seconds, pass this header to each git command (call again for a new one; never save it):",
-    `git -c http.${url}.extraHeader='${header}' clone ${url}`,
+    "For the next 60 seconds, pass these headers to each git command (call again for a new one; never save it):",
+    `git ${header
+      .split("\n")
+      .map((line) => `-c http.${url}.extraHeader='${line}' `)
+      .join("")}clone ${url}`,
   ].join("\n");
 }
 

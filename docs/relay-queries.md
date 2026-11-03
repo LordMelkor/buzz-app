@@ -672,8 +672,12 @@ receipt, as Buzz desktop does. Nothing is persisted or restored; a rejection or
 10-second timeout rejects the call and the dialog keeps its input for retry. The
 method is undefined unless the writer supports kind 1984.
 
-In an empty composer, unmodified Up arrow opens the latest eligible own message
-from that channel or thread in the same editor. Enter/the send arrow saves;
+In an empty composer, unmodified Up arrow selects the newest message in the
+channel timeline or thread beside it, as in Slack; E then opens a selected
+eligible own message in the same editor, and on macOS ⌘↑ still opens the latest eligible
+own message directly (elsewhere, Up then E). Surfaces without a selectable message
+list (media review, Huddles), or a timeline scrolled away from its newest
+message, keep Up opening the latest eligible own message directly. Enter/the send arrow saves;
 Escape or × cancels. Edits retain raw attachment Markdown and leave original
 notification recipients unchanged. Edit text never overwrites the new-message
 draft or its undo history. Pending edits lock the editor until delivery; failed
@@ -781,12 +785,18 @@ cooperative batch yields, not just signature CPU. These development-React/jsdom
 measurements prove neither startup nor browser paint, native performance, actual
 IndexedDB durability or live relay latency.
 
-The HTTP verifier retains at most 2,048 event-ID/signature pairs per transport
+The HTTP verifier retains at most 8,192 event-ID/signature pairs per transport
 using the existing byte-bounded LRU. A hit requires fresh envelope validation,
 a fresh hash of signed fields and the exact previously verified signature. It
 still returns newly owned frozen data and performs every HTTP read and access
-check. It is not an event/query cache or authorization proof; WebSocket and other
-`eventDto` callers remain uncached. `event-proof.test.ts` covers tampering,
+check. It is not an event/query cache or authorization proof. Live subscriptions
+retain up to 16,384 proofs across reconnects; direct `eventDto` calls are uncached.
+Desktop finite reads and live events send signature batches to the existing Rust
+libsecp256k1 verifier off the renderer thread. JavaScript still checks wire shape
+and content hashes. Live EVENT/EOSE/CLOSED delivery stays ordered, with bounded
+pending work; overflow or host failure reconnects from before unprocessed frames.
+Browser and broker callers retain JavaScript signature verification.
+`event-proof.test.ts` covers tampering,
 connection isolation, eviction and actual HTTP wiring. `events.ts` also belongs
 to the dev broker's native-config import graph: new runtime imports there must
 retain explicit extensions and pass `browser-host/vite-config.test.mjs`.
@@ -873,20 +883,29 @@ for outstanding work. These manual fixtures are not part of `pnpm test`; see
 The session's `live` capability exposes connection/route state independently from
 finite-read readiness. A connected socket is not proof that every route is live.
 Global profile and self-scoped membership-hint routes are separate from channel
-traffic. The logical interest capacity remains 1,022 channels plus those two globals
-(one fewer channel while agent observation is enabled); omitted routes and partial
-roster coverage remain visible. Joined background channels share stable wires of
-at most 10 channels. Initial replay uses singleton channel filters, matching the
-relay's per-REQ filter cap; live-only replacements use one equivalent filter.
-Public previews and foreground interests admitted as singletons remain separate;
-navigation prioritizes pending work without rebuilding healthy wires. Joined
-versus preview classification travels atomically with interests.
+traffic. Joined channels share stable wires of up to 2,048 IDs, the relay's
+explicit channel bound. There is no fixed roster count limit. New members fill
+empty slots in existing batches. Initial live setup takes priority over renewal
+and replay. Priority changes setup order and preserves healthy wires.
+Preview channels use separate wires. Admission reserves room for global routes,
+observer and presence, replay requests, artifact syncs, the silence probe, and
+replacement wires within the relay's limit of 1,024 subscriptions. Omitted channels stay visible as limited routes.
+Joined versus preview classification travels with the interest snapshot.
 
-Initial replay is opportunistic and capped at 500 events **per channel filter**,
-preserving the previous singleton replay allowance. A busy channel cannot consume
-another channel's sample. This reduces REQ frames and route-state publications,
-not historical database queries. Aggregate replay status stays conservative:
-500 received events can mark a batch limited but never prove any channel complete.
+The 100,000-channel scale case uses 49 persistent channel wires. Replay uses a
+separate queue with at most 10 singleton filters per request. Each filter requests
+up to 500 recent events. At most four setup requests run at once. A busy channel
+cannot consume another channel's replay allowance. A failed replay is visible to
+recovery and Retry. A local failure does not stop other queued channels. Shared
+quota failures pause admission. Replay stays quiet; one later live copy can emit
+one incoming-message signal.
+
+The broker accepts interest records up to 64 MiB. Status deltas and establishment
+notices contain at most 512 channel changes per frame and obey backpressure.
+Frames and the write buffer retain their 8 MiB bound. Channel IDs have at most
+128 characters. Discovery retains up to 256 MiB of signed records. The startup
+cache retains its 8 MiB bound. Larger rosters require fresh discovery on restart.
+Replay status stays conservative and never proves a channel complete.
 EOSE establishes streaming, **not complete historical replay**. A first connect
 replays the last five minutes. After a drop, a route that had reached EOSE on that
 connection resumes sixteen minutes (960 s) before the connection last heard the
@@ -937,26 +956,44 @@ proportional to it.
 Removing a batch member rebuilds only that batch's survivor scope. One established
 source overlaps its zero-replay replacement until EOSE; another removal supersedes
 the pending replacement, not that established source. Removed IDs are fenced
-immediately, including after re-addition. Original source scopes stay immutable;
+immediately, including after re-addition. A batch with new members requests a
+fresh replay sample only for those members. Survivor filters request no replay.
+Their events stay live before EOSE. The old wire can deliver only for survivors.
+Original source scopes stay immutable;
 ambiguous auxiliary events never gain invented alert attribution. Replacements
-use fresh wire IDs, preserve `since`, and request `limit: 0`, so their events are
+without added members use fresh wire IDs, preserve `since`, and request `limit: 0`. Their events are
 live even before EOSE. Pending setup alone does not prove continuity. Narrowed-scope
 failure, denial and disposal release both sources. An undecodable event is dropped
-and logged; its route stays. For an
-unchanged scope, a renewal timeout or transient relay error retires only the
-replacement and retains the established source, with the error visible until
+and logged; its route stays. A temporary failure retains the established source
+when its full scope stays allowed. This also applies when a replacement adds
+members. The error stays visible until
 fresh EOSE. The existing minute timer retries that renewal; quota failures retain
 the same source but obey the existing cooldown and three-retry limit. Exhausted
 or unsupported quota retries require manual Retry, not a reset each minute.
 
-One 60-second recovery timer renews established joined batches and hints the
-existing roster and unread owners to repair finite evidence. The roster hint
-starts a full channel-list read only when the last one is still owed or failed,
-or when no full read, from any trigger, has completed for 15 minutes
-(`ROSTER_BACKSTOP_INTERVAL`). Membership notices carry joins and removals live;
-the read backs up the changes the relay sends no notice for: a channel delete,
-a moderation kick or DM, and a dropped fan-out frame. It does not renew
-singleton previews or add per-channel background history reads. When the socket
+Signed grant notices renew joined batches that contain the affected channel.
+One 60-second recovery timer checks for batches whose last REQ is at least
+15 minutes old. It also hints the roster and unread owners to repair finite
+evidence. The roster hint starts a full channel-list read only when the last
+one is still owed or failed, or when no full read has completed for 15 minutes
+(`ROSTER_BACKSTOP_INTERVAL`). Membership notices carry joins and removals live.
+The read also covers changes with no notice: a channel delete, a moderation
+kick or DM, and a dropped frame. The unread hint runs while a repair is owed,
+and otherwise at most every 15 minutes (`UNREAD_BACKSTOP_INTERVAL`), counted
+from that owner's last full
+repair, which each connection's first establishment also asks for. A covered
+resume (a continuous membership replay) reads no read-state snapshot, so it does
+not restart that interval. The live stream carries every unread change; this
+backstop only repairs what it lost with no signal (a channel the relay pruned
+from a batch, or a dropped frame). A repair is owed while either of two debts
+is open, and each clears only its own way. Evidence debt (a failed evidence
+repair, an evidence overflow, or a drop) clears only when an evidence repair
+completes; a live message that marks the evidence observed again does not clear
+it. Marker debt (a failed snapshot read, a live marker that failed to apply, or
+a drop) clears only on a successful snapshot read or a covered resume. A
+snapshot read cannot clear evidence debt, and an evidence repair cannot clear
+marker debt. It does not
+renew singleton previews or add per-channel background history reads. When the socket
 delivered no frame for a whole interval, the timer also sends one empty probe
 REQ; if no frame arrives within the setup timeout, the socket is replaced through
 the ordinary reconnect, with its backoff and replay. An open socket can stop

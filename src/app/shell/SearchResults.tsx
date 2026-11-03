@@ -56,6 +56,7 @@ import { usePublicChannelSearch } from "../../features/channels/usePublicChannel
 import { type SearchSort, useSearchMessages } from "./useSearchMessages";
 import {
   MESSAGE_SEARCH_MIN_CHARS,
+  SEARCH_MIN_CHARS,
   searchDebounce,
   searchable,
 } from "../../shared/search-debounce";
@@ -1068,9 +1069,11 @@ export function SearchResults({
                 ? "Searching people…"
                 : authorSuggestions.lookupFailed
                   ? "People search is unavailable. Try a longer name."
-                  : authorNeedle
-                    ? "No matching people. Try a different name."
-                    : "Type a name to search people.",
+                  : authorNeedle && !searchable(authorNeedle)
+                    ? `Type at least ${SEARCH_MIN_CHARS} characters to search people.`
+                    : authorNeedle
+                      ? "No matching people. Try a different name."
+                      : "Type a name to search people.",
           },
           {
             label: "Agents",

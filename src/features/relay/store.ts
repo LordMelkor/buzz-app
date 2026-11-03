@@ -95,6 +95,7 @@ export type ChannelStoreOptions = {
   /** Warm every roster channel's head in the background before it is opened. */
   warm?: boolean;
   persistence?: HeadPersistence;
+  maxDiscoveryBytes?: number;
   maxHeadBytes?: number;
   maxHeads?: number;
   maxHistoryRows?: number;
@@ -113,6 +114,8 @@ const DISCOVERY_LIMIT = 500;
 // Public channel metadata for name search, read a page at a time up to a
 // bound; matches resolve exactly.
 const PUBLIC_CHANNEL_PAGE = 500;
+// One exact resolution can consume the reader's full response byte budget.
+const PUBLIC_CHANNEL_RESERVE_BYTES = 8 * 1024 * 1024;
 const PUBLIC_CHANNEL_DIRECTORY = 20_000;
 /** One creator's channels with one label: a small answer, within one `resolve`. */
 const LABELED_CHANNEL_PAGE = 100;
@@ -271,7 +274,11 @@ export function createChannelStore(
   let allowed: Set<string> | undefined;
   let coverage: "partial" | undefined;
   const discovery = transport
-    ? new DiscoveryState(transport.viewer, transport.relayAuthor)
+    ? new DiscoveryState(
+        transport.viewer,
+        transport.relayAuthor,
+        options.maxDiscoveryBytes,
+      )
     : null;
   // Restored metadata needs confirmation independently of roster progress/retries.
   const pendingMetadata = new Set<string>();
@@ -1134,7 +1141,6 @@ export function createChannelStore(
         saved.savedAt > now() ||
         now() - saved.savedAt > 86_400_000 ||
         !Array.isArray(saved.events) ||
-        saved.events.length > 3072 ||
         byteSize(saved) > 8 * 1024 * 1024
       )
         return;
@@ -1178,12 +1184,14 @@ export function createChannelStore(
     }
   }
   // Background reads deduplicate metadata versions; strong resolution revisits proof.
-  const creationReads = new Map<string, string>();
+  type CreationRead = { version: string; complete: boolean };
+  const creationReads = new Map<string, CreationRead>();
   async function readCreations(
     events: readonly RelayEvent[],
     settings?: ChannelReadOptions,
   ) {
     if (!transport || !discovery || options.cachedOnly) return;
+    const pending = new Map<string, CreationRead>();
     const filters = events.flatMap((event) => {
       const id = tag(event, "d");
       const identity = channelIdentity(event);
@@ -1196,10 +1204,12 @@ export function createChannelStore(
         discovery.get(id)?.parentChannelId ||
         !identity.creator ||
         (settings?.consistency !== "strong" &&
-          creationReads.get(id) === event.id)
+          creationReads.get(id)?.version === event.id)
       )
         return [];
-      creationReads.set(id, event.id);
+      const read = { version: event.id, complete: false };
+      creationReads.set(id, read);
+      pending.set(id, read);
       return [
         {
           kinds: [9007],
@@ -1232,17 +1242,21 @@ export function createChannelStore(
         settings?.signal?.throwIfAborted();
         if (disposed || generation !== epoch || controller.signal.aborted)
           throw new DOMException("Stale creation resolution", "AbortError");
+        for (const filter of filters.slice(offset, offset + 4)) {
+          const id = filter["#h"][0];
+          const read = id && pending.get(id);
+          if (id && read && creationReads.get(id) === read)
+            read.complete = true;
+        }
         applyDiscovery(receipts.filter((event) => event.kind === 9007));
       }
     })()
       .catch((error) => {
         // Unavailable proof leaves an ordinary channel. A later metadata refresh
         // may retry; never turn a failed proof read into loss of channel access.
-        for (const event of events) {
-          const id = tag(event, "d");
-          if (id && creationReads.get(id) === event.id)
+        for (const [id, read] of pending)
+          if (!read.complete && creationReads.get(id) === read)
             creationReads.delete(id);
-        }
         throw error;
       })
       .finally(() => controllers.delete(controller));
@@ -1459,6 +1473,7 @@ export function createChannelStore(
     let outcome: RosterRefresh = { state: "deferred" };
     try {
       const ids = new Set<string>();
+      let scannedBytes = 0;
       const named = new Set<string | undefined>();
       let cursor: RelayEvent | undefined;
       let complete: Set<string> | undefined;
@@ -1472,8 +1487,8 @@ export function createChannelStore(
       let system: RelayEvent[] = [];
       if (transport.channelIdentity) {
         let systemCursor: RelayEvent | undefined;
-        for (let page = 0; ; page++) {
-          if (page > discovery.capacity / DISCOVERY_LIMIT)
+        for (;;) {
+          if (scannedBytes >= discovery.maxBytes)
             throw new ReadError(
               "invalid-response",
               "System channel discovery exceeded its read budget",
@@ -1497,6 +1512,7 @@ export function createChannelStore(
             { signal: controller.signal },
           );
           if (disposed || generation !== epoch) return;
+          scannedBytes += listByteSize(rosters);
           const members = rosters
             .filter(
               (event) =>
@@ -1536,9 +1552,8 @@ export function createChannelStore(
           paged = true;
         }
       }
-      // At most the retained roster budget plus its final exhaustion read.
-      // This also bounds a relay returning repeated coordinates with new versions.
-      for (let page = 0; page <= discovery.capacity / DISCOVERY_LIMIT; page++) {
+      // Bound scanned bytes as well as retained evidence, including repeated versions.
+      for (;;) {
         const rosters = await transport.read(
           [
             {
@@ -1554,6 +1569,7 @@ export function createChannelStore(
           { signal: controller.signal },
         );
         if (disposed || generation !== epoch) return;
+        scannedBytes += listByteSize(rosters);
         const members = rosters
           .filter(
             (event) =>
@@ -1606,7 +1622,7 @@ export function createChannelStore(
           retainedComplete = !paged;
           break;
         }
-        if (overflowed) break;
+        if (overflowed || scannedBytes >= discovery.maxBytes) break;
         cursor = last;
         paged = true;
       }
@@ -2161,7 +2177,7 @@ export function createChannelStore(
     // before granting a preview. The final answer re-reads every match; pages
     // in flight resolve at most `limit` channels in all and leave every
     // search in flight, and one that joins later (`in:team data` runs two),
-    // `limit` free discovery slots for its final answer, so a long read
+    // one response byte budget for its final answer, so a long read
     // cannot fill discovery or crowd out a better match on a later page.
     const answer = async (final: boolean, readSignal?: AbortSignal) => {
       // Saved names are candidates only: each match still resolves freshly.
@@ -2199,13 +2215,10 @@ export function createChannelStore(
             .filter((id) => !resolved.has(id))
             .slice(
               0,
-              Math.max(
-                0,
-                Math.min(
-                  limit - resolved.size,
-                  discovery.headroom() - publicSearchReserve - limit,
-                ),
-              ),
+              discovery.byteHeadroom() - publicSearchReserve >=
+                PUBLIC_CHANNEL_RESERVE_BYTES * 2
+                ? Math.max(0, limit - resolved.size)
+                : 0,
             );
       if (unresolved.length) {
         await resolve(
@@ -2275,7 +2288,7 @@ export function createChannelStore(
       entry.events.length || entry.previous?.size
         ? Promise.resolve()
         : entry.page;
-    publicSearchReserve += limit;
+    publicSearchReserve += PUBLIC_CHANNEL_RESERVE_BYTES;
     try {
       for (;;) {
         const result = await Promise.race([
@@ -2335,7 +2348,7 @@ export function createChannelStore(
       }
       throw error;
     } finally {
-      publicSearchReserve -= limit;
+      publicSearchReserve -= PUBLIC_CHANNEL_RESERVE_BYTES;
     }
   }
   /** NIP-CL lookup: the channels `creator` made with `label`, oldest first.
@@ -3248,7 +3261,8 @@ export function createChannelStore(
   ) {
     const hadHydration = hydration !== undefined;
     epoch++;
-    creationReads.clear();
+    for (const [id, read] of creationReads)
+      if (!read.complete || !authorized(id)) creationReads.delete(id);
     revokedEpoch = epoch;
     hydration = undefined;
     revealHydration?.();

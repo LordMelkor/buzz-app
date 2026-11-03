@@ -449,6 +449,25 @@ it("solo composer retains side-tab cycling and close focus", async () => {
   expect(thread).toHaveFocus();
 });
 
+it("leaves Shift+Escape (Mark all as read) to a side thread, closing it on Escape", async () => {
+  const h = await page();
+  const tabs = renderHook(() => useChannelTabState(h.session, "alpha"));
+  const root = "c".repeat(64);
+  act(() =>
+    tabs.result.current.openThreadTab("alpha", root, root, undefined, "side"),
+  );
+  const thread = await screen.findByRole("tab", { name: "Thread · Alpha" });
+  expect(thread).toHaveAttribute("aria-selected", "true");
+  const content = document.querySelector(
+    `[id="${thread.getAttribute("aria-controls")}"] *`,
+  );
+  if (!content) throw new Error("The side thread has no content");
+  fireEvent.keyDown(content, { key: "Escape", shiftKey: true });
+  expect(thread).toBeInTheDocument();
+  fireEvent.keyDown(content, { key: "Escape" });
+  expect(thread).not.toBeInTheDocument();
+});
+
 it.each(["stream", "solo"] as const)(
   "the real %s page closes its side tabs by shortcut, preserves typing, and handles an empty repeat",
   async (type) => {

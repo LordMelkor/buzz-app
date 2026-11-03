@@ -25,7 +25,7 @@ test("community dialog keeps oversized actions intact, reachable and keyboard op
   await url.fill("wss://secondary.example");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   const dialog = page.getByRole("dialog", {
-    name: "Your profile in Secondary",
+    name: "Your profile",
     exact: true,
   });
   await expect(
@@ -196,7 +196,7 @@ test.describe("touch entry", () => {
     await expect(url).toBeFocused();
     await url.fill("wss://secondary.example");
     await dialog.getByRole("button", { name: "Continue", exact: true }).tap();
-    await expect(dialog).toHaveAccessibleName("Your profile in Secondary");
+    await expect(dialog).toHaveAccessibleName("Your profile");
     const name = dialog.getByRole("textbox", {
       name: "Display name",
       exact: true,

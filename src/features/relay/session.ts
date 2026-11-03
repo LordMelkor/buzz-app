@@ -146,6 +146,11 @@ export type EventViewSnapshot = Readonly<{
  * kick or DM, or a dropped fan-out. Any completed full read restarts it. */
 export const ROSTER_BACKSTOP_INTERVAL = 15 * 60_000;
 
+/** The live recovery tick repairs unread at most this often. The live stream
+ * carries every unread change; this read only backs up what it can lose with
+ * no signal: a channel the relay pruned from a batch, or a dropped fan-out. */
+export const UNREAD_BACKSTOP_INTERVAL = 15 * 60_000;
+
 /** A read of named authors' profiles only. Profiles do not depend on channels,
  * so no channel access change, including a denied channel list, can stale it. */
 function isProfileFilter(filter: ReadFilter) {
@@ -254,10 +259,11 @@ export function createRelaySession(
       channels.queries.list().channels.some((channel) => channel.id === id),
     notify,
   );
-  const recent = new ByteLru<{ event: RelayEvent; revision: number }>(
-    4096,
-    8 * 1024 * 1024,
-  );
+  const recent = new ByteLru<{
+    event: RelayEvent;
+    revision: number;
+    incoming?: "replay" | "live";
+  }>(4096, 8 * 1024 * 1024);
   const observations = new Set<(events: readonly RelayEvent[]) => void>();
   const incomingListeners = new Set<IncomingListener>();
   const liveEventListeners = new Set<LiveListener>();
@@ -796,6 +802,7 @@ export function createRelaySession(
       raw: readonly RelayEvent[],
     ) => void,
     signal?: AbortSignal,
+    incomingPhase?: "replay" | "live",
   ): readonly RelayEvent[] {
     if (closed) return [];
     // Authority precedes every projection, even in a batch containing both a
@@ -828,15 +835,33 @@ export function createRelaySession(
       "events.reconcile",
       events[0]?.id ?? "empty",
       () => {
-        for (const event of visible)
-          recent.set(event.id, { event, revision: ++revision });
+        for (const event of visible) {
+          const previous = recent.peek(event.id);
+          // Replay can precede a fresh live copy. Keep alert receipt separate from content receipt.
+          const incoming = [9, 40002, 40008].includes(event.kind)
+            ? incomingPhase === "live" || previous?.incoming === "live"
+              ? "live"
+              : previous?.incoming === "replay" ||
+                  (incomingPhase === "replay" &&
+                    !previous &&
+                    !unread.event(event.id))
+                ? "replay"
+                : undefined
+            : undefined;
+          recent.set(event.id, {
+            event,
+            revision: ++revision,
+            ...(incoming ? { incoming } : {}),
+          });
+        }
         activity.messagesChanged(visible);
         if (closed || epoch !== accessEpoch) return;
         reads.accept(visible);
         unread.accept(visible);
         writes?.observe(visible);
         if (epoch !== accessEpoch) return;
-        profiles.accept(visible);
+        // A profile read's signal lets the directory publish its pages once.
+        profiles.accept(visible, signal);
         if (epoch !== accessEpoch) return;
         emoji.accept(visible);
         if (epoch !== accessEpoch) return;
@@ -1576,19 +1601,30 @@ export function createRelaySession(
   const mainAgent = (() => {
     const read = transport?.readMainAgent;
     const write = transport?.writeMainAgent;
+    const clear = transport?.clearMainAgent;
     const bounded = (ms: number) =>
       AbortSignal.any([lifetime.signal, AbortSignal.timeout(ms)]);
     // One change at a time, so the last choice is the one confirmed.
     let writes = Promise.resolve();
-    const queue = (change: () => Promise<void>) => {
+    const queue = <T>(change: () => Promise<T>) => {
       const next = writes.then(change);
-      writes = next.catch(() => {});
+      writes = next.then(
+        () => {},
+        () => {},
+      );
       return next;
     };
     return read && write
       ? Object.freeze({
           read: () => read(bounded(10_000)),
-          write: (agent: string) => queue(() => write(agent, bounded(20_000))),
+          write: (agent: string | null) =>
+            queue(() => write(agent, bounded(20_000))),
+          ...(clear
+            ? {
+                clear: (expected: string) =>
+                  queue(() => clear(expected, bounded(20_000))),
+              }
+            : {}),
         })
       : undefined;
   })();
@@ -3056,6 +3092,14 @@ export function createRelaySession(
   // the sidebar page to mount and observe them.
   if (options.warm) void sidebarPreferences.queries.ensure();
   let refreshedGeneration = -1;
+  /** When unread was last asked for a full repair: a connection's first
+   * establishment, then the recovery tick's backstop. */
+  let unreadRepairedAt = 0;
+  const repairUnread = (covered = false) => {
+    // A covered resume reads no snapshot, so it cannot replace the backstop.
+    if (!covered) unreadRepairedAt = Date.now();
+    unread.reconnect(covered);
+  };
   /** Held profiles still need a full read: none has completed since the
    * session started or since the last one was asked for. */
   let profilesOwed = true;
@@ -3129,7 +3173,7 @@ export function createRelaySession(
         }
         return;
       }
-      unread.reconnect(continuous);
+      repairUnread(continuous);
       // Only while this same connection is still up.
       if (generation === liveGeneration && memoryConnected)
         void (continuous ? reminders?.resume() : reminders?.recover());
@@ -3254,8 +3298,8 @@ export function createRelaySession(
                   event.pubkey !== transport.viewer &&
                   destinations.length === 1 &&
                   destinations[0]?.[1] === provenance.channelId &&
-                  !recent.peek(event.id) &&
-                  !unread.event(event.id) &&
+                  (recent.peek(event.id)?.incoming === "replay" ||
+                    (!recent.peek(event.id) && !unread.event(event.id))) &&
                   !rawLocal().some((item) => item.event.id === event.id)
                 );
               })
@@ -3276,7 +3320,13 @@ export function createRelaySession(
       );
       const epoch = accessEpoch;
       const generation = liveGeneration;
-      const visible = accept(events);
+      const visible = accept(
+        events,
+        true,
+        undefined,
+        undefined,
+        provenance?.channelId ? provenance.phase : undefined,
+      );
       // Completion subscribers can synchronously clear, revoke or retire this
       // live delivery. Do not admit its remaining pulses into the new lifetime.
       if (
@@ -3499,7 +3549,12 @@ export function createRelaySession(
         Date.now() - rosterReadAt >= ROSTER_BACKSTOP_INTERVAL
       )
         refreshRoster();
-      unread.reconnect();
+      // A failed repair retries on the next tick, as the roster does.
+      if (
+        unread.owed() ||
+        Date.now() - unreadRepairedAt >= UNREAD_BACKSTOP_INTERVAL
+      )
+        repairUnread();
     },
     denied(channelId, reason) {
       if (!closed) channels.denyChannel(channelId, new Error(reason));

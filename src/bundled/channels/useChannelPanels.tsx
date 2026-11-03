@@ -148,7 +148,8 @@ export function useChannelPanels(
       <Panel
         aria-label={`${selected.panel.title} panel`}
         onKeyDown={(event) => {
-          if (event.key === "Escape") {
+          // Shift+Escape is Mark all as read, not a dismissal.
+          if (event.key === "Escape" && !event.shiftKey) {
             event.stopPropagation();
             hide(selected);
           }

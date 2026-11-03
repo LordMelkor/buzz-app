@@ -129,11 +129,15 @@ function Fixture() {
         Shortcut settings
       </button>
       {settings && (
-        <ShortcutSettings
-          shortcuts={shortcuts}
-          bindings={bindings}
-          plugins={plugins}
-        />
+        // Bounded, so the read-only formatting group can't push the drawer
+        // out of the viewport, where xterm has no rows to render.
+        <div style={{ maxHeight: 200, overflow: "auto" }}>
+          <ShortcutSettings
+            shortcuts={shortcuts}
+            bindings={bindings}
+            plugins={plugins}
+          />
+        </div>
       )}
       <button
         type="button"

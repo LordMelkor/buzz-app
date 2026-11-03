@@ -4169,3 +4169,23 @@ async fn native_signature_checks_reject_tampered_and_malformed_claims() {
     .unwrap();
     assert_eq!(checked, [true, false, false, false]);
 }
+
+#[tokio::test]
+async fn finished_native_reads_release_their_cancel_slot() {
+    // More completed reads than the registry holds, some failing: each frees its id.
+    for read in 0..100 {
+        let id = format!("{read:08}-4444-4444-8444-444444444444");
+        let result = cancellable(Some(&id), "POST", "/query", async move {
+            if read % 2 == 0 {
+                Ok(cancelled_read())
+            } else {
+                Err("relay down".into())
+            }
+        })
+        .await;
+        match result {
+            Ok(_) => assert_eq!(read % 2, 0),
+            Err(error) => assert_eq!(error.to_string(), "relay down"),
+        }
+    }
+}

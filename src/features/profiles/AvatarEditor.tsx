@@ -29,6 +29,7 @@ import type { EmojiSearchSelection } from "../../bundled/emoji/emoji-mart";
 
 type Props = {
   triggerStyle?: "dotted-squircle";
+  emptyStyle?: "dotted-circle" | undefined;
   inlinePicker?: boolean;
   triggerLabel?: string;
   actionTarget?: HTMLElement | null | undefined;
@@ -82,6 +83,7 @@ const colors = [
 
 /** One draft editor for humans and agents; the enclosing form owns profile Save. */
 export function AvatarEditor(props: Props) {
+  const setupAnchor = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(!!props.inlinePicker);
   const [draftPreview, setDraftPreview] = useState<DraftPreview | null>(null);
   const [sizeTarget, setSizeTarget] = useState<HTMLElement | null>(null);
@@ -117,6 +119,7 @@ export function AvatarEditor(props: Props) {
     <div
       className={props.inlinePicker ? styles.inlineEditor : undefined}
       data-editing={open || undefined}
+      ref={setupAnchor}
     >
       <Popover.Root
         open={open}
@@ -139,7 +142,39 @@ export function AvatarEditor(props: Props) {
           if (!props.inlinePicker || next) setOpen(next);
         }}
       >
-        {props.triggerStyle === "dotted-squircle" ? (
+        {props.emptyStyle === "dotted-circle" &&
+        !props.value &&
+        !draftPreview?.picture &&
+        !draftPreview?.emoji ? (
+          <div className={styles.avatarFrame}>
+            <Popover.Trigger
+              render={
+                <button
+                  type="button"
+                  className={`${styles.dottedTrigger} ${styles.emptyCircle}`}
+                  aria-label="Add avatar"
+                  disabled={props.disabled}
+                />
+              }
+            >
+              <svg
+                className={styles.dottedOutline}
+                viewBox="0 0 220 220"
+                aria-hidden="true"
+              >
+                <circle
+                  cx="110"
+                  cy="110"
+                  r="108"
+                  pathLength="288"
+                  strokeWidth="3"
+                  strokeDasharray="4 5"
+                />
+              </svg>
+              <PlusIcon size={40} aria-hidden="true" />
+            </Popover.Trigger>
+          </div>
+        ) : props.triggerStyle === "dotted-squircle" ? (
           <div className={styles.dottedFrame}>
             <Popover.Trigger
               render={
@@ -230,7 +265,8 @@ export function AvatarEditor(props: Props) {
                     aria-label="Edit avatar"
                     aria-describedby={pictureError ? errorId : undefined}
                     icon={
-                      props.value ? (
+                      (draftPreview?.picture ?? props.value) ||
+                      draftPreview?.emoji ? (
                         <PencilSimpleIcon size={16} />
                       ) : (
                         <PlusIcon size={16} />
@@ -253,12 +289,15 @@ export function AvatarEditor(props: Props) {
         ) : (
           <Popover.Portal>
             <Popover.Positioner
+              anchor={
+                props.emptyStyle === "dotted-circle" ? setupAnchor : undefined
+              }
               side="bottom"
               align="center"
               sideOffset={8}
               collisionPadding={12}
               collisionAvoidance={{
-                side: "shift",
+                side: props.emptyStyle === "dotted-circle" ? "none" : "shift",
                 align: "shift",
                 fallbackAxisSide: "none",
               }}

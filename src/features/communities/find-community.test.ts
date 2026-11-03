@@ -56,6 +56,7 @@ it("reports only what the relay publishes, with the icon sanitized, from two una
   ).resolves.toEqual({
     url,
     host: "relay.example.com:8443",
+    name: "Buzz Relay",
     icon: "https://cdn.example.com/icon.png",
     self,
     policy: {

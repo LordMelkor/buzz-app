@@ -4,7 +4,7 @@ import {
   videoDemuxer,
   VIDEO_PREPARATION_MS,
 } from "./video-preparation.ts";
-import { safeAttachmentName } from "./message-content.ts";
+import { IMETA_DIM, safeAttachmentName } from "./message-content.ts";
 
 import {
   mediaByteLimit,
@@ -19,6 +19,7 @@ export type UploadedAttachment = Readonly<{
   type: string;
   size: number;
   sha256: string;
+  dim?: string;
   voice?: Readonly<{ duration: number; waveform: readonly number[] }>;
 }>;
 /** Bytes of the transferred file handed to the connection so far. */
@@ -100,6 +101,10 @@ export function validateUploadResult(
     type: v.type.toLowerCase(),
     size,
     sha256: v.sha256,
+    // Optional layout metadata: a malformed value is dropped, not fatal.
+    ...(typeof v.dim === "string" && IMETA_DIM.test(v.dim)
+      ? { dim: v.dim }
+      : {}),
   });
 }
 /** A file's name as relay filename metadata takes it: a basename capped at
@@ -322,6 +327,7 @@ export function attachmentMessage(
       `size ${result.size}`,
       `x ${result.sha256}`,
       `filename ${name}`,
+      ...(result.dim ? [`dim ${result.dim}`] : []),
       ...(item.voice ? voiceMetadataTags(item.voice) : []),
     ]);
     return attachmentMarkdown(name, result);

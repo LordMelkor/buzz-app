@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { getEventHash, verifyEvent, verifiedSymbol } from "nostr-tools";
 import { createEventVerifier, eventDto, hasEventProof } from "./events";
 import { connectBrokerTransport, connectSignedTransport } from "./transport";
-import { hostSigner, keypair, signed } from "./testing";
+import { hostSigner, keypair, nativeSignatureChecks, signed } from "./testing";
 import { ByteLru } from "./budget";
 
 // Count the actual dependency verifier; never replace its cryptographic result.
@@ -189,9 +189,9 @@ it.each(["broker", "signed"])(
   },
 );
 
-it("batches memo misses to the host's signature checker and rejects a whole response on any failure", async () => {
+it("batches memo misses and admits only independently verified native results", async () => {
   const check = vi.fn(async (claims: readonly { sig: string }[]) =>
-    claims.map((claim) => claim.sig !== "0".repeat(128)),
+    nativeSignatureChecks({ claims }),
   );
   const { native } = createEventVerifier(undefined, check);
   if (!native) throw new Error("expected a native verifier");
@@ -205,8 +205,8 @@ it("batches memo misses to the host's signature checker and rejects a whole resp
     { id: second.id, pubkey: second.pubkey, sig: second.sig },
   ]);
   expect(verifyEvent).not.toHaveBeenCalled();
-  expect(events.map((item) => item[verifiedSymbol])).toEqual([true, true]);
-  expect(events.every((item) => hasEventProof(item))).toBe(true);
+  expect(events.map((item) => item?.[verifiedSymbol])).toEqual([true, true]);
+  expect(events.every((item) => item && hasEventProof(item))).toBe(true);
   expect(Object.isFrozen(events[0])).toBe(true);
   await batch([wire()]); // remembered: no host call
   expect(check).toHaveBeenCalledTimes(1);
@@ -214,8 +214,22 @@ it("batches memo misses to the host's signature checker and rejects a whole resp
     "invalidly signed",
   );
   const forged = { ...signed(other, { kind: 9, content: "x", tags: [] }) };
+  expect(
+    await batch([wire(), { ...forged, sig: "0".repeat(128) }, forged]),
+  ).toEqual([event, undefined, forged]);
+  const calls = check.mock.calls.length;
+  expect(await batch([forged, { ...forged, sig: "0".repeat(128) }])).toEqual([
+    forged,
+    undefined,
+  ]);
+  expect(check).toHaveBeenCalledTimes(calls + 1); // A failed signature never earns a proof.
+  check.mockResolvedValueOnce([]);
   await expect(
-    batch([wire(), { ...forged, sig: "0".repeat(128) }]),
+    batch([second, { ...forged, sig: "0".repeat(128) }]),
   ).rejects.toThrow("invalidly signed");
+  check.mockRejectedValueOnce(new Error("host failed"));
+  await expect(batch([{ ...forged, sig: "0".repeat(128) }])).rejects.toThrow(
+    "host failed",
+  );
   expect(createEventVerifier().native).toBeUndefined();
 });

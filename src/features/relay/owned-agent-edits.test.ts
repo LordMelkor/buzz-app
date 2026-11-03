@@ -26,6 +26,14 @@ import {
   signed,
 } from "./testing";
 
+vi.mock("./fold", async (actual) => {
+  const fold = await actual<typeof import("./fold")>();
+  return { ...fold, foldMessages: vi.fn(fold.foldMessages) };
+});
+/** Unread previews fold with no viewer; other projections pass one. */
+const unreadFolds = () =>
+  vi.mocked(foldMessages).mock.calls.filter(([, author]) => author === "");
+
 it("admits owner edits only after verifying the current signed profile, and revokes replaced evidence", async () => {
   const owner = keypair(),
     agent = keypair(),
@@ -629,6 +637,23 @@ it("uses the same verified owner edit in the conversation, prompt history and un
     expect(unread.activity("c").items?.[0]?.preview).toBe("Spoken");
     expect(unread.inbox().items?.[0]?.preview).toBe("Spoken");
     expect(changed).toHaveBeenCalled();
+    // A profile no fold read cannot change the previews: no refold.
+    vi.mocked(foldMessages).mockClear();
+    const stranger = keypair();
+    live.receive([
+      signed(stranger, {
+        kind: 0,
+        created_at: 12,
+        content: '{"name":"Stranger"}',
+        tags: [],
+      }),
+    ]);
+    await vi.waitFor(() =>
+      expect(
+        connection.session.profiles.snapshot().get(stranger.pubkey)?.name,
+      ).toBe("Stranger"),
+    );
+    expect(unreadFolds()).toHaveLength(0);
     profile = eventDto(
       signed(agent, { kind: 0, created_at: 13, content: "{}", tags: [] }),
     );

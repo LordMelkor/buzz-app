@@ -1239,7 +1239,7 @@ test.each([
   ],
   ["/api/relay/archive", 4096, "bytes", "Archive request too large"],
   ["/api/relay/stream-presence", 256, "bytes", "Live control too large"],
-  ["/api/relay/stream", 300000, "bytes", "Live interests too large"],
+  ["/api/relay/stream", 64 * 1024 * 1024, "bytes", "Live interests too large"],
   ["/api/relay/query", 65536, "chars", "Filter body too large"],
   ["/api/relay/presence-snapshot", 20 * 1024, "bytes", "Filter body too large"],
 ])(
@@ -3917,6 +3917,26 @@ test("inventory rejects foreign pages, ignores invalid heads and follows exact-k
     await h.close();
   }
 });
+
+test.each([[], [1, 42], [1, 42, 43]])(
+  "join discovery exposes membership enforcement for %j",
+  async (...nips) => {
+    const h = await harness((call) =>
+      Response.json(
+        call.url === fixtureRelayUrl
+          ? { name: "Community", supported_nips: nips }
+          : { policy: null },
+      ),
+    );
+    try {
+      expect(await (await h.get("info")).json()).toMatchObject({
+        membershipRequired: nips.includes(43),
+      });
+    } finally {
+      await h.close();
+    }
+  },
+);
 
 test("Builderlab HTTP accepts full agent instructions and isolates the fixed native routes", async () => {
   let openLogin;

@@ -70,6 +70,41 @@ export async function accountStorage(subject: string) {
 export const nativeBuilderlab = () =>
   import.meta.env.VITE_BUZZ_FEDERATED_IDENTITY === "1";
 
+/**
+ * The current NIP-FI session's account from Builderlab's `GET v1/auth/me`,
+ * through the native forwarder, or undefined for any answer that is not one.
+ * Rejects when the call or its JSON fails.
+ */
+export async function federatedAccount(
+  identity: Pick<FederatedIdentity, "snapshot" | "request">,
+): Promise<Account | undefined> {
+  const authority = identity.snapshot().authority;
+  if (!authority) return undefined;
+  const response = await identity.request({
+    path: `${authority.apiBasePath}v1/auth/me`,
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (response.status < 200 || response.status >= 300) return undefined;
+  const value = JSON.parse(response.body) as {
+    subject?: unknown;
+    email?: unknown;
+    capabilities?: {
+      can_use_remote_agents?: unknown;
+      can_use_builderlab_decisions?: unknown;
+    };
+  };
+  if (typeof value?.subject !== "string" || !value.subject.trim())
+    return undefined;
+  return Object.freeze({
+    subject: value.subject,
+    email: typeof value.email === "string" ? value.email.trim() : "",
+    canUseRemoteAgents: value.capabilities?.can_use_remote_agents === true,
+    canUseBuilderlabDecisions:
+      value.capabilities?.can_use_builderlab_decisions === true,
+  });
+}
+
 const ACCOUNT_FAILED = "Could not load your Builderlab account. Try again.";
 
 /**
@@ -123,33 +158,8 @@ export function createNativeSession(
     let account: Account | undefined;
     let storage = "";
     try {
-      const authority = identity.snapshot().authority;
-      if (!authority) throw new Error(ACCOUNT_FAILED);
-      const response = await identity.request({
-        path: `${authority.apiBasePath}v1/auth/me`,
-        method: "GET",
-        headers: { Accept: "application/json" },
-      });
-      if (response.status >= 200 && response.status < 300) {
-        const value = JSON.parse(response.body) as {
-          subject?: unknown;
-          email?: unknown;
-          capabilities?: {
-            can_use_remote_agents?: unknown;
-            can_use_builderlab_decisions?: unknown;
-          };
-        };
-        if (typeof value?.subject === "string" && value.subject.trim())
-          account = Object.freeze({
-            subject: value.subject,
-            email: typeof value.email === "string" ? value.email.trim() : "",
-            canUseRemoteAgents:
-              value.capabilities?.can_use_remote_agents === true,
-            canUseBuilderlabDecisions:
-              value.capabilities?.can_use_builderlab_decisions === true,
-          });
-        if (account) storage = await accountStorage(account.subject);
-      }
+      account = await federatedAccount(identity);
+      if (account) storage = await accountStorage(account.subject);
     } catch {
       // Fails closed below; signing in again retries.
     }

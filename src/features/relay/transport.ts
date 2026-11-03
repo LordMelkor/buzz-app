@@ -165,9 +165,15 @@ export interface ReadTransport {
   readonly renameSidebarSection?: SidebarSectionRenameMutator;
   readonly writeSidebarStar?: SidebarStarMutator;
   /** Host-only private account record of the main agent the viewer chose:
-   * undefined when never saved. */
+   * undefined when never saved or explicitly cleared. */
   readMainAgent?(signal: AbortSignal): Promise<string | undefined>;
-  writeMainAgent?(agent: string, signal: AbortSignal): Promise<void>;
+  /** Null saves that this account has no main agent. */
+  writeMainAgent?(agent: string | null, signal: AbortSignal): Promise<void>;
+  /** Clears only the expected choice and returns the resulting choice. */
+  clearMainAgent?(
+    expected: string,
+    signal: AbortSignal,
+  ): Promise<string | undefined>;
   readonly profiling?: RelayProfiler;
   /** Verified incoming traffic. The session owns this subscription and fences late delivery. */
   subscribe?(callbacks: LiveCallbacks): LiveSubscription;
@@ -300,6 +306,11 @@ async function parseEvents(
   if (!native) return checkChunks(verify);
   const events = await native.settle(await checkChunks(native.prepare));
   if (signal?.aborted) throw new DOMException("Read cancelled", "AbortError");
+  if (!events.every((event) => event !== undefined))
+    throw new ReadError(
+      "invalid-response",
+      "Relay supplied a malformed or invalidly signed event",
+    );
   return events;
 }
 
@@ -1406,6 +1417,11 @@ export async function connectSignedTransport(
           }),
           socketFactory,
           owner.live,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          signer.verifySignatures,
         );
       } catch (error) {
         owner.streams--;

@@ -116,7 +116,7 @@ function fixture() {
     },
   };
 }
-it("rejects status snapshots beyond channel interests plus both globals and observer", async () => {
+it("rejects status deltas beyond the bounded frame size", async () => {
   vi.useFakeTimers();
   const f = fixture();
   const t = await connectBrokerTransport();
@@ -124,9 +124,11 @@ it("rejects status snapshots beyond channel interests plus both globals and obse
   try {
     f.accept(0);
     await tick();
-    f.publish(0, {
+    f.frame("state-delta", {
       status: "connected",
-      routes: Array.from({ length: 1028 }, (_, i) => ({
+      removed: [],
+      interestRevision: 0,
+      routes: Array.from({ length: 513 }, (_, i) => ({
         id: `route-${i}`,
         status: "pending",
         replay: "unknown",
@@ -136,7 +138,7 @@ it("rejects status snapshots beyond channel interests plus both globals and obse
     expect(f.snapshots.at(-1)).toEqual({
       status: "retrying",
       routes: [],
-      error: "Invalid live broker status",
+      error: "Invalid live status delta",
     });
   } finally {
     owner.dispose();
@@ -550,6 +552,85 @@ it("in-place channel interests preserve an outstanding presence publication", as
     owner.dispose();
   }
 });
+
+it("keeps current status when old delta frames follow a removed and re-added channel", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const t = await connectBrokerTransport();
+  const established = vi.fn();
+  const owner = required(t.subscribe)({ ...f.callbacks, established });
+  const row = {
+    id: "channel:a",
+    channelId: "a",
+    status: "live",
+    replay: "unknown",
+  };
+  const delta = (revision: number, routes: unknown[], removed: string[] = []) =>
+    f.frame("state-delta", {
+      status: "connected",
+      routes,
+      removed,
+      interestRevision: revision,
+    });
+  try {
+    owner.update(["a"], ["a"]);
+    f.accept(0);
+    await tick();
+    delta(1, [row]);
+    f.frame("established", { channels: ["a"], interestRevision: 1 });
+    await tick();
+    expect(established).toHaveBeenCalledExactlyOnceWith(["a"]);
+    owner.update([]);
+    owner.update(["a"], ["a"]);
+    delta(1, [row]);
+    await tick();
+    expect(f.snapshots.at(-1)).toMatchObject({
+      routes: [expect.objectContaining({ channelId: "a", status: "pending" })],
+    });
+    delta(3, [row]);
+    f.frame("established", { channels: ["a"], interestRevision: 3 });
+    await tick();
+    delta(1, [], ["channel:a"]);
+    await tick();
+    expect(f.snapshots.at(-1)).toMatchObject({
+      routes: [expect.objectContaining({ channelId: "a", status: "live" })],
+    });
+    expect(established).toHaveBeenCalledTimes(2);
+  } finally {
+    owner.dispose();
+  }
+});
+
+it.each([
+  { id: "unknown", status: "live", replay: "unknown" },
+  { id: "fake-channel:a", channelId: "a", status: "live", replay: "unknown" },
+])(
+  "rejects a delta key outside the current route namespace: $id",
+  async (route) => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const t = await connectBrokerTransport();
+    const owner = required(t.subscribe)(f.callbacks);
+    try {
+      f.accept(0);
+      await tick();
+      f.frame("state-delta", {
+        status: "connected",
+        interestRevision: 0,
+        removed: [],
+        routes: [route],
+      });
+      await tick();
+      expect(f.snapshots.at(-1)).toMatchObject({
+        status: "retrying",
+        error: "Invalid live status delta",
+      });
+    } finally {
+      owner.dispose();
+    }
+  },
+);
+
 it("keeps the reconnect backoff growing for streams that drop right after their first frame", async () => {
   vi.useFakeTimers();
   const f = fixture();

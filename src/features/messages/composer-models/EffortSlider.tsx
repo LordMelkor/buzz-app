@@ -104,7 +104,7 @@ export function EffortSlider({
             // circular handle so the fill's rounded cap cannot leave a gap.
             style={{
               width:
-                "calc(var(--thumb-width) + var(--effort-progress) * (100% - var(--thumb-width)))",
+                "calc(var(--thumb-width) + var(--composer-effort-position) * (100% - var(--thumb-width)))",
             }}
           >
             <EffortMesh avatarSrc={avatarSrc} effort={known ? at / last : 0} />
@@ -120,6 +120,10 @@ export function EffortSlider({
           <Slider.Thumb
             className={styles.thumb}
             data-rubber-thumb=""
+            style={{
+              insetInlineStart:
+                "calc(var(--thumb-width) / 2 + var(--composer-effort-position) * (100% - var(--thumb-width)))",
+            }}
             inputRef={thumb}
             aria-label={`Effort for ${name}'s next run`}
             getAriaValueText={() => level}

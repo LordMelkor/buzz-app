@@ -1183,7 +1183,19 @@ The port retains the prepared-store implementation and its behavior tests:
   retained-window live catch-up. Optional profile enrichment stays background.
   Selecting an already-queued catch-up promotes that existing read without adding
   a request or resetting its deadline.
-- 1,024 profile entries / 2 MiB signed-record budget, narrow row profile selectors,
+- 1,024 profile entries and an aggregate signed-record byte budget of the entry
+  limit × 2 KiB, evicting the least recently requested profile. While a channel is
+  open and active (not a retained background tab), it reserves room for its whole
+  roster on top of that base, up to 10,240 entries. Leaving gives the room back
+  after the current task, so a remount or a roster count change keeps the loaded
+  profiles; the shrink cancels background profile reads still in flight, and
+  stops the verified-name syncs it emptied. Verified-name syncs (128 people
+  each) have their own pool of 80, enough for the largest cache, apart from the
+  32 artifact syncs. A background profile read of many pages publishes once,
+  when its pages settle (a foreground read that joins it publishes at once), so
+  an open mention menu re-ranks a large roster once instead of per page. The
+  channel avatar preview reads at most the first 1,024 members; only the mention
+  menu reads a whole large roster. Narrow row profile selectors,
   and request-warmed avatars (fetched and decoded, nothing retained; disabled
   under the Save-Data preference). Signature verification yields in batches.
 - Account/relay-scoped IndexedDB: 64 records / 8 MiB global disk budget, 24-hour
@@ -1290,14 +1302,21 @@ channel-scoped payloads from the connected relay become activity rows; malformed
 unknown and other authors' summaries are not rendered as JSON. These events do not
 grant/revoke access: the existing signed roster remains authoritative.
 
-The timeline groups adjacent arrivals/departures into compact avatar-and-text rows.
-Messages, local-day changes and gaps over an hour break groups; removals by different
-actors stay separate. Same-adder additions use “added by you” for the viewer;
-mixed arrivals do not invent an adder. Grouping is presentation-only: signed event
-IDs and cursors remain per event, and live activity counts against the row budget.
-Profiles reuse the
-shared background directory/cache, and reading anchors can resolve a member of a
-group. Activity has no message actions, thread, unread evidence or chat preview.
+The timeline shows only explicit additions by another actor and removals; self-joins
+and voluntary leaves are hidden before grouping. Each uninterrupted run of visible
+membership activity becomes one centered avatar-and-text row. Messages and huddles
+break runs; local-day changes, elapsed time and different removal actors do not.
+Each person appears only under their latest visible action in the run, including
+in the hover detail: removal followed by re-addition is described as an addition.
+The group keeps its newest event's identity and its oldest event's date.
+
+Small same-adder additions use “added by you” for the viewer; mixed additions do not
+invent an adder. Large or mixed summaries keep one name per action and a count;
+hovering, clicking or keyboard-opening the count shows the full scrollable people
+list for that action. Grouping is presentation-only: all signed events remain in
+the group, IDs and cursors remain per event, and reading anchors can resolve any
+member event. Profiles reuse the shared background directory/cache. Activity has no
+message actions, thread, unread evidence or chat preview.
 A Solo chat omits its owner's additions and removals of agents before its first
 message once history reaches its start; later changes, people and agents added by others still
 show. Membership, access and pagination are unchanged.
@@ -1549,6 +1568,39 @@ options exposes local-only manual unread, explicit mark-through and sync recover
 Older synchronized hints may expire under bounded retention. Synced manual-unread
 and OS notifications are not enabled by this feature.
 
+### Keyboard navigation and reading
+
+The Channels plugin registers Slack-style shortcuts through the shared dispatcher, so
+each is listed in Settings → Shortcuts and can be rebound. All run while typing in the
+message editor and are ignored behind a dialog. None run in a terminal, which keeps
+Escape and Option+Arrow for the shell.
+
+- **Previous/next conversation** (Option+Up/Down) and **previous/next unread
+  conversation** (Option+Shift+Up/Down) step through the sidebar's rendered order,
+  Solo chats and team rows alike. `conversation-rows.ts` scans the sidebar's
+  `Subscribed channels` list, so sorting, sections, filters and the All/Solo/Team pane
+  are already applied; rows in a collapsed section or the inactive pane are skipped. A
+  row is unread when it shows the unread or thread-activity marker that
+  `SidebarUnread` also reads. The open conversation is the row marked `aria-current`.
+  Stepping does not wrap, and at either end it does nothing. When the open
+  conversation is not among the rows, next starts from the top and previous from the
+  bottom. A conversation listed in two sections is stepped over once. The shortcuts
+  are unavailable, leaving the key alone, while the sidebar renders no rows (for
+  example behind another page's own sidebar). Stepping activates the row's own
+  button, so it takes the exact path of a click: the saved selection, navigation
+  intent, session staleness guard and Solo's immediate activation. The list scrolls
+  just far enough to show the row, and nothing above it moves.
+- **Mark conversation as read** (Escape) uses the open conversation's
+  `unread.markChannelRead`, as the row menu's Mark as read does, with no success toast.
+  A failure shows an error toast. The page publishes it only for a joined,
+  non-preview conversation (not the new message page), and it is available only while
+  the connection has `frontier-sync`, the conversation shows unread and focus is not a
+  text field outside the composer. It never consumes a dismissal: the dispatcher skips
+  events something already handled, panels, tabs, completions and message edits stop
+  Escape themselves, and the narrow navigation drawer now prevents it when it closes.
+- **Mark all as read** (Shift+Escape) is registered by the shell; see
+  [shell design](shell-design.md).
+
 
 ### Attachment layout and scrolling
 
@@ -1582,6 +1634,7 @@ Image attachments reserve loading geometry from valid `imeta dim` metadata,
 bounded to 360px wide and 320px tall without enlarging the frame beyond the
 original dimensions. Missing/invalid dimensions, including metadata that would
 reserve less than one CSS pixel on either axis, use a 360:320 loading frame.
+When sending media, the app copies `dim` from the relay's upload result.
 After the original decodes, its natural dimensions replace metadata and the
 loading frame. Loaded previews follow the image's aspect ratio with no grey
 backing or letterboxing, bounded to 360px wide and 320px tall. Exceptionally thin

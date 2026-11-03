@@ -467,7 +467,7 @@ export const COMPONENTS: readonly ComponentDefinition[] = [
       "link",
       "plain: unfilled text disclosure without an underline",
       "glass (proposed): frosted action over profile artwork",
-      "size: caption (32px, caption text) | inline | xs | sm | md (default) | lg",
+      "size: caption (32px, caption text) | inline | row (8px insets, stretched label) | xs | sm | md (default) | lg",
       "medium leading icon + label: 12px leading / 16px trailing inset (proposed)",
       "shape: capsule (default) | control (12px) | icon (square, 10px)",
       "SurfaceButton: artwork layout with shared activation and focus (proposed)",
@@ -544,6 +544,7 @@ export const COMPONENTS: readonly ComponentDefinition[] = [
       "Show a person or agent with an image or stable fallback. Use a circle for a person and a squircle for an agent, based on identity data supplied by the caller.",
     behavior: "Base UI Avatar.",
     variants: [
+      "tiny",
       "compact",
       "small",
       "default",
@@ -672,7 +673,7 @@ export const COMPONENTS: readonly ComponentDefinition[] = [
     purpose:
       "Group workspace content on a shared surface. Panel owns fill, border, corners, shadow, and clipping; the feature owns headers, spacing, scrolling, and resizing.",
     behavior: "Semantic native region.",
-    variants: ["panel", "capsule"],
+    variants: ["panel", "capsule", "card"],
     status: "proposed",
     collection: "components",
     owner: "desktop-new Messages",
@@ -852,8 +853,8 @@ export const COMPONENTS: readonly ComponentDefinition[] = [
     purpose:
       "Search and choose from a set of options. The field includes a browse control and a shared option popup. A dropdown trigger can place search inside the popup.",
     behavior:
-      "Base UI owns keyboard navigation and selection; callers own filtering, custom values and async discovery.",
-    variants: ["default", "compact", "loading", "disabled"],
+      "Base UI owns keyboard navigation, selection and positioning; callers own filtering, custom values and async discovery. Compact popups keep search visible above scrollable results and can retain a preferred side within the available height.",
+    variants: ["default", "compact", "compact popup", "loading", "disabled"],
     status: "proposed",
     collection: "components",
     source: "shared/design-system/ui/Combobox.tsx",

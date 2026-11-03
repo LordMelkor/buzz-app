@@ -1,4 +1,4 @@
-import { ByteLru } from "./budget";
+import { ByteLru, PROFILE_CACHE_BASE, PROFILE_ENTRY_BYTES } from "./budget";
 import { newer, type RelayEvent } from "./events";
 import {
   VERIFIED_PROFILE_BATCH,
@@ -23,12 +23,28 @@ export function createVerifiedProfileDirectory(
     signal: AbortSignal,
   ) => Promise<VerifiedProfileAuthority | null>,
 ) {
-  const heads = new ByteLru<RelayEvent>(1024, 2 * 1024 * 1024);
+  let limit = PROFILE_CACHE_BASE;
+  const heads = new ByteLru<RelayEvent>(limit, limit * PROFILE_ENTRY_BYTES);
   // Least recently ensured first.
   const wanted = new Set<string>();
   const checked = new Set<string>();
-  type Batch = { stop(): void; subjects: readonly string[] };
+  type Batch = {
+    stop(): void;
+    subjects: readonly string[];
+    /** A change accepted before EOSE that is not yet published. */
+    pending(): boolean;
+  };
   const batches = new Set<Batch>();
+  // Every profile publish projects every head: reuse the last projection of
+  // an unchanged event so publishes skip revalidation and compare by identity.
+  const projections = new WeakMap<
+    RelayEvent,
+    {
+      authority: VerifiedProfileAuthority;
+      checked: boolean;
+      profile: VerifiedProfile | undefined;
+    }
+  >();
   let authority = initialAuthority;
   let enabled = !!authority;
   let discoveryFresh = !!authority;
@@ -67,7 +83,13 @@ export function createVerifiedProfileDirectory(
           stopBatches();
           heads.clear();
         }
-        authority = next;
+        // An equal refresh keeps the current object, so unchanged heads keep
+        // their projections.
+        if (
+          authority?.pubkey !== next.pubkey ||
+          authority.multipleIssuers !== next.multipleIssuers
+        )
+          authority = next;
         enabled = true;
         schedule();
       }
@@ -86,6 +108,23 @@ export function createVerifiedProfileDirectory(
     }
   }
 
+  function project(
+    event: RelayEvent,
+    currentAuthority: VerifiedProfileAuthority,
+    isChecked: boolean,
+  ) {
+    const memo = projections.get(event);
+    if (memo?.authority === currentAuthority && memo.checked === isChecked)
+      return memo.profile;
+    const profile = verifiedProfile(event, currentAuthority, isChecked);
+    projections.set(event, {
+      authority: currentAuthority,
+      checked: isChecked,
+      profile,
+    });
+    return profile;
+  }
+
   /** Returns whether the head changed; the caller owns notification. */
   function accept(event: RelayEvent) {
     if (!authority || !enabled) return false;
@@ -99,6 +138,8 @@ export function createVerifiedProfileDirectory(
   function start(
     currentAuthority: VerifiedProfileAuthority,
     chunk: readonly string[],
+    // A change accepted before EOSE that is not yet published.
+    dirty = false,
   ) {
     let active = true;
     let ready = false;
@@ -107,6 +148,7 @@ export function createVerifiedProfileDirectory(
     let stopWire: (() => void) | undefined;
     const batch: Batch = {
       subjects: chunk,
+      pending: () => !ready && dirty,
       stop() {
         active = false;
         clearTimeout(timeout);
@@ -136,7 +178,7 @@ export function createVerifiedProfileDirectory(
             if (!ready) {
               count++;
               seen.add(subject);
-              accept(event);
+              if (accept(event)) dirty = true;
             } else if (accept(event)) changed();
           },
           eose() {
@@ -147,15 +189,34 @@ export function createVerifiedProfileDirectory(
             // never evidence that an omitted key has no current projection.
             const complete = count < chunk.length || seen.size === chunk.length;
             for (const subject of chunk) {
+              const had = checked.has(subject);
               if (wanted.has(subject) && (seen.has(subject) || complete))
                 checked.add(subject);
               // An incomplete replacement cannot confirm inherited status.
               else checked.delete(subject);
-              if (complete && !seen.has(subject)) heads.delete(subject);
+              if (had !== checked.has(subject)) dirty = true;
+              if (complete && !seen.has(subject) && heads.peek(subject)) {
+                heads.delete(subject);
+                dirty = true;
+              }
             }
-            changed();
+            // A replay that confirmed what was already shown changes nothing.
+            if (dirty) changed();
           },
-          closed: fail,
+          closed(reason) {
+            if (!reason.startsWith("disconnected:")) return fail();
+            // A replaced socket ends every sent sync. An outage then reports
+            // the connection down in the same task, which stops every batch.
+            // A planned renewal keeps it up: send the batch again and keep
+            // its checked status until the replacement answers, as a rebuilt
+            // batch does.
+            queueMicrotask(() => {
+              if (!active || !online) return fail();
+              batch.stop();
+              batches.delete(batch);
+              start(currentAuthority, batch.subjects, batch.pending());
+            });
+          },
         },
       );
       if (!stopWire) fail();
@@ -192,13 +253,17 @@ export function createVerifiedProfileDirectory(
         if (!unassigned.length) break;
         batch.stop();
         batches.delete(batch);
-        start(currentAuthority, [
-          ...batch.subjects,
-          ...unassigned.splice(
-            0,
-            VERIFIED_PROFILE_BATCH - batch.subjects.length,
-          ),
-        ]);
+        start(
+          currentAuthority,
+          [
+            ...batch.subjects,
+            ...unassigned.splice(
+              0,
+              VERIFIED_PROFILE_BATCH - batch.subjects.length,
+            ),
+          ],
+          batch.pending(),
+        );
       }
       while (unassigned.length)
         start(currentAuthority, unassigned.splice(0, VERIFIED_PROFILE_BATCH));
@@ -209,6 +274,28 @@ export function createVerifiedProfileDirectory(
       }
     });
   }
+  /** Drops the least recently ensured identities past the limit. */
+  function trim() {
+    const gone = new Set<string>();
+    for (const oldest of wanted) {
+      if (wanted.size - gone.size <= limit) break;
+      gone.add(oldest);
+    }
+    forget(gone);
+  }
+  /** Evicted identities leave membership, so a later ensure asks again. */
+  function forget(gone: ReadonlySet<string>) {
+    if (!gone.size) return;
+    for (const subject of gone) {
+      wanted.delete(subject);
+      heads.delete(subject);
+      checked.delete(subject);
+    }
+    evicted = true;
+    // A later ensure must issue a fresh REQ; the old one is past EOSE.
+    for (const batch of batches)
+      batch.subjects = batch.subjects.filter((key) => !gone.has(key));
+  }
   return {
     ensure(subjects: readonly string[]) {
       if (closed) return;
@@ -217,22 +304,26 @@ export function createVerifiedProfileDirectory(
         wanted.delete(subject);
         wanted.add(subject);
       }
-      const gone = new Set<string>();
-      for (const oldest of wanted) {
-        if (wanted.size <= 1024) break;
-        wanted.delete(oldest);
-        heads.delete(oldest);
-        checked.delete(oldest);
-        gone.add(oldest);
-      }
-      if (gone.size) {
-        evicted = true;
-        // A later ensure must issue a fresh REQ; the old one is past EOSE.
-        for (const batch of batches)
-          batch.subjects = batch.subjects.filter((key) => !gone.has(key));
-      }
+      trim();
       schedule();
       if (!refreshTimer && !discovery) armRefresh();
+    },
+    /** Follows the profile directory's limit; shrinking evicts and notifies now. */
+    resize(next: number) {
+      if (closed || next === limit) return;
+      limit = next;
+      // Request order decides who goes. After the trim every head is still
+      // wanted, so the head budget can only evict for bytes.
+      trim();
+      const before = heads.keys();
+      if (heads.resize(limit, limit * PROFILE_ENTRY_BYTES))
+        forget(new Set(before.filter((subject) => !heads.peek(subject))));
+      if (evicted) {
+        evicted = false;
+        changed();
+      }
+      // Stop the live syncs a shrink emptied now, not at the next ensure.
+      schedule();
     },
     snapshot(): ReadonlyMap<string, VerifiedProfile> {
       const currentAuthority = authority;
@@ -242,7 +333,7 @@ export function createVerifiedProfileDirectory(
           const event = heads.peek(subject);
           const profile =
             event &&
-            verifiedProfile(
+            project(
               event,
               currentAuthority,
               discoveryFresh && checked.has(subject),

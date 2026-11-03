@@ -374,6 +374,7 @@ export function PanelWorkspace({
       onKeyDown={(event) => {
         if (
           event.key === "Escape" &&
+          !event.shiftKey &&
           !event.nativeEvent.isComposing &&
           event.nativeEvent.keyCode !== 229 &&
           !event.defaultPrevented &&

@@ -172,3 +172,37 @@ it("partitions subscriptions and widths by workspace without remounting sidebar 
   expect(column()).toHaveStyle({ width: "350px" });
   expect(screen.getByRole("textbox")).toBe(draft);
 });
+
+it("cancels a drag across workspaces without replacing sidebar content or its destination width", () => {
+  vi.stubGlobal(
+    "PointerEvent",
+    class extends MouseEvent {
+      readonly pointerId = 1;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function () {
+      return { width: Number.parseFloat(this.style.width) } as DOMRect;
+    },
+  );
+  writeView("drag-a", "channel-sidebar", { width: 300 });
+  writeView("drag-b", "channel-sidebar", { width: 400 });
+  const view = render(sidebar("drag-a"));
+  const draft = screen.getByRole("textbox");
+  draft.focus();
+  fireEvent.pointerDown(screen.getByRole("separator"), {
+    button: 0,
+    clientX: 300,
+  });
+  view.rerender(sidebar("drag-b"));
+  expect(column()).toHaveStyle({ width: "400px" });
+  fireEvent.pointerUp(window, { clientX: 480 });
+  expect(column()).toHaveStyle({ width: "400px" });
+  expect(readView("drag-b", "channel-sidebar", null)).toEqual({ width: 400 });
+  expect(readView("drag-a", "channel-sidebar", null)).toEqual({ width: 300 });
+  expect(screen.getByRole("textbox")).toBe(draft);
+  expect(draft).toHaveFocus();
+  expect(document.documentElement).not.toHaveAttribute("data-sidebar-resizing");
+  resize("Home");
+  expect(readView("drag-b", "channel-sidebar", null)).toEqual({ width: 220 });
+});

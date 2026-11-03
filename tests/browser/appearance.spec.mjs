@@ -463,6 +463,7 @@ test("saved dark document paints before the application module is allowed to exe
   await page.route(/\/assets\/.*\.js$/, (route) =>
     route.fulfill({
       contentType: "application/javascript",
+      headers: { "cache-control": "no-store" },
       body: "/* Application execution deliberately withheld. */",
     }),
   );

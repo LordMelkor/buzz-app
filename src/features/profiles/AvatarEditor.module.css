@@ -341,3 +341,10 @@ html[data-keyboard-navigation] .panelViewport {
     background: var(--affordance-subtle-hover);
   }
 }
+
+.emptyCircle {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  color: var(--text-standard);
+}

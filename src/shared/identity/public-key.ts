@@ -1,10 +1,19 @@
 import { npubEncode } from "nostr-tools/nip19";
 
+// Rosters relabel the same keys on every render; bech32 is costly at that scale.
+const encoded = new Map<string, string>();
+
 /** The full npub of a hex public key, or undefined for anything else. */
 export function canonicalPublicKey(pubkey: string): string | undefined {
-  return /^[0-9a-f]{64}$/i.test(pubkey)
-    ? npubEncode(pubkey.toLowerCase())
-    : undefined;
+  if (!/^[0-9a-f]{64}$/i.test(pubkey)) return undefined;
+  const key = pubkey.toLowerCase();
+  let npub = encoded.get(key);
+  if (!npub) {
+    npub = npubEncode(key);
+    if (encoded.size >= 8192) encoded.delete(encoded.keys().next().value ?? "");
+    encoded.set(key, npub);
+  }
+  return npub;
 }
 
 /** Display only: never use this abbreviation for copying, storage or routing. */
@@ -42,4 +51,10 @@ export function publicKeyLabels(
       `npub…${npub.slice(-length)}`,
     ]),
   );
+}
+
+/** Compact single-line public identity with recognizable leading and trailing characters. */
+export function abbreviatedPublicKey(pubkey: string): string | undefined {
+  const npub = canonicalPublicKey(pubkey);
+  return npub ? `${npub.slice(0, 10)}...${npub.slice(-10)}` : undefined;
 }

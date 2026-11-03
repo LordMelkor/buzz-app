@@ -15,10 +15,11 @@ import {
   liveGlobal,
   type LiveCallbacks,
   type LiveSnapshot,
+  type LiveRoute,
   type LiveSubscription,
 } from "./live";
 
-const MAX_FRAME = 1024 * 1024;
+const MAX_FRAME = 8 * 1024 * 1024;
 const MAX_RETRY_MS = 30_000;
 /** A generation owns its stream, parser, retry and heartbeat. Interest changes
  * use the same host owner so they cannot interrupt pending publications. */
@@ -35,7 +36,7 @@ export function subscribeBrokerTraffic(
   let channels: string[] = [];
   let joined: string[] = [];
   let sentChannels: string[] = [];
-  // Only IDs in the last dispatched snapshot can have a host wire (at most 1024).
+  // Only IDs in the last dispatched snapshot can have a host wire.
   const removed = new Set<string>();
   let interestRevision = 0;
   const addedAt = new Map<string, number>();
@@ -60,6 +61,7 @@ export function subscribeBrokerTraffic(
   let streamId: string | undefined;
   let controlPending = false;
   let receiving = false;
+  const routeState = new Map<string, LiveRoute>();
   let latest: LiveSnapshot = { status: "connecting", routes: [] };
   const publish = (snapshot: LiveSnapshot) => {
     latest = snapshot;
@@ -165,6 +167,7 @@ export function subscribeBrokerTraffic(
     controller = owned;
     const valid = () =>
       !closed && current === generation && !owned.signal.aborted;
+    routeState.clear();
     state("connecting");
     const pulse = () => {
       clearTimeout(heartbeat);
@@ -194,6 +197,7 @@ export function subscribeBrokerTraffic(
             observer,
             presenceAuthors,
             interestRevision,
+            statusDeltas: true,
           }),
           signal: owned.signal,
         });
@@ -309,6 +313,65 @@ export function subscribeBrokerTraffic(
                 };
                 if (observer !== null && record.generation === observer)
                   callbacks.observer?.(observerFrame(record.frame), observer);
+              } else if (kind === "state-delta") {
+                const snapshot = liveSnapshot(data);
+                const delta = data as {
+                  interestRevision?: unknown;
+                  reset?: unknown;
+                  removed?: unknown;
+                };
+                if (
+                  !Number.isSafeInteger(delta.interestRevision) ||
+                  (delta.interestRevision as number) < 0 ||
+                  (delta.interestRevision as number) > interestRevision ||
+                  snapshot.routes.some((route) =>
+                    route.channelId
+                      ? route.id !== `channel:${route.channelId}`
+                      : ![
+                          "profiles",
+                          "membership",
+                          "observer",
+                          "presence",
+                        ].includes(route.id),
+                  ) ||
+                  snapshot.routes.length > 512 ||
+                  !Array.isArray(delta.removed) ||
+                  delta.removed.length + snapshot.routes.length > 512 ||
+                  delta.removed.some((id) => typeof id !== "string")
+                )
+                  throw new Error("Invalid live status delta");
+                if (delta.reset === true) {
+                  routeState.clear();
+                  for (const channelId of channels)
+                    routeState.set(
+                      `channel:${channelId}`,
+                      Object.freeze({
+                        id: `channel:${channelId}`,
+                        channelId,
+                        status: "pending",
+                        replay: "unknown",
+                      }),
+                    );
+                }
+                for (const id of delta.removed as string[]) {
+                  const route = routeState.get(id);
+                  if (
+                    !route?.channelId ||
+                    currentChannel(route.channelId, delta.interestRevision)
+                  )
+                    routeState.delete(id);
+                }
+                for (const route of snapshot.routes)
+                  if (
+                    !route.channelId ||
+                    currentChannel(route.channelId, delta.interestRevision)
+                  ) {
+                    routeState.set(route.id, route);
+                  }
+                for (const [id, route] of routeState)
+                  if (route.channelId && !addedAt.has(route.channelId))
+                    routeState.delete(id);
+                publish({ ...snapshot, routes: [...routeState.values()] });
               } else if (kind === "state") {
                 const snapshot = liveSnapshot(data);
                 const revision = (data as { interestRevision?: unknown })
@@ -601,16 +664,29 @@ export function subscribeBrokerTraffic(
       )
         return;
       interestRevision++;
+      const nextSet = new Set(next),
+        joinedSet = new Set(joined),
+        nextJoinedSet = new Set(nextJoined),
+        sentSet = new Set(sentChannels);
       for (const id of channels)
-        if (
-          !next.includes(id) ||
-          joined.includes(id) !== nextJoined.includes(id)
-        ) {
+        if (!nextSet.has(id) || joinedSet.has(id) !== nextJoinedSet.has(id)) {
           addedAt.delete(id);
-          if (sentChannels.includes(id)) removed.add(id);
+          routeState.delete(`channel:${id}`);
+          if (sentSet.has(id)) removed.add(id);
         }
       for (const id of next)
-        if (!addedAt.has(id)) addedAt.set(id, interestRevision);
+        if (!addedAt.has(id)) {
+          addedAt.set(id, interestRevision);
+          routeState.set(
+            `channel:${id}`,
+            Object.freeze({
+              id: `channel:${id}`,
+              channelId: id,
+              status: "pending",
+              replay: "unknown",
+            }),
+          );
+        }
       channels = next;
       joined = nextJoined;
       sendInterests();
@@ -682,8 +758,6 @@ function liveSnapshot(value: unknown): LiveSnapshot {
       snapshot.status,
     ) ||
     !Array.isArray(snapshot.routes) ||
-    // Keep limited channels visible alongside both globals and the optional observer.
-    snapshot.routes.length > 1027 ||
     (snapshot.error !== undefined && typeof snapshot.error !== "string")
   )
     throw new Error("Invalid live broker status");

@@ -600,3 +600,70 @@ it("limits advisory creation proof to streams in the background and keeps writer
     owner.dispose();
   }
 });
+
+it("keeps completed creation reads for retained channels while retrying aborted proof work", async () => {
+  const wire = scriptedTransport(author.pubkey, relay.pubkey);
+  let live!: LiveCallbacks;
+  const owner = createRelaySession({
+    ...wire.transport,
+    subscribe(callbacks) {
+      live = callbacks;
+      return { update() {}, retry() {}, dispose() {} };
+    },
+  });
+  const ids = Array.from({ length: 5 }, (_, i) => `proof-${i}`);
+  const records = ids.map((id) =>
+    metadata(relay, id, id, 30, [
+      ["t", "stream"],
+      ["P", author.pubkey],
+      ["private"],
+    ]),
+  );
+  const proof = async () => {
+    await vi.waitFor(() =>
+      expect(
+        wire.pending.some((r) => r.filters[0]?.kinds?.includes(9007)),
+      ).toBe(true),
+    );
+    const index = wire.pending.findIndex((r) =>
+      r.filters[0]?.kinds?.includes(9007),
+    );
+    const request = wire.pending.splice(index, 1)[0];
+    if (!request) throw new Error("Missing proof read");
+    return request;
+  };
+  try {
+    live.receive([
+      ...ids.map((id) => roster(relay, id, [author.pubkey], 20)),
+      ...records,
+    ]);
+    const complete = await proof();
+    expect(complete.filters).toHaveLength(4);
+    complete.respond([]);
+    const pending = await proof();
+    expect(pending.filters[0]?.["#h"]).toEqual(["proof-4"]);
+    live.receive([roster(relay, "proof-0", [], 40)]);
+    await flush();
+    expect(owner.session.channels.get?.("proof-0")).toBeUndefined();
+    expect(pending.signal?.aborted).toBe(true);
+    live.receive(records.slice(1));
+    const retry = await proof();
+    expect(retry.filters.map((f) => f["#h"])).toEqual([["proof-4"]]);
+    retry.respond([]);
+    await flush();
+    live.receive(records.slice(1));
+    await flush();
+    expect(
+      wire.pending.filter((r) => r.filters[0]?.kinds?.includes(9007)),
+    ).toHaveLength(0);
+    live.receive([
+      roster(relay, "proof-0", [author.pubkey], 41),
+      ...records.slice(0, 1),
+    ]);
+    const rejoined = await proof();
+    expect(rejoined.filters.map((f) => f["#h"])).toEqual([["proof-0"]]);
+    rejoined.respond([]);
+  } finally {
+    owner.dispose();
+  }
+});

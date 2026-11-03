@@ -18,10 +18,13 @@ import type { RegisteredPage } from "../../features/pages/service";
 import type { AccountActionsService } from "../../features/account-actions/service";
 import type { Communities } from "../../features/communities/service";
 import type { FederatedIdentity } from "../../features/federated-identity/service";
+import { ResizableSidebar } from "../../features/channel-navigation/ResizableSidebar";
 import type { InviteLink } from "../../features/communities/invite-link";
 import type { OpenTarget } from "../../features/navigation/targets";
 import { CommunityPicker } from "../../features/communities/CommunityPicker";
 import { ProfileButton } from "./ProfileButton";
+import { CommunityShortcuts } from "./CommunityShortcuts";
+import { MarkAllReadShortcut } from "./MarkAllReadShortcut";
 import type { Appearance } from "../../shared/theme/service";
 import { PageSearch, type SearchServices } from "./PageSearch";
 import { headerPageSelection, pagePlacement, orderPages } from "./presentation";
@@ -34,6 +37,7 @@ import {
   PopoverPopup,
 } from "../../shared/design-system/ui/Popover";
 import { PanelFrame } from "../../features/panels/PanelFrame";
+import { useRelayConnection } from "../../features/relay/react";
 import { macTitleBarDragHandlers } from "./title-bar";
 import { hasIntegratedWindowControls, WindowControls } from "./WindowControls";
 
@@ -118,6 +122,8 @@ function AppShellContent({
   const [creationContainer, setCreationContainer] =
     useState<HTMLDivElement | null>(null);
   const [creationOpen, setCreationOpen] = useState(false);
+  const connection = useRelayConnection(communities.relay);
+  const sidebarScope = connection.scope ?? "disconnected";
   const channelsNavigation = selected === "buzz.channels/channels";
   const [narrow, setNarrow] = useState(
     () => window.matchMedia("(max-width: 650px)").matches,
@@ -188,7 +194,7 @@ function AppShellContent({
         />
       </nav>
     ) : null;
-    return sidebar ? (
+    const content = sidebar ? (
       sidebar(
         pageNavigation,
         creationAction && creationInSidebar && (
@@ -202,7 +208,25 @@ function AppShellContent({
         </Panel>
       </div>
     );
-  }, [pages, selected, onSelect, sidebar, creationAction, creationInSidebar]);
+    const selectedPageHasSidebar = pages.some(
+      (page) => page.key === selected && !!page.sidebar,
+    );
+    return selectedPageHasSidebar ? (
+      <ResizableSidebar scope={sidebarScope} className="shell-sidebar">
+        {content}
+      </ResizableSidebar>
+    ) : (
+      content
+    );
+  }, [
+    pages,
+    selected,
+    onSelect,
+    sidebar,
+    sidebarScope,
+    creationAction,
+    creationInSidebar,
+  ]);
   const headerPages = useMemo(
     () =>
       orderPages(
@@ -512,9 +536,12 @@ function AppShellContent({
                 onKeyDown={(event) => {
                   if (
                     event.key === "Escape" &&
+                    !event.shiftKey &&
                     navigationOpen &&
                     !event.defaultPrevented
                   ) {
+                    // Closing the drawer consumes Escape, so it marks nothing read.
+                    event.preventDefault();
                     setNavigationOpen(false);
                     navigationToggle.current?.focus();
                   }
@@ -563,6 +590,19 @@ function AppShellContent({
         </div>
       </div>
       {creationAction?.(creationOpen, setCreationOpen, creationContainer)}
+      {searchServices && (
+        <>
+          <MarkAllReadShortcut
+            communities={communities}
+            shortcuts={searchServices.shortcuts}
+          />
+          <CommunityShortcuts
+            communities={communities}
+            shortcuts={searchServices.shortcuts}
+            onSelect={onCommunitySelect}
+          />
+        </>
+      )}
     </div>
   );
 }

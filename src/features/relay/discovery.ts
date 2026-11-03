@@ -1,3 +1,4 @@
+import { byteSize } from "./budget";
 import {
   channelJoinRole,
   channelTtl,
@@ -22,6 +23,8 @@ export function metadataName(event: RelayEvent): string | undefined {
   names.set(event, name);
   return name;
 }
+
+const noMembers: readonly string[] = Object.freeze([]);
 
 /** A Solo chat: a private stream carrying the Solo label. Never access. */
 export function soloChannelMetadata(event: RelayEvent): boolean {
@@ -61,11 +64,45 @@ export class DiscoveryState {
    * both arrived. Local display and intent only: never saved, never proof.
    * It stands in for access only until a signed roster decides it. */
   private starting = new Map<string, ChannelSummary>();
+  private retainedBytes = 0;
+  private rejectedVersions = new Map<
+    string,
+    Pick<RelayEvent, "id" | "created_at">
+  >();
   constructor(
     readonly viewer: string,
     readonly relayAuthor: string,
-    readonly capacity = 1024,
-  ) {}
+    readonly maxBytes = 256 * 1024 * 1024,
+  ) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+      throw new Error("Invalid discovery byte budget");
+  }
+  private store(
+    map: Map<string, RelayEvent>,
+    id: string,
+    event: RelayEvent,
+  ): boolean {
+    const previous = map.get(id);
+    const bytes =
+      this.retainedBytes +
+      byteSize(event) -
+      (previous ? byteSize(previous) : 0);
+    if (bytes > this.maxBytes) {
+      this.overflowRevision++;
+      return false;
+    }
+    map.set(id, event);
+    this.retainedBytes = bytes;
+    return true;
+  }
+  private olderThanRejected(event: RelayEvent, id: string): boolean {
+    const rejected = this.rejectedVersions.get(`${event.kind}:${id}`);
+    return (
+      !!rejected &&
+      (event.created_at < rejected.created_at ||
+        (event.created_at === rejected.created_at && event.id > rejected.id))
+    );
+  }
   /** Returns whether visible state changed. Events from other authors are ignored, not trusted. */
   accept(event: RelayEvent, cached = false): boolean {
     if (event.kind === 9007) {
@@ -73,8 +110,7 @@ export class DiscoveryState {
       const metadata = id && this.metadata.get(id);
       if (!id || !metadata || !huddleCreation(event, metadata)) return false;
       if (this.creations.get(id)?.id === event.id) return false;
-      this.creations.set(id, event);
-      return true;
+      return this.store(this.creations, id, event);
     }
     if (
       event.pubkey !== this.relayAuthor ||
@@ -84,12 +120,26 @@ export class DiscoveryState {
     const id = tag(event, "d");
     if (!id) return false;
     const map = event.kind === 39002 ? this.rosters : this.metadata;
-    if (!map.has(id) && map.size >= this.capacity) {
-      this.overflowRevision++;
+    const previous = map.get(id);
+    const coordinate = `${event.kind}:${id}`;
+    if (this.olderThanRejected(event, id)) return false;
+    const next = newer(previous, event);
+    const accessible = this.canAccess(id);
+    if (next !== previous && !this.store(map, id, next)) {
+      // Keep the version when its full body cannot fit. Older evidence cannot regrant access.
+      if (previous)
+        this.rejectedVersions.set(coordinate, {
+          id: event.id,
+          created_at: event.created_at,
+        });
+      if (
+        previous &&
+        (event.kind === 39002 || (!this.authorized(id) && !openMetadata(event)))
+      )
+        this.deny(id);
       return false;
     }
-    const previous = map.get(id);
-    const next = newer(previous, event);
+    if (next !== previous) this.rejectedVersions.delete(coordinate);
     // Only this version or a newer one confirms saved membership. An older
     // response must not promote a newer disk roster into write authority.
     const confirmed =
@@ -98,8 +148,6 @@ export class DiscoveryState {
       (next !== previous || event.id === previous?.id) &&
       this.cached.delete(id);
     if (next === previous) return confirmed;
-    const accessible = this.canAccess(id);
-    map.set(id, next);
     if (event.kind === 39000 && !this.open(id))
       this.confirmedPreviews.delete(id);
     if (event.kind === 39002) {
@@ -145,12 +193,6 @@ export class DiscoveryState {
     // A relay denial outranks an omission that a later read could undo.
     this.absent.delete(id);
     if (!this.canAccess(id) && !this.suspended.has(id)) return;
-    // Never evict denial evidence back into "unknown". Bound adversarial IDs by
-    // failing closed until fresh signed membership is available.
-    if (this.denied.size >= this.capacity) {
-      this.denyAll();
-      return;
-    }
     this.accessRevision++;
     this.suspended.delete(id);
     this.confirmedPreviews.delete(id);
@@ -173,6 +215,7 @@ export class DiscoveryState {
       metadata?.kind === 39000 &&
       metadata.pubkey === this.relayAuthor &&
       tag(metadata, "d") === id &&
+      !this.olderThanRejected(metadata, id) &&
       openMetadata(metadata) &&
       newer(this.metadata.get(id), metadata)?.id === metadata.id
     ) {
@@ -260,16 +303,45 @@ export class DiscoveryState {
   canWrite(id: string): boolean {
     return this.canParticipate(id) && this.viewerRole(id) !== "guest";
   }
+  // Per signed roster event, so a large roster is not parsed, sorted and
+  // scanned for the (fixed) viewer again on every `get`.
+  private readonly parsed = new WeakMap<
+    RelayEvent,
+    { members: readonly string[]; viewerRole: ChannelSummary["viewerRole"] }
+  >();
+  private parse(roster: RelayEvent) {
+    let parsed = this.parsed.get(roster);
+    if (!parsed) {
+      const entries = roster.tags.filter(
+        ([key, value]) => key === "p" && value === this.viewer,
+      );
+      const role = entries.length === 1 ? entries[0]?.[3] : undefined;
+      parsed = {
+        members: Object.freeze(
+          [
+            ...new Set(
+              roster.tags.flatMap(([name, value]) =>
+                name === "p" && value && /^[0-9a-f]{64}$/.test(value)
+                  ? [value]
+                  : [],
+              ),
+            ),
+          ].sort(),
+        ),
+        // A contradictory guest entry cannot restore writing through another role.
+        viewerRole: entries.some((entry) => entry[3] === "guest")
+          ? "guest"
+          : ["owner", "admin", "member", "bot"].includes(role ?? "")
+            ? (role as ChannelSummary["viewerRole"])
+            : undefined,
+      };
+      this.parsed.set(roster, parsed);
+    }
+    return parsed;
+  }
   private viewerRole(id: string): ChannelSummary["viewerRole"] {
-    const entries = this.rosters
-      .get(id)
-      ?.tags.filter(([key, value]) => key === "p" && value === this.viewer);
-    // A contradictory guest entry cannot restore writing through another role.
-    if (entries?.some((entry) => entry[3] === "guest")) return "guest";
-    const role = entries?.length === 1 ? entries[0]?.[3] : undefined;
-    return ["owner", "admin", "member", "bot"].includes(role ?? "")
-      ? (role as ChannelSummary["viewerRole"])
-      : undefined;
+    const roster = this.rosters.get(id);
+    return roster && this.parse(roster).viewerRole;
   }
   authorized(id: string): boolean {
     const roster = this.rosters.get(id);
@@ -281,9 +353,8 @@ export class DiscoveryState {
   named(id: string): boolean {
     return this.metadata.has(id);
   }
-  /** Metadata slots still free: `accept` drops a new channel's 39000 without one. */
-  headroom(): number {
-    return this.capacity - this.metadata.size;
+  byteHeadroom(): number {
+    return this.maxBytes - this.retainedBytes;
   }
   name(id: string): string {
     const event = this.metadata.get(id);
@@ -359,17 +430,7 @@ export class DiscoveryState {
             description: tag(event, "about") ?? "",
           }
         : {}),
-      members: Object.freeze(
-        [
-          ...new Set(
-            roster?.tags.flatMap(([name, value]) =>
-              name === "p" && value && /^[0-9a-f]{64}$/.test(value)
-                ? [value]
-                : [],
-            ),
-          ),
-        ].sort(),
-      ),
+      members: roster ? this.parse(roster).members : noMembers,
       ...(this.hidden(id) ? { hidden: true } : {}),
       ...(this.isPrivate(id) ? { private: true } : {}),
       ...(channelType ? { channelType } : {}),
@@ -405,9 +466,11 @@ export class DiscoveryState {
     for (const id of this.cached) {
       this.deny(id);
       // Clearing must allow a fresh identical signed roster to regrant access.
-      this.rosters.delete(id);
-      this.metadata.delete(id);
-      this.creations.delete(id);
+      for (const map of [this.rosters, this.metadata, this.creations]) {
+        const event = map.get(id);
+        if (event) this.retainedBytes -= byteSize(event);
+        map.delete(id);
+      }
     }
     this.cached.clear();
   }

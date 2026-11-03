@@ -372,3 +372,58 @@ it("deleting the reply or either copy removes every linked copy", async () => {
   messages.remove([reply.id]);
   expect(targets(next, 5)).toEqual([a.id, b.id, reply.id].sort());
 });
+it("deletes a reply and its channel copy with one target per deletion", async () => {
+  const { messages, outbox, send } = linkedSetup();
+  await outbox.ready();
+  const copy = send();
+  const before = outbox.snapshot().length;
+  messages.remove([reply.id]);
+  expect(
+    outbox
+      .snapshot()
+      .slice(before)
+      .map((item) => item.event.tags.filter(([n]) => n !== "client-id")),
+  ).toEqual(
+    [reply.id, copy.id].map((id) => [
+      ["h", "channel"],
+      ["e", id],
+      ["k", "9"],
+    ]),
+  );
+});
+it("still deletes the other copies when one deletion fails, then reports it", async () => {
+  const { outbox, copies, send } = linkedSetup();
+  await outbox.ready();
+  send();
+  const events = [root, reply, ...copies];
+  const sent: string[] = [];
+  const messages = createMessages(
+    {
+      ...outbox,
+      send(input, ...rest) {
+        const target = input.tags.find(([n]) => n === "e")?.[1] ?? "";
+        if (target === reply.id) throw new Error("storage full");
+        sent.push(target);
+        return outbox.send(input, ...rest);
+      },
+    },
+    author.pubkey,
+    (id) => events.find((event) => event.id === id),
+    () => [],
+    () => {},
+    () => true,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    (id) =>
+      events.filter((event) =>
+        event.tags.some(([n, v]) => n === "buzz:copy-of" && v === id),
+      ),
+  );
+  expect(() => messages.remove([reply.id])).toThrow(
+    "Could not delete 1 of 2 linked messages",
+  );
+  expect(sent).toEqual(copies.map((copy) => copy.id));
+});

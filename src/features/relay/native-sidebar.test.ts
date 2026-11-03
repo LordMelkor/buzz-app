@@ -168,6 +168,29 @@ it("saves and reads back the account's main agent", async () => {
   expect(await transport.readMainAgent?.(signal)).toBeUndefined();
   await transport.writeMainAgent?.("a".repeat(64), signal);
   expect(await transport.readMainAgent?.(signal)).toBe("a".repeat(64));
+  const signedBeforeMismatch = vi
+    .mocked(invoke)
+    .mock.calls.filter(([command]) => command === "relay_sign_sidebar").length;
+  expect(await transport.clearMainAgent?.("b".repeat(64), signal)).toBe(
+    "a".repeat(64),
+  );
+  expect(
+    vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "relay_sign_sidebar"),
+  ).toHaveLength(signedBeforeMismatch);
+  expect(await transport.readMainAgent?.(signal)).toBe("a".repeat(64));
+  expect(
+    await transport.clearMainAgent?.("a".repeat(64), signal),
+  ).toBeUndefined();
+  expect(await transport.readMainAgent?.(signal)).toBeUndefined();
+  await transport.writeMainAgent?.("a".repeat(64), signal);
+  await transport.writeMainAgent?.(null, signal);
+  expect(await transport.readMainAgent?.(signal)).toBeUndefined();
+  expect(invoke).toHaveBeenCalledWith(
+    "relay_sign_sidebar",
+    expect.objectContaining({ payload: { version: 1, agent: null } }),
+  );
   await expect(
     transport.writeMainAgent?.("A".repeat(64), signal),
   ).rejects.toThrow("Invalid main agent intent");

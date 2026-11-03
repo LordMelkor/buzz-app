@@ -17,11 +17,24 @@ import {
   subscribeRelayTraffic,
   type LiveCallbacks,
 } from "./live";
-import { keypair, message, roster, signed, scriptedTransport } from "./testing";
+import {
+  keypair,
+  message,
+  nativeSignatureChecks,
+  roster,
+  signed,
+  scriptedTransport,
+} from "./testing";
+import type { SignatureVerifier } from "./events";
+import { yieldToHost } from "./yield";
 import { createRelaySession } from "./session";
 import { liveRecoveryStatus } from "./live-recovery";
 import { createPresence } from "../presence/presence";
 import { matchesEvent } from "./projection";
+import {
+  VERIFIED_PROFILE_MAX_SYNCS,
+  verifiedProfileFilter,
+} from "./verified-profile";
 type WireFilter = {
   kinds: number[];
   "#h"?: string[];
@@ -97,7 +110,9 @@ it("keeps the browser authentication deadline measured from construction", async
 function setup(
   channels = ["a", "b"],
   admission = createLiveAdmission(),
+  batchSize = 10,
   random?: () => number,
+  signatures?: SignatureVerifier,
 ) {
   const key = keypair(),
     sockets: Socket[] = [];
@@ -121,13 +136,199 @@ function setup(
     admission,
     undefined,
     undefined,
+    batchSize,
     random,
+    signatures,
   );
   owner.update(channels);
   const first = sockets[0];
   assert.exists(first);
   return { key, sockets, callbacks, owner, first };
 }
+
+describe("native live verification", () => {
+  function gate() {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const check = vi.fn<SignatureVerifier>(async (claims) => {
+      await promise;
+      return nativeSignatureChecks({ claims });
+    });
+    return { check, release };
+  }
+  const channelRequest = (socket: Socket) => {
+    const route = socket
+      .requests()
+      .find((request) => scopeOf(request).includes("a"));
+    assert.exists(route);
+    return route;
+  };
+
+  it("batches a burst without JS signatures and delivers valid events before EOSE and CLOSED", async () => {
+    const host = gate();
+    const h = setup(["a"], undefined, undefined, undefined, host.check);
+    const delivered: string[] = [];
+    h.callbacks.receive.mockImplementation(([event], provenance) =>
+      delivered.push(`${event?.content}:${provenance?.phase}`),
+    );
+    h.callbacks.established.mockImplementation((channel) => {
+      if (channel === "a") delivered.push("EOSE");
+    });
+    try {
+      await h.first.auth();
+      const route = channelRequest(h.first);
+      const first = message(h.key, "a", "first", 1700000000);
+      const second = message(h.key, "a", "second", 1700000001);
+      const frames = [
+        ["EVENT", route[1], first],
+        ["EVENT", route[1], { ...first, content: "tampered" }],
+        ["EVENT", route[1], { ...second, sig: "0".repeat(128) }],
+        ["EVENT", route[1], second],
+        ["EOSE", route[1]],
+        ["EVENT", route[1], first],
+        ["CLOSED", route[1], "restricted: not a channel member"],
+        ["EVENT", route[1], second],
+      ].map((frame) => h.first.receive(frame));
+      vi.mocked(verifyEvent).mockClear();
+      await vi.waitFor(() => expect(host.check).toHaveBeenCalledOnce());
+      expect(host.check.mock.calls[0]?.[0]).toHaveLength(5);
+      expect(delivered).toEqual([]);
+      host.release();
+      await Promise.all(frames);
+      expect(delivered).toEqual([
+        "first:replay",
+        "second:replay",
+        "EOSE",
+        "first:live",
+      ]);
+      expect(h.callbacks.denied).toHaveBeenCalledWith(
+        "a",
+        "restricted: not a channel member",
+      );
+      expect(verifyEvent).not.toHaveBeenCalled();
+    } finally {
+      host.release();
+      h.owner.dispose();
+    }
+  });
+
+  it.each(["retire", "disconnect", "dispose"])(
+    "discards native results after %s",
+    async (action) => {
+      const host = gate();
+      const h = setup(["a"], undefined, undefined, undefined, host.check);
+      try {
+        await h.first.auth();
+        const route = channelRequest(h.first);
+        const event = message(h.key, "a", "late", 1700000000);
+        const frames = [
+          h.first.receive(["EVENT", route[1], event]),
+          h.first.receive(["EOSE", route[1]]),
+        ];
+        await vi.waitFor(() => expect(host.check).toHaveBeenCalledOnce());
+        if (action === "retire") h.owner.update([]);
+        else if (action === "disconnect") h.first.close();
+        else h.owner.dispose();
+        host.release();
+        await host.check.mock.results[0]?.value;
+        await Promise.all(frames);
+        // Finish the native-result microtasks even when disconnect settled the frames early.
+        await yieldToHost();
+        expect(h.callbacks.receive).not.toHaveBeenCalled();
+        expect(h.callbacks.established).not.toHaveBeenCalledWith("a");
+      } finally {
+        host.release();
+        h.owner.dispose();
+      }
+    },
+  );
+
+  it("recovers a rejected host check without admitting the event or its EOSE", async () => {
+    const check = vi
+      .fn<SignatureVerifier>(async (claims) =>
+        nativeSignatureChecks({ claims }),
+      )
+      .mockRejectedValueOnce(new Error("host unavailable"));
+    const h = setup(["a"], undefined, undefined, undefined, check);
+    try {
+      await h.first.auth();
+      const route = channelRequest(h.first);
+      const event = message(h.key, "a", "retry", 1700000000);
+      await Promise.all([
+        h.first.receive(["EVENT", route[1], event]),
+        h.first.receive(["EOSE", route[1]]),
+      ]);
+      expect(h.callbacks.state.mock.lastCall?.[0].status).toBe("retrying");
+      expect(h.callbacks.receive).not.toHaveBeenCalled();
+      expect(h.callbacks.established).not.toHaveBeenCalledWith("a");
+      h.owner.retry();
+      const next = h.sockets[1];
+      assert.exists(next);
+      await next.auth();
+      await next.receive(["EVENT", channelRequest(next)[1], event]);
+      expect(h.callbacks.receive).toHaveBeenCalledWith([event], {
+        phase: "replay",
+        channelId: "a",
+      });
+    } finally {
+      h.owner.dispose();
+    }
+  });
+
+  it.each(["frames", "bytes"])(
+    "bounds pending %s and resumes before undelivered native work",
+    async (bound) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_700_000_000_000);
+      const host = gate();
+      const h = setup(["a"], undefined, undefined, () => 0, host.check);
+      try {
+        await h.first.auth();
+        for (const req of h.first.requests())
+          await h.first.receive(["EOSE", req[1]]);
+        const admittedAt = Math.floor(Date.now() / 1000);
+        const route = channelRequest(h.first);
+        const event = message(h.key, "a", "pending", 1700000000);
+        const pending = h.first.receive(["EVENT", route[1], event]);
+        await vi.waitFor(() => expect(host.check).toHaveBeenCalledOnce());
+        // Control traffic can advance liveness while the native batch is held.
+        await vi.advanceTimersByTimeAsync(14 * LIVE_RECOVERY_INTERVAL);
+        await h.first.receive(["NOTICE", "still connected"]);
+        const count = bound === "frames" ? 32_768 : 38;
+        const frame =
+          bound === "frames"
+            ? ["EOSE", route[1]]
+            : ["EVENT", route[1], { ...event, content: "x".repeat(900_000) }];
+        await Promise.all([
+          pending,
+          ...Array.from({ length: count }, () => h.first.receive(frame)),
+        ]);
+        expect(h.callbacks.state.mock.lastCall?.[0]).toMatchObject({
+          status: "retrying",
+          error: "Live event verification backlog exceeded",
+        });
+        h.owner.retry();
+        const next = h.sockets[1];
+        assert.exists(next);
+        await next.auth();
+        expect(channelRequest(next)[2].since).toBe(
+          Math.max(route[2].since, admittedAt - 960),
+        );
+        host.release();
+        await host.check.mock.results[0]?.value;
+        await yieldToHost();
+        expect(h.callbacks.receive).not.toHaveBeenCalled();
+        await next.receive(["EVENT", channelRequest(next)[1], event]);
+        expect(h.callbacks.receive).toHaveBeenCalledOnce();
+      } finally {
+        host.release();
+        h.owner.dispose();
+      }
+    },
+  );
+});
 /** The relay's member-added notice for `channel` on the viewer's membership
  * route: the one event that makes a live batch re-send its REQ. */
 async function grant(
@@ -303,9 +504,11 @@ it("batches joined background interests without rebalance and fences retired bat
     for (let i = 0; i < h.first.requests().length; i++)
       await h.first.receive(["EOSE", h.first.requests()[i]?.[1]]);
     const requests = h.first.requests();
-    expect(requests).toHaveLength(38);
+    expect(requests).toHaveLength(37);
     const batches = requests.filter((r) => scopeOf(r).length > 1);
-    expect(batches.map((r) => scopeOf(r).length)).toEqual(Array(33).fill(10));
+    expect(batches.map((r) => scopeOf(r).length).sort((a, b) => a - b)).toEqual(
+      [2, ...Array(33).fill(10)],
+    );
     for (const r of requests) {
       expect(filtersOf(r).length).toBeLessThanOrEqual(10);
       for (const f of filtersOf(r))
@@ -316,10 +519,10 @@ it("batches joined background interests without rebalance and fences retired bat
     }
     expect(
       requests.filter((r) => scopeOf(r).length === 1).map(scopeOf),
-    ).toEqual([["c331"], ["preview"], ["c330"]]);
-    expect(h.callbacks.established).toHaveBeenCalledTimes(38);
+    ).toEqual([["preview"]]);
+    expect(h.callbacks.established).toHaveBeenCalledTimes(37);
     expect(h.callbacks.state.mock.lastCall?.[0].routes).toHaveLength(335);
-    const batch = batches[0];
+    const batch = batches.find((request) => scopeOf(request).includes("c000"));
     assert.exists(batch);
     const first = message(h.key, "c000", "first", 1700000000);
     await h.first.receive(["EVENT", batch[1], first]);
@@ -342,11 +545,11 @@ it("batches joined background interests without rebalance and fences retired bat
       channelId: "c001",
     });
     h.owner.prioritize?.(["c001"]);
-    expect(h.first.requests()).toHaveLength(38);
+    expect(h.first.requests()).toHaveLength(37);
     const retained = joined.filter((id) => id !== "c000");
     h.owner.update([...retained, "preview"], retained);
     // Healthy survivors keep one scope and overlap the old wire until EOSE.
-    expect(h.first.requests()).toHaveLength(39);
+    expect(h.first.requests()).toHaveLength(38);
     const replacement = h.first.requests().at(-1);
     assert.exists(replacement);
     expect(replacement[2].limit).toBe(0);
@@ -616,7 +819,9 @@ it.each(["single", "chained"])(
         message(author, "a", "old lifetime", 1700000005),
       ]);
       expect(h.callbacks.receive).not.toHaveBeenCalled();
-      await h.first.receive(["EOSE", replacement[1]]);
+      const latest = h.first.requests().at(-1);
+      assert.exists(latest);
+      await h.first.receive(["EOSE", latest[1]]);
       expect(h.first.sent).toContainEqual(["CLOSE", initial[1]]);
     } finally {
       owner.dispose();
@@ -895,7 +1100,7 @@ it.each(["timeout", "error: temporarily unavailable"])(
         h.callbacks.state.mock.lastCall?.[0].routes.find(
           (r) => r.channelId === "b",
         ),
-      ).toMatchObject({ status: "pending", error: expect.any(String) });
+      ).toMatchObject({ status: "live", error: expect.any(String) });
       await h.first.receive(["EOSE", retry[1]]);
       expect(h.first.sent).toContainEqual(["CLOSE", initial[1]]);
       const state = h.callbacks.state.mock.lastCall?.[0].routes.find(
@@ -1156,7 +1361,7 @@ function captureLog() {
 
 it("verifies a reconnect's replayed events once and still rejects a changed copy", async () => {
   vi.useFakeTimers();
-  const h = setup(["a"], undefined, () => 0.5);
+  const h = setup(["a"], undefined, undefined, () => 0.5);
   const log = captureLog();
   try {
     await h.first.auth();
@@ -1565,7 +1770,7 @@ const sinceOf = (socket: Socket, match: (r: WireRequest) => boolean) =>
 
 it("resumes a rebuilt route sixteen minutes before its connection last heard the relay, and only if it reached EOSE", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup(["a", "b"], undefined, () => 0.5);
+  const h = setup(["a", "b"], undefined, undefined, () => 0.5);
   try {
     age();
     await h.first.auth();
@@ -1607,7 +1812,7 @@ it("resumes a rebuilt route sixteen minutes before its connection last heard the
 
 it("never resumes from before the session's first window", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup(["a"], undefined, () => 0.5);
+  const h = setup(["a"], undefined, undefined, () => 0.5);
   try {
     await h.first.auth();
     await vi.advanceTimersByTimeAsync(750);
@@ -1629,7 +1834,7 @@ it("never resumes from before the session's first window", async () => {
 
 it("takes a batch's resume point from its earliest channel", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup([], undefined, () => 0.5);
+  const h = setup([], undefined, undefined, () => 0.5);
   try {
     age();
     h.owner.update(["a", "b"], ["a", "b"]);
@@ -1659,7 +1864,7 @@ it("takes a batch's resume point from its earliest channel", async () => {
 
 it("resumes from when a silent socket last answered, not from when it was replaced", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup(["a"], undefined, () => 0.5);
+  const h = setup(["a"], undefined, undefined, () => 0.5);
   try {
     age();
     await h.first.auth();
@@ -1712,9 +1917,48 @@ async function rebuilt(h: ReturnType<typeof setup>) {
   return next;
 }
 
+it("resumes large live batches and their separate replay from the established cursor", async () => {
+  vi.useFakeTimers({ now: 1_700_000_000_000 });
+  const h = setup([], undefined, 2048, () => 0.5);
+  try {
+    age();
+    const ids = Array.from({ length: 11 }, (_, i) => `channel-${i}`);
+    h.owner.update(ids, ids);
+    await h.first.auth();
+    await vi.advanceTimersByTimeAsync(750);
+    for (let i = 0; i < h.first.requests().length; i++) {
+      const request = h.first.requests()[i];
+      assert.exists(request);
+      await h.first.receive(["EOSE", request[1]]);
+    }
+    const heard = Math.floor(Date.now() / 1000);
+    h.first.close();
+    const next = await rebuilt(h);
+    for (let i = 0; i < next.requests().length; i++) {
+      const request = next.requests()[i];
+      assert.exists(request);
+      await next.receive(["EOSE", request[1]]);
+    }
+    const requests = next
+      .requests()
+      .filter((r) => scopeOf(r).includes("channel-0"));
+    expect(requests).toHaveLength(2);
+    expect(
+      requests.flatMap(filtersOf).filter((f) => f["#h"]?.includes("channel-0")),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ since: heard - 960, limit: 0 }),
+        expect.objectContaining({ since: heard - 960, limit: 500 }),
+      ]),
+    );
+  } finally {
+    h.owner.dispose();
+  }
+});
+
 it("resumes a joined batch closed during its renewal from the source it kept", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup([], undefined, () => 0.5);
+  const h = setup([], undefined, undefined, () => 0.5);
   try {
     const { heard } = await renewing(h);
     h.first.close();
@@ -1729,7 +1973,7 @@ it("resumes a joined batch closed during its renewal from the source it kept", a
 
 it("resumes a joined batch whose renewal failed but kept its source", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup([], undefined, () => 0.5);
+  const h = setup([], undefined, undefined, () => 0.5);
   try {
     const { heard, renewal } = await renewing(h);
     // After one tick, a frame proves the relay only as far as the AUTH.
@@ -1746,7 +1990,7 @@ it("resumes a joined batch whose renewal failed but kept its source", async () =
 
 it("resumes a silent joined batch from its last frame, though its renewal never answered", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup([], undefined, () => 0.5);
+  const h = setup([], undefined, undefined, () => 0.5);
   try {
     age();
     h.owner.update(["a", "b"], ["a", "b"]);
@@ -1777,7 +2021,7 @@ it("resumes a silent joined batch from its last frame, though its renewal never 
 
 it("gives a renewal's kept source no cursor for a channel the renewal dropped", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup([], undefined, () => 0.5);
+  const h = setup([], undefined, undefined, () => 0.5);
   try {
     age();
     h.owner.update(["a", "b"], ["a", "b"]);
@@ -1804,7 +2048,7 @@ it("gives a renewal's kept source no cursor for a channel the renewal dropped", 
 
 it("resumes a batch rebuilt before its EOSE from the cursor, not the last five minutes", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup([], undefined, () => 0.5);
+  const h = setup([], undefined, undefined, () => 0.5);
   try {
     age();
     h.owner.update(["a", "b", "c"], ["a", "b", "c"]);
@@ -1835,7 +2079,7 @@ it("resumes a batch rebuilt before its EOSE from the cursor, not the last five m
 
 it("does not move the cursor to the wake time for a frame that waited through a sleep", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup(["a"], undefined, () => 0.5);
+  const h = setup(["a"], undefined, undefined, () => 0.5);
   try {
     age();
     await h.first.auth();
@@ -1868,7 +2112,7 @@ it.each([
   "a frame handled after a short sleep proves the relay only up to the tick before the latest, whether %s is handled first",
   async (_, tickFirst) => {
     vi.useFakeTimers({ now: 1_700_000_000_000 });
-    const h = setup(["a"], undefined, () => 0.5);
+    const h = setup(["a"], undefined, undefined, () => 0.5);
     try {
       age();
       await h.first.auth();
@@ -1909,7 +2153,7 @@ it.each([
 
 it("keeps a route's cursor through a connection that never established it", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup(["a"], undefined, () => 0.5);
+  const h = setup(["a"], undefined, undefined, () => 0.5);
   try {
     age();
     await h.first.auth();
@@ -1940,7 +2184,7 @@ it("keeps a route's cursor through a connection that never established it", asyn
 
 it("reports a global route continuous only when it resumed from a cursor and its replay stayed under the limit", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup([], undefined, () => 0.5);
+  const h = setup([], undefined, undefined, () => 0.5);
   const globals = () =>
     h.callbacks.established.mock.calls.flatMap(([channels, global]) =>
       channels === undefined ? [global] : [],
@@ -1990,7 +2234,7 @@ it("reports a global route continuous only when it resumed from a cursor and its
 
 it("forgets the cursor of a channel that left the interests before a rebuild", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup(["a", "b"], undefined, () => 0.5);
+  const h = setup(["a", "b"], undefined, undefined, () => 0.5);
   try {
     age();
     await h.first.auth();
@@ -2037,7 +2281,7 @@ it.each([
   "stamps the last relay frame, not the wake-up, when waking finds %s",
   async (_name, drop) => {
     vi.useFakeTimers({ now: 1_700_000_000_000 });
-    const h = setup(["a"], undefined, () => 0.5);
+    const h = setup(["a"], undefined, undefined, () => 0.5);
     try {
       age();
       await h.first.auth();
@@ -2066,7 +2310,7 @@ it.each([
 
 it("does not take a late EOSE for a superseded REQ as the replacement's catch-up", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup(["a"], undefined, () => 0.5);
+  const h = setup(["a"], undefined, undefined, () => 0.5);
   try {
     age();
     await h.first.auth();
@@ -2098,7 +2342,7 @@ it("does not take a late EOSE for a superseded REQ as the replacement's catch-up
 
 it("keeps an earlier cursor when the replacement REQ on the same socket has not caught up", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup(["a"], undefined, () => 0.5);
+  const h = setup(["a"], undefined, undefined, () => 0.5);
   try {
     age();
     await h.first.auth();
@@ -2134,7 +2378,7 @@ it("keeps an earlier cursor when the replacement REQ on the same socket has not 
 
 it("keeps the earlier cursor when a channel is unsubscribed and subscribed again before its late EOSE", async () => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });
-  const h = setup(["a"], undefined, () => 0.5);
+  const h = setup(["a"], undefined, undefined, () => 0.5);
   try {
     age();
     await h.first.auth();
@@ -2188,7 +2432,7 @@ it.each([
   "waits for the jitter its close code calls for before reconnecting (code %s)",
   async (code, delay) => {
     vi.useFakeTimers();
-    const h = setup(["a"], undefined, () => 0.9);
+    const h = setup(["a"], undefined, undefined, () => 0.9);
     try {
       await h.first.auth();
       h.first.close(code);
@@ -2205,7 +2449,7 @@ it.each([
 it("reconnects at once when the spread draws zero, then backs off normally after a plain failure", async () => {
   vi.useFakeTimers();
   const draws = [0, 0.5];
-  const h = setup(["a"], undefined, () => draws.shift() ?? 0.5);
+  const h = setup(["a"], undefined, undefined, () => draws.shift() ?? 0.5);
   try {
     await h.first.auth();
     h.first.close(1012);
@@ -2324,20 +2568,22 @@ it("bounds interests and exposes every omitted ID without exceeding 1024 subscri
   await h.first.auth();
   await vi.advanceTimersByTimeAsync(750);
   let index = 0;
-  while (index < 1024) {
+  while (index < 1023) {
     if (index >= h.first.requests().length)
       await vi.advanceTimersByTimeAsync(250);
     const request = h.first.requests()[index++];
     assert.exists(request);
     await h.first.receive(["EOSE", request[1]]);
   }
-  expect(h.first.requests()).toHaveLength(1024);
+  expect(h.first.requests()).toHaveLength(1023);
   expect(
     h.callbacks.state.mock.lastCall?.[0].routes
       .filter((r) => r.status === "limited")
       .map((r) => r.channelId),
-  ).toEqual(ids.slice(1022));
-  expect(() => liveChannels([...ids, "excess"])).toThrow();
+  ).toEqual(ids.slice(1021));
+  expect(
+    liveChannels(Array.from({ length: 100_001 }, (_, i) => `c${i}`)),
+  ).toHaveLength(100_001);
   for (const invalid of [[""], ["a b"], ["x".repeat(129)], [9], {}])
     expect(() => liveChannels(invalid)).toThrow();
   h.owner.dispose();
@@ -2397,6 +2643,8 @@ it.each([false, true])(
       () => socket as unknown as WebSocket,
       undefined,
       16,
+      undefined,
+      10,
     );
     const channels = Array.from({ length: 170 }, (_, i) => `channel-${i}`);
     owner.update(channels, joined ? channels : []);
@@ -3763,6 +4011,800 @@ it("carries verified workflow attribution from live admission to notification ca
     h.owner.dispose();
   }
 });
+
+it("keeps 10,000 joined channels live through membership changes, reconnect and restart", async () => {
+  vi.useFakeTimers();
+  const ids = Array.from(
+    { length: 10_000 },
+    (_, i) => `task-${String(i).padStart(5, "0")}`,
+  );
+  const previews = Array.from(
+    { length: 64 },
+    (_, i) => `preview-${String(i).padStart(2, "0")}`,
+  );
+  const h = setup([]);
+  let latest: Parameters<LiveCallbacks["state"]>[0] | undefined;
+  h.callbacks.state.mockImplementation((state) => {
+    latest = state;
+  });
+  const settle = async (socket: Socket, start = 0) => {
+    for (let i = start; i < socket.requests().length; i++) {
+      await socket.receive(["EOSE", socket.requests()[i]?.[1]]);
+      h.callbacks.state.mockClear();
+    }
+  };
+  const assertBounds = (socket: Socket) => {
+    const active = new Set<unknown>();
+    for (const [kind, id] of socket.sent) {
+      if (kind === "REQ") active.add(id);
+      if (kind === "CLOSE") active.delete(id);
+      expect(active.size).toBeLessThanOrEqual(1024);
+    }
+    return active;
+  };
+  try {
+    h.owner.prioritize?.(ids.slice(-64));
+    h.owner.observe?.(1);
+    h.owner.watchPresence?.([h.key.pubkey]);
+    h.owner.update(ids);
+    h.owner.update([...ids, ...previews], ids);
+    await h.first.auth();
+    await settle(h.first);
+    expect(h.first.requests()).toHaveLength(1019);
+    expect(
+      latest?.routes.filter(
+        (route) => route.channelId && route.status === "live",
+      ),
+    ).toHaveLength(10_015);
+    expect(
+      latest?.routes.filter((route) => route.status === "limited"),
+    ).toHaveLength(49);
+    expect(new Set(h.first.requests().flatMap(scopeOf))).toEqual(
+      new Set([...ids, ...previews.slice(0, 15)]),
+    );
+    assertBounds(h.first);
+    const route = h.first
+      .requests()
+      .find((request) => scopeOf(request).includes("task-09999"));
+    assert.exists(route);
+    const event = message(
+      h.key,
+      "task-09999",
+      "input on the last task",
+      1700000001,
+    );
+    await h.first.receive(["EVENT", route[1], event]);
+    expect(h.callbacks.receive).toHaveBeenLastCalledWith([event], {
+      phase: "live",
+      channelId: ids[9999],
+    });
+
+    // Churn across every batch must reuse space, rather than grow one route per join.
+    const retained = ids.filter((_, i) => i % 10 !== 0);
+    const added = Array.from({ length: 1000 }, (_, i) => `replacement-${i}`);
+    const next = [...retained, ...added];
+    let start = h.first.requests().length;
+    h.owner.update([...retained, ...previews], retained);
+    h.owner.update([...next, ...previews], next);
+    await settle(h.first, start);
+    expect(
+      latest?.routes.filter(
+        (route) => route.channelId && route.status === "live",
+      ),
+    ).toHaveLength(10_015);
+    expect(assertBounds(h.first).size).toBe(1019);
+
+    start = h.first.requests().length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle(h.first, start);
+    expect(assertBounds(h.first).size).toBe(1019);
+    h.first.close();
+    await vi.advanceTimersByTimeAsync(500);
+    const reconnect = h.sockets.at(-1);
+    assert.exists(reconnect);
+    expect(reconnect).not.toBe(h.first);
+    await reconnect.auth();
+    await settle(reconnect);
+    expect(new Set(reconnect.requests().flatMap(scopeOf))).toEqual(
+      new Set([...next, ...previews.slice(0, 15)]),
+    );
+    expect(latest?.status).toBe("connected");
+    assertBounds(reconnect);
+
+    h.owner.dispose();
+    const restarted = setup([]);
+    try {
+      restarted.callbacks.state.mockImplementation(() =>
+        restarted.callbacks.state.mockClear(),
+      );
+      restarted.owner.update(next, next);
+      await restarted.first.auth();
+      await settle(restarted.first);
+      expect(new Set(restarted.first.requests().flatMap(scopeOf))).toEqual(
+        new Set(next),
+      );
+      assertBounds(restarted.first);
+    } finally {
+      restarted.owner.dispose();
+    }
+  } finally {
+    h.owner.dispose();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+}, 60_000);
+
+it("passes the full session roster and delivers input and artifacts on task 10,000", async () => {
+  vi.useFakeTimers({ now: 1_700_000_100_000 });
+  const h = setup([], createLiveAdmission(), 2048),
+    relay = keypair(),
+    author = keypair();
+  const wire = scriptedTransport(h.key.pubkey, relay.pubkey);
+  let latest: Parameters<LiveCallbacks["state"]>[0] | undefined;
+  const owner = createRelaySession({
+    ...wire.transport,
+    subscribe(callbacks) {
+      h.callbacks.receive.mockImplementation(callbacks.receive);
+      h.callbacks.state.mockImplementation((state) => {
+        latest = state;
+        callbacks.state(state);
+      });
+      h.callbacks.established.mockImplementation(callbacks.established);
+      return h.owner;
+    },
+  });
+  try {
+    const ids = Array.from(
+      { length: 10_000 },
+      (_, i) => `task-${String(i).padStart(5, "0")}`,
+    );
+    h.callbacks.receive(ids.map((id) => roster(relay, id, [h.key.pubkey])));
+    expect(owner.session.channels.list().channels).toHaveLength(10_000);
+    const live = vi.fn(),
+      input = vi.fn();
+    owner.session.subscribeLive(live, { replay: true });
+    owner.session.subscribeIncoming(input);
+    await h.first.auth();
+    for (let i = 0; i < h.first.requests().length; i++) {
+      await h.first.receive(["EOSE", h.first.requests()[i]?.[1]]);
+      h.callbacks.state.mockClear();
+    }
+    expect(latest?.status).toBe("connected");
+    expect(
+      latest?.routes.filter(
+        (route) => route.channelId && route.status === "live",
+      ),
+    ).toHaveLength(10_000);
+    const route = h.first
+      .requests()
+      .find((request) => scopeOf(request).includes("task-09999"));
+    assert.exists(route);
+    const messageEvent = message(
+      author,
+      "task-09999",
+      "run this task",
+      1_700_000_101,
+    );
+    const artifactEvent = signed(author, {
+      kind: 45010,
+      created_at: 1_700_000_102,
+      content: '{"text":"Result"}',
+      tags: [
+        ["h", "task-09999"],
+        ["ar", "1"],
+        ["d", "result"],
+        ["type", "example.note"],
+        ["op", "create"],
+      ],
+    });
+    await h.first.receive(["EVENT", route[1], messageEvent]);
+    await h.first.receive(["EVENT", route[1], artifactEvent]);
+    expect(input).toHaveBeenCalledWith([
+      expect.objectContaining({
+        channelId: "task-09999",
+        messageId: messageEvent.id,
+      }),
+    ]);
+    expect(live).toHaveBeenCalledWith({
+      channelId: "task-09999",
+      events: [artifactEvent],
+    });
+    h.first.close();
+    await vi.advanceTimersByTimeAsync(500);
+    const reconnect = h.sockets.at(-1);
+    assert.exists(reconnect);
+    await reconnect.auth();
+    let cursor = 0;
+    while (
+      !reconnect
+        .requests()
+        .some(
+          (request) =>
+            scopeOf(request).includes("task-00000") && request[2].limit === 500,
+        )
+    ) {
+      const request: WireRequest | undefined = reconnect.requests()[cursor++];
+      assert.exists(request);
+      await reconnect.receive(["EOSE", request[1]]);
+    }
+    const replayRoute = reconnect
+      .requests()
+      .find(
+        (request) =>
+          scopeOf(request).includes("task-00000") && request[2].limit === 500,
+      );
+    assert.exists(replayRoute);
+    const missed = message(author, "task-00000", "missed input", 1_700_000_103);
+    await reconnect.receive(["EVENT", replayRoute[1], missed]);
+    expect(live).toHaveBeenCalledWith({
+      channelId: "task-00000",
+      events: [missed],
+      replay: true,
+    });
+  } finally {
+    owner.dispose();
+  }
+}, 120_000);
+
+it("finishes initial channel setup before renewing established batches", async () => {
+  vi.useFakeTimers();
+  const h = setup([]);
+  try {
+    const ids = Array.from(
+      { length: 400 },
+      (_, i) => `c${String(i).padStart(3, "0")}`,
+    );
+    h.owner.update(ids, ids);
+    await h.first.auth();
+    for (const request of h.first
+      .requests()
+      .filter((request) => !scopeOf(request).length))
+      await h.first.receive(["EOSE", request[1]]);
+    let cursor = 2;
+    for (let round = 0; round < 7; round++) {
+      await vi.advanceTimersByTimeAsync(8000);
+      const pending = h.first.requests().slice(cursor);
+      cursor = h.first.requests().length;
+      for (const request of pending)
+        await h.first.receive(["EOSE", request[1]]);
+    }
+    const pending = h.first.requests().slice(cursor);
+    await vi.advanceTimersByTimeAsync(4000);
+    assert.exists(pending[0]);
+    const before = h.first.requests().length;
+    await h.first.receive(["EOSE", pending[0][1]]);
+    expect(h.first.requests()).toHaveLength(before + 1);
+    expect(h.first.requests().at(-1)?.[2].limit).toBe(500);
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it.each(["replacement", "source"])(
+  "keeps survivor alerts when %s delivers first during batch expansion",
+  async (first) => {
+    vi.useFakeTimers({ now: 1_700_000_100_000 });
+    const h = setup([]),
+      relay = keypair(),
+      author = keypair();
+    const wire = scriptedTransport(h.key.pubkey, relay.pubkey);
+    const owner = createRelaySession({
+      ...wire.transport,
+      subscribe(callbacks) {
+        h.callbacks.receive.mockImplementation(callbacks.receive);
+        h.callbacks.state.mockImplementation(callbacks.state);
+        return h.owner;
+      },
+    });
+    try {
+      h.callbacks.receive([roster(relay, "a", [h.key.pubkey])]);
+      await h.first.auth();
+      for (const request of h.first.requests())
+        await h.first.receive(["EOSE", request[1]]);
+      const source = h.first
+        .requests()
+        .find((request) => scopeOf(request).includes("a"));
+      assert.exists(source);
+      const incoming = vi.fn();
+      owner.session.subscribeIncoming(incoming);
+      h.callbacks.receive([roster(relay, "b", [h.key.pubkey])]);
+      const replacement = h.first.requests().at(-1);
+      assert.exists(replacement);
+      expect(scopeOf(replacement)).toEqual(["a", "b"]);
+      const event = message(author, "a", "fresh survivor", 1_700_000_101);
+      const sources =
+        first === "replacement" ? [replacement, source] : [source, replacement];
+      for (const request of sources)
+        await h.first.receive(["EVENT", request[1], event]);
+      expect(incoming).toHaveBeenCalledTimes(1);
+      expect(filtersOf(replacement).map((filter) => filter.limit)).toEqual([
+        0, 500,
+      ]);
+    } finally {
+      owner.dispose();
+    }
+  },
+);
+
+it.each(["transient failure", "removal"])(
+  "keeps the live survivor source after %s in an expanding batch",
+  async (outcome) => {
+    vi.useFakeTimers();
+    const h = setup([]);
+    try {
+      h.owner.update(["a", "b"], ["a", "b"]);
+      await h.first.auth();
+      for (const request of h.first.requests())
+        await h.first.receive(["EOSE", request[1]]);
+      const source = h.first
+        .requests()
+        .find((request) => scopeOf(request).includes("b"));
+      assert.exists(source);
+      h.owner.update(["a", "b", "c"], ["a", "b", "c"]);
+      const replacement = h.first.requests().at(-1);
+      assert.exists(replacement);
+      if (outcome === "transient failure")
+        await h.first.receive([
+          "CLOSED",
+          replacement[1],
+          "error: internal server error",
+        ]);
+      else h.owner.update(["b", "c"], ["b", "c"]);
+      expect(h.first.sent).not.toContainEqual(["CLOSE", source[1]]);
+      const event = message(h.key, "b", "survivor remains live", 1_700_000_101);
+      await h.first.receive(["EVENT", source[1], event]);
+      expect(h.callbacks.receive).toHaveBeenLastCalledWith([event], {
+        phase: "live",
+        channelId: "b",
+      });
+      if (outcome === "transient failure") h.owner.retry();
+      const retry = h.first.requests().at(-1);
+      assert.exists(retry);
+      expect(
+        filtersOf(retry).find((filter) => filter["#h"]?.includes("c"))?.limit,
+      ).toBe(500);
+    } finally {
+      h.owner.dispose();
+    }
+  },
+);
+
+it("prioritizes a growing initial batch over healthy renewals", async () => {
+  vi.useFakeTimers();
+  const h = setup([]);
+  try {
+    const ids = Array.from(
+      { length: 320 },
+      (_, i) => `c${String(i).padStart(3, "0")}`,
+    );
+    h.owner.update(ids, ids);
+    await h.first.auth();
+    for (let i = 0; i < h.first.requests().length; i++)
+      await h.first.receive(["EOSE", h.first.requests()[i]?.[1]]);
+    const start = h.first.requests().length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    h.owner.update([...ids, "new-a"], [...ids, "new-a"]);
+    const renewal = h.first.requests()[start];
+    assert.exists(renewal);
+    await h.first.receive(["EOSE", renewal[1]]);
+    const initial = h.first.requests().at(-1);
+    assert.exists(initial);
+    expect(scopeOf(initial)).toEqual(["new-a"]);
+    h.owner.update([...ids, "new-a", "new-b"], [...ids, "new-a", "new-b"]);
+    const expanded = h.first.requests().at(-1);
+    assert.exists(expanded);
+    expect(scopeOf(expanded)).toEqual(["new-a", "new-b"]);
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it("covers 100,000 channels with protocol-sized live batches and a bounded replay queue", async () => {
+  vi.useFakeTimers();
+  const ids = Array.from(
+    { length: 100_000 },
+    (_, i) => `task-${String(i).padStart(6, "0")}`,
+  );
+  const h = setup([], createLiveAdmission(), 2048);
+  let latest: Parameters<LiveCallbacks["state"]>[0] | undefined;
+  h.callbacks.state.mockImplementation((state) => {
+    latest = state;
+    h.callbacks.state.mockClear();
+  });
+  const live = new Map<string, WireRequest>();
+  let replayed = 0;
+  const active = new Set<string>();
+  const drain = async (start = 0) => {
+    for (let i = start; i < h.first.sent.length; i++) {
+      const frame = h.first.sent[i] as WireRequest;
+      if (frame[0] === "CLOSE") active.delete(frame[1]);
+      if (frame[0] !== "REQ") continue;
+      active.add(frame[1]);
+      expect(active.size).toBeLessThanOrEqual(1024);
+      const filters = filtersOf(frame);
+      expect(filters.length).toBeLessThanOrEqual(10);
+      expect(scopeOf(frame).length).toBeLessThanOrEqual(2048);
+      if (scopeOf(frame).length && filters[0]?.limit === 0) {
+        for (const id of scopeOf(frame)) live.set(id, frame);
+      } else if (scopeOf(frame).length) {
+        expect(
+          filters.every((f) => f["#h"]?.length === 1 && f.limit === 500),
+        ).toBe(true);
+        replayed += filters.length;
+      }
+      await h.first.receive(["EOSE", frame[1]]);
+    }
+  };
+  try {
+    h.owner.update(ids, ids);
+    await h.first.auth();
+    await drain();
+    expect(live.size).toBe(100_000);
+    expect(replayed).toBe(100_000);
+    expect(active.size).toBe(51);
+    expect(
+      latest?.routes.filter((r) => r.channelId && r.status === "live"),
+    ).toHaveLength(100_000);
+    const last = ids.at(-1);
+    assert.exists(last);
+    const source = live.get(last);
+    assert.exists(source);
+    const event = message(h.key, last, "last channel input", 1700000001);
+    await h.first.receive(["EVENT", source[1], event]);
+    expect(h.callbacks.receive).toHaveBeenLastCalledWith([event], {
+      channelId: last,
+      phase: "live",
+    });
+    const start = h.first.sent.length;
+    h.owner.update(
+      [...ids.slice(0, -1), "replacement"],
+      [...ids.slice(0, -1), "replacement"],
+    );
+    await drain(start);
+    h.callbacks.receive.mockClear();
+    await h.first.receive(["EVENT", source[1], event]);
+    expect(h.callbacks.receive).not.toHaveBeenCalled();
+    expect(
+      latest?.routes.some(
+        (r) => r.channelId === "replacement" && r.status === "live",
+      ),
+    ).toBe(true);
+    expect(latest?.routes.some((r) => r.channelId === last)).toBe(false);
+  } finally {
+    h.owner.dispose();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+}, 60_000);
+
+it("reports a replay failure to recovery, continues other channels, and exposes its retry", async () => {
+  vi.useFakeTimers();
+  const ids = Array.from(
+    { length: 80 },
+    (_, i) => `c${String(i).padStart(3, "0")}`,
+  );
+  const h = setup([], createLiveAdmission(), 2048);
+  try {
+    h.owner.update(ids, ids);
+    await h.first.auth();
+    for (const request of [...h.first.requests()])
+      await h.first.receive(["EOSE", request[1]]);
+    const replay = h.first
+      .requests()
+      .find((request) => scopeOf(request).length && request[2].limit === 500);
+    assert.exists(replay);
+    const id = scopeOf(replay)[0];
+    assert.exists(id);
+    const before = h.first.requests().length;
+    await h.first.receive(["CLOSED", replay[1], "error: replay unavailable"]);
+    expect(h.first.requests()).toHaveLength(before + 1);
+    const snapshot = h.callbacks.state.mock.lastCall?.[0];
+    assert.exists(snapshot);
+    expect(
+      snapshot.routes.find((route) => route.channelId === id),
+    ).toMatchObject({ status: "error", error: "error: replay unavailable" });
+    expect(
+      liveRecoveryStatus({
+        ...snapshot,
+        roster: { state: "verified" },
+        heads: [],
+      }),
+    ).toBe("failed");
+    h.owner.retry();
+    expect(
+      h.callbacks.state.mock.lastCall?.[0].routes.find(
+        (route) => route.channelId === id,
+      ),
+    ).toMatchObject({ status: "pending" });
+    let retry: WireRequest | undefined;
+    for (let i = before; i < h.first.requests().length; i++) {
+      const request = h.first.requests()[i];
+      assert.exists(request);
+      if (scopeOf(request).includes(id)) {
+        retry = request;
+        break;
+      }
+      await h.first.receive(["EOSE", request[1]]);
+    }
+    assert.exists(retry);
+    await h.first.receive(["EOSE", retry[1]]);
+    expect(
+      h.callbacks.state.mock.lastCall?.[0].routes.find(
+        (route) => route.channelId === id,
+      ),
+    ).toMatchObject({ status: "live" });
+    expect(
+      h.callbacks.state.mock.lastCall?.[0].routes.find(
+        (route) => route.channelId === id,
+      )?.error,
+    ).toBeUndefined();
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it.each([
+  "replay-first",
+  "live-first",
+  "known-history",
+  "replay-finite-live",
+  "finite-first",
+])(
+  "keeps incoming alerts correct across duplicate sources: %s",
+  async (order) => {
+    vi.useFakeTimers({ now: 1_700_000_100_000 });
+    const h = setup([], createLiveAdmission(), 2048);
+    const relay = keypair(),
+      author = keypair();
+    const wire = scriptedTransport(h.key.pubkey, relay.pubkey);
+    const owner = createRelaySession({
+      ...wire.transport,
+      subscribe(callbacks) {
+        h.callbacks.receive.mockImplementation(callbacks.receive);
+        h.callbacks.state.mockImplementation(callbacks.state);
+        return h.owner;
+      },
+    });
+    try {
+      const ids = Array.from(
+        { length: 11 },
+        (_, i) => `c${String(i).padStart(2, "0")}`,
+      );
+      h.callbacks.receive(ids.map((id) => roster(relay, id, [h.key.pubkey])));
+      await h.first.auth();
+      for (const request of [...h.first.requests()])
+        await h.first.receive(["EOSE", request[1]]);
+      const source = h.first
+        .requests()
+        .find((r) => scopeOf(r).includes("c00") && r[2].limit === 0);
+      const replay = h.first
+        .requests()
+        .find((r) => scopeOf(r).includes("c00") && r[2].limit === 500);
+      assert.exists(source);
+      assert.exists(replay);
+      const incoming = vi.fn();
+      owner.session.subscribeIncoming(incoming);
+      const event = message(author, "c00", "fresh input", 1_700_000_100);
+      const finite = async () => {
+        const read = owner.session.readRemote([
+          { kinds: [9], "#h": ["c00"], limit: 10 },
+        ]);
+        wire.next().respond([event]);
+        await read;
+      };
+      if (order === "known-history") h.callbacks.receive([event]);
+      if (order === "finite-first") await finite();
+      if (order === "live-first")
+        await h.first.receive(["EVENT", source[1], event]);
+      await h.first.receive(["EVENT", replay[1], event]);
+      await h.first.receive(["EVENT", replay[1], event]);
+      expect(incoming).toHaveBeenCalledTimes(order === "live-first" ? 1 : 0);
+      if (order === "replay-finite-live") await finite();
+      await h.first.receive(["EVENT", source[1], event]);
+      const count =
+        order === "known-history" || order === "finite-first" ? 0 : 1;
+      expect(incoming).toHaveBeenCalledTimes(count);
+      await h.first.receive(["EVENT", replay[1], event]);
+      await h.first.receive(["EVENT", source[1], event]);
+      expect(incoming).toHaveBeenCalledTimes(count);
+    } finally {
+      owner.dispose();
+    }
+  },
+);
+
+it("shares the wire budget with artifact syncs and the silence probe", async () => {
+  vi.useFakeTimers();
+  const ids = Array.from({ length: 1024 }, (_, i) => `c${i}`);
+  const h = setup(ids);
+  const release: (() => void)[] = [];
+  try {
+    await h.first.auth();
+    assert.exists(h.owner.syncArtifacts);
+    for (let i = 0; i < 32; i++)
+      release.push(
+        h.owner.syncArtifacts(
+          {
+            artifact: "current",
+            "#h": ["11111111-1111-4111-8111-111111111111"],
+          },
+          { event() {}, eose() {}, closed() {} },
+        ),
+      );
+    const refused = vi.fn();
+    h.owner.syncArtifacts(
+      { artifact: "current", "#h": ["11111111-1111-4111-8111-111111111111"] },
+      { event() {}, eose() {}, closed: refused },
+    );
+    await Promise.resolve();
+    expect(refused).toHaveBeenCalledExactlyOnceWith(
+      "error: artifact sync capacity reached",
+    );
+    for (let i = 0; i < h.first.requests().length; i++) {
+      await h.first.receive(["EOSE", h.first.requests()[i]?.[1]]);
+      h.callbacks.state.mockClear();
+    }
+    await vi.advanceTimersByTimeAsync(120_000);
+    const active = new Set();
+    for (const [kind, id] of h.first.sent) {
+      if (kind === "REQ") active.add(id);
+      if (kind === "CLOSE") active.delete(id);
+      expect(active.size).toBeLessThanOrEqual(1024);
+    }
+    expect(
+      h.first.requests().filter((request) => request[1].startsWith("sync-")),
+    ).toHaveLength(32);
+    expect(h.first.probes()).toHaveLength(1);
+  } finally {
+    for (const close of release) close();
+    h.owner.dispose();
+  }
+});
+it("reserves the silence probe when a profile sync starts at channel capacity", async () => {
+  vi.useFakeTimers();
+  const h = setup(Array.from({ length: 1021 }, (_, index) => `c${index}`));
+  let release: (() => void) | undefined;
+  try {
+    await h.first.auth();
+    for (let i = 0; i < h.first.requests().length; i++)
+      await h.first.receive(["EOSE", h.first.requests()[i]?.[1]]);
+    assert.exists(h.owner.syncVerifiedProfiles);
+    release = h.owner.syncVerifiedProfiles(
+      verifiedProfileFilter("a".repeat(64), ["b".repeat(64)]),
+      { event() {}, eose() {}, closed() {} },
+    );
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.first.probes()).toHaveLength(1);
+    release();
+    release = undefined;
+    for (let i = 0; i < h.first.requests().length; i++)
+      await h.first.receive(["EOSE", h.first.requests()[i]?.[1]]);
+    const active = new Set();
+    for (const [kind, id] of h.first.sent) {
+      if (kind === "REQ") active.add(id);
+      if (kind === "CLOSE") active.delete(id);
+      expect(active.size).toBeLessThanOrEqual(1024);
+    }
+    expect(
+      h.callbacks.state.mock.lastCall?.[0].routes.some(
+        (route) => route.status === "limited",
+      ),
+    ).toBe(false);
+  } finally {
+    release?.();
+    h.owner.dispose();
+  }
+});
+it("bounds profile syncs even without channel routes", async () => {
+  vi.useFakeTimers();
+  const h = setup([]);
+  const release: (() => void)[] = [];
+  try {
+    await h.first.auth();
+    assert.exists(h.owner.syncVerifiedProfiles);
+    const filter = verifiedProfileFilter("a".repeat(64), ["b".repeat(64)]);
+    for (let i = 0; i < VERIFIED_PROFILE_MAX_SYNCS; i++)
+      release.push(
+        h.owner.syncVerifiedProfiles(filter, {
+          event() {},
+          eose() {},
+          closed() {},
+        }),
+      );
+    const refused = vi.fn();
+    release.push(
+      h.owner.syncVerifiedProfiles(filter, {
+        event() {},
+        eose() {},
+        closed: refused,
+      }),
+    );
+    await Promise.resolve();
+    expect(refused).toHaveBeenCalledExactlyOnceWith(
+      "error: profile sync capacity reached",
+    );
+    expect(
+      h.first.requests().filter((request) => request[1].startsWith("sync-")),
+    ).toHaveLength(VERIFIED_PROFILE_MAX_SYNCS);
+  } finally {
+    for (const close of release) close();
+    h.owner.dispose();
+  }
+});
+it("admits a full directory's profile syncs without refusing artifact views", async () => {
+  vi.useFakeTimers();
+  const h = setup([]);
+  const release: (() => void)[] = [];
+  const sink = { event() {}, eose() {}, closed: vi.fn() };
+  const artifact = {
+    artifact: "current" as const,
+    "#h": ["11111111-1111-4111-8111-111111111111"],
+  };
+  try {
+    await h.first.auth();
+    assert.exists(h.owner.syncVerifiedProfiles);
+    assert.exists(h.owner.syncArtifacts);
+    // The largest directory needs this many 128-subject batches.
+    expect(VERIFIED_PROFILE_MAX_SYNCS).toBe(80);
+    const filter = verifiedProfileFilter("a".repeat(64), ["b".repeat(64)]);
+    for (let i = 0; i < VERIFIED_PROFILE_MAX_SYNCS; i++)
+      release.push(h.owner.syncVerifiedProfiles(filter, sink));
+    for (let i = 0; i < 32; i++)
+      release.push(h.owner.syncArtifacts(artifact, sink));
+    await Promise.resolve();
+    expect(sink.closed).not.toHaveBeenCalled();
+    const refused = vi.fn();
+    release.push(
+      h.owner.syncArtifacts(artifact, {
+        event() {},
+        eose() {},
+        closed: refused,
+      }),
+    );
+    await Promise.resolve();
+    expect(refused).toHaveBeenCalledExactlyOnceWith(
+      "error: artifact sync capacity reached",
+    );
+    expect(
+      h.first.requests().filter((request) => request[1].startsWith("sync-")),
+    ).toHaveLength(VERIFIED_PROFILE_MAX_SYNCS + 32);
+    // A released profile sync frees its own pool, not the artifact pool.
+    release.shift()?.();
+    const again = vi.fn();
+    release.push(
+      h.owner.syncArtifacts(artifact, { event() {}, eose() {}, closed: again }),
+    );
+    await Promise.resolve();
+    expect(again).toHaveBeenCalledExactlyOnceWith(
+      "error: artifact sync capacity reached",
+    );
+  } finally {
+    for (const close of release) close();
+    h.owner.dispose();
+  }
+});
+it("does not forward a relay CLOSED as local socket loss", async () => {
+  const h = setup([]);
+  try {
+    await h.first.auth();
+    assert.exists(h.owner.syncVerifiedProfiles);
+    const closed = vi.fn();
+    h.owner.syncVerifiedProfiles(
+      verifiedProfileFilter("a".repeat(64), ["b".repeat(64)]),
+      { event() {}, eose() {}, closed },
+    );
+    await Promise.resolve();
+    const sync = h.first
+      .requests()
+      .find((request) => request[1].startsWith("sync-"));
+    assert.exists(sync);
+    await h.first.receive(["CLOSED", sync[1], "disconnected: forged"]);
+    expect(closed).toHaveBeenCalledExactlyOnceWith(
+      "error: relay closed the sync",
+    );
+  } finally {
+    h.owner.dispose();
+  }
+});
 describe("policy close (1008) recovery", () => {
   const deny = async (socket: Socket) => {
     await socket.receive(["NOTICE", "auth-required: authorization denied"]);
@@ -3974,6 +5016,49 @@ it("keeps a planned renewal connected and skips catch-up for carried routes", as
       for (const route of state.routes)
         expect(route, JSON.stringify(state)).toMatchObject({ status: "live" });
     }
+  } finally {
+    h.owner.dispose();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
+it("catches up a live-only batch after a planned renewal", async () => {
+  vi.useFakeTimers();
+  const h = setup([], undefined, 2048);
+  const ids = Array.from({ length: 11 }, (_, index) => `room-${index}`);
+  try {
+    h.owner.update(ids, ids);
+    await establish(h.first);
+    for (let i = 0; i < h.first.requests().length; i++)
+      await h.first.receive(["EOSE", h.first.requests()[i]?.[1]]);
+    h.callbacks.established.mockClear();
+    h.callbacks.state.mockClear();
+    renew(h.first);
+    const second = h.sockets[1];
+    assert.exists(second);
+    await second.auth();
+    await vi.advanceTimersByTimeAsync(750);
+    const batch = second
+      .requests()
+      .find((request) =>
+        filtersOf(request).some(
+          (filter) => filter.limit === 0 && filter["#h"]?.length === 11,
+        ),
+      );
+    assert.exists(batch);
+    for (const request of second.requests())
+      if (request[1] !== batch[1]) await second.receive(["EOSE", request[1]]);
+    expect(h.callbacks.established).not.toHaveBeenCalled();
+    h.callbacks.state.mockClear();
+    await second.receive(["EOSE", batch[1]]);
+    expect(h.callbacks.state.mock.calls.map(([state]) => state.status)).toEqual(
+      ["connected", "connecting", "connected"],
+    );
+    expect(h.callbacks.established).toHaveBeenCalledWith(
+      expect.arrayContaining(ids),
+    );
+    expect(h.callbacks.established).toHaveBeenCalledTimes(3);
+    for (let i = 0; i < second.requests().length; i++)
+      await second.receive(["EOSE", second.requests()[i]?.[1]]);
   } finally {
     h.owner.dispose();
   }

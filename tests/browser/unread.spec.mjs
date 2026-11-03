@@ -538,6 +538,8 @@ test.describe("local receipt reserve", () => {
     page,
     app,
   }) => {
+    // Startup and reload must not earn bottom catch-up before the isolated read.
+    await holdReadingFocus(page);
     await open(page, app);
     const ids = await visible(page);
     expect(ids.length).toBeGreaterThan(0);
@@ -564,7 +566,6 @@ test.describe("local receipt reserve", () => {
       (await journal(page)).state.frontiers[`activity:${alphaId}`],
     ).toBeUndefined();
     await park(page);
-    await holdReadingFocus(page); // Applied on reload, so it cannot silently reread Alpha.
     await page.evaluate(() =>
       window.fixtureRelay.snapshot().session.channels.ensure("beta"),
     );

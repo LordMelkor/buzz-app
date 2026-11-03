@@ -3,7 +3,8 @@
 # with one of these steps:
 #
 #   run [ARGS...]                    runs the copy in use with ARGS
-#   install VERSION PLATFORM SHA256  downloads a release and checks it
+#   install VERSION PLATFORM SHA256  downloads a release, unless it is already
+#                                    downloaded, and checks it
 #   use VERSION                      makes a downloaded release the one in use
 set -eu
 
@@ -55,6 +56,18 @@ install)
   darwin-arm64 | darwin-x64 | linux-arm64 | linux-x64) ;;
   *) echo "Unsupported platform" >&2; exit 2 ;;
   esac
+  # 64 hex digits, so a hash that failed and printed nothing can never match it.
+  case "$checksum" in *[!0-9a-f]*) echo "Invalid checksum" >&2; exit 2 ;; esac
+  [ "${#checksum}" = 64 ] || { echo "Invalid checksum" >&2; exit 2; }
+  sha256() { (shasum -a 256 "$1" 2>/dev/null || sha256sum "$1") | cut -d" " -f1; }
+  # A download whose switch never ran, such as one stopped before `use`, is
+  # used again once its bytes match the checksum; anything else is replaced.
+  binary="$dir/$version/claude"
+  if [ -f "$binary" ] && [ ! -h "$binary" ] && [ "$(sha256 "$binary")" = "$checksum" ] &&
+    { [ -x "$binary" ] || chmod +x "$binary" 2>/dev/null; }; then
+    echo "Claude $version is already downloaded."
+    exit 0
+  fi
   mkdir -p "$dir/$version"
   # Each download has its own temporary file, so two Buzz builds updating at
   # once do not write over each other, and a stopped one leaves nothing.
@@ -65,11 +78,10 @@ install)
   curl -fsSL --speed-limit 1024 --speed-time 60 -o "$part" \
     "https://downloads.claude.ai/claude-code-releases/$version/$platform/claude"
   # The release manifest's checksum, which the plugin passes in.
-  actual=$( (shasum -a 256 "$part" 2>/dev/null || sha256sum "$part") | cut -d" " -f1)
-  [ "$actual" = "$checksum" ] || { echo "The download did not match its checksum" >&2; exit 1; }
+  [ "$(sha256 "$part")" = "$checksum" ] || { echo "The download did not match its checksum" >&2; exit 1; }
   chmod +x "$part"
   # A rename, so a session starting now sees the old file or the whole new one.
-  mv -f "$part" "$dir/$version/claude"
+  mv -f "$part" "$binary"
   ;;
 use)
   version="$1"

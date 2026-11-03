@@ -715,6 +715,8 @@ test("a grouped reaction toggles my contribution while its preview is open", asy
   await expect(button).toHaveAccessibleName("😂: 2 people");
   for (let cycle = 0; cycle < 2; cycle++) {
     await page.mouse.move(0, 0);
+    // Each cycle starts after the previous click-dismissed preview has exited.
+    await expect(page.locator(".buzz-preview-card")).toHaveCount(0);
     await button.hover();
     const preview = page.locator(".buzz-preview-card[data-open]");
     await expect(preview).toBeVisible();
