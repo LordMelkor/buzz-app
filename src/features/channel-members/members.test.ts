@@ -58,12 +58,17 @@ function setup(
   let agent = false;
   let echo = false;
   let failRoster = false;
+  let rolesAvailable = true;
   let failSave = false;
   let failAcknowledgement = false;
+  let roleGate: { entered(): void; held: Promise<void> } | undefined;
   const published: RelayEvent[] = [];
   const publish = vi.fn(async (event: RelayEvent) => {
     if (fail) throw unknown ? new Error(fail) : new PublishRejected(fail);
-    if (apply) members = [...new Set([...members, person.pubkey])];
+    if (apply) {
+      members = [...new Set([...members, person.pubkey])];
+      personRole = event.tags.find(([tag]) => tag === "role")?.[1] ?? joinRole;
+    }
     clock++;
     published.push(event);
     if (loseReceipt) throw new Error("Receipt lost after membership applied");
@@ -80,6 +85,12 @@ function setup(
           definitions: [],
           identities: agent ? [{ pubkey: person.pubkey, name: "Agent" }] : [],
         }),
+        memberAdministration: {
+          sign: async (template) => signed(viewer, template),
+          publish: async (event) => {
+            await publish(event);
+          },
+        },
         writer: {
           kinds: [9, 9000, 9007],
           sign: async (template) => signed(viewer, template),
@@ -88,6 +99,15 @@ function setup(
           },
         },
         query: async (filters) => {
+          if (
+            roleGate &&
+            filters.some((filter) => filter.kinds?.includes(39001))
+          ) {
+            const gate = roleGate;
+            roleGate = undefined;
+            gate.entered();
+            await gate.held;
+          }
           if (
             failRoster &&
             published.length &&
@@ -108,6 +128,22 @@ function setup(
                 ["name", "Design"],
               ],
             }),
+            ...(rolesAvailable
+              ? [
+                  signed(relay, {
+                    kind: 39001,
+                    content: "",
+                    created_at: clock,
+                    tags: [
+                      ["d", id],
+                      ...(personRole === "admin" &&
+                      members.includes(person.pubkey)
+                        ? [["p", person.pubkey, "admin"]]
+                        : []),
+                    ],
+                  }),
+                ]
+              : []),
             personRole
               ? signed(relay, {
                   kind: 39002,
@@ -179,6 +215,21 @@ function setup(
     },
     setEcho: () => {
       echo = true;
+    },
+    holdRoleRead: () => {
+      let release!: () => void;
+      let entered!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      roleGate = { entered, held };
+      return { release, started };
+    },
+    setRolesAvailable: (value: boolean) => {
+      rolesAvailable = value;
     },
     setRosterFailure: (value: boolean) => {
       failRoster = value;
@@ -767,3 +818,151 @@ it.each([false, true])(
     ]);
   },
 );
+
+async function savedNoRoleInvitation(
+  t: ReturnType<typeof setup>,
+  uncertain = true,
+) {
+  t.setFail("Old invitation result", uncertain);
+  const outbox = t.session.outbox;
+  if (!outbox) throw new Error("Expected membership outbox");
+  const original = outbox.send({
+    kind: 9000,
+    content: "",
+    tags: [
+      ["h", t.id],
+      ["p", t.person.pubkey],
+    ],
+  });
+  await vi.waitFor(() =>
+    expect(t.records()[0]?.delivery).toBe(uncertain ? "unknown" : "failed"),
+  );
+  t.legacy();
+  t.restart();
+  await t.ready();
+  t.setFail("");
+  return original;
+}
+it("does not replay a legacy Solo invitation that could now admit a Guest", async () => {
+  const t = setup("solo", "public", "guest");
+  await t.ready();
+  const original = await savedNoRoleInvitation(t);
+  await expect(t.managedAdd()).rejects.toThrow(
+    /saved invitation.*participation/i,
+  );
+  expect(t.publish).toHaveBeenCalledOnce();
+  expect(t.records()[0]).toMatchObject({
+    event: { id: original },
+    delivery: "unknown",
+  });
+  expect(t.records()[0]?.acknowledged).toBeUndefined();
+  await expect(t.session.outbox?.dismiss(original)).rejects.toThrow(/Confirm/);
+  t.restart();
+  await t.ready();
+  await expect(t.managedAdd()).rejects.toThrow(
+    /saved invitation.*participation/i,
+  );
+  expect(t.publish).toHaveBeenCalledOnce();
+});
+it.each(["member", "admin"])(
+  "confirms a recovered no-role invitation only after signed %s participation",
+  async (role) => {
+    const t = setup("solo", "public", "guest");
+    await t.ready();
+    const original = await savedNoRoleInvitation(t);
+    t.confirmPerson(role);
+    await t.managedAdd();
+    expect(t.publish).toHaveBeenCalledOnce();
+    expect(t.records()[0]).toMatchObject({
+      event: { id: original },
+      acknowledged: true,
+    });
+  },
+);
+it("reports a recovered Guest and permits a fresh Member invite only after explicit removal", async () => {
+  const t = setup("solo", "public", "guest");
+  await t.ready();
+  const original = await savedNoRoleInvitation(t);
+  t.confirmPerson("guest");
+  await expect(t.managedAdd()).rejects.toThrow(
+    /remove them in People.*invite them again/i,
+  );
+  expect(t.publish).toHaveBeenCalledOnce();
+  expect(t.records()[0]).toMatchObject({
+    event: { id: original },
+    acknowledged: true,
+  });
+  t.restart();
+  await t.ready();
+  await expect(t.managedAdd()).rejects.toThrow(/remove them in People/i);
+  expect(t.publish).toHaveBeenCalledOnce();
+  t.removePerson();
+  await t.managedAdd();
+  expect(t.publish).toHaveBeenCalledTimes(2);
+  expect(t.publish.mock.calls[1]?.[0].id).not.toBe(original);
+  expect(t.publish.mock.calls[1]?.[0].tags).toContainEqual(["role", "member"]);
+});
+
+it("preserves a legacy invitation while signed roles are unavailable", async () => {
+  const t = setup("solo", "public", "guest");
+  await t.ready();
+  await savedNoRoleInvitation(t);
+  t.confirmPerson("guest");
+  t.setRolesAvailable(false);
+  await expect(t.managedAdd()).rejects.toThrow(
+    /access could not be confirmed/i,
+  );
+  expect(t.records()[0]?.acknowledged).toBeUndefined();
+  expect(t.publish).toHaveBeenCalledOnce();
+  t.setRolesAvailable(true);
+  await expect(t.managedAdd()).rejects.toThrow(/remove them in People/i);
+  expect(t.records()[0]?.acknowledged).toBe(true);
+});
+it("replaces a definitively failed no-role invitation only after explicit Outbox dismissal", async () => {
+  const t = setup("solo", "public", "guest");
+  await t.ready();
+  const original = await savedNoRoleInvitation(t, false);
+  await expect(t.managedAdd()).rejects.toThrow(
+    /saved invitation.*participation/i,
+  );
+  expect(t.publish).toHaveBeenCalledOnce();
+  await t.session.outbox?.dismiss(original);
+  await t.managedAdd();
+  expect(t.publish).toHaveBeenCalledTimes(2);
+  expect(t.publish.mock.calls[1]?.[0].id).not.toBe(original);
+  expect(t.publish.mock.calls[1]?.[0].tags).toContainEqual(["role", "member"]);
+});
+
+it("does not confirm a legacy invitation from stale roles during another member operation", async () => {
+  const t = setup("solo", "public", "guest");
+  await t.ready();
+  await savedNoRoleInvitation(t);
+  t.confirmPerson("member");
+  await t.session.memberAdministration.refresh(t.id);
+  const gate = t.holdRoleRead();
+  const other = t.session.memberAdministration
+    .run(t.id, {
+      pubkey: t.person.pubkey,
+      expectedRole: "member",
+      role: "guest",
+    })
+    .catch(() => {});
+  try {
+    await gate.started;
+    expect(t.session.memberAdministration.snapshot(t.id)).toMatchObject({
+      status: "ready",
+      operation: { status: "pending" },
+    });
+    await expect(t.managedAdd()).rejects.toThrow(
+      /access could not be confirmed/i,
+    );
+    expect(t.records()[0]?.acknowledged).toBeUndefined();
+    expect(t.publish).toHaveBeenCalledOnce();
+  } finally {
+    gate.release();
+    await other;
+  }
+  await t.managedAdd();
+  expect(t.records()[0]?.acknowledged).toBe(true);
+  expect(t.publish).toHaveBeenCalledOnce();
+});

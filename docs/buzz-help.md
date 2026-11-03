@@ -93,7 +93,9 @@ the interface unless an available tool actually supports that action.
   who joined keep their access until removed in People. Opening a private chat to the community warns that its full
   history and Canvas, including workspace folders and agent instructions, become
   readable. View only retains Guest admission. Copying its link alone does not grant access. Check the intended people
-  and destination before changing access.
+  and destination before changing access. If an older saved invitation granted
+  view-only access, remove that person in People and invite them again for
+  participation; an unknown invitation result must be checked in Outbox first.
 
 ## Choosing and customizing agents
 

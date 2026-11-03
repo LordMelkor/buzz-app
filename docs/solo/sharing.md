@@ -70,6 +70,13 @@ cached non-agent evidence for an additional human. Unknown profiles remain
 unclassified; absence of the indicator is **not** a privacy promise. Clicking the
 indicator opens the same dialog.
 
+An invitation saved by an older client without an explicit Member grant is not
+replayed as a participation invitation. Check its original status in Outbox;
+unknown outcomes remain protected against replacement. If signed roles confirm
+that it admitted a Guest, the error explains how to remove that person in People
+and invite them again. Recovery never silently promotes an existing Guest.
+A failed invitation can be replaced after explicitly dismissing it in Outbox.
+
 ### General access
 
 The access dialog's **General access** offers **View only** and **Private**.

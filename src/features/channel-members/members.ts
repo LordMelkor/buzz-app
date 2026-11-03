@@ -2,6 +2,7 @@ import { archiveHides } from "../relay/identity-archives";
 import type { RelaySession } from "../relay/session";
 import type { ChannelSummary } from "../relay/contracts";
 import type { LocalEvents } from "../relay/outbox";
+import type { RelayEvent } from "../relay/events";
 
 const keyPattern = /^[0-9a-f]{64}$/;
 
@@ -132,26 +133,32 @@ export async function addChannelMember(
   const fresh =
     intent.dismissed ||
     (intent.confirmed && !channel()?.members?.includes(pubkey));
+  const matchesTarget = (event: Pick<RelayEvent, "kind" | "tags">) =>
+    event.kind === 9000 &&
+    event.tags.some(([tag, value]) => tag === "h" && value === channelId) &&
+    event.tags.some(([tag, value]) => tag === "p" && value === pubkey);
+  const noRole = (event: Pick<RelayEvent, "tags">) =>
+    !event.tags.some(([tag]) => tag === "role");
+  const saved = journal.snapshot();
   const pending = fresh
     ? undefined
-    : journal
-        .snapshot()
-        .find(({ event, acknowledged }) =>
-          intent.id
-            ? event.id === intent.id
-            : !acknowledged &&
-              event.kind === 9000 &&
-              event.tags.some(
-                ([tag, value]) => tag === "h" && value === channelId,
-              ) &&
-              event.tags.some(
-                ([tag, value]) => tag === "p" && value === pubkey,
-              ) &&
-              !event.tags.some(
-                ([tag, value]) =>
-                  tag === "role" && value !== "bot" && value !== "member",
-              ),
-        );
+    : (saved.find(({ event, acknowledged }) =>
+        intent.id
+          ? event.id === intent.id
+          : !acknowledged &&
+            matchesTarget(event) &&
+            !event.tags.some(
+              ([tag, value]) =>
+                tag === "role" && value !== "bot" && value !== "member",
+            ),
+      ) ??
+      // Keep a resolved legacy Guest outcome actionable after restart.
+      (soloParticipant && channel()?.members?.includes(pubkey)
+        ? saved.find(
+            ({ event, acknowledged }) =>
+              acknowledged && matchesTarget(event) && noRole(event),
+          )
+        : undefined));
   const recovery = { key: `member-add:${channelId}:${pubkey}`, value: "1" };
   // A saved share may finish its exact Bot grant; it cannot authorize a new one.
   const recoveringSoloAgent =
@@ -182,9 +189,40 @@ export async function addChannelMember(
     throw new Error(
       "Retry this invitation from the agent’s profile so its eligibility can be checked.",
     );
+  if (soloParticipant && pending && noRole(pending.event))
+    intent.id = pending.event.id;
   if (pending && !pending.acknowledged)
     await outbox.recover(pending.event.id, recovery);
   check();
+  if (soloParticipant && pending && noRole(pending.event)) {
+    if (!channel()?.members?.includes(pubkey))
+      throw new Error(
+        "This saved invitation does not explicitly grant participation. Check its status in Outbox before inviting again.",
+      );
+    await session.memberAdministration.refresh(channelId);
+    check();
+    const verified = session.memberAdministration.snapshot(channelId);
+    const role = verified.authority.roles[pubkey];
+    if (
+      verified.status !== "ready" ||
+      verified.operation?.status === "pending" ||
+      !role ||
+      role === "unknown"
+    )
+      throw new Error(
+        "Current access could not be confirmed. Refresh members and roles before trying again.",
+      );
+    // Membership resolves the original command, even when its grant was Guest.
+    // Do not promote a newer role or replay the old command after removal.
+    if (role === "guest") {
+      await outbox.acknowledge(pending.event.id);
+      check();
+      intent.confirmed = true;
+      throw new Error(
+        "This earlier invitation granted view-only access. To grant participation, remove them in People and invite them again.",
+      );
+    }
+  }
   if (channel()?.members?.includes(pubkey)) {
     if (!intent.id && pending) intent.id = pending.event.id;
     if (pending) await outbox.acknowledge(pending.event.id);
