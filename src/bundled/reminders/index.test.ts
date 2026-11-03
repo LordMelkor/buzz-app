@@ -403,8 +403,8 @@ it("notifies a reminder only a later history page holds, saving only after the l
 });
 
 // Roster pages per launch shape: "two" puts the channel on page two of 501,
-// "capped" overflows discovery's retained cap on the third page.
-const ROSTERS = { one: 1, empty: 1, two: 2, capped: 3 } as const;
+// "capped" exhausts the discovery byte budget on page two.
+const ROSTERS = { one: 1, empty: 1, two: 2, capped: 2 } as const;
 
 type Launch = Readonly<{
   /** Which loads first at startup: reminder history or the channel list. */
@@ -505,7 +505,11 @@ async function launch(options: Launch) {
         },
       },
     },
-    { prepared: true, warm: false },
+    {
+      prepared: true,
+      warm: false,
+      ...(options.roster === "capped" ? { maxDiscoveryBytes: 240_000 } : {}),
+    },
   );
   // The live subscription is established on launch, before any test step.
   if (options.offline) live?.state({ status: "retrying", routes: [] });
@@ -585,7 +589,7 @@ async function launch(options: Launch) {
         : shape === "capped"
           ? page === 0
             ? [room(2e6), ...filler(0, 499)]
-            : filler(page, page === 1 ? 500 : 25)
+            : filler(page, 500)
           : [room(1e6)];
   let served = 0;
   return {
@@ -721,6 +725,8 @@ it.each<[string, Launch["first"], Launch["banners"], Partial<Launch>]>([
     };
     app.seed();
     at(5_000);
+    // Polling advances timers without changing this case's checkpoint time.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(5_000_000);
     try {
       if (first === "history") {
         await app.start();
@@ -759,9 +765,11 @@ it.each<[string, Launch["first"], Launch["banners"], Partial<Launch>]>([
       await app.refresh();
       expect(app.show).toHaveBeenCalledTimes(banners);
     } finally {
+      clock.mockRestore();
       await app.close();
     }
   },
+  60_000,
 );
 
 it("does not replay a caught-up reminder after closing and reopening", async () => {

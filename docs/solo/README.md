@@ -80,6 +80,13 @@ behavior on the label, so a rename touches copy only.
   agents: answer as one channel-scoped, top-level conversation. It is not access
   authority. The in-app agent harness reads it from the channel list; remote
   harnesses that only read `about` need to learn the label.
+- The Buzz tools' `channel_create` with `solo` sends the same create for any
+  caller, including the standalone stdio server: signed by the caller, with the
+  label and any `members` it names. The caller is the creator, so an agent's
+  key makes a chat its human members see as shared, not their own. It sends no
+  message, so no agent turn starts, and it does not file the chat in a
+  workspace. It cannot check NIP-CL support first, so on a relay that drops the
+  label it reports an ordinary private channel instead.
 - **Share** opens the same access dialog from Solo and Messages. This flow
   preserves channel ID, history, Canvas, existing members,
   Solo label and workspace filing. It neither promotes a conversation nor

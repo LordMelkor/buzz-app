@@ -1,6 +1,6 @@
 #![cfg(all(target_os = "macos", debug_assertions))]
 
-use buzz_credential_store::{read_human, Error};
+use buzz_credential_store::{dev_agent_store, read_human, Error};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
@@ -82,6 +82,41 @@ fn human_restore_uses_the_selected_helper_and_fails_closed() {
         .status()
         .unwrap()
         .success());
+
+    let agent = |operation, value: &[u8]| {
+        dev_agent_store(
+            operation,
+            "xyz.block.buzz.desktop.agents",
+            "agent-bundle-v1",
+            value,
+        )
+        .unwrap()
+        .map(|value| value.to_vec())
+    };
+    for (body, expected) in [
+        ("printf '{}'", Ok(b"{}".to_vec())),
+        ("exit 10", Err(Error::Absent)),
+        ("exit 11", Err(Error::Denied)),
+        ("exit 12", Err(Error::Corrupt)),
+        ("exit 13", Err(Error::Occupied)),
+        ("exit 1", Err(Error::Unavailable)),
+    ] {
+        fs::write(&helper, format!("#!/bin/sh\n{body}\n")).unwrap();
+        assert_eq!(agent("read", &[]), expected);
+        if expected.is_err() {
+            assert_eq!(agent("replace", &vec![b'x'; 2 * 1024 * 1024]), expected);
+        }
+    }
+    fs::write(&helper, "#!/bin/sh\n/bin/cat <&1 > /dev/null\n").unwrap();
+    assert_eq!(agent("replace", &vec![b'x'; 2 * 1024 * 1024]), Ok(vec![]));
+    assert_eq!(
+        agent("replace", &vec![b'x'; 2 * 1024 * 1024 + 1]),
+        Err(Error::Unavailable)
+    );
+    fs::write(&helper, "#!/bin/sh\nprintf unexpected\n").unwrap();
+    assert_eq!(agent("delete", &[]), Err(Error::Corrupt));
+    fs::write(&helper, "#!/bin/sh\n/usr/bin/head -c 2097153 /dev/zero\n").unwrap();
+    assert_eq!(agent("read", &[]), Err(Error::Corrupt));
 
     std::env::set_var("BUZZ_DEV_CREDENTIAL_HELPER", "helper");
     assert_eq!(read_human(), Err(Error::Unavailable));

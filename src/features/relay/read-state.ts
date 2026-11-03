@@ -145,6 +145,9 @@ export function createReadState({
   let work: Promise<unknown> = Promise.resolve();
   let epoch = 0;
   let requested = false;
+  /** The completeness the last drop interrupted, while nothing since has
+   * failed: a continuous replay brings the markers back to it without a read. */
+  let resumable: ReadSyncSnapshot["completeness"] | undefined;
   const slots = new Map<
     string,
     { event: RelayEvent; parsed: ParsedReadBlob }
@@ -168,6 +171,7 @@ export function createReadState({
   };
   const health = (patch: Partial<ReadSyncSnapshot>) => {
     if (patch.status) failedRevision = undefined;
+    if (patch.status === "error") resumable = undefined;
     const next = { ...snapshot, ...patch };
     if (!same(next, snapshot)) {
       snapshot = Object.freeze(next);
@@ -852,12 +856,50 @@ export function createReadState({
         } catch (error) {
           if (!closed && generation === epoch)
             health({ status: "error", error: errorText(error) });
+          // A drop cancelled it: the replay may not carry it again, so the
+          // snapshot is read again instead of resuming.
+          else resumable = undefined;
         }
       });
     },
     stale() {
+      resumable =
+        snapshot.completeness !== "unknown" &&
+        snapshot.status !== "error" &&
+        snapshot.status !== "stale"
+          ? snapshot.completeness
+          : undefined;
       epoch++;
       health({ status: "stale", completeness: "unknown" });
+    },
+    /** The membership route resumed from its cursor and its replay ended
+     * under the limit: it fed every marker written since the drop through
+     * `accept`, the same `ingest` the snapshot read uses. Once those land, the
+     * state the drop interrupted stands again. Without one, or after a
+     * failure since, the snapshot is read again as on any reconnect. */
+    resume(): Promise<void> {
+      if (closed || !host) return Promise.resolve();
+      const generation = epoch;
+      return queue(async () => {
+        await ready;
+        const completeness = resumable;
+        if (!completeness || !journal || closed || generation !== epoch)
+          return false;
+        resumable = undefined;
+        const pending =
+          journal.pending || journal.revision > journal.acceptedRevision;
+        health({
+          status: pending ? "pending" : "reconciled",
+          completeness,
+          error: undefined,
+        });
+        if (pending) schedule();
+        return true;
+      })
+        .catch(() => false)
+        .then((resumed) =>
+          resumed || closed || generation !== epoch ? undefined : refresh(),
+        );
     },
     dispose() {
       closed = true;

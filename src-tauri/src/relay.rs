@@ -688,6 +688,37 @@ async fn admit_app_data(
     Ok(())
 }
 
+/// An incoming event's signature claim: the webview checks shape and that `id`
+/// hashes the event, then asks libsecp256k1 whether `sig` signs `id` for `pubkey`.
+#[derive(serde::Deserialize)]
+pub(crate) struct SignatureClaim {
+    id: String,
+    pubkey: String,
+    sig: String,
+}
+
+/// BIP-340 checks off the webview's main thread; one result per claim, in order.
+#[tauri::command]
+pub(crate) async fn relay_verify_signatures(claims: Vec<SignatureClaim>) -> Result<Vec<bool>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let secp = secp256k1::Secp256k1::verification_only();
+        claims.iter().map(|claim| signs(&secp, claim)).collect()
+    })
+    .await
+    .map_err(|_| "Signature verification could not complete".into())
+}
+
+fn signs(secp: &secp256k1::Secp256k1<secp256k1::VerifyOnly>, claim: &SignatureClaim) -> bool {
+    let (Ok(id), Ok(pubkey), Ok(sig)) = (
+        nostr::event::EventId::from_hex(&claim.id),
+        claim.pubkey.parse::<secp256k1::XOnlyPublicKey>(),
+        claim.sig.parse::<secp256k1::schnorr::Signature>(),
+    ) else {
+        return false;
+    };
+    secp.verify_schnorr(&sig, id.as_bytes(), &pubkey).is_ok()
+}
+
 fn verify_signature(event: &serde_json::Value) -> Result<()> {
     let parsed: nostr::event::Event =
         serde_json::from_value(event.clone()).map_err(|_| "Invalid outgoing signature")?;
@@ -761,6 +792,21 @@ fn client() -> Result<&'static reqwest::Client> {
         .map_err(|_| "Relay network client is unavailable".into())
 }
 
+/// Status of a read the renderer abandoned; the renderer has stopped listening.
+const CANCELLED_READ: u16 = 499;
+
+/// Searches and reads the renderer may abandon. A dispatched write may already
+/// have reached the relay, so it is never cancelled. Mirrors `nativeRelayRequest`.
+fn cancellable_read(method: &str, path: &str) -> bool {
+    method == "POST" && matches!(path, "/query" | "/profiles/search" | "/gifs/search")
+}
+
+/// The upload registry's semantics: a cancel may overtake its read IPC.
+fn read_cancels() -> &'static Uploads {
+    static CANCELS: OnceLock<Uploads> = OnceLock::new();
+    CANCELS.get_or_init(Uploads::default)
+}
+
 #[tauri::command]
 pub(crate) async fn relay_http(
     host: tauri::State<'_, IdentityHost>,
@@ -769,6 +815,7 @@ pub(crate) async fn relay_http(
     path: String,
     method: String,
     body: Option<String>,
+    id: Option<String>,
 ) -> Result<RelayResponse> {
     let url = request_url(&community, &path, &method)?;
     if body.as_ref().is_some_and(|b| b.len() > MAX_BODY)
@@ -805,7 +852,7 @@ pub(crate) async fn relay_http(
             return Err("Invalid outgoing signature".into());
         }
     }
-    send(
+    let request = send(
         host.inner(),
         Some(fi.inner()),
         url,
@@ -813,8 +860,52 @@ pub(crate) async fn relay_http(
         body,
         method == "POST",
         MAX_RESPONSE,
-    )
-    .await
+    );
+    cancellable(id.as_deref(), &method, &path, request).await
+}
+
+/// Runs `request`, or for a read with an `id`, until `relay_http_cancel` names it.
+async fn cancellable(
+    id: Option<&str>,
+    method: &str,
+    path: &str,
+    request: impl std::future::Future<Output = Result<RelayResponse>>,
+) -> Result<RelayResponse> {
+    let Some(id) = id else {
+        return request.await;
+    };
+    if !cancellable_read(method, path) {
+        return Err("Relay writes cannot be cancelled".into());
+    }
+    let id = upload_id(Some(id)).map_err(|_| "Invalid relay read")?;
+    let Some(cancelled) = read_cancels()
+        .start(id)
+        .map_err(|_| "Relay reads are busy")?
+    else {
+        return Ok(cancelled_read());
+    };
+    // Dropping the request future closes its connection.
+    let result = tokio::select! {
+        biased;
+        _ = cancelled => Ok(cancelled_read()),
+        result = request => result,
+    };
+    read_cancels().finish(id);
+    result
+}
+
+#[tauri::command]
+pub(crate) fn relay_http_cancel(id: String) -> Result<()> {
+    read_cancels().cancel(upload_id(Some(&id)).map_err(|_| "Invalid relay read")?);
+    Ok(())
+}
+
+fn cancelled_read() -> RelayResponse {
+    RelayResponse {
+        status: CANCELLED_READ,
+        headers: BTreeMap::new(),
+        body: String::new(),
+    }
 }
 
 async fn evidence(

@@ -2,6 +2,7 @@ import { useProfileGeneration } from "../../features/relay/react";
 import { archiveHides } from "../../features/relay/identity-archives";
 import { Button as BaseButton } from "@base-ui/react/button";
 import referenceStyles from "../../shared/InlineReference.module.css";
+import { SEARCH_MIN_CHARS } from "../../shared/search-debounce";
 import { npubEncode } from "nostr-tools/nip19";
 import {
   memo,
@@ -104,6 +105,7 @@ import {
 import { writeClipboardText } from "../../shared/clipboard";
 
 const INVITATION_GROUP_SIZE = 4;
+const MEMBER_PAGE_SIZE = 50;
 
 const additionRoles = [
   {
@@ -794,6 +796,7 @@ export function ChannelMembersDialog({
     };
   }, [session, channelId, refresh, soloSharing]);
   const memberKey = channel?.members?.join(":") ?? "";
+  const largeRoster = (channel?.members?.length ?? 0) > MEMBER_PAGE_SIZE;
   const administration = useMemberAdministration(
     session,
     channelId,
@@ -806,30 +809,6 @@ export function ChannelMembersDialog({
   )
     busy.add(administration.operation.change.pubkey);
   const profileGeneration = useProfileGeneration(session.profiles);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh retries missing names with the other dialog reads; a purge generation rereads.
-  useEffect(() => {
-    setNameError("");
-    setNamesSettledFor(undefined);
-    if (!memberKey) {
-      setNamesSettledFor({ session, memberKey });
-      return;
-    }
-    let current = true;
-    void session.profiles
-      .ensure(memberKey.split(":"), "foreground")
-      .catch(() => {
-        if (current)
-          setNameError(
-            "Some names could not load. Public keys still identify members. Try again.",
-          );
-      })
-      .finally(() => {
-        if (current) setNamesSettledFor({ session, memberKey });
-      });
-    return () => {
-      current = false;
-    };
-  }, [session, memberKey, refresh, profileGeneration]);
   const namesBusy =
     namesSettledFor?.session !== session ||
     namesSettledFor?.memberKey !== memberKey;
@@ -853,14 +832,27 @@ export function ChannelMembersDialog({
     // The authority hook may have started a new roster's read in this effect
     // flush. Do not reveal using the previous render's settled role snapshot.
     const status = session.memberAdministration.snapshot(channelId).status;
-    if (!rosterBusy && !namesBusy && rolesSettled && status !== "loading")
+    if (
+      !rosterBusy &&
+      (!namesBusy || largeRoster) &&
+      rolesSettled &&
+      status !== "loading"
+    )
       setRevealedFor(session);
-  }, [session, channelId, rosterBusy, namesBusy, rolesSettled]);
+  }, [session, channelId, rosterBusy, namesBusy, largeRoster, rolesSettled]);
   const initialLoading = revealedFor !== session;
   const known = useMemo(
     () =>
       new Map(agentChoices.identities.map((agent) => [agent.pubkey, agent])),
     [agentChoices.identities],
+  );
+  const search = useMemberSearch(
+    session,
+    query,
+    canAddPeople || (largeRoster && !solo && channel?.channelType !== "dm"),
+  );
+  const searchProfiles = new Map(
+    search.people.map((person) => [person.pubkey, person]),
   );
   const members = new Set(channel?.members ?? []);
   const archived = new Set(archives.archived);
@@ -868,13 +860,18 @@ export function ChannelMembersDialog({
     resolveName(
       key,
       profiles.get(key)?.name ??
+        searchProfiles.get(key)?.name ??
         fallback ??
         known.get(key)?.name ??
         formatPublicKey(key) ??
         "Unknown member",
     );
-  // Filters the fully loaded member list.
+  // Filters every roster identity using its currently available label.
   const matches = (key: string, name: string) =>
+    !text ||
+    [searchProfiles.get(key)?.name, searchProfiles.get(key)?.username].some(
+      (name) => name && matchPerson(name, query),
+    ) ||
     `${name} ${key} ${npubEncode(key)}`
       .toLowerCase()
       .includes(query.trim().toLowerCase());
@@ -888,10 +885,15 @@ export function ChannelMembersDialog({
       typed === npubEncode(key)
     );
   };
+  // Label once per member: a fallback label bech32-encodes the key, too costly
+  // to repeat for every member of a large roster on each render.
+  const memberLabels = new Map([...members].map((key) => [key, label(key)]));
+  const memberLabel = (key: string) => memberLabels.get(key) ?? label(key);
   const currentMembers = [...members].sort(
-    (a, b) => label(a).localeCompare(label(b)) || a.localeCompare(b),
+    (a, b) =>
+      memberLabel(a).localeCompare(memberLabel(b)) || a.localeCompare(b),
   );
-  const groups = ["People", "Agents"].map((name) => {
+  const currentGroups = ["People", "Agents"].map((name) => {
     const keys = currentMembers.filter((key) => {
       const group =
         known.has(key) || profiles.get(key)?.isAgent ? "Agents" : "People";
@@ -900,9 +902,56 @@ export function ChannelMembersDialog({
     return {
       name,
       count: keys.length,
-      keys: keys.filter((key) => matches(key, label(key))),
+      keys,
     };
   });
+  // Optional profile updates change labels, not the identities being browsed.
+  // Reopening or refreshing takes a new paging order. Live roster changes
+  // retain surviving identities and append new members in their current order.
+  const [memberOrder, setMemberOrder] = useState({
+    session,
+    channelId,
+    memberKey,
+    refresh,
+    initialLoading,
+    groups: currentGroups,
+  });
+  const resetOrder =
+    memberOrder.session !== session ||
+    memberOrder.channelId !== channelId ||
+    memberOrder.refresh !== refresh ||
+    memberOrder.initialLoading !== initialLoading;
+  const previousMembers = new Set(
+    memberOrder.groups.flatMap((group) => group.keys),
+  );
+  const orderedGroups =
+    resetOrder || !largeRoster
+      ? currentGroups
+      : memberOrder.memberKey !== memberKey
+        ? memberOrder.groups.map((group) => {
+            const keys = [
+              ...group.keys.filter((key) => members.has(key)),
+              ...(
+                currentGroups.find((current) => current.name === group.name)
+                  ?.keys ?? []
+              ).filter((key) => !previousMembers.has(key)),
+            ];
+            return { ...group, keys, count: keys.length };
+          })
+        : memberOrder.groups;
+  if (resetOrder || memberOrder.memberKey !== memberKey)
+    setMemberOrder({
+      session,
+      channelId,
+      memberKey,
+      refresh,
+      initialLoading,
+      groups: orderedGroups,
+    });
+  const groups = (largeRoster ? orderedGroups : currentGroups).map((group) => ({
+    ...group,
+    keys: group.keys.filter((key) => matches(key, memberLabel(key))),
+  }));
   const presentGroups = groups.filter((group) => group.count > 0);
   const roleFilter =
     query.length === 0 &&
@@ -921,7 +970,78 @@ export function ChannelMembersDialog({
       (roleFilter === "All" || group.name === roleFilter) &&
       group.keys.length > 0,
   );
-  const search = useMemberSearch(session, query, canAddPeople);
+  const [memberPages, setMemberPages] = useState({
+    text,
+    roleFilter,
+    pages: {} as Record<string, number>,
+  });
+  let pages =
+    memberPages.text === text && memberPages.roleFilter === roleFilter
+      ? memberPages.pages
+      : {};
+  for (const group of groups) {
+    const lastPage = Math.max(
+      0,
+      Math.ceil(group.keys.length / MEMBER_PAGE_SIZE) - 1,
+    );
+    if ((pages[group.name] ?? 0) > lastPage)
+      pages = { ...pages, [group.name]: lastPage };
+  }
+  if (pages !== memberPages.pages) setMemberPages({ text, roleFilter, pages });
+  const pendingMemberPage = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const group = pendingMemberPage.current;
+    pendingMemberPage.current = null;
+    if (group === null) return;
+    const heading = document.getElementById(`${presenceId}-${group}-page`);
+    heading?.focus({ preventScroll: true });
+    heading?.parentElement?.scrollIntoView({ block: "start" });
+  });
+  const changeMemberPage = (group: string, page: number) => {
+    pendingMemberPage.current = group;
+    setMemberPages({
+      text,
+      roleFilter,
+      pages: { ...pages, [group]: page },
+    });
+  };
+  const profileKey = !largeRoster
+    ? memberKey
+    : filteredGroups
+        .flatMap((group) => {
+          const page = Math.min(
+            pages[group.name] ?? 0,
+            Math.ceil(group.keys.length / MEMBER_PAGE_SIZE) - 1,
+          );
+          return group.keys.slice(
+            page * MEMBER_PAGE_SIZE,
+            (page + 1) * MEMBER_PAGE_SIZE,
+          );
+        })
+        .join(":");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh retries missing names with the other dialog reads; a purge generation rereads.
+  useEffect(() => {
+    let current = true;
+    setNameError("");
+    setNamesSettledFor(undefined);
+    void session.profiles
+      .ensure(
+        profileKey ? profileKey.split(":") : [],
+        largeRoster ? "background" : "foreground",
+      )
+      .catch(() => {
+        if (current)
+          setNameError(
+            "Some names could not load. Public keys still identify members. Try again.",
+          );
+      })
+      .finally(() => {
+        if (current) setNamesSettledFor({ session, memberKey });
+      });
+    return () => {
+      current = false;
+    };
+  }, [session, memberKey, profileKey, refresh, largeRoster, profileGeneration]);
   const relayKeys = new Set(search.people.map((person) => person.pubkey));
   const candidates = new Map(
     search.people.map((person) => [person.pubkey, person]),
@@ -1156,11 +1276,16 @@ export function ChannelMembersDialog({
       ? [{ team, missing }]
       : [];
   });
-  const keys = publicKeyLabels([...members, ...candidates.keys()]);
+  // Suffix search scans the whole roster; redo it only when the keys change.
+  const keyList = [...members, ...candidates.keys()].join(":");
+  const keys = useMemo(
+    () => publicKeyLabels(keyList ? keyList.split(":") : []),
+    [keyList],
+  );
   // A naming plugin is optional: same-named rows still need a visible difference.
   const shownNames = new Map<string, number>();
   for (const name of [
-    ...currentMembers.map((key) => label(key)),
+    ...currentMembers.map(memberLabel),
     ...visibleCandidates.map((person) => label(person.pubkey, person.name)),
   ])
     shownNames.set(name, (shownNames.get(name) ?? 0) + 1);
@@ -1491,6 +1616,38 @@ export function ChannelMembersDialog({
   const memberCount = (count: number) =>
     `${count} member${count === 1 ? "" : "s"}`;
   const chosen = share.chosen;
+  const searchFeedback = (
+    <>
+      {search.loading && (
+        <p role="status" className="px-control-inset text-body-sm text-subtle">
+          Searching…
+        </p>
+      )}
+      {search.error && (
+        <p role="alert" className="px-control-inset text-body-sm text-danger">
+          {search.error}
+        </p>
+      )}
+      {search.more && (
+        <div className="flex justify-center border-t border-standard pt-4">
+          <Button
+            variant="subtle"
+            size="sm"
+            onClick={() => {
+              setInvitationPage((old) => ({
+                ...old,
+                revealRelay: true,
+              }));
+              search.next();
+            }}
+            disabled={search.loading}
+          >
+            Find more matches
+          </Button>
+        </div>
+      )}
+    </>
+  );
   const copyAction = (
     <Tooltip
       content="Copying a link does not grant access."
@@ -1855,25 +2012,77 @@ export function ChannelMembersDialog({
               )
             ) : (
               <>
-                {filteredGroups.map((group) => (
-                  <section key={group.name} aria-label={group.name}>
-                    <h3
-                      className={`${styles.groupHeading} pb-2 text-caption text-subtle`}
-                    >
-                      {group.name} · {text ? group.keys.length : group.count}
-                    </h3>
-                    <ul aria-busy={refreshing}>
-                      {group.keys.map((key) => row(key, label(key), false))}
-                    </ul>
-                  </section>
-                ))}
-                {!filteredGroups.length && !rosterBusy && !offering && (
-                  <p className="px-control-inset text-body-sm text-subtle">
-                    {query
-                      ? "No members match your search."
-                      : "No members to show."}
-                  </p>
-                )}
+                {filteredGroups.map((group) => {
+                  const pageCount = Math.ceil(
+                    group.keys.length / MEMBER_PAGE_SIZE,
+                  );
+                  const page = Math.min(pages[group.name] ?? 0, pageCount - 1);
+                  return (
+                    <section key={group.name} aria-label={group.name}>
+                      <h3
+                        id={`${presenceId}-${group.name}-page`}
+                        tabIndex={-1}
+                        className={`${styles.groupHeading} pb-2 text-caption text-subtle`}
+                      >
+                        {group.name} · {text ? group.keys.length : group.count}
+                      </h3>
+                      <ul aria-busy={refreshing}>
+                        {group.keys
+                          .slice(
+                            page * MEMBER_PAGE_SIZE,
+                            (page + 1) * MEMBER_PAGE_SIZE,
+                          )
+                          .map((key) => row(key, memberLabel(key), false))}
+                      </ul>
+                      {pageCount > 1 && (
+                        <nav
+                          aria-label={`${group.name} member pages`}
+                          className="flex items-center justify-between gap-2 px-control-inset"
+                        >
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={page === 0}
+                            onClick={() =>
+                              changeMemberPage(group.name, page - 1)
+                            }
+                          >
+                            Previous
+                          </Button>
+                          <span
+                            className="text-caption text-subtle"
+                            aria-live="polite"
+                          >
+                            <span className="sr-only">Page </span>
+                            {page + 1} of {pageCount}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={page + 1 === pageCount}
+                            onClick={() =>
+                              changeMemberPage(group.name, page + 1)
+                            }
+                          >
+                            Next
+                          </Button>
+                        </nav>
+                      )}
+                    </section>
+                  );
+                })}
+                {!filteredGroups.length &&
+                  !rosterBusy &&
+                  !offering &&
+                  !search.loading &&
+                  !search.error &&
+                  !search.more && (
+                    <p className="px-control-inset text-body-sm text-subtle">
+                      {query
+                        ? "No members match your search."
+                        : "No members to show."}
+                    </p>
+                  )}
               </>
             )}
             {offering && (
@@ -1997,23 +2206,17 @@ export function ChannelMembersDialog({
                     </section>
                   ) : null,
                 )}
-                {search.loading && (
-                  <p
-                    role="status"
-                    className="px-control-inset text-body-sm text-subtle"
-                  >
-                    Searching…
-                  </p>
-                )}
                 {!search.loading && !search.error && !available.length && (
                   <p className="px-control-inset text-body-sm text-subtle">
-                    {!solo
-                      ? "No other matching people or agents."
-                      : !canAddSoloAgents
-                        ? "No other matching people."
-                        : agentChoices.pending
-                          ? "Loading agents…"
-                          : "No other matching people or agents."}
+                    {search.tooShort
+                      ? `Type at least ${SEARCH_MIN_CHARS} characters to search people.`
+                      : !solo
+                        ? "No other matching people or agents."
+                        : !canAddSoloAgents
+                          ? "No other matching people."
+                          : agentChoices.pending
+                            ? "Loading agents…"
+                            : "No other matching people or agents."}
                   </p>
                 )}
                 {agentsByMention && (
@@ -2021,34 +2224,10 @@ export function ChannelMembersDialog({
                     To add an agent, mention it in the chat.
                   </p>
                 )}
-                {search.error && (
-                  <p
-                    role="alert"
-                    className="px-control-inset text-body-sm text-danger"
-                  >
-                    {search.error}
-                  </p>
-                )}
-                {search.more && (
-                  <div className="flex justify-center border-t border-standard pt-4">
-                    <Button
-                      variant="subtle"
-                      size="sm"
-                      onClick={() => {
-                        setInvitationPage((old) => ({
-                          ...old,
-                          revealRelay: true,
-                        }));
-                        search.next();
-                      }}
-                      disabled={search.loading}
-                    >
-                      Find more matches
-                    </Button>
-                  </div>
-                )}
+                {searchFeedback}
               </section>
             )}
+            {!initialLoading && !offering && searchFeedback}
             {shareChannels.length > 0 && (
               <section className={styles.memberGroup} aria-label="Channels">
                 <h3

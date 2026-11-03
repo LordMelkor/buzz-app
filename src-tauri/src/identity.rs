@@ -10,7 +10,7 @@ use nostr::{
 use secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use zeroize::Zeroizing;
 
 type Result<T> = std::result::Result<T, String>;
@@ -36,7 +36,9 @@ fn decrypt_with_conversation(
 }
 
 // No Debug/Serialize: only deliberate export may return the secret to the main UI.
-struct Key(Zeroizing<[u8; 32]>);
+/// The secret, and its public key derived once: socket frames and HTTP
+/// requests read it.
+struct Key(Zeroizing<[u8; 32]>, OnceLock<String>);
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -119,7 +121,7 @@ impl Key {
         if values.next().is_some() {
             return Err(INVALID.into());
         }
-        let key = Self(bytes);
+        let key = Self::new(bytes);
         key.viewer()?;
         Ok(key)
     }
@@ -127,20 +129,26 @@ impl Key {
         loop {
             let mut bytes = Zeroizing::new([0; 32]);
             getrandom::fill(bytes.as_mut()).map_err(|_| "Could not create an identity")?;
-            let key = Self(bytes);
+            let key = Self::new(bytes);
             if key.viewer().is_ok() {
                 return Ok(key);
             }
         }
     }
+    fn new(secret: Zeroizing<[u8; 32]>) -> Self {
+        Self(secret, OnceLock::new())
+    }
     fn viewer(&self) -> Result<String> {
+        if let Some(public) = self.1.get() {
+            return Ok(public.clone());
+        }
         let mut key = SecretKey::from_byte_array(*self.0).map_err(|_| INVALID)?;
         let public = PublicKey::from_secret_key(&Secp256k1::signing_only(), &key)
             .x_only_public_key()
             .0
             .to_string();
         key.non_secure_erase();
-        Ok(public)
+        Ok(self.1.get_or_init(|| public).clone())
     }
     fn nsec(&self) -> Result<String> {
         bech32::encode::<Bech32>(Hrp::parse("nsec").map_err(|_| INVALID)?, self.0.as_ref())
@@ -398,7 +406,7 @@ impl Identity {
     }
     fn install_recovered(&mut self, secret: Zeroizing<[u8; 32]>, expected: &str) -> Result<String> {
         self.require_missing()?;
-        let key = Key(secret);
+        let key = Key::new(secret);
         let viewer = key.viewer()?;
         if viewer != expected {
             return Err("The recovered identity could not be verified".into());
@@ -736,7 +744,7 @@ pub struct IdentityHost(Arc<Mutex<Identity>>);
 impl IdentityHost {
     #[cfg(test)]
     pub(crate) fn fixture() -> Self {
-        Self::fixture_in(State::Ready(Key(Zeroizing::new([1; 32]))))
+        Self::fixture_in(State::Ready(Key::new(Zeroizing::new([1; 32]))))
     }
     /// No saved key, or a key that cannot be read (a signing-out host refuses every read).
     #[cfg(test)]

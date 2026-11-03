@@ -1,3 +1,4 @@
+import { createLocalAgentActivity } from "../agents/local-activity";
 import { bindNames } from "../identity-names/service";
 import { createAgentDirectory } from "../identity-names/testing";
 import { Context } from "@deepseek-ai/cordis";
@@ -233,7 +234,12 @@ export async function setup(
     discover();
     void owner.session.unread.ensure();
   }
-  const stop = bindMessageNotifications(notifications, communities);
+  const activity = createLocalAgentActivity();
+  const stop = bindMessageNotifications(
+    notifications,
+    communities,
+    activity.reader,
+  );
   cleanups.push(stop);
   await flush();
   // Names retain owner inventory independently of notification/roster startup.
@@ -253,6 +259,7 @@ export async function setup(
     ]);
   return {
     owner,
+    activity,
     notifications,
     navigation,
     emit,

@@ -71,8 +71,10 @@ import type { EventTemplate, VerifiedEvent } from "nostr-tools";
 import {
   createEventVerifier,
   eventDto,
+  type EventVerifier,
   type ReadFilter,
   type RelayEvent,
+  type SignatureVerifier,
 } from "./events";
 
 /** Relay connection. Implementations verify signatures; callers never see raw JSON. */
@@ -244,6 +246,8 @@ export interface Signer {
   upload?(file: File, signal: AbortSignal): Promise<Response>;
   /** Native hosts serve relay `/media/` URLs through an authenticated proxy. */
   media?(url: string): string;
+  /** Native hosts check incoming signatures with libsecp256k1, off the main thread. */
+  verifySignatures?: SignatureVerifier;
 }
 
 /** The host's explicit HTTP base wins; otherwise translate the ws(s) relay URL's scheme. */
@@ -264,7 +268,7 @@ export function relayHttpBase(
 
 async function parseEvents(
   raw: unknown,
-  verify: (value: unknown) => RelayEvent,
+  verify: EventVerifier,
   signal?: AbortSignal,
 ): Promise<RelayEvent[]> {
   if (!Array.isArray(raw))
@@ -272,17 +276,35 @@ async function parseEvents(
       "invalid-response",
       "Relay response is not an event array",
     );
-  const events: RelayEvent[] = [];
+  const { native } = verify;
   // Signature checks are CPU work too. Yield between small batches so speculative
   // head/profile responses cannot monopolize input and foreground rendering.
-  for (let index = 0; index < raw.length; index += 12) {
-    if (signal?.aborted) throw new DOMException("Read cancelled", "AbortError");
-    const started = performance.now();
-    const batch = raw.slice(index, index + 12).map(verify);
-    clientMetrics.cpu("verify.read", performance.now() - started, batch.length);
-    events.push(...batch);
-    if (index + 12 < raw.length) await yieldToHost();
-  }
+  // A native host checks signatures; JS still validates and hashes each event.
+  const checkChunks = async <T>(check: (value: unknown) => T) => {
+    const checked: T[] = [];
+    for (let index = 0; index < raw.length; index += 12) {
+      if (signal?.aborted)
+        throw new DOMException("Read cancelled", "AbortError");
+      const started = performance.now();
+      const batch = raw.slice(index, index + 12).map(check);
+      clientMetrics.cpu(
+        "verify.read",
+        performance.now() - started,
+        batch.length,
+      );
+      checked.push(...batch);
+      if (index + 12 < raw.length) await yieldToHost();
+    }
+    return checked;
+  };
+  if (!native) return checkChunks(verify);
+  const events = await native.settle(await checkChunks(native.prepare));
+  if (signal?.aborted) throw new DOMException("Read cancelled", "AbortError");
+  if (!events.every((event) => event !== undefined))
+    throw new ReadError(
+      "invalid-response",
+      "Relay supplied a malformed or invalidly signed event",
+    );
   return events;
 }
 
@@ -1327,7 +1349,7 @@ export async function connectSignedTransport(
   httpOrigin = relayOrigin(httpOrigin);
   const principal = () => signedAdmissions(httpOrigin, viewer);
   const profiling = createRelayProfiler();
-  const verify = createEventVerifier();
+  const verify = createEventVerifier(undefined, signer.verifySignatures);
   const presence = presenceObservation();
   const upload = signer.upload?.bind(signer);
   return {
@@ -1389,6 +1411,11 @@ export async function connectSignedTransport(
           }),
           socketFactory,
           owner.live,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          signer.verifySignatures,
         );
       } catch (error) {
         owner.streams--;

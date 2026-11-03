@@ -17,16 +17,35 @@ const FI_SIGN_IN_AGAIN: &str = "Sign in again in Settings → Identity → Organ
 pub enum ViewerAuth {
     Credential(String),
     Federated(String),
+    #[cfg(debug_assertions)]
+    Broker(BrokerAuth),
+}
+#[cfg(debug_assertions)]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrokerAuth {
+    origin: String,
+    revision: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawViewerAuth {
     credential: Option<String>,
     federated: Option<String>,
+    #[cfg(debug_assertions)]
+    broker: Option<BrokerAuth>,
 }
 impl TryFrom<RawViewerAuth> for ViewerAuth {
     type Error = &'static str;
     fn try_from(raw: RawViewerAuth) -> Result<Self, Self::Error> {
+        #[cfg(debug_assertions)]
+        if let Some(broker) = raw.broker {
+            return if raw.credential.is_none() && raw.federated.is_none() {
+                Ok(Self::Broker(broker))
+            } else {
+                Err("expected exactly one viewer authentication source")
+            };
+        }
         match (raw.credential, raw.federated) {
             (Some(credential), None) => Ok(Self::Credential(credential)),
             (None, Some(revision)) => Ok(Self::Federated(revision)),
@@ -124,6 +143,23 @@ fn exchange_request(
     const SIGN_IN_AGAIN: &str = "Sign in to Builderlab again in Settings";
     const PATH: &str = "v1/auth/hosted-site/native-session";
     match auth {
+        #[cfg(debug_assertions)]
+        ViewerAuth::Broker(broker) => {
+            let origin = Url::parse(&broker.origin).map_err(|_| "Invalid development origin")?;
+            if origin.scheme() != "http"
+                || !matches!(origin.host_str(), Some("127.0.0.1" | "localhost"))
+                || origin.port().is_none()
+                || origin.origin().ascii_serialization() != broker.origin
+            {
+                return Err("Invalid development origin".into());
+            }
+            Ok((
+                format!("{}/api/builderlab/viewer", broker.origin),
+                HeaderName::from_static("x-buzz-builderlab-revision"),
+                HeaderValue::from_str(&broker.revision)
+                    .map_err(|_| "Invalid development session")?,
+            ))
+        }
         ViewerAuth::Credential(credential) => {
             let credential = Zeroizing::new(credential);
             if !(32..=512).contains(&credential.len())
@@ -169,16 +205,29 @@ pub(super) async fn prepare(
     }
     let root = app_root(domain, target)?;
     let federated = matches!(auth, ViewerAuth::Federated(_));
+    #[cfg(not(debug_assertions))]
+    let development = false;
+    #[cfg(debug_assertions)]
+    let development = matches!(auth, ViewerAuth::Broker(_));
     let (url, header, credential) = exchange_request(auth, fi)?;
     let client = reqwest::Client::builder()
-        .https_only(true)
+        .https_only(!development)
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|_| "Builderlab sign-in is unavailable")?;
     let body = Zeroizing::new(serde_json::json!({ "return_to": root }).to_string());
-    let mut response = client
-        .post(url)
+    let mut request = client.post(&url);
+    if development {
+        request = request.header(
+            "Origin",
+            Url::parse(&url)
+                .map_err(|_| "Invalid development origin")?
+                .origin()
+                .ascii_serialization(),
+        );
+    }
+    let mut response = request
         .header(header, credential)
         .header("Content-Type", "application/json")
         .body(body.to_string())
@@ -272,6 +321,35 @@ mod tests {
         ] {
             assert!(parse(json).is_err(), "{json}");
         }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn development_viewer_auth_accepts_only_loopback_origins_and_a_public_revision() {
+        let fi = signed_in();
+        for origin in ["http://127.0.0.1:1430", "http://localhost:1430"] {
+            let auth: ViewerAuth = serde_json::from_value(serde_json::json!({ "broker": { "origin": origin, "revision": "public-revision" } })).unwrap();
+            let (url, header, value) = exchange_request(auth, &fi).unwrap();
+            assert_eq!(url, format!("{origin}/api/builderlab/viewer"));
+            assert_eq!(header.as_str(), "x-buzz-builderlab-revision");
+            assert_eq!(value.to_str().unwrap(), "public-revision");
+        }
+        for origin in [
+            "https://evil.example",
+            "http://127.0.0.1:1430/path",
+            "http://user@localhost:1430",
+            "http://localhost",
+        ] {
+            assert!(exchange_request(
+                ViewerAuth::Broker(BrokerAuth {
+                    origin: origin.into(),
+                    revision: "r".into()
+                }),
+                &fi
+            )
+            .is_err());
+        }
+        assert!(serde_json::from_value::<ViewerAuth>(serde_json::json!({"credential":"c", "broker":{"origin":"http://127.0.0.1:1430","revision":"r"}})).is_err());
     }
 
     #[test]

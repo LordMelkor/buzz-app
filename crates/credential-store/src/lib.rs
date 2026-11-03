@@ -12,6 +12,19 @@ use zeroize::Zeroizing;
 #[cfg(all(not(test), target_os = "macos", debug_assertions))]
 mod dev_helper;
 
+/// Debug-only access to the selected local helper for the agent store.
+/// `None` means no helper is configured. A helper failure never permits OS access.
+#[cfg(all(not(test), target_os = "macos", debug_assertions))]
+pub fn dev_agent_store(
+    operation: &str,
+    service: &str,
+    account: &str,
+    value: &[u8],
+) -> Option<Result<Zeroizing<Vec<u8>>>> {
+    std::env::var_os("BUZZ_DEV_CREDENTIAL_HELPER")
+        .map(|helper| dev_helper::agent(&helper, operation, service, account, value))
+}
+
 pub const HUMAN_ACCOUNT: &str = "human";
 pub const HUMAN_SERVICE: &str = human_service(cfg!(debug_assertions));
 /// The human key's service before 1.0, which reads copy from.

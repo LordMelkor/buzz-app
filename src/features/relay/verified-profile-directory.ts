@@ -24,17 +24,28 @@ export function createVerifiedProfileDirectory(
   ) => Promise<VerifiedProfileAuthority | null>,
 ) {
   const heads = new ByteLru<RelayEvent>(1024, 2 * 1024 * 1024);
-  const wanted = new Map<string, number>();
+  // Least recently ensured first.
+  const wanted = new Set<string>();
   const checked = new Set<string>();
   type Batch = { stop(): void; subjects: readonly string[] };
   const batches = new Set<Batch>();
+  // Every profile publish projects every head: reuse the last projection of
+  // an unchanged event so publishes skip revalidation and compare by identity.
+  const projections = new WeakMap<
+    RelayEvent,
+    {
+      authority: VerifiedProfileAuthority;
+      checked: boolean;
+      profile: VerifiedProfile | undefined;
+    }
+  >();
   let authority = initialAuthority;
   let enabled = !!authority;
   let discoveryFresh = !!authority;
   let discovery: AbortController | undefined;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-  let interest = 0;
   let queued = false;
+  let evicted = false;
   let closed = false;
   let online = true;
 
@@ -66,7 +77,13 @@ export function createVerifiedProfileDirectory(
           stopBatches();
           heads.clear();
         }
-        authority = next;
+        // An equal refresh keeps the current object, so unchanged heads keep
+        // their projections.
+        if (
+          authority?.pubkey !== next.pubkey ||
+          authority.multipleIssuers !== next.multipleIssuers
+        )
+          authority = next;
         enabled = true;
         schedule();
       }
@@ -85,14 +102,32 @@ export function createVerifiedProfileDirectory(
     }
   }
 
+  function project(
+    event: RelayEvent,
+    currentAuthority: VerifiedProfileAuthority,
+    isChecked: boolean,
+  ) {
+    const memo = projections.get(event);
+    if (memo?.authority === currentAuthority && memo.checked === isChecked)
+      return memo.profile;
+    const profile = verifiedProfile(event, currentAuthority, isChecked);
+    projections.set(event, {
+      authority: currentAuthority,
+      checked: isChecked,
+      profile,
+    });
+    return profile;
+  }
+
+  /** Returns whether the head changed; the caller owns notification. */
   function accept(event: RelayEvent) {
-    if (!authority || !enabled) return;
+    if (!authority || !enabled) return false;
     const subject = verifiedProfileSubject(event, authority);
-    if (!subject || !wanted.has(subject)) return;
+    if (!subject || !wanted.has(subject)) return false;
     const old = heads.peek(subject);
-    if (newer(old, event) === old) return;
+    if (newer(old, event) === old) return false;
     heads.set(subject, event);
-    changed();
+    return true;
   }
   function start(
     currentAuthority: VerifiedProfileAuthority,
@@ -129,11 +164,13 @@ export function createVerifiedProfileDirectory(
             if (!active) return;
             const subject = verifiedProfileSubject(event, currentAuthority);
             if (!subject || !chunk.includes(subject)) return;
+            // Each notification refolds the whole profile directory, so a
+            // replay notifies once at EOSE (or failure), not per event.
             if (!ready) {
               count++;
               seen.add(subject);
-            }
-            accept(event);
+              accept(event);
+            } else if (accept(event)) changed();
           },
           eose() {
             if (!active) return;
@@ -198,7 +235,11 @@ export function createVerifiedProfileDirectory(
       }
       while (unassigned.length)
         start(currentAuthority, unassigned.splice(0, VERIFIED_PROFILE_BATCH));
-      changed();
+      // Starting REQs changes no snapshot; only eviction removes names.
+      if (evicted) {
+        evicted = false;
+        changed();
+      }
     });
   }
   return {
@@ -206,18 +247,22 @@ export function createVerifiedProfileDirectory(
       if (closed) return;
       for (const subject of subjects) {
         if (!/^[0-9a-f]{64}$/.test(subject)) continue;
-        wanted.set(subject, ++interest);
+        wanted.delete(subject);
+        wanted.add(subject);
       }
-      while (wanted.size > 1024) {
-        const oldest = [...wanted].reduce((old, entry) =>
-          entry[1] < old[1] ? entry : old,
-        )[0];
+      const gone = new Set<string>();
+      for (const oldest of wanted) {
+        if (wanted.size <= 1024) break;
         wanted.delete(oldest);
         heads.delete(oldest);
         checked.delete(oldest);
+        gone.add(oldest);
+      }
+      if (gone.size) {
+        evicted = true;
         // A later ensure must issue a fresh REQ; the old one is past EOSE.
         for (const batch of batches)
-          batch.subjects = batch.subjects.filter((key) => key !== oldest);
+          batch.subjects = batch.subjects.filter((key) => !gone.has(key));
       }
       schedule();
       if (!refreshTimer && !discovery) armRefresh();
@@ -230,7 +275,7 @@ export function createVerifiedProfileDirectory(
           const event = heads.peek(subject);
           const profile =
             event &&
-            verifiedProfile(
+            project(
               event,
               currentAuthority,
               discoveryFresh && checked.has(subject),

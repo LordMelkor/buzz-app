@@ -42,7 +42,12 @@ import {
 import type { JoinPolicy } from "../communities/join-policy";
 import { createCommunities } from "../communities/service";
 import { connectNativeTransport } from "../relay/native";
-import { keypair, profile, signed } from "../relay/testing";
+import {
+  keypair,
+  nativeSignatureChecks,
+  profile,
+  signed,
+} from "../relay/testing";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
   isTauri: vi.fn(() => true),
@@ -1050,6 +1055,8 @@ function landingRelay(
     if (command === "identity_create") return created;
     if (command === "identity_import") return owned.pubkey;
     if (command === "identity_export") return key;
+    if (command === "relay_verify_signatures")
+      return nativeSignatureChecks(args);
     if (command !== "relay_http")
       throw new Error(`Unexpected command ${command}`);
     relayCalls.push(args);
@@ -1513,6 +1520,8 @@ it("a landing URL that cannot be reached fails before sign-in, and Cancel keeps 
   vi.mocked(invoke).mockImplementation((command, args) => {
     if (command === "identity_restore") return Promise.resolve(null);
     if (command === "identity_legacy_available") return Promise.resolve(false);
+    if (command === "relay_verify_signatures")
+      return Promise.resolve(nativeSignatureChecks(args));
     if (command === "relay_http") {
       relayCalls.push(args);
       return Promise.reject(new Error("connection refused"));
@@ -2213,6 +2222,8 @@ it("Join a community checks the typed URL, opens Finding community, and Cancel k
     if (command === "identity_restore") return Promise.resolve(null);
     if (command === "identity_legacy_available") return Promise.resolve(false);
     if (command === "identity_create") return Promise.resolve(viewer);
+    if (command === "relay_verify_signatures")
+      return Promise.resolve(nativeSignatureChecks(args));
     if (command === "relay_http") {
       relayCalls.push(args);
       return new Promise(() => {});
@@ -2305,6 +2316,8 @@ it("a found community shows Join Community after exactly the two unauthenticated
     if (command === "identity_restore") return Promise.resolve(null);
     if (command === "identity_legacy_available") return Promise.resolve(false);
     if (command === "identity_create") return Promise.resolve(viewer);
+    if (command === "relay_verify_signatures")
+      return Promise.resolve(nativeSignatureChecks(args));
     if (command === "relay_http") {
       relayCalls.push(args);
       const { path } = args as { path: string };
@@ -2424,13 +2437,17 @@ function nativeRelay(
     if (command === "clipboard_write_text") return undefined;
     if (command === "relay_sign")
       return signed(member, (args as { event: EventTemplate }).event);
+    if (command === "relay_verify_signatures")
+      return nativeSignatureChecks(args);
     if (command !== "relay_http")
       throw new Error(`Unexpected command ${command}`);
-    const request = args as {
+    // A read's cancel id is fresh per request; calls record what was sent.
+    const { id: _, ...request } = args as {
       community: string;
       path: string;
       method: string;
       body: string | null;
+      id?: string;
     };
     const body: unknown = request.body ? JSON.parse(request.body) : null;
     calls.push({ ...request, body });

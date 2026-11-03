@@ -572,6 +572,11 @@ pub fn repository_url(input: &str) -> Result<String> {
         || url.query().is_some()
         || url.fragment().is_some()
         || url.path().trim_matches('/').is_empty()
+        || expanded.split_once("://").is_some_and(|(_, rest)| {
+            rest.split(['/', '?', '#'])
+                .next()
+                .is_some_and(|a| a.contains('%'))
+        })
         || expanded
             .chars()
             .any(|c| c.is_whitespace() || c.is_control())
@@ -580,7 +585,10 @@ pub fn repository_url(input: &str) -> Result<String> {
             "Use an HTTPS or SSH repository URL without a password, query or fragment".into(),
         );
     }
-    if url.host_str() == Some("github.com") && url.path().trim_matches('/').split('/').count() != 2
+    let host = url.host_str().unwrap_or_default().trim_end_matches('.');
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    if host.eq_ignore_ascii_case("github.com")
+        && url.path().trim_matches('/').split('/').count() != 2
     {
         return Err("Use the GitHub repository URL, not a tree/file URL. Enter the branch or tag separately, then select a plugin folder.".into());
     }
@@ -1748,6 +1756,10 @@ mod tests {
             "https://me:secret@example.com/repo",
             "https://example.com/repo?token=secret",
             "https://github.com/block/repo/tree/main/plugins",
+            "https://www.github.com/block/repo/tree/main/plugins",
+            "https://github.com./block/repo/tree/main/plugins",
+            "https://git%68ub.com/block/repo",
+            "ssh://git@exa%6dple.com/team/repo",
             "--upload-pack=bad",
             "ssh://-oProxyCommand=bad/repo",
             "-oProxyCommand=bad@github.com:owner/repo.git",

@@ -213,6 +213,29 @@ it("batches and deduplicates subjects, retains retractions, and fences retired c
   }
 });
 
+it("notifies once per replay, then once per live change", async () => {
+  const h = harness();
+  try {
+    h.directory.ensure([alice.pubkey, bob.pubkey]);
+    await Promise.resolve();
+    const sink = h.subscriptions[0]?.sink;
+    assert(sink);
+    h.changed.mockClear();
+    sink.event(projection(10));
+    sink.event(projection(10, bob.pubkey));
+    expect(h.changed).not.toHaveBeenCalled();
+    expect(h.directory.snapshot().size).toBe(2);
+    sink.eose();
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    sink.event(projection(10)); // Unchanged head.
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    sink.event(projection(11));
+    expect(h.changed).toHaveBeenCalledTimes(2);
+  } finally {
+    h.directory.dispose();
+  }
+});
+
 it("a newer malformed projection invalidates an older valid name", async () => {
   const h = harness();
   try {
@@ -308,6 +331,69 @@ it("overlays verified names, qualifies collisions, preserves kind 0 details, and
     expect(
       directory.queries.snapshot().get(alice.pubkey)?.verified,
     ).toBeUndefined();
+  } finally {
+    directory.dispose();
+  }
+});
+
+it("qualifies verified namesakes and shared usernames, but not a unique verified name", async () => {
+  const { createProfileDirectory } = await import("./profile-directory");
+  const carol = keypair();
+  const dave = keypair();
+  const verifiedAs = (subject: string, displayName: string, username: string) =>
+    eventDto(
+      signed(relay, {
+        kind: 30382,
+        content: "",
+        created_at: 10,
+        tags: [
+          ["d", subject],
+          ["p", subject],
+          ["active", "true"],
+          ["display_name", displayName],
+          ["username", username],
+          ["issuer_label", "Example"],
+          ["verified_at", "10"],
+        ],
+      }),
+    );
+  let sink: VerifiedProfileSink | undefined;
+  const directory = createProfileDirectory(
+    { read: async () => [] },
+    undefined,
+    undefined,
+    {
+      authority: { ...authority, multipleIssuers: false },
+      subscribe(_filter, next) {
+        sink = next;
+        return () => {};
+      },
+    },
+  );
+  try {
+    const people = [alice, bob, carol, dave];
+    directory.accept(
+      people.map((key) =>
+        eventDto(signed(key, { kind: 0, tags: [], content: "{}" })),
+      ),
+    );
+    await directory.ensure(people.map((key) => key.pubkey));
+    assert(sink);
+    sink.event(verifiedAs(alice.pubkey, "Sam", "sam1"));
+    sink.event(verifiedAs(bob.pubkey, "Sam", "sam2"));
+    sink.event(verifiedAs(carol.pubkey, "Carol", "shared"));
+    sink.event(verifiedAs(dave.pubkey, "Dave", "shared"));
+    sink.eose();
+    const name = (key: { pubkey: string }) =>
+      directory.queries.snapshot().get(key.pubkey)?.name;
+    expect(name(alice)).toBe(`Sam (${alice.pubkey.slice(0, 10)})`);
+    expect(name(bob)).toBe(`Sam (${bob.pubkey.slice(0, 10)})`);
+    expect(name(carol)).toBe(`Carol (${carol.pubkey.slice(0, 10)})`);
+    expect(name(dave)).toBe(`Dave (${dave.pubkey.slice(0, 10)})`);
+    sink.event(retract(20, bob.pubkey));
+    sink.event(retract(20, dave.pubkey));
+    expect(name(alice)).toBe("Sam");
+    expect(name(carol)).toBe("Carol");
   } finally {
     directory.dispose();
   }
@@ -456,6 +542,7 @@ it("wires session profile demand, live updates, disconnection, and refreshed dis
   const wire = scriptedTransport(alice.pubkey, relay.pubkey);
   let live: import("./live").LiveCallbacks | undefined;
   let sink: VerifiedProfileSink | undefined;
+  let requests = 0;
   const refresh = vi.fn(async () => null);
   const owner = createRelaySession({
     ...wire.transport,
@@ -469,6 +556,7 @@ it("wires session profile demand, live updates, disconnection, and refreshed dis
         retry() {},
         dispose() {},
         syncVerifiedProfiles(_filter, next) {
+          requests++;
           sink = next;
           return () => {};
         },
@@ -478,6 +566,16 @@ it("wires session profile demand, live updates, disconnection, and refreshed dis
   try {
     assert(live);
     live.state({ status: "connected", routes: [] });
+    // An over-budget request is rejected before it reaches verification.
+    await expect(
+      owner.session.profiles.ensure(
+        Array.from({ length: 1025 }, (_, index) =>
+          index.toString(16).padStart(64, "0"),
+        ),
+      ),
+    ).rejects.toThrow("budget");
+    await Promise.resolve();
+    expect(requests).toBe(0);
     await owner.session.profiles.ensure([alice.pubkey]);
     assert(sink);
     sink.event(projection());
@@ -498,6 +596,85 @@ it("wires session profile demand, live updates, disconnection, and refreshed dis
     expect(
       owner.session.profiles.snapshot().get(alice.pubkey)?.verified,
     ).toBeUndefined();
+  } finally {
+    owner.dispose();
+  }
+});
+
+it("keeps a verified name and its live check when channel access ends", async () => {
+  const { createRelaySession } = await import("./session");
+  const { roster, scriptedTransport } = await import("./testing");
+  const wire = scriptedTransport(alice.pubkey, relay.pubkey);
+  let live: import("./live").LiveCallbacks | undefined;
+  let sink: VerifiedProfileSink | undefined;
+  let subscribed = 0;
+  let stopped = 0;
+  const owner = createRelaySession({
+    ...wire.transport,
+    verifiedProfiles: { ...authority, multipleIssuers: false },
+    subscribe(callbacks) {
+      live = callbacks;
+      return {
+        update() {},
+        retry() {},
+        dispose() {},
+        syncVerifiedProfiles(_filter, next) {
+          subscribed++;
+          sink = next;
+          return () => {
+            stopped++;
+          };
+        },
+      };
+    },
+  });
+  const isProfileRead = (filters: readonly { kinds?: readonly number[] }[]) =>
+    filters.every(
+      (filter) => filter.kinds?.length === 1 && filter.kinds[0] === 0,
+    );
+  const denyPending = () => {
+    for (const entry of wire.pending.splice(0))
+      if (isProfileRead(entry.filters)) entry.respond([]);
+      else entry.fail(new Error("Relay read failed (403)"));
+  };
+  const verified = () =>
+    owner.session.profiles.snapshot().get(alice.pubkey)?.verified;
+  try {
+    assert(live);
+    live.state({ status: "connected", routes: [] });
+    const ensured = owner.session.profiles.ensure([alice.pubkey]);
+    await vi.waitFor(() =>
+      expect(wire.pending.some((entry) => isProfileRead(entry.filters))).toBe(
+        true,
+      ),
+    );
+    denyPending();
+    await ensured;
+    assert(sink);
+    sink.event(projection());
+    sink.eose();
+    expect(verified()).toMatchObject({
+      displayName: "Alice",
+      status: "checked",
+    });
+    // A denied channel, then a denied channel list: profiles do not depend on
+    // channels, so neither removes the verified name or stops its check.
+    live.receive(["a", "b"].map((id) => roster(relay, id, [alice.pubkey], 10)));
+    owner.session.channels.ensure("a");
+    await vi.waitFor(() => {
+      denyPending();
+      expect(owner.session.channels.window("a").status).toBe("error");
+    });
+    owner.session.channels.refreshList?.();
+    await vi.waitFor(() => {
+      denyPending();
+      expect(owner.session.channels.list().status).toBe("error");
+    });
+    expect(verified()).toMatchObject({
+      displayName: "Alice",
+      status: "checked",
+    });
+    expect([subscribed, stopped]).toEqual([1, 0]);
   } finally {
     owner.dispose();
   }
@@ -557,6 +734,31 @@ it("keeps batch membership and checked status stable when subjects are added or 
   }
 });
 
+it("notifies when ensure evicts a subject, not when it only adds one", async () => {
+  const h = harness();
+  const keys = Array.from({ length: 1025 }, (_, index) =>
+    index.toString(16).padStart(64, "0"),
+  );
+  try {
+    h.directory.ensure(keys.slice(0, 1024));
+    await Promise.resolve();
+    expect(h.changed).not.toHaveBeenCalled();
+    // Re-ensuring the first key makes the second the least recent.
+    h.directory.ensure([keys[0] as string]);
+    h.directory.ensure([keys[1024] as string]);
+    await Promise.resolve();
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    const wanted = h.subscriptions
+      .filter((item) => !item.stopped)
+      .flatMap((item) => item.subjects);
+    expect(wanted).toHaveLength(1024);
+    expect(wanted).toContain(keys[0]);
+    expect(wanted).not.toContain(keys[1]);
+  } finally {
+    h.directory.dispose();
+  }
+});
+
 it("keeps kind-0 enrichment retryable after a verified-only profile loads", async () => {
   const { createProfileDirectory } = await import("./profile-directory");
   let sink: VerifiedProfileSink | undefined;
@@ -597,5 +799,48 @@ it("keeps kind-0 enrichment retryable after a verified-only profile loads", asyn
     });
   } finally {
     directory.dispose();
+  }
+});
+
+it("reuses an unchanged head's projection across snapshots", async () => {
+  const h = harness();
+  try {
+    h.directory.ensure([alice.pubkey]);
+    await Promise.resolve();
+    const sink = h.subscriptions[0]?.sink;
+    assert(sink);
+    sink.event(projection());
+    sink.eose();
+    const checked = h.directory.snapshot().get(alice.pubkey);
+    expect(checked?.status).toBe("checked");
+    expect(h.directory.snapshot().get(alice.pubkey)).toBe(checked);
+    h.directory.connected(false);
+    const cached = h.directory.snapshot().get(alice.pubkey);
+    expect(cached?.status).toBe("cached");
+    expect(h.directory.snapshot().get(alice.pubkey)).toBe(cached);
+  } finally {
+    h.directory.dispose();
+  }
+});
+
+it("keeps an unchanged head's projection through an equal discovery refresh", async () => {
+  vi.useFakeTimers();
+  const refresh = vi.fn(async () => ({ ...authority }));
+  const h = harness(refresh);
+  try {
+    h.directory.ensure([alice.pubkey]);
+    await Promise.resolve();
+    const sink = h.subscriptions[0]?.sink;
+    assert(sink);
+    sink.event(projection());
+    sink.eose();
+    const checked = h.directory.snapshot().get(alice.pubkey);
+    expect(checked?.status).toBe("checked");
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(h.directory.snapshot().get(alice.pubkey)).toBe(checked);
+  } finally {
+    h.directory.dispose();
+    vi.useRealTimers();
   }
 });

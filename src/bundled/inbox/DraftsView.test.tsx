@@ -269,7 +269,9 @@ function fixture(
     },
   );
   owners.push(owner);
-  emit(events);
+  // Held profiles arrive only through the gated read: names survive access
+  // changes now, so a live copy would name everyone before the gate opens.
+  emit(profilesGate ? events.filter((event) => event.kind !== 0) : events);
   const scope = {
     viewer: viewer.pubkey,
     communityOrigin: "https://relay.test",

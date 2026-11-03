@@ -16,7 +16,12 @@ import { App } from "./App";
 import { createServices, type AppServices } from "./services";
 import type { JoinPolicy } from "../features/communities/join-policy";
 import type { RelayEvent } from "../features/relay/events";
-import { keypair, profile, signed } from "../features/relay/testing";
+import {
+  keypair,
+  nativeSignatureChecks,
+  profile,
+  signed,
+} from "../features/relay/testing";
 
 // A first run whose Builderlab account saved one community and whose landing
 // named another: the real gate lifts on the restored community and the rail's
@@ -127,6 +132,8 @@ beforeEach(() => {
     if (command === "relay_sign")
       return signed(member, (args as { event: EventTemplate }).event);
     if (command === "relay_http") return relayAnswer(args);
+    if (command === "relay_verify_signatures")
+      return nativeSignatureChecks(args);
     if (command === "plugin_catalog")
       return {
         status: "ready",

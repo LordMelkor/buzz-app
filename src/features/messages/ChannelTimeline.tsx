@@ -660,12 +660,17 @@ function Timeline({
         : virtualizer.getItemOffset(index) - element.scrollTop;
     };
     let logical = logicalTop();
+    let offset = element.scrollTop;
     // A drag can carry the reader away from that row, and Virtua unmounts
     // rows the reader leaves. Hold the row they read instead, or correcting
     // for the old one would move the rows in view.
     const read = () => {
       const position = positionAt(element, anchor.id).anchor;
-      if (position) Object.assign(anchor, position);
+      // Keep the ideal Y through integer scrollTop rounding; only a handover
+      // adopts rendered geometry. Our own corrections contribute no user delta.
+      if (position?.id === anchor.id) anchor.y += offset - element.scrollTop;
+      else if (position) Object.assign(anchor, position);
+      offset = element.scrollTop;
       logical = logicalTop();
     };
     let height = list.style.height;
@@ -703,6 +708,7 @@ function Timeline({
           delta = next - logical;
         correctScrollTop(element, delta);
       }
+      offset = element.scrollTop;
       logical = logicalTop();
     });
     const release = (keepAnchor = false) => {

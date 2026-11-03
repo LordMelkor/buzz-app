@@ -39,10 +39,8 @@ import type { Outbox } from "../../features/relay/outbox";
 import { MessageMarkdown } from "../../features/messages/MessageMarkdown";
 import { profileTarget } from "../../features/profiles/target";
 import { npubEncode } from "nostr-tools/nip19";
-import {
-  fetchMentionDirectoryPage,
-  MENTION_DIRECTORY_DELAY_MS,
-} from "./useMentionDirectory";
+import { fetchMentionDirectoryPage } from "./useMentionDirectory";
+import { SEARCH_DEBOUNCE_MS } from "../../shared/search-debounce";
 import {
   resolveSpaceMention,
   type SpaceMentionResolution,
@@ -1600,7 +1598,7 @@ it("never expands Solo chat candidates from the community directory", async () =
     target: { value: "Out" },
   });
   // Past the directory delay, so a search would have started.
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS * 2));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS * 2));
   expect(people).not.toHaveBeenCalled();
   expect(
     screen.queryByRole("button", { name: /Outside/ }),
@@ -1738,7 +1736,7 @@ it("shows local rows before the directory, appends outside rows, and reuses sett
   // The member is usable before the network search starts or settles.
   expect(labels()).toEqual(["Larkin"]);
   expect(last()?.status).toBe("Searching community…");
-  await act(() => vi.advanceTimersByTimeAsync(200));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(1);
   // A truncated page: a longer query cannot be read out of it, so it searches.
   await act(async () =>
@@ -1755,7 +1753,7 @@ it("shows local rows before the directory, appends outside rows, and reuses sett
   );
   expect(labels()).toEqual(["Larry Outside"]);
   expect(last()?.status).toBe("Searching community…");
-  await act(() => vi.advanceTimersByTimeAsync(200));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(2);
   const newer = { pubkey: "d".repeat(64), name: "Larry Newer" };
   await act(async () =>
@@ -1769,7 +1767,7 @@ it("shows local rows before the directory, appends outside rows, and reuses sett
   );
   expect(labels()).toEqual(["Larkin", "Lara", "Larry Outside"]);
   expect(last()?.status).toBe("Narrow your search to see more members.");
-  await act(() => vi.advanceTimersByTimeAsync(200));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(2);
 });
 
@@ -2195,6 +2193,49 @@ type RelaySessionPeople = (
   query: string,
 ) => Promise<{ people: { pubkey: string; name: string }[]; hasMore: boolean }>;
 
+it("keeps already-read directory people at one character without searching", async () => {
+  vi.useFakeTimers();
+  const people = vi.fn<RelaySessionPeople>(async () => ({
+    people: [
+      { pubkey: "e".repeat(64), name: "Mark Outsider" },
+      { pubkey: "f".repeat(64), name: "Zed Outsider" },
+    ],
+    hasMore: false,
+  }));
+  const { last, complete } = directoryCompletion(people);
+  const view = render(complete(""));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+  expect(people).toHaveBeenCalledExactlyOnceWith("", 1, expect.anything());
+  // One character is too short to search: the listing stays, filtered.
+  view.rerender(complete("m"));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+  expect(people).toHaveBeenCalledTimes(1);
+  const labels = last()?.items.map((item) => item.label);
+  expect(labels).toContain("Mark Outsider");
+  expect(labels).not.toContain("Zed Outsider");
+  expect(last()?.status).not.toBe("Searching community…");
+  view.rerender(complete("ma"));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+  expect(people).toHaveBeenLastCalledWith("ma", 1, expect.anything());
+});
+
+it("Space does not select a one-character name a truncated listing could continue", async () => {
+  vi.useFakeTimers();
+  const people = vi.fn<RelaySessionPeople>(async () => ({
+    people: [{ pubkey: "e".repeat(64), name: "Q" }],
+    hasMore: true,
+  }));
+  const { last, complete } = directoryCompletion(people);
+  const view = render(complete(""));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+  view.rerender(complete("q"));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+  expect(last()?.items.map((item) => item.label)).toContain("Q");
+  // An unread page may hold "Q Smith", and no search for `q` ran.
+  expect(last()?.spaceId).toBeUndefined();
+  expect(people).toHaveBeenCalledTimes(1);
+});
+
 it("answers a longer query from the complete page already read for its prefix, with no read and no typing pause", async () => {
   vi.useFakeTimers();
   const people = vi.fn<RelaySessionPeople>(async () => ({
@@ -2206,7 +2247,7 @@ it("answers a longer query from the complete page already read for its prefix, w
   }));
   const { last, complete } = directoryCompletion(people);
   const view = render(complete("Mar"));
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(1);
   expect(last()?.items.map((item) => item.label)).toEqual([
     "Mark",
@@ -2218,7 +2259,7 @@ it("answers a longer query from the complete page already read for its prefix, w
   expect(last()?.items.map((item) => item.label)).toEqual(["Mary Jane"]);
   expect(last()?.status).toBeUndefined();
   expect(last()?.spacePending).toBeUndefined();
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(1);
   // Space decides over the derived page, as over the page itself.
   view.rerender(complete("Mary Jane"));
@@ -2235,12 +2276,12 @@ it("still searches a longer query when the page read for its prefix was truncate
   }));
   const { last, complete } = directoryCompletion(people);
   const view = render(complete("Mar"));
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(last()?.status).toBe("Narrow your search to see more members.");
   // A truncated page may have left a match out: it answers only its own query.
   view.rerender(complete("Mary J"));
   expect(last()?.status).toBe("Searching community…");
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(2);
   expect(people).toHaveBeenLastCalledWith("Mary J", 1, expect.any(AbortSignal));
   expect(last()?.status).toBeUndefined();
@@ -2256,7 +2297,7 @@ it("does not answer a name search from the listing read for an empty query", asy
   const { last, complete } = directoryCompletion(people);
   // A pause on `@` lists the community; fewer than 15 profiles completes it.
   const view = render(complete(""));
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledExactlyOnceWith(
     "",
     1,
@@ -2266,7 +2307,7 @@ it("does not answer a name search from the listing read for an empty query", asy
   // member who joins or renames after it must still be found by name.
   view.rerender(complete("mi"));
   expect(last()?.status).toBe("Searching community…");
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(2);
   expect(people).toHaveBeenLastCalledWith("mi", 1, expect.any(AbortSignal));
   expect(last()?.items.map((item) => item.label)).toEqual(["Mira Everly"]);
@@ -2274,7 +2315,7 @@ it("does not answer a name search from the listing read for an empty query", asy
   view.rerender(complete("mir"));
   expect(last()?.status).toBeUndefined();
   expect(last()?.items.map((item) => item.label)).toEqual(["Mira Everly"]);
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(2);
 });
 
@@ -2329,11 +2370,11 @@ it("scopes a retry to its query: later queries derive from a cached prefix page 
   // The picker keeps one hook mounted across openings: one instance sees
   // every query of the session.
   const view = render(complete("mira e"));
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(last()?.status).toBe(failed);
   // Still offline: the retry fails too and Retry stays offered.
   act(() => last()?.retry?.());
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(2);
   expect(last()?.status).toBe(failed);
   // Other consumers of the session settle complete `lu` and `mira` pages and
@@ -2352,7 +2393,7 @@ it("scopes a retry to its query: later queries derive from a cached prefix page 
   view.rerender(complete("zedd"));
   expect(last()?.status).not.toBe("Searching community…");
   expect(last()?.items).toEqual([]);
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(5);
   // Back on `mira e`, the asked-for read is still owed: its failure and
   // Retry stand, and a second Retry reads `mira e` afresh rather than
@@ -2360,7 +2401,7 @@ it("scopes a retry to its query: later queries derive from a cached prefix page 
   view.rerender(complete("mira e"));
   expect(last()?.status).toBe(failed);
   act(() => last()?.retry?.());
-  await act(() => vi.advanceTimersByTimeAsync(MENTION_DIRECTORY_DELAY_MS));
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   expect(people).toHaveBeenCalledTimes(6);
   expect(people).toHaveBeenLastCalledWith("mira e", 1, expect.any(AbortSignal));
   expect(last()?.status).toBeUndefined();

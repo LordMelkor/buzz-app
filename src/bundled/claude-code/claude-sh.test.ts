@@ -6,15 +6,18 @@ import {
   type PromiseWithChild,
   spawn,
 } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { watch } from "node:fs";
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -238,4 +241,162 @@ it("starts the release in use when switches prune the one it read", async () => 
     launching.child.kill();
     await launching.catch(() => {});
   }
+});
+
+const sha256 = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+
+/** A `curl` on PATH that counts its calls and saves `release` where -o names. */
+async function downloads(home: string, release: string) {
+  const bin = join(home, "bin");
+  await mkdir(bin, { recursive: true });
+  await writeFile(join(bin, "release"), release);
+  await writeFile(
+    join(bin, "curl"),
+    `#!/bin/sh\necho >>"${bin}/calls"\nwhile [ "$1" != -o ]; do shift; done\n/bin/cp "${bin}/release" "$2"\n`,
+  );
+  await chmod(join(bin, "curl"), 0o755);
+  return {
+    install: (version: string, checksum: string) =>
+      run(
+        "bash",
+        [
+          "-c",
+          script,
+          "claude.sh",
+          "install",
+          version,
+          "darwin-arm64",
+          checksum,
+        ],
+        { env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: home } },
+      ),
+    calls: () =>
+      readFile(join(bin, "calls"), "utf8").then(
+        (calls) => calls.split("\n").length - 1,
+        () => 0,
+      ),
+  };
+}
+const release = (version: string) => `#!/bin/sh\necho "${version}"\n`;
+
+// A build stopped between `install` and `use` leaves the release whole but none in use.
+it("uses a downloaded release that matches its checksum without downloading it again", async () => {
+  const { home, dir, step, selected } = await disk(["0.2.0"]);
+  const binary = join(dir, "0.2.0", "claude");
+  await chmod(binary, 0o644);
+  const { install, calls } = await downloads(home, "unused");
+  const { stdout } = await install(
+    "0.2.0",
+    sha256(await readFile(binary, "utf8")),
+  );
+  expect(stdout).toContain("Claude 0.2.0 is already downloaded.");
+  expect(await calls()).toBe(0);
+  await expect(selected()).rejects.toThrow("Claude is not installed");
+  await step("use", "0.2.0");
+  expect(await selected()).toBe("0.2.0");
+});
+
+// A release this user cannot chmod, such as one another account wrote, is still used.
+it("uses an executable matching release without changing its mode", async () => {
+  const { home, dir } = await disk(["0.2.0"]);
+  const binary = join(dir, "0.2.0", "claude");
+  const { install, calls } = await downloads(home, "unused");
+  await writeFile(join(home, "bin", "chmod"), "#!/bin/sh\nexit 1\n");
+  await chmod(join(home, "bin", "chmod"), 0o755);
+  const { stdout } = await install(
+    "0.2.0",
+    sha256(await readFile(binary, "utf8")),
+  );
+  expect(stdout).toContain("Claude 0.2.0 is already downloaded.");
+  expect(await calls()).toBe(0);
+});
+
+it("downloads again over a matching release it cannot make executable", async () => {
+  const { home, dir, step, selected } = await disk([]);
+  const binary = join(dir, "0.2.0", "claude");
+  await mkdir(dirname(binary), { recursive: true });
+  await writeFile(binary, release("0.2.0"));
+  await chmod(binary, 0o644);
+  const { install, calls } = await downloads(home, release("0.2.0"));
+  // Refuses only the cached file, so the download can still mark its own copy executable.
+  await writeFile(
+    join(home, "bin", "chmod"),
+    '#!/bin/sh\ncase "$2" in */claude) exit 1 ;; esac\nexec /bin/chmod "$@"\n',
+  );
+  await chmod(join(home, "bin", "chmod"), 0o755);
+  await install("0.2.0", sha256(release("0.2.0")));
+  expect(await calls()).toBe(1);
+  expect(await readFile(binary, "utf8")).toBe(release("0.2.0"));
+  await step("use", "0.2.0");
+  expect(await selected()).toBe("0.2.0");
+});
+
+it("downloads again over a release that does not match its checksum", async () => {
+  const { home, dir } = await disk([]);
+  const binary = join(dir, "0.2.0", "claude");
+  await mkdir(dirname(binary), { recursive: true });
+  // Cut short, as a copy written some other way may be.
+  await writeFile(binary, release("0.2.0").slice(0, 12));
+  const { install, calls } = await downloads(home, release("0.2.0"));
+  await install("0.2.0", sha256(release("0.2.0")));
+  expect(await calls()).toBe(1);
+  expect(await readFile(binary, "utf8")).toBe(release("0.2.0"));
+});
+
+it("downloads again when a stopped download left only its partial file", async () => {
+  const { home, dir } = await disk([]);
+  const binary = join(dir, "0.2.0", "claude");
+  await mkdir(dirname(binary), { recursive: true });
+  await writeFile(`${binary}.4242`, release("0.2.0"));
+  const { install, calls } = await downloads(home, release("0.2.0"));
+  await install("0.2.0", sha256(release("0.2.0")));
+  expect(await calls()).toBe(1);
+  expect(await readFile(binary, "utf8")).toBe(release("0.2.0"));
+});
+
+it("does not use a link to a release that matches its checksum", async () => {
+  const { home, dir } = await disk([]);
+  const target = join(home, "elsewhere");
+  await writeFile(target, release("0.2.0"));
+  await mkdir(join(dir, "0.2.0"), { recursive: true });
+  await symlink(target, join(dir, "0.2.0", "claude"));
+  const { install, calls } = await downloads(home, release("0.2.0"));
+  await install("0.2.0", sha256(release("0.2.0")));
+  expect(await calls()).toBe(1);
+  expect((await lstat(join(dir, "0.2.0", "claude"))).isSymbolicLink()).toBe(
+    false,
+  );
+});
+
+it("keeps a mismatched download from being used", async () => {
+  const { home, dir, step, selected } = await disk(["0.1.0"], "0.1.0");
+  const { install, calls } = await downloads(home, release("0.2.0"));
+  await expect(install("0.2.0", sha256("something else"))).rejects.toThrow(
+    "The download did not match its checksum",
+  );
+  expect(await calls()).toBe(1);
+  await expect(readdir(join(dir, "0.2.0"))).resolves.toEqual([]);
+  await expect(step("use", "0.2.0")).rejects.toThrow("no longer downloaded");
+  expect(await selected()).toBe("0.1.0");
+});
+
+// An empty digest from a hash that failed must not match: the checksum itself is refused.
+it("refuses a checksum that is not 64 hex digits before reusing or downloading", async () => {
+  const { home, dir } = await disk(["0.2.0"]);
+  const { install, calls } = await downloads(home, release("0.2.0"));
+  const digest = sha256(release("0.2.0"));
+  for (const checksum of [
+    "",
+    digest.slice(1),
+    digest.toUpperCase(),
+    `${digest.slice(1)}/`,
+  ])
+    await expect(install("0.2.0", checksum)).rejects.toThrow(
+      "Invalid checksum",
+    );
+  expect(await calls()).toBe(0);
+  expect(await readFile(join(dir, "0.2.0", "claude"), "utf8")).toBe(
+    release("0.2.0"),
+  );
 });

@@ -159,7 +159,8 @@ it("desktop settings expose app-owned sounds and collapse them when alerts are d
   expect(html).toContain("Direct messages");
   expect(html).toContain("@Mentions");
   expect(html).toContain("Thread replies");
-  expect(html.match(/role="combobox"/g)).toHaveLength(3);
+  expect(html).toContain("Solo chat completions");
+  expect(html.match(/role="combobox"/g)).toHaveLength(4);
   expect(html).not.toContain("Preview flutter");
   expect(html).not.toContain("Permission granted");
   expect(html).toContain("Check permission");

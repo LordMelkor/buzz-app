@@ -78,7 +78,6 @@ import { createUserStatuses } from "./user-status";
 import { createEmojiDirectory } from "./emoji-directory";
 import { EMOJI_SET_KIND } from "./emoji";
 import { createProfileDirectory } from "./profile-directory";
-import { rowProfileIds } from "./membership";
 import { createChannelStore, type ChannelStoreOptions } from "./store";
 import { MessageClock } from "./message-order";
 import {
@@ -89,7 +88,7 @@ import {
 import { PRODUCT_FEEDBACK_KIND } from "./product-feedback";
 import { attemptEnded } from "./withdraw";
 import type { ReadTransport } from "./transport";
-import type { LiveSnapshot, LiveSubscription } from "./live";
+import type { LiveGlobal, LiveSnapshot, LiveSubscription } from "./live";
 import {
   hasTag,
   type ReadFilter,
@@ -140,6 +139,30 @@ export type EventViewSnapshot = Readonly<{
   events: readonly VisibleEvent[];
   error?: string | undefined;
 }>;
+
+/** The live recovery tick re-reads the full channel list at most this often.
+ * Membership notices carry joins and removals live; this read only backs up
+ * changes the relay sends no notice for, such as a channel delete, a moderation
+ * kick or DM, or a dropped fan-out. Any completed full read restarts it. */
+export const ROSTER_BACKSTOP_INTERVAL = 15 * 60_000;
+
+/** A read of named authors' profiles only. Profiles do not depend on channels,
+ * so no channel access change, including a denied channel list, can stale it. */
+function isProfileFilter(filter: ReadFilter) {
+  return (
+    filter.kinds?.length === 1 &&
+    filter.kinds[0] === 0 &&
+    !!filter.authors?.length &&
+    Object.keys(filter).every((key) =>
+      ["kinds", "authors", "limit"].includes(key),
+    )
+  );
+}
+
+/** Every filter reads profiles only: see isProfileFilter. */
+function isProfileRead(filters: readonly ReadFilter[]) {
+  return filters.length > 0 && filters.every(isProfileFilter);
+}
 
 /** Compose once per relay/viewer. Plugins get one interface; the host owns disposal. */
 export function createRelaySession(
@@ -231,10 +254,11 @@ export function createRelaySession(
       channels.queries.list().channels.some((channel) => channel.id === id),
     notify,
   );
-  const recent = new ByteLru<{ event: RelayEvent; revision: number }>(
-    4096,
-    8 * 1024 * 1024,
-  );
+  const recent = new ByteLru<{
+    event: RelayEvent;
+    revision: number;
+    incoming?: "replay" | "live";
+  }>(4096, 8 * 1024 * 1024);
   const observations = new Set<(events: readonly RelayEvent[]) => void>();
   const incomingListeners = new Set<IncomingListener>();
   const liveEventListeners = new Set<LiveListener>();
@@ -368,6 +392,13 @@ export function createRelaySession(
   const localViews = writes
     ? { snapshot: local, subscribe: writes.local.subscribe }
     : undefined;
+  /** A profile read survives a channel access change, never a full cache clear. */
+  function profileReadSurvives(
+    filters: readonly ReadFilter[],
+    cleared: number,
+  ) {
+    return isProfileRead(filters) && cleared === cacheClearEpoch;
+  }
   function revokeAccess(commit: () => void, ids?: readonly string[]) {
     revoking++;
     try {
@@ -379,26 +410,28 @@ export function createRelaySession(
       details.cancel();
       memberAdministration.clear();
       typing.clear();
-      // Saved owner inventory does not depend on channel access. Preserve only
-      // that narrow read; broad, mixed, ID and channel reads must still retire.
+      // Saved owner inventory and profiles do not depend on channel access.
+      // Preserve only those narrow reads; broad, mixed, ID and channel reads
+      // must still retire.
       const retired = (filters: readonly ReadFilter[]) =>
         !filters.length ||
         filters.some(
-          (filter) => !isOwnerInventoryFilter(filter, transport?.viewer),
+          (filter) =>
+            !isOwnerInventoryFilter(filter, transport?.viewer) &&
+            !isProfileFilter(filter),
         );
       requests.invalidate(retired);
       retireBackoffs(retired);
       const visible = visibility();
+      // Profiles (kind 0) are global: any community member can read any of
+      // them, so losing a channel does not make a name private. They stay.
       const revoked = recent
         .entries()
-        .flatMap(([id, { event }]) =>
-          event.kind === 0 || !visible(event) ? [id] : [],
-        );
+        .flatMap(([id, { event }]) => (!visible(event) ? [id] : []));
       // Purge before notifying: callbacks must not be able to reseed denied data.
       for (const id of revoked) recent.delete(id);
       channels.purgeAccess((events) => events.filter(visibility(events)));
-      writes?.purgeConfirmed((event) => event.kind !== 0 && visible(event));
-      profiles.clear();
+      writes?.purgeConfirmed(visible);
       emoji.clear();
       statuses.clear();
       activity.accessChanged();
@@ -412,16 +445,6 @@ export function createRelaySession(
       // The relay reapplies access to a new sync; nothing held survives.
       for (const view of artifactSyncs) view.restart();
       commit();
-      // After commit: a store commit may clear profiles again, aborting earlier reads.
-      channels.refetchWindowProfiles();
-      for (const thread of threads)
-        if (canAccess(thread.channelId)) {
-          const { root, replies } = thread.view.snapshot();
-          const rows = root ? [root, ...replies] : replies;
-          void profiles
-            .ensure(rows.flatMap(rowProfileIds), "background")
-            .catch(() => {});
-        }
       unread.purge();
       inboxFeed.purge();
     } finally {
@@ -594,6 +617,7 @@ export function createRelaySession(
       aborted?.throwIfAborted();
     }
     const epoch = accessEpoch;
+    const cleared = cacheClearEpoch;
     let events: readonly RelayEvent[];
     try {
       events = await requests.reader.read(filters, settings);
@@ -614,7 +638,11 @@ export function createRelaySession(
         channels.denyChannel(id, error);
       throw error;
     }
-    if (closed || epoch !== accessEpoch)
+    // A profile read stays valid across an access change; see isProfileFilter.
+    if (
+      closed ||
+      (epoch !== accessEpoch && !profileReadSurvives(filters, cleared))
+    )
       throw new DOMException("Stale relay read", "AbortError");
     const relayCount = events.length;
     // A broken or stale transport must not promote private sidecar events into
@@ -769,6 +797,7 @@ export function createRelaySession(
       raw: readonly RelayEvent[],
     ) => void,
     signal?: AbortSignal,
+    incomingPhase?: "replay" | "live",
   ): readonly RelayEvent[] {
     if (closed) return [];
     // Authority precedes every projection, even in a batch containing both a
@@ -801,8 +830,25 @@ export function createRelaySession(
       "events.reconcile",
       events[0]?.id ?? "empty",
       () => {
-        for (const event of visible)
-          recent.set(event.id, { event, revision: ++revision });
+        for (const event of visible) {
+          const previous = recent.peek(event.id);
+          // Replay can precede a fresh live copy. Keep alert receipt separate from content receipt.
+          const incoming = [9, 40002, 40008].includes(event.kind)
+            ? incomingPhase === "live" || previous?.incoming === "live"
+              ? "live"
+              : previous?.incoming === "replay" ||
+                  (incomingPhase === "replay" &&
+                    !previous &&
+                    !unread.event(event.id))
+                ? "replay"
+                : undefined
+            : undefined;
+          recent.set(event.id, {
+            event,
+            revision: ++revision,
+            ...(incoming ? { incoming } : {}),
+          });
+        }
         activity.messagesChanged(visible);
         if (closed || epoch !== accessEpoch) return;
         reads.accept(visible);
@@ -975,6 +1021,8 @@ export function createRelaySession(
       : undefined,
     notify,
   );
+  /** When the last full channel-list read completed, whatever started it. */
+  let rosterReadAt = 0;
   const channels = createChannelStore(
     transport
       ? {
@@ -990,6 +1038,8 @@ export function createRelaySession(
           restored: (events) => unread.accept(events),
           demand: (channelId) => demandChannel(channelId),
           rosterChanged: (strong) => {
+            if (channels.roster().state === "verified")
+              rosterReadAt = Date.now();
             settleHintConfirmations(strong);
             publishLive();
           },
@@ -2568,6 +2618,7 @@ export function createRelaySession(
     ): Promise<{ events: readonly VisibleEvent[]; relayCount: number }> {
       const began = revision;
       const epoch = accessEpoch;
+      const cleared = cacheClearEpoch;
       const { events: result, relayCount } = await finiteRead(
         filters,
         settings,
@@ -2577,8 +2628,9 @@ export function createRelaySession(
           }),
       );
       // Applying discovery can itself revoke access. Let that authority-only
-      // read finish under current visibility; content/search completions must
-      // still be fenced, including mixed discovery + content requests.
+      // read, or a profile read, finish under current visibility;
+      // content/search completions must still be fenced, including mixed
+      // discovery + content requests.
       const discoveryOnly =
         filters.length > 0 &&
         filters.every(
@@ -2586,7 +2638,12 @@ export function createRelaySession(
             !!filter.kinds?.length &&
             filter.kinds.every((kind) => [39000, 39002].includes(kind)),
         );
-      if (closed || (epoch !== accessEpoch && !discoveryOnly))
+      if (
+        closed ||
+        (epoch !== accessEpoch &&
+          !discoveryOnly &&
+          !profileReadSurvives(filters, cleared))
+      )
         throw new DOMException("Stale relay read", "AbortError");
       const merged = new Map(result.map((event) => [event.id, event]));
       for (const [id, observation] of recent.entries()) {
@@ -2772,9 +2829,7 @@ export function createRelaySession(
         controller?.abort();
         controller = undefined;
         const visible = visibility(remote);
-        remote = clear
-          ? []
-          : remote.filter((event) => event.kind !== 0 && visible(event));
+        remote = clear ? [] : remote.filter(visible);
         update({ status: "idle", error: undefined });
       });
       const view = {
@@ -3020,6 +3075,86 @@ export function createRelaySession(
   // the sidebar page to mount and observe them.
   if (options.warm) void sidebarPreferences.queries.ensure();
   let refreshedGeneration = -1;
+  /** Held profiles still need a full read: none has completed since the
+   * session started or since the last one was asked for. */
+  let profilesOwed = true;
+  let profilesRead = 0;
+  /** The full read each global route's establishment may skip. A continuous
+   * replay sent every stored change since the last connection heard the
+   * relay, so its read is skipped unless an earlier one is still owed. A cut
+   * replay reads again; so does a route that fails or goes unreported, once
+   * per connection. */
+  const globalReads = {
+    profiles: {
+      generation: -1,
+      owed: () => profilesOwed,
+      read() {
+        profilesOwed = true;
+        const read = ++profilesRead;
+        const timer = setTimeout(() => {
+          timers.delete(timer);
+          if (!closed)
+            void profiles.reconnect().then(
+              () => {
+                if (read === profilesRead) profilesOwed = false;
+              },
+              () => {},
+            );
+        }, 0);
+        timers.add(timer);
+      },
+    },
+    membership: {
+      generation: -1,
+      // Recovery retries a failed or deferred roster read on its own.
+      owed: () => channels.rosterOwed(),
+      read: () => refreshRoster(),
+    },
+  };
+  /** `continuous` is undefined when the route failed or went unreported. */
+  const settleGlobal = (
+    route: keyof typeof globalReads,
+    continuous?: boolean,
+  ) => {
+    const global = globalReads[route];
+    if (continuous !== false && global.generation === liveGeneration) return;
+    global.generation = liveGeneration;
+    if (!continuous || global.owed()) global.read();
+  };
+  /** Per global route, the connection whose covered reads are settled. */
+  const coveredGeneration = { profiles: -1, membership: -1 };
+  /** The reads a global route's replay covers (statuses and emoji for
+   * `profiles`; read state and reminders for `membership`), once per
+   * connection. A continuous replay already delivered every change since the
+   * last connection heard the relay, so each owner resumes the state the
+   * drop interrupted; otherwise it reads again. Like `settleGlobal`, a cut
+   * replay reads again even after an earlier report on this connection, and
+   * `continuous` is undefined when the route failed or went unreported. */
+  const settleCovered = (route: LiveGlobal["route"], continuous?: boolean) => {
+    if (continuous !== false && coveredGeneration[route] === liveGeneration)
+      return;
+    coveredGeneration[route] = liveGeneration;
+    const generation = liveGeneration;
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      if (closed) return;
+      if (route === "profiles") {
+        if (continuous) {
+          emoji.resume();
+          statuses.resume();
+        } else {
+          emoji.reconnect();
+          statuses.reconnect();
+        }
+        return;
+      }
+      unread.reconnect(continuous);
+      // Only while this same connection is still up.
+      if (generation === liveGeneration && memoryConnected)
+        void (continuous ? reminders?.resume() : reminders?.recover());
+    }, 0);
+    timers.add(timer);
+  };
   /** No route has been established since the stream dropped, or ever: a
    * thread view opened now reads while it is down. */
   let streamDropped = true;
@@ -3138,8 +3273,8 @@ export function createRelaySession(
                   event.pubkey !== transport.viewer &&
                   destinations.length === 1 &&
                   destinations[0]?.[1] === provenance.channelId &&
-                  !recent.peek(event.id) &&
-                  !unread.event(event.id) &&
+                  (recent.peek(event.id)?.incoming === "replay" ||
+                    (!recent.peek(event.id) && !unread.event(event.id))) &&
                   !rawLocal().some((item) => item.event.id === event.id)
                 );
               })
@@ -3160,7 +3295,13 @@ export function createRelaySession(
       );
       const epoch = accessEpoch;
       const generation = liveGeneration;
-      const visible = accept(events);
+      const visible = accept(
+        events,
+        true,
+        undefined,
+        undefined,
+        provenance?.channelId ? provenance.phase : undefined,
+      );
       // Completion subscribers can synchronously clear, revoke or retire this
       // live delivery. Do not admit its remaining pulses into the new lifetime.
       if (
@@ -3298,6 +3439,17 @@ export function createRelaySession(
       )
         refreshRoster();
       liveSnapshot = snapshot;
+      // A global route that failed before it established proves nothing, so
+      // the finite reads stand in for its replay on this connection.
+      if (snapshot.status === "connected")
+        for (const route of snapshot.routes)
+          if (
+            (route.id === "profiles" || route.id === "membership") &&
+            route.status === "error"
+          ) {
+            settleGlobal(route.id);
+            settleCovered(route.id);
+          }
       // Suspend every affected preview before any recheck: one revocation can
       // cancel another read, but must never leave its old public grant readable.
       const previews = snapshot.routes
@@ -3314,28 +3466,31 @@ export function createRelaySession(
       revalidatePreviews(previews);
       publishLive();
     },
-    established(channelId) {
+    established(channelId, global) {
       if (closed) return;
       streamDropped = false;
       if (!channelId) {
-        if (refreshedGeneration !== liveGeneration) {
+        const first = refreshedGeneration !== liveGeneration;
+        // A host that reports no route (an older broker) leaves both reads
+        // to this connection's first establishment, in any order.
+        if (global) {
+          settleGlobal(global.route, global.continuous);
+          settleCovered(global.route, global.continuous);
+        } else {
+          settleGlobal("membership");
+          settleGlobal("profiles");
+          settleCovered("membership");
+          settleCovered("profiles");
+        }
+        if (first) {
           refreshedGeneration = liveGeneration;
-          refreshRoster();
-          const generation = liveGeneration;
           const timer = setTimeout(() => {
             timers.delete(timer);
             if (!closed) {
-              void profiles.reconnect().catch(() => {});
               agentLibrary.reconnect();
               activityRosterKey = undefined;
               refreshChannelActivity();
-              emoji.reconnect();
-              statuses.reconnect();
-              unread.reconnect();
               inboxFeed.reconnect();
-              // Only while this same connection is still up.
-              if (generation === liveGeneration && memoryConnected)
-                void reminders?.recover();
               for (const refresh of refreshers) void refresh();
             }
           }, 0);
@@ -3364,7 +3519,11 @@ export function createRelaySession(
     },
     recover() {
       if (closed) return;
-      refreshRoster();
+      if (
+        channels.rosterOwed() ||
+        Date.now() - rosterReadAt >= ROSTER_BACKSTOP_INTERVAL
+      )
+        refreshRoster();
       unread.reconnect();
     },
     denied(channelId, reason) {

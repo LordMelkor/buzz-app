@@ -103,12 +103,13 @@ export function agentSections({
       render: () => <HostSettings host={settingsHost} />,
     });
   if (agent.place === "here")
-    for (const { key, title, component: Component } of agents.addedTabs())
-      tabs.push({
-        value: `agent:added:${key}`,
-        label: title,
-        render: () => <Component agent={agent} />,
-      });
+    for (const { key, title, component: Component, when } of agents.addedTabs())
+      if (!when || shows(when, agent, key))
+        tabs.push({
+          value: `agent:added:${key}`,
+          label: title,
+          render: () => <Component agent={agent} />,
+        });
   if (agent.place === "here" && agents.configHistory(agent.pubkey))
     tabs.push({
       value: "agent:history",
@@ -130,6 +131,16 @@ export function agentSections({
       ),
     },
   ];
+}
+
+/** A plugin's `when`; one that throws hides only its own tab. */
+function shows(when: (agent: Agent) => boolean, agent: Agent, key: string) {
+  try {
+    return when(agent);
+  } catch (error) {
+    console.error(`Agent tab ${key} could not decide whether to show`, error);
+    return false;
+  }
 }
 
 function HostSettings({ host }: { host: AgentSettingsHost }) {

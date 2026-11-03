@@ -149,16 +149,23 @@ test.each(["http", "transport", "provider"])(
   },
 );
 
-test("canceling a native GIF search retains the shared capability", async () => {
+test("canceling a native GIF search cancels it natively and retains the shared capability", async () => {
   vi.stubGlobal("navigator", { platform: "MacIntel", language: "en-US" });
   vi.stubEnv("VITE_BUZZ_LIVE", "0");
   const community = "https://gif-canceled-search.test";
   const paths: string[] = [];
+  const ids: (string | undefined)[] = [];
+  const cancelled: string[] = [];
   const controller = new AbortController();
   const reason = new Error("Search canceled");
-  vi.mocked(invoke).mockImplementation(async (_command, args) => {
-    const { path } = args as { path: string };
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "relay_http_cancel") {
+      cancelled.push((args as { id: string }).id);
+      return undefined;
+    }
+    const { path, id } = args as { path: string; id?: string };
     paths.push(path);
+    ids.push(id);
     if (path === "/")
       return {
         status: 200,
@@ -181,6 +188,10 @@ test("canceling a native GIF search retains the shared capability", async () => 
   ).rejects.toBe(reason);
   expect(await relaySupportsKlipy(community)).toBe(true);
   expect(paths).toEqual(["/", "/gifs/search"]);
+  // Discovery is not cancellable; the search is, under its own id.
+  expect(ids[0]).toBeUndefined();
+  expect(cancelled).toEqual([ids[1]]);
+  expect(ids[1]).toMatch(/^[0-9a-f-]{36}$/);
 });
 
 const asset = (url: string, width = 320, height = 180) => ({

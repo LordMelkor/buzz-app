@@ -237,7 +237,7 @@ const { session: sharedSession } = createRelaySession(
   },
   {
     outboxStorage: { load: () => [], save: () => {} },
-    ...(idleOverlap
+    ...(idleOverlap || searchScale
       ? {
           agentChoices: localAgentsFixture(
             managed.map(({ key, name }) => ({

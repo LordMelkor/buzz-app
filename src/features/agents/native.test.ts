@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { expect, it, vi } from "vitest";
 import { hasEventProof } from "../relay/events";
 import { keypair, signed } from "../relay/testing";
-import { nativeAgents } from "./native";
+import { nativeAgents, unconfirmedAgentEvent } from "./native";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
@@ -18,6 +18,18 @@ const query = (response: unknown) => {
   vi.mocked(invoke).mockResolvedValueOnce(response);
   return native.query(member, [{ kinds: [9] }]);
 };
+
+it("reads the signed id from an uncertain native publish outcome", () => {
+  const id = "a".repeat(64);
+  const uncertain = `Agent event ${id} unconfirmed; it may or may not have been accepted`;
+  expect(unconfirmedAgentEvent(new Error(uncertain))).toBe(id);
+  expect(unconfirmedAgentEvent(uncertain)).toBe(id);
+  expect(
+    unconfirmedAgentEvent(
+      new Error("The community refused the agent event: blocked"),
+    ),
+  ).toBeUndefined();
+});
 
 it("admits the community's events through the relay verifier", async () => {
   const events = await query([JSON.parse(JSON.stringify(message))]);

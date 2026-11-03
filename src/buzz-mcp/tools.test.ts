@@ -7,7 +7,7 @@ import { respond } from "./rpc";
 import { ATTENTION_TOOLS } from "./attention";
 import { createHash } from "node:crypto";
 import { callTool, memoryVersion, TOOLS } from "./tools";
-import { callSessionTool } from "./session-tools";
+import { callSessionTool, sessionTools } from "./session-tools";
 import { SOLO_WORKER_TOOLS } from "./solo-worker";
 import { Context } from "@deepseek-ai/cordis";
 import { AgentProtectionService } from "../features/agent-protection/service";
@@ -1273,7 +1273,13 @@ function relay(refused: Readonly<Record<string, string>> = {}) {
   client.publish = vi.fn(async (template: Template) => {
     const id = template.tags.find((t) => t[0] === "h")?.[1] ?? "";
     const target = template.tags.find((t) => t[0] === "p")?.[1] ?? "";
-    if (refused[target]) throw new Error(refused[target]);
+    // Like the relay, any refused member keeps a whole create out.
+    const refusal = (
+      template.kind === 9007
+        ? template.tags.flatMap(([key, value]) => (key === "p" ? [value] : []))
+        : [target]
+    ).find((key) => key && refused[key]);
+    if (refusal) throw new Error(refused[refusal]);
     published.push(template);
     const { kind } = template;
     if (kind === 9007) {
@@ -1282,6 +1288,11 @@ function relay(refused: Readonly<Record<string, string>> = {}) {
       const value = (key: string) =>
         template.tags.find((t) => t[0] === key)?.[1];
       const type = ["t", value("channel_type") ?? "stream"];
+      // Labels follow the type; `p` members join in the create.
+      const labels = template.tags.filter((t) => t[0] === "t");
+      const members = template.tags.flatMap(([key, value]) =>
+        key === "p" && value ? [["p", value, "", "member"]] : [],
+      );
       state.push(
         event({
           kind: 39000,
@@ -1289,12 +1300,13 @@ function relay(refused: Readonly<Record<string, string>> = {}) {
             ["d", id],
             ["name", value("name") ?? ""],
             type,
+            ...labels,
             ...(value("visibility") === "private" ? [["private"]] : []),
           ],
         }),
         event({
           kind: 39002,
-          tags: [["d", id], type, ["p", me, "", "owner"]],
+          tags: [["d", id], type, ["p", me, "", "owner"], ...members],
         }),
       );
     }
@@ -1496,6 +1508,163 @@ it("creates a system channel", async () => {
       type: "dm",
     }),
   ).rejects.toThrow("type must be stream, forum or system.");
+});
+
+it("creates a Solo chat with its members in the create, as Buzz does", async () => {
+  const { client, published } = relay();
+  const answer = await callTool(client, {}, "channel_create", {
+    name: "triage",
+    visibility: "private",
+    solo: true,
+    members: [alice, npubEncode(bob), alice, me],
+  });
+  const id = published[0]?.tags[0]?.[1] as string;
+  expect(published).toEqual([
+    {
+      kind: 9007,
+      content: "",
+      tags: [
+        ["h", id],
+        ["name", "triage"],
+        ["visibility", "private"],
+        ["channel_type", "stream"],
+        ["t", "buzz.solo"],
+        ["t", "buzz.session.named"],
+        ["p", alice],
+        ["p", bob],
+      ],
+    },
+  ]);
+  expect(answer).toBe(
+    `created ${id}\nadded ${alice} Alice Smith\nadded ${bob}`,
+  );
+  await expect(
+    callTool(client, {}, "channel_get", { channel: id }),
+  ).resolves.toBe(`${id} triage (stream, solo, private)\nyou: owner`);
+  await expect(
+    callTool(client, {}, "member_list", { channel: id }),
+  ).resolves.toBe(`${me}  (owner)\n${alice} Alice Smith\n${bob} `);
+  // An ordinary private channel is not Solo.
+  await callTool(client, {}, "channel_create", {
+    name: "ops",
+    visibility: "private",
+  });
+  const plain = published[1]?.tags[0]?.[1] as string;
+  expect(published[1]?.tags.some(([key]) => key === "t" || key === "p")).toBe(
+    false,
+  );
+  await expect(
+    callTool(client, {}, "channel_get", { channel: plain }),
+  ).resolves.toBe(`${plain} ops (stream, private)\nyou: owner`);
+});
+
+it("refuses Solo arguments that do not fit, before publishing", async () => {
+  const { client, published } = relay();
+  const create = (args: Record<string, unknown>) =>
+    callTool(client, {}, "channel_create", {
+      name: "x",
+      visibility: "private",
+      ...args,
+    });
+  const shape = "A Solo chat is a private stream without about or template.";
+  await expect(create({ solo: true, visibility: "open" })).rejects.toThrow(
+    shape,
+  );
+  await expect(create({ solo: true, type: "forum" })).rejects.toThrow(shape);
+  await expect(create({ solo: true, about: "notes" })).rejects.toThrow(shape);
+  await expect(create({ solo: true, template: "Triage" })).rejects.toThrow(
+    shape,
+  );
+  for (const members of [[alice], ["alice"], alice])
+    await expect(create({ members })).rejects.toThrow(
+      "members is for Solo chats.",
+    );
+  await expect(create({ solo: true, members: ["alice"] })).rejects.toThrow(
+    "Not a pubkey: alice",
+  );
+  await expect(create({ solo: true, members: alice })).rejects.toThrow(
+    "members must be a list of pubkeys.",
+  );
+  await expect(create({ solo: "true" })).rejects.toThrow(
+    "solo must be true or false.",
+  );
+  const many = Array.from({ length: 33 }, (_, n) =>
+    n.toString(16).padStart(64, "0"),
+  );
+  await expect(create({ solo: true, members: many })).rejects.toThrow(
+    "A Solo chat starts with at most 32 members.",
+  );
+  expect(published).toEqual([]);
+});
+
+it("starts a Solo chat with the relay's maximum of 32 members", async () => {
+  const { client, published } = relay();
+  const members = Array.from({ length: 32 }, (_, n) =>
+    (n + 1).toString(16).padStart(64, "0"),
+  );
+  await callTool(client, {}, "channel_create", {
+    name: "x",
+    visibility: "private",
+    solo: true,
+    members: [...members, me],
+  });
+  expect(
+    published[0]?.tags.filter(([key]) => key === "p").map(([, key]) => key),
+  ).toEqual(members);
+});
+
+it("creates no Solo chat when a member refuses, and says what it cannot confirm", async () => {
+  const { client, published, state } = relay({
+    [alice]: "blocked: this agent only joins its owner's channels",
+  });
+  await expect(
+    callTool(client, {}, "channel_create", {
+      name: "triage",
+      visibility: "private",
+      solo: true,
+      members: [bob, alice],
+    }),
+  ).rejects.toThrow("blocked: this agent only joins its owner's channels");
+  expect(published).toEqual([]);
+  expect(state.filter((e) => e.kind === 39000)).toHaveLength(1);
+
+  vi.useFakeTimers();
+  try {
+    // A relay without channel labels drops them and keeps the channel.
+    const publish = client.publish;
+    client.publish = vi.fn(async (template: Template) =>
+      publish({
+        ...template,
+        tags: template.tags.filter(([key]) => key !== "t"),
+      }),
+    );
+    let answer = callTool(client, {}, "channel_create", {
+      name: "triage",
+      visibility: "private",
+      solo: true,
+      members: [bob],
+    });
+    await vi.runAllTimersAsync();
+    let id = published.at(-1)?.tags[0]?.[1] as string;
+    await expect(answer).resolves.toBe(
+      `created ${id}\nThe community did not keep the Solo label, so it is an ordinary private channel.\nadded ${bob}`,
+    );
+    // A create the community never shows leaves its members unconfirmed.
+    client.query = vi.fn(async () => []);
+    answer = callTool(client, {}, "channel_create", {
+      name: "triage",
+      visibility: "private",
+      solo: true,
+      members: [bob],
+    });
+    await vi.runAllTimersAsync();
+    id = published.at(-1)?.tags[0]?.[1] as string;
+    await expect(answer).resolves.toBe(
+      `The community accepted channel ${id} but does not show it yet; its members are not confirmed.`,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("finds a channel past the relay's first page, by name and then by ID", async () => {
@@ -1860,6 +2029,268 @@ it("publishes the first canvas only after finding visible channel metadata", asy
   expect(published).toEqual([
     { kind: 40100, content: "first", tags: [["h", "chan"]] },
   ]);
+});
+
+it("lists canvas revisions newest first, a page at a time", async () => {
+  const rows = Array.from({ length: 26 }, (_, i) =>
+    event({
+      kind: 40100,
+      id: `${i}`.padStart(64, "0"),
+      created_at: 100 + i,
+      content: `# Plan ${i}\nbody`,
+    }),
+  );
+  const { client } = fake(rows);
+  const page = await callTool(
+    client,
+    { channel: "chan" },
+    "canvas_history",
+    {},
+  );
+  const lines = (page as string).split("\n");
+  expect(lines).toHaveLength(28);
+  expect(lines[0]).toBe(`version: ${rows[25]?.id}`);
+  expect(lines[2]).toBe(
+    `${rows[25]?.id} 1970-01-01T00:02Z ${alice} 14B # Plan 25`,
+  );
+  expect(lines[27]).toBe(
+    `Older revisions may remain; continue with ${JSON.stringify({ channel: "chan", before: 101, before_id: rows[1]?.id })}`,
+  );
+  await expect(
+    callTool(client, {}, "canvas_history", {
+      channel: "chan",
+      before: 101,
+      before_id: rows[1]?.id,
+    }),
+  ).resolves.toBe(`${rows[0]?.id} 1970-01-01T00:01Z ${alice} 13B # Plan 0`);
+  await expect(
+    callTool(client, {}, "canvas_history", {
+      channel: "chan",
+      before_id: root,
+    }),
+  ).rejects.toThrow("before_id needs before");
+  await expect(
+    callTool(client, {}, "canvas_history", { channel: "chan", before: 1e12 }),
+  ).rejects.toThrow("Unix seconds");
+  // Only the first page is read from the writer.
+  const filters = (client.query as ReturnType<typeof vi.fn>).mock.calls.map(
+    ([[filter]]) => filter,
+  );
+  expect(filters[0]).toEqual({
+    kinds: [40100],
+    "#h": ["chan"],
+    limit: 25,
+    consistency: "strong",
+  });
+  expect(filters[1]).not.toHaveProperty("consistency");
+});
+
+it("pages canvas revisions that share a timestamp without gaps", async () => {
+  const rows = Array.from({ length: 30 }, (_, i) =>
+    event({
+      kind: 40100,
+      id: `${i}`.padStart(64, "0"),
+      created_at: 100,
+      content: `${i}`,
+    }),
+  );
+  const { client } = fake(rows);
+  const first = (await callTool(client, {}, "canvas_history", {
+    channel: "chan",
+  })) as string;
+  const cursor = JSON.parse(first.split("continue with ")[1] ?? "");
+  const second = (await callTool(
+    client,
+    {},
+    "canvas_history",
+    cursor,
+  )) as string;
+  const ids = [...first.split("\n").slice(2, 27), ...second.split("\n")].map(
+    (line) => line.split(" ")[0],
+  );
+  expect(ids).toEqual(rows.map((row) => row.id));
+});
+
+it("restores a canvas revision guarded by the head it read", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(300_000);
+    const old = event({ kind: 40100, id: root, content: "# Old" });
+    const head = event({ kind: 40100, id: nested, created_at: 200 });
+    const { client, published } = fake([old, head], { keep: true });
+    await expect(
+      callTool(client, { channel: "chan" }, "canvas_restore", {
+        id: root,
+        expected: nested,
+      }),
+    ).resolves.toBe(`restored ${root} as ${"1".padStart(64, "e")}`);
+    expect(published).toEqual([
+      {
+        kind: 40100,
+        content: "# Old",
+        tags: [
+          ["h", "chan"],
+          ["expected-revision", nested],
+        ],
+      },
+    ]);
+    await expect(
+      callTool(client, { channel: "chan" }, "canvas_get", {}),
+    ).resolves.toBe("# Old");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("refuses to restore what is not a revision of this canvas", async () => {
+  const { client, published } = fake([
+    event({ kind: 9, id: root }),
+    event({ kind: 40100, id: nested, tags: [["h", "other"]] }),
+  ]);
+  for (const id of [root, nested, "f".repeat(64)])
+    await expect(
+      callTool(client, { channel: "chan" }, "canvas_restore", {
+        id,
+        expected: root,
+      }),
+    ).rejects.toThrow(`No canvas revision ${id} in chan`);
+  await expect(
+    callTool(client, { channel: "chan" }, "canvas_restore", {
+      id: "x",
+      expected: root,
+    }),
+  ).rejects.toThrow("64-character");
+  await expect(
+    callTool(client, { channel: "chan" }, "canvas_restore", { id: root }),
+  ).rejects.toThrow("expected");
+  expect(published).toEqual([]);
+});
+
+it("refuses to restore over a canvas saved since the agent read it", async () => {
+  const old = event({ kind: 40100, id: root, content: "# Old" });
+  const seen = event({ kind: 40100, id: nested, created_at: 200 });
+  const { client, published } = fake([old, seen]);
+  await callTool(client, { channel: "chan" }, "canvas_history", {});
+  // A collaborator saves after the agent read the history.
+  (client.query as ReturnType<typeof vi.fn>).mockImplementation(
+    async ([filter]: readonly { ids?: string[] }[]) =>
+      filter?.ids
+        ? [old]
+        : [event({ kind: 40100, id: "c".repeat(64), created_at: 300 })],
+  );
+  await expect(
+    callTool(client, { channel: "chan" }, "canvas_restore", {
+      id: root,
+      expected: nested,
+    }),
+  ).rejects.toThrow(`The canvas changed since version ${nested}`);
+  expect(published).toEqual([]);
+});
+
+it("restores only revisions within the canvas size limit", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(300_000);
+    const head = event({ kind: 40100, id: nested, created_at: 200 });
+    for (const [content, ok] of [
+      ["", true],
+      ["x".repeat(24 * 1024), true],
+      ["x".repeat(24 * 1024 + 1), false],
+    ] as const) {
+      const old = event({ kind: 40100, id: root, content });
+      const { client, published } = fake([old, head], { keep: true });
+      const restore = callTool(client, { channel: "chan" }, "canvas_restore", {
+        id: root,
+        expected: nested,
+      });
+      if (ok) await expect(restore).resolves.toMatch(/^restored /);
+      else await expect(restore).rejects.toThrow("over the canvas limit");
+      expect(published).toHaveLength(ok ? 1 : 0);
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("annotates the canvas history and restore tools", () => {
+  const find = (name: string) => TOOLS.find((item) => item.name === name);
+  expect(find("canvas_history")?.annotations).toEqual({ readOnlyHint: true });
+  expect(find("canvas_restore")?.annotations).toEqual({
+    readOnlyHint: false,
+    destructiveHint: true,
+  });
+});
+
+it("reports a restore that another canvas write overtook", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(300_000);
+    const old = event({ kind: 40100, id: root, content: "# Old" });
+    const later = event({ kind: 40100, id: nested, created_at: 999 });
+    const { client } = fake([old]);
+    const publish = client.publish;
+    client.publish = vi.fn(async (template) => {
+      const signed = await publish(template);
+      (client.query as ReturnType<typeof vi.fn>).mockResolvedValue([later]);
+      return signed;
+    });
+    await expect(
+      callTool(client, { channel: "chan" }, "canvas_restore", {
+        id: root,
+        expected: root,
+      }),
+    ).resolves.toBe("That revision is already the canvas.");
+    const { client: other } = fake([
+      old,
+      event({ kind: 40100, id: "d".repeat(64), created_at: 200 }),
+    ]);
+    const otherPublish = other.publish;
+    other.publish = vi.fn(async (template) => {
+      const signed = await otherPublish(template);
+      (other.query as ReturnType<typeof vi.fn>).mockResolvedValue([later]);
+      return signed;
+    });
+    await expect(
+      callTool(other, { channel: "chan" }, "canvas_restore", {
+        id: root,
+        expected: "d".repeat(64),
+      }),
+    ).rejects.toThrow(
+      `conflict: the restore was received, but another canvas (${nested})`,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("reports an accepted restore whose read-back fails", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(300_000);
+    const old = event({ kind: 40100, id: root, content: "# Old" });
+    const head = event({ kind: 40100, id: nested, created_at: 200 });
+    const { client } = fake([old, head]);
+    const publish = client.publish;
+    let saved = "";
+    client.publish = vi.fn(async (template) => {
+      const signed = await publish(template);
+      saved = signed.id;
+      (client.query as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error("socket closed"),
+      );
+      return signed;
+    });
+    const restore = callTool(client, { channel: "chan" }, "canvas_restore", {
+      id: root,
+      expected: nested,
+    });
+    await expect(restore).rejects.toThrow(/^restored /);
+    await expect(restore).rejects.toThrow(
+      `restored ${root} as ${saved}, but the canvas could not be read back to confirm it is current: socket closed`,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("reads and replaces the canvas of a named channel or the current one", async () => {
@@ -3647,5 +4078,48 @@ it("needs the message to reply under", async () => {
       text: "hi",
     }),
   ).rejects.toThrow("parent is required");
+  expect(published).toEqual([]);
+});
+
+it("deletes only the given message, one target per deletion", async () => {
+  const mine = event({ id: root, pubkey: me, created_at: 100 });
+  const copy = event({
+    id: nested,
+    pubkey: me,
+    created_at: 101,
+    tags: [
+      ["h", "chan"],
+      ["buzz:copy-of", root],
+    ],
+  });
+  const { client, published } = fake([mine, copy]);
+  expect(
+    await callTool(client, { channel: "chan" }, "delete", { id: nested }),
+  ).toContain("deleted");
+  expect(published).toEqual([
+    {
+      kind: 5,
+      content: "",
+      tags: [
+        ["h", "chan"],
+        ["e", nested],
+        ["k", "9"],
+      ],
+    },
+  ]);
+});
+
+it("marks delete as destructive, also as a session lists it", () => {
+  for (const tools of [TOOLS, sessionTools()])
+    expect(tools.find((tool) => tool.name === "delete")).toMatchObject({
+      annotations: { readOnlyHint: false, destructiveHint: true },
+    });
+});
+
+it("refuses to delete another author's message", async () => {
+  const { client, published } = fake([event({ id: root, pubkey: alice })]);
+  await expect(
+    callTool(client, { channel: "chan" }, "delete", { id: root }),
+  ).rejects.toThrow("Only your own messages can be deleted.");
   expect(published).toEqual([]);
 });

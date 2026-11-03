@@ -494,7 +494,10 @@ function ProfileDetails({
             {profile?.verified && (
               <p className="text-body-sm text-secondary">
                 {profile.verified.status === "checked" && (
-                  <CheckCircleIcon aria-hidden="true" />
+                  <CheckCircleIcon
+                    aria-hidden="true"
+                    className={styles.verificationIcon}
+                  />
                 )}{" "}
                 {profile.verified.status === "checked"
                   ? `Name verified by ${profile.verified.issuerLabel}`

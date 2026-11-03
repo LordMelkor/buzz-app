@@ -674,7 +674,8 @@ it("directory pages rebuild the name index only for people they add", async () =
   // Pages of members change no row.
   await type("pe");
   await type("per");
-  expect(h.session.directMessages.people).toHaveBeenCalledTimes(3);
+  // `p` is too short to search; `pe` and `per` each read.
+  expect(h.session.directMessages.people).toHaveBeenCalledTimes(2);
   expect(starts).not.toHaveBeenCalled();
   // An outsider is a new choice set: one rebuild, then reused while it stays.
   page = [...members, outsider];

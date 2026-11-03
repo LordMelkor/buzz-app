@@ -97,6 +97,20 @@ const sessions = ["a", "b"].map((community) => {
                       "very-long-community-emoji-name-that-does-not-fit",
                       `${origin}/media/long.png`,
                     ],
+                    [
+                      "emoji",
+                      "very-long-community-emoji-name-that-does-not-fit-either",
+                      `${origin}/media/longer.png`,
+                    ],
+                    ...(new URLSearchParams(location.search).has(
+                      "completion-scroll",
+                    )
+                      ? Array.from({ length: 30 }, (_, index) => [
+                          "emoji",
+                          `scrolling-emoji-with-a-long-common-name-${String(index).padStart(2, "0")}`,
+                          `${origin}/media/scroll-${index}.png`,
+                        ])
+                      : []),
                   ]
                 : []),
             ]),

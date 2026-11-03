@@ -18,6 +18,7 @@ import { localAgentsFixture } from "../../features/agents/local-testing";
 import type { RegisteredPage } from "../../features/pages/service";
 import type { RelayData, RelaySnapshot } from "../../features/relay/service";
 import { createRelaySession } from "../../features/relay/session";
+import { createSidebarPreferencesStore } from "../../features/relay/sidebar-preferences-store";
 import {
   keypair,
   message,
@@ -286,13 +287,25 @@ it("does not demand legacy inventory when the Bestie page is disabled", async ()
   expect(f.libraryRead).not.toHaveBeenCalled();
 });
 
-it("shows the promoted DM's shared unread pip, clears when read, and follows replacement and deletion", async () => {
+it("honors the promoted DM's mute and unread state through reads and Bestie replacement", async () => {
   const f = await fixture();
   const me = keypair(),
     relay = keypair(),
     agent = keypair();
   const first = "11111111-1111-4111-8111-111111111111",
     second = "22222222-2222-4222-8222-222222222222";
+  let muted = true;
+  const preferences = createSidebarPreferencesStore({
+    available: true,
+    read: async () => ({
+      sections: [],
+      assignments: {},
+      starred: [],
+      muted: muted ? [first] : [],
+    }),
+  });
+  disposals.push(() => preferences.dispose());
+  await preferences.queries.refresh();
   const discovery = [
     metadata(relay, first, "Pollen DM", undefined, [["t", "dm"]]),
     roster(relay, first, [me.pubkey, pollen]),
@@ -343,6 +356,7 @@ it("shows the promoted DM's shared unread pip, clears when read, and follows rep
     ...owner.session,
     live: { ...owner.session.live, snapshot: () => liveState },
     agentChoices: f.relay.snapshot().session.agentChoices,
+    sidebarPreferences: preferences.queries,
   };
   const currentScope = `https://example.test:${me.pubkey}`;
   f.update({ session, scope: currentScope, viewer: me.pubkey });
@@ -402,9 +416,8 @@ it("shows the promoted DM's shared unread pip, clears when read, and follows rep
       ]),
     ]);
   });
-  await waitFor(() =>
-    expect(row().querySelector("[data-channel-activity]")).not.toBeNull(),
-  );
+  await waitFor(() => expect(row()).toHaveAccessibleName(/1 unread thread/));
+  expect(row().querySelector("[data-channel-activity]")).toBeNull();
   expect(
     within(row()).getByRole("img", { name: /1 observed unread messages/ }),
   ).toBeInTheDocument();
@@ -413,6 +426,26 @@ it("shows the promoted DM's shared unread pip, clears when read, and follows rep
     "data-bestie-unread",
     "true",
   );
+  expect(dmRow()).toBeNull();
+  await act(async () => {
+    muted = false;
+    await preferences.queries.refresh();
+  });
+  expect(row().querySelector("[data-channel-activity]")).toBeInTheDocument();
+  expect(row().querySelector("[data-bestie-unread]")).toHaveAttribute(
+    "data-bestie-unread",
+    "true",
+  );
+  await act(async () => {
+    muted = true;
+    await preferences.queries.refresh();
+  });
+  expect(row().querySelector("[data-bestie-unread]")).toHaveAttribute(
+    "data-bestie-unread",
+    "true",
+  );
+  expect(row().querySelector("[data-channel-activity]")).toBeNull();
+  expect(row()).toHaveAccessibleName(/1 unread thread/);
   expect(dmRow()).toBeNull();
   view.rerender(tree());
   expect(dmRow()).toBeNull();
@@ -427,6 +460,10 @@ it("shows the promoted DM's shared unread pip, clears when read, and follows rep
   expect(
     within(row()).getByRole("img", { name: /Marked unread/ }),
   ).toBeInTheDocument();
+  expect(row().querySelector("[data-bestie-unread]")).toHaveAttribute(
+    "data-bestie-unread",
+    "true",
+  );
   act(() => {
     setDefaultAgent(currentScope, fizz);
   });

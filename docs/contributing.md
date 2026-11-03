@@ -115,13 +115,20 @@ need their own validation.
   path, which opens in Instruments. Use `just profile-clean` to remove all generated
   web and desktop captures.
 - `just desktop-bundle [args...]`: bundle a debug desktop app for testing OS deep
-  links on macOS, where the OS routes a scheme only to a bundled application. It
-  defaults to a `.app` bundle unless `--bundles` or `--no-bundle` says otherwise,
-  and passes everything else to `tauri build`. The bundle uses `buzz`, as does
-  release bundling with `pnpm tauri build`.
+  links and notifications on macOS, where those APIs require a bundled application.
+  Pass `--launch` to build and open the `.app` in one command; quit every other Buzz
+  copy first. `--launch` is macOS-only and requires the default app name and target
+  path, so it rejects bundle, target, runner, config, and Cargo/Tauri artifact-path
+  overrides rather than risk opening a stale build. Without it, the recipe defaults
+  to a `.app` bundle unless `--bundles` or `--no-bundle` says otherwise, and passes
+  everything else to `tauri build`.
+  The bundle uses `buzz`, as does release bundling with `pnpm tauri build`.
 - On macOS, set `BUZZ_DEV_SIGNING_IDENTITY` in `.env.local` to an installed code
   signing certificate name or SHA-1 hash (`security find-identity -v -p codesigning`
-  lists them). `just desktop-bundle` passes it to Tauri's macOS signer; the process
+  lists them). A stable certificate-backed identity is required to test macOS
+  notifications across rebuilds; Tauri's default ad-hoc signature changes with the
+  binary and can be rejected with `UNErrorDomain error 1`. `just desktop-bundle`
+  passes the identity to Tauri's macOS signer; the process
   environment takes precedence, including an empty value to disable this setting.
   Keep the same certificate and development app identifier across rebuilds. After
   the first signed build, enter your login Keychain password and choose **Always

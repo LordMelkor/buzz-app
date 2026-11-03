@@ -318,16 +318,25 @@ export function createEmojiDirectory(
         if (!closed) void ensure();
       });
   }
+  function reconnect() {
+    if (!requested || closed) return;
+    controller?.abort();
+    controller = undefined;
+    pending = undefined;
+    void load("background");
+  }
   return {
     queries,
     accept,
     clear,
-    reconnect() {
-      if (!requested || closed) return;
-      controller?.abort();
-      controller = undefined;
-      pending = undefined;
-      void load("background");
+    reconnect,
+    /** A continuous profiles replay delivered every set change since the last
+     * connection heard the relay, so a complete ready catalog stays as it is.
+     * Anything else, a read still out from before the drop included, reads
+     * again as on any reconnect. */
+    resume() {
+      if (pending || snapshot.status !== "ready" || snapshot.error || limited)
+        reconnect();
     },
     tags(content: string): string[][] {
       const codes = referencedEmoji(content);

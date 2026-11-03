@@ -68,7 +68,7 @@ fn identity(store: &Arc<Memory>) -> Identity {
     }
 }
 fn fixture() -> Key {
-    Key(Zeroizing::new([1; 32]))
+    Key::new(Zeroizing::new([1; 32]))
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn imports_exact_key_then_restores_and_exports_without_repeated_reads() {
 #[test]
 fn legacy_import_adopts_only_a_valid_old_key_and_never_replaces_one() {
     let nsec = fixture().nsec().unwrap();
-    let other = Key(Zeroizing::new([2; 32])).nsec().unwrap();
+    let other = Key::new(Zeroizing::new([2; 32])).nsec().unwrap();
     // (saved, own store denied, legacy entry, imports, reads legacy)
     for (saved, denied, legacy, imports, reads_legacy) in [
         (None, false, Some(format!(" {nsec}\n")), true, true),
@@ -172,7 +172,7 @@ fn invalid_imports_do_not_create_keys_and_saved_identity_is_immutable() {
         "ab",
         &"ab".repeat(32),
         &bech32::encode::<Bech32>(Hrp::parse("npub").unwrap(), &[1; 32]).unwrap(),
-        &Key(Zeroizing::new([0; 32])).nsec().unwrap(),
+        &Key::new(Zeroizing::new([0; 32])).nsec().unwrap(),
     ] {
         assert!(owner.save(Some(text)).is_err());
         assert!(store.saved.lock().unwrap().is_none());
@@ -192,7 +192,7 @@ async fn authorize_agent_signs_for_agent_and_rejects_invalid_requests() {
     use secp256k1::{schnorr::Signature, Secp256k1, XOnlyPublicKey};
     let host = IdentityHost::fixture();
     let owner = host.viewer().await.unwrap();
-    let agent = Key(Zeroizing::new([2; 32])).viewer().unwrap();
+    let agent = Key::new(Zeroizing::new([2; 32])).viewer().unwrap();
     let tag = host
         .authorize_agent(owner.clone(), agent.clone())
         .await
@@ -230,7 +230,7 @@ fn remote_agent_authorization_reaches_signer_through_production_ipc() {
         .build()
         .unwrap();
     let owner = fixture().viewer().unwrap();
-    let agent = Key(Zeroizing::new([2; 32])).viewer().unwrap();
+    let agent = Key::new(Zeroizing::new([2; 32])).viewer().unwrap();
     let response = get_ipc_response(
         &view,
         tauri::webview::InvokeRequest {
@@ -565,7 +565,7 @@ fn remove_key_also_deletes_the_key_under_its_previous_service() {
 async fn closing_refuses_every_key_operation_including_a_sign_started_before_it() {
     let host = IdentityHost::fixture();
     let owner = host.viewer().await.unwrap();
-    let agent = Key(Zeroizing::new([2; 32])).viewer().unwrap();
+    let agent = Key::new(Zeroizing::new([2; 32])).viewer().unwrap();
     let template = || {
         serde_json::from_value(serde_json::json!({
             "kind": 1, "content": "", "tags": [], "created_at": 0

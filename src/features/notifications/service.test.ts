@@ -283,7 +283,12 @@ it("late platform errors report without retry and stay fenced to their account l
 it("plays the selected per-category sound once delivery is accepted", async () => {
   const t = setup();
   t.service.updatePreferences({
-    sounds: { mention: "ping", direct: "unison", thread: "doop" },
+    sounds: {
+      mention: "ping",
+      direct: "unison",
+      thread: "doop",
+      agent: "doodone",
+    },
   });
   await t.submit("one");
   await flush();

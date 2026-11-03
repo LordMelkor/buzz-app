@@ -3,7 +3,11 @@
 // in this Node process; the page only sees account metadata and API results.
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
+import { readFileSync, openAsBlob } from "node:fs";
+import { realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { sep } from "node:path";
 import { finalizeEvent } from "nostr-tools";
 
 const API = "https://app.builderlab.xyz/api/goose";
@@ -12,8 +16,43 @@ export const BUILDERLAB_ORIGIN = "https://app.builderlab.xyz";
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const RESPONSE_STATUS = Symbol("builderlabResponseStatus");
-const COMPLETE_HTML =
-  "<!doctype html><meta charset=utf-8><title>Buzz authentication complete</title><p>You're signed in. You can close this window and return to Buzz.";
+// Use the agents' callback page and assets, without a second visual implementation.
+const callbackRoot = new URL(
+  "../src-tauri/src/oauth_callback/",
+  import.meta.url,
+);
+function callbackPage(status) {
+  const read = (name) => readFileSync(new URL(name, callbackRoot));
+  const style = read("page.css")
+    .toString()
+    .replace("{{font}}", read("inter-latin.woff2").toString("base64"));
+  const script = read("page.js").toString();
+  const hash = (value) => createHash("sha256").update(value).digest("base64");
+  return {
+    body: read("page.html")
+      .toString()
+      .replace("<!-- {{style}} -->", `<style>${style}</style>`)
+      .replace("<!-- {{script}} -->", `<script>${script}</script>`)
+      .replaceAll("{{complete}}", status === 200 ? "true" : "false")
+      .replaceAll("{{closeDelay}}", "3")
+      .replace(
+        "{{brand}}",
+        readFileSync(
+          new URL("../public/builderlab-mark.svg", import.meta.url),
+        ).toString(),
+      )
+      .replace("{{artwork}}", read("cubes.webp").toString("base64"))
+      .replace(
+        "{{heading}}",
+        status === 200 ? "Signing you in…" : "Sign-in needs attention",
+      )
+      .replace(
+        "{{message}}",
+        status === 200 ? "" : "Return to Buzz to retry sign-in.",
+      ),
+    policy: `default-src 'none'; img-src data:; font-src data:; style-src 'sha256-${hash(style)}'; script-src 'sha256-${hash(script)}'; base-uri 'none'; frame-ancestors 'none'`,
+  };
+}
 
 /** Account routes forwarded with allowlisted string fields only. */
 const ROUTES = {
@@ -40,7 +79,12 @@ export const builderlabResponseStatus = (value) =>
   value?.[RESPONSE_STATUS] ?? 200;
 
 /** Signs the kind 24243 challenge exactly as block/buzz desktop does, after the same checks. */
-export function bindingEvent(key, challenge, now = Date.now()) {
+export function bindingEvent(
+  key,
+  challenge,
+  now = Date.now(),
+  expectedOrigin = BUILDERLAB_ORIGIN,
+) {
   const { challenge_id, nonce, verification_code, origin, expires_at } =
     challenge ?? {};
   if (
@@ -52,7 +96,7 @@ export function bindingEvent(key, challenge, now = Date.now()) {
     !/^[A-Za-z0-9_-]{43}$/.test(nonce) ||
     typeof verification_code !== "string" ||
     !/^\d{6}$/.test(verification_code) ||
-    origin !== BUILDERLAB_ORIGIN ||
+    origin !== expectedOrigin ||
     typeof expires_at !== "string" ||
     !(Date.parse(expires_at) > now)
   )
@@ -88,9 +132,10 @@ const openBrowser = (url) =>
   );
 
 /** Waits for one loopback redirect carrying `code`, like the desktop callback listener. */
-function awaitCallback(signal, open) {
+function awaitCallback(signal, open, api, verifier) {
   return new Promise((resolve, reject) => {
     const nonce = randomUUID().replaceAll("-", "");
+    const state = randomUUID();
     let settle;
     let settled = false;
     const server = createServer((req, res) => {
@@ -108,19 +153,29 @@ function awaitCallback(signal, open) {
         res.writeHead(404).end("Not found");
         return;
       }
+      const codes = url.searchParams.getAll("code");
+      if (
+        url.searchParams.getAll("state").length !== 1 ||
+        url.searchParams.get("state") !== state ||
+        (!url.searchParams.has("error") &&
+          (codes.length !== 1 || !codes[0] || codes[0].length > 4096))
+      ) {
+        res.writeHead(400).end("Invalid callback");
+        return;
+      }
+      const failed = url.searchParams.has("error");
+      const page = callbackPage(failed ? 400 : 200);
       res
-        .writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
-        .end(COMPLETE_HTML);
-      const code = url.searchParams.get("code");
+        .writeHead(failed ? 400 : 200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+          "Content-Security-Policy": page.policy,
+        })
+        .end(page.body);
       settle(
-        code
-          ? null
-          : new Error(
-              url.searchParams.get("error_description") ??
-                url.searchParams.get("error") ??
-                "Authentication callback did not include a code",
-            ),
-        code,
+        failed ? new Error("Browser sign-in failed. Try again.") : null,
+        codes[0],
       );
     });
     const timer = setTimeout(
@@ -143,10 +198,16 @@ function awaitCallback(signal, open) {
     server.once("error", (error) => settle(error));
     server.listen(0, "127.0.0.1", () => {
       const returnTo = `http://127.0.0.1:${server.address().port}/callback/${nonce}`;
-      const login = new URL(`${API}/v1/auth/login`);
+      const login = new URL(`${api}/v1/auth/login`);
       login.searchParams.set("type", "cli");
-      login.searchParams.set("product", "buzz");
-      login.searchParams.set("returnTo", returnTo);
+      login.searchParams.set("product", "builderlab");
+      login.searchParams.set("state", state);
+      login.searchParams.set(
+        "code_challenge",
+        createHash("sha256").update(verifier).digest("base64url"),
+      );
+      login.searchParams.set("code_challenge_method", "S256");
+      login.searchParams.set("redirect_uri", returnTo);
       open(login.href).catch((error) => settle(error));
     });
   });
@@ -156,21 +217,46 @@ export function createBuilderlab({
   key,
   fetch = globalThis.fetch,
   open = openBrowser,
+  api = API,
+  appsBase,
 }) {
   let credential;
+  let account;
+  let pending = false;
+  let loginError;
+  let linking = Promise.resolve();
+  let expiry;
+  let revision = randomUUID();
+  const listeners = new Set();
+  const snapshot = () => ({
+    revision,
+    pending,
+    auth: account ?? null,
+    ...(loginError ? { error: loginError } : {}),
+  });
+  const notify = () => {
+    for (const listener of listeners) listener(snapshot());
+  };
+  const current = (expected) => {
+    if (!credential || expected !== revision)
+      throw new Error("Builderlab session changed");
+  };
   const request = async (path, body, session = credential) => {
     if (!session) throw new Error("Sign in to Builderlab first");
-    const response = await fetch(`${API}${path}`, {
+    const started = generation;
+    const response = await fetch(`${api}${path}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-BB-Session-Credential": session,
-        Origin: BUILDERLAB_ORIGIN,
+        Origin: new URL(api).origin,
       },
       body: JSON.stringify(body),
       redirect: "error",
       signal: AbortSignal.timeout(60000),
     });
+    if (started !== generation) throw new Error("Builderlab session changed");
+    if (response.status === 401) revoke();
     const text = await response.text();
     if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES)
       throw new Error("Builderlab response was too large");
@@ -191,21 +277,40 @@ export function createBuilderlab({
     throw new Error(`Builderlab request failed (HTTP ${response.status}).`);
   };
   const me = async (session, signal) => {
-    const response = await fetch(`${API}/v1/auth/me`, {
+    const started = generation;
+    const response = await fetch(`${api}/v1/auth/me`, {
       headers: { "X-BB-Session-Credential": session },
       redirect: "error",
       signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]),
     });
-    if (!response.ok)
+    if (!response.ok) {
+      if (
+        response.status === 401 &&
+        started === generation &&
+        credential === session
+      )
+        revoke();
       throw new Error(
         `Builderlab session check failed with HTTP ${response.status}`,
       );
-    const { email, name, expires_at, capabilities } = await response.json();
+    }
+    const { subject, email, name, expires_at, capabilities } =
+      await response.json();
+    if (
+      typeof subject !== "string" ||
+      !subject.trim() ||
+      !Number.isFinite(Date.parse(expires_at))
+    )
+      throw new Error("Builderlab returned an invalid account");
     return {
+      subject,
       email,
       name,
       expiresAt: expires_at,
       capabilities: {
+        can_use_remote_agents: capabilities?.can_use_remote_agents === true,
+        can_use_builderlab_decisions:
+          capabilities?.can_use_builderlab_decisions === true,
         can_delete_buzz_communities:
           capabilities?.can_delete_buzz_communities === true,
       },
@@ -215,85 +320,290 @@ export function createBuilderlab({
   // write, clear or describe the current session.
   let generation = 0;
   let session;
-  const revoke = () => {
+  const revoke = (announce = true) => {
     generation += 1;
+    revision = randomUUID();
+    clearTimeout(expiry);
+    pending = false;
+    loginError = undefined;
+    account = undefined;
     session?.abort();
     session = new AbortController();
     credential = undefined;
+    if (announce) notify();
   };
   revoke();
-  return {
+  const signOut = (announce = true) => {
+    const previous = credential;
+    revoke(announce);
+    if (previous)
+      void fetch(`${api}/v1/auth/logout`, {
+        method: "POST",
+        headers: { "X-BB-Session-Credential": previous },
+        redirect: "error",
+        signal: AbortSignal.timeout(30000),
+      }).catch(() => {});
+  };
+  const publishAccount = (value) => {
+    account = value;
+    notify();
+  };
+  const broker = {
+    snapshot,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     async auth() {
       const current = credential;
       if (!current) return null;
       const started = generation;
-      try {
-        const account = await me(current, session.signal);
-        if (started !== generation)
-          throw new Error("Builderlab session changed");
-        return account;
-      } catch (error) {
-        if (started === generation) credential = undefined;
-        throw error;
-      }
-    },
-    async login(signal) {
-      revoke();
-      const started = generation;
-      const attempt = AbortSignal.any([signal, session.signal]);
-      const code = await awaitCallback(attempt, open);
-      const response = await fetch(`${API}/v1/auth/login/exchange`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-        redirect: "error",
-        signal: AbortSignal.any([attempt, AbortSignal.timeout(30000)]),
-      });
-      if (!response.ok)
-        throw new Error(
-          `Builderlab code exchange failed with HTTP ${response.status}`,
-        );
-      const exchanged = await response.json();
-      if (
-        typeof exchanged.session_credential !== "string" ||
-        !exchanged.session_credential
-      )
-        throw new Error(
-          "Builderlab code exchange returned an empty credential",
-        );
-      const account = await me(exchanged.session_credential, attempt);
-      if (account.expiresAt !== exchanged.expires_at)
-        throw new Error(
-          "Builderlab session expiry did not match code exchange",
-        );
-      if (attempt.aborted || started !== generation)
-        throw new Error("Builderlab authentication canceled");
-      credential = exchanged.session_credential;
+      // Transport failures do not revoke a valid shared sign-in.
+      await linking;
+      const account = await me(current, session.signal);
+      if (started !== generation) throw new Error("Builderlab session changed");
       return account;
     },
-    signOut: revoke,
-    async bind() {
-      const session = credential;
+    async login(signal) {
+      signOut(false);
       const started = generation;
-      const challenge = await request(
-        "/v1/buzz/nostr-identities/challenge",
-        { origin: BUILDERLAB_ORIGIN },
-        session,
-      );
-      if (challenge.error) return challenge;
-      // A sign-out or new sign-in while the challenge was pending must not let the
-      // old credential claim this device's key.
-      if (started !== generation) throw new Error("Builderlab session changed");
-      const event = bindingEvent(key(), challenge);
-      return request(
-        "/v1/buzz/nostr-identities/verify",
-        {
-          challenge_id: challenge.challenge_id,
-          nonce: challenge.nonce,
-          signed_payload: JSON.stringify(event),
-        },
-        session,
-      );
+      pending = true;
+      notify();
+      const attempt = signal
+        ? AbortSignal.any([signal, session.signal])
+        : session.signal;
+      let loginCredential;
+      try {
+        const verifier = randomBytes(32).toString("base64url");
+        const code = await awaitCallback(attempt, open, api, verifier);
+        const response = await fetch(`${api}/v1/auth/login/exchange`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code, code_verifier: verifier }),
+          redirect: "error",
+          signal: AbortSignal.any([attempt, AbortSignal.timeout(30000)]),
+        });
+        if (!response.ok)
+          throw new Error(
+            `Builderlab code exchange failed with HTTP ${response.status}`,
+          );
+        const exchanged = await response.json();
+        if (
+          typeof exchanged.session_credential !== "string" ||
+          !exchanged.session_credential ||
+          exchanged.session_credential.length > 4096 ||
+          [...exchanged.session_credential].some(
+            (character) =>
+              character.charCodeAt(0) <= 32 || character.charCodeAt(0) > 126,
+          )
+        )
+          throw new Error(
+            "Builderlab code exchange returned an empty credential",
+          );
+        loginCredential = exchanged.session_credential;
+        const account = await me(loginCredential, attempt);
+        if (account.expiresAt !== exchanged.expires_at)
+          throw new Error(
+            "Builderlab session expiry did not match code exchange",
+          );
+        if (attempt.aborted || started !== generation)
+          throw new Error("Builderlab authentication canceled");
+        credential = exchanged.session_credential;
+        const delay = Date.parse(account.expiresAt) - Date.now();
+        if (delay <= 0) throw new Error("Builderlab sign-in expired");
+        expiry = setTimeout(revoke, Math.min(delay, 2_147_483_647));
+        expiry.unref?.();
+        // Bind before subsequent remote-agent operations.
+        void broker.bind();
+        if (started !== generation)
+          throw new Error("Builderlab session changed");
+        publishAccount(account);
+        return account;
+      } catch (error) {
+        const message = (
+          error instanceof Error ? error.message : "Builderlab sign-in failed"
+        ).replaceAll(loginCredential || "\u0000", "[redacted]");
+        if (started === generation) {
+          const canceled = attempt.aborted;
+          revoke(false);
+          loginError = canceled ? undefined : message;
+          notify();
+        }
+        throw new Error(message);
+      } finally {
+        if (started === generation) {
+          pending = false;
+          notify();
+        }
+      }
+    },
+
+    signOut,
+    // Only the broker's fixed viewer/Decisions handlers opt into native routes.
+    async request(input, signal, native = false) {
+      // Activation must not overtake the sign-in's automatic key binding.
+      if (
+        typeof input.path === "string" &&
+        input.path.startsWith("/v3/beekeeper/")
+      )
+        await linking;
+      current(input.revision);
+      const started = generation;
+      const secret = credential;
+      const apps = input.target === "apps";
+      if (apps && !appsBase)
+        throw new Error(
+          "Apps are not configured for this Builderlab environment",
+        );
+      const base = new URL(apps ? appsBase : api);
+      const prefix = base.pathname.replace(/\/$/, "");
+      let url;
+      try {
+        if (
+          typeof input.path !== "string" ||
+          !input.path.startsWith("/") ||
+          input.path.startsWith("//") ||
+          input.path.includes("#") ||
+          input.path.includes("\\")
+        )
+          throw new Error();
+        url = new URL(`${base.href.replace(/\/$/, "")}${input.path}`);
+      } catch {
+        throw new Error("Unsupported Builderlab request");
+      }
+      const path = url.pathname.slice(prefix.length);
+      if (
+        url.origin !== base.origin ||
+        !url.pathname.startsWith(`${prefix}/`) ||
+        !(native
+          ? !apps &&
+            [
+              "/v3/builderlab/decisions",
+              "/v1/auth/hosted-site/native-session",
+            ].includes(path)
+          : apps
+            ? /^\/v1\/agent\//.test(path)
+            : /^\/(?:v3\/beekeeper\/|v1\/buzz\/known-communities\/(?:list|add|remove)$)/.test(
+                path,
+              ))
+      )
+        throw new Error("Unsupported Builderlab request");
+      const method = input.method ?? "GET";
+      if (
+        !(apps ? ["GET", "POST", "PUT", "DELETE"] : ["GET", "POST"]).includes(
+          method,
+        )
+      )
+        throw new Error("Unsupported Builderlab method");
+      const headers = {
+        Accept: "application/json",
+        ...(apps
+          ? {
+              Authorization: `BBIdentity ${secret}`,
+              "X-Hotpod-Agent-Client-Version": "0.2.0",
+            }
+          : { "X-BB-Session-Credential": secret, Origin: new URL(api).origin }),
+      };
+      if (path === "/v3/builderlab/decisions") {
+        if (
+          typeof input.community !== "string" ||
+          !/^[a-z0-9.-]+(?::[0-9]+)?$/i.test(input.community) ||
+          input.community.length > 253
+        )
+          throw new Error("Invalid decision community");
+        headers["X-Buzz-Community"] = input.community;
+      }
+      let body = input.body;
+      if (input.file) {
+        if (
+          !apps ||
+          !/^\/v1\/agent\/apps\/[A-Za-z0-9_-]+\/deploy$/.test(path) ||
+          method !== "POST"
+        )
+          throw new Error("Unsupported Apps upload");
+        const home = await realpath(homedir());
+        const file = await realpath(input.file);
+        if (
+          file !== input.file ||
+          !file.startsWith(`${home}${sep}`) ||
+          !file.endsWith(".tar.gz") ||
+          !(await stat(file)).isFile() ||
+          (await stat(file)).size > 100 * 1024 * 1024
+        )
+          throw new Error(
+            "Apps artifact must be a .tar.gz file under home, at most 100 MB",
+          );
+        body = new FormData();
+        body.set(
+          "artifact",
+          await openAsBlob(file, { type: "application/gzip" }),
+          "artifact.tar.gz",
+        );
+      } else if (body !== undefined) {
+        if (typeof body !== "string")
+          throw new Error("Invalid Builderlab body");
+        headers["Content-Type"] = "application/json";
+      }
+      current(input.revision);
+      const response = await fetch(url, {
+        method,
+        headers,
+        ...(body !== undefined ? { body } : {}),
+        redirect: "error",
+        signal: AbortSignal.any([
+          signal,
+          // A dispatched upload keeps its receipt after sign-out/account switch.
+          ...(input.file ? [] : [session.signal]),
+          AbortSignal.timeout(
+            input.file || path.endsWith("/initialize") ? 180000 : 60000,
+          ),
+        ]),
+      });
+      const text = await response.text();
+      if (Buffer.byteLength(text) > 16 * 1024 * 1024)
+        throw new Error("Builderlab response was too large");
+      if (started !== generation && !input.file)
+        throw new Error("Builderlab session changed");
+      if (response.status === 401 && started === generation && !apps) revoke();
+      return {
+        status: response.status,
+        headers: {},
+        body: text.replaceAll(secret, "[redacted]"),
+      };
+    },
+    bind() {
+      const done = (async () => {
+        const session = credential;
+        const started = generation;
+        const challenge = await request(
+          "/v1/buzz/nostr-identities/challenge",
+          { origin: new URL(api).origin },
+          session,
+        );
+        if (challenge.error) return challenge;
+        // A sign-out or new sign-in while the challenge was pending must not let the
+        // old credential claim this device's key.
+        if (started !== generation)
+          throw new Error("Builderlab session changed");
+        const event = bindingEvent(
+          key(),
+          challenge,
+          Date.now(),
+          new URL(api).origin,
+        );
+        return request(
+          "/v1/buzz/nostr-identities/verify",
+          {
+            challenge_id: challenge.challenge_id,
+            nonce: challenge.nonce,
+            signed_payload: JSON.stringify(event),
+          },
+          session,
+        );
+      })();
+      // Every attempt, including a manual retry, replaces the previous result.
+      linking = done.catch(() => {});
+      return done;
     },
     async call(action, input) {
       const route = Object.hasOwn(ROUTES, action) ? ROUTES[action] : undefined;
@@ -314,4 +624,5 @@ export function createBuilderlab({
       return request(path, body);
     },
   };
+  return broker;
 }

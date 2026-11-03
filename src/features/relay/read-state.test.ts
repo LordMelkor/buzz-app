@@ -1091,3 +1091,98 @@ it.each([false, true])(
     });
   },
 );
+
+/** A marker another device of the same viewer published for "room". */
+async function otherDeviceMarker(f: ReturnType<typeof fixture>) {
+  let other: ReadJournal | undefined;
+  // Its own reads are not the owner's under test.
+  const device = f.make({
+    reader: { read: vi.fn(async () => []) },
+    storage: {
+      update: async (change) => {
+        other = readJournal(change(other), f.key.pubkey);
+        return other;
+      },
+      close() {},
+    },
+  });
+  await device.ready;
+  await device.read("room", 12, () => true);
+  await device.flush();
+  const marker = f.host.publish.mock.calls.at(-1)?.[0];
+  if (!marker) throw new Error("Missing other device's marker");
+  return marker;
+}
+describe("resume after a continuous membership replay", () => {
+  it("restores the interrupted state from the replayed markers without reading the snapshot again", async () => {
+    const f = fixture();
+    const owner = f.make();
+    await owner.ready;
+    await owner.refresh();
+    expect(owner.snapshot()).toMatchObject({
+      status: "reconciled",
+      completeness: "bounded",
+    });
+    const reads = f.reader.read.mock.calls.length;
+    owner.stale();
+    expect(owner.snapshot()).toMatchObject({
+      status: "stale",
+      completeness: "unknown",
+    });
+    // Another device reads "room" during the outage, and the replay feeds
+    // its marker through `accept`, as live traffic does.
+    owner.accept([await otherDeviceMarker(f)]);
+    await owner.resume();
+    expect(f.reader.read.mock.calls.length).toBe(reads);
+    expect(owner.state().frontiers.room).toBe(12);
+    expect(owner.snapshot()).toMatchObject({
+      status: "reconciled",
+      completeness: "bounded",
+    });
+  });
+
+  it("reads the snapshot again when nothing was loaded, or a failure followed the drop", async () => {
+    const f = fixture();
+    const owner = f.make();
+    await owner.ready;
+    const marker = await otherDeviceMarker(f);
+    // Never loaded before the drop.
+    owner.stale();
+    await owner.resume();
+    expect(f.reader.read).toHaveBeenCalledTimes(1);
+    expect(owner.snapshot().status).toBe("reconciled");
+    // A replayed marker that cannot be decoded is a failure since the drop.
+    owner.stale();
+    f.host.decode.mockRejectedValueOnce(new Error("undecodable"));
+    owner.accept([marker]);
+    await owner.resume();
+    expect(f.reader.read).toHaveBeenCalledTimes(2);
+    expect(owner.snapshot().status).toBe("reconciled");
+  });
+
+  it("reads the snapshot again when a drop cancelled a live marker still being ingested", async () => {
+    const f = fixture();
+    const owner = f.make();
+    await owner.ready;
+    await owner.refresh();
+    const marker = await otherDeviceMarker(f);
+    // The marker arrives live and is still decoding when the stream drops.
+    let release!: () => void;
+    const decode = f.host.decode.getMockImplementation();
+    if (!decode) throw new Error("Missing fixture decoder");
+    f.host.decode.mockImplementationOnce(async (events) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return decode(events);
+    });
+    owner.accept([marker]);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    owner.stale();
+    release();
+    await owner.resume();
+    expect(f.reader.read).toHaveBeenCalledTimes(2);
+    expect(owner.state().frontiers.room).toBe(12);
+    expect(owner.snapshot().status).toBe("reconciled");
+  });
+});

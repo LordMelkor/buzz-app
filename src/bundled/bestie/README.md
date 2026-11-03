@@ -35,6 +35,25 @@ DM remains recognizable without presenting a placeholder identity. Agent rows
 remain separate **New chat** actions; namesakes stay distinct by exact public key
 and use readable owner labels before abbreviated-key fallbacks.
 
+### The Bestie tab
+
+The agent you made your Bestie (with **Make my bestie** in Agents) gets a
+**Bestie** tab on its agent page while it runs on this device. **Change** picks
+another agent and asks before replacing your Bestie.
+
+**Remembers you** adds memory rules to the agent's instructions, in a section
+marked `<!-- buzz:bestie/memory v1 -->` … `<!-- /buzz:bestie/memory -->`, and
+turning it off removes that section. The switch is on while the section is
+there, whatever you edit inside it or type next to its markers. Off removes
+it with your edits inside it, and keeps text you put before its opening
+marker or after its closing one. If you edit, remove or copy one of its
+markers, the row says the section was edited instead of showing a switch, so
+it never adds a second one. **Restore** puts back the original section in
+place of its two markers and what lies between them, when they still show
+where it starts and ends; otherwise fix its markers in Instructions. Off
+deletes no memory, and the agent's core memory is still in every prompt;
+clear memory in the Memory tab. The tab's other settings are not set up yet.
+
 ### Hosted setup fallback
 
 The account choice is read before the page decides what to show. With a saved

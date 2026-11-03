@@ -35,6 +35,7 @@ import { useSavedAgentState } from "../../features/solo/default-agent";
 import type { RelayData } from "../../features/relay/service";
 import { PinnedBestie } from "./PinnedBestie";
 import { bestieRoute } from "./routes";
+import { bestieTab } from "./BestieTab";
 
 export const inject = [
   "pages",
@@ -72,6 +73,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     });
   });
   ctx.effect(() => () => listeners.clear());
+  ctx.agents.registerTab(bestieTab(ctx.relay, ctx.agents));
   ctx.pages.register({
     id: "bestie",
     title: "Bestie",

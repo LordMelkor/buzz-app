@@ -320,10 +320,14 @@ active registered types appear there; plugin activation remains owned by
 Settings → Plugins → Manage plugins. Provider defaults are versioned device preferences, not
 agent-record migrations; blank per-agent values inherit them.
 
-A plugin, bundled or installed, can add a tab to the settings of every agent
-running on this device, whatever its type, with
-`ctx.agents.registerTab({ id, title, component })`. The component receives
-`{ agent }`; it reads and saves through the plugin's own `ctx.agents`. The tab
+A plugin, bundled or installed, can add a tab to the settings of agents
+running on this device, whatever their type, with
+`ctx.agents.registerTab({ id, title, component, when, subscribe })`. The component receives
+`{ agent }`; it reads and saves through the plugin's own `ctx.agents`. An
+optional `when(agent)` limits the tab to the agents it returns true for, and an
+optional `subscribe(listener)` tells the host when `when` may answer
+differently, so the tab appears or goes without a reload. A `when` that throws
+hides only its own tab. The tab
 follows Activity and precedes History and Settings, in the agent's Build view and
 its profile panel, and is not offered for hosted or elsewhere agents. It is
 removed when the plugin is turned off or its scope ends. The bundled Agent
@@ -398,16 +402,20 @@ ctx.pages.register({
 A page may replace the conversation sidebar while selected. Its component receives
 the current read-only `OpenTarget` and, when present, shell-generated primary
 Pages navigation as `children`. It supplies only its sidebar contents within the
-existing sidebar slot. Wrap that content in the existing `shell-sidebar-default`
-layout role to receive the default sidebar width and shell sizing constraints
-(260px default width, 220px minimum, with the shell's available-width clamp). That
-role provides outer slot geometry and its divider; it does not provide an inner
-surface, frame, padding, or content layout. The contributor owns those details.
+existing sidebar slot. The host places the contribution and its unavailable
+fallback in the same resizable track as the conversation sidebar. Both use one
+saved width per community and viewer workspace, with a 260px default, 220px
+minimum, 520px maximum, and the shell's existing available-width clamp. The host
+owns the resize handle, keyboard controls, reset, and persistence; switching
+between Messages and a page sidebar preserves that shared width. Wrap the content
+in the existing `shell-sidebar-default` layout role so it fills the host track.
+That role does not provide an inner surface, frame, padding, or content layout;
+the contributor owns those details.
 External authors use this CSS role and their own markup; internal source components
 such as `SidebarFrame` are not part of the author SDK. The host owns the slot and
-collapse/drawer interaction. A page may manage its own width preference. Pages do
-not receive navigation completion authority or own routing. On wide layouts the
-shell keeps its generic Show/Hide sidebar toggle; on narrow layouts the existing
+collapse/drawer interaction. Pages do not manage a separate sidebar width
+preference, receive navigation completion authority, or own routing. On wide
+layouts the shell keeps its generic Show/Hide sidebar toggle; on narrow layouts the existing
 Show/Hide navigation drawer, focus handoff, Escape, inert, and ARIA behavior remain
 shell-owned. Pages without `sidebar` continue to
 use the conversation sidebar. The host isolates sidebar rendering with
@@ -1918,7 +1926,7 @@ provider so a delayed name can appear without another editor event.
 Channels filters the session's joined channel roster locally, including private
 channels and joined channels restored from cache (the store marks those
 `readOnly` and `cached` until the relay reconfirms them), but excluding DMs,
-sessions, archived, hidden, unnamed and other read-only entries. After a 180 ms
+sessions, archived, hidden, unnamed and other read-only entries. After a 300 ms
 typing pause, a query also asks `searchPublic`, through the same
 `usePublicChannelSearch` hook as Command-K, for open channels the viewer has not
 joined; they are labeled "Not joined", and private results are never offered.

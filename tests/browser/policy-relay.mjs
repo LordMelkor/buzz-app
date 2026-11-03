@@ -656,7 +656,7 @@ export function policyRelay({
               if (
                 filter.kinds.includes(9) &&
                 (!channel ||
-                  filter["#h"].length > 10 ||
+                  filter["#h"].length > 2048 ||
                   (filter.limit !== 0 && filter["#h"].length !== 1))
               ) {
                 queueMicrotask(() =>

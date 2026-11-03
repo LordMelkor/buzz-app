@@ -465,12 +465,14 @@ No user key belongs in release configuration.
 ## Local restore helper on macOS
 
 macOS builds with Rust debug assertions accept `BUZZ_DEV_CREDENTIAL_HELPER` as an
-absolute executable path. When set, only `read_human()` uses this helper.
+absolute executable path. When set, `read_human()` and native agent storage use
+this helper.
 The helper replaces both the normal read and the copy from the previous service.
 Its setup must select the intended saved identity, including its service name.
 Exit 10 declares that identity absent; it does not start a Keychain migration.
 Release builds ignore it. With no setting, the normal Keychain read is unchanged.
-Import, creation, deletion, agent keys, and session records keep their own owners.
+Human import, creation, deletion, and session records keep their own owners.
+Legacy agent import also keeps its exact-source read owner.
 
 The helper receives a fresh Unix socket as stdout and no stdin. It must return
 exactly 63 bytes of nsec text with no newline, then close stdout and exit zero.
@@ -492,6 +494,36 @@ the configured app identifier and certificate. A PID check alone is insufficient
 Reject pipes and sockets created before exec. Sign both processes with hardened
 runtime and without entitlements that allow code injection. These access controls
 need native tests; the app hook does not supply them.
+
+For native agents, the app passes `--agent-store <operation> <service> <account>`
+after the optional `--authorize`. Operations are `read`, `replace`, and `delete`.
+The service is `xyz.block.buzz.desktop.agents` or
+`dev.local.buzz.foundation.agents`. The account is `agent-bundle-v1` or the exact
+`agent:<credential-id>` selected by the bundle owner. The helper must reject
+other services, accounts, and operations. A helper that supports only human
+restore must reject agent requests. It must never return a human key for them.
+
+The fresh stdout socket carries data in both directions. Stdin stays closed.
+For `replace`, the app sends the bundle bytes, then closes its write side.
+The helper must authenticate the peer before it reads these bytes. It reads to
+EOF before it sends a response. For `read`, it returns the exact item bytes.
+Successful writes and deletes return no bytes. Each direction has a 2 MiB limit.
+The app uses the same deadline and exit codes as human restore. Exit 13 means
+occupied. A helper failure stops the operation without a direct Keychain retry.
+
+The helper must use the default Keychain and the same peer checks as human
+restore. It must preserve item access controls on replacement and confirm a
+deleted item is absent. Normal operations must disable Keychain dialogs.
+The app retains bundle validation, create-only agent writes, migration order,
+locks, cache epochs, and read-back checks. The helper does not store keys in
+files or change their access controls to avoid approval. Configure its signed
+binary outside this repository. Do not copy existing keys into its setup.
+
+Before a real test, wait for green CI. Obtain explicit consent for first approval.
+Then use a disposable agent to check creation, restore after restart, and deletion.
+Check denied access and an invalid helper path too. Confirm no normal operation
+shows a Keychain dialog. These native checks and a human check are required;
+synthetic helper tests do not prove signature or Keychain enforcement.
 
 The certificate check trusts access to its signing key. Another program that can
 use that key and app identifier can satisfy the same requirement. Approval to use

@@ -74,7 +74,16 @@ export function useUnreadState(
     ((count ?? 0) > 0 && (dm || !muted || (snapshot.attentionCount ?? 0) > 0));
   const ordinary = ordinaryUnread(snapshot, dm, muted);
   const threadCount = activity.items?.length ?? 0;
-  return { snapshot, activity, count, manual, unread, ordinary, threadCount };
+  return {
+    snapshot,
+    activity,
+    count,
+    manual,
+    unread,
+    ordinary,
+    threadCount,
+    muted,
+  };
 }
 
 export function UnreadBadge({
@@ -102,15 +111,20 @@ export function UnreadBadge({
     unread: quietUnread,
     ordinary,
     threadCount,
+    muted,
   } = useUnreadState(session, channelId, dm);
   const unread =
     labelUnread === "all" || preserveUnread
       ? manual || (count ?? 0) > 0
       : quietUnread;
+  const hideUnreadDots = muted && labelUnread === "ordinary" && !preserveUnread;
   if (!unread && !threadCount && label === undefined) return null;
   const priority = dm || (snapshot.attentionCount ?? 0) > 0;
   const showUnreadDot =
-    priority && threadCount === 0 && labelUnread === "ordinary";
+    !hideUnreadDots &&
+    priority &&
+    threadCount === 0 &&
+    labelUnread === "ordinary";
   const unreadLabel = manual
     ? `Marked unread${snapshot.manual === "local-only" ? " on this device only" : ""}`
     : `${count} observed unread messages${snapshot.freshness === "stale" ? "; may be out of date" : ""}. Not an exact total.`;
@@ -143,15 +157,18 @@ export function UnreadBadge({
           aria-hidden="true"
         />
       )}
-      {threadCount > 0 && (
-        <span
-          className={styles.threadActivityDot}
-          data-channel-activity=""
-          role="img"
-          aria-label={threadLabel}
-          title={threadLabel}
-        />
-      )}
+      {threadCount > 0 &&
+        (hideUnreadDots ? (
+          <span className="sr-only">{threadLabel}</span>
+        ) : (
+          <span
+            className={styles.threadActivityDot}
+            data-channel-activity=""
+            role="img"
+            aria-label={threadLabel}
+            title={threadLabel}
+          />
+        ))}
     </>
   );
 }

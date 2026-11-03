@@ -80,6 +80,25 @@ it("normalizes viewer, owner, candidates and repeated keys at the API boundary",
   ).toBe("Alex");
 });
 
+it("reads only the selected keys and their owners from the directory", () => {
+  let read = 0;
+  const directory = Array.from({ length: 1000 }, (_, index) => ({
+    pubkey: index.toString(16).padStart(64, "0"),
+    get name() {
+      read++;
+      return "Honey";
+    },
+  }));
+  const names = resolveIdentityNames(
+    [...directory, person(wes, "Wes"), agent(a, wes), person(b)],
+    me,
+    [a, b],
+  );
+  expect(names.get(a)?.name).toBe("Wes’s Honey");
+  expect(names.get(b)?.name).toBe("Honey");
+  expect(read).toBe(0);
+});
+
 it("compares all aliases while returning the last requested alias for each key", () => {
   const rows = [
     agent(a, me),
