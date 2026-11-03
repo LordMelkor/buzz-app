@@ -5,12 +5,14 @@ import { useRelayConnection } from "../../features/relay/react";
 import { avatarMedia, avatarSource } from "../../shared/avatar-source";
 import { useUserStatus } from "../../features/user-status/useUserStatus";
 import { useStatusEditor } from "../../features/user-status/useStatusEditor";
+import { statusShortcut } from "../../features/user-status/status-shortcut";
 import { StatusEmoji } from "../../features/user-status/StatusEmoji";
 import { Button } from "../../shared/design-system/ui/Button";
 import { StatusEditor } from "../../features/user-status/StatusEditor";
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useId,
   useRef,
   useState,
@@ -197,6 +199,18 @@ export function ProfileButton({
   const picture = selected ? avatarMedia(source, session?.media) : source;
   const status = useUserStatus(session?.statuses, viewer ?? "");
   const statusEditor = useStatusEditor(session, viewer ?? undefined);
+  // The Set status shortcut follows the menu item's availability.
+  const statusAvailable =
+    !!viewer && !!session?.statuses?.writable && !!connection.scope;
+  const openStatus = useEffectEvent(() => statusEditor.open());
+  useEffect(() => {
+    if (!statusAvailable) return;
+    const open = () => openStatus();
+    statusShortcut.current = open;
+    return () => {
+      if (statusShortcut.current === open) statusShortcut.current = undefined;
+    };
+  }, [statusAvailable]);
   const profileTrigger = useRef<HTMLButtonElement>(null);
   const appearanceTrigger = useRef<HTMLDivElement>(null);
   const openingStatus = useRef(false);

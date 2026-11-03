@@ -62,6 +62,7 @@ import { AgentsContext } from "../agents/react";
 import type { Agents } from "../agents/service";
 import { MessageComposer, type MessageComposerProps } from "./MessageComposer";
 import { MessageEditScope, useMessageEditScope } from "./MessageEditScope";
+import { registerMessageList } from "./message-selection";
 import { createRelaySession, type RelaySession } from "../relay/session";
 import { keypair, metadata, roster, signed } from "../relay/testing";
 import type { EventTemplate } from "nostr-tools";
@@ -7020,6 +7021,64 @@ it("edits in the same composer, cancels without persisting edit text, and restor
   fireEvent.keyDown(input, { key: "z", ctrlKey: true });
   expect(input).toHaveValue("Unsent draft");
   expect(h.messages.edit).not.toHaveBeenCalled();
+});
+
+it("selects the newest message on Up when the scope has a message list, instead of editing", () => {
+  const base = mount({}, undefined, first.pubkey);
+  base.unmount();
+  const row = editableMessage();
+  let scope: ReturnType<typeof useMessageEditScope>;
+  function Probe() {
+    scope = useMessageEditScope();
+    return null;
+  }
+  const list = document.createElement("ol");
+  list.innerHTML =
+    '<li data-message-id="older"><div data-layout="timeline">Older</div></li>' +
+    '<li data-message-id="newest"><div data-layout="timeline">Newest</div></li>';
+  document.body.append(list);
+  const unregister = registerMessageList(list, {
+    row: (id) => ({ id }) as ChannelMessage,
+    newest: () => "newest",
+    canEdit: () => false,
+    edit: () => {},
+    canDelete: () => false,
+    remove: () => {},
+    canMarkUnread: () => false,
+    markUnread: () => {},
+    composer: () => null,
+  });
+  try {
+    render(
+      <MessageEditScope>
+        <Probe />
+        <MessageComposer
+          session={base.session}
+          scope="scope"
+          channelId="channel"
+          channelName="General"
+          editMessages={[row]}
+        />
+      </MessageEditScope>,
+      { wrapper: ToastProvider },
+    );
+    if (scope) scope.list.current = list;
+    const input = screen.getByRole("textbox");
+    act(() => input.focus());
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(
+      list.querySelector('[data-message-id="newest"] > div'),
+    ).toHaveFocus();
+    expect(input).not.toHaveAccessibleName("Edit message");
+    // Without a connected list, Up keeps editing the last own message.
+    list.remove();
+    act(() => input.focus());
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(input).toHaveAccessibleName("Edit message");
+  } finally {
+    unregister();
+    list.remove();
+  }
 });
 
 it.each(["cancel", "accepted"])(

@@ -1532,8 +1532,9 @@ export function subscribeRelayTraffic(
           sync.sink.event(checked);
         } else if (data[0] === "EOSE") sync.sink.eose();
         else if (data[0] === "CLOSED") {
+          // `disconnected:` is reserved for local socket loss.
           const reason =
-            typeof data[2] === "string"
+            typeof data[2] === "string" && !data[2].startsWith("disconnected:")
               ? data[2].slice(0, 512)
               : "error: relay closed the sync";
           // The quota is shared: the view's restart and every other queued

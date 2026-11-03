@@ -5,7 +5,7 @@ use buzzodz_plugins::HostGrants;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -301,13 +301,10 @@ pub(crate) async fn plugin_host_request_bytes(
     })?;
     let operation = async {
         byte_origin(manager.clone(), &id, &revision, &url).await?;
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_millis(timeout))
-            .build()
-            .map_err(|_| "Host request client is unavailable")?;
-        let (status, headers, bytes) =
-            read_bytes(client.get(url.clone()), request.max_bytes).await?;
+        let get = client(false)?
+            .get(url.clone())
+            .timeout(Duration::from_millis(timeout));
+        let (status, headers, bytes) = read_bytes(get, request.max_bytes).await?;
         byte_origin(manager, &id, &revision, &url).await?;
         byte_frame(status, headers, bytes).map(tauri::ipc::Response::new)
     };
@@ -384,12 +381,12 @@ pub(crate) async fn plugin_host_upload(
             reqwest::header::CONTENT_TYPE,
             HeaderValue::from_str(&content_type).map_err(|_| "Invalid upload")?,
         );
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(UPLOAD_DEADLINE)
-            .build()
-            .map_err(|_| "Host request client is unavailable")?;
-        read_response(client.post(url).headers(headers).body(body)).await
+        let post = client(false)?
+            .post(url)
+            .headers(headers)
+            .body(body)
+            .timeout(UPLOAD_DEADLINE);
+        read_response(post).await
     };
     tokio::time::timeout(UPLOAD_DEADLINE, operation)
         .await
@@ -562,22 +559,40 @@ async fn send_request_with_policy(
     deadline: Duration,
     protected: bool,
 ) -> Result<HostResponse, String> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+    let mut request = client(protected)?
+        .request(method, url)
+        .headers(headers)
         .timeout(deadline);
-    let client = if protected {
-        client.retry(reqwest::retry::never())
-    } else {
-        client
-    };
-    let client = client
-        .build()
-        .map_err(|_| "Host request client is unavailable")?;
-    let mut request = client.request(method, url).headers(headers);
     if let Some(body) = body {
         request = request.body(body);
     }
     read_response(request).await
+}
+
+/// Shared clients, as for agent requests, so plugin requests reuse
+/// connections instead of building a client and opening a connection on every
+/// call. Each request sets its own timeout. A protected request is never
+/// retried or pooled.
+fn client(protected: bool) -> Result<&'static reqwest::Client, String> {
+    static PLAIN: OnceLock<Result<reqwest::Client, reqwest::Error>> = OnceLock::new();
+    static PROTECTED: OnceLock<Result<reqwest::Client, reqwest::Error>> = OnceLock::new();
+    let cell = if protected { &PROTECTED } else { &PLAIN };
+    cell.get_or_init(|| {
+        let builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        if protected {
+            // No idle connections, so each one-time request opens its own
+            // (reqwest is built without HTTP/2, so none are shared either).
+            builder
+                .retry(reqwest::retry::never())
+                .pool_max_idle_per_host(0)
+        } else {
+            // A connection idle across sleep may be dead; open a new one.
+            builder.pool_idle_timeout(Duration::from_secs(30))
+        }
+        .build()
+    })
+    .as_ref()
+    .map_err(|_| "Host request client is unavailable".into())
 }
 
 /// Sends `request` and reads its bounded response, without its cookies.
@@ -879,6 +894,44 @@ mod tests {
             "https://outside.example/"
         );
         assert!(!response.headers.contains_key("set-cookie"));
+    }
+
+    #[tokio::test]
+    async fn request_transport_pools_only_unprotected_connections() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = reqwest::Url::parse(&format!(
+            "http://{}/graphql",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = accepted.clone();
+        std::thread::spawn(move || {
+            for socket in listener.incoming() {
+                let mut socket = socket.unwrap();
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let mut request = [0u8; 1024];
+                    while matches!(socket.read(&mut request), Ok(count) if count > 0) {
+                        let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+                    }
+                });
+            }
+        });
+        for protected in [false, false, true, true] {
+            send_request_with_policy(
+                url.clone(),
+                reqwest::Method::POST,
+                HeaderMap::new(),
+                None,
+                DEADLINE,
+                protected,
+            )
+            .await
+            .unwrap();
+        }
+        // Two plain requests share one connection; each protected one opens its own.
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
     #[tokio::test]

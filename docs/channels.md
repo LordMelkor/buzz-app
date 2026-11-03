@@ -1549,6 +1549,39 @@ options exposes local-only manual unread, explicit mark-through and sync recover
 Older synchronized hints may expire under bounded retention. Synced manual-unread
 and OS notifications are not enabled by this feature.
 
+### Keyboard navigation and reading
+
+The Channels plugin registers Slack-style shortcuts through the shared dispatcher, so
+each is listed in Settings → Shortcuts and can be rebound. All run while typing in the
+message editor and are ignored behind a dialog. None run in a terminal, which keeps
+Escape and Option+Arrow for the shell.
+
+- **Previous/next conversation** (Option+Up/Down) and **previous/next unread
+  conversation** (Option+Shift+Up/Down) step through the sidebar's rendered order,
+  Solo chats and team rows alike. `conversation-rows.ts` scans the sidebar's
+  `Subscribed channels` list, so sorting, sections, filters and the All/Solo/Team pane
+  are already applied; rows in a collapsed section or the inactive pane are skipped. A
+  row is unread when it shows the unread or thread-activity marker that
+  `SidebarUnread` also reads. The open conversation is the row marked `aria-current`.
+  Stepping does not wrap, and at either end it does nothing. When the open
+  conversation is not among the rows, next starts from the top and previous from the
+  bottom. A conversation listed in two sections is stepped over once. The shortcuts
+  are unavailable, leaving the key alone, while the sidebar renders no rows (for
+  example behind another page's own sidebar). Stepping activates the row's own
+  button, so it takes the exact path of a click: the saved selection, navigation
+  intent, session staleness guard and Solo's immediate activation. The list scrolls
+  just far enough to show the row, and nothing above it moves.
+- **Mark conversation as read** (Escape) uses the open conversation's
+  `unread.markChannelRead`, as the row menu's Mark as read does, with no success toast.
+  A failure shows an error toast. The page publishes it only for a joined,
+  non-preview conversation (not the new message page), and it is available only while
+  the connection has `frontier-sync`, the conversation shows unread and focus is not a
+  text field outside the composer. It never consumes a dismissal: the dispatcher skips
+  events something already handled, panels, tabs, completions and message edits stop
+  Escape themselves, and the narrow navigation drawer now prevents it when it closes.
+- **Mark all as read** (Shift+Escape) is registered by the shell; see
+  [shell design](shell-design.md).
+
 
 ### Attachment layout and scrolling
 
@@ -1582,6 +1615,7 @@ Image attachments reserve loading geometry from valid `imeta dim` metadata,
 bounded to 360px wide and 320px tall without enlarging the frame beyond the
 original dimensions. Missing/invalid dimensions, including metadata that would
 reserve less than one CSS pixel on either axis, use a 360:320 loading frame.
+When sending media, the app copies `dim` from the relay's upload result.
 After the original decodes, its natural dimensions replace metadata and the
 loading frame. Loaded previews follow the image's aspect ratio with no grey
 backing or letterboxing, bounded to 360px wide and 320px tall. Exceptionally thin

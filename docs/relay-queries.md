@@ -672,8 +672,12 @@ receipt, as Buzz desktop does. Nothing is persisted or restored; a rejection or
 10-second timeout rejects the call and the dialog keeps its input for retry. The
 method is undefined unless the writer supports kind 1984.
 
-In an empty composer, unmodified Up arrow opens the latest eligible own message
-from that channel or thread in the same editor. Enter/the send arrow saves;
+In an empty composer, unmodified Up arrow selects the newest message in the
+channel timeline or thread beside it, as in Slack; E then opens a selected
+eligible own message in the same editor, and on macOS ⌘↑ still opens the latest eligible
+own message directly (elsewhere, Up then E). Surfaces without a selectable message
+list (media review, Huddles), or a timeline scrolled away from its newest
+message, keep Up opening the latest eligible own message directly. Enter/the send arrow saves;
 Escape or × cancels. Edits retain raw attachment Markdown and leave original
 notification recipients unchanged. Edit text never overwrites the new-message
 draft or its undo history. Pending edits lock the editor until delivery; failed
@@ -974,8 +978,22 @@ evidence. The roster hint starts a full channel-list read only when the last
 one is still owed or failed, or when no full read has completed for 15 minutes
 (`ROSTER_BACKSTOP_INTERVAL`). Membership notices carry joins and removals live.
 The read also covers changes with no notice: a channel delete, a moderation
-kick or DM, and a dropped frame. It does not renew singleton previews or add
-per-channel background history reads. When the socket
+kick or DM, and a dropped frame. The unread hint runs while a repair is owed,
+and otherwise at most every 15 minutes (`UNREAD_BACKSTOP_INTERVAL`), counted
+from that owner's last full
+repair, which each connection's first establishment also asks for. A covered
+resume (a continuous membership replay) reads no read-state snapshot, so it does
+not restart that interval. The live stream carries every unread change; this
+backstop only repairs what it lost with no signal (a channel the relay pruned
+from a batch, or a dropped frame). A repair is owed while either of two debts
+is open, and each clears only its own way. Evidence debt (a failed evidence
+repair, an evidence overflow, or a drop) clears only when an evidence repair
+completes; a live message that marks the evidence observed again does not clear
+it. Marker debt (a failed snapshot read, a live marker that failed to apply, or
+a drop) clears only on a successful snapshot read or a covered resume. A
+snapshot read cannot clear evidence debt, and an evidence repair cannot clear
+marker debt. It does not
+renew singleton previews or add per-channel background history reads. When the socket
 delivered no frame for a whole interval, the timer also sends one empty probe
 REQ; if no frame arrives within the setup timeout, the socket is replaced through
 the ordinary reconnect, with its backoff and replay. An open socket can stop

@@ -3484,10 +3484,10 @@ const repo = (
     id: d.padEnd(64, "0"),
     tags: [["d", d], ...channels.map((c) => ["buzz-channel", c]), ...extra],
   });
-const git = (client: BuzzClient) => {
+const git = (client: BuzzClient, header = "Authorization: Nostr abc") => {
   const gitAuth = vi.fn(async (owner: string, name: string) => ({
     url: `https://relay/git/${owner}/${name}.git`,
-    header: "Authorization: Nostr abc",
+    header,
   }));
   client.gitAuth = gitAuth;
   return gitAuth;
@@ -3526,9 +3526,22 @@ it("gives the channel's repository and a Git header signed for it", async () => 
   expect(answer).toBe(
     [
       `hive: ${url}`,
-      "For the next 60 seconds, pass this header to each git command (call again for a new one; never save it):",
+      "For the next 60 seconds, pass these headers to each git command (call again for a new one; never save it):",
       `git -c http.${url}.extraHeader='Authorization: Nostr abc' clone ${url}`,
     ].join("\n"),
+  );
+});
+
+it("passes each Git header line, sign-in evidence included", async () => {
+  const { client } = fake([
+    hive({ [bob]: "admin" }),
+    repo(bob, "hive", ["chan"]),
+  ]);
+  git(client, "Authorization: Nostr abc\nNostr-Federated-Identity: Bearer xyz");
+  const answer = await callTool(client, { channel: "chan" }, "repo", {});
+  const url = `https://relay/git/${bob}/hive.git`;
+  expect(answer).toContain(
+    `git -c http.${url}.extraHeader='Authorization: Nostr abc' -c http.${url}.extraHeader='Nostr-Federated-Identity: Bearer xyz' clone ${url}`,
   );
 });
 

@@ -47,8 +47,15 @@ import { PagesService } from "../features/pages/service";
 import { SoloNavigationService } from "../features/channel-navigation/solo-navigation";
 import { SidebarSectionsService } from "../features/channel-navigation/sidebar-sections-service";
 import { bundledPlugins } from "../bundled";
+import { bundledFederatedIdentity } from "../bundled/builderlab/oauth/first-run";
+import { nativeBuilderlab } from "../bundled/builderlab/session";
 import { conversationFeatures } from "./conversation-features";
 import { createPluginManager } from "../plugins/manager";
+import {
+  createPluginInstallCore,
+  createPluginInstallRequests,
+  createPluginInstallerService,
+} from "../plugins/installer";
 import { withTimeout } from "../plugins/timeout";
 
 export function createServices() {
@@ -58,6 +65,11 @@ export function createServices() {
   const ctx = new Context();
   new HostService(ctx);
   const federatedIdentity = new FederatedIdentityService(ctx);
+  // An FI build's Welcome calls the session as the Builderlab plugin's
+  // bundled installation, which works whether or not the plugin has started.
+  const firstRunFederatedIdentity = nativeBuilderlab()
+    ? bundledFederatedIdentity(ctx)
+    : undefined;
   const plugins = createPluginManager(ctx, {
     bundled: bundledPlugins,
     builtIn: conversationFeatures,
@@ -71,6 +83,14 @@ export function createServices() {
   const decisions = new DecisionsService(ctx);
   const pages = new PagesService(ctx);
   const sidebarSections = new SidebarSectionsService(ctx);
+  const pluginInstallRequests = createPluginInstallRequests();
+  const pluginInstallCore = createPluginInstallCore({
+    plugins,
+    requests: pluginInstallRequests,
+    openPlugins: () =>
+      navigation.open({ version: 1, kind: "settings", section: "plugins" }),
+  });
+  createPluginInstallerService(ctx, { core: pluginInstallCore });
   const panels = new PanelsService(ctx);
   const accountActions = new AccountActionsService(ctx);
   const conversation = new ConversationService(ctx);
@@ -229,9 +249,11 @@ export function createServices() {
     adminAccess,
     pages,
     sidebarSections,
+    pluginInstallRequests,
     panels,
     plugins,
     federatedIdentity,
+    firstRunFederatedIdentity,
     relay,
     communities,
     invites,

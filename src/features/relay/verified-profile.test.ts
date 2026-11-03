@@ -277,6 +277,29 @@ it("an incomplete lookup leaves omitted cached subjects unreconciled", async () 
   }
 });
 
+it("does not re-send a batch an outage ended", async () => {
+  const h = harness();
+  try {
+    h.directory.ensure([alice.pubkey]);
+    await Promise.resolve();
+    const first = h.subscriptions[0];
+    assert(first);
+    first.sink.event(projection());
+    first.sink.eose();
+    // An outage ends the sync, then reports the connection down.
+    first.sink.closed("disconnected: live connection lost");
+    h.directory.connected(false);
+    await Promise.resolve();
+    expect(h.subscriptions).toHaveLength(1);
+    expect(h.directory.snapshot().get(alice.pubkey)?.status).toBe("cached");
+    h.directory.connected(true);
+    await Promise.resolve();
+    expect(h.subscriptions.filter((item) => !item.stopped)).toHaveLength(1);
+  } finally {
+    h.directory.dispose();
+  }
+});
+
 it("overlays verified names, qualifies collisions, preserves kind 0 details, and restores them on retraction", async () => {
   const { createProfileDirectory } = await import("./profile-directory");
   let sink: VerifiedProfileSink | undefined;
@@ -889,5 +912,114 @@ it("keeps an unchanged head's projection through an equal discovery refresh", as
   } finally {
     h.directory.dispose();
     vi.useRealTimers();
+  }
+});
+
+it("re-sends a batch a replaced socket ended and keeps its check quiet while connected", async () => {
+  const h = harness();
+  const active = () => h.subscriptions.filter((item) => !item.stopped);
+  try {
+    h.directory.ensure([alice.pubkey, bob.pubkey]);
+    await Promise.resolve();
+    const first = h.subscriptions[0];
+    assert(first);
+    first.sink.event(projection());
+    first.sink.event(projection(10, bob.pubkey));
+    first.sink.eose();
+    const shown = h.directory.snapshot();
+    h.changed.mockClear();
+    // A planned renewal replaces the socket; the connection stays up.
+    first.sink.closed("disconnected: live connection lost");
+    await Promise.resolve();
+    expect(h.changed).not.toHaveBeenCalled();
+    expect(h.directory.snapshot()).toEqual(shown);
+    expect(h.directory.snapshot().get(alice.pubkey)?.status).toBe("checked");
+    const replacement = active()[0];
+    assert(replacement && replacement !== first);
+    expect(replacement.subjects).toEqual([alice.pubkey, bob.pubkey]);
+    // A replay that confirms what is shown does not notify.
+    replacement.sink.event(projection());
+    replacement.sink.event(projection(10, bob.pubkey));
+    replacement.sink.eose();
+    expect(h.changed).not.toHaveBeenCalled();
+    expect(h.directory.snapshot().get(bob.pubkey)?.status).toBe("checked");
+    // A replay that differs notifies once.
+    replacement.sink.closed("disconnected: live connection lost");
+    await Promise.resolve();
+    const third = active()[0];
+    assert(third);
+    third.sink.event(projection(12));
+    third.sink.eose();
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    expect(h.directory.snapshot().get(alice.pubkey)?.verifiedAt).toBe(12);
+    expect(h.directory.snapshot().has(bob.pubkey)).toBe(false);
+    // Any other end still fails the batch without a retry.
+    h.changed.mockClear();
+    third.sink.closed("error: relay refused");
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    expect(active()).toHaveLength(0);
+    expect(h.directory.snapshot().get(alice.pubkey)?.status).toBe("cached");
+  } finally {
+    h.directory.dispose();
+  }
+});
+
+it("publishes a pre-EOSE change after a second renewal", async () => {
+  const h = harness();
+  const active = () => h.subscriptions.filter((item) => !item.stopped);
+  try {
+    h.directory.ensure([alice.pubkey]);
+    await Promise.resolve();
+    const first = h.subscriptions[0];
+    assert(first);
+    first.sink.event(projection());
+    first.sink.eose();
+    first.sink.closed("disconnected: live connection lost");
+    await Promise.resolve();
+    const second = active()[0];
+    assert(second);
+    second.sink.event(projection(12));
+    h.changed.mockClear();
+    second.sink.closed("disconnected: live connection lost");
+    await Promise.resolve();
+    const third = active()[0];
+    assert(third && third !== second);
+    third.sink.event(projection(12));
+    third.sink.eose();
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    expect(h.directory.snapshot().get(alice.pubkey)?.verifiedAt).toBe(12);
+  } finally {
+    h.directory.dispose();
+  }
+});
+
+it("publishes a pre-EOSE change after an open batch is rebuilt", async () => {
+  const h = harness();
+  const active = () => h.subscriptions.filter((item) => !item.stopped);
+  try {
+    h.directory.ensure([alice.pubkey]);
+    await Promise.resolve();
+    const first = active()[0];
+    assert(first);
+    first.sink.event(projection());
+    first.sink.eose();
+    first.sink.closed("disconnected: live connection lost");
+    await Promise.resolve();
+    const renewed = active()[0];
+    assert(renewed);
+    renewed.sink.event(projection(12));
+    h.changed.mockClear();
+    h.directory.ensure([bob.pubkey]);
+    await Promise.resolve();
+    const rebuilt = active()[0];
+    assert(rebuilt && rebuilt !== renewed);
+    // An incomplete replay that flips no checked status.
+    rebuilt.sink.event(projection(12));
+    rebuilt.sink.event(projection(12));
+    rebuilt.sink.eose();
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    expect(h.directory.snapshot().get(alice.pubkey)?.verifiedAt).toBe(12);
+  } finally {
+    h.directory.dispose();
   }
 });

@@ -3542,6 +3542,29 @@ html[data-keyboard-navigation] .audienceLine:focus-visible {
   }
 }
 
+/* A keyboard-selected message holds the same wash steady, ringed with the
+   focus colour, without changing the row's layout box. */
+html[data-keyboard-navigation] .message:focus-visible {
+  outline: none;
+  isolation: isolate;
+}
+html[data-keyboard-navigation] .message:focus-visible::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline: calc(-1 * var(--space-2));
+  z-index: -1;
+  border-radius: var(--radius-row);
+  background: var(--surface-message-highlight);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+  pointer-events: none;
+}
+@media (forced-colors: active) {
+  html[data-keyboard-navigation] .message:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}
+
 [data-attachment-drop-zone] {
   position: relative;
 }

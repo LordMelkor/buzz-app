@@ -510,6 +510,43 @@ it("does not open a DM that finishes starting after search closed and reopened",
   }
 });
 
+it("opens Search Buzz with Command T as well as Command K, as Slack does", async () => {
+  const root = new Context();
+  root.provide("pluginStatus", {
+    isActive: () => true,
+    subscribe: () => () => {},
+  });
+  const bindings = createShortcutBindings(window);
+  const shortcuts = new ShortcutsService(root, window, bindings);
+  const connection = { status: "disconnected", generation: 0 };
+  const community = { selected: null, viewer: null };
+  const services = {
+    shortcuts,
+    shortcutBindings: bindings,
+    navigation: {
+      subscribe: () => () => {},
+      snapshot: () => ({ entry: { target: null } }),
+    },
+    communities: {
+      subscribe: () => () => {},
+      snapshot: () => community,
+      relay: { subscribe: () => () => {}, snapshot: () => connection },
+    },
+  } as unknown as SearchServices;
+  try {
+    render(<PageSearch pages={[]} onSelect={vi.fn()} services={services} />);
+    const apple = isApplePlatform(navigator.platform);
+    fireEvent.keyDown(window, { key: "t", metaKey: apple, ctrlKey: !apple });
+    expect(
+      await screen.findByRole("dialog", { name: "Search Buzz" }),
+    ).toBeVisible();
+  } finally {
+    cleanup();
+    bindings.dispose();
+    await root.fiber.dispose();
+  }
+});
+
 it("ranks pages by match when no community is connected", async () => {
   const root = new Context();
   root.provide("pluginStatus", {

@@ -27,7 +27,12 @@ export function createVerifiedProfileDirectory(
   // Least recently ensured first.
   const wanted = new Set<string>();
   const checked = new Set<string>();
-  type Batch = { stop(): void; subjects: readonly string[] };
+  type Batch = {
+    stop(): void;
+    subjects: readonly string[];
+    /** A change accepted before EOSE that is not yet published. */
+    pending(): boolean;
+  };
   const batches = new Set<Batch>();
   // Every profile publish projects every head: reuse the last projection of
   // an unchanged event so publishes skip revalidation and compare by identity.
@@ -132,6 +137,8 @@ export function createVerifiedProfileDirectory(
   function start(
     currentAuthority: VerifiedProfileAuthority,
     chunk: readonly string[],
+    // A change accepted before EOSE that is not yet published.
+    dirty = false,
   ) {
     let active = true;
     let ready = false;
@@ -140,6 +147,7 @@ export function createVerifiedProfileDirectory(
     let stopWire: (() => void) | undefined;
     const batch: Batch = {
       subjects: chunk,
+      pending: () => !ready && dirty,
       stop() {
         active = false;
         clearTimeout(timeout);
@@ -169,7 +177,7 @@ export function createVerifiedProfileDirectory(
             if (!ready) {
               count++;
               seen.add(subject);
-              accept(event);
+              if (accept(event)) dirty = true;
             } else if (accept(event)) changed();
           },
           eose() {
@@ -180,15 +188,34 @@ export function createVerifiedProfileDirectory(
             // never evidence that an omitted key has no current projection.
             const complete = count < chunk.length || seen.size === chunk.length;
             for (const subject of chunk) {
+              const had = checked.has(subject);
               if (wanted.has(subject) && (seen.has(subject) || complete))
                 checked.add(subject);
               // An incomplete replacement cannot confirm inherited status.
               else checked.delete(subject);
-              if (complete && !seen.has(subject)) heads.delete(subject);
+              if (had !== checked.has(subject)) dirty = true;
+              if (complete && !seen.has(subject) && heads.peek(subject)) {
+                heads.delete(subject);
+                dirty = true;
+              }
             }
-            changed();
+            // A replay that confirmed what was already shown changes nothing.
+            if (dirty) changed();
           },
-          closed: fail,
+          closed(reason) {
+            if (!reason.startsWith("disconnected:")) return fail();
+            // A replaced socket ends every sent sync. An outage then reports
+            // the connection down in the same task, which stops every batch.
+            // A planned renewal keeps it up: send the batch again and keep
+            // its checked status until the replacement answers, as a rebuilt
+            // batch does.
+            queueMicrotask(() => {
+              if (!active || !online) return fail();
+              batch.stop();
+              batches.delete(batch);
+              start(currentAuthority, batch.subjects, batch.pending());
+            });
+          },
         },
       );
       if (!stopWire) fail();
@@ -225,13 +252,17 @@ export function createVerifiedProfileDirectory(
         if (!unassigned.length) break;
         batch.stop();
         batches.delete(batch);
-        start(currentAuthority, [
-          ...batch.subjects,
-          ...unassigned.splice(
-            0,
-            VERIFIED_PROFILE_BATCH - batch.subjects.length,
-          ),
-        ]);
+        start(
+          currentAuthority,
+          [
+            ...batch.subjects,
+            ...unassigned.splice(
+              0,
+              VERIFIED_PROFILE_BATCH - batch.subjects.length,
+            ),
+          ],
+          batch.pending(),
+        );
       }
       while (unassigned.length)
         start(currentAuthority, unassigned.splice(0, VERIFIED_PROFILE_BATCH));

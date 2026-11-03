@@ -32,6 +32,7 @@ import { IdentitySetup } from "./IdentitySetup";
 import { PrivateKey } from "./PrivateKey";
 import { SignOutDialog, WIPE_PHRASE } from "./SignOut";
 import { Welcome } from "./Welcome";
+import { federatedFixture } from "../federated-identity/testing";
 import type { Credential } from "../../bundled/builderlab/oauth/browser";
 import { BackupError, type BackupStatus } from "./backup";
 import {
@@ -6077,5 +6078,65 @@ it("shows a native refusal's message and offers a retry", async () => {
   );
   expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  identity.dispose();
+});
+
+it("an FI build's Sign in with email signs in through the native session and checks the account through its forwarder, never the plugin's network grant", async () => {
+  vi.stubEnv("VITE_BUZZ_BUILDERLAB_URL", "https://builderlab.example");
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "identity_restore") return null;
+    if (command === "identity_legacy_available") return false;
+    if (command === "plugin_catalog")
+      return {
+        status: "ready",
+        catalog: {
+          plugins: [
+            {
+              source: "bundled",
+              manifest: { id: "block.builderlab" },
+              enabled: true,
+            },
+          ],
+        },
+      };
+    throw new Error(`Unexpected command ${command}`);
+  });
+  const fi = federatedFixture();
+  const answer = (body: object) => ({
+    status: 200,
+    headers: {},
+    body: JSON.stringify(body),
+  });
+  fi.request.mockImplementation(async ({ path }) =>
+    path.endsWith("/v1/auth/me")
+      ? answer({ subject: "user", email: "a@example.com" })
+      : path.endsWith("/nostr-identities/current")
+        ? answer({ identity: null })
+        : answer({ communities: [] }),
+  );
+  const identity = createIdentity();
+  const user = userEvent.setup();
+  render(
+    <Welcome
+      identity={identity}
+      communities={noJoin}
+      invites={invites}
+      federatedIdentity={fi.service}
+    >
+      <p>Signed in</p>
+    </Welcome>,
+  );
+  await user.click(await screen.findByRole("button", { name: SIGN_IN }));
+  expect(
+    await screen.findByRole("button", { name: "Create my key" }),
+  ).toBeVisible();
+  expect(fi.service.signIn).toHaveBeenCalledOnce();
+  expect(fi.request.mock.calls.map(([{ path }]) => path).sort()).toEqual([
+    "/api/goose/v1/auth/me",
+    "/api/goose/v1/buzz/known-communities/list",
+    "/api/goose/v1/buzz/nostr-identities/current",
+  ]);
+  expect(commands()).not.toContain("plugin_host_request");
+  expect(commands()).not.toContain("oauth_callback_begin");
   identity.dispose();
 });

@@ -38,6 +38,8 @@ import type { PageNavigation } from "../navigation/service";
 import { messageViewKey } from "./view-key";
 import { useKnownAgentPubkeys } from "../agents/use-known";
 import { JumpToLatestButton } from "./JumpToLatestButton";
+import { moveMessageSelection } from "./message-selection";
+import { useMessageSelection } from "./use-message-selection";
 
 // Native upward scrolling can start on a focused message link or button.
 // Inner scrollports own the key while they can move. At their top boundary,
@@ -325,6 +327,7 @@ function Timeline({
   );
   const scroller = useRef<HTMLElement>(null);
   const edge = useRef<HTMLDivElement>(null);
+  useMessageSelection(scroller, rows, queries);
   // Keep pagination space through EOF so removing its control cannot change
   // Virtua's start margin in the same measurement cycle as a prepend.
   const [reserveHistorySpace, setReserveHistorySpace] = useState(false);
@@ -1105,7 +1108,10 @@ function Timeline({
         );
         touchY.current = next;
       }}
-      onKeyDown={(event) => gesture(scrollsHistoryUp(event))}
+      onKeyDown={(event) => {
+        moveMessageSelection(event);
+        gesture(scrollsHistoryUp(event));
+      }}
       onPointerDown={() => {
         pointerHeld.current = true;
         // A press can end outside history.

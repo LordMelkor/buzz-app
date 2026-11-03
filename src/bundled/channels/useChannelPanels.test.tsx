@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -105,6 +105,13 @@ it.each(["bottom", "side"] as const)(
       screen.queryByRole("button", { name: "Close settings" }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: label })).toBeVisible();
+    if (placement !== "side") return;
+    // Shift+Escape is Mark all as read; only plain Escape dismisses.
+    const region = screen.getByRole("region", { name: label });
+    fireEvent.keyDown(region, { key: "Escape", shiftKey: true });
+    expect(region).toBeInTheDocument();
+    fireEvent.keyDown(region, { key: "Escape" });
+    expect(region).not.toBeInTheDocument();
   },
 );
 

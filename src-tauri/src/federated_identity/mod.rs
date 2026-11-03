@@ -150,6 +150,7 @@ impl FederatedIdentity {
         let store = Arc::new(store::SecureStore {
             account: account.clone(),
             root: store::root()?,
+            bundled: store::BUNDLED,
         });
         Ok(Self::with_store(config, fingerprint, account, store))
     }

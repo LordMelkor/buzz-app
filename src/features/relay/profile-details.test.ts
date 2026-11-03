@@ -439,3 +439,25 @@ it("moves the purge generation and notifies on every clear, even with nothing lo
     reader.dispose();
   }
 });
+
+it("evicts the least recently ensured profile, not the oldest stored one", async () => {
+  const read = vi.fn(async () => []);
+  const directory = createProfileDirectory({ read });
+  try {
+    const people = Array.from({ length: 1024 }, () => keypair());
+    directory.accept(
+      people.map((key, index) => profile(key, { name: `P${index}` })),
+    );
+    expect(directory.queries.snapshot().size).toBe(1024);
+    const [oldest, next] = people as [typeof user, typeof user];
+    await directory.ensure([oldest.pubkey]);
+    expect(read).not.toHaveBeenCalled();
+    directory.accept([profile(keypair(), { name: "Newcomer" })]);
+    const snapshot = directory.queries.snapshot();
+    expect(snapshot.size).toBe(1024);
+    expect(snapshot.get(oldest.pubkey)?.name).toBe("P0");
+    expect(snapshot.has(next.pubkey)).toBe(false);
+  } finally {
+    directory.dispose();
+  }
+});

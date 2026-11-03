@@ -17,6 +17,7 @@ use grant::{Grant, GrantStore, SecureGrantStore};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -27,6 +28,8 @@ const SIGN_IN: &str = "Sign in to your organization to enroll this agent";
 const STOPPED: &str =
     "Your organization no longer accepts this agent; sign in again to re-enroll it";
 const CHANGED: &str = "Your organization sign-in changed; try again";
+const SHORT_LIVED: &str =
+    "The community's sign-in does not last long enough for Git. Ask its administrator to lengthen it.";
 const DELETED: &str = "This agent was deleted";
 
 /// Lists every agent's owner and pubkey, for retiring all grants at once.
@@ -207,7 +210,8 @@ impl Admission {
 
 impl AgentTokens {
     pub(crate) fn new(identity: FederatedIdentity) -> Self {
-        Self::with_store(identity, Arc::new(SecureGrantStore))
+        let store = Arc::new(SecureGrantStore(identity.0.account.clone()));
+        Self::with_store(identity, store)
     }
     /// Tokens for a build without an organization: agents send no evidence.
     #[cfg(test)]
@@ -379,6 +383,18 @@ impl AgentTokens {
         key: &Secret,
         incarnation: Stamp,
     ) -> Result<Admission, String> {
+        self.authorize_for(agent, key, incarnation, Duration::ZERO)
+            .await
+    }
+    /// As [`Self::authorize`], with evidence that stays valid for at least
+    /// `valid_for`, for a header handed to a later process such as Git.
+    pub(crate) async fn authorize_for(
+        &self,
+        agent: &AppAgent,
+        key: &Secret,
+        incarnation: Stamp,
+        valid_for: Duration,
+    ) -> Result<Admission, String> {
         let mut admission = Admission {
             tokens: self.clone(),
             agent: agent.pubkey.clone(),
@@ -387,7 +403,7 @@ impl AgentTokens {
             cached: None,
         };
         admission.dispatch()?;
-        admission.cached = self.acquire(agent, key, incarnation.key).await?;
+        admission.cached = self.acquire(agent, key, incarnation.key, valid_for).await?;
         admission.dispatch()?;
         Ok(admission)
     }
@@ -413,6 +429,7 @@ impl AgentTokens {
         agent: &AppAgent,
         key: &Secret,
         incarnation: u64,
+        valid_for: Duration,
     ) -> Result<Option<Cached>, String> {
         let Some(config) = self.0.identity.0.config.as_ref() else {
             return Ok(None);
@@ -436,6 +453,7 @@ impl AgentTokens {
                     .is_none_or(|account| *account == cached.account)
                 && cached.relay == relay
                 && cached.refresh_at > now
+                && cached.expires_at > tokio::time::Instant::now() + valid_for
             {
                 return Ok(Some(cached.clone()));
             }
@@ -516,6 +534,9 @@ impl AgentTokens {
             ..cached
         };
         slot.assertion = Some(cached.clone());
+        if cached.expires_at <= tokio::time::Instant::now() + valid_for {
+            return Err(SHORT_LIVED.into());
+        }
         Ok(Some(cached))
     }
 

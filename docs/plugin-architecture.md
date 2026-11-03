@@ -243,6 +243,52 @@ remaining acceptance work and historical evidence.
 
 ## Starting contracts
 
+### Plugin installer
+
+A plugin, such as a catalog or marketplace page, may ask the host to review a plugin
+for installation. Read the optional `pluginInstaller` service with
+`ctx.reflect.get("pluginInstaller")` instead of adding it to required `inject`; the
+lookup returns `undefined` when an older host has not provided it.
+
+```ts
+type PluginInstaller = {
+  requestInstall(source: {
+    repository: string; // https://, ssh:// or scp-style git URL
+    reference: string; // branch or tag
+    path?: string; // relative folder inside the repository
+    commit?: string; // 40- or 64-hex; install exactly this commit
+  }): Promise<"installed" | "updated" | "cancelled" | "unavailable">;
+};
+```
+
+`requestInstall` never installs silently. It opens Settings → Plugins with the Git
+source prefilled and read-only, and the user still chooses **Find**, reviews the
+existing access review, and confirms. The promise resolves with what the user did:
+`installed`, `updated` (an installed plugin was replaced), or `cancelled` (the dialog
+was closed, including after reviewing a plugin that was already current). It resolves
+`unavailable` in the browser build, before plugin settings have loaded, when Settings
+cannot open, while another request waits or any plugin review dialog is open, or when
+the calling plugin has already been disabled or removed. It rejects for a source
+outside the accepted grammar or a caller that is not an installed plugin.
+
+The review shows "Opened from <plugin name> (<plugin id>)", taken from the calling
+plugin's own manifest. It is a hint for the user, not proof of who asked: the access
+review and the source shown are what the user approves. A request nobody claims in
+Settings expires as `cancelled` after a minute, and any request is cancelled when
+Settings closes, a `buzz://plugin-install` link replaces its review, or the requesting
+plugin is disabled or removed, unless the user has already confirmed the install. A plugin that updates itself is replaced during that
+install and still resolves `updated`.
+
+A request can install a new plugin, or update an installed plugin only from the same
+saved Git repository and folder. A plugin already installed from another source,
+including a local folder or an unknown one, is refused with a message naming both
+sources; remove it first to install it from the new one. Dismissing the review of a
+plugin already at the requested revision resolves `cancelled`, because nothing was
+installed. The folder source is hidden while a request is open. When `commit` is
+given, the native Git import refuses a reference whose tip is any other commit, so a
+branch that moves after a catalog review cannot install unreviewed code, and the
+review checks the fetched commit again before offering to install.
+
 ### Conversation sidebar sections
 
 A plugin may register a versioned `sidebarSections` contribution. Read it with
@@ -1654,7 +1700,7 @@ patches over the display parsing budget retain escaped raw text. Unconsumed
 patch lines and unsupported binary payloads also fall back to the complete raw
 patch; metadata-only rename/mode/binary summaries retain rich presentation.
 Preview, file and raw scroll regions support native keyboard navigation. Diff
-messages are not editable, including through the composer's Up-arrow shortcut.
+messages are not editable, including through the selected-message Edit shortcut.
 Diff search remains deferred: the client accepts kind 40008 hits, but relays
 whose search index allowlist excludes that kind cannot return them. Metadata is
 untrusted presentation, not repository access authority. No sending, applying,
@@ -2189,6 +2235,49 @@ the original event to this same dispatcher through a private DOM handoff. Eligib
 app shortcuts (including live rebinds) win there; unhandled keys stay with xterm.
 No plugin shortcut API or preference access is added. Ordinary editors continue
 to handle keys before the window's bubbling dispatcher.
+
+Slack-style message keys are host bindings. In an empty composer, Up selects the
+newest message (by id, not tree order) of the timeline or thread sharing its edit scope (on macOS ⌘↑ keeps editing
+the latest own message directly; elsewhere use Up, then E); a selection is
+DOM focus on that message's box (`features/messages/message-selection.ts`), so
+the timeline's Virtua keeps the row mounted and assistive technology follows it.
+Membership notices and folded or collapsed rows are skipped. While a message
+itself is focused, Up/Down move between rendered messages, Down past the newest and
+Escape return to the composer (a handled Escape does not also close the thread),
+and Up at the oldest rendered row stays native so history can load. When the
+timeline is scrolled far enough that the newest message is unmounted, Up from the
+composer keeps its old edit-last behavior, Down at the last rendered row scrolls
+natively, and ⌘⇧\ does nothing rather than act on an older message. E edits a selected eligible own message through the scope's
+editor, R opens the row's reaction picker through the host-owned
+`[data-reaction-tool]` trigger, and ⌘⇧\ selects the newest message in the focused
+pane, even from another selected message, and does the same. T or → clicks the row's Reply action (open or answer its
+thread), U marks unread from it (`useMessageKeyActions` in `MessageManagement.tsx`,
+the menu's own call), and Delete or Backspace opens the menu's delete confirmation
+for your own message; agent-owner deletion stays in the menu because it needs
+ownership evidence a key cannot wait for. Remind me (M) has no key: plugin message
+actions have no binding in their contract. Single-letter bindings never run in
+editable targets. ⌘1–⌘9 select the community switcher's entries in its order
+(⌘1 is Personal space) and ⌘⇧] / ⌘⇧[ step through them, wrapping
+(`app/shell/CommunityShortcuts.tsx`); Ctrl+Tab stays Buzz's tab switching.
+⌘T opens Search Buzz as a default alias of ⌘K (Slack's switcher answers to
+both); a shortcut may ship several default chords, and Settings → Shortcuts lists each
+distinct one ("⌘K or ⌘T") while showing layout aliases of one physical key (⌘=
+and ⌘+) once, but a Settings rebind replaces them with one. Plain-Escape
+dismissals (thread, panels, drawer, plugin details) ignore Shift so ⇧Esc reaches
+Mark all as read. The message editor's own keys (`composerFormats` and `linkBindings` in
+`features/messages/composer-dom.ts`, plus undo, redo and new line) are listed
+read-only under Message formatting, which says once under its heading that they
+belong to the editor; the editor matches them before any shortcut,
+so rebinding a shortcut onto one warns. Slack's ⌘⇧C (code), ⌘⇧9 (quote), ⌘⌥⇧C
+(code block) and ⌘⇧U (link) are aliases of Buzz's chords. ⌘/ opens Settings →
+Shortcuts, which is built the first time it is shown rather than with every
+Settings open. ⌘⇧Y opens Set a status while the profile menu
+can (the message editor keeps it as Redo). Home is on the placeholder ⌘⇧O while
+⌘⇧A opens Inbox's unread view. Inbox's ⌘⇧A, ⌘⇧T, ⌘⇧M and ⌘⇧K are ordinary
+`buzz.inbox` plugin contributions, so they follow the plugin precedence above: a
+plugin whose namespaced ID sorts first and claims the same chord wins it while
+eligible. Settings → Shortcuts marks such rows "Also used by"; rebinding either one
+resolves it.
 
 Known limitations. Capture and matching both use the logical `KeyboardEvent.key`.
 On macOS an Option chord reports the composed character, so Option+K is stored

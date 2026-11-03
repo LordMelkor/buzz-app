@@ -82,7 +82,10 @@ import {
   inlineFormats,
   blockFormats,
   composerFormats,
+  formatBindings,
+  linkBindings,
   type ComposerFormat,
+  type ComposerFormatBinding,
   type ComposerLinkEdit,
   type ComposerInputElement,
 } from "./composer-dom";
@@ -1824,22 +1827,21 @@ export function EditableInput({
             (key === "v" || (event.altKey && event.code === "KeyV"));
           if (primary && !event.altKey && !event.shiftKey && key === "a")
             return selectAll(editor.state, editor.dispatch);
+          const pressed = (binding: ComposerFormatBinding) =>
+            (key === binding.key ||
+              event.code === `Digit${binding.key}` ||
+              (event.altKey &&
+                event.code === `Key${binding.key.toUpperCase()}`)) &&
+            event.shiftKey === binding.shift &&
+            event.altKey === !!binding.alt;
           const format =
             primary &&
-            composerFormats.find(
-              ({ binding }) =>
-                (key === binding.key ||
-                  event.code === `Digit${binding.key}` ||
-                  (event.altKey &&
-                    event.code === `Key${binding.key.toUpperCase()}`)) &&
-                event.shiftKey === binding.shift &&
-                event.altKey === ("alt" in binding && binding.alt),
-            );
+            composerFormats.find((item) => formatBindings(item).some(pressed));
           if (format) {
             if (!event.repeat) toggleFormat(format.mark);
             return true;
           }
-          if (primary && !event.altKey && !event.shiftKey && key === "k") {
+          if (primary && linkBindings.some(pressed)) {
             const edit = editLink();
             if (
               edit &&

@@ -16,12 +16,21 @@ wireframes. When a page replaces another, focus moves to the new page's
 heading unless the page focuses a field itself, and **Back** returns focus to
 the choice that opened the page.
 
-Federated-identity builds (`BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG`) do not yet
-support this flow. **Sign in with email** runs under the bundled Builderlab
-plugin's own network grant, which an FI build does not have (its Builderlab
-calls go through the native FI session; #1461), so sign-in fails with
-*Couldn’t sign in* after the browser step. FI builds need their own first-run
-path before adopting this flow.
+In federated-identity builds (`BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG`) the
+bundled Builderlab plugin has no network grant of its own: its Builderlab calls
+go through the native FI session (#1461). There, **Sign in with email** is the
+native [organization sign-in](#native-federated-session-module), whose browser
+step, code exchange and token stay native. A session that already exists,
+including one saved by an earlier run, signs in again, so the browser can
+choose the account; if that sign-in is canceled, first run stops rather than
+continuing as the old account, and one that times out fails as *Sign-in did
+not finish*. Setup's account calls then go through the native forwarder as the
+bundled plugin's installation, fenced to that session, and a backup hands the
+uploader the session's revision. Native admission checks only that
+installation's grant, so this works whether or not the plugin has started. The
+forwarder grants no backup-status route, so Welcome back offers no restore and
+an imported key is offered the backup. The session outlives first run: sign-in
+at launch finds it signed in.
 
 A URL given on the welcome screen is looked up first, before sign-in and before
 any key exists: **Continue** opens the same **Finding community** page described
@@ -563,7 +572,11 @@ First run's **Backing up your key** is a pass of this uploader. It saves the
 automatic choice for the key, hands the first-run Builderlab sign-in to the
 uploader, waits up to 60 seconds for the pass that handoff starts, and then
 hands the sign-in back, whatever the outcome; an earlier pass's result never
-answers it. A pass that stops to wait for consent, a session or a key binding
+answers it. In an FI build the sign-in is the session the Builderlab plugin
+also hands the uploader, so after a completed backup it stays with the
+uploader, which runs one more pass; after a failure the uploader has no session
+until the plugin hands it over again, when that session changes or the app
+restarts. A pass that stops to wait for consent, a session or a key binding
 fails the step, since nothing would wake it again before first run ends. The
 failed page names the reason without any service response. The automatic choice
 stays on after a failure, Continue without backup included, so a later
@@ -871,7 +884,13 @@ replacement. Local expiry, cancellation, and sign-out fence stale work.
 
 FI records use the OS secure-store service
 `xyz.block.buzz.desktop.federated-session` (with `.debug` for Rust debug
-builds), keyed by profile and deployment fingerprint. Account indices and
+builds), keyed by profile and deployment fingerprint. On macOS one item per
+profile and deployment holds the session and every agent grant, so Keychain
+prompts once; Windows and Linux keep one item per record. Older macOS items
+move into it on read. This is a one-way development migration: close older
+Buzz copies, including other debug worktrees, before the first upgraded launch
+and use the upgraded build afterward. An older copy still running can write a
+grant the bundle no longer reads, which leaves that agent stopped. Release builds already run one instance. Account indices and
 revision-specific refusal markers contain no credential and live outside wiped
 Buzz data. Failed removal of a known record leaves refusal durable before any
 secure-store access, so that revision cannot restore until cleanup succeeds.
@@ -895,9 +914,15 @@ performs fresh NIP-42. Retirement fences protected reads and results.
 
 Each local agent enrolls using the signed-in owner's session and its own NIP-98
 proof. The native agent-token owner stores the resulting grant beside session
-records in the same OS secure-store service, under a separate key scoped to the
-profile, deployment, owner public key and agent public key. Neither grants nor
-assertion headers cross IPC. Enrollment validates the returned owner and issuer;
+records in the same OS secure-store service, keyed by profile, deployment, owner
+public key and agent public key: in the session's item on macOS, under a
+separate key elsewhere. Grants never cross IPC, and assertion headers cross it
+only as the `repo` tool's Git headers. There the NIP-98 proof is bound to one
+repository URL for 60 seconds, while the assertion is scoped to the relay for
+the lifetime its issuer set and bound to the agent's key, so it is unusable
+without that key (NIP-FI, Assertion–key binding). Git asks for an assertion
+valid for at least 70 seconds and fails rather than accept a shorter one.
+Enrollment validates the returned owner and issuer;
 assertions are checked for the agent key, issuer, relay audience and lifetime.
 The relay remains responsible for signature and authorization verification.
 

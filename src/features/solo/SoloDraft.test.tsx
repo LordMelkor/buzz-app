@@ -1679,7 +1679,11 @@ it.each([false, true])(
     writeView(
       "real-creation",
       "solo:new-draft",
-      taggedDraft("Original prompt", viewer.pubkey, "Viewer"),
+      taggedDraft(
+        "Original [\\#design](buzz://channel/design) prompt",
+        viewer.pubkey,
+        "Viewer",
+      ),
     );
     let observed = outbox.outbox.snapshot();
     let channelList = {
@@ -1778,7 +1782,7 @@ it.each([false, true])(
         .find((event) => event.kind === 9007);
       expect(created?.tags).toContainEqual([
         "name",
-        explicit ? "Chosen title" : "Original prompt",
+        explicit ? "Chosen title" : "Original #design prompt",
       ]);
       expect(created?.tags).toContainEqual(["t", SOLO_LABEL]);
       expect(created?.tags.some(([key]) => key === "about")).toBe(false);
@@ -1786,6 +1790,9 @@ it.each([false, true])(
       expect(publish.mock.calls.map(([event]) => event.kind)).toEqual([
         9007, 9,
       ]);
+      expect(publish.mock.calls[1]?.[0].content).toContain(
+        "[\\#design](buzz://channel/design)",
+      );
       expect(screen.queryByRole("alert")).toBeNull();
     } finally {
       mounted.unmount();

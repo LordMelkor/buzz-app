@@ -4727,6 +4727,29 @@ it("bounds profile syncs even without channel routes", async () => {
     h.owner.dispose();
   }
 });
+it("does not forward a relay CLOSED as local socket loss", async () => {
+  const h = setup([]);
+  try {
+    await h.first.auth();
+    assert.exists(h.owner.syncVerifiedProfiles);
+    const closed = vi.fn();
+    h.owner.syncVerifiedProfiles(
+      verifiedProfileFilter("a".repeat(64), ["b".repeat(64)]),
+      { event() {}, eose() {}, closed },
+    );
+    await Promise.resolve();
+    const sync = h.first
+      .requests()
+      .find((request) => request[1].startsWith("sync-"));
+    assert.exists(sync);
+    await h.first.receive(["CLOSED", sync[1], "disconnected: forged"]);
+    expect(closed).toHaveBeenCalledExactlyOnceWith(
+      "error: relay closed the sync",
+    );
+  } finally {
+    h.owner.dispose();
+  }
+});
 describe("policy close (1008) recovery", () => {
   const deny = async (socket: Socket) => {
     await socket.receive(["NOTICE", "auth-required: authorization denied"]);

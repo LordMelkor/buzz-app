@@ -217,6 +217,9 @@ export function createProfileDirectory(
     const unique = [...new Set(ids)];
     if (!refresh && unique.length > 1024)
       throw new Error("Profile request exceeds the directory budget");
+    // A hit marks the profile recently used, so the budget evicts profiles
+    // nobody has asked for rather than the oldest ones still on screen.
+    for (const id of unique) events.get(id);
     verified?.ensure(unique);
     const signal = controller.signal;
     const waiting = new Set<Promise<void>>();

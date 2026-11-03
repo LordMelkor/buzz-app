@@ -12,6 +12,7 @@ import { TypingPresentation } from "../conversation/typing-presentation";
 import { useTypingBroadcast } from "./useTypingBroadcast";
 import { useEffectEvent } from "react";
 import { useMessageEditScope } from "./MessageEditScope";
+import { selectNewestMessage } from "./message-selection";
 import { useMessageDeletion } from "./MessageManagement";
 import { animate, useReducedMotion } from "motion/react";
 import {
@@ -3177,6 +3178,15 @@ function Composer({
                   !valueRef.current.gifs?.length &&
                   !attachments.items.length
                 ) {
+                  // Like Slack, Up selects the newest message; E edits it.
+                  // ⌘↑ and surfaces without a selectable list keep Up-to-edit.
+                  if (
+                    !event.metaKey &&
+                    selectNewestMessage(editScope?.list.current)
+                  ) {
+                    event.preventDefault();
+                    return;
+                  }
                   const target = lastEditableMessage(session, editableRows());
                   if (target) {
                     event.preventDefault();

@@ -188,6 +188,9 @@ export function createReadState({
   const emit = () => {
     if (!closed) for (const listener of listeners) notify(listener);
   };
+  /** A snapshot read failed, an accepted marker failed to apply, or the
+   * stream dropped, and no snapshot read or resume has succeeded since. */
+  let observationOwed = false;
   const health = (patch: Partial<ReadSyncSnapshot>) => {
     if (patch.status) failedRevision = undefined;
     if (patch.status === "error") resumable = undefined;
@@ -473,6 +476,7 @@ export function createReadState({
         await ingest(events, signal, generation);
         if (closed || generation !== epoch) return;
         if (complete) basis(events);
+        observationOwed = false;
         health({
           status:
             journal.pending || journal.revision > journal.acceptedRevision
@@ -484,8 +488,10 @@ export function createReadState({
         if (journal.pending || journal.revision > journal.acceptedRevision)
           schedule();
       } catch (error) {
-        if (!closed && generation === epoch)
+        if (!closed && generation === epoch) {
+          observationOwed = true;
           health({ status: "error", error: errorText(error) });
+        }
       }
     });
     refreshing = task.finally(() => {
@@ -846,6 +852,8 @@ export function createReadState({
   return {
     ready,
     snapshot: () => snapshot,
+    /** Markers may be missing: a snapshot read is still owed. */
+    owed: () => observationOwed,
     state: () => state,
     localUnread: (key: string) => journal?.localUnread[key],
     revision: () => journal?.revision ?? 0,
@@ -1011,8 +1019,10 @@ export function createReadState({
         try {
           await ingest(events, signal, generation);
         } catch (error) {
-          if (!closed && generation === epoch)
+          if (!closed && generation === epoch) {
+            observationOwed = true;
             health({ status: "error", error: errorText(error) });
+          }
           // A drop cancelled it: the replay may not carry it again, so the
           // snapshot is read again instead of resuming.
           else resumable = undefined;
@@ -1029,6 +1039,7 @@ export function createReadState({
       epoch++;
       // Capacity needs a fresh complete snapshot after a gap.
       snapshotSizes = undefined;
+      observationOwed = true;
       health({ status: "stale", completeness: "unknown" });
     },
     /** The membership route resumed from its cursor and its replay ended
@@ -1045,6 +1056,7 @@ export function createReadState({
         if (!completeness || !journal || closed || generation !== epoch)
           return false;
         resumable = undefined;
+        observationOwed = false;
         const pending =
           journal.pending || journal.revision > journal.acceptedRevision;
         health({
