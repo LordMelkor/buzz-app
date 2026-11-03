@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useEffect, useState } from "react";
 import { afterEach, expect, it } from "vitest";
 import { Select } from "./Select";
@@ -33,7 +33,14 @@ it("separates groups without adding a keyboard selection stop", async () => {
   await user.click(trigger);
   const listbox = await screen.findByRole("listbox");
   expect(listbox.querySelector(".buzz-select-separator")).toBeVisible();
-  await user.keyboard("{ArrowDown}{Enter}");
+  await waitFor(() =>
+    expect(screen.getByRole("option", { name: "Public" })).toHaveFocus(),
+  );
+  await user.keyboard("{ArrowDown}");
+  await waitFor(() =>
+    expect(screen.getByRole("option", { name: "Private" })).toHaveFocus(),
+  );
+  await user.keyboard("{Enter}");
   expect(trigger).toHaveTextContent("Private");
   expect(trigger).toHaveFocus();
 });
