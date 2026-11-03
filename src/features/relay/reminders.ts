@@ -167,6 +167,12 @@ export function createReminders(options: {
   let generation = 0;
   let refreshController: AbortController | undefined;
   let loadingGeneration = -1;
+  /** The list was complete when the connection dropped. */
+  let resumable = false;
+  /** Live edits still decoding. */
+  const receiving = new Set<Promise<void>>();
+  /** A live edit failed to decode since the last full read started. */
+  let lost = false;
   const publishState = (
     next: Omit<RemindersState, "reminders" | "hydrated">,
     hydrated = state.hydrated,
@@ -268,6 +274,7 @@ export function createReminders(options: {
       refreshController = controller;
       const readSignal = AbortSignal.any([signal, controller.signal]);
       loadingGeneration = current;
+      lost = false;
       if (state.status !== "loading") publishState({ status: "loading" });
       let read: Promise<void> | undefined;
       read = (async () => {
@@ -362,27 +369,57 @@ export function createReminders(options: {
         content: content(current, "cancelled"),
       })),
   });
+  function recover() {
+    resumable = false;
+    offline = false;
+    generation++;
+    refreshController?.abort();
+    return capability.refresh();
+  }
   return {
     capability,
     /** The connection dropped: the list is stale until `recover()`'s read lands. */
     stale() {
       offline = true;
+      resumable =
+        state.status === "ready" &&
+        !state.error &&
+        state.hydrated &&
+        !loading &&
+        !lost;
       if (state.status !== "loading") publishState({ status: "loading" });
     },
-    /** The connection is (re-)established: start the read that ends the outage. */
-    recover() {
+    /** The membership route resumed from its cursor and its replay ended
+     * under the limit, so it carried every edit made since the drop. A list
+     * that was complete before the drop is complete again once those edits
+     * are decoded; any other list reads again as `recover()` does. */
+    resume() {
+      if (!resumable || loading) return recover();
+      resumable = false;
       offline = false;
-      generation++;
-      refreshController?.abort();
-      return capability.refresh();
+      const current = ++generation;
+      return Promise.allSettled([...receiving]).then(() => {
+        // A second drop while the edits decode leaves the list stale again.
+        if (signal.aborted || current !== generation || loading || offline)
+          return;
+        // An edit the replay carried but that failed to decode is read again.
+        if (lost) void recover();
+        else publishState({ status: "ready" }, true);
+      });
     },
+    /** The connection is (re-)established: start the read that ends the outage. */
+    recover,
     /** Live delivery from another device; failures leave the last good list. */
     receive(events: readonly RelayEvent[]) {
-      void accept(events)
+      const run = accept(events)
         .then((changed) => {
           if (changed) publishChange();
         })
-        .catch(() => {});
+        .catch(() => {
+          lost = true;
+        })
+        .finally(() => receiving.delete(run));
+      receiving.add(run);
     },
   };
 }

@@ -18,11 +18,12 @@ runs:
         # A faster JS-only job must not freeze an incomplete cache for Rust jobs.
         key: hermit-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('bin/**') }}
     - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+    # A cache miss downloads each tool here; bound and retry a stalled fetch.
     - name: Verify pinned tool entry points
       shell: bash
       run: |
-        ./bin/node --version
-        ./bin/pnpm --version
+        scripts/ci-retry.sh 3 120 ./bin/node --version
+        scripts/ci-retry.sh 3 120 ./bin/pnpm --version
     - name: Resolve pnpm store
       id: pnpm
       shell: bash

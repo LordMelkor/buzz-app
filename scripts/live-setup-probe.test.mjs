@@ -71,8 +71,8 @@ it("measures coverage for the app's subscriber and for raw batch shapes", async 
   const four = await run("client:4", channels);
   const packed = await run("filters:10", channels);
   const single = await run("multi-h:all", channels);
-  // Two ten-channel batches, plus the app's profile and membership routes.
-  expect([one.reqs, four.reqs, packed.reqs, single.reqs]).toEqual([4, 4, 2, 1]);
+  // One live batch and two global routes. The client can also start replay.
+  expect([one.reqs, four.reqs, packed.reqs, single.reqs]).toEqual([4, 5, 2, 1]);
   for (const result of [one, four, packed, single])
     expect(result).toMatchObject({
       channels: 20,
@@ -81,11 +81,35 @@ it("measures coverage for the app's subscriber and for raw batch shapes", async 
       canaryMs: expect.any(Number),
       sockets: 1,
     });
-  // Four serial wire setups at K=1; all four fit in one round trip at K=4.
-  expect(one.coverageMs).toBe(4 * 40);
+  // Three serial live setups at K=1; all three fit in one round trip at K=4.
+  expect(one.coverageMs).toBe(3 * 40);
   expect(four.coverageMs).toBe(40);
   expect(packed.coverageMs).toBe(40);
   expect(single.reqMs).toEqual([40]);
+});
+
+it("keeps live coverage when the separate replay sample fails", async () => {
+  vi.useFakeTimers();
+  let first = true;
+  const result = await run(
+    "client:4",
+    channels,
+    (id) => {
+      if (first) {
+        first = false;
+        return ["EOSE", id];
+      }
+      return ["CLOSED", id, "error: replay unavailable"];
+    },
+    { delay: (id) => (id === "probe-canary" ? 1000 : 40) },
+  );
+  expect(result).toMatchObject({
+    channels: 20,
+    failed: 0,
+    coverageMs: 40,
+    canaryMs: 1000,
+    failures: { "error: replay unavailable": 2 },
+  });
 });
 
 it("reports relay refusals and an idle baseline canary", async () => {
@@ -208,9 +232,10 @@ it("times channel coverage by channel EOSE only", async () => {
 it("keeps a timed-out batch failed when its EOSE arrives after CLOSE", async () => {
   vi.useFakeTimers();
   let first = true;
-  // The first batch answers 30 ms after its 10 s deadline, before the second
-  // batch completes 40 ms after that deadline. Late EOSE must not erase failure.
-  const result = await run("client:1", channels, undefined, {
+  // The first full batch answers 30 ms after its deadline. The second
+  // batch keeps the socket open until 40 ms after that deadline.
+  const batchChannels = Array.from({ length: 2058 }, (_, i) => `channel-${i}`);
+  const result = await run("client:1", batchChannels, undefined, {
     delay: (_id, channel) => {
       if (!channel) return 40;
       const late = first;
@@ -218,7 +243,7 @@ it("keeps a timed-out batch failed when its EOSE arrives after CLOSE", async () 
       return late ? 10030 : 40;
     },
   });
-  expect(result).toMatchObject({ reqs: 4, failed: 10 });
+  expect(result).toMatchObject({ reqs: 5, failed: 2048 });
   expect(result.coverageMs).toBeUndefined();
   expect(result.error).toBeUndefined();
 });

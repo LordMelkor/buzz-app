@@ -641,7 +641,7 @@ it("offers no Archive shortcut while Drafts is shown", async () => {
   await waitFor(() => expect(h.archive.current).toBeUndefined());
 });
 
-it("archives from the row without opening it, remembers filters, and clears an empty unread archive", async () => {
+it("archives from the row without opening it, remembers filters, and resets an empty archive's filters, then its Status", async () => {
   const h = fixture();
   const view = render(h.view);
   await waitFor(() => expect(rows()).toHaveLength(2));
@@ -668,14 +668,78 @@ it("archives from the row without opening it, remembers filters, and clears an e
   expect(rows()).toHaveLength(1);
   await chooseFilter("DMs");
   await screen.findByText("No archived conversations match Unread only");
-  fireEvent.click(
-    screen.getByRole("button", { name: "Show all archived conversations" }),
-  );
+  const filters = screen.getByRole("button", { name: "Inbox filters" });
+  // Clear filters resets Type, From and Unread only, keeping Archived.
+  fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+  await waitFor(() => expect(rows()).toHaveLength(1));
+  expect(filters).toHaveFocus();
+  expect(filters).toHaveTextContent(/^Archived$/);
   expect(screen.getByRole("button", { name: "Unread only" })).toHaveAttribute(
     "aria-pressed",
     "false",
   );
+
+  const [archived] = rows();
+  if (!archived) throw new Error("Missing archived row");
+  fireEvent.click(within(archived).getByRole("button", { name: /^Restore / }));
+  await screen.findByText("No archived conversations in this view");
+  expect(
+    screen.queryByRole("button", { name: "Clear filters" }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Show Inbox" }));
+  await waitFor(() => expect(rows()).toHaveLength(2));
+  expect(filters).toHaveFocus();
+  expect(filters).toHaveTextContent(/^All$/);
+
+  // An unfiltered, empty Inbox has nothing to reset.
+  for (const remaining of [1, 0]) {
+    const [row] = rows();
+    if (!row) throw new Error("Missing Inbox row");
+    const action = within(row).getByRole("button", { name: /^Archive / });
+    await waitFor(() => expect(action).toBeEnabled());
+    fireEvent.click(action);
+    await waitFor(() => expect(rows()).toHaveLength(remaining));
+  }
+  const empty = await screen.findByText("No recent activity in this view");
+  const status = empty.closest<HTMLElement>('[role="status"]');
+  if (!status) throw new Error("Missing empty state");
+  expect(within(status).queryAllByRole("button")).toEqual([]);
 });
+
+it.each([
+  ["DMs", "Activity type"],
+  ["Agents", "Sender"],
+  ["Unread only", "Attention"],
+] as const)(
+  "offers Clear filters when %s empties Inbox, keeping Status",
+  async (label, control) => {
+    const h = fixture();
+    render(h.view);
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    if (control === "Attention")
+      await act(async () => {
+        await h.owner.session.unread.markChannelRead("room");
+      });
+    await chooseFilter(label, control);
+    await screen.findByText(
+      control === "Attention"
+        ? "No unread activity in this view"
+        : "No recent activity in this view",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Show Inbox" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    const filters = screen.getByRole("button", { name: "Inbox filters" });
+    expect(filters).toHaveFocus();
+    expect(filters).toHaveTextContent(/^All$/);
+    expect(screen.getByRole("button", { name: "Unread only" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  },
+);
 
 it.each([
   ["button", true],
@@ -1527,12 +1591,11 @@ function fixture(
     late = keypair(),
     unknown = keypair(),
     relayKey = keypair();
-  let releaseProfiles = () => {};
-  const profilesGate = options.holdProfiles
-    ? new Promise<void>((resolve) => {
-        releaseProfiles = resolve;
-      })
-    : undefined;
+  // Held profiles are unpublished until release, then arrive live. Holding a
+  // read open instead would occupy the one background read slot for good.
+  let profilesHeld = options.holdProfiles ?? false;
+  const unheld = (found: RelayEvent[]) =>
+    profilesHeld ? found.filter((event) => event.kind !== 0) : found;
   let rosterFailure = options.failRoster ?? false;
   let rosterGate: Promise<void> | undefined;
   let rosterStarted = false;
@@ -1717,8 +1780,6 @@ function fixture(
           await auxGate;
           if (failAux) throw new Error("auxiliary history unavailable");
         }
-        if (profilesGate && filters.some((filter) => filter.kinds?.includes(0)))
-          await profilesGate;
         if (filters.some((filter) => filter.kinds?.includes(39002))) {
           rosterStarted = true;
           if (rosterGate) await rosterGate;
@@ -1740,7 +1801,7 @@ function fixture(
               throw new Error("history offline");
           }
         }
-        return filters.flatMap(answer);
+        return unheld(filters.flatMap(answer));
       },
       // The real sizing rewrite behind a pass-through proxy, so rows resolve
       // relay-hosted pictures to the variant they actually requested.
@@ -1831,7 +1892,7 @@ function fixture(
     },
   );
   owners.push(owner);
-  if (!options.failRoster) emit(events);
+  if (!options.failRoster) emit(unheld(events));
   const scope = {
     viewer: viewer.pubkey,
     communityOrigin: "https://relay.test",
@@ -1999,7 +2060,11 @@ function fixture(
       };
     },
     rosterStarted: () => rosterStarted,
-    releaseProfiles,
+    releaseProfiles() {
+      if (!profilesHeld) return;
+      profilesHeld = false;
+      emit(events.filter((event) => event.kind === 0));
+    },
     agent,
     unknown,
     late,

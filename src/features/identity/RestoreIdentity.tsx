@@ -6,18 +6,38 @@ import { Field } from "../../shared/design-system/ui/Field";
 import { Radio, RadioGroup } from "../../shared/design-system/ui/RadioGroup";
 import { type Identity, type RecoveryState, recoveryOff } from "./service";
 
+/**
+ * Recovered backups to restore one from. With `expectedPubkey`, only that key
+ * is offered: when no backup holds it, nothing can be restored, and `onImport`
+ * offers Enter your private key instead. Try recovery again is offered only
+ * where a retry may help, which includes a backup that failed to come back:
+ * it may hold the key.
+ */
 export function RestoreIdentity({
   identity,
   recovery,
+  expectedPubkey,
+  onImport,
 }: {
-  identity: Identity;
+  identity: Pick<
+    Identity,
+    "beginRecovery" | "installRecovery" | "cancelRecovery"
+  >;
   recovery: RecoveryState;
+  /** The hex key linked to the signed-in account, when only it may be restored. */
+  expectedPubkey?: string | undefined;
+  /** No backup holds `expectedPubkey`: leave recovery for the import page. */
+  onImport?: (() => void) | undefined;
 }) {
   const [selected, setSelected] = useState<{
     recovery: RecoveryState;
     handle: string;
   }>();
-  const candidates = recovery.status === "choosing" ? recovery.candidates : [];
+  const recovered = recovery.status === "choosing" ? recovery.candidates : [];
+  const candidates =
+    expectedPubkey === undefined
+      ? recovered
+      : recovered.filter((candidate) => candidate.pubkey === expectedPubkey);
   const labels = publicKeyLabels(
     candidates.map((candidate) => candidate.pubkey),
   );
@@ -29,6 +49,9 @@ export function RestoreIdentity({
       : undefined;
   const handle =
     selected?.recovery === recovery ? selected.handle : current?.handle;
+  const mismatched = recovered.length > 0 && candidates.length === 0;
+  // A backup that failed to come back may hold the key: a retry may help.
+  const failed = recovery.status === "choosing" && recovery.failedCount > 0;
   return (
     <section className="flex flex-col gap-4" aria-label="Restore from backup">
       {recovery.status === "waiting" ? (
@@ -39,6 +62,12 @@ export function RestoreIdentity({
         <p role="status">Canceling recovery…</p>
       ) : recovery.status === "error" ? (
         <p role="alert">{recovery.error}</p>
+      ) : mismatched ? (
+        <p role="alert">
+          {failed
+            ? "Some of your backups couldn’t be recovered, and the ones that were don’t hold the key linked to this account."
+            : "None of your backups holds the key linked to this account, so nothing was restored."}
+        </p>
       ) : candidates.length === 0 ? (
         <p role={recovery.failedCount ? "alert" : "status"}>
           {recovery.failedCount
@@ -104,8 +133,25 @@ export function RestoreIdentity({
           >
             Restore this identity
           </Button>
+        ) : mismatched && onImport ? (
+          <>
+            <Button
+              variant={failed ? "subtle" : "prominent"}
+              onClick={onImport}
+            >
+              Enter your private key
+            </Button>
+            {failed && (
+              <Button
+                variant="prominent"
+                onClick={() => void identity.beginRecovery()}
+              >
+                Try recovery again
+              </Button>
+            )}
+          </>
         ) : (recovery.status === "error" && !recoveryOff(recovery)) ||
-          (recovery.status === "choosing" && candidates.length === 0) ? (
+          (recovery.status === "choosing" && recovered.length === 0) ? (
           <Button
             variant="primary"
             onClick={() => void identity.beginRecovery()}

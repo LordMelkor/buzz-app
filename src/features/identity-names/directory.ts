@@ -21,7 +21,8 @@ export function createNameProvider(
         inputs: readonly unknown[];
         names: Map<string, string>;
         identities: Map<string, NamingIdentity>;
-        // Recently used scopes (LRU), so a hot scope survives interleaved lookups.
+        // Recently used scopes (LRU), so a hot scope survives interleaved lookups
+        // and a sidebar pass over every DM's participants hits on the next pass.
         scopes: Map<
           string | undefined,
           { displayFacts: unknown; labels: ReturnType<NamingPolicy["resolve"]> }
@@ -145,7 +146,7 @@ export function createNameProvider(
     }
     const resolved = resolveLabels(source, selection, displayFacts);
     scopes.delete(id);
-    if (scopes.size >= 8) scopes.delete(scopes.keys().next().value);
+    if (scopes.size >= 256) scopes.delete(scopes.keys().next().value);
     scopes.set(id, { displayFacts, labels: resolved });
     return resolved;
   };

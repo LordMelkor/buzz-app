@@ -3,13 +3,18 @@ import { Section } from "./primitives";
 import { useState, type ReactNode } from "react";
 import { Field } from "../../../../src/shared/design-system/ui/Field";
 import { InputGroup } from "../../../../src/shared/design-system/ui/InputGroup";
-import { CodeIcon } from "../../../../src/shared/design-system/icons";
+import {
+  CodeIcon,
+  Filter2Icon,
+} from "../../../../src/shared/design-system/icons";
 import { Input } from "../../../../src/shared/design-system/ui/Input";
 import { Textarea } from "../../../../src/shared/design-system/ui/Textarea";
 import { SearchField } from "../../../../src/shared/design-system/ui/SearchField";
 import { Select } from "../../../../src/shared/design-system/ui/Select";
 import { Combobox } from "../../../../src/shared/design-system/ui/Combobox";
 import { Button } from "../../../../src/shared/design-system/ui/Button";
+
+import { IconButton } from "../../../../src/shared/design-system/ui/IconButton";
 
 const destinations = [
   {
@@ -31,8 +36,12 @@ const destinations = [
 export const workspaceGroups = [
   {
     label: "Workspaces",
+    options: destinations,
+  },
+  {
+    label: "",
+    separator: true,
     options: [
-      ...destinations,
       { value: "archive", label: "Archived workspace", disabled: true },
     ],
   },
@@ -240,6 +249,21 @@ export function SearchExamples() {
   const [invalid, setInvalid] = useState("unknown");
   return (
     <div className="component-specimen-stack">
+      <FormExample
+        title="Search with a trailing action"
+        description="Search and its filter action share one frame; Clear remains separate."
+        code={
+          '<SearchField value={query} onValueChange={setQuery} trailing={<IconButton aria-label="Filter" icon={<Filter2Icon />} />} />'
+        }
+      >
+        <SearchField
+          value={query}
+          onValueChange={setQuery}
+          trailing={
+            <IconButton aria-label="Filter" icon={<Filter2Icon size={16} />} />
+          }
+        />
+      </FormExample>
       <FormExample
         title="Search palette"
         description="Composer surface, generous input spacing, and larger search text."
@@ -452,6 +476,8 @@ export function SelectExamples() {
           label="Input-height filter"
           variant="compact"
           size="md"
+          leading={<CodeIcon size={20} />}
+          align="end"
           value={inline}
           onValueChange={setInline}
           groups={workspaceGroups}
@@ -698,7 +724,9 @@ ${workspaceComboboxCode}`}
 }
 
 /** Full source for examples that compose the public Combobox parts. */
-export const workspaceComboboxCode = `const destinations = [
+export const workspaceComboboxCode = `import { IconButton } from "../../../../src/shared/design-system/ui/IconButton";
+
+const destinations = [
   {
     value: "studio",
     label: "Design studio",

@@ -27,7 +27,10 @@ test("Buzz channel and message links render, reveal verified targets, and preser
   page,
   app,
 }) => {
-  app.relay.holdProfiles([app.viewer]);
+  const history = app.histories.get("primary/alpha");
+  const target = history.find((row) => row.content === "Broadcast reply");
+  // The linked author stays unnamed until the link is focused, too.
+  app.relay.holdProfiles([app.viewer, target.pubkey]);
   await open(page, app);
   const libraryReads = () =>
     app.report.brokerRequests.filter(({ url }) =>
@@ -35,8 +38,6 @@ test("Buzz channel and message links render, reveal verified targets, and preser
     ).length;
   // Owner inventory survives the startup roster; previews add no further read.
   await expect.poll(libraryReads).toBe(1);
-  const history = app.histories.get("primary/alpha");
-  const target = history.find((row) => row.content === "Broadcast reply");
   const href = `buzz://message?channel=alpha&id=${target.id}`;
   const message = app.append(
     "primary",
@@ -46,19 +47,22 @@ test("Buzz channel and message links render, reveal verified targets, and preser
   const row = page.locator(
     `[data-channel-timeline] [data-message-id="${message.id}"]`,
   );
-  await expect(
-    row.getByRole("link", { name: "Alpha", exact: true }),
-  ).toBeVisible();
+  // A message link names its channel until its author has a name.
+  const unnamed = row.getByRole("link", { name: "Alpha", exact: true });
+  await expect(unnamed).toBeVisible();
   await expect(
     row.getByRole("link", { name: "#Beta", exact: true }),
   ).toBeVisible();
   await expect(row).not.toContainText("<buzz:");
-  const link = row.getByRole("link", { name: "Alpha", exact: true });
-  await expect(link).toHaveCSS("text-decoration-line", "underline");
+  const link = row.getByRole("link", {
+    name: "Alice Fixture in #Alpha",
+    exact: true,
+  });
+  await expect(unnamed).toHaveCSS("text-decoration-line", "underline");
   // Received-bubble links use the message-specific accent role.
-  await expect(link).toHaveCSS(
+  await expect(unnamed).toHaveCSS(
     "color",
-    await link.evaluate((node) => {
+    await unnamed.evaluate((node) => {
       const probe = document.createElement("span");
       probe.style.color = "var(--text-message-link)";
       node.parentElement?.append(probe);
@@ -67,7 +71,7 @@ test("Buzz channel and message links render, reveal verified targets, and preser
       return color;
     }),
   );
-  // Release the held profile while the link is focused, before the navigation
+  // Release the held profiles while the link is focused, before the navigation
   // below: profile reads give up after 10s, and a loaded engine can spend that
   // long on navigation, leaving nothing pending to release.
   const preview = page.getByLabel("Message preview", { exact: true });
@@ -79,12 +83,12 @@ test("Buzz channel and message links render, reveal verified targets, and preser
   await page.keyboard.press("Shift+Tab");
   // WebKit follows macOS's tab-to-links preference; retain keyboard modality
   // while focusing the specific trigger under test.
-  await link.focus();
-  await expect(link).toBeFocused();
+  await unnamed.focus();
+  await expect(unnamed).toBeFocused();
   expect(
-    await link.evaluate((element) => element.matches(":focus-visible")),
+    await unnamed.evaluate((element) => element.matches(":focus-visible")),
   ).toBe(true);
-  const focusedTrigger = await link.elementHandle();
+  const focusedTrigger = await unnamed.elementHandle();
   app.relay.releaseProfiles();
   await expect(
     row.getByRole("button", {
@@ -92,10 +96,11 @@ test("Buzz channel and message links render, reveal verified targets, and preser
       exact: true,
     }),
   ).toBeVisible();
+  // Naming the author relabels the focused anchor in place.
+  await expect(link).toBeFocused();
   expect(await focusedTrigger.evaluate((element) => element.isConnected)).toBe(
     true,
   );
-  await expect(link).toBeFocused();
   await expect(preview).toBeVisible();
   expect(libraryReads()).toBe(1);
   await link.press("Tab");
@@ -176,7 +181,10 @@ test("activating a panel from a linked thread retires the navigation-owned threa
   const row = page.locator(
     `[data-channel-timeline] [data-message-id="${message.id}"]`,
   );
-  const link = row.getByRole("link", { name: "Alpha", exact: true });
+  const link = row.getByRole("link", {
+    name: "Alice Fixture in #Alpha",
+    exact: true,
+  });
   await expect(link).toBeVisible();
   // Virtua holds the list's pointer events off for 150ms after every scroll
   // event, and a late scroll can land after the timeline looks settled. A click
@@ -221,7 +229,10 @@ test("a message link's context menu opens its thread as a tab without leaving th
   const row = page.locator(
     `[data-channel-timeline] [data-message-id="${message.id}"]`,
   );
-  const link = row.getByRole("link", { name: "Beta", exact: true });
+  const link = row.getByRole("link", {
+    name: "Alice Fixture in #Beta",
+    exact: true,
+  });
   await expect(link).toBeVisible();
   await virtuaIdle(page);
   const before = (await state(page)).entry;
@@ -285,7 +296,7 @@ test("a hovered message preview survives scroll anchoring and closes when its li
   );
   const link = page
     .locator(`[data-channel-timeline] [data-message-id="${message.id}"]`)
-    .getByRole("link", { name: "Alpha", exact: true });
+    .getByRole("link", { name: "Alice Fixture in #Alpha", exact: true });
   await expect(link).toBeInViewport();
   await virtuaIdle(page);
   const preview = page.getByLabel("Message preview", { exact: true });
@@ -352,7 +363,7 @@ test("a hovered message preview survives the timeline's scroll-time pointer-even
   );
   const link = page
     .locator(`[data-channel-timeline] [data-message-id="${message.id}"]`)
-    .getByRole("link", { name: "Alpha", exact: true });
+    .getByRole("link", { name: "Alice Fixture in #Alpha", exact: true });
   await expect(link).toBeInViewport();
   await virtuaIdle(page);
   const preview = page.getByLabel("Message preview", { exact: true });

@@ -213,6 +213,9 @@ const PAIRS = [
   ["--text-standard", "--affordance-reaction"],
   ["--text-message-own", "--affordance-reaction-own"],
   ["--text-message-own", "--affordance-message-own-hover"],
+  // An arrival cue lays the regular step across the whole bubble.
+  ["--text-standard", "--affordance-message-highlight"],
+  ["--text-message-own", "--affordance-message-own-highlight"],
   ...["subtle", "subtle-hover", "subtle-pressed"].map((state) => [
     "--text-standard",
     `--affordance-${state}`,
@@ -349,6 +352,8 @@ const SITS_ON = new Map([
   ["--affordance-mention-own", "--surface-message-own"],
   ["--affordance-mention-own-hover", "--surface-message-own"],
   ["--affordance-message-own-hover", "--surface-message-own"],
+  ["--affordance-message-highlight", "--surface-message"],
+  ["--affordance-message-own-highlight", "--surface-message-own"],
   ["--affordance-reaction", "--surface-message"],
   ["--affordance-reaction-own", "--surface-message-own"],
 ]);

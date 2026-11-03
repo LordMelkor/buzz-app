@@ -230,10 +230,26 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          gh release create "v$VERSION" release-assets/* \
-            --target "$SOURCE_SHA" --prerelease --latest=false \
-            --title "Buzz $VERSION (desktop preview)" \
-            --notes "Desktop preview from commit $SOURCE_SHA, built by Actions run $GITHUB_RUN_ID. Includes Apple Silicon macOS (signed and notarized), Windows x64 (unsigned NSIS installer), and Linux x64 (Ubuntu 24.04 deb and AppImage). Windows/Linux still require desktop acceptance. Updater-enabled installs update from the preview feed."
+          # GitHub can fail one call of several (500 publishing the uploaded
+          # draft). Delete a draft a failed try left, then try again. A
+          # published v$VERSION may be an earlier attempt's, already in the
+          # feed, so it is never deleted.
+          for try in 1 2 3; do
+            gh release create "v$VERSION" release-assets/* \
+              --target "$SOURCE_SHA" --prerelease --latest=false \
+              --title "Buzz $VERSION (desktop preview)" \
+              --notes "Desktop preview from commit $SOURCE_SHA, built by Actions run $GITHUB_RUN_ID. Includes Apple Silicon macOS (signed and notarized), Windows x64 (unsigned NSIS installer), and Linux x64 (Ubuntu 24.04 deb and AppImage). Windows/Linux still require desktop acceptance. Updater-enabled installs update from the preview feed." &&
+              exit 0
+            test "$try" -lt 3 || exit 1
+            draft=$(gh release view "v$VERSION" --json isDraft --jq .isDraft) || draft=
+            case "$draft" in
+              true) gh release delete "v$VERSION" --yes || true ;;
+              false)
+                echo "::error::v$VERSION is already published; leaving it in place."
+                exit 1 ;;
+            esac
+            sleep $((try * 15))
+          done
 
   promote_preview:
     name: Promote verified preview

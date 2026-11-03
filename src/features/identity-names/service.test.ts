@@ -355,3 +355,50 @@ it("rejects a second policy until the current plugin is explicitly disabled", as
     await ctx.fiber.dispose();
   }
 });
+
+it("qualifies a verified name through the scoped naming policy", () => {
+  const viewer = "a".repeat(64),
+    other = "b".repeat(64);
+  const source: NameSource = {
+    viewer,
+    profiles: {
+      snapshot: () =>
+        new Map([
+          [viewer, { name: "Alice " }],
+          [
+            other,
+            {
+              name: "Alice",
+              verified: {
+                displayName: "Alice",
+                username: "alice",
+                issuerLabel: "Example",
+                verifiedAt: 1,
+                status: "checked" as const,
+                multipleIssuers: false,
+              },
+            },
+          ],
+        ]),
+      subscribe: () => () => {},
+      ensure: async () => {},
+    },
+    agentLibrary: {
+      snapshot: () => ({ status: "ready", definitions: [], identities: [] }),
+      subscribe: () => () => {},
+      refresh: async () => {},
+      retain: () => () => {},
+    },
+  };
+  const view = bindNames(source, {
+    snapshot: () => [createAgentDirectory()],
+    subscribe: () => () => {},
+  });
+  try {
+    const scoped = view.scope([viewer, other]);
+    expect(scoped(viewer)?.name).toBe("Alice");
+    expect(scoped(other)?.name).toBe(`Alice · ${npubEncode(other).slice(-4)}`);
+  } finally {
+    view.dispose();
+  }
+});

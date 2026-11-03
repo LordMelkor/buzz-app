@@ -425,6 +425,40 @@ it("reuses one policy run per candidate scope across mixed case, outside keys, a
   expect(resolve).toHaveBeenCalledTimes(34);
 });
 
+it("keeps every DM scope of a sidebar pass for the next pass", () => {
+  const profiles = new Map();
+  const library = {
+    status: "ready",
+    definitions: [],
+    identities: [],
+  } as const;
+  const source: NameSource = {
+    profiles: {
+      snapshot: () => profiles,
+      subscribe: () => () => {},
+      ensure: async () => {},
+    },
+    agentLibrary: {
+      snapshot: () => library,
+      subscribe: () => () => {},
+      refresh: async () => {},
+      retain: () => () => {},
+    },
+  };
+  const resolve = vi.fn(defaultNamingPolicy.resolve);
+  const names = bindNames(source, {
+    snapshot: () => [createNameProvider({ id: "spy", resolve })],
+    subscribe: () => () => {},
+  });
+  const dms = Array.from({ length: 40 }, (_, index) => [
+    index.toString(16).padStart(64, "0"),
+  ]);
+  // Two sidebar passes; the second hits every scope.
+  for (const participants of [...dms, ...dms])
+    names.resolve(participants[0] as string, "", participants);
+  expect(resolve).toHaveBeenCalledTimes(dms.length);
+});
+
 it.each(
   [
     '{"about":"Artwork-only agent"}',

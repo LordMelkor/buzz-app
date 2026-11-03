@@ -415,3 +415,27 @@ it("records no absence from a read that filled its page", async () => {
     directory.dispose();
   }
 });
+
+it("moves the purge generation and notifies on every clear, even with nothing loaded", () => {
+  const wire = scriptedTransport(user.pubkey, keypair().pubkey);
+  const reader = createRelayReader(wire.transport);
+  const directory = createProfileDirectory(reader.reader);
+  const changed = vi.fn();
+  const unsubscribe = directory.queries.subscribe(changed);
+  try {
+    expect(directory.queries.generation?.()).toBe(0);
+    directory.clear();
+    expect(directory.queries.generation?.()).toBe(1);
+    expect(changed).toHaveBeenCalledTimes(1);
+    directory.accept([profile(user, { name: "Mic" }, 1)]);
+    changed.mockClear();
+    directory.clear();
+    expect(directory.queries.snapshot().size).toBe(0);
+    expect(directory.queries.generation?.()).toBe(2);
+    expect(changed).toHaveBeenCalledTimes(1);
+  } finally {
+    unsubscribe();
+    directory.dispose();
+    reader.dispose();
+  }
+});

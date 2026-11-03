@@ -28,7 +28,10 @@ import {
 } from "../../features/agents/shared-agents";
 import { ReadError } from "../../features/relay/errors";
 import type { EventData } from "../../features/relay/events";
-import { useRelayConnection } from "../../features/relay/react";
+import {
+  useProfileGeneration,
+  useRelayConnection,
+} from "../../features/relay/react";
 import { useReauthorizedRetry } from "../../features/relay/RecoveryNotice";
 import type { RelayData } from "../../features/relay/service";
 import type { RelaySession } from "../../features/relay/session";
@@ -333,9 +336,11 @@ function Sharer({
     session.profiles.snapshot,
     session.profiles.snapshot,
   );
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     void session.profiles.ensure([pubkey]).catch(() => {});
-  }, [session, pubkey]);
+  }, [session, pubkey, profileGeneration]);
   const profile = profiles.get(pubkey);
   const picture = useAvatarPreview(profile?.picture ?? "", community, "small");
   const npub = canonicalPublicKey(pubkey) ?? pubkey;

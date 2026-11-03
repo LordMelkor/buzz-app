@@ -151,6 +151,7 @@ export function createHuddleComposerClient(token: string) {
         snapshot: () => value().profiles,
         subscribe,
         ensure: (keys) => request("profiles", keys),
+        generation: () => value().profileGeneration,
       },
       emoji: {
         snapshot: () => value().emoji,

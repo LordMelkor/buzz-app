@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import { TeamMentionAvatars } from "./TeamMentionAvatars";
 import { useContext, useEffect, useRef, useState } from "react";
 import { useTeamMentions } from "./use-team-mentions";
@@ -16,7 +17,10 @@ import { avatarMedia } from "../../shared/avatar-source";
 
 // Demand bookkeeping only, not another profile cache. Missing names do not issue
 // the same network request on every query keystroke; explicit retry remains available.
-const demands = new WeakMap<ComposerSession, Set<string>>();
+const demands = new WeakMap<
+  ComposerSession,
+  { generation: number; ids: Set<string> }
+>();
 export function MentionCompletion({
   session,
   scope,
@@ -59,11 +63,17 @@ export function MentionCompletion({
   }>(undefined);
   const [attempt, retry] = useState(0);
   const [error, setError] = useState(false);
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
     if (draftRoster) return;
     session.channels.ensureList();
-    const requested = demands.get(session) ?? new Set<string>();
-    demands.set(session, requested);
+    // An access purge drops loaded names, so its reads start a new budget.
+    let demand = demands.get(session);
+    if (demand?.generation !== profileGeneration) {
+      demand = { generation: profileGeneration, ids: new Set() };
+      demands.set(session, demand);
+    }
+    const requested = demand.ids;
     const ids = memberKey
       .split(":")
       .filter((id) => id && (attempt > 0 || !requested.has(id)))
@@ -77,7 +87,7 @@ export function MentionCompletion({
     return () => {
       live = false;
     };
-  }, [session, memberKey, attempt, draftRoster]);
+  }, [session, memberKey, attempt, draftRoster, profileGeneration]);
   useEffect(() => {
     const members = memberKey ? memberKey.split(":") : [];
     const admitted =

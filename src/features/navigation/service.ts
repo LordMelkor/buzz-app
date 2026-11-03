@@ -18,6 +18,17 @@ export type PageNavigation = Readonly<{
   signal: AbortSignal;
   /** Suppress destination autofocus when the opening control retains focus. */
   focus?: NavigationFocus;
+  /** Back/Forward returned to this visit. A consumer that kept its state may
+   * restore it rather than replay the visit's opening. */
+  traversal?: true;
+  /** This visit's state under a consumer's key, kept for Back/Forward until
+   * the shared store evicts it. */
+  position(key: string): JsonValue | undefined;
+  /** Usable after this presentation is revoked, so leaving can record it.
+   * Every visit and consumer shares one store that keeps the latest 100
+   * entries, so use few keys and small values: never drafts, message bodies,
+   * credentials or authorization. */
+  savePosition(key: string, value: JsonValue): void;
   /** Bind a domain subtree to the exact connection it renders, without another visit. */
   forSession(relay: RelayData, connection: RelaySnapshot): PageNavigation;
   /** Resolve the pending visit's default destination without replacing its caller. */
@@ -44,20 +55,19 @@ export function provideNavigation(
     controller.dispose();
     positions.clear();
   });
+  const position = (id: string) => positions.get(id);
+  function savePosition(id: string, value: JsonValue) {
+    positions.delete(id);
+    positions.set(id, value);
+    while (positions.size > 100) {
+      const first = positions.keys().next().value;
+      if (first) positions.delete(first);
+    }
+  }
   return {
     ...controller,
-    /** Bounded per-visit state; never drafts, message bodies, credentials or authorization. */
-    position(id: string) {
-      return positions.get(id);
-    },
-    savePosition(id: string, value: JsonValue) {
-      positions.delete(id);
-      positions.set(id, value);
-      while (positions.size > 100) {
-        const first = positions.keys().next().value;
-        if (first) positions.delete(first);
-      }
-    },
+    position,
+    savePosition,
     request(
       attempt: OpenAttempt,
       owner: PresentationOwner,
@@ -72,6 +82,7 @@ export function provideNavigation(
       const retainedSignal = retainUnderSettings
         ? new AbortController().signal
         : attempt.signal;
+      const visit = (key: string) => JSON.stringify([attempt.entry.id, key]);
       const sameVisit = (next: OpenAttempt) =>
         next.entry.id === attempt.entry.id &&
         targetKey(next.entry.target) === targetKey(attempt.entry.target);
@@ -86,11 +97,14 @@ export function provideNavigation(
           entryId: attempt.entry.id,
           target: attempt.entry.target,
           signal: retainedSignal,
+          ...(attempt.traversal && { traversal: attempt.traversal }),
           get focus() {
             return active === attempt
               ? (attempt.focus ?? "content")
               : "preserve";
           },
+          position: (key) => position(visit(key)),
+          savePosition: (key, value) => savePosition(visit(key), value),
           resolve: (target) => {
             if (
               retainUnderSettings &&
@@ -202,9 +216,12 @@ function bindPresentation(
     entryId: parent.entryId,
     target: parent.target,
     signal: lifetime.signal,
+    ...(parent.traversal && { traversal: parent.traversal }),
     get focus() {
       return parent.focus ?? "content";
     },
+    position: parent.position,
+    savePosition: parent.savePosition,
     resolve: (target) => valid() && parent.resolve(target),
     complete: (result) => valid() && parent.complete(result),
     forSession(relay, connection) {

@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createRelaySession } from "./session";
 import { createSidebarPreferencesStore } from "./sidebar-preferences-store";
+import { byteSize } from "./budget";
 import { DiscoveryState } from "./discovery";
 import { ReadError } from "./errors";
 import type { HeadPersistence, SavedHead, SavedStartup } from "./persistence";
@@ -83,6 +84,7 @@ function setup(
   cachedOnly = false,
   initialChannelId?: string,
   readIntent = false,
+  maxDiscoveryBytes?: number,
 ) {
   let journal: ReadJournal | undefined;
   const membership = deferred<RelayEvent[]>();
@@ -115,6 +117,7 @@ function setup(
         : {}),
     },
     {
+      ...(maxDiscoveryBytes ? { maxDiscoveryBytes } : {}),
       persistence: storage,
       prepared: true,
       cachedOnly,
@@ -149,11 +152,27 @@ describe("device-local startup", () => {
         roster(relay, `channel-${index}`, [viewer.pubkey]),
       ).sort((a, b) => a.id.localeCompare(b.id)),
     ];
-    // Cached alpha plus these rosters exceeds the 1,024-entry retention cap.
-    capacityRosters = Array.from({ length: 1024 }, (_, i) =>
+    // Large signed snapshot for restore and byte-budget checks.
+    capacityRosters = Array.from({ length: 10_000 }, (_, i) =>
       roster(relay, `other-${i}`, [viewer.pubkey]),
     ).sort((a, b) => a.id.localeCompare(b.id));
-  });
+  }, 60_000);
+
+  it("restores 10,000 signed rosters as cached membership after restart", async () => {
+    const { owner, channels, storage } = setup();
+    await storage.writeStartup?.({
+      discovery: {
+        savedAt: Date.now(),
+        relayAuthor: relay.pubkey,
+        events: [...capacityRosters],
+      },
+    });
+    await owner.restore();
+    expect(channels.list().channels).toHaveLength(10_000);
+    expect(channels.list().channels.every((channel) => channel.cached)).toBe(
+      true,
+    );
+  }, 60_000);
 
   it.each(["roster failure", "roster cancellation", "metadata failure"])(
     "retries restored metadata after %s clears cached membership",
@@ -292,7 +311,7 @@ describe("device-local startup", () => {
   );
 
   it.each([false, true])(
-    "keeps saved names on unchanged confirmation but purges them on omission=%s",
+    "keeps saved names across discovery confirmation and omission=%s",
     async (omitted) => {
       const storage = disk();
       const records = await storage.read();
@@ -315,10 +334,11 @@ describe("device-local startup", () => {
       await vi.waitFor(() =>
         expect(channels.list().channels.some((c) => c.cached)).toBe(false),
       );
+      // A profile is a global relay event; losing a channel does not drop it.
       expect(owner.session.profiles.snapshot().get(viewer.pubkey)?.name).toBe(
-        omitted ? undefined : "Saved name",
+        "Saved name",
       );
-      if (!omitted) expect(names).not.toContain(undefined);
+      expect(names).not.toContain(undefined);
     },
   );
 
@@ -593,9 +613,18 @@ describe("device-local startup", () => {
     expect(channels.window("beta").rows).toEqual([]);
   });
   it.each(["confirm", "omit", "deny"])(
-    "revalidates demanded cached membership omitted by capacity-limited discovery: %s",
+    "revalidates demanded cached membership omitted by byte-limited discovery: %s",
     async (outcome) => {
-      const { owner, channels, query, membership, storage } = setup();
+      const maxBytes = capacityRosters
+        .slice(0, 500)
+        .reduce((bytes, event) => bytes + byteSize(event), 0);
+      const { owner, channels, query, membership, storage } = setup(
+        disk(),
+        false,
+        undefined,
+        false,
+        maxBytes,
+      );
       await owner.restore();
       channels.ensureList();
       await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));

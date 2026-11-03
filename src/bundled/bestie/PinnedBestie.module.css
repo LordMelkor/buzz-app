@@ -1,0 +1,5 @@
+/* The Solo column and composer use this existing named query container to
+ * adapt their width inside the Bestie workspace. */
+.work {
+  container: solo-conversation / inline-size;
+}

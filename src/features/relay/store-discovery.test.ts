@@ -3,6 +3,7 @@ import {
   WORKFLOW_CHANNEL_BATCH,
   WORKFLOW_DEFINITION_LIMIT,
 } from "../workflows/queries";
+import { byteSize } from "./budget";
 import { tag, type RelayEvent } from "./events";
 import { createRelaySession } from "./session";
 import type { ChannelSummary } from "./contracts";
@@ -31,12 +32,12 @@ function named(id: string) {
 }
 // Preserve real page/capacity boundaries; sign metadata lazily when requested.
 beforeAll(() => {
-  memberships = Array.from({ length: 1025 }, (_, i) => {
+  memberships = Array.from({ length: 10_001 }, (_, i) => {
     const id = `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
     names.set(id, { name: `Channel ${i}` });
     return roster(relay, id, [viewer.pubkey]);
   }).sort((a, b) => a.id.localeCompare(b.id));
-});
+}, 60_000);
 afterEach(() => {
   for (const owner of owners.splice(0)) owner.dispose();
 });
@@ -77,8 +78,12 @@ function setup(
     next,
     settled,
     emit: (events: readonly RelayEvent[]) => receive(events),
-    async rosters(count: number) {
-      for (let offset = 0; offset <= count; offset += 500) {
+    async rosters(count: number, exhaust = true) {
+      for (
+        let offset = 0;
+        offset < count || (exhaust && offset === count);
+        offset += 500
+      ) {
         const request = await next(39002);
         const previous = memberships[offset - 1];
         expect(request.filters).toEqual([
@@ -482,44 +487,52 @@ it("keeps membership and earlier names when a later metadata batch fails, then r
   ).toBe(true);
 });
 
-it.each([1024, 1025])(
+it.each([10_000, 10_001])(
   "reports retention coverage truthfully for %i memberships",
   async (count) => {
     const h = setup();
     h.channels.ensureList();
     await h.rosters(count);
-    await h.metadata(1024);
-    expect(h.channels.list().channels).toHaveLength(1024);
-    expect(h.channels.list().coverage).toBe(
-      count > 1024 ? "partial" : undefined,
-    );
+    await h.metadata(count);
+    expect(h.channels.list().channels).toHaveLength(count);
+    expect(h.channels.list().coverage).toBeUndefined();
     expect(h.pending).toHaveLength(0);
   },
+  60_000,
 );
 
-it("does not revoke omitted channels when retained rosters exhaust capacity", async () => {
-  const h = setup();
-  h.emit([roster(relay, "omitted", [viewer.pubkey])]);
+it("does not revoke omitted channels when retained bytes exhaust the budget", async () => {
+  const omitted = roster(relay, "omitted", [viewer.pubkey]);
+  const maxDiscoveryBytes =
+    byteSize(omitted) +
+    memberships
+      .slice(0, 499)
+      .reduce((bytes, event) => bytes + byteSize(event), 0);
+  const h = setup({ maxDiscoveryBytes });
+  h.emit([omitted]);
   h.channels.ensureList();
-  await h.rosters(1024);
-  await h.metadata(1023);
+  await h.rosters(500, false);
+  await h.metadata(499);
   expect(h.channels.list().coverage).toBe("partial");
-  expect(h.channels.list().channels).toHaveLength(1024);
+  expect(h.channels.list().channels).toHaveLength(500);
   expect(
     h.channels.list().channels.some((channel) => channel.id === "omitted"),
   ).toBe(true);
 });
 
 it("keeps coverage partial when exact discovery overflows during omission confirmation", async () => {
-  const h = setup();
-  h.emit(memberships.slice(0, 1024));
-  expect(h.channels.list().channels).toHaveLength(1024);
+  const maxDiscoveryBytes = memberships
+    .slice(0, 1000)
+    .reduce((bytes, event) => bytes + byteSize(event), 0);
+  const h = setup({ maxDiscoveryBytes });
+  h.emit(memberships.slice(0, 1000));
+  expect(h.channels.list().channels).toHaveLength(1000);
 
   h.channels.ensureList();
-  await h.rosters(1000);
+  await h.rosters(976);
   const confirmation = await h.next(39002);
   const omitted = memberships
-    .slice(1000, 1024)
+    .slice(976, 1000)
     .flatMap((event) => tag(event, "d") ?? []);
   const confirmationIds = confirmation.filters[0]?.["#d"] ?? [];
   expect(confirmation.filters[0]).toMatchObject({
@@ -552,7 +565,7 @@ it("keeps coverage partial when exact discovery overflows during omission confir
   expect(h.channels.list().coverage).toBe("partial");
 
   confirmation.respond([]);
-  await h.metadata(1000);
+  await h.metadata(976);
   expect(h.session.live.snapshot().roster.state).toBe("verified");
   expect(h.channels.list().coverage).toBe("partial");
   expect(
@@ -562,13 +575,18 @@ it("keeps coverage partial when exact discovery overflows during omission confir
   expect(h.pending).toHaveLength(0);
 });
 
-it("marks metadata retention overflow as partial without discarding membership", async () => {
-  const h = setup();
-  const member = memberships[1024];
+it("marks metadata byte overflow as partial without discarding membership", async () => {
+  const initial = [...names.keys()].slice(0, 500).map(named);
+  const retained = new Set(initial.map((event) => tag(event, "d")));
+  const member = memberships.find((event) => !retained.has(tag(event, "d")));
   assert.exists(member);
   const id = tag(member, "d");
   assert.exists(id);
-  h.emit([...names.keys()].filter((channelId) => channelId !== id).map(named));
+  const maxDiscoveryBytes =
+    byteSize(member) +
+    initial.reduce((bytes, event) => bytes + byteSize(event), 0);
+  const h = setup({ maxDiscoveryBytes });
+  h.emit(initial);
   h.channels.ensureList();
   (await h.next(39002)).respond([member]);
   (await h.next(39000)).respond([named(id)]);
@@ -1628,8 +1646,16 @@ it("reports landed public pages' matches while the read goes on, to a search tha
   expect(h.pending).toHaveLength(0);
 });
 
+function retainedDiscoveryBytes(count: number) {
+  return memberships.slice(0, count).reduce((bytes, event) => {
+    const id = tag(event, "d");
+    assert.exists(id);
+    return bytes + byteSize(event) + byteSize(named(id));
+  }, 0);
+}
+
 it("leaves a nearly full discovery room for the final public search answer", async () => {
-  const h = setup();
+  const h = setup({ maxDiscoveryBytes: retainedDiscoveryBytes(1023) + 512 });
   h.channels.ensureList();
   await h.rosters(1023);
   await h.metadata(1023);
@@ -1640,8 +1666,8 @@ it("leaves a nearly full discovery room for the final public search answer", asy
     progress: (found) => typed.push(names(found)),
   });
   assert.exists(done);
-  // The one free slot is kept for the final answer: a page in flight would
-  // spend it on a match the better one on the next page then cannot replace.
+  // The remaining bytes fit one final metadata record. Provisional records
+  // cannot consume the budget for a better match on the next page.
   (await take()).respond(first);
   await vi.waitFor(() => expect(typed).toEqual([[]]));
   (await take()).respond(second);
@@ -1653,14 +1679,14 @@ it("leaves a nearly full discovery room for the final public search answer", asy
 });
 
 it("leaves room for the final answers of public searches that run side by side", async () => {
-  const h = setup();
+  const h = setup({ maxDiscoveryBytes: retainedDiscoveryBytes(1022) + 1024 });
   h.channels.ensureList();
   await h.rosters(1022);
   await h.metadata(1022);
   const { id, first, second, take, resolves, names } = openDirectory(h);
   const typed: string[][] = [];
   // Cmd-K's `in:recent-1 nsec-backup`: an exact lookup and a substring search
-  // share the read, and each final answer needs one of the two free slots.
+  // share the read, and each final answer needs its metadata byte budget.
   const found = h.channels.searchPublic?.("nsec-backup", {
     limit: 1,
     progress: (found) => typed.push(names(found)),
@@ -1671,8 +1697,7 @@ it("leaves room for the final answers of public searches that run side by side",
   });
   assert.exists(found);
   assert.exists(scoped);
-  // A page in flight would spend a slot on a match the substring search's
-  // final answer replaces, leaving the exact lookup none.
+  // Provisional metadata cannot consume the bytes for either final answer.
   (await take()).respond(first);
   await vi.waitFor(() => expect(typed).toEqual([[]]));
   (await take()).respond(second);
@@ -1686,7 +1711,7 @@ it("leaves room for the final answers of public searches that run side by side",
 });
 
 it("leaves room for the final answer of a public search that joins after a page lands", async () => {
-  const h = setup();
+  const h = setup({ maxDiscoveryBytes: retainedDiscoveryBytes(1022) + 1024 });
   h.channels.ensureList();
   await h.rosters(1022);
   await h.metadata(1022);
@@ -1697,8 +1722,8 @@ it("leaves room for the final answer of a public search that joins after a page 
     progress: (found) => typed.push(names(found)),
   });
   assert.exists(found);
-  // Alone on the read, a page in flight would still spend a slot the final
-  // answers of this search and of an `in:` lookup joining later both need.
+  // The byte budget stays available for this final answer and for an
+  // exact lookup that can join the read later.
   (await take()).respond(first);
   await vi.waitFor(() => expect(typed).toEqual([[]]));
   // Editing `nsec-backup` to `in:recent-1 nsec-backup` starts only the lookup.

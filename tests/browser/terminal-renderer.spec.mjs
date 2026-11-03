@@ -580,6 +580,9 @@ test("terminal shared controls keep focus, recovery and layout in both modes", a
         );
         if (width === 1280) {
           const splash = drawer.locator("[data-terminal-splash]");
+          const spawns = await page.evaluate(() =>
+            window.terminalPanel.spawns(),
+          );
           await page.evaluate(() => window.terminalPanel.holdClose());
           try {
             await restart.click();
@@ -594,6 +597,11 @@ test("terminal shared controls keep focus, recovery and layout in both modes", a
           } finally {
             await page.evaluate(() => window.terminalPanel.releaseClose());
           }
+          // The restarted shell queues its first write on the paused clock
+          // right after it spawns; run the clock only once that spawn is seen.
+          await expect
+            .poll(() => page.evaluate(() => window.terminalPanel.spawns()))
+            .toBe(spawns + 1);
           await page.clock.runFor(50);
           await expect(splash.locator("canvas")).toBeVisible();
           const bounds = await splash.evaluate((el) => {

@@ -14,6 +14,7 @@ import { watchPageErrors } from "./page-errors.mjs";
 // Ephemeral identities and a network fence prevent any live message or profile write.
 const test = base.extend({
   developmentReact: [false, { scope: "worker" }],
+  builderlabLogin: [false, { scope: "worker" }],
   pluginFixtures: [false, { scope: "worker" }],
   companionFixture: [false, { scope: "worker" }],
   pairingFixture: [false, { scope: "worker" }],

@@ -10,7 +10,7 @@ import { CommunityDialog } from "./CommunityDialog";
 import { createCommunities } from "./service";
 import { createJoinJournal } from "./join-journal";
 import { connectNativeTransport } from "../relay/native";
-import { keypair, signed } from "../relay/testing";
+import { keypair, nativeSignatureChecks, signed } from "../relay/testing";
 import type { RelayEvent } from "../relay/events";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -57,6 +57,8 @@ beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "get_os_idle_seconds") return 0;
     if (command === "identity_restore") return viewer.pubkey;
+    if (command === "relay_verify_signatures")
+      return nativeSignatureChecks(args);
     if (command === "relay_sign")
       return signed(viewer, (args as { event: EventTemplate }).event);
     if (command !== "relay_http")

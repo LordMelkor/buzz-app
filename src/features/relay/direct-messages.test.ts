@@ -11,6 +11,7 @@ function setup(
 ) {
   const viewer = keypair(),
     other = keypair(),
+    agentOwner = keypair(),
     relay = keypair(),
     stranger = keypair();
   const authority = options.untrusted ? stranger : relay;
@@ -32,11 +33,15 @@ function setup(
     if (filters.some((f) => f.kinds?.includes(0)))
       return [
         profile(viewer, { name: "Me" }),
-        profile(other, {
-          name: "Other",
-          picture: "https://example.com/avatar.png",
-          is_agent: true,
-          about: "Unused biography",
+        signed(other, {
+          kind: 0,
+          content: JSON.stringify({
+            name: "Other",
+            picture: "https://example.com/avatar.png",
+            is_agent: true,
+            about: "Unused biography",
+          }),
+          tags: [["auth", agentOwner.pubkey, "", "a".repeat(128)]],
         }),
       ];
     return options.lagging &&
@@ -65,6 +70,7 @@ function setup(
     owner,
     viewer,
     other,
+    agentOwner,
     query,
     publish,
     openDirectMessage,
@@ -186,6 +192,7 @@ it("reads paginated verified profiles, excludes the viewer, and cancels with the
           name: "Other",
           picture: "https://example.com/avatar.png",
           isAgent: true,
+          ownerPubkey: t.agentOwner.pubkey,
         },
       ],
       hasMore: false,

@@ -100,10 +100,11 @@ export function ResizableSidebar({
   };
   return (
     <>
-      <div className={className} style={{ width }}>
+      <div className={`${className} ${styles.sidebar}`} style={{ width }}>
         {children}
       </div>
       <ResizeHandle
+        key={scope}
         width={width}
         setWidth={resize}
         min={SIDEBAR_MIN_WIDTH}

@@ -1,12 +1,15 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { Header } from "../../../shared/design-system/ui/Header";
 import { Button } from "../../../shared/design-system/ui/Button";
+import { brokerBuilderlab } from "../dev-session";
 import { nativeBuilderlab, type BuilderlabSession } from "../session";
 
 const kept = () =>
-  nativeBuilderlab()
-    ? "Buzz keeps your sign-in in your system keychain until you sign out."
-    : "Your credential stays in memory until you sign out or close Buzz.";
+  brokerBuilderlab()
+    ? "Your sign-in stays on the development server through app reloads, until you sign out or the session expires."
+    : nativeBuilderlab()
+      ? "Buzz keeps your sign-in in your system keychain until you sign out."
+      : "Your credential stays in memory until you sign out or close Buzz.";
 
 export function Login({
   session,

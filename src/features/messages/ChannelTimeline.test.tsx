@@ -208,6 +208,9 @@ function setup({
     clientHeight: 668,
     scrollHeight: 3706,
     scrollTop: 2388,
+    ownerDocument: Object.assign(new EventTarget(), {
+      defaultView: new EventTarget(),
+    }),
     focus: vi.fn(),
     getBoundingClientRect: () => ({ top: 0 }),
     querySelector: () => list,
@@ -265,6 +268,7 @@ function setup({
     "data-jump-visible": true | undefined;
     children: unknown[];
     onScroll: (event: unknown) => void;
+    onScrollEnd: (event: unknown) => void;
     onPointerDown: () => void;
     onPointerUp: () => void;
     onWheel: (event: { deltaY: number; ctrlKey: boolean }) => void;
@@ -418,6 +422,9 @@ function setup({
     dispatchScroll() {
       section.props.onScroll({ currentTarget: element });
     },
+    scrollEnd() {
+      section.props.onScrollEnd({ currentTarget: element });
+    },
     scroll(user = true) {
       resized(element);
       render();
@@ -503,7 +510,7 @@ it("persists the event target's reading position at real component cleanup, not 
   const h = setup();
   h.scroll();
   h.unmount();
-  expect(h.saved()).toEqual({ offset: 2388, bottom: false });
+  expect(h.saved()).toEqual({ bottom: false });
 });
 it("a bottom-position event persists bottom intent even when the virtualizer still reports zero", () => {
   const h = setup();
@@ -511,7 +518,54 @@ it("a bottom-position event persists bottom intent even when the virtualizer sti
   h.handle.scrollOffset = 0;
   h.scroll(false);
   h.unmount();
-  expect(h.saved()).toEqual({ offset: 3038, bottom: true });
+  expect(h.saved()).toEqual({ bottom: true });
+});
+// A following reader's place is written once: the row under their viewport
+// changes with every live message, but a bottom place restores without it.
+it("writes a following reader's place once across live messages, and again when their place changes", () => {
+  const mounted = [{ id: "last", y: 42 }];
+  const h = setup({ mounted });
+  const setItem = vi.spyOn(localStorage, "setItem");
+  h.element.scrollTop = 3038;
+  h.scroll(false);
+  h.scrollEnd();
+  expect(setItem).toHaveBeenCalledTimes(1);
+  expect(h.saved()).toEqual({ bottom: true });
+  for (const y of [60, 75]) {
+    h.append();
+    mounted.splice(0, 1, { id: "appended", y });
+    h.element.scrollHeight += 100;
+    h.element.scrollTop += 100;
+    h.dispatchScroll();
+    h.scrollEnd();
+  }
+  expect(setItem).toHaveBeenCalledTimes(1);
+  // Reading back up is a new place.
+  h.element.scrollTop = 2388;
+  h.scroll();
+  h.scrollEnd();
+  expect(setItem).toHaveBeenCalledTimes(2);
+  expect(h.saved()).toMatchObject({
+    bottom: false,
+    anchor: { id: "appended" },
+  });
+  h.unmount();
+  expect(setItem).toHaveBeenCalledTimes(2);
+});
+it("retries a place whose write failed", () => {
+  const h = setup();
+  const setItem = vi
+    .spyOn(localStorage, "setItem")
+    .mockImplementationOnce(() => {
+      throw new Error("quota");
+    });
+  h.element.scrollTop = 3038;
+  h.scroll(false);
+  h.scrollEnd();
+  expect(h.saved()).toBeUndefined();
+  h.unmount();
+  expect(setItem).toHaveBeenCalledTimes(2);
+  expect(h.saved()).toEqual({ bottom: true });
 });
 it("an append follows the actual bottom position, not stale virtualizer position", () => {
   const h = setup();
@@ -608,7 +662,7 @@ it.each([
     h.element.scrollTop = h.element.scrollHeight - h.element.clientHeight - gap;
     h.scroll();
     h.unmount();
-    expect(h.saved()).toEqual({ offset: h.element.scrollTop, bottom });
+    expect(h.saved()).toEqual({ bottom });
   },
 );
 it.each([
@@ -660,17 +714,88 @@ it("a restoration scroll through unmeasured rows does not become bottom follow",
     anchor: { id: "last" },
   });
 });
-it.each([
-  { offset: 1234, bottom: false },
-  { offset: 1234, bottom: false, anchor: { id: "missing", y: 42 } },
-])(
-  "keeps an offset fallback for legacy positions and an anchor outside retained history: %j",
-  (initial) => {
-    const h = setup({ initial });
-    expect(h.handle.scrollTo).toHaveBeenCalledWith(1234);
+it("opens a legacy position without an anchor at the latest message, not a pixel offset", () => {
+  const h = setup({ initial: { offset: 1234, bottom: false } });
+  expect(h.handle.scrollToIndex).toHaveBeenLastCalledWith(1, { align: "end" });
+  expect(h.handle.scrollTo).not.toHaveBeenCalled();
+  h.unmount();
+  expect(h.saved()).toEqual({ bottom: true });
+});
+// On reload the saved IndexedDB head mounts first; the network head and notice
+// rows that may hold the saved row arrive in later rows.
+it("follows the latest message while a saved row is still loading, then restores it when it arrives", () => {
+  const h = setup({
+    initialRows: [timelineMessage("old")],
+    initial: { bottom: false, anchor: { id: "anchor", y: 42 } },
+  });
+  expect(h.handle.scrollToIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+  expect(h.handle.scrollTo).not.toHaveBeenCalled();
+  // The timeline's own end scroll must not replace the pending place.
+  h.scroll(false);
+  expect(h.handle.scrollToIndex).toHaveBeenLastCalledWith(0, { align: "end" });
+  h.setRows([
+    timelineMessage("old"),
+    timelineMessage("anchor"),
+    timelineMessage("new"),
+  ]);
+  expect(h.handle.scrollToIndex).toHaveBeenLastCalledWith(1, {
+    align: "start",
+    offset: -42,
+  });
+  h.unmount();
+  expect(h.saved()).toMatchObject({
+    bottom: false,
+    anchor: { id: "anchor", y: 42 },
+  });
+});
+// Notice rows fill in after each head, above the messages already shown.
+it("restores a saved row on the render that inserts it above the loaded rows", () => {
+  const h = setup({
+    initialRows: [timelineMessage("old")],
+    initial: { bottom: false, anchor: { id: "anchor", y: 42 } },
+  });
+  h.scroll(false);
+  h.handle.scrollToIndex.mockClear();
+  h.setRows([timelineMessage("anchor"), timelineMessage("old")]);
+  expect(h.handle.scrollToIndex).toHaveBeenCalledWith(0, {
+    align: "start",
+    offset: -42,
+  });
+  h.unmount();
+  expect(h.saved()).toMatchObject({
+    bottom: false,
+    anchor: { id: "anchor", y: 42 },
+  });
+});
+it.each(["wheel", "pointer"])(
+  "%s reader input while a saved row is loading retires it, so its arrival does not move the reader",
+  (input) => {
+    const h = setup({
+      initialRows: [timelineMessage("old")],
+      initial: { bottom: false, anchor: { id: "anchor", y: 42 } },
+    });
+    h.scroll(false);
+    h.gesture(input === "wheel");
+    h.handle.scrollToIndex.mockClear();
+    h.setRows([timelineMessage("old"), timelineMessage("anchor")]);
+    expect(h.handle.scrollToIndex).not.toHaveBeenCalledWith(1, {
+      align: "start",
+      offset: -42,
+    });
     h.unmount();
+    expect(h.saved()).not.toMatchObject({ anchor: { id: "anchor" } });
   },
 );
+it("keeps a placed reader in place when a resize finds their saved row gone", () => {
+  const h = setup({ mounted: [{ id: "last", y: 42 }] });
+  h.scroll();
+  h.setRows([timelineMessage("first")]);
+  h.handle.scrollToIndex.mockClear();
+  h.element.clientWidth = 650;
+  h.resize();
+  expect(h.handle.scrollToIndex).not.toHaveBeenCalled();
+  expect(h.handle.scrollTo).not.toHaveBeenCalled();
+});
 it("captures the mounted message at cleanup and restores that anchor after resize", () => {
   const h = setup({ mounted: [{ id: "last", y: 42 }] });
   h.scroll();
@@ -683,7 +808,6 @@ it("captures the mounted message at cleanup and restores that anchor after resiz
   });
   h.unmount();
   expect(h.saved()).toEqual({
-    offset: 2388,
     bottom: false,
     anchor: { id: "last", y: 42 },
   });
@@ -728,9 +852,11 @@ it("local-send navigation releases the restored anchor", () => {
   h.resize();
   mounted.unshift({ id: "first", y: 0 });
   h.reveal("first");
+  // At the bottom, a retained anchor would still hold the place above it.
+  h.element.scrollTop = 3038;
   h.scroll(false);
   h.unmount();
-  expect(h.saved().anchor).toEqual({ id: "first", y: 0 });
+  expect(h.saved()).toEqual({ bottom: true });
 });
 it.each([-200, 800])(
   "a restored row outside the viewport (%s) is not preferred",
@@ -1570,7 +1696,7 @@ it("cancelled resize settles before later reader scroll/save", () => {
   h.element.scrollTop = 1900;
   h.dispatchScroll();
   h.unmount();
-  expect(h.saved()).toEqual({ offset: 1900, bottom: false });
+  expect(h.saved()).toEqual({ bottom: false });
 });
 
 it("list shrinkage clamps the offset without revoking bottom follow", () => {
@@ -1641,7 +1767,7 @@ it("input saves pending DOM movement even if navigation precedes its scroll even
   h.element.scrollTop = 2000;
   h.gesture();
   h.unmount();
-  expect(h.saved()).toEqual({ offset: 2000, bottom: false });
+  expect(h.saved()).toEqual({ bottom: false });
 });
 
 it("growth before a no-scroll click does not revoke the existing bottom intent", () => {

@@ -646,7 +646,7 @@ test("current custom catalog drives typeahead and signed tags across community r
     exact: true,
   });
   await expect(longOption).toBeVisible();
-  const longLabel = longOption.locator("[data-completion-label]");
+  const longLabel = longOption.locator("[data-completion-label] > span");
   await expect(longLabel).toHaveCSS("text-overflow", "ellipsis");
   await expect(longLabel).toHaveCSS("white-space", "nowrap");
   expect(

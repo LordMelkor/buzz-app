@@ -372,6 +372,13 @@ export function createUserStatuses(
       loaded.clear();
       schedule();
     },
+    /** A continuous profiles replay delivered every status change since the
+     * last connection heard the relay, so loaded authors stay loaded. Authors
+     * whose read failed or never ran, during the outage too, read again. */
+    resume() {
+      resetRetries();
+      schedule();
+    },
     dispose() {
       closed = true;
       clear();

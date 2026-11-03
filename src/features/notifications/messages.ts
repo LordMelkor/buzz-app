@@ -1,7 +1,12 @@
+import {
+  REPLY_CORRELATION_MS,
+  type LocalAgentSource,
+} from "../agents/local-activity";
 import type { Communities } from "../communities/service";
 import { communityDestination } from "../communities/destination";
 import type { OpenTarget } from "../navigation/targets";
 import type { IncomingListener } from "../relay/incoming";
+import { relayPartition } from "../relay/partition";
 import type { RelaySession } from "../relay/session";
 import type { NotificationsService } from "./service";
 import { messageNotificationText } from "./content";
@@ -11,6 +16,42 @@ const labels = {
   direct: "Direct messages",
   thread: "Thread replies",
 };
+/** A local Solo run owns its completion feedback; its reply is not a mention alert. */
+export function localSoloAgentReply(
+  activity: LocalAgentSource | undefined,
+  message: {
+    channelId: string;
+    messageId: string;
+    authorId: string;
+    workflowOwnerId?: string | undefined;
+    createdAt: number;
+  },
+  scope?: string,
+): "reply" | "pending" | undefined {
+  const author = message.workflowOwnerId ?? message.authorId;
+  const candidates =
+    activity
+      ?.work()
+      .filter(
+        (item) =>
+          item.soloChat &&
+          (!scope || item.scope === scope) &&
+          item.channelId === message.channelId &&
+          item.agent === author,
+      ) ?? [];
+  const now = Date.now();
+  if (
+    candidates.some((item) =>
+      item.replyMessages?.some(
+        (reply) =>
+          reply.id === message.messageId &&
+          now - reply.acknowledgedAt <= REPLY_CORRELATION_MS,
+      ),
+    )
+  )
+    return "reply";
+  if (candidates.some((item) => item.publishing)) return "pending";
+}
 /** No new subscriptions: this first adapter covers only the selected community. */
 export function notificationAuthorized(
   communities: Communities,
@@ -48,6 +89,7 @@ export function notificationAuthorized(
 export function bindMessageNotifications(
   notifications: NotificationsService,
   communities: Communities,
+  localActivity?: LocalAgentSource,
 ) {
   let closed = false;
   let session: RelaySession | undefined;
@@ -57,6 +99,7 @@ export function bindMessageNotifications(
   let stopAccess = () => {};
   let stopSync = () => {};
   let stopPreferences = () => {};
+  let stopActivity = () => {};
   const update = () => {
     const client = communities.snapshot();
     void notifications.selectViewer(client.viewer);
@@ -71,6 +114,7 @@ export function bindMessageNotifications(
     stopAccess();
     stopSync();
     stopPreferences();
+    stopActivity();
     notifications.revalidate();
     session = relay.session;
     identity = next;
@@ -103,9 +147,18 @@ export function bindMessageNotifications(
         // attention; admission waits until the lookup decides it.
         const category =
           attention.category ?? (attention.pending ? "thread" : undefined);
+        const soloReply =
+          category === "mention"
+            ? localSoloAgentReply(
+                localActivity,
+                message,
+                relayPartition(origin, viewer),
+              )
+            : undefined;
         if (
           !category ||
-          (attention.status !== "eligible" && !attention.pending)
+          (attention.status !== "eligible" && !attention.pending) ||
+          soloReply === "reply"
         )
           continue;
         void notifications.admit(
@@ -126,6 +179,15 @@ export function bindMessageNotifications(
           () => {
             if (!valid() || Date.now() - message.createdAt * 1000 > 120000)
               return false;
+            if (category === "mention") {
+              const current = localSoloAgentReply(
+                localActivity,
+                message,
+                relayPartition(origin, viewer),
+              );
+              if (current === "reply") return false;
+              if (current === "pending") return "wait";
+            }
             const attention = owned.unread.attention(
               message.channelId,
               message.messageId,
@@ -191,6 +253,9 @@ export function bindMessageNotifications(
     stopIncoming = owned.subscribeIncoming(receive);
     // Only reconsider retained live candidates; readiness is not an event source.
     stopSync = owned.unread.subscribeSync(() => notifications.revalidate());
+    stopActivity =
+      localActivity?.subscribeWork(() => notifications.revalidate()) ??
+      (() => {});
     const preferencesChanged = () => {
       notifications.revalidate();
       if (owned.sidebarPreferences.snapshot().status === "idle")
@@ -224,5 +289,6 @@ export function bindMessageNotifications(
     stopAccess();
     stopSync();
     stopPreferences();
+    stopActivity();
   };
 }

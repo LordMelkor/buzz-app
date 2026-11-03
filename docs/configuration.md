@@ -98,9 +98,24 @@ code, with no runtime override or credential field:
   "identityOrigin": "https://identity.example",
   "communityHosts": ["*.communities.example", "custom.example:8443"],
   "adapterBase": "https://identity.example/nip-fa/",
-  "apiBasePath": "/api/goose/"
+  "apiBasePath": "/api/goose/",
+  "signIn": "at-launch",
+  "organization": "Example"
 }
 ```
+
+`signIn` and `organization` are optional. `signIn` is `on-demand` by default:
+the app asks for organization sign-in only when a protected community refuses
+the viewer, or from Settings → Identity. `at-launch` signs in before the app
+opens and again whenever the session ends (see
+[identity](identity.md#sign-in-at-launch)). `organization` is the display name
+used in that sign-in copy, up to 64 characters. Neither is part of the deployment
+fingerprint, so changing them keeps saved sessions.
+
+The first-run welcome screen does not yet support FI builds: its **Sign in
+with email** needs the bundled Builderlab plugin's own network grant, which an
+FI build does not have, so sign-in fails after the browser step (see
+[identity](identity.md)).
 
 Vite uses its existing environment loader; the native plugin-manager build reads
 repository-root `.env.local` and process values using the native dotenv pattern.

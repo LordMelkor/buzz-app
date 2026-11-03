@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../relay/react";
 import { useEffect, useSyncExternalStore } from "react";
 import type { Profile } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
@@ -22,9 +23,11 @@ export function useProfileOwner(
     read,
     read,
   );
+  const profileGeneration = useProfileGeneration(profiles);
   useEffect(() => {
+    void profileGeneration;
     if (owner) void profiles?.ensure([owner], "background").catch(() => {});
-  }, [profiles, owner]);
+  }, [profiles, owner, profileGeneration]);
   const profile = useSyncExternalStore(
     owner && profiles ? profiles.subscribe : noSubscribe,
     owner && profiles ? () => profiles.snapshot().get(owner) : none,

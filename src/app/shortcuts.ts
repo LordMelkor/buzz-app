@@ -20,6 +20,7 @@ export const HOST_SHORTCUT_ORDER = {
   textSizeReset: 60,
   search: 70,
   settings: 80,
+  shortcutsHelp: 81,
   nextTab: 82,
   previousTab: 84,
   close: 85,
@@ -187,6 +188,18 @@ export function registerNavigationShortcuts(
       allowInEditable: true,
       run: () =>
         navigation.open({ version: 1, kind: "home" }).then(() => undefined),
+    }),
+    shortcuts.registerHost({
+      id: "shortcuts-help",
+      title: "Show keyboard shortcuts",
+      order: HOST_SHORTCUT_ORDER.shortcutsHelp,
+      // Not Mod+Shift+? too: macOS reserves it for Help menu search.
+      binding: { key: "/", mod: true },
+      allowInEditable: true,
+      run: () =>
+        navigation
+          .open({ version: 1, kind: "settings", section: "shortcuts" })
+          .then(() => undefined),
     }),
     shortcuts.registerHost({
       id: "navigation-back",

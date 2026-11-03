@@ -50,6 +50,9 @@ pub(crate) enum SocketEvent {
     Refused {
         reason: String,
     },
+    /// The assertion reached its refresh point; the renderer reconnects at
+    /// once with a fresh one. Ends the socket before the relay's deadline.
+    Renew,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -115,18 +118,19 @@ pub(crate) async fn relay_socket_connect(
         // A connection without a token (the relay decides) never expires here.
         let expiry = async {
             match &assertion {
-                Some(assertion) => tokio::time::sleep(assertion.remaining()).await,
+                Some(assertion) => tokio::time::sleep(assertion.renew_in()).await,
                 None => std::future::pending().await,
             }
         };
         tokio::pin!(expiry);
         let mut closing: Option<(u16, String)> = None;
         let mut refused = None;
+        let mut renew = false;
         let ready = tokio::select! {
             result = tokio::time::timeout(Duration::from_secs(10), started) => result.is_ok_and(|value| value.is_ok()),
             _ = cancel.cancelled() => false,
             _ = stop.cancelled() => false,
-            _ = &mut expiry => false,
+            _ = &mut expiry => { renew = true; false },
         };
         if ready {
             let pump = async {
@@ -167,7 +171,7 @@ pub(crate) async fn relay_socket_connect(
             tokio::select! {
                 _ = cancel.cancelled() => {},
                 _ = stop.cancelled() => {},
-                _ = &mut expiry => {},
+                _ = &mut expiry => renew = true,
                 _ = pump => {},
             }
         }
@@ -192,6 +196,7 @@ pub(crate) async fn relay_socket_connect(
             Some(reason) => SocketEvent::Refused {
                 reason: reason.into(),
             },
+            None if renew => SocketEvent::Renew,
             None => SocketEvent::Closed { code, reason },
         });
     });
@@ -302,6 +307,12 @@ async fn upgrade(
     let mut request = relay
         .into_client_request()
         .map_err(|_| "Invalid native socket request")?;
+    request.headers_mut().insert(
+        tokio_tungstenite::tungstenite::http::header::USER_AGENT,
+        crate::relay::user_agent()
+            .parse()
+            .map_err(|_| "Invalid native socket request")?,
+    );
     if let Some(assertion) = &assertion {
         request.headers_mut().insert(
             super::assertion::HEADER,
@@ -384,6 +395,13 @@ mod tests {
         let heads = server.heads().await;
         assert!(
             heads[0].to_ascii_lowercase().contains("upgrade: websocket"),
+            "{}",
+            heads[0]
+        );
+        assert!(
+            heads[0]
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("user-agent: Buzz")),
             "{}",
             heads[0]
         );

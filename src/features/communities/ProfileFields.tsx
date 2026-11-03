@@ -4,6 +4,7 @@ import { Input } from "../../shared/design-system/ui/Input";
 import { AvatarEditor } from "../profiles/AvatarEditor";
 import { avatarPictureError } from "../profiles/avatar-upload";
 import type { PersonalProfile } from "./service";
+import type { VerifiedProfile } from "../relay/verified-profile";
 import { PROFILE_ABOUT_MAX_LENGTH } from "./service";
 import { Textarea } from "../../shared/design-system/ui/Textarea";
 
@@ -32,6 +33,7 @@ export function ProfileFields({
   showAvatar = true,
   autoFocus = false,
   nameRef,
+  verifiedName,
 }: {
   profile: PersonalProfile;
   onChange(profile: PersonalProfile): void;
@@ -42,6 +44,10 @@ export function ProfileFields({
   /** Focuses the display name on mount, for pages whose only task is this form. */
   autoFocus?: boolean;
   nameRef?: Ref<HTMLInputElement>;
+  /** A relay-verified name replaces the editable display name. */
+  verifiedName?:
+    | { name: string; issuerLabel: string; status: VerifiedProfile["status"] }
+    | undefined;
 }) {
   return (
     <div className="grid gap-4">
@@ -55,14 +61,24 @@ export function ProfileFields({
           onChange={(picture) => onChange({ ...profile, picture })}
         />
       )}
-      <Field label="Display name">
+      <Field
+        label="Display name"
+        description={
+          verifiedName
+            ? verifiedName.status === "checked"
+              ? `Name verified by ${verifiedName.issuerLabel}`
+              : `Cached verification from ${verifiedName.issuerLabel}`
+            : undefined
+        }
+      >
         <Input
           ref={nameRef}
           autoComplete="nickname"
           autoFocus={autoFocus}
           required
           disabled={disabled}
-          value={profile.name}
+          readOnly={!!verifiedName}
+          value={verifiedName?.name ?? profile.name}
           maxLength={100}
           onChange={(event) =>
             onChange({ ...profile, name: event.target.value })

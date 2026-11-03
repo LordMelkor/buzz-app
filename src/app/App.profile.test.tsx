@@ -21,6 +21,8 @@ import { metadata, roster } from "../features/relay/testing";
 import type { ComposerInputElement } from "../features/messages/composer-dom";
 import { composerDOMFixture } from "../features/messages/composer-testing";
 import * as communityApi from "../features/communities/api";
+import { communityDestination } from "../features/communities/destination";
+import { readView, writeView } from "../shared/view-state";
 import { sidebarFixtureState } from "./sidebar-plugin.fixture";
 
 /** Any variant of the App-owned "page couldn't open" card. */
@@ -270,8 +272,10 @@ it("retains an owned page sidebar and its draft through Settings sections and Cl
   });
   fireEvent.change(sidebarDraft, { target: { value: "keep this draft" } });
 
+  if (!services) throw new Error("Missing services");
+  const current = services;
   await act(async () => {
-    void services?.navigation.open({
+    void current.navigation.open({
       version: 1,
       kind: "settings",
       section: "appearance",
@@ -280,9 +284,19 @@ it("retains an owned page sidebar and its draft through Settings sections and Cl
   const settings = await screen.findByRole("dialog", { name: "Settings" });
   expect(sidebarDraft).toBeInTheDocument();
   expect(sidebarDraft).toHaveValue("keep this draft");
-  await user.click(
-    within(settings).getByRole("button", { name: "Notifications" }),
-  );
+  // A section button opens its section with the selected community's scope
+  // (openSettingsSection in App.tsx). Make that same navigation here; clicking
+  // the buttons is covered by the unsent-conversation journey below.
+  const { viewer, selected } = current.communities.snapshot();
+  if (!viewer || !selected) throw new Error("Missing selected community");
+  await act(async () => {
+    void current.navigation.open({
+      version: 1,
+      kind: "settings",
+      section: "notifications",
+      scope: { viewer, communityOrigin: communityDestination(selected).url },
+    });
+  });
   await within(settings).findByRole("heading", { name: "Notifications" });
   expect(sidebarDraft).toBeInTheDocument();
   await user.click(
@@ -362,6 +376,67 @@ it("recovers a failed sidebar registration after disabling and re-enabling its p
   }
 });
 
+it("shares its resizable width between a page sidebar and Messages, including the fallback", async () => {
+  await setup();
+  const appServices = services;
+  if (!appServices) throw new Error("Expected app services after setup");
+  const scope =
+    appServices.communities.relay.snapshot().scope ?? "disconnected";
+  act(() => writeView(scope, "channel-sidebar", { width: 344 }));
+  const sidebarColumn = () =>
+    screen.getByRole("separator", { name: "Resize sidebar" })
+      .previousElementSibling as HTMLElement;
+
+  await openSidebarPage("main", "first");
+  expect(await screen.findByText("Beacon page content")).toBeVisible();
+  expect(sidebarColumn()).toHaveStyle({ width: "344px" });
+  fireEvent.keyDown(screen.getByRole("separator", { name: "Resize sidebar" }), {
+    key: "End",
+  });
+  expect(sidebarColumn()).toHaveStyle({ width: "520px" });
+  expect(readView(scope, "channel-sidebar", null)).toMatchObject({
+    width: 520,
+  });
+
+  await act(async () => {
+    await appServices.navigation.open({
+      version: 1,
+      kind: "page",
+      pluginId: "buzz.channels",
+      pageId: "channels",
+    });
+  });
+  expect(
+    await screen.findByRole("complementary", { name: "Sidebar" }),
+  ).toBeVisible();
+  expect(sidebarColumn()).toHaveStyle({ width: "520px" });
+  fireEvent.keyDown(screen.getByRole("separator", { name: "Resize sidebar" }), {
+    key: "Home",
+  });
+  expect(sidebarColumn()).toHaveStyle({ width: "220px" });
+  expect(readView(scope, "channel-sidebar", null)).toMatchObject({
+    width: 220,
+  });
+
+  await openSidebarPage("main", "second");
+  expect(
+    await within(
+      screen.getByRole("complementary", { name: "Beacon sidebar" }),
+    ).findByText("main:second"),
+  ).toBeVisible();
+  expect(sidebarColumn()).toHaveStyle({ width: "220px" });
+
+  await openSidebarPage("main", "broken-sidebar");
+  expect(
+    await screen.findByText("This page’s sidebar is unavailable."),
+  ).toBeVisible();
+  expect(sidebarColumn()).toHaveStyle({ width: "220px" });
+  fireEvent.keyDown(screen.getByRole("separator", { name: "Resize sidebar" }), {
+    key: "End",
+  });
+  expect(sidebarColumn()).toHaveStyle({ width: "520px" });
+});
+
 it.each([
   { when: "before leaving", action: "Dismiss", from: "Messages" },
   { when: "while away", action: "Retry", from: "Messages" },
@@ -425,7 +500,7 @@ it.each([
           screen.getByRole("dialog", { name: "Couldn’t mute Planning" }),
         ).toHaveTextContent("Relay request failed (503)");
       }
-      const returnToMessages = async () => {
+      const returnToMessages = async (muted = false) => {
         await act(async () => {
           await services?.navigation.open({
             version: 1,
@@ -437,7 +512,9 @@ it.each([
         const sidebar = await screen.findByRole("complementary", {
           name: "Sidebar",
         });
-        return within(sidebar).findByRole("button", { name: "Planning" });
+        return within(sidebar).findByRole("button", {
+          name: muted ? /^Planning\s*Muted$/ : "Planning",
+        });
       };
       const returnedRow =
         from === "Messages" ? await returnToMessages() : undefined;
@@ -475,7 +552,7 @@ it.each([
           screen.getByRole("complementary", { name: "Beacon sidebar" }),
         ).toBeVisible();
         expect(screen.getByText("Beacon page content")).toBeVisible();
-        await returnToMessages();
+        await returnToMessages(action === "Retry");
         expect(
           screen.queryByRole("dialog", { name: "Couldn’t mute Planning" }),
         ).toBeNull();
@@ -589,26 +666,19 @@ it("opens profile settings from the account menu header", async () => {
   ).toHaveValue("Community name");
 });
 
-it("reopens profile settings from the same session cache while refreshing", async () => {
-  const user = await setup();
+// Startup has already cached the viewer's profile in this session, so the
+// first open is served from that cache.
+it("opens profile settings from the session cache while refreshing", async () => {
+  await setup();
   if (!services) throw new Error("Missing services");
   const current = services;
-  const openProfile = () =>
-    act(async () => {
-      void current.navigation.open({
-        version: 1,
-        kind: "settings",
-        section: "profile",
-      });
-    });
-  await openProfile();
-  const settings = await screen.findByRole("dialog", { name: "Settings" });
-  await within(settings).findByRole("textbox", { name: "Display name" });
-  await user.click(
-    within(settings).getByRole("button", { name: "Close Settings" }),
-  );
+  // ProfileButton fills that cache from its own background read, after the
+  // relay is ready. Settings seeds its loaded profile from the cache once, on
+  // mount, so wait for the fixture profile to land before opening.
   await waitFor(() =>
-    expect(screen.queryByRole("dialog", { name: "Settings" })).toBeNull(),
+    expect(current.relay.snapshot().session?.profiles.event?.(viewer)?.id).toBe(
+      profile.id,
+    ),
   );
   let release = () => {};
   const read = new Promise<void>((resolve) => {
@@ -625,22 +695,28 @@ it("reopens profile settings from the same session cache while refreshing", asyn
   // feedback so a busy runner cannot cross its one-second boundary first.
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    await openProfile();
+    await act(async () => {
+      void current.navigation.open({
+        version: 1,
+        kind: "settings",
+        section: "profile",
+      });
+    });
     expect(refresh).toHaveBeenCalledWith(
       origin,
       current.relay.snapshot().session,
     );
-    const reopened = screen.getByRole("dialog", { name: "Settings" });
+    const settings = screen.getByRole("dialog", { name: "Settings" });
     expect(
-      within(reopened).getByRole("textbox", { name: "Display name" }),
+      within(settings).getByRole("textbox", { name: "Display name" }),
     ).toHaveValue("Community name");
-    expect(within(reopened).queryByText(/Loading your profile/)).toBeNull();
+    expect(within(settings).queryByText(/Loading your profile/)).toBeNull();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000);
     });
-    expect(within(reopened).getByText(/Loading your profile/)).toBeVisible();
+    expect(within(settings).getByText(/Loading your profile/)).toBeVisible();
     expect(
-      within(reopened).getByRole("textbox", { name: "Display name" }),
+      within(settings).getByRole("textbox", { name: "Display name" }),
     ).toHaveValue("Community name");
   } finally {
     await act(async () => release());

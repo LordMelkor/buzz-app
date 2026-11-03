@@ -66,9 +66,9 @@ export function validEmojiSetTemplate(
   return true;
 }
 /** Original URLs belong in events; display URLs are resolved by session.media. */
-export function emojiTags(
-  event: Pick<EventData, "tags">,
-): readonly CustomEmoji[] {
+export function emojiTags(event: {
+  readonly tags: readonly (readonly string[])[];
+}): readonly CustomEmoji[] {
   const entries = new Map<string, CustomEmoji>();
   for (const [name, value, url] of event.tags) {
     if (name !== "emoji" || !value || !url?.trim()) continue;
@@ -97,6 +97,42 @@ export function* emojiMatches(
     end = match.index + (match[1]?.length ?? 0);
     yield { emoji, start: match.index, end };
   }
+}
+/** The community palette from each member's latest set: the newest entry per
+ * shortcode, with the lower URL breaking a tie. */
+export function communityEmoji(
+  sets: Iterable<{
+    readonly tags: readonly (readonly string[])[];
+    readonly created_at: number;
+  }>,
+): CustomEmoji[] {
+  const winners = new Map<string, { emoji: CustomEmoji; time: number }>();
+  for (const event of sets)
+    for (const emoji of emojiTags(event)) {
+      const old = winners.get(emoji.shortcode);
+      if (
+        !old ||
+        event.created_at > old.time ||
+        (event.created_at === old.time && emoji.url < old.emoji.url)
+      )
+        winners.set(emoji.shortcode, { emoji, time: event.created_at });
+    }
+  return [...winners.values()]
+    .map(({ emoji }) => emoji)
+    .sort((a, b) => a.shortcode.localeCompare(b.shortcode));
+}
+/** NIP-30 tags for the palette shortcodes `content` uses outside links. */
+export function contentEmojiTags(
+  content: string,
+  entries: readonly CustomEmoji[],
+): string[][] {
+  const used = new Map<string, string>();
+  for (const part of messageParts(content)) {
+    if (linkPart(part)) continue;
+    for (const { emoji } of emojiMatches(part, entries))
+      used.set(emoji.shortcode, emoji.url);
+  }
+  return [...used].map(([code, url]) => ["emoji", code, url]);
 }
 export function referencedEmoji(content: string): string[] {
   return [

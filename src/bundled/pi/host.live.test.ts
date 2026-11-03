@@ -111,6 +111,11 @@ try { out.cleanupFailure = await pi.rpc("wait", { agent, submission: b.submissio
 finally { openedHarness.commit = commit; }
 // What a transcript and usage read: the places, and the entries without schemas.
 out.places = (await pi.rpc("places", { agent })).places;
+// Another membership of the same identity has its own durable storage.
+const secondary = agent + "@secondary.example%3A7447";
+await pi.rpc("open", { agent: secondary, tools });
+out.secondaryPlaces = (await pi.rpc("places", { agent: secondary })).places;
+await pi.rpc("close", { agent: secondary });
 out.recorded = Object.keys((await pi.rpc("recorded", { agent, conversation: a.conversation })).models);
 out.entries = (await pi.rpc("entries", { agent, conversation: a.conversation })).entries.map((entry) => [entry.kind, ...(entry.model ?? []).map((message) => message.role + (message.usage ? "+usage" : ""))]);
 // A policy enabled after the process started blocks the same live tool path.
@@ -574,6 +579,14 @@ describe.skipIf(!DEPS)("the Pi host on Pi durable", () => {
       text: "Plain answer",
     });
     expect(out.recorded).toEqual(["faux/faux-1"]);
+    expect(out.secondaryPlaces).toEqual([]);
+    expect(
+      (
+        await stat(
+          join(agents, `${"b".repeat(64)}@secondary.example%3A7447.sqlite`),
+        )
+      ).isFile(),
+    ).toBe(true);
     expect(out.places).toEqual([
       { key: "chan/root", conversation: out.a.conversation, seen: 100 },
     ]);

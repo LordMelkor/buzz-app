@@ -1,12 +1,14 @@
 import { breathing, localActivity } from "../../features/agents/local-activity";
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import type { Profile } from "../../features/relay/contracts";
+import { selectProfiles } from "../../features/relay/profile-selection";
 import type { RelaySession } from "../../features/relay/session";
 import { workingAgents } from "./working-agents";
 
 const noSubscribe = () => () => {};
 const noAgents: readonly string[] = [];
-const noProfiles = new Map<string, Profile>();
+const none: ReadonlyMap<string, Profile> = new Map();
+const noProfiles = () => none;
 
 /** Shared observer/owned-typing signal for Messages and Solo sidebar rows. */
 export function useWorkingAgents(
@@ -67,11 +69,18 @@ export function useWorkingAgents(
   const agents = typingAgents.length
     ? [...new Set([...observed, ...typingAgents])].sort()
     : observed;
-  const agentProfiles = useSyncExternalStore(
-    agents.length ? session.profiles.subscribe : noSubscribe,
-    agents.length ? session.profiles.snapshot : () => noProfiles,
+  // Only these agents' profiles: another profile arriving leaves the row alone.
+  const ids = agents.join(",");
+  const selection = useMemo(
+    () => (ids ? selectProfiles(session.profiles, ids.split(",")) : undefined),
+    [session, ids],
   );
-  const names = new Map(agentProfiles);
+  const names = new Map(
+    useSyncExternalStore(
+      selection?.subscribe ?? noSubscribe,
+      selection?.snapshot ?? noProfiles,
+    ),
+  );
   for (const agent of library?.identities ?? [])
     if (agents.includes(agent.pubkey) && !names.get(agent.pubkey)?.name)
       names.set(agent.pubkey, { ...names.get(agent.pubkey), name: agent.name });

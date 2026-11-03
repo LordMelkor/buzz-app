@@ -611,7 +611,7 @@ it("shows loading and failed current access with refresh, never an empty roster"
     t.failRoster(false);
     t.holdRoster(undefined);
     const refresh = within(dialog).getByRole("button", {
-      name: "Refresh member data",
+      name: "Retry member data",
     });
     await waitFor(() =>
       expect(refresh).not.toHaveAttribute("aria-disabled", "true"),

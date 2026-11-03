@@ -7,8 +7,20 @@ import { appClient } from "../../buzz-mcp/app-client";
 import { callAttentionTool } from "../../buzz-mcp/attention";
 import { callSessionTool } from "../../buzz-mcp/session-tools";
 import { callTool } from "../../buzz-mcp/tools";
-import { createLocalAgentActivity, type WorkOutcome } from "./local-activity";
+import {
+  createLocalAgentActivity,
+  type LocalWork,
+  type WorkOutcome,
+} from "./local-activity";
 import { createHash } from "node:crypto";
+import {
+  mkdtemp,
+  readFile as readLocalFile,
+  writeFile,
+  rm,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Context } from "@deepseek-ai/cordis";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { npubEncode } from "nostr-tools/nip19";
@@ -56,7 +68,7 @@ import { readInterrupted, writeInterrupted } from "./interrupted";
 import { memoryStorage } from "./test-fakes";
 import { SyncedTeams } from "./team-config";
 import { STANDALONE_DEADLINE_MS } from "../agent-harness/standalone";
-import { readTeams, writeTeams } from "./store";
+import { readTeams, writeTeams, type AgentRecord } from "./store";
 import {
   bot,
   channel,
@@ -336,6 +348,9 @@ function runnerGate<T = void>() {
 /** Lets every pending promise chain finish: a macrotask runs only after the
  * microtask queue is empty, so this does not depend on how fast runners are. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+/** The texts of a watch's recent events, oldest first. */
+const texts = (service: AgentsService, slug = "watch/pr") =>
+  service.find(bot)?.attentionHistory?.[slug]?.events?.map(({ text }) => text);
 /** The service's synced config state, which tests set as the relay would. */
 const internals = (service: AgentsService) =>
   service as unknown as {
@@ -1132,7 +1147,18 @@ it("delivers mentions and matching watches once, and never the agent's own event
       ["p", bot],
     ],
   });
-  const watched = deploy("w");
+  const carol = "7".repeat(64);
+  const dave = "8".repeat(64);
+  const erin = "9".repeat(64);
+  const watched = deploy("w", {
+    tags: [
+      ["p", carol],
+      ["p", carol],
+      ["p", "not-a-pubkey"],
+      ["mention", dave],
+      ["mention", erin, "extra"],
+    ],
+  });
   emit({ events: [mention, mention, event("x"), watched], channelId: channel });
   emit({ events: [deploy("own", { pubkey: bot })] });
   await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
@@ -1146,13 +1172,20 @@ it("delivers mentions and matching watches once, and never the agent's own event
   });
   await vi.waitFor(() =>
     expect(
-      service.find(bot)?.attentionHistory?.["watch/channel"]?.output,
-    ).toContain(watched.content),
+      service.find(bot)?.attentionHistory?.["watch/channel"]?.events,
+    ).toEqual([
+      {
+        id: watched.id,
+        at: watched.created_at,
+        author: watched.pubkey,
+        channel,
+        text: watched.content,
+        // Only signed, well-formed tags name who it mentions.
+        mentions: [carol],
+        mentionReferences: [dave],
+      },
+    ]),
   );
-  const output = service.find(bot)?.attentionHistory?.["watch/channel"]?.output;
-  if (!output) throw new Error("missing history");
-  expect(output).toContain(watched.pubkey);
-  expect(output.match(/deploy/g)).toHaveLength(1);
   const history = service.find(bot)?.attentionHistory?.["watch/channel"];
   for (const enabled of [false, true]) {
     const expected = service.find(bot)?.attention["watch/channel"];
@@ -1166,6 +1199,37 @@ it("delivers mentions and matching watches once, and never the agent's own event
   }
   expect(first?.channelId).toBe(channel);
   expect(first?.config).toEqual({ reply: "ok" });
+});
+
+it("records an event wake without a body in place of the history a watch kept before", async () => {
+  const { service, emit } = await setup();
+  await service.create({ type: "example/echo", name: "Echo" });
+  await service.save(bot, { attentionEnabled: true });
+  const records = (
+    service as unknown as { records: Record<string, AgentRecord> }
+  ).records;
+  const record = records[bot];
+  if (!record) throw new Error("fixture");
+  records[bot] = {
+    ...record,
+    attentionHistory: { "watch/channel": { lastWokeAt: 1, output: "before" } },
+  };
+  const blank = deploy("blank", { content: "" });
+  emit({ events: [blank], channelId: channel });
+  await vi.waitFor(() =>
+    expect(service.find(bot)?.attentionHistory?.["watch/channel"]).toEqual({
+      lastWokeAt: expect.any(Number),
+      events: [
+        {
+          id: blank.id,
+          at: blank.created_at,
+          author: blank.pubkey,
+          channel,
+          text: "",
+        },
+      ],
+    }),
+  );
 });
 
 it("gives each member its teams' roster and instructions, and drops a deleted agent from its teams", async () => {
@@ -1584,6 +1648,250 @@ it("publishes an agent's reply in a chat its owner is still starting once the st
   land();
   await vi.waitFor(() => expect(replied).toBe(true));
   expect(await published(native, 9)).toHaveLength(1);
+});
+
+it("confirms first-turn Solo metadata before its reply publish is acknowledged", async () => {
+  const { service, run, emit, session, activity, native } = await setup();
+  await service.create({ type: "example/echo", name: "Echo" });
+  let land = () => {};
+  const starting = new Promise<void>((resolve) => {
+    land = resolve;
+  });
+  let acknowledge = (_event: RelayEvent) => {};
+  const published = new Promise<RelayEvent>((resolve) => {
+    acknowledge = resolve;
+  });
+  native.publish.mockImplementationOnce(() => published);
+  vi.spyOn(session.channelWrites, "starting").mockImplementation((id) =>
+    id === channel ? starting : undefined,
+  );
+  const list = session.channels.list();
+  vi.spyOn(session.channels, "list").mockImplementation(() => ({
+    ...list,
+    channels: list.channels.map((row) =>
+      row.id === channel
+        ? {
+            ...row,
+            name: "First Solo",
+            channelType: "solo",
+            pending: true,
+          }
+        : row,
+    ),
+  }));
+  run.mockImplementationOnce(async ({ agent }) => {
+    await agent.publish({ kind: 9, content: "hi", tags: [["h", channel]] });
+  });
+  emit({
+    events: [
+      event("first-solo", {
+        tags: [
+          ["h", channel],
+          ["p", bot],
+        ],
+      }),
+    ],
+    channelId: channel,
+  });
+  await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+  expect(activity.reader.work()[0]).not.toHaveProperty("soloChat");
+
+  const states: string[] = [];
+  const stop = activity.reader.subscribeWork(() => {
+    const work = activity.reader.work()[0];
+    states.push(`${work?.state}:${work?.soloChat === true}`);
+  });
+  land();
+  await vi.waitFor(() =>
+    expect(activity.reader.work()[0]).toMatchObject({
+      state: "working",
+      soloChat: true,
+      conversationName: "First Solo",
+      publishing: 1,
+    }),
+  );
+  acknowledge(
+    event("first-reply", {
+      pubkey: bot,
+      content: "hi",
+      tags: [["h", channel]],
+    }),
+  );
+  await vi.waitFor(() =>
+    expect(activity.reader.work()[0]).toMatchObject({
+      state: "done",
+      replyMessages: [
+        {
+          id: "first-reply".padEnd(64, "0"),
+          acknowledgedAt: expect.any(Number),
+        },
+      ],
+    }),
+  );
+  stop();
+  expect(states).toContain("working:true");
+  expect(activity.reader.work()[0]).not.toHaveProperty("publishing");
+});
+
+it("releases own-channel reply correlation when publication fails", async () => {
+  const { service, run, emit, activity, native } = await setup();
+  await service.create({ type: "example/echo", name: "Echo" });
+  let fail = (_error: Error) => {};
+  native.publish.mockImplementationOnce(
+    () =>
+      new Promise<RelayEvent>((_resolve, reject) => {
+        fail = reject;
+      }),
+  );
+  run.mockImplementationOnce(async ({ agent }) => {
+    await expect(
+      agent.publish({ kind: 9, content: "hi", tags: [["h", channel]] }),
+    ).rejects.toThrow("offline");
+  });
+  emit({
+    events: [
+      event("failed-reply", {
+        tags: [
+          ["h", channel],
+          ["p", bot],
+        ],
+      }),
+    ],
+    channelId: channel,
+  });
+  await vi.waitFor(() =>
+    expect(activity.reader.work()[0]).toMatchObject({ publishing: 1 }),
+  );
+  fail(new Error("offline"));
+  await vi.waitFor(() =>
+    expect(activity.reader.work()[0]).toMatchObject({ state: "done" }),
+  );
+  expect(activity.reader.work()[0]).not.toHaveProperty("publishing");
+  expect(activity.reader.work()[0]).not.toHaveProperty("replyMessages");
+});
+
+it("retains reply correlation when publication has an uncertain outcome", async () => {
+  const { service, run, emit, activity, native } = await setup();
+  await service.create({ type: "example/echo", name: "Echo" });
+  const id = "d".repeat(64);
+  native.publish.mockRejectedValueOnce(
+    new Error(
+      `Agent event ${id} unconfirmed; it may or may not have been accepted`,
+    ),
+  );
+  run.mockImplementationOnce(async ({ agent }) => {
+    await expect(
+      agent.publish({ kind: 9, content: "hi", tags: [["h", channel]] }),
+    ).rejects.toThrow("may or may not have been accepted");
+  });
+  emit({
+    events: [
+      event("uncertain-request", {
+        tags: [
+          ["h", channel],
+          ["p", bot],
+        ],
+      }),
+    ],
+    channelId: channel,
+  });
+  await vi.waitFor(() =>
+    expect(activity.reader.work()[0]).toMatchObject({
+      state: "done",
+      replyMessages: [{ id, acknowledgedAt: expect.any(Number) }],
+    }),
+  );
+  expect(activity.reader.work()[0]).not.toHaveProperty("publishing");
+});
+
+it("does not make ordinary work Solo when it publishes into a Solo chat", async () => {
+  const { service, run, emit, session, activity } = await setup();
+  await service.create({ type: "example/echo", name: "Echo" });
+  const solo = "solo-destination";
+  const list = session.channels.list();
+  vi.spyOn(session.channels, "list").mockReturnValue({
+    ...list,
+    channels: [
+      ...list.channels,
+      {
+        ...list.channels[0],
+        id: solo,
+        name: "Another Solo chat",
+        channelType: "solo",
+      },
+    ],
+  });
+  run.mockImplementationOnce(async ({ agent }) => {
+    await agent.publish({
+      kind: 9,
+      content: "cross-post",
+      tags: [["h", solo]],
+    });
+  });
+  emit({
+    events: [
+      event("ordinary-request", {
+        tags: [
+          ["h", channel],
+          ["p", bot],
+        ],
+      }),
+    ],
+    channelId: channel,
+  });
+  await vi.waitFor(() =>
+    expect(activity.reader.work()[0]).toMatchObject({ state: "done" }),
+  );
+  expect(activity.reader.work()[0]).not.toHaveProperty("soloChat");
+  expect(activity.reader.work()[0]).not.toHaveProperty("conversationName");
+  expect(activity.reader.work()[0]).not.toHaveProperty("replyMessages");
+});
+
+it("does not confirm first-turn Solo metadata when chat start fails", async () => {
+  const { service, run, emit, session, activity } = await setup();
+  await service.create({ type: "example/echo", name: "Echo" });
+  let fail = () => {};
+  const starting = new Promise<void>((_resolve, reject) => {
+    fail = () => reject(new Error("Chat creation failed"));
+  });
+  starting.catch(() => {});
+  vi.spyOn(session.channelWrites, "starting").mockImplementation((id) =>
+    id === channel ? starting : undefined,
+  );
+  const list = session.channels.list();
+  vi.spyOn(session.channels, "list").mockImplementation(() => ({
+    ...list,
+    channels: list.channels.map((row) =>
+      row.id === channel
+        ? {
+            ...row,
+            name: "Failed Solo",
+            channelType: "solo",
+            pending: true,
+          }
+        : row,
+    ),
+  }));
+  run.mockImplementationOnce(async () => {
+    await starting.catch(() => {});
+  });
+  emit({
+    events: [
+      event("failed-first-solo", {
+        tags: [
+          ["h", channel],
+          ["p", bot],
+        ],
+      }),
+    ],
+    channelId: channel,
+  });
+  await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+  fail();
+  await vi.waitFor(() =>
+    expect(activity.reader.work()[0]).toMatchObject({ state: "done" }),
+  );
+  expect(activity.reader.work()[0]).not.toHaveProperty("soloChat");
 });
 
 it("keeps room for mentions however much watch work waits", async () => {
@@ -8860,6 +9168,44 @@ it("adds a plugin's tab to every agent's settings until the plugin goes", async 
   expect(service.addedTabs()).toEqual([]);
 });
 
+it("renders a tab's views again when its `when` may answer differently", async () => {
+  const { service, ctx } = await setup();
+  const owner = ctx.extend({
+    pluginOwner: Object.freeze({ id: "buzz.bestie", revision: "bundled" }),
+  });
+  const listeners = new Set<() => void>();
+  const tab = {
+    id: "bestie",
+    title: "Bestie",
+    component: () => null,
+    when: () => true,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => void listeners.delete(listener);
+    },
+  };
+  const plugin = owner.plugin({
+    inject: ["agents"],
+    apply: (child: Context) => child.agents.registerTab(tab),
+  });
+  await plugin;
+  expect(listeners.size).toBe(1);
+  const before = service.snapshot();
+  const listener = vi.fn();
+  service.subscribe(listener);
+  for (const changed of listeners) changed();
+  expect(service.snapshot()).not.toBe(before);
+  expect(listener).toHaveBeenCalled();
+  for (const bad of [
+    { ...tab, id: "other", when: true as never },
+    { ...tab, id: "other", subscribe: "soon" as never },
+  ])
+    expect(() => owner.agents.registerTab(bad)).toThrow(/Agent tabs need/);
+  // The host stops listening when the plugin goes.
+  await plugin.dispose();
+  expect(listeners.size).toBe(0);
+});
+
 it("refuses a hosted type that also runs here", async () => {
   const { plugin } = await setup();
   const { type } = cloud();
@@ -8985,6 +9331,61 @@ it("keeps what it lists when the community's records cannot be read", async () =
   });
 });
 
+it.each([
+  ["confirmed Solo", { channelType: "solo" }, true],
+  ["DM", { channelType: "dm" }, false],
+  ["cached Solo", { channelType: "solo", cached: true }, false],
+  ["pending Solo", { channelType: "solo", pending: true }, false],
+  [
+    "metadata-pending Solo",
+    { channelType: "solo", metadataPending: true },
+    false,
+  ],
+] as const)(
+  "captures completion metadata for %s agent work",
+  async (_kind, channelPatch, eligible) => {
+    const f = await setup();
+    const list = f.session.channels.list();
+    vi.spyOn(f.session.channels, "list").mockReturnValue({
+      ...list,
+      channels: list.channels.map((row) =>
+        row.id === channel
+          ? { ...row, name: " Launch planning ", ...channelPatch }
+          : row,
+      ),
+    });
+    await f.service.create({ type: "example/echo", name: "Echo" });
+    f.emit({
+      events: [
+        event("completion-metadata", {
+          tags: [
+            ["h", channel],
+            ["p", bot],
+          ],
+        }),
+      ],
+      channelId: channel,
+    });
+    try {
+      await vi.waitFor(() => expect(f.run).toHaveBeenCalledOnce());
+      expect(f.activity.reader.work()[0]).toMatchObject({
+        channelId: channel,
+        ...(eligible
+          ? { soloChat: true, conversationName: "Launch planning" }
+          : {}),
+      });
+      if (!eligible) {
+        expect(f.activity.reader.work()[0]).not.toHaveProperty("soloChat");
+        expect(f.activity.reader.work()[0]).not.toHaveProperty(
+          "conversationName",
+        );
+      }
+    } finally {
+      await f.ctx.fiber.dispose();
+    }
+  },
+);
+
 it("projects accepted queued work and keeps working past handover until the plugin's actual result", async () => {
   const f = await setup();
   await f.service.create({ type: "example/echo", name: "Echo" });
@@ -9069,6 +9470,62 @@ it("shows a request whose run failed before handing anything over as failed, wit
       }),
     );
   } finally {
+    await f.ctx.fiber.dispose();
+  }
+});
+
+it("retries a failed request as the same mention, which stays seen and is saved as working only while it runs", async () => {
+  const f = await setup({ resumes: true });
+  await f.service.create({ type: "example/echo", name: "Echo" });
+  const asked = event("1", {
+    tags: [
+      ["h", channel],
+      ["p", bot],
+    ],
+  });
+  let finish!: () => void;
+  f.run.mockRejectedValueOnce(new Error("Provider unavailable"));
+  f.run.mockImplementationOnce(({ workingUntil }) =>
+    workingUntil(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    ),
+  );
+  f.emit({ events: [asked], channelId: channel });
+  try {
+    await vi.waitFor(() =>
+      expect(f.activity.reader.work()[0]).toMatchObject({
+        state: "error",
+        retryable: true,
+      }),
+    );
+    expect(readInterrupted(f.storage)).toEqual({});
+    f.activity.reader.retry?.(f.activity.reader.work()[0] as LocalWork);
+    expect(f.activity.reader.work()).toEqual([
+      expect.objectContaining({ messageId: asked.id, state: "waiting" }),
+    ]);
+    await vi.waitFor(() => expect(f.run).toHaveBeenCalledTimes(2));
+    expect(f.run.mock.calls[1]?.[0]).toMatchObject({
+      trigger: { type: "mention", event: asked },
+      channelId: channel,
+    });
+    expect(f.run.mock.calls[1]?.[0].trigger).not.toHaveProperty("resumed");
+    expect(f.activity.reader.work()[0]?.state).toBe("working");
+    expect(readInterrupted(f.storage)).toEqual({
+      [bot]: { [asked.id]: channel },
+    });
+    // Still seen: heard again, it is not given a third time.
+    f.emit({ events: [asked], channelId: channel });
+    await settle();
+    expect(f.run).toHaveBeenCalledTimes(2);
+    finish();
+    await vi.waitFor(() =>
+      expect(f.activity.reader.work()[0]?.state).toBe("done"),
+    );
+    expect(readInterrupted(f.storage)).toEqual({});
+  } finally {
+    finish?.();
     await f.ctx.fiber.dispose();
   }
 });
@@ -9888,9 +10345,7 @@ describe("Attention plugin sources", () => {
         expect(run).not.toHaveBeenCalled();
         expect(service.find(bot)?.attention["watch/pr"]).toBeDefined();
         expect(service.find(bot)?.sourceRuns?.["watch/pr"]).toBeDefined();
-        expect(service.find(bot)?.attentionHistory?.["watch/pr"]?.output).toBe(
-          "build failed",
-        );
+        expect(texts(service)).toEqual(["build failed"]);
         return;
       }
       await vi.waitFor(() =>
@@ -9969,7 +10424,7 @@ describe("Attention plugin sources", () => {
       ),
     ).toBe(true);
   });
-  it("separates source history emits that do not end in a newline", async () => {
+  it("keeps each source emit as its own recent event", async () => {
     const { service, plugin, native } = await sourceFixture();
     plugin.agents.addAttentionSource({
       id: "command",
@@ -9984,10 +10439,28 @@ describe("Attention plugin sources", () => {
     await service.create({ type: "example/echo", name: "Echo" });
     await vi.waitFor(() => expect(native.claim).toHaveBeenCalledWith(bot, 0));
     await service.save(bot, { attentionEnabled: true, attention: watches });
+    await vi.waitFor(() => expect(texts(service)).toEqual(["first", "second"]));
+    await service.save(bot, { attentionEnabled: false });
+  });
+  it("keeps the end of long source output, where a failure is summarised", async () => {
+    const { service, plugin, native } = await sourceFixture();
+    const summary = "\n2 tests failed";
+    plugin.agents.addAttentionSource({
+      id: "command",
+      run: async ({ emit, signal }) => {
+        emit(`${"x".repeat(5000)}${summary}`);
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+      },
+    });
+    await service.create({ type: "example/echo", name: "Echo" });
+    await vi.waitFor(() => expect(native.claim).toHaveBeenCalledWith(bot, 0));
+    await service.save(bot, { attentionEnabled: true, attention: watches });
     await vi.waitFor(() =>
-      expect(service.find(bot)?.attentionHistory?.["watch/pr"]?.output).toBe(
-        "first\nsecond",
-      ),
+      expect(texts(service)).toEqual([
+        `${"x".repeat(2000 - summary.length)}${summary}`,
+      ]),
     );
     await service.save(bot, { attentionEnabled: false });
   });
@@ -10147,9 +10620,7 @@ describe("Attention plugin sources", () => {
       try {
         await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
         await vi.waitFor(() =>
-          expect(
-            service.find(bot)?.attentionHistory?.["watch/pr"]?.output,
-          ).toBe("final output\n"),
+          expect(texts(service)).toEqual(["final output\n"]),
         );
         expect(
           service.find(bot)?.attentionHistory?.["watch/pr"]?.lastWokeAt,
@@ -10167,9 +10638,7 @@ describe("Attention plugin sources", () => {
       await settle();
       if (outcome !== "success") {
         expect(service.find(bot)?.attention["watch/pr"]).toBeDefined();
-        expect(service.find(bot)?.attentionHistory?.["watch/pr"]?.output).toBe(
-          "final output\n",
-        );
+        expect(texts(service)).toEqual(["final output\n"]);
       } else {
         await vi.waitFor(() =>
           expect(service.find(bot)?.attention["watch/pr"]).toBeUndefined(),
@@ -10220,9 +10689,7 @@ describe("Attention plugin sources", () => {
       await settle();
       expect(produce).toHaveBeenCalledTimes(1);
       expect(service.find(bot)?.attention["watch/pr"]).toBeDefined();
-      expect(service.find(bot)?.attentionHistory?.["watch/pr"]?.output).toBe(
-        "final output",
-      );
+      expect(texts(service)).toEqual(["final output"]);
     },
   );
   it("delivers nonempty output, preserves queued output on completion, and does not rerun after restart", async () => {
@@ -11224,6 +11691,111 @@ const heldCommand = async () => ({
   kill: async () => {},
   write: async () => {},
   end: async () => {},
+});
+
+it("sends actual private-file bytes through the app-owned sourceCommand reader and existing attachment publication", async () => {
+  const { service, plugin, ctx, native } = await setup();
+  await service.create({ type: "example/echo", name: "Echo" });
+  await vi.waitFor(() => expect(plugin.agents.handle(bot)).toBeDefined());
+  const dir = await mkdtemp(join(tmpdir(), "buzz-reader-"));
+  const path = join(dir, "private-file");
+  const bytes = new Uint8Array([0, 159, 255, 17]);
+  await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+  let request!: import("../host/service").McpHandler;
+  let stop!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    stop = resolve;
+  });
+  // This is the external native read boundary, not an attachment implementation:
+  // read the real fixture path, letting AgentsService/appClient/core attach do the rest.
+  const readFile = vi.fn(
+    async (path: string) => new Uint8Array(await readLocalFile(path)),
+  );
+  ctx.provide("host", {
+    spawn: heldCommand,
+    readFile,
+    serveMcp: async (handler: import("../host/service").McpHandler) => {
+      request = handler;
+      return {
+        url: "http://127.0.0.1:1234/mcp",
+        headers: [],
+        close: async () => {
+          stop();
+        },
+        closed,
+      };
+    },
+  } as unknown as import("../host/service").Host);
+  const consumer = ctx.extend({
+    pluginOwner: Object.freeze({ id: "consumer", revision: "one" }),
+  });
+  const controller = new AbortController();
+  const connection = await sourceCommand(service, consumer, {
+    signal: controller.signal,
+    channel,
+  });
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  native.upload.mockResolvedValue({
+    url: "https://files.example.test/bytes",
+    sha256: hash,
+    size: bytes.length,
+    type: "application/octet-stream",
+  });
+  native.publish.mockClear();
+  try {
+    const result = await request({
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "send",
+        arguments: {
+          text: "File attached",
+          files: [path],
+          audience: "everyone",
+        },
+      },
+    });
+    expect(result).not.toHaveProperty("result.isError", true);
+    expect(readFile).toHaveBeenCalledExactlyOnceWith(path, undefined);
+    expect(native.upload).toHaveBeenCalledExactlyOnceWith(
+      member(bot),
+      Buffer.from(bytes).toString("base64"),
+      "application/octet-stream",
+    );
+    const published = native.publish.mock.calls.find(
+      ([, template]) => template.kind === 9,
+    );
+    expect(published?.[0]).toEqual(member(bot));
+    expect(published?.[1].tags).toContainEqual(["h", channel]);
+    expect(published?.[1].tags).toContainEqual(
+      expect.arrayContaining(["imeta", `x ${hash}`, "filename private-file"]),
+    );
+    expect(published?.[1].content).toContain(
+      "https://files.example.test/bytes",
+    );
+    // A path with the same label but missing bytes must never synthesize an upload.
+    native.upload.mockClear();
+    native.publish.mockClear();
+    const missing = await request({
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "send",
+        arguments: {
+          text: "Missing",
+          files: [join(dir, "missing")],
+          audience: "everyone",
+        },
+      },
+    });
+    expect(missing).toHaveProperty("result.isError", true);
+    expect(native.upload).not.toHaveBeenCalled();
+    expect(native.publish).not.toHaveBeenCalled();
+  } finally {
+    await connection.close();
+    controller.abort();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 it.each(["close", "unload", "abort"])(

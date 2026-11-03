@@ -12,6 +12,7 @@ import type { BuzzClient } from "./client";
 import { BUZZ_PROMPT } from "./prompt";
 import { respond } from "./rpc";
 import { turnNote } from "./session-tools";
+import { SOLO_WORKER_TOOLS } from "./solo-worker";
 import { TOOLS } from "./tools";
 
 const channel = "0b8e2a3c-1d4f-4a5b-8c6d-7e8f9a0b1c2d";
@@ -97,7 +98,9 @@ describe("the tool list", () => {
   it("always offers the attention tools with their guidance, and says each turn whether attention is on", async () => {
     // One list whatever the setting, so turning attention on or off never
     // replaces a session or its cached prompt prefix.
-    const names = [...TOOLS, ...ATTENTION_TOOLS].map((tool) => tool.name);
+    const names = [...TOOLS, ...ATTENTION_TOOLS, ...SOLO_WORKER_TOOLS].map(
+      (tool) => tool.name,
+    );
     expect(await list()).toEqual(names);
     for (const enabled of [true, false])
       expect(

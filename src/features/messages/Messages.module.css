@@ -1817,6 +1817,7 @@ html[data-keyboard-navigation] .text pre code:focus-visible {
 }
 
 .membership {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2967,7 +2968,8 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
   overflow-wrap: anywhere;
 }
 @media (hover: hover) and (pointer: fine) {
-  .message[data-actions-revealed]
+  /* An arrival cue replaces hover on its bubble rather than stacking on it. */
+  .message[data-actions-revealed]:not(.messageHighlight)
     > .messageBody
     > .messageContent
     .messageBubble:not([data-emoji-only], [data-diff-only]):not(
@@ -2976,7 +2978,7 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
     ) {
     background: var(--surface-message-hover);
   }
-  .message[data-own][data-actions-revealed]
+  .message[data-own][data-actions-revealed]:not(.messageHighlight)
     > .messageBody
     > .messageContent
     .messageBubble:not([data-emoji-only], [data-diff-only]):not(
@@ -3349,6 +3351,7 @@ html[data-keyboard-navigation] .audienceLine:focus-visible {
   outline-offset: -2px;
 }
 .audienceEntry {
+  position: relative;
   display: flex;
   align-items: flex-start;
   border-radius: var(--radius-control);
@@ -3469,12 +3472,24 @@ html[data-keyboard-navigation] .audienceLine:focus-visible {
   }
 }
 
-/* Returning from a thread only paints its already-visible origin. The wash
-   extends into the feed's inset without changing the row's layout box. */
-.returnHighlight {
+/* Arriving at a message, by link, search or returning from its thread,
+   briefly marks it. A filled bubble takes a see-through layer, chosen like its
+   chips, so they stay readable on top. A row without one (membership lines,
+   emoji, attachments, tables, diffs) is washed instead; the wash extends into
+   the feed's inset without changing the row's layout box. */
+.messageHighlight {
   isolation: isolate;
 }
-.returnHighlight::after {
+.messageHighlight:not(
+  :has(
+    > .messageBody
+      > .messageContent
+      .messageBubble:not([data-emoji-only], [data-diff-only]):not(
+        :has(> .text > table:only-child),
+        :has(> .text > table:first-child + .edited:last-child)
+      )
+  )
+)::after {
   content: "";
   position: absolute;
   inset-block: 0;
@@ -3483,12 +3498,37 @@ html[data-keyboard-navigation] .audienceLine:focus-visible {
   border-radius: var(--radius-row);
   background: var(--surface-message-highlight);
   pointer-events: none;
-  animation: return-message-highlight calc(var(--duration-settle) * 5) ease-out
-    both;
+  animation: message-highlight calc(var(--duration-settle) * 10) ease-out both;
 }
-@keyframes return-message-highlight {
+.messageHighlight > .messageBody > .messageContent .messageBubble {
+  isolation: isolate;
+}
+.messageHighlight
+  > .messageBody
+  > .messageContent
+  .messageBubble:not([data-emoji-only], [data-diff-only]):not(
+    :has(> .text > table:only-child),
+    :has(> .text > table:first-child + .edited:last-child)
+  )::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--affordance-message-highlight);
+  pointer-events: none;
+  animation: message-highlight calc(var(--duration-settle) * 10) ease-out both;
+}
+.messageHighlight
+  > .messageBody
+  > .messageContent
+  .messageBubble[data-own]::after {
+  background: var(--affordance-message-own-highlight);
+}
+/* Held about a second so it reads as intentional, then a slow fade. */
+@keyframes message-highlight {
   0%,
-  35% {
+  45% {
     opacity: 1;
   }
   100% {
@@ -3496,7 +3536,8 @@ html[data-keyboard-navigation] .audienceLine:focus-visible {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .returnHighlight::after {
+  .messageHighlight::after,
+  .messageHighlight .messageBubble::after {
     animation-timing-function: steps(1, end);
   }
 }

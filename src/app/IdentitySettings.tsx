@@ -159,6 +159,13 @@ function OrganizationSignIn({ identity }: { identity: FederatedIdentity }) {
   const organization = new URL(state.authority.identityOrigin).host;
   const signedIn = state.status === "signed-in";
   const signingIn = state.status === "signing-in";
+  const expires =
+    signedIn && state.expiresAt
+      ? new Date(state.expiresAt).toLocaleString(undefined, {
+          dateStyle: "medium",
+          timeStyle: "short",
+        })
+      : "";
   function run(operation: () => Promise<unknown>) {
     setFailure("");
     void Promise.resolve()
@@ -182,7 +189,17 @@ function OrganizationSignIn({ identity }: { identity: FederatedIdentity }) {
               ? `Signed in as ${state.email ?? "your organization account"}`
               : "Not signed in"
           }
-          subtitle={`Lets you and your agents into communities that require your ${organization} login. Signing out keeps your Buzz key on this device, but you and your agents can’t connect to those communities again until you sign back in.`}
+          subtitle={
+            <>
+              {expires && (
+                <>
+                  Expires at {expires}
+                  <br />
+                </>
+              )}
+              {`Lets you and your agents into communities that require your ${organization} login. Signing out keeps your Buzz key on this device, but you and your agents can’t connect to those communities again until you sign back in.`}
+            </>
+          }
           trailing={
             <Button
               type="button"

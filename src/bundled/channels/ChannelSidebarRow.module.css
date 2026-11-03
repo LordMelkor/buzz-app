@@ -107,6 +107,11 @@
   overflow: hidden;
   white-space: nowrap;
 }
+.muted {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-metadata);
+}
 .label:only-child {
   width: 100%;
 }

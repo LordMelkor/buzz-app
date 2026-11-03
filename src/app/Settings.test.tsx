@@ -21,6 +21,7 @@ import {
   type SettingsCards,
 } from "../features/settings/service";
 import type { ClientSnapshot } from "../features/communities/service";
+import type { DecisionsService } from "../features/decisions/service";
 import type { RelayData } from "../features/relay/service";
 import type { Contribution } from "../plugins/contributions";
 
@@ -1196,6 +1197,42 @@ it("shows administration only within a selected community", () => {
   expect(nav).not.toHaveTextContent("Community admin");
   expect(screen.queryByRole("button", { name: "Membership" })).toBeNull();
   expect(screen.queryByText("Membership body")).toBeNull();
+});
+
+it("opens Manage plugins from the Decisions API hint", async () => {
+  const user = userEvent.setup();
+  const { cards } = registry([]);
+  const providers: never[] = [];
+  const decisions = {
+    backend: () => undefined,
+    providers: () => providers,
+    subscribe: () => () => {},
+    setBackend: vi.fn(),
+  } as unknown as DecisionsService;
+  const onSection = vi.fn();
+  const view = (section: string) => (
+    <Settings
+      {...host}
+      cards={cards}
+      decisions={decisions}
+      navigation={
+        {
+          target: { version: 1, kind: "settings", section },
+          complete: () => true,
+        } as never
+      }
+      onSection={onSection}
+    />
+  );
+  const { rerender } = render(view("decisions"));
+  const section = await screen.findByRole("region", { name: "Decisions API" });
+  await user.click(
+    within(section).getByRole("button", { name: "Manage plugins" }),
+  );
+  expect(onSection).toHaveBeenCalledExactlyOnceWith("plugins");
+  // The link is hidden with its section, so focus moves into the one it opened.
+  rerender(view("plugins"));
+  expect(screen.getByRole("region", { name: "Manage plugins" })).toHaveFocus();
 });
 
 it("gives contributed cards their own community sections and retires removed cards", async () => {

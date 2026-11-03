@@ -15,17 +15,6 @@ ignore = [
     # instant 0.1.13 — unmaintained, not vulnerable. nostr 0.44 → instant (via
     # Buzz and buzz-pairing). Remove when nostr 0.44 is gone.
     { id = "RUSTSEC-2024-0384", reason = "instant via nostr 0.44; unmaintained, not vulnerable" },
-    # zip 4.6.1 < 9: extraction keeps setuid/setgid bits (0367), creates symlinks
-    # that escape the destination (0368) and applies permissions through symlinks
-    # (0369). Only path: Buzz → tauri-plugin-updater 2.13.3 → zip.
-    # The updater sniffs the downloaded bytes and calls ZipArchive::extract on
-    # Windows when they are a ZIP, regardless of URL or createUpdaterArtifacts.
-    # The current release pipeline publishes raw, signed NSIS installer bytes.
-    # Recheck before publishing Windows ZIP updates. Remove when
-    # tauri-plugin-updater moves to zip >= 9.
-    { id = "RUSTSEC-2026-0367", reason = "zip 4.6.1 via tauri-plugin-updater; it extracts ZIP-sniffed bytes on Windows, but the current release pipeline publishes raw NSIS bytes; recheck before Windows ZIP updates, remove at zip >= 9" },
-    { id = "RUSTSEC-2026-0368", reason = "zip 4.6.1 via tauri-plugin-updater; it extracts ZIP-sniffed bytes on Windows, but the current release pipeline publishes raw NSIS bytes; recheck before Windows ZIP updates, remove at zip >= 9" },
-    { id = "RUSTSEC-2026-0369", reason = "zip 4.6.1 via tauri-plugin-updater; it extracts ZIP-sniffed bytes on Windows, but the current release pipeline publishes raw NSIS bytes; recheck before Windows ZIP updates, remove at zip >= 9" },
     # zbus 5 D-Bus crates — unmaintained, not vulnerable. Linux only:
     # Buzz, tauri-plugin-opener and tauri-plugin-single-instance →
     # zbus 5. Remove when those move off zbus 5.

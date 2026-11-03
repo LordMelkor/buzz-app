@@ -1,0 +1,1327 @@
+{
+  "keys": {
+    "owner_secret": "0101010101010101010101010101010101010101010101010101010101010101",
+    "controller_secret": "0202020202020202020202020202020202020202020202020202020202020202",
+    "worker_secret": "0303030303030303030303030303030303030303030303030303030303030303"
+  },
+  "requests": [
+    {
+      "name": "readiness",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "readiness",
+        "nonce": "00000000000000000000000000000001",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {}
+      },
+      "canonical": "{\"action\":\"readiness\",\"admit_before\":1790000120,\"args\":{},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000001\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}",
+      "id": "sw1:0ddc86cd1a446c62283a7cc677ad5ebe2f06d740d77e2d4ba46c5ac0393e4da2"
+    },
+    {
+      "name": "create",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test"
+        },
+        "custody_epoch": "c7"
+      },
+      "canonical": "{\"action\":\"create\",\"admit_before\":1790000120,\"args\":{\"title\":\"Fix the flaky test\",\"worker\":\"531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337\"},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"custody_epoch\":\"c7\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000002\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}",
+      "id": "sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7"
+    },
+    {
+      "name": "create without title",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000003",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337"
+        },
+        "custody_epoch": "c7"
+      },
+      "canonical": "{\"action\":\"create\",\"admit_before\":1790000120,\"args\":{\"worker\":\"531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337\"},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"custody_epoch\":\"c7\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000003\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}",
+      "id": "sw1:ca6345ffef9718c5ed87cd7484ad581ab98256dbc6e55d0145ba55270e8dc216"
+    },
+    {
+      "name": "send",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "send",
+        "nonce": "00000000000000000000000000000004",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "worker_epoch": 1,
+          "text": "Run the tests — then report ✅"
+        },
+        "custody_epoch": "c7"
+      },
+      "canonical": "{\"action\":\"send\",\"admit_before\":1790000120,\"args\":{\"solo\":\"0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d\",\"text\":\"Run the tests — then report ✅\",\"worker_epoch\":1},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"custody_epoch\":\"c7\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000004\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}",
+      "id": "sw1:f2bfd6b40c6e58097d2f49841be33e1d756a57c720aba97ac1edcae2b57fb59e"
+    },
+    {
+      "name": "read",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "read",
+        "nonce": "00000000000000000000000000000005",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "limit": 20
+        }
+      },
+      "canonical": "{\"action\":\"read\",\"admit_before\":1790000120,\"args\":{\"limit\":20,\"solo\":\"0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d\"},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000005\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}",
+      "id": "sw1:54405265048eb952c03a38db9da03bb756f78c50a8b232edef51b52016bdcf7e"
+    },
+    {
+      "name": "read after",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "read",
+        "nonce": "00000000000000000000000000000006",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "limit": 20,
+          "after": "evt-9"
+        }
+      },
+      "canonical": "{\"action\":\"read\",\"admit_before\":1790000120,\"args\":{\"after\":\"evt-9\",\"limit\":20,\"solo\":\"0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d\"},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000006\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}",
+      "id": "sw1:9e69ecadd27c5645d09b44a5c6b64be94dcc076f376ce5633c93155384c8109c"
+    },
+    {
+      "name": "stop",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "stop",
+        "nonce": "00000000000000000000000000000007",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "worker_epoch": 1
+        },
+        "custody_epoch": "c7"
+      },
+      "canonical": "{\"action\":\"stop\",\"admit_before\":1790000120,\"args\":{\"solo\":\"0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d\",\"worker_epoch\":1},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"custody_epoch\":\"c7\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000007\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}",
+      "id": "sw1:4a2bba0e8867c8de93a158903087e97aa403018b37ace88811bfe880ae318289"
+    },
+    {
+      "name": "archive",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "archive",
+        "nonce": "00000000000000000000000000000008",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+        },
+        "custody_epoch": "c7"
+      },
+      "canonical": "{\"action\":\"archive\",\"admit_before\":1790000120,\"args\":{\"solo\":\"0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d\"},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"custody_epoch\":\"c7\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000008\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}",
+      "id": "sw1:505f58ff2d8e21fdd5a4f61034148bafab7fa6c169f155b58a61655f39ee1530"
+    },
+    {
+      "name": "list",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "list",
+        "nonce": "00000000000000000000000000000009",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "limit": 50,
+          "archived": false
+        }
+      },
+      "canonical": "{\"action\":\"list\",\"admit_before\":1790000120,\"args\":{\"archived\":false,\"limit\":50},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000009\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}",
+      "id": "sw1:e6dafed72309618fdd9c8210ae07c56a1ecfe62cf22a081927d06ddb182ef115"
+    }
+  ],
+  "responses": [
+    {
+      "name": "readiness ready",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:0ddc86cd1a446c62283a7cc677ad5ebe2f06d740d77e2d4ba46c5ac0393e4da2",
+        "action": "readiness",
+        "revision": 1,
+        "phase": "ready",
+        "observed_at": 1790000005,
+        "result": {
+          "custody_epoch": "c7",
+          "valid_until": 1790000035
+        }
+      },
+      "canonical": "{\"action\":\"readiness\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"ready\",\"request\":\"sw1:0ddc86cd1a446c62283a7cc677ad5ebe2f06d740d77e2d4ba46c5ac0393e4da2\",\"result\":{\"custody_epoch\":\"c7\",\"valid_until\":1790000035},\"revision\":1,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    },
+    {
+      "name": "create accepted",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7",
+        "action": "create",
+        "revision": 1,
+        "phase": "accepted",
+        "observed_at": 1790000005
+      },
+      "canonical": "{\"action\":\"create\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"accepted\",\"request\":\"sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7\",\"revision\":1,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    },
+    {
+      "name": "create ready",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7",
+        "action": "create",
+        "revision": 2,
+        "phase": "ready",
+        "observed_at": 1790000005,
+        "receipt_retained_until": 1790086405,
+        "result": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "worker_epoch": 1
+        }
+      },
+      "canonical": "{\"action\":\"create\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"ready\",\"receipt_retained_until\":1790086405,\"request\":\"sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7\",\"result\":{\"solo\":\"0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d\",\"worker\":\"531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337\",\"worker_epoch\":1},\"revision\":2,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    },
+    {
+      "name": "send settled",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:f2bfd6b40c6e58097d2f49841be33e1d756a57c720aba97ac1edcae2b57fb59e",
+        "action": "send",
+        "revision": 2,
+        "phase": "settled",
+        "observed_at": 1790000005,
+        "result": {}
+      },
+      "canonical": "{\"action\":\"send\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"settled\",\"request\":\"sw1:f2bfd6b40c6e58097d2f49841be33e1d756a57c720aba97ac1edcae2b57fb59e\",\"result\":{},\"revision\":2,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    },
+    {
+      "name": "read running",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:54405265048eb952c03a38db9da03bb756f78c50a8b232edef51b52016bdcf7e",
+        "action": "read",
+        "revision": 1,
+        "phase": "running",
+        "observed_at": 1790000005,
+        "result": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "state": "running",
+          "worker_epoch": 1,
+          "events": [],
+          "complete": true
+        }
+      },
+      "canonical": "{\"action\":\"read\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"running\",\"request\":\"sw1:54405265048eb952c03a38db9da03bb756f78c50a8b232edef51b52016bdcf7e\",\"result\":{\"complete\":true,\"events\":[],\"state\":\"running\",\"worker\":\"531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337\",\"worker_epoch\":1},\"revision\":1,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    },
+    {
+      "name": "stop pending",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:4a2bba0e8867c8de93a158903087e97aa403018b37ace88811bfe880ae318289",
+        "action": "stop",
+        "revision": 1,
+        "phase": "stop_pending",
+        "observed_at": 1790000005
+      },
+      "canonical": "{\"action\":\"stop\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"stop_pending\",\"request\":\"sw1:4a2bba0e8867c8de93a158903087e97aa403018b37ace88811bfe880ae318289\",\"revision\":1,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    },
+    {
+      "name": "stop settled",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:4a2bba0e8867c8de93a158903087e97aa403018b37ace88811bfe880ae318289",
+        "action": "stop",
+        "revision": 2,
+        "phase": "settled",
+        "observed_at": 1790000005,
+        "result": {
+          "worker_epoch": 2
+        }
+      },
+      "canonical": "{\"action\":\"stop\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"settled\",\"request\":\"sw1:4a2bba0e8867c8de93a158903087e97aa403018b37ace88811bfe880ae318289\",\"result\":{\"worker_epoch\":2},\"revision\":2,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    },
+    {
+      "name": "archive local only",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:505f58ff2d8e21fdd5a4f61034148bafab7fa6c169f155b58a61655f39ee1530",
+        "action": "archive",
+        "revision": 2,
+        "phase": "settled",
+        "observed_at": 1790000005,
+        "result": {
+          "scope": "local_only"
+        }
+      },
+      "canonical": "{\"action\":\"archive\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"settled\",\"request\":\"sw1:505f58ff2d8e21fdd5a4f61034148bafab7fa6c169f155b58a61655f39ee1530\",\"result\":{\"scope\":\"local_only\"},\"revision\":2,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    },
+    {
+      "name": "list page",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:e6dafed72309618fdd9c8210ae07c56a1ecfe62cf22a081927d06ddb182ef115",
+        "action": "list",
+        "revision": 1,
+        "phase": "settled",
+        "observed_at": 1790000005,
+        "result": {
+          "workers": [
+            {
+              "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+              "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+              "title": "Fix the flaky test",
+              "state": "idle",
+              "worker_epoch": 1,
+              "archived": false
+            }
+          ],
+          "next": "p2",
+          "complete": false
+        }
+      },
+      "canonical": "{\"action\":\"list\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"settled\",\"request\":\"sw1:e6dafed72309618fdd9c8210ae07c56a1ecfe62cf22a081927d06ddb182ef115\",\"result\":{\"complete\":false,\"next\":\"p2\",\"workers\":[{\"archived\":false,\"solo\":\"0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d\",\"state\":\"idle\",\"title\":\"Fix the flaky test\",\"worker\":\"531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337\",\"worker_epoch\":1}]},\"revision\":1,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    },
+    {
+      "name": "create refused",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7",
+        "action": "create",
+        "revision": 1,
+        "phase": "refused",
+        "observed_at": 1790000005,
+        "reason": "approval_required"
+      },
+      "canonical": "{\"action\":\"create\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"refused\",\"reason\":\"approval_required\",\"request\":\"sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7\",\"revision\":1,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    },
+    {
+      "name": "send uncertain",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:f2bfd6b40c6e58097d2f49841be33e1d756a57c720aba97ac1edcae2b57fb59e",
+        "action": "send",
+        "revision": 3,
+        "phase": "uncertain",
+        "observed_at": 1790000005,
+        "reason": "outcome_unavailable"
+      },
+      "canonical": "{\"action\":\"send\",\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"observed_at\":1790000005,\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"phase\":\"uncertain\",\"reason\":\"outcome_unavailable\",\"request\":\"sw1:f2bfd6b40c6e58097d2f49841be33e1d756a57c720aba97ac1edcae2b57fb59e\",\"revision\":3,\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"response\",\"v\":1}"
+    }
+  ],
+  "grant_acks": [
+    {
+      "name": "active",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "grant_ack",
+        "workers": [
+          "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337"
+        ],
+        "operations": [
+          "archive",
+          "create",
+          "list",
+          "read",
+          "readiness",
+          "send",
+          "stop"
+        ],
+        "state": "active",
+        "issued_at": 1789999000
+      },
+      "canonical": "{\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1789999000,\"operations\":[\"archive\",\"create\",\"list\",\"read\",\"readiness\",\"send\",\"stop\"],\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"state\":\"active\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"grant_ack\",\"v\":1,\"workers\":[\"531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337\"]}"
+    },
+    {
+      "name": "revoked",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 4
+        },
+        "type": "grant_ack",
+        "workers": [
+          "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337"
+        ],
+        "operations": [
+          "archive",
+          "create",
+          "list",
+          "read",
+          "readiness",
+          "send",
+          "stop"
+        ],
+        "state": "revoked",
+        "issued_at": 1790000500
+      },
+      "canonical": "{\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":4},\"issued_at\":1790000500,\"operations\":[\"archive\",\"create\",\"list\",\"read\",\"readiness\",\"send\",\"stop\"],\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"state\":\"revoked\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"grant_ack\",\"v\":1,\"workers\":[\"531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337\"]}"
+    }
+  ],
+  "refused": [
+    {
+      "name": "create with a prompt",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test",
+          "prompt": "do it"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "unknown field",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test"
+        },
+        "custody_epoch": "c7",
+        "extra": 1
+      }
+    },
+    {
+      "name": "mutation without custody epoch",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test"
+        }
+      }
+    },
+    {
+      "name": "read with custody epoch",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "read",
+        "nonce": "00000000000000000000000000000005",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "limit": 20
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "window over 120 seconds",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000121,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "empty window",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000000,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "uppercase owner",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1B84C5567B126440995D3ED5AABA0565D71E1834604819FF9C17F5E9D5DD078F",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "owner as controller",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "short nonce",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "version 2",
+      "kind": "request",
+      "record": {
+        "v": 2,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "unknown action",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "eval",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": "Fix the flaky test"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "text too long",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "send",
+        "nonce": "00000000000000000000000000000004",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "worker_epoch": 1,
+          "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "blank text",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "send",
+        "nonce": "00000000000000000000000000000004",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "worker_epoch": 1,
+          "text": "  "
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "page too large",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "read",
+        "nonce": "00000000000000000000000000000005",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "limit": 51
+        }
+      }
+    },
+    {
+      "name": "negative epoch",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "send",
+        "nonce": "00000000000000000000000000000004",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "worker_epoch": -1,
+          "text": "Run the tests — then report ✅"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "fractional epoch",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "send",
+        "nonce": "00000000000000000000000000000004",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "worker_epoch": 1.5,
+          "text": "Run the tests — then report ✅"
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "null title",
+      "kind": "request",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "request",
+        "action": "create",
+        "nonce": "00000000000000000000000000000002",
+        "issued_at": 1790000000,
+        "admit_before": 1790000120,
+        "args": {
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "title": null
+        },
+        "custody_epoch": "c7"
+      }
+    },
+    {
+      "name": "refused without reason",
+      "kind": "response",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7",
+        "action": "create",
+        "revision": 1,
+        "phase": "refused",
+        "observed_at": 1790000005
+      }
+    },
+    {
+      "name": "settled with reason",
+      "kind": "response",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:f2bfd6b40c6e58097d2f49841be33e1d756a57c720aba97ac1edcae2b57fb59e",
+        "action": "send",
+        "revision": 2,
+        "phase": "settled",
+        "observed_at": 1790000005,
+        "result": {},
+        "reason": "conflict"
+      }
+    },
+    {
+      "name": "refused with result",
+      "kind": "response",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7",
+        "action": "create",
+        "revision": 1,
+        "phase": "refused",
+        "observed_at": 1790000005,
+        "reason": "approval_required",
+        "result": {
+          "solo": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "worker": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "worker_epoch": 1
+        }
+      }
+    },
+    {
+      "name": "readiness valid too long",
+      "kind": "response",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:0ddc86cd1a446c62283a7cc677ad5ebe2f06d740d77e2d4ba46c5ac0393e4da2",
+        "action": "readiness",
+        "revision": 1,
+        "phase": "ready",
+        "observed_at": 1790000005,
+        "result": {
+          "custody_epoch": "c7",
+          "valid_until": 1790000036
+        }
+      }
+    },
+    {
+      "name": "result of another action",
+      "kind": "response",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7",
+        "action": "create",
+        "revision": 2,
+        "phase": "ready",
+        "observed_at": 1790000005,
+        "receipt_retained_until": 1790086405,
+        "result": {
+          "scope": "complete"
+        }
+      }
+    },
+    {
+      "name": "unknown phase",
+      "kind": "response",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "sw1:f14d9a41723355035570fbd08b781ac785b33c0e3e811ed18b40ebcfd7abcea7",
+        "action": "create",
+        "revision": 1,
+        "phase": "done",
+        "observed_at": 1790000005
+      }
+    },
+    {
+      "name": "bad request id",
+      "kind": "response",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "response",
+        "request": "abc",
+        "action": "create",
+        "revision": 1,
+        "phase": "accepted",
+        "observed_at": 1790000005
+      }
+    },
+    {
+      "name": "unsorted workers",
+      "kind": "grant_ack",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "grant_ack",
+        "workers": [
+          "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+          "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"
+        ],
+        "operations": [
+          "archive",
+          "create",
+          "list",
+          "read",
+          "readiness",
+          "send",
+          "stop"
+        ],
+        "state": "active",
+        "issued_at": 1789999000
+      }
+    },
+    {
+      "name": "repeated operation",
+      "kind": "grant_ack",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "grant_ack",
+        "workers": [
+          "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337"
+        ],
+        "operations": ["read", "read"],
+        "state": "active",
+        "issued_at": 1789999000
+      }
+    },
+    {
+      "name": "unknown state",
+      "kind": "grant_ack",
+      "record": {
+        "v": 1,
+        "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "controller": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "stream": "7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192",
+        "community": "wss://relay.example.com",
+        "device": "desk-1",
+        "grant": {
+          "id": "g1",
+          "revision": 3
+        },
+        "type": "grant_ack",
+        "workers": [
+          "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337"
+        ],
+        "operations": [
+          "archive",
+          "create",
+          "list",
+          "read",
+          "readiness",
+          "send",
+          "stop"
+        ],
+        "state": "paused",
+        "issued_at": 1789999000
+      }
+    },
+    {
+      "name": "whitespace",
+      "kind": "text",
+      "text": "{\"action\": \"readiness\", \"admit_before\": 1790000120, \"args\": {}, \"community\": \"wss://relay.example.com\", \"controller\": \"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\", \"device\": \"desk-1\", \"grant\": {\"id\": \"g1\", \"revision\": 3}, \"issued_at\": 1790000000, \"nonce\": \"00000000000000000000000000000001\", \"owner\": \"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\", \"stream\": \"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\", \"type\": \"request\", \"v\": 1}"
+    },
+    {
+      "name": "reordered keys",
+      "kind": "text",
+      "text": "{\"admit_before\":1790000120,\"args\":{},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000001\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1,\"action\":\"readiness\"}"
+    },
+    {
+      "name": "duplicate key",
+      "kind": "text",
+      "text": "{\"action\":\"readiness\",\"admit_before\":1790000120,\"args\":{},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000001\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1,\"v\":1}"
+    },
+    {
+      "name": "escaped ascii",
+      "kind": "text",
+      "text": "{\"action\":\"readiness\",\"admit_before\":1790000120,\"args\":{},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk\\u002d1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000,\"nonce\":\"00000000000000000000000000000001\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}"
+    },
+    {
+      "name": "float",
+      "kind": "text",
+      "text": "{\"action\":\"readiness\",\"admit_before\":1790000120,\"args\":{},\"community\":\"wss://relay.example.com\",\"controller\":\"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\",\"device\":\"desk-1\",\"grant\":{\"id\":\"g1\",\"revision\":3},\"issued_at\":1790000000.0,\"nonce\":\"00000000000000000000000000000001\",\"owner\":\"1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\",\"stream\":\"7d3c1b52-9a0e-4f61-8d2b-3c5e6f708192\",\"type\":\"request\",\"v\":1}"
+    },
+    {
+      "name": "null",
+      "kind": "text",
+      "text": "{\"v\":null}"
+    }
+  ]
+}

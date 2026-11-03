@@ -2,6 +2,8 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import styles from "./Messages.module.css";
+import { HIGHLIGHT_MAX_WAIT_MS, HIGHLIGHT_QUIET_MS } from "./message-highlight";
 import { useMessageReveal } from "./use-message-reveal";
 
 // Control frame/mutation ordering; browser journeys own real layout and inert focus.
@@ -36,35 +38,46 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
 });
+// Each frame is a whole settle window, so a still row is marked on the
+// frame after the one that first measures it.
+let clock = 0;
 async function frame() {
+  clock += HIGHLIGHT_QUIET_MS;
   await act(async () => {
     for (const [id, callback] of [...frames]) {
       if (!frames.delete(id)) continue;
-      callback(0);
+      callback(clock);
     }
   });
 }
-function mount(hold?: () => boolean) {
+/** Run frames until nothing is pending, such as an arrival cue's settle wait. */
+async function idle() {
+  for (let i = 0; frames.size && i < 20; i++) await frame();
+}
+function mount(hold?: () => boolean, { focus }: { focus?: boolean } = {}) {
   const request = new AbortController();
   const complete = vi.fn();
   function Surface({
     signal = request.signal,
     prepare = undefined,
     rowKey = 0,
+    messageId = "target",
   }: {
     signal?: AbortSignal;
     prepare?: () => void;
     rowKey?: number;
+    messageId?: string;
   }) {
     const scroller = useRef<HTMLDivElement>(null);
     const settled = useRef(false);
     useMessageReveal({
       scroller,
       settled,
-      messageId: "target",
+      messageId,
       signal,
       ready: true,
       complete,
+      ...(focus === undefined ? {} : { focus }),
       ...(prepare ? { prepare } : {}),
       ...(hold ? { hold } : {}),
     });
@@ -73,6 +86,11 @@ function mount(hold?: () => boolean) {
         <div ref={scroller}>
           <div key={rowKey} data-message-id="target">
             Target
+            <div data-highlight-surface="" />
+          </div>
+          <div data-message-id="other">
+            Other
+            <div data-highlight-surface="" />
           </div>
         </div>
         <button type="button">Elsewhere</button>
@@ -92,6 +110,10 @@ function mount(hold?: () => boolean) {
     remountRow: () => result.rerender(<Surface rowKey={1} />),
     next: () =>
       result.rerender(<Surface signal={new AbortController().signal} />),
+    other: () =>
+      result.rerender(
+        <Surface signal={new AbortController().signal} messageId="other" />,
+      ),
   };
 }
 async function mutate(row: HTMLElement) {
@@ -112,6 +134,60 @@ it("notifies reading after the revealed row is verified", async () => {
   expect(complete).toHaveBeenCalledOnce();
 });
 
+function highlighted(row: HTMLElement) {
+  return !!row
+    .querySelector(":scope > [data-highlight-surface]")
+    ?.classList.contains(styles.messageHighlight ?? "");
+}
+
+it("marks the arrival once the revealed row is verified", async () => {
+  const { row, request, unmount } = mount();
+  await frame(); // Attach observers.
+  await frame(); // Reveal, but do not verify yet.
+  expect(highlighted(row)).toBe(false);
+  await frame(); // Verify; the cue waits for the row to hold still.
+  await frame(); // First measure.
+  expect(highlighted(row)).toBe(false);
+  await frame(); // Unmoved for a whole quiet window.
+  expect(highlighted(row)).toBe(true);
+  request.abort();
+  expect(highlighted(row)).toBe(true);
+  unmount();
+  expect(highlighted(row)).toBe(false);
+});
+
+it("moves the arrival mark to the next revealed message", async () => {
+  const { row, other } = mount();
+  await idle();
+  expect(highlighted(row)).toBe(true);
+  other();
+  await idle();
+  expect(highlighted(row)).toBe(false);
+  expect(highlighted(screen.getByText("Other"))).toBe(true);
+});
+
+it("does not mark a row that fails verification", async () => {
+  const { row, complete } = mount();
+  await frame();
+  await frame();
+  vi.spyOn(row, "getBoundingClientRect").mockReturnValue({
+    ...row.getBoundingClientRect(),
+    height: 0,
+  });
+  await frame();
+  expect(complete).not.toHaveBeenCalled();
+  expect(highlighted(row)).toBe(false);
+});
+
+it("does not mark a reveal behind a covering panel", async () => {
+  const { row, complete } = mount(undefined, { focus: false });
+  await frame();
+  await frame();
+  await frame();
+  expect(complete).toHaveBeenCalledOnce();
+  expect(highlighted(row)).toBe(false);
+});
+
 it.each([false, true])(
   "preserves moved focus before verification (mutation: %s)",
   async (mutation) => {
@@ -125,6 +201,7 @@ it.each([false, true])(
     await frame();
     expect(document.activeElement).toBe(outside);
     expect(complete).toHaveBeenCalledOnce();
+    await idle();
     await mutate(row);
     expect(frames.size).toBe(0);
   },
@@ -219,6 +296,7 @@ it.each([false, true])(
     expect(document.activeElement).toBe(moved ? outside : replacement);
     expect(focus).toHaveBeenCalledTimes(moved ? 0 : 1);
     expect(complete).toHaveBeenCalledOnce();
+    await idle();
     await mutate(replacement);
     expect(frames.size).toBe(0);
   },
@@ -239,6 +317,7 @@ it("completes after focus leaves another control between replacement reveal and 
   expect(document.activeElement).toBe(document.body);
   expect(focus).not.toHaveBeenCalled();
   expect(complete).toHaveBeenCalledOnce();
+  await idle();
   expect(frames.size).toBe(0);
 });
 
@@ -318,7 +397,74 @@ it.each([
     await mutate(row);
     await frame();
     expect(scrollTop).toBe(resized ? 0 : drift);
+    await idle();
     await mutate(row);
     expect(frames.size).toBe(0);
   },
 );
+
+it("waits to mark the arrival until the row holds still, but not forever", async () => {
+  const { row } = mount();
+  let top = 0;
+  vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(
+    function (this: HTMLElement) {
+      const at = this.dataset.highlightSurface === "" ? top : 0;
+      return {
+        top: at,
+        left: 0,
+        bottom: at + 100,
+        right: 100,
+        width: 100,
+        height: 100,
+        x: 0,
+        y: at,
+        toJSON() {},
+      };
+    },
+  );
+  await frame(); // Attach observers.
+  await frame(); // Reveal.
+  await frame(); // Verify and start waiting.
+  await frame(); // First measure.
+  // Still loading: the row moves every frame, so the cue holds off.
+  for (
+    let waited = 0;
+    waited < HIGHLIGHT_MAX_WAIT_MS;
+    waited += HIGHLIGHT_QUIET_MS
+  ) {
+    expect(highlighted(row)).toBe(false);
+    top += 1;
+    await frame();
+  }
+  // It never settled, so it is marked once the wait runs out.
+  expect(highlighted(row)).toBe(true);
+});
+
+it("marks the arrival as soon as the row holds still", async () => {
+  const { row } = mount();
+  let top = 0;
+  vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(
+    function (this: HTMLElement) {
+      const at = this.dataset.highlightSurface === "" ? top : 0;
+      return {
+        top: at,
+        left: 0,
+        bottom: at + 100,
+        right: 100,
+        width: 100,
+        height: 100,
+        x: 0,
+        y: at,
+        toJSON() {},
+      };
+    },
+  );
+  await frame();
+  await frame();
+  await frame();
+  top = 40; // A row above finishes loading.
+  await frame();
+  expect(highlighted(row)).toBe(false);
+  await frame(); // Held still for a whole quiet window.
+  expect(highlighted(row)).toBe(true);
+});

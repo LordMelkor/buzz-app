@@ -8,8 +8,18 @@ import { settle } from "./timeline.mjs";
 test("reaction previews and the inline picker do not reveal message hover actions", async ({
   page,
 }) => {
+  await page.route("**/emoji-media/**", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22"/>',
+    }),
+  );
   await page.goto("/tests/fixtures/emoji.html?reactions&wrap&narrow");
   const row = page.locator("[data-message-id]").first();
+  // Failed emoji retries rewrap the prose and move reactions off a still pointer.
+  await expect(
+    row.locator('p img[data-copy-emoji=":party:"]'),
+  ).toHaveJSProperty("naturalWidth", 22);
   const reaction = row.locator('button[data-reaction="👍"]');
   const actions = row.getByRole("group", { name: "Message actions" });
   const body = row.locator("[data-message-action-anchor]").first();

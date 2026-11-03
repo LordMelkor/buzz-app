@@ -23,6 +23,7 @@ function recipe(name, ...args) {
   const gooseFile = path.join(directory, "goose.jsonl");
   const commandFile = path.join(directory, "agent-command.jsonl");
   const cliFile = path.join(directory, "buzz-cli.jsonl");
+  const openFile = path.join(directory, "open.jsonl");
   try {
     copyFileSync(
       new URL("../../justfile", import.meta.url),
@@ -78,6 +79,11 @@ if (process.argv[2] === "tauri" && process.argv[3] === "dev") console.log("VIEWE
 \n`,
       { mode: 0o755 },
     );
+    writeFileSync(
+      path.join(directory, "open"),
+      `#!${process.execPath}\nrequire("node:fs").appendFileSync(process.env.BUZZ_TEST_OPEN, JSON.stringify(process.argv.slice(2)) + "\\n");\n`,
+      { mode: 0o755 },
+    );
     // Set PATH inside the recipe shell: Hermit proxies restore their own PATH.
     const result = spawnSync(
       "just",
@@ -103,6 +109,7 @@ if (process.argv[2] === "tauri" && process.argv[3] === "dev") console.log("VIEWE
           BUZZ_TEST_GOOSE: gooseFile,
           BUZZ_TEST_AGENT_COMMAND: commandFile,
           BUZZ_TEST_BUZZ_CLI: cliFile,
+          BUZZ_TEST_OPEN: openFile,
           // Do not inherit the operator's public pin in isolated launcher tests.
           BUZZ_DEV_VIEWER: undefined,
           BUZZ_DEV_SIGNING_IDENTITY: undefined,
@@ -125,10 +132,22 @@ if (process.argv[2] === "tauri" && process.argv[3] === "dev") console.log("VIEWE
     const cli = existsSync(cliFile)
       ? readFileSync(cliFile, "utf8").trim().split("\n").map(JSON.parse)
       : [];
+    const opened = existsSync(openFile)
+      ? readFileSync(openFile, "utf8").trim().split("\n").map(JSON.parse)
+      : [];
     // The fixture is not a Git checkout, so the launcher hashes its own root for
     // its port; Node resolves that through symlinks when loading the script.
     const root = realpathSync(directory);
-    return { ...result, calls, goose, command, cli, port: portForPath(root) };
+    return {
+      ...result,
+      calls,
+      goose,
+      command,
+      cli,
+      opened,
+      root,
+      port: portForPath(root),
+    };
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -364,6 +383,66 @@ test("desktop-bundle builds a debug app bundle with only the development identif
     ...bundled,
   ]);
   assert.doesNotMatch(stdout, /Bundling with deep links/);
+});
+
+test("desktop-bundle --launch builds and opens the macOS app bundle", {
+  skip: process.platform !== "darwin",
+}, () => {
+  const result = launched("desktop-bundle", "--launch");
+  assert.deepEqual(result.call, [
+    "tauri",
+    "build",
+    "--debug",
+    "--bundles",
+    "app",
+    ...bundled,
+  ]);
+  const app = path.join(result.root, "target/debug/bundle/macos/Buzz.app");
+  assert.deepEqual(result.opened, [[app]]);
+  assert.match(result.stderr, /bundle is ad-hoc signed/);
+});
+
+test("desktop-bundle --launch does not warn for configured certificate signing", {
+  skip: process.platform !== "darwin",
+}, () => {
+  const result = launched(
+    "desktop-bundle",
+    { env: { BUZZ_DEV_SIGNING_IDENTITY: "development-cert" } },
+    "--launch",
+  );
+  assert.equal(
+    JSON.parse(result.call[6]).bundle.macOS.signingIdentity,
+    "development-cert",
+  );
+  assert.doesNotMatch(result.stderr, /ad-hoc signed/);
+});
+
+test("desktop-bundle --launch rejects bundle and artifact overrides", () => {
+  for (const [settings, args, message] of [
+    [{}, ["--launch", "--no-bundle"], /bundle flags/],
+    [{}, ["--launch", "--bundles", "dmg"], /bundle flags/],
+    [
+      {},
+      ["--launch", "--target", "aarch64-apple-darwin"],
+      /custom app artifact from --target/,
+    ],
+    [
+      {},
+      ["--launch", "--config", '{"productName":"Other"}'],
+      /custom app artifact from --config/,
+    ],
+    [
+      { env: { CARGO_TARGET_DIR: "somewhere-else" } },
+      ["--launch"],
+      /custom app artifact from CARGO_TARGET_DIR/,
+    ],
+  ]) {
+    const result = recipe("desktop-bundle", settings, ...args);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, message);
+    assert.deepEqual(result.calls, [["install", "--frozen-lockfile"]]);
+    assert.deepEqual(result.opened, []);
+  }
 });
 
 for (const [name, settings, expected] of [

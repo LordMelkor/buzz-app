@@ -549,9 +549,7 @@ it("retires stopped local waits after independent work clears and ignores late c
         channelId: "chat",
         threadRootId: undefined,
         startedAt: 1,
-        timestamp: 1,
         working: true,
-        expiresAt: 8001,
       },
     ]);
     const next = h.entry("next");

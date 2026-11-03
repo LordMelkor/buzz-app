@@ -47,6 +47,13 @@ impl AgentState {
         self.dir.as_deref().map_err(Clone::clone)
     }
 
+    /// The Agents root selected at startup, shared with identities and hosting.
+    pub(crate) fn agents_root(&self) -> Result<&Path, String> {
+        self.dir()?
+            .parent()
+            .ok_or_else(|| "Invalid agent storage".into())
+    }
+
     /// Every key and its value. Unreadable or foreign files are skipped.
     pub(crate) fn load(&self) -> Result<HashMap<String, String>, String> {
         let dir = self.dir()?;
@@ -232,6 +239,15 @@ pub(crate) async fn app_agent_state_set(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agents_root_preserves_startup_storage_errors() {
+        let state = AgentState::new(Err("Local agent storage is unavailable".into()));
+        assert_eq!(
+            state.agents_root().unwrap_err(),
+            "Local agent storage is unavailable"
+        );
+    }
 
     #[test]
     fn names_round_trip() {

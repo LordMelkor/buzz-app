@@ -503,6 +503,33 @@ test.describe("automatic catch-up after membership rows", () => {
   });
 });
 
+// AIDA-2318: a burst of joins filled the first history page, so the messages
+// unread counted never loaded and opening the channel could not read them.
+test.describe("a join burst longer than a history page", () => {
+  test.use({ membershipBurst: 40, historyCounts: { [alphaId]: 20, beta: 1 } });
+  test("opening the channel reads the messages behind the joins", async ({
+    page,
+    app,
+  }) => {
+    // Startup focus would read Alpha before the unread baseline is observed.
+    await holdReadingFocus(page);
+    await open(page, app);
+    await expect(alpha(page).locator("[data-channel-unread]")).toHaveCount(1);
+    await releaseReadingFocus(page);
+    await composer(page).focus();
+    const latest = app.histories
+      .get(`primary/${alphaId}`)
+      .findLast((row) => row.kind === 9);
+    await expect
+      .poll(
+        async () =>
+          (await journal(page))?.state.frontiers[`activity:${alphaId}`],
+      )
+      .toBe(latest.created_at);
+    await expect(alpha(page).locator("[data-channel-unread]")).toHaveCount(0);
+  });
+});
+
 // Browser boundary: real app reading → strict IndexedDB under pressure → reload.
 // Lower-layer tests own unseen/manual/override matrices; no new fixture controls.
 test.describe("local receipt reserve", () => {

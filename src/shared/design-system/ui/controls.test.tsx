@@ -654,3 +654,42 @@ test("search and code fields suppress correction without changing prose or expli
     expect(field).toHaveAttribute("spellcheck", "true");
   }
 });
+
+test.each(["default", "capsule", "palette"] as const)(
+  "search %s keeps trailing actions separate from editing and clear",
+  async (variant) => {
+    const user = userEvent.setup();
+    const action = vi.fn();
+    function Example() {
+      const [value, setValue] = useState("design");
+      return (
+        <SearchField
+          variant={variant}
+          label="Search records"
+          value={value}
+          onValueChange={setValue}
+          trailing={
+            <IconButton
+              aria-label="Filter records"
+              icon={<PlusIcon />}
+              onClick={action}
+            />
+          }
+        />
+      );
+    }
+    render(<Example />);
+    const input = screen.getByRole("searchbox", { name: "Search records" });
+    const filter = screen.getByRole("button", { name: "Filter records" });
+    await user.click(filter);
+    expect(action).toHaveBeenCalledOnce();
+    expect(input).toHaveValue("design");
+    await user.click(
+      screen.getByRole("button", { name: "Clear search records" }),
+    );
+    expect(input).toHaveValue("");
+    expect(input).toHaveFocus();
+    await user.tab();
+    expect(filter).toHaveFocus();
+  },
+);

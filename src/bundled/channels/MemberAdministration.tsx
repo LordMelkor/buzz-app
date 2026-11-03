@@ -122,7 +122,14 @@ export function MemberRow({
   useEffect(() => {
     const viewport = scrollport.current;
     if (!menuOpen || !viewport) return;
-    const dismiss = () => setMenuOpen(undefined);
+    // Revealing the trigger can queue a scroll event before this listener mounts.
+    // Only subsequent movement should dismiss the newly opened menu.
+    const top = viewport.scrollTop;
+    const left = viewport.scrollLeft;
+    const dismiss = () => {
+      if (viewport.scrollTop !== top || viewport.scrollLeft !== left)
+        setMenuOpen(undefined);
+    };
     viewport.addEventListener("scroll", dismiss, { passive: true });
     return () => viewport.removeEventListener("scroll", dismiss);
   }, [menuOpen, scrollport]);
@@ -141,7 +148,10 @@ export function MemberRow({
       pubkey,
       verifiedOwner,
     );
-  const roleCaption = role === "unknown" ? undefined : memberAccessLabel(role);
+  const roleCaption =
+    role === "unknown" || role === "member" || role === "bot"
+      ? undefined
+      : memberAccessLabel(role);
   const locked =
     state.operation?.status === "pending" ||
     state.operation?.status === "uncertain";

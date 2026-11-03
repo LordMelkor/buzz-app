@@ -15,6 +15,8 @@ export function relayBrokerPlugin(options?: {
   upstreamFetch?: typeof fetch;
   socketFactory?: (url: string) => WebSocket;
   builderlab?: {
+    api?: string;
+    appsBase?: string | undefined;
     fetch?: typeof fetch;
     open?: (url: string) => Promise<void>;
   };

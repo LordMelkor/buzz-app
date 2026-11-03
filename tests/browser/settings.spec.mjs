@@ -675,9 +675,13 @@ test("hosted deletion reload keeps the UUID until an enabled manual replay", asy
     return route.fulfill({ status: 404, json: { error: "unexpected" } });
   });
 
-  await page.goto(app.origin);
-  await page.evaluate(
-    ({ owner, request }) =>
+  // Boot with the saved deletion rather than reloading over a booting app,
+  // which WebKit can fail with an internal error. Seed only the first
+  // document, so the reload below sees just what the app kept.
+  await page.addInitScript(
+    ({ owner, request }) => {
+      if (sessionStorage.getItem("test.seeded-deletion")) return;
+      sessionStorage.setItem("test.seeded-deletion", "1");
       localStorage.setItem(
         "buzz.hosted-community-deletion.v1",
         JSON.stringify({
@@ -686,10 +690,11 @@ test("hosted deletion reload keeps the UUID until an enabled manual replay", asy
           backend_origin: window.location.origin,
           request,
         }),
-      ),
+      );
+    },
     { owner, request },
   );
-  await page.reload();
+  await page.goto(app.origin);
   await button(page, "Your profile").click();
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
   await button(page, "Builderlab").click();

@@ -55,6 +55,8 @@ export type SearchInputProps = {
     | undefined;
   displayQuery?: string | undefined;
   onDisplayQueryChange?: ((value: string) => void) | undefined;
+  /** False while the palette closes, so a held Enter chooses nothing. */
+  open?: boolean | undefined;
 };
 
 export function SearchChoices({
@@ -70,9 +72,18 @@ export function SearchChoices({
   scopeAction,
   children,
   inlineSettings,
+  open = true,
+  pending = false,
+  isAction,
 }: SearchInputProps & {
   groups: readonly SearchGroup[];
   children?: ReactNode;
+  /** A row that should lead may still arrive, so Enter before any row
+   * waits until it has. */
+  pending?: boolean;
+  /** Whether a row acts on the search rather than being a result, so Enter
+   * on it can wait for `pending` like Enter before any row. */
+  isAction?: (key: string) => boolean;
 }) {
   const resultsViewport = useRef<HTMLDivElement>(null);
   const resultsContent = useRef<HTMLDivElement>(null);
@@ -137,6 +148,9 @@ export function SearchChoices({
     query,
     keys: destinations.map(({ key }) => key),
     onChoose: (key) => destinations.find((row) => row.key === key)?.run(),
+    open,
+    pending,
+    isAction,
   });
   const selected = highlight.active;
   useEffect(() => {
@@ -210,7 +224,7 @@ export function SearchChoices({
             const destination = destinations[Number(shortcutNumber) - 1];
             if (destination) {
               event.preventDefault();
-              if (!event.repeat) destination.run();
+              if (!event.repeat) highlight.choose(destination.key);
             }
             return;
           }
@@ -259,7 +273,6 @@ export function SearchChoices({
                           icon,
                           image,
                           avatar,
-                          run,
                         }) =>
                           content ? (
                             // biome-ignore lint/a11y/useSemanticElements: Interactive search grid, not a data table.
@@ -287,7 +300,7 @@ export function SearchChoices({
                                   )
                                 )
                                   return;
-                                run();
+                                highlight.choose(key);
                               }}
                               onKeyDownCapture={(event) => {
                                 const target = event.target as HTMLElement;
@@ -308,7 +321,7 @@ export function SearchChoices({
                                   event.key === " "
                                 ) {
                                   event.preventDefault();
-                                  run();
+                                  highlight.choose(key);
                                 } else highlight.rowProps(key).onKeyDown(event);
                               }}
                             >
@@ -345,7 +358,7 @@ export function SearchChoices({
                                         event.key === "Enter"
                                       ) {
                                         event.preventDefault();
-                                        run();
+                                        highlight.choose(key);
                                       } else
                                         highlight
                                           .rowProps(key)
@@ -412,7 +425,7 @@ export function SearchChoices({
                                       )}
                                     </>
                                   }
-                                  onClick={run}
+                                  onClick={() => highlight.choose(key)}
                                 />
                               </div>
                             </div>

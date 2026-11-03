@@ -16,11 +16,14 @@ export function SearchField({
   description,
   error,
   prefix,
+  trailing,
   ...inputProps
 }: {
   inputRef?: Ref<HTMLElement>;
   variant?: "default" | "capsule" | "palette";
   prefix?: ReactNode;
+  /** Auxiliary actions after Clear, inside the search frame. */
+  trailing?: ReactNode;
   description?: ReactNode;
   error?: ReactNode;
   value: string;
@@ -84,10 +87,23 @@ export function SearchField({
           {icon}
           {prefix}
           {input}
-          {clear}
+          {clear || trailing ? (
+            <span className="search-field-actions">
+              {clear}
+              {trailing}
+            </span>
+          ) : null}
         </div>
       ) : (
-        <InputGroup leading={icon} trailing={clear}>
+        <InputGroup
+          leading={icon}
+          trailing={
+            <>
+              {clear}
+              {trailing}
+            </>
+          }
+        >
           {prefix}
           {input}
         </InputGroup>

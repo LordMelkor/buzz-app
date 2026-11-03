@@ -76,3 +76,65 @@ it("opens the worktree picker at the current location and keeps it when the pick
   ).toBeEnabled();
   expect(location).toHaveFocus();
 });
+
+it.each([true, false])(
+  "shows the folder requirement and clears it on either recovery path (native: %s)",
+  async (native) => {
+    vi.mocked(isTauri).mockReturnValue(native);
+    vi.mocked(invoke).mockResolvedValue("~/chosen");
+    render(<Form folders={["  "]} />);
+    const user = userEvent.setup();
+    const toggle = screen.getByRole("switch", {
+      name: "Work in a new worktree",
+    });
+    const label = screen.getByText(/^Folders/);
+    const message = "Add at least one folder to use a new worktree.";
+    const control = native
+      ? screen.getByRole("button", { name: "Add folder…" })
+      : screen.getByRole("textbox", { name: /^Folders/ });
+
+    expect(label).not.toHaveTextContent("Optional");
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(control).toHaveAccessibleDescription(message);
+    await user.click(toggle);
+    expect(label).toHaveTextContent("Optional");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(control).not.toHaveAccessibleDescription(message);
+    await user.click(toggle);
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+
+    if (native) await user.click(control);
+    else {
+      await user.type(control, "~/chosen{Enter}");
+      expect(control).toHaveValue("");
+    }
+    expect(screen.getByRole("button", { name: "Remove chosen" })).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(control).not.toHaveAccessibleDescription(message);
+    expect(label).not.toHaveTextContent("Optional");
+    await user.click(screen.getByRole("button", { name: "Remove chosen" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(control).toHaveAccessibleDescription(message);
+  },
+);
+
+it("keeps the requirement after picker cancellation and preserves picker failures", async () => {
+  vi.mocked(invoke)
+    .mockResolvedValueOnce(null)
+    .mockRejectedValueOnce(new Error("Picker unavailable"))
+    .mockResolvedValueOnce("~/chosen");
+  render(<Form folders={[]} />);
+  const user = userEvent.setup();
+  const add = screen.getByRole("button", { name: "Add folder…" });
+  await user.click(add);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Add at least one folder to use a new worktree.",
+  );
+  expect(add).toHaveFocus();
+  await user.click(add);
+  expect(screen.getByRole("alert")).toHaveTextContent("Picker unavailable");
+  expect(add).toHaveAccessibleDescription("Picker unavailable");
+  await user.click(add);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("button", { name: "Remove chosen" })).toBeVisible();
+});

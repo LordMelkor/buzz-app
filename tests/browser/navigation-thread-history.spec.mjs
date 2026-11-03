@@ -669,13 +669,14 @@ test("closing an active thread highlights its visible channel origin without scr
   const scroll = await timeline.evaluate((element) => element.scrollTop);
   // Observe paint admission before triggering close; the cue is transient.
   await origin.evaluate((element) => {
+    // The cue paints on the row's filled bubble, or on the row without one.
+    window.arrivalCue = (row) =>
+      [row, ...row.querySelectorAll('[class*="messageBubble"]')]
+        .map((painted) => getComputedStyle(painted, "::after").animationName)
+        .find((name) => name !== "none") ?? "none";
     window.returnHighlightPainted = false;
     const observer = new MutationObserver(() => {
-      if (
-        getComputedStyle(element, "::after").animationName.includes(
-          "return-message-highlight",
-        )
-      ) {
+      if (window.arrivalCue(element).includes("message-highlight")) {
         window.returnHighlightPainted = true;
         observer.disconnect();
       }
@@ -694,11 +695,7 @@ test("closing an active thread highlights its visible channel origin without scr
     .poll(() => timeline.evaluate((element) => element.scrollTop))
     .toBe(scroll);
   await expect
-    .poll(() =>
-      origin.evaluate(
-        (element) => getComputedStyle(element, "::after").animationName,
-      ),
-    )
+    .poll(() => origin.evaluate((element) => window.arrivalCue(element)))
     .toBe("none");
 });
 
@@ -842,7 +839,7 @@ for (const how of ["native Close", "the close button"]) {
     await expect(threads).toHaveCount(1);
     const link = side
       .locator(`[data-message-id="${reply.id}"]`)
-      .getByRole("link", { name: "Beta", exact: true });
+      .getByRole("link", { name: "Alice Fixture in #Beta", exact: true });
     await expect(link).toBeVisible();
     await virtuaIdle(page);
     await link.click({ button: "right" });
@@ -949,7 +946,7 @@ test("a wrong link hint preserves both open thread editors and selects the verif
   await main.getByRole("tab", { name: "Alpha", exact: true }).click();
   await page
     .locator(`[data-channel-timeline="alpha"] [data-message-id="${linked.id}"]`)
-    .getByRole("link", { name: "Alpha", exact: true })
+    .getByRole("link", { name: "Alice Fixture in #Alpha", exact: true })
     .click();
   await expect
     .poll(() => page.evaluate(() => window.fixtureNavigation.snapshot().status))
@@ -1048,4 +1045,187 @@ test.describe(() => {
       history.locator(`[data-message-id="${arrival.id}"]`),
     ).not.toBeInViewport();
   });
+});
+
+// Browser-only: real popstate traversal remounts a thread tab left in another
+// channel, and its reading place is real scroll geometry; jsdom models neither.
+test("Back and Forward return to a root-linked thread's reading place; a fresh link reveals it again", async ({
+  page,
+  app,
+}) => {
+  const root = app.histories
+    .get("primary/alpha")
+    .find((row) => row.content === "Thread root 0");
+  for (let i = 0; i < 40; i++)
+    app.append(
+      "primary",
+      "alpha",
+      `Long reply ${i}\n${"Enough text to scroll the thread. ".repeat(8)}`,
+      false,
+      false,
+      root.id,
+    );
+  const betaRoot = app.append("primary", "beta", "Beta root", false, false);
+  const betaReply = app.append(
+    "primary",
+    "beta",
+    "Beta reply",
+    false,
+    false,
+    betaRoot.id,
+  );
+  // No thread hint: the link names the root, so its opening reveals it.
+  // Thread-row links would reach the fixture's catch-all panel; these
+  // timeline links take the same navigation.
+  const opener = app.append(
+    "primary",
+    "alpha",
+    `Start at <buzz://message?channel=alpha&id=${root.id}>, then <buzz://message?channel=beta&id=${betaReply.id}&thread=${betaRoot.id}>`,
+    false,
+  );
+  await open(page, app);
+  const panel = page.getByRole("complementary", {
+    name: "Thread",
+    exact: true,
+  });
+  const region = panel.getByRole("region", {
+    name: "Thread messages",
+    exact: true,
+  });
+  const links = page.locator(
+    `[data-channel-timeline] [data-message-id="${opener.id}"]`,
+  );
+  const rootLink = links.getByRole("link", {
+    name: "Fixture Reader in #Alpha",
+    exact: true,
+  });
+  const opened = () =>
+    expect
+      .poll(() =>
+        page.evaluate(() => window.fixtureNavigation.snapshot().status),
+      )
+      .toBe("opened");
+  const rootAtTop = () =>
+    expect
+      .poll(() =>
+        region.evaluate(
+          (node, id) =>
+            node
+              .querySelector(`[data-message-id="${id}"]`)
+              .getBoundingClientRect().top - node.getBoundingClientRect().top,
+          root.id,
+        ),
+      )
+      .toBeLessThan(4);
+  const gap = () =>
+    region.evaluate(
+      (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+    );
+  const place = () =>
+    region.evaluate((node) => {
+      const top = node.getBoundingClientRect().top;
+      const row = [...node.querySelectorAll("[data-message-id]")].find(
+        (row) => row.getBoundingClientRect().bottom > top + 1,
+      );
+      return {
+        id: row.dataset.messageId,
+        y: Math.round(row.getBoundingClientRect().top - top),
+      };
+    });
+  const expectPlace = (saved) =>
+    expect
+      .poll(async () => {
+        const now = await place();
+        return now.id === saved.id && Math.abs(now.y - saved.y) < 4;
+      })
+      .toBe(true);
+  // Sample each frame from before a traversal until stopped, recording the
+  // place of every one that shows this thread's rows.
+  const sampleFrames = () =>
+    page.evaluate((id) => {
+      const frames = [];
+      window.threadFrames = frames;
+      const sample = () => {
+        if (window.threadFrames !== frames) return;
+        const node = [
+          ...document.querySelectorAll('[aria-label="Thread messages"]'),
+        ].find((node) => node.querySelector(`[data-message-id="${id}"]`));
+        if (node && !node.hasAttribute("data-positioning")) {
+          const top = node.getBoundingClientRect().top;
+          const row = [...node.querySelectorAll("[data-message-id]")].find(
+            (row) => row.getBoundingClientRect().bottom > top + 1,
+          );
+          frames.push({
+            id: row?.dataset.messageId,
+            y: Math.round((row?.getBoundingClientRect().top ?? top) - top),
+          });
+        }
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    }, root.id);
+  const sampledFrames = () =>
+    page.evaluate(() => {
+      const frames = window.threadFrames;
+      window.threadFrames = undefined;
+      return frames;
+    });
+
+  await rootLink.click();
+  await opened();
+  await rootAtTop();
+  await settle(page, region);
+  await region.hover();
+  for (let i = 0; i < 12 && (await gap()) >= 4; i++)
+    await wheel(page, 4000, region);
+  expect(await gap()).toBeLessThan(4);
+  await links
+    .getByRole("link", { name: "Alice Fixture in #Beta", exact: true })
+    .click();
+  await expect(panel.getByText("Beta reply", { exact: true })).toBeVisible();
+
+  // Back remounts the thread where it was left: the end, not the root.
+  await page.goBack();
+  await expect(region.locator(`[data-message-id="${root.id}"]`)).toHaveCount(1);
+  await opened();
+  await settle(page, region);
+  expect(await gap()).toBeLessThan(4);
+
+  // A place within the thread survives Forward then Back.
+  await region.hover();
+  await wheel(page, -1500, region);
+  expect(await gap()).toBeGreaterThan(400);
+  expect(await region.evaluate((node) => node.scrollTop)).toBeGreaterThan(400);
+  const saved = await place();
+  await page.goForward();
+  await expect(panel.getByText("Beta reply", { exact: true })).toBeVisible();
+  await opened();
+  // The remounted thread stays hidden until its route restores the place:
+  // no frame shows the bottom it positions at first.
+  await sampleFrames();
+  await page.goBack();
+  await expect(region.locator(`[data-message-id="${root.id}"]`)).toHaveCount(1);
+  await opened();
+  await settle(page, region);
+  await expectPlace(saved);
+  const frames = await sampledFrames();
+  expect(frames.length).toBeGreaterThan(0);
+  expect(
+    frames.filter(
+      (frame) => frame.id !== saved.id || Math.abs(frame.y - saved.y) >= 4,
+    ),
+  ).toEqual([]);
+
+  // Forward into the visit from its own channel keeps the mounted place too.
+  await page.goBack();
+  await opened();
+  await page.goForward();
+  await opened();
+  await settle(page, region);
+  await expectPlace(saved);
+
+  // Following the link again is a new opening: it reveals the root.
+  await rootLink.click();
+  await opened();
+  await rootAtTop();
 });

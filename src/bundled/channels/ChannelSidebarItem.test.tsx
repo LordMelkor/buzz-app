@@ -10,13 +10,16 @@ import {
   screen,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { Profiler, type ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ChannelSummary, Profile } from "../../features/relay/contracts";
 import type { RelaySession } from "../../features/relay/session";
 import type { UnreadSnapshot } from "../../features/relay/unread";
 import type { PresenceStatus } from "../../features/presence/presence";
 import { ChannelSidebarItem } from "./ChannelSidebarItem";
+import { UnreadBadge } from "./UnreadBadge";
+import { createSidebarPreferencesStore } from "../../features/relay/sidebar-preferences-store";
+import type { SidebarPreferences } from "../../features/relay/sidebar-preferences";
 
 afterEach(cleanup);
 
@@ -24,6 +27,8 @@ const noTyping = Object.freeze([]);
 
 function owner(profiles = new Map<string, Profile>()) {
   const listeners = new Set<() => void>();
+  const preferenceListeners = new Set<() => void>();
+  let muted: string[] = [];
   let snapshot: UnreadSnapshot = {
     target: { kind: "channel", channelId: "alpha" },
     observedCount: 0,
@@ -40,6 +45,13 @@ function owner(profiles = new Map<string, Profile>()) {
   };
   const session = {
     channels: { prepare: vi.fn() },
+    sidebarPreferences: {
+      snapshot: () => ({ data: { muted } }),
+      subscribe: (listener: () => void) => {
+        preferenceListeners.add(listener);
+        return () => preferenceListeners.delete(listener);
+      },
+    },
     agentActivity: {
       subscribe: () => () => {},
       snapshot: () => ({
@@ -78,6 +90,14 @@ function owner(profiles = new Map<string, Profile>()) {
     session,
     profiles,
     listeners,
+    mute(value: boolean) {
+      muted = value ? ["alpha"] : [];
+      for (const listener of preferenceListeners) listener();
+    },
+    manual() {
+      snapshot = { ...snapshot, manual: "local-only" };
+      for (const listener of listeners) listener();
+    },
     unread(count: number, attentionCount = 0) {
       snapshot = { ...snapshot, observedCount: count, attentionCount };
       for (const listener of listeners) listener();
@@ -513,4 +533,217 @@ it("marks a temporary channel with its lifetime and yields the slot to working a
   expect(document.querySelector("[data-channel-temporary]")).toBeNull();
   view.rerender(<ChannelSidebarItem {...itemProps(state.session, false)} />);
   expect(document.querySelector("[data-channel-temporary]")).toBeNull();
+});
+
+it("re-renders a working row for its agents' profiles, not every profile", () => {
+  const agent = "a".repeat(64);
+  let profiles = new Map<string, Profile>([
+    [agent, { name: "Buzzy", isAgent: true }],
+  ]);
+  const listeners = new Set<() => void>();
+  const session = {
+    ...owner().session,
+    profiles: {
+      snapshot: () => profiles,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+  } as unknown as RelaySession;
+  const publish = (next: typeof profiles) =>
+    act(() => {
+      profiles = next;
+      for (const listener of listeners) listener();
+    });
+  let commits = 0;
+  render(
+    <Profiler id="row" onRender={() => commits++}>
+      <ChannelSidebarItem {...itemProps(session, true)} />
+    </Profiler>,
+  );
+  expect(
+    screen.getByRole("img", { name: "Buzzy working in Alpha" }),
+  ).toBeInTheDocument();
+  const settled = commits;
+  publish(new Map([...profiles, ["b".repeat(64), { name: "Bystander" }]]));
+  expect(commits).toBe(settled);
+  publish(
+    new Map([...profiles, [agent, { name: "Buzzy Two", isAgent: true }]]),
+  );
+  expect(
+    screen.getByRole("img", { name: "Buzzy Two working in Alpha" }),
+  ).toBeInTheDocument();
+});
+
+it("keeps Solo unread labels and markers independent of mute", () => {
+  const state = owner();
+  const view = render(
+    <UnreadBadge
+      session={state.session}
+      channelId="alpha"
+      label="Solo"
+      labelUnread="all"
+    />,
+  );
+  const label = () =>
+    view.container.querySelector("[data-channel-unread-title]");
+  act(() => state.unread(2));
+  expect(label()).toBeInTheDocument();
+  act(() => state.mute(true));
+  expect(label()).toBeInTheDocument();
+  expect(
+    screen.getByRole("img", { name: /2 observed unread/ }),
+  ).toBeInTheDocument();
+  act(() => state.unread(3, 1));
+  expect(label()).toBeInTheDocument();
+  expect(view.container.querySelector("[data-channel-priority]")).toBeNull();
+  act(() => state.unread(0));
+  expect(label()).toBeNull();
+  expect(view.container.querySelector("[data-channel-unread]")).toBeNull();
+});
+
+it.each([
+  { channelType: "stream", mutedIndicators: 0 },
+  { channelType: "dm", mutedIndicators: 1 },
+] as const)(
+  "replaces the muted $channelType unread dot with a bell, restores it on unmute, and retains unread evidence",
+  ({ channelType, mutedIndicators }) => {
+    const state = owner();
+    const view = render(
+      <ChannelSidebarItem
+        {...itemProps(state.session, false, {
+          id: "alpha",
+          name: "Alpha",
+          channelType,
+        })}
+      />,
+    );
+    const row = () =>
+      view.container.querySelector("[data-channel-sidebar-row]");
+    expect(
+      screen.queryByRole("img", { name: "Muted" }),
+    ).not.toBeInTheDocument();
+    act(() => state.mute(true));
+    expect(screen.getByRole("img", { name: "Muted" })).toBeInTheDocument();
+    expect(row()).not.toHaveAttribute("data-ordinary");
+    act(() => state.mute(false));
+    act(() => state.unread(2));
+    expect(row()).toHaveAttribute("data-ordinary");
+    act(() => state.mute(true));
+    expect(row()?.hasAttribute("data-ordinary")).toBe(channelType === "dm");
+    act(() => state.unread(3, 0));
+    expect(row()?.hasAttribute("data-ordinary")).toBe(channelType === "dm");
+    expect(
+      view.container.querySelectorAll("[data-channel-unread]"),
+    ).toHaveLength(mutedIndicators);
+    expect(
+      view.container.querySelectorAll("[data-channel-priority]"),
+    ).toHaveLength(0);
+    expect(screen.getByRole("img", { name: "Muted" })).toBeInTheDocument();
+    act(() => state.mute(false));
+    expect(row()).toHaveAttribute("data-ordinary");
+    expect(
+      screen.queryByRole("img", { name: "Muted" }),
+    ).not.toBeInTheDocument();
+    expect(
+      view.container.querySelectorAll("[data-channel-priority]"),
+    ).toHaveLength(mutedIndicators);
+    act(() => state.mute(true));
+    act(() => state.unread(4, 1));
+    expect(row()?.hasAttribute("data-ordinary")).toBe(channelType === "dm");
+    expect(view.container.querySelector("[data-channel-priority]")).toBeNull();
+    expect(
+      screen.getByRole("img", { name: /4 observed unread messages/ }),
+    ).toBeInTheDocument();
+    act(() => state.mute(false));
+    expect(
+      view.container.querySelector("[data-channel-priority]"),
+    ).toBeInTheDocument();
+    act(() => state.mute(true));
+    act(() => state.manual());
+    expect(row()).toHaveAttribute("data-ordinary");
+    expect(
+      screen.getByRole("img", { name: "Marked unread on this device only" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Muted" })).toBeInTheDocument();
+  },
+);
+
+it("keeps cached mute from quieting unread but retains confirmed mute through read failures", async () => {
+  const data: SidebarPreferences = {
+    sections: [],
+    assignments: {},
+    starred: [],
+    muted: ["alpha"],
+  };
+  let rejectRead!: (error: Error) => void;
+  const read = vi.fn(
+    () =>
+      new Promise<SidebarPreferences>((_resolve, reject) => {
+        rejectRead = reject;
+      }),
+  );
+  const store = createSidebarPreferencesStore({
+    available: true,
+    read,
+    persistence: {
+      read: async () => [],
+      readStartup: async () => ({ preferences: { savedAt: Date.now(), data } }),
+      write: async () => {},
+      remove: async () => {},
+      retain: async () => {},
+      clear: async () => {},
+      close() {},
+    },
+  });
+  try {
+    await store.ready;
+    const preferences = store.queries;
+    expect(preferences.snapshot().cached).toBe(true);
+    const state = owner();
+    state.unread(2);
+    const session = { ...state.session, sidebarPreferences: preferences };
+    const view = render(<ChannelSidebarItem {...itemProps(session, false)} />);
+    const row = () =>
+      view.container.querySelector("[data-channel-sidebar-row]");
+    expect(row()).toHaveAttribute("data-ordinary");
+    expect(
+      screen.getByRole("img", { name: /2 observed unread/ }),
+    ).toBeInTheDocument();
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = preferences.refresh();
+    });
+    expect(preferences.snapshot().status).toBe("loading");
+    expect(row()).toHaveAttribute("data-ordinary");
+    await act(async () => {
+      rejectRead(new Error("Preference read failed"));
+      await pending;
+    });
+    expect(preferences.snapshot().status).toBe("error");
+    expect(row()).toHaveAttribute("data-ordinary");
+    read.mockResolvedValueOnce(data);
+    await act(async () => {
+      await preferences.refresh();
+    });
+    expect(preferences.snapshot().cached).toBeUndefined();
+    expect(row()).not.toHaveAttribute("data-ordinary");
+    await act(async () => {
+      pending = preferences.refresh();
+    });
+    expect(row()).not.toHaveAttribute("data-ordinary");
+    await act(async () => {
+      rejectRead(new Error("Refresh failed"));
+      await pending;
+    });
+    expect(row()).not.toHaveAttribute("data-ordinary");
+    read.mockResolvedValueOnce({ ...data, muted: [] });
+    await act(async () => {
+      await preferences.refresh();
+    });
+    expect(row()).toHaveAttribute("data-ordinary");
+  } finally {
+    store.dispose();
+  }
 });

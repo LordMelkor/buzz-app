@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import { HuddleAvatarMotion } from "./HuddleAvatarMotion";
 import { useEffect, useSyncExternalStore, type CSSProperties } from "react";
 import type { RelayData } from "../../features/relay/service";
@@ -21,12 +22,14 @@ export function HuddleAvatarStack({
     session.profiles.snapshot,
   );
   const keys = participants.join(":");
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (keys)
       void session.profiles
         .ensure(keys.split(":"), "background")
         .catch(() => {});
-  }, [keys, session]);
+  }, [keys, session, profileGeneration]);
   const name = (key: string) =>
     profiles.get(key)?.name || formatPublicKey(key) || "Participant";
   const label = participants.map(name).join(", ");

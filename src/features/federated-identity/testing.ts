@@ -17,10 +17,14 @@ export function federatedFixture(
       id: "test",
       identityOrigin: "https://builderlab.example",
       apiBasePath: "/api/goose/",
+      signIn: "on-demand",
+      organization: null,
     },
     revision: `${revision}:0`,
     email: null,
     failure: null,
+    expiresAt: null,
+    expiring: false,
   };
   const listeners = new Set<() => void>();
   const publish = (next: Partial<SessionSnapshot>) => {

@@ -69,7 +69,8 @@ semantic tokens, UI authoring rules and the local component reference.
   the surviving community trigger.
   Switching pages preserves the desktop sidebar’s current visibility. The manual
   collapse toggle remains available across destinations.
-  The conversation sidebar retains its saved width and resize behavior.
+  The conversation sidebar and page-contributed sidebars share one saved
+  per-community width and resize behavior.
   Settings opens in the shared expanded Dialog with an integrated sidebar; the
   workspace remains mounted underneath. Its portal fills the shell's workspace
   frame (navigation, main content and companion panels); the popup centers inside
@@ -254,7 +255,12 @@ avatar. Search, sidebar and history controls use unfilled ghost icon buttons wit
 Their hover fills remain translucent over the colored backdrop.
 Pressed fills are slightly stronger; icons keep full opacity. Plugin launchers
 use the shared glass style.
-Bestie is available in the Messages sidebar when its plugin is enabled.
+Bestie is available in the Messages sidebar when its plugin is enabled. An
+account-saved Bestie decorates that row with the agent's identity and promotes
+its exact one-to-one DM there. Search Buzz shows the same agent identity with
+**Bestie** as supporting text and matches either name. See
+[`solo/README.md`](solo/README.md) and the bundled Bestie README for selection,
+DM promotion and hosted-setup fallback ownership.
 `ProfileButton.tsx` uses the selected community's profile when connected and
 local defaults in Personal space. Its anchored account menu groups profile and
 status controls above Appearance, Plugins and Settings. The avatar inside the

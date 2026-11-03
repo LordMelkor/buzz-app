@@ -874,9 +874,23 @@ pub(crate) async fn app_agent_publish(
 ) -> Result<Value, String> {
     let (agent, key, evidence) = state.signer(pubkey, relay).await?;
     let signed = agent.sign(&key, event.kind, event.content, event.tags)?;
+    let event_id = signed
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("Invalid agent event")?
+        .to_owned();
     evidence
         .run(true, post(&agent, &key, evidence.header(), signed))
         .await
+        .map_err(|error| publish_error(&event_id, error))
+}
+
+fn publish_error(event_id: &str, error: String) -> String {
+    if error == "Write result could not be confirmed; it may have completed. Inspect the existing operation before retrying." {
+        format!("Agent event {event_id} unconfirmed; it may or may not have been accepted")
+    } else {
+        error
+    }
 }
 
 /// Publishes changed public metadata. Safe to call any time; one publication
@@ -1376,18 +1390,24 @@ async fn post(
         .body(bytes)
         .send()
         .await
-        .map_err(|_| "Agent event unconfirmed; it may or may not have been accepted")?;
+        .map_err(|_| {
+            format!("Agent event {event_id} unconfirmed; it may or may not have been accepted")
+        })?;
     let status = response.status();
     let body = response.bytes().await.unwrap_or_default();
-    let receipt: Value =
-        serde_json::from_slice(&body[..body.len().min(16 * 1024)]).unwrap_or(Value::Null);
-    if !status.is_success()
-        || receipt.get("accepted").and_then(Value::as_bool) != Some(true)
-        || receipt.get("event_id").and_then(Value::as_str) != Some(event_id.as_str())
-    {
+    if !status.is_success() {
         return Err(format!(
             "The community refused the agent event: {}",
             reason(status, &body)
+        ));
+    }
+    let receipt: Value =
+        serde_json::from_slice(&body[..body.len().min(16 * 1024)]).unwrap_or(Value::Null);
+    if receipt.get("accepted").and_then(Value::as_bool) != Some(true)
+        || receipt.get("event_id").and_then(Value::as_str) != Some(event_id.as_str())
+    {
+        return Err(format!(
+            "Agent event {event_id} unconfirmed; it may or may not have been accepted"
         ));
     }
     Ok(signed)
@@ -1470,6 +1490,22 @@ mod tests {
             second.join().unwrap().unwrap();
         });
         assert_eq!(shown.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn uncertain_evidence_keeps_the_signed_event_id() {
+        let id = "a".repeat(64);
+        assert_eq!(
+            publish_error(
+                &id,
+                "Write result could not be confirmed; it may have completed. Inspect the existing operation before retrying.".into(),
+            ),
+            format!("Agent event {id} unconfirmed; it may or may not have been accepted")
+        );
+        assert_eq!(
+            publish_error(&id, "The community refused the agent event: blocked".into()),
+            "The community refused the agent event: blocked"
+        );
     }
 
     /// One saved key, behind a store that is busy for the first few reads.

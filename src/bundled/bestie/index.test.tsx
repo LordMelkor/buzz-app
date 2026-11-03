@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { composerDOMFixture } from "../../features/messages/composer-testing";
@@ -8,6 +8,7 @@ import type { ConversationExtensions } from "../../features/conversation/contrac
 import type { ConversationHostServices } from "../../features/conversation/ConversationHost";
 import type { Navigation } from "../../features/navigation/controller";
 import { BestiePage } from "./index";
+import { deferred } from "../builderlab/test-helpers";
 import { bestieFixture, cleanups, HOME } from "./testing";
 
 const native = vi.hoisted(() => ({ isTauri: () => true, invoke: vi.fn() }));
@@ -80,6 +81,90 @@ const chooseModel = async () => {
   await user.click(await screen.findByRole("option", { name: "high" }));
 };
 const composer = () => screen.getByRole("textbox", { name: "Message #Bestie" });
+
+it("waits for the account choice before deciding whether to show setup", async () => {
+  const choice = deferred<string | undefined>();
+  const h = await bestieFixture(native.invoke, {
+    mainAgent: {
+      read: () => choice.promise,
+      write: async () => {},
+    },
+  });
+  renderPage(h);
+  expect(await screen.findByRole("status")).toHaveTextContent(
+    "Loading your Bestie…",
+  );
+  expect(
+    screen.queryByRole("button", { name: "Set up Bestie" }),
+  ).not.toBeInTheDocument();
+  await act(async () => choice.resolve(undefined));
+  expect(
+    await screen.findByRole("button", { name: "Set up Bestie" }),
+  ).toBeVisible();
+});
+
+it("keeps setup hidden when the account choice read fails and retries it", async () => {
+  const first = deferred<string | undefined>();
+  const second = deferred<string | undefined>();
+  let reads = 0;
+  const h = await bestieFixture(native.invoke, {
+    mainAgent: {
+      read: () => (reads++ ? second.promise : first.promise),
+      write: async () => {},
+    },
+  });
+  await h.bestie.setup();
+  renderPage(h);
+  await act(async () => first.reject(new Error("Account temporarily offline")));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Account temporarily offline",
+  );
+  expect(
+    screen.queryByRole("button", { name: "Set up Bestie" }),
+  ).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByRole("status")).toHaveTextContent(
+    "Loading your Bestie…",
+  );
+  await act(async () => second.resolve(h.agent));
+  expect(
+    await screen.findByText("This connection cannot start direct messages."),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "Set up Bestie" }),
+  ).not.toBeInTheDocument();
+});
+
+it("keeps a replacement connecting session out of hosted setup", async () => {
+  const h = await bestieFixture(native.invoke);
+  renderPage(h);
+  act(() => h.replaceWithConnectingSession());
+  expect(await screen.findByRole("status")).toHaveTextContent(
+    "Connecting to your Bestie…",
+  );
+  expect(
+    screen.queryByRole("button", { name: "Set up Bestie" }),
+  ).not.toBeInTheDocument();
+});
+
+it("routes an account-saved Bestie to its canonical DM instead of hosted setup", async () => {
+  const choice = deferred<string | undefined>();
+  const h = await bestieFixture(native.invoke, {
+    mainAgent: {
+      read: () => choice.promise,
+      write: async () => {},
+    },
+  });
+  await h.bestie.setup();
+  renderPage(h);
+  await act(async () => choice.resolve(h.agent));
+  expect(
+    await screen.findByText("This connection cannot start direct messages."),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "Set up Bestie" }),
+  ).not.toBeInTheDocument();
+});
 
 it("sets up Bestie on the model the owner chose and hands focus to its conversation", async () => {
   const h = await bestieFixture(native.invoke);

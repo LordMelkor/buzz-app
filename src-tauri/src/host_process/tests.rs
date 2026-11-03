@@ -387,6 +387,104 @@ fn process_mcp_connection_has_an_explicit_wire_shape() {
     }
 }
 
+#[tokio::test]
+#[cfg(target_os = "macos")]
+async fn protected_launches_keep_the_startup_agents_root_when_release_storage_appears() {
+    use crate::agent_state::AgentState;
+    use crate::sign_out::legacy_identifier::{agents, CURRENT, DEV, LEGACY};
+    use sha2::{Digest, Sha256};
+    use std::path::Path;
+
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    std::fs::create_dir(base.join(LEGACY)).unwrap();
+    let app_data = base.join(DEV);
+    let startup_root = agents(DEV, &app_data);
+    assert_eq!(startup_root, app_data.join("agents"));
+    let state = AgentState::new(Ok(startup_root.join("state")));
+    state.set("marker", Some("before")).unwrap();
+    let identities = startup_root.join("identities.json");
+    std::fs::write(&identities, "identities").unwrap();
+    let declaration: HostProcess = serde_json::from_value(serde_json::json!({
+        "id": "worker", "program": "worker", "artifact": {
+            "path": "/usr/bin/true",
+            "sha256": format!("{:x}", Sha256::digest(std::fs::read("/usr/bin/true").unwrap()))
+        }
+    }))
+    .unwrap();
+    let protection = ProcessProtection {
+        read_only_paths: vec![],
+        hidden_paths: vec![],
+    };
+    let first_root = state.agents_root().unwrap().to_path_buf();
+    let first_target = protected_program_path(
+        &declaration,
+        || unreachable!(),
+        &first_root.join("artifacts"),
+    )
+    .unwrap();
+    let first_profile = protection.profile(&[first_root]).unwrap();
+    let run = |profile: &str, script: &str, path: &Path| {
+        let mut command = process_command(
+            Path::new("/bin/sh"),
+            None,
+            Some(profile),
+            &[],
+            &[
+                "-c".into(),
+                script.into(),
+                "worker".into(),
+                path.to_str().unwrap().into(),
+            ],
+        );
+        command.env_clear();
+        command
+    };
+    // A contained worker can create this sibling; it must not redirect later launches.
+    let release = base.join(CURRENT);
+    let created = run(&first_profile, "/bin/mkdir \"$1\"", &release)
+        .output()
+        .await
+        .unwrap();
+    assert!(created.status.success(), "{created:?}");
+    assert_eq!(agents(DEV, &app_data), release.join("agents"));
+
+    let second_root = state.agents_root().unwrap().to_path_buf();
+    assert_eq!(second_root, startup_root);
+    let staged = protected_program_path(
+        &declaration,
+        || unreachable!(),
+        &second_root.join("artifacts"),
+    )
+    .unwrap();
+    assert_eq!(staged, first_target);
+    assert!(staged.starts_with(startup_root.join("artifacts")));
+    assert!(!release.join("agents").exists());
+    let second_profile = protection.profile(&[second_root]).unwrap();
+    state.set("marker", Some("after")).unwrap();
+    for profile in [&first_profile, &second_profile] {
+        for path in [
+            identities.clone(),
+            startup_root.join("state/marker"),
+            startup_root.join("artifacts/untrusted"),
+        ] {
+            let write = run(profile, "printf breached > \"$1\"", &path)
+                .output()
+                .await
+                .unwrap();
+            assert!(!write.status.success(), "write allowed: {path:?}");
+        }
+        // The owner can chmod its staged file; the worker's profile must forbid it.
+        let chmod = run(profile, "/bin/chmod u+w \"$1\"", &staged)
+            .output()
+            .await
+            .unwrap();
+        assert!(!chmod.status.success(), "staged artifact was writable");
+    }
+    assert_eq!(std::fs::read_to_string(identities).unwrap(), "identities");
+    assert_eq!(state.load().unwrap()["marker"], "after");
+}
+
 #[test]
 #[cfg(target_os = "macos")]
 fn snapshot_mcp_and_containment_keep_the_verified_target_and_argument_order() {

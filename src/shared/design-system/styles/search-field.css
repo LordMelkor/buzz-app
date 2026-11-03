@@ -145,3 +145,9 @@ html[data-keyboard-navigation]
 .search-field[data-variant="palette"] [data-search-clear] {
   margin-block: calc(-1 * var(--space-half));
 }
+
+.search-field-actions {
+  display: flex;
+  flex-shrink: 0;
+  order: 2;
+}

@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { attestedOwner } from "../../features/agents/owner-attestation";
 import { type EventData, newer } from "../../features/relay/events";
@@ -128,7 +129,9 @@ export function useMemberOwners(
     names.attempt === attempt
       ? names
       : undefined;
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     let active = true;
     setNames({
       session,
@@ -163,7 +166,7 @@ export function useMemberOwners(
     return () => {
       active = false;
     };
-  }, [session, ownerKeys, attempt]);
+  }, [session, ownerKeys, attempt, profileGeneration]);
   return {
     owners,
     busy:

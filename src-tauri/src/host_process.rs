@@ -338,14 +338,11 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
     load_login_shell_path().await;
     let path = effective_path();
     let controls = if protected {
-        let app_data = app
-            .path()
-            .app_data_dir()
-            .map_err(|_| "Application data is unavailable")?;
-        Some(crate::sign_out::legacy_identifier::agents(
-            &app.config().identifier,
-            &app_data,
-        ))
+        Some(
+            app.state::<crate::agent_state::AgentState>()
+                .agents_root()?
+                .to_path_buf(),
+        )
     } else {
         None
     };

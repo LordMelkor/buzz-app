@@ -120,8 +120,9 @@ function setup(
   const core = vi.fn(async () => null as string | null | undefined);
   /** Whether `Agents.handle` gives the agent outside a run. */
   const connection = { live: true };
+  const desktop = { spawn: host.spawn };
   const runtime = new PiRuntime(
-    { spawn: host.spawn },
+    desktop,
     (key) => ownerReads(relay, pubkeyOf(key)),
     core,
     () => added,
@@ -202,6 +203,7 @@ function setup(
   return {
     runtime,
     host,
+    desktop,
     deliver,
     runOnce,
     settled,
@@ -213,6 +215,119 @@ function setup(
     core,
   };
 }
+
+it("contains delegated file reads with the current Pi handle's policy", async () => {
+  const f = setup();
+  const spawn = f.desktop.spawn;
+  const read = vi.fn(
+    async (
+      _id: string,
+      options: import("../../features/host/service").HostProcessOptions = {},
+    ) => {
+      options.onStdout?.(btoa("reviewed Pi file"));
+      return {
+        write: vi.fn(),
+        end: vi.fn(),
+        kill: vi.fn(),
+        exited: Promise.resolve(0),
+      };
+    },
+  );
+  f.desktop.spawn = (id, options) =>
+    id === "read-protected" ? read(id, options) : spawn(id, options);
+  try {
+    await f.deliver({ type: "mention", event: reply("2", "@Pi look") }).run;
+    const processProtection = {
+      readOnlyPaths: ["/controls"],
+      hiddenPaths: ["/approval"],
+    };
+    Object.assign(f.agent, {
+      protection: {
+        processProtection,
+        assertAvailable() {},
+        check: async () => {},
+      },
+    });
+    const result = await f.runtime.tool({
+      agent: self,
+      conversation: CONVERSATION,
+      context: { channel, root: root.id },
+      name: "send",
+      arguments: { path: "report.md", audience: "everyone" },
+    });
+    expect(result.isError).not.toBe(true);
+    expect(read).toHaveBeenCalledExactlyOnceWith(
+      "read-protected",
+      expect.objectContaining({
+        args: ["report.md"],
+        cwd: DEFAULT_CONFIG.workspace,
+        protection: processProtection,
+      }),
+    );
+    expect(f.published.at(-1)?.content).toBe("reviewed Pi file");
+  } finally {
+    await f.runtime.dispose();
+  }
+});
+
+it("stops a protected file read when its tool call is aborted", async () => {
+  const f = setup();
+  const spawn = f.desktop.spawn;
+  const started = deferred();
+  const exit = deferred<number>();
+  const kill = vi.fn(async () => exit.resolve(143));
+  f.desktop.spawn = async (id, options) => {
+    if (id !== "read-protected") return spawn(id, options);
+    started.resolve();
+    return { write: vi.fn(), end: vi.fn(), kill, exited: exit.promise };
+  };
+  try {
+    await f.deliver({ type: "mention", event: reply("2", "@Pi look") }).run;
+    Object.assign(f.agent, {
+      protection: {
+        processProtection: { readOnlyPaths: [], hiddenPaths: [] },
+        assertAvailable() {},
+        check: async () => {},
+      },
+    });
+    const stop = new AbortController();
+    const result = f.runtime.tool(
+      {
+        agent: self,
+        conversation: CONVERSATION,
+        context: { channel, root: root.id },
+        name: "send",
+        arguments: { path: "report.md", audience: "everyone" },
+      },
+      stop.signal,
+    );
+    await started.promise;
+    expect(kill).not.toHaveBeenCalled();
+    stop.abort();
+    expect((await result).isError).toBe(true);
+    expect(kill).toHaveBeenCalled();
+  } finally {
+    exit.resolve(0);
+    await f.runtime.dispose();
+  }
+});
+
+it("never opens a protected agent's storage in the shared host before its handle arrives", async () => {
+  const { host, runtime } = setup();
+  runtime.sync([
+    {
+      key: self,
+      pubkey: self,
+      config: DEFAULT_CONFIG,
+      protection: { provider: "test", policy: {} },
+    },
+  ] as unknown as Agent[]);
+  await expect(runtime.places(self)).rejects.toThrow(
+    "The agent isn't connected yet",
+  );
+  expect(host.requests("places")).toEqual([]);
+  expect(host.processes).toEqual([]);
+});
 
 it("hands an owner's mention to its thread's Pi conversation", async () => {
   const { host, deliver, published } = setup();
@@ -2340,3 +2455,52 @@ it("lets go of whichever channel-list listener it holds when Activity unsubscrib
   relay.connect();
   expect(changed).toHaveBeenCalledTimes(1);
 });
+
+it.each(["stop", "retire"])(
+  "keeps a protected final answer local after %s",
+  async (mode) => {
+    const answered = deferred<unknown>();
+    const check = vi.fn(async () => {});
+    const f = setup({
+      wait: () => answered.promise,
+      abort: () => ({}),
+      runtime: () => ({
+        file: "/runtime/host.mjs",
+        node: "/node/bin/node",
+        codeRoot: "/runtime",
+        nodeRoot: "/node",
+        data: "/data",
+        auth: "/auth",
+      }),
+    });
+    let stop!: () => Promise<void>;
+    const turn = f.deliver(
+      { type: "mention", event: reply("2", "@Pi look") },
+      {
+        interruptible: (fn) => {
+          stop = fn;
+        },
+      },
+    );
+    await turn.run;
+    Object.assign(f.agent, {
+      protection: {
+        key: "test",
+        stateKey: "test",
+        processProtection: { readOnlyPaths: [], hiddenPaths: [] },
+        assertAvailable() {},
+        check,
+      },
+    });
+    if (mode === "stop") await stop();
+    else await f.runtime.retire(self);
+    answered.resolve({
+      status: "done",
+      answer: 5,
+      text: "The build is green.",
+    });
+    await f.settled(turn);
+    expect(f.published).toEqual([]);
+    expect(check).not.toHaveBeenCalled();
+  },
+);

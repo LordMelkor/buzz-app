@@ -20,10 +20,19 @@ import {
   keypair,
   message,
   metadata,
+  profile,
   roster,
   scriptedTransport,
   signed,
 } from "./testing";
+
+vi.mock("./fold", async (actual) => {
+  const fold = await actual<typeof import("./fold")>();
+  return { ...fold, foldMessages: vi.fn(fold.foldMessages) };
+});
+/** Unread previews fold with no viewer; other projections pass one. */
+const unreadFolds = () =>
+  vi.mocked(foldMessages).mock.calls.filter(([, author]) => author === "");
 
 it("admits owner edits only after verifying the current signed profile, and revokes replaced evidence", async () => {
   const owner = keypair(),
@@ -397,6 +406,55 @@ it.each(["head", "tail"])(
   },
 );
 
+it("refreshes an unopened channel's tail preview after its head changes", async () => {
+  const author = keypair(),
+    relay = keypair();
+  const wire = scriptedTransport(author.pubkey, relay.pubkey);
+  let live!: LiveCallbacks;
+  const connection = createRelaySession(
+    {
+      ...wire.transport,
+      subscribe(callbacks) {
+        live = callbacks;
+        return { update() {}, retry() {}, dispose() {} };
+      },
+    },
+    { prepared: true },
+  );
+  const original = message(author, "c", "Original", 11);
+  const edit = signed(author, {
+    kind: 40003,
+    created_at: 12,
+    content: "Edited",
+    tags: [
+      ["h", "c"],
+      ["e", original.id],
+    ],
+  });
+  const channels = connection.session.channels;
+  const preview = () =>
+    channels.list().channels.find((channel) => channel.id === "c")?.preview;
+  try {
+    live.receive([roster(relay, "c", [author.pubkey], 1), original]);
+    live.receive([eventDto(profile(keypair(), { name: "First" }))]);
+    await flush();
+    expect(preview()).toBe("Original");
+    channels.prepare?.("c");
+    wire
+      .next()
+      .respond([
+        original,
+        edit,
+        bounds(relay, "c", "head", { has_more: false, next_cursor: null }),
+      ]);
+    await flush();
+    live.receive([eventDto(profile(keypair(), { name: "Second" }))]);
+    await vi.waitFor(() => expect(preview()).toBe("Edited"));
+  } finally {
+    connection.dispose();
+  }
+});
+
 it.each(["actor", "p"])(
   "fetches a cold %s-attributed agent profile for owner-edited unread previews",
   async (attribution) => {
@@ -579,6 +637,23 @@ it("uses the same verified owner edit in the conversation, prompt history and un
     expect(unread.activity("c").items?.[0]?.preview).toBe("Spoken");
     expect(unread.inbox().items?.[0]?.preview).toBe("Spoken");
     expect(changed).toHaveBeenCalled();
+    // A profile no fold read cannot change the previews: no refold.
+    vi.mocked(foldMessages).mockClear();
+    const stranger = keypair();
+    live.receive([
+      signed(stranger, {
+        kind: 0,
+        created_at: 12,
+        content: '{"name":"Stranger"}',
+        tags: [],
+      }),
+    ]);
+    await vi.waitFor(() =>
+      expect(
+        connection.session.profiles.snapshot().get(stranger.pubkey)?.name,
+      ).toBe("Stranger"),
+    );
+    expect(unreadFolds()).toHaveLength(0);
     profile = eventDto(
       signed(agent, { kind: 0, created_at: 13, content: "{}", tags: [] }),
     );

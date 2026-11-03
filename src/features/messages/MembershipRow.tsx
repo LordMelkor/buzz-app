@@ -46,7 +46,7 @@ export const MembershipRow = memo(function MembershipRow({
   return (
     <div data-message-id={row.id} data-membership-row="">
       {day && <DayDivider createdAt={row.createdAt} />}
-      <div className={styles.membership}>
+      <div className={styles.membership} data-highlight-surface="">
         <span className={styles.membershipAvatars} aria-hidden="true">
           {targets.slice(0, 3).map((id) => {
             const profile = profiles.get(id);

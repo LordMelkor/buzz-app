@@ -11,6 +11,28 @@ pub(crate) struct Config {
     pub(crate) community_hosts: Vec<String>,
     pub(crate) adapter_base: String,
     pub(crate) api_base_path: String,
+    /// When the app asks for sign-in. Presentation policy, not identity: it is
+    /// left out of the session fingerprint, so changing it keeps saved sessions.
+    #[serde(default, skip_serializing_if = "SignIn::is_on_demand")]
+    pub(crate) sign_in: SignIn,
+    /// The organization's display name for sign-in copy, such as "Block".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) organization: Option<String>,
+}
+
+#[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SignIn {
+    /// Only when a protected community refuses the viewer, or from Settings.
+    #[default]
+    OnDemand,
+    /// Before the app opens, and again whenever the session ends.
+    AtLaunch,
+}
+impl SignIn {
+    fn is_on_demand(&self) -> bool {
+        *self == Self::OnDemand
+    }
 }
 
 const INVALID: &str = "Invalid BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG";
@@ -29,6 +51,12 @@ impl Config {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-')
             || config.community_hosts.len() > 128
+            || config.organization.as_ref().is_some_and(|name| {
+                name.trim() != name
+                    || name.is_empty()
+                    || name.chars().count() > 64
+                    || name.chars().any(|c| c.is_control() || is_format(c))
+            })
         {
             return Err(INVALID.into());
         }
@@ -71,6 +99,15 @@ impl Config {
         }
         config.community_hosts = hosts;
         Ok(config)
+    }
+
+    /// The deployment as it identifies saved sessions, without presentation.
+    pub(crate) fn identity(&self) -> Self {
+        Self {
+            sign_in: SignIn::OnDemand,
+            organization: None,
+            ..self.clone()
+        }
     }
 
     pub(crate) fn endpoint(&self, suffix: &str) -> Url {
@@ -151,6 +188,11 @@ pub(crate) fn canonical_relay(raw: &str) -> Result<String, String> {
     ))
 }
 
+/// Invisible characters that reorder or hide text, such as bidi overrides.
+fn is_format(c: char) -> bool {
+    matches!(c, '\u{00ad}' | '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +228,25 @@ mod tests {
     }
 
     #[test]
+    fn sign_in_policy_is_optional_and_outside_the_session_identity() {
+        let plain = Config::parse(&descriptor().to_string()).unwrap();
+        assert!(plain.sign_in == SignIn::OnDemand && plain.organization.is_none());
+        let mut value = descriptor();
+        value["signIn"] = serde_json::json!("at-launch");
+        value["organization"] = serde_json::json!("Block");
+        let launch = Config::parse(&value.to_string()).unwrap();
+        assert!(launch.sign_in == SignIn::AtLaunch);
+        assert_eq!(launch.organization.as_deref(), Some("Block"));
+        // build.rs re-serializes the descriptor; the policy must survive it.
+        let rebuilt = Config::parse(&serde_json::to_string(&launch).unwrap()).unwrap();
+        assert!(rebuilt.sign_in == SignIn::AtLaunch);
+        assert_eq!(
+            serde_json::to_string(&launch.identity()).unwrap(),
+            serde_json::to_string(&plain).unwrap()
+        );
+    }
+
+    #[test]
     fn unsafe_descriptors_are_refused_before_any_credential_use() {
         for (field, bad) in [
             ("version", serde_json::json!(2)),
@@ -211,6 +272,12 @@ mod tests {
             ),
             ("communityHosts", serde_json::json!(["a.*.example"])),
             ("communityHosts", serde_json::json!(["example."])),
+            ("signIn", serde_json::json!("always")),
+            ("organization", serde_json::json!("")),
+            ("organization", serde_json::json!(" Block")),
+            ("organization", serde_json::json!("Bl\nock")),
+            ("organization", serde_json::json!("Bl\u{202e}ock")),
+            ("organization", serde_json::json!("x".repeat(65))),
         ] {
             let mut value = descriptor();
             value[field] = bad;

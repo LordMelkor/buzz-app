@@ -4,21 +4,23 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
+import type { ChannelSummary } from "../../features/relay/contracts";
 import type { ComposerSession } from "../../features/messages/composer-session";
 import type { MentionRecipient } from "../../features/messages/mention-draft";
 import type { Agent } from "../../features/agents/service";
 import { useAgentChoices } from "../../features/agents/use-choices";
 import { AgentsContext, useAgentsSnapshot } from "../../features/agents/react";
-import { useIdentityNames } from "../../features/identity-names/react";
 import { DraftMentionRoster } from "../../features/messages/draft-mention-roster";
 import { SelectedMentionContext } from "../../features/messages/selected-mention-context";
 import { archivedMention } from "../../features/messages/mention-admission";
 import { mentionHistory } from "../../features/messages/mention-history";
 import { directoryChanges, mentionCandidates } from "./mention-candidates";
 import { useListedChannel } from "../../features/relay/listed-channel";
+import { useNamesRevision } from "../../features/identity-names/react";
 import {
   exactMention,
   matchingMentions,
@@ -26,6 +28,18 @@ import {
   type MentionChoice,
 } from "./mention-ranking";
 type Person = ReturnType<typeof useMentionDirectory>["people"][number];
+const activityFields = new Set(["preview", "lastActivityAt"]);
+/** Equal but for the preview and activity time a new message changes. */
+function sameMentionFields(a: ChannelSummary, b: ChannelSummary) {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys)
+    if (
+      !activityFields.has(key) &&
+      !Object.is(a[key as keyof ChannelSummary], b[key as keyof ChannelSummary])
+    )
+      return false;
+  return true;
+}
 const none: readonly Person[] = [];
 // Derived once per cached candidate list (see mentionCandidates), so a
 // keystroke reuses labels and keys instead of renaming every member.
@@ -199,8 +213,15 @@ export function useMentionChoices(
     () => session.profiles.unnamed?.(),
   );
   // Previews replace the list on every message; read this channel and the
-  // roster's state, not the whole list.
-  const channel = useListedChannel(session.channels, channelId, (c) => c);
+  // roster's state, not the whole list. A message also replaces this channel's
+  // summary with a new preview and activity time, which mentions never read:
+  // keep the previous summary while every other field is unchanged.
+  const kept = useRef<ChannelSummary>(undefined);
+  const channel = useListedChannel(session.channels, channelId, (c) => {
+    if (!c || !kept.current || !sameMentionFields(kept.current, c))
+      kept.current = c;
+    return kept.current;
+  });
   const listStatus = useSyncExternalStore(
     session.channels.subscribeList,
     () => session.channels.list().status,
@@ -223,7 +244,8 @@ export function useMentionChoices(
     lifetime,
   );
   const archives = useMentionArchives(session, open);
-  const resolve = useIdentityNames(session.names);
+  // Labels come from names scopes directly: watch every name change while open.
+  const names = useNamesRevision(session.names, open);
   const [installed, install] = useState<{
     session: ComposerSession;
     key: string;
@@ -278,7 +300,7 @@ export function useMentionChoices(
     void channel;
     void agents;
     void archives;
-    void resolve;
+    void names;
     void revision;
     // A closed or disabled chooser shows nothing, so it names nothing.
     if (!open)
@@ -296,7 +318,7 @@ export function useMentionChoices(
     channel,
     agents,
     archives,
-    resolve,
+    names,
     revision,
   ]);
   // Install membership first; agent discovery must not hide known members.
@@ -369,7 +391,11 @@ export function useMentionChoices(
       });
     }
   }
-  const complete = !directory.loading && !directory.error && !directory.more;
+  const complete =
+    !directory.loading &&
+    !directory.error &&
+    !directory.more &&
+    !directory.tooShort;
   return useMemo(() => {
     const evidence = { pending, missingNames, complete };
     const live = byKey(candidates);

@@ -21,13 +21,13 @@ env:
 jobs:
   javascript:
     if: github.event_name != 'workflow_dispatch'
-    name: JavaScript (${{ matrix.shard }}/3)
+    name: JavaScript (${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -42,7 +42,7 @@ jobs:
         env:
           # Bound contention between suites that sign and verify large fixtures.
           BUZZ_TEST_WORKERS: "2"
-        run: ./bin/node scripts/ci-test-report.mjs kind=vitest report=test-results/ci/vitest.json evidence=test-results/ci/vitest-timing.json title="Vitest shard ${{ matrix.shard }}/3" -- ./bin/pnpm exec vitest run --shard=${{ matrix.shard }}/3 --reporter=default --reporter=json --outputFile=test-results/ci/vitest.json
+        run: ./bin/node scripts/ci-test-report.mjs kind=vitest report=test-results/ci/vitest.json evidence=test-results/ci/vitest-timing.json title="Vitest shard ${{ matrix.shard }}/4" -- ./bin/pnpm exec vitest run --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile=test-results/ci/vitest.json
       - name: Vitest timing evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -62,6 +62,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+      - name: Install pinned Pi test dependencies
+        run: |
+          source bin/activate-hermit
+          cd src/bundled/pi/deps
+          npm ci --ignore-scripts --no-audit --no-fund
+      - name: Real Pi tools and recovery
+        env:
+          PI_DEPS: ${{ github.workspace }}/src/bundled/pi/deps
+        run: ./bin/node scripts/ci-test-report.mjs kind=vitest report=test-results/protection/vitest.json evidence=test-results/protection/timing.json title="Protected Pi" -- ./bin/pnpm exec vitest run src/bundled/pi/protection.live.test.ts --reporter=default --reporter=json --outputFile=test-results/protection/vitest.json
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: agent-protection
@@ -240,7 +249,9 @@ jobs:
           name: browser-fixture-${{ github.sha }}-${{ github.run_attempt }}
           path: target/browser-fixture.tar
           if-no-files-found: error
-          retention-days: 1
+          # Re-running failed shards reuses this artifact by ID, so keep it as
+          # long as their evidence.
+          retention-days: 7
 
   browser:
     if: github.event_name != 'workflow_dispatch'

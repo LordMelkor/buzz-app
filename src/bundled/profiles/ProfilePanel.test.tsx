@@ -15,6 +15,7 @@ import {
   profileActivityViewTarget,
 } from "../../features/profiles/target";
 import { ProfilePanel } from "./ProfilePanel";
+import type { Navigation } from "../../features/navigation/controller";
 import type {
   Agent,
   Agents,
@@ -24,10 +25,22 @@ import type {
 
 import { agentDirectory } from "../../features/identity-names/testing";
 import type { LiveCallbacks } from "../../features/relay/live";
-import { keypair, profile } from "../../features/relay/testing";
+import { keypair, profile, signed } from "../../features/relay/testing";
 
-const key = "a".repeat(64);
+const key = "a".repeat(64),
+  viewer = "b".repeat(64),
+  threadRoot = "c".repeat(64);
 afterEach(cleanup);
+
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
 it("updates a mounted profile from the shared name view without replacing its identity", async () => {
   let name = "Local name";
   let notify = () => {};
@@ -353,12 +366,14 @@ function renderAgentActivity(
   tabs: { title: string; role?: string }[],
   rootId?: string,
   transcript: "opened" | "shown again" | false = false,
+  navigation?: Navigation,
 ) {
   const owner = createRelaySession(null);
   const snapshot = {
     status: "ready" as const,
     generation: 1,
     session: owner.session,
+    ...(navigation && { scope: `https://relay.test:${viewer}`, viewer }),
   };
   const relay: RelayData = {
     snapshot: () => snapshot,
@@ -377,9 +392,11 @@ function renderAgentActivity(
       component: function Echo({
         conversation,
         initialTranscript,
+        openConversation,
       }: {
         conversation?: { channelId: string; rootId?: string };
         initialTranscript?: TranscriptRequest;
+        openConversation?: (channelId: string, threadRootId?: string) => void;
       }) {
         // Like a type's Activity tab: it acts on the request as it shows.
         const [first] = useState(!!initialTranscript);
@@ -397,6 +414,19 @@ function renderAgentActivity(
                 Opened from {conversation.channelId}/
                 {conversation.rootId ?? "channel"}
               </p>
+            )}
+            {openConversation && (
+              <>
+                <button type="button" onClick={() => openConversation("c")}>
+                  Open channel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openConversation("c", threadRoot)}
+                >
+                  Open thread
+                </button>
+              </>
             )}
           </>
         );
@@ -442,6 +472,7 @@ function renderAgentActivity(
         open: vi.fn(() => true),
       }}
       close={() => {}}
+      {...(navigation && { navigation })}
     />
   );
   let mounts = 0;
@@ -484,6 +515,43 @@ it("opens an agent's activity on its type's Activity tab, the profile's only one
     expect(screen.getByText("Echo activity")).toBeVisible();
   } finally {
     dispose();
+  }
+});
+
+it("lets the Activity tab open a turn's channel or thread in this community, only with navigation", () => {
+  const navigate = vi.fn(async () => ({ status: "opened" as const }));
+  const tabs = [{ title: "Activity", role: "activity" }];
+  const dispose = renderAgentActivity(tabs, undefined, false, {
+    open: navigate,
+  } as unknown as Navigation);
+  const scope = { viewer, communityOrigin: "https://relay.test" };
+  try {
+    act(() => screen.getByRole("button", { name: "Open thread" }).click());
+    // A thread opens at its root message, which names the thread.
+    expect(navigate).toHaveBeenLastCalledWith({
+      version: 1,
+      kind: "conversation",
+      scope,
+      channelId: "c",
+      messageId: threadRoot,
+      threadRootId: threadRoot,
+    });
+    act(() => screen.getByRole("button", { name: "Open channel" }).click());
+    expect(navigate).toHaveBeenLastCalledWith({
+      version: 1,
+      kind: "conversation",
+      scope,
+      channelId: "c",
+    });
+  } finally {
+    dispose();
+  }
+  const without = renderAgentActivity(tabs);
+  try {
+    expect(screen.getByText("Echo activity")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Open thread" })).toBeNull();
+  } finally {
+    without();
   }
 });
 
@@ -579,5 +647,195 @@ it("opens an agent's activity on its type's first tab when the type has no Activ
     expect(screen.queryByRole("tab", { name: "Activity" })).toBeNull();
   } finally {
     dispose();
+  }
+});
+
+it("links an owned agent whose type's plugin is off to Manage plugins", async () => {
+  const owner = createRelaySession(null);
+  const snapshot = {
+    status: "ready" as const,
+    generation: 1,
+    session: owner.session,
+  };
+  const relay = {
+    snapshot: () => snapshot,
+    subscribe: () => () => {},
+  } as unknown as RelayData;
+  const agent = {
+    key,
+    pubkey: key,
+    name: "Lou",
+    type: "test/off",
+    place: "here",
+    config: {},
+    attention: {},
+  } as unknown as Agent;
+  const types: RegisteredAgentType[] = [];
+  const agentsSnapshot = { agents: [agent], teams: [] };
+  const agents = {
+    subscribe: () => () => {},
+    snapshot: () => agentsSnapshot,
+    types: () => types,
+    find: (pubkey: string) => (pubkey === key ? agent : undefined),
+    memberships: () => [],
+    configHistory: () => undefined,
+    addedTabs: () => [],
+  } as unknown as Agents;
+  const navigation = {
+    open: vi.fn(async () => ({ status: "opened" as const })),
+  } as unknown as Navigation;
+  try {
+    render(
+      <ProfilePanel
+        relay={relay}
+        agents={agents}
+        navigation={navigation}
+        target={profileTarget(key) ?? ""}
+        close={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Manage plugins" }));
+    expect(navigation.open).toHaveBeenCalledExactlyOnceWith({
+      version: 1,
+      kind: "settings",
+      section: "plugins",
+    });
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("shows historical verification time and issuer, discloses cache, and hides disabled marks", async () => {
+  const { eventDto } = await import("../../features/relay/events");
+  const person = keypair();
+  const relayKey = keypair();
+  let live!: LiveCallbacks;
+  let sink:
+    | import("../../features/relay/verified-profile").VerifiedProfileSink
+    | undefined;
+  // Kind-0 reads wait on the test; the first fails while the projection succeeds.
+  const profileReads: ReturnType<typeof deferred>[] = [];
+  const owner = createRelaySession({
+    viewer: person.pubkey,
+    relayAuthor: relayKey.pubkey,
+    scope: "wss://relay.example.test",
+    query: async (filters) => {
+      if (filters.some((filter) => filter.kinds?.includes(0))) {
+        const read = deferred();
+        profileReads.push(read);
+        if (profileReads.length === 1)
+          read.reject(new Error("profile read rejected"));
+        await read.promise;
+      }
+      return [];
+    },
+    media: () => undefined,
+    verifiedProfiles: { pubkey: relayKey.pubkey, multipleIssuers: false },
+    readVerifiedProfileAuthority: async () => null,
+    subscribe(callbacks) {
+      live = callbacks;
+      return {
+        update() {},
+        retry() {},
+        dispose() {},
+        syncVerifiedProfiles(_filter, next) {
+          sink = next;
+          return () => {};
+        },
+      };
+    },
+  });
+  const snapshot = {
+    status: "ready" as const,
+    generation: 1,
+    session: owner.session,
+  };
+  const relay: RelayData = {
+    snapshot: () => snapshot,
+    subscribe: () => () => {},
+    retry() {},
+    disconnect() {},
+    clearCache: async () => {},
+  };
+  try {
+    render(
+      <ProfilePanel
+        relay={relay}
+        target={profileTarget(person.pubkey) ?? ""}
+        close={() => {}}
+      />,
+    );
+    await waitFor(() => expect(sink).toBeDefined());
+    act(() => {
+      sink?.event(
+        eventDto(
+          signed(relayKey, {
+            kind: 30382,
+            created_at: 1_000_000,
+            content: "",
+            tags: [
+              ["d", person.pubkey],
+              ["p", person.pubkey],
+              ["active", "true"],
+              ["display_name", "Alice"],
+              ["username", "alice"],
+              ["issuer_label", "Example"],
+              ["verified_at", "1000000"],
+              ["full_name", "Alice Example"],
+            ],
+          }),
+        ),
+      );
+      sink?.eose();
+    });
+    expect(await screen.findByRole("heading", { name: "Alice" })).toBeVisible();
+    expect(screen.getByText(/Name verified by Example.*@alice/)).toBeVisible();
+    expect(screen.getByText("Alice Example")).toBeVisible();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "Info" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not load this profile.",
+    );
+    const retryButton = screen.getByRole("button", { name: "Retry profile" });
+    // A pending retry keeps its focused control and announces the read.
+    await user.click(retryButton);
+    await waitFor(() => expect(profileReads).toHaveLength(2));
+    expect(retryButton).toHaveFocus();
+    expect(retryButton).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByText("Loading profile…")).toHaveAttribute(
+      "role",
+      "status",
+    );
+    await act(async () => profileReads[1]?.reject(new Error("still rejected")));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not load this profile.",
+    );
+    expect(retryButton).toHaveFocus();
+    expect(retryButton).not.toHaveAttribute("aria-busy");
+    // Success removes Retry and hands its focus to the profile region.
+    await user.click(retryButton);
+    await waitFor(() => expect(profileReads).toHaveLength(3));
+    await act(async () => profileReads[2]?.resolve());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry profile" })).toBeNull();
+    expect(
+      screen.getByRole("region", { name: "Profile details" }),
+    ).toHaveFocus();
+    expect(screen.getByText("Name verified by Example")).toBeVisible();
+    expect(screen.getByText(/Last verified/)).toHaveTextContent(/1970/);
+    expect(screen.getByText(/current issuer endorsement/)).toBeVisible();
+    act(() => live.state({ status: "connecting", routes: [] }));
+    expect(screen.getByText(/Cached verification/)).toBeVisible();
+    expect(screen.getByText(/Cached evidence/)).toBeVisible();
+    await act(async () => live.state({ status: "connected", routes: [] }));
+    expect(screen.queryByText("Name verified by Example")).toBeNull();
+    expect(screen.queryByText("Alice Example")).toBeNull();
+    expect(screen.queryByText(/Cached verification/)).toBeNull();
+  } finally {
+    for (const read of profileReads) read.resolve();
+    cleanup();
+    owner.dispose();
   }
 });

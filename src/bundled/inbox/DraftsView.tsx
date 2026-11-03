@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import type { ConversationHostServices } from "../../features/conversation/ConversationHost";
 import {
   ConversationChannel,
@@ -219,13 +220,15 @@ export function DraftsView({
     selection.snapshot,
   );
   const name = useIdentityNames(session.names);
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
     // An access/cache reset retires old profile work; a ready roster starts
     // a fresh bounded read for the visible DM destinations.
     void list.asOf;
+    void profileGeneration;
     if (list.status === "ready" && profileIds.length)
       void session.profiles.ensure(profileIds, "background").catch(() => {});
-  }, [session, profileIds, list.status, list.asOf]);
+  }, [session, profileIds, list.status, list.asOf, profileGeneration]);
   const destination = (channel: ChannelSummary | undefined) => {
     if (!channel) return "Unavailable conversation";
     if (channel.channelType !== "dm") return channelText(channel);

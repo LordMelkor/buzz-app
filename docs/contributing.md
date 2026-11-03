@@ -115,13 +115,20 @@ need their own validation.
   path, which opens in Instruments. Use `just profile-clean` to remove all generated
   web and desktop captures.
 - `just desktop-bundle [args...]`: bundle a debug desktop app for testing OS deep
-  links on macOS, where the OS routes a scheme only to a bundled application. It
-  defaults to a `.app` bundle unless `--bundles` or `--no-bundle` says otherwise,
-  and passes everything else to `tauri build`. The bundle uses `buzz`, as does
-  release bundling with `pnpm tauri build`.
+  links and notifications on macOS, where those APIs require a bundled application.
+  Pass `--launch` to build and open the `.app` in one command; quit every other Buzz
+  copy first. `--launch` is macOS-only and requires the default app name and target
+  path, so it rejects bundle, target, runner, config, and Cargo/Tauri artifact-path
+  overrides rather than risk opening a stale build. Without it, the recipe defaults
+  to a `.app` bundle unless `--bundles` or `--no-bundle` says otherwise, and passes
+  everything else to `tauri build`.
+  The bundle uses `buzz`, as does release bundling with `pnpm tauri build`.
 - On macOS, set `BUZZ_DEV_SIGNING_IDENTITY` in `.env.local` to an installed code
   signing certificate name or SHA-1 hash (`security find-identity -v -p codesigning`
-  lists them). `just desktop-bundle` passes it to Tauri's macOS signer; the process
+  lists them). A stable certificate-backed identity is required to test macOS
+  notifications across rebuilds; Tauri's default ad-hoc signature changes with the
+  binary and can be rejected with `UNErrorDomain error 1`. `just desktop-bundle`
+  passes the identity to Tauri's macOS signer; the process
   environment takes precedence, including an empty value to disable this setting.
   Keep the same certificate and development app identifier across rebuilds. After
   the first signed build, enter your login Keychain password and choose **Always
@@ -786,7 +793,7 @@ across cached, parallel jobs rather than running the entire recipe several times
 [Three documented WebKit cases remain local-only](browser-testing.md#ci-coverage-and-local-only-webkit-checks);
 the complete correctness suite still runs with `pnpm test` / `just scan`:
 
-- **JavaScript:** three runners, each with Biome, one TypeScript check and a frontend
+- **JavaScript:** four runners, each with Biome, one TypeScript check and a frontend
   build. Vitest splits all test files across the runners, with two workers each;
   every shard must succeed. Timing artifacts include the shard number.
 - **Rust and tool integration:** workspace formatting, Clippy, all Rust tests and
@@ -795,13 +802,14 @@ the complete correctness suite still runs with `pnpm test` / `just scan`:
   rather than part of pre-push.
 - **Browser measurements:** Chromium then WebKit, serially on an isolated runner.
   It also runs all [perf scenarios](performance.md) once in Chromium.
-- **Browser journeys:** twenty-one runners (nine Chromium and twelve WebKit
+- **Browser journeys:** twenty-three runners (nine Chromium and fourteen WebKit
   file-level shards), each with two workers. They start alongside measurements on separate
   runners; `CI required` still requires both lanes. A separate required Ubuntu
   job builds the native plugin-manager fixture once with Hermit's pinned Cargo.
   It uploads a tar with executable permission, checkout revision and SHA-256
   checksum; shards download by exact same-run artifact ID and verify all three
-  before running. A missing artifact fails CI rather than rebuilding. Local
+  before running. A missing artifact fails CI rather than rebuilding; the artifact
+  is kept for seven days, so failed shards can be re-run within that window. Local
   non-CI journeys retain the locked Cargo build. Each browser test uses its own
   mutable fixture home. No measurements are repeated on shards and no retries
   hide failures.

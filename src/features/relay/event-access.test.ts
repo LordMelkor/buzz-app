@@ -20,3 +20,12 @@ it("accessOnce reads each channel's access once for a batch", () => {
   expect(events.filter(visible)).toHaveLength(500);
   expect(canAccess).toHaveBeenCalledTimes(2);
 });
+
+it("ignores a stray h tag on a kind 0 profile, as the relay does", () => {
+  const visible = eventVisibility(
+    () => false,
+    () => undefined,
+  );
+  expect(visible({ ...event("profile", "closed"), kind: 0 })).toBe(true);
+  expect(visible(event("content", "closed"))).toBe(false);
+});

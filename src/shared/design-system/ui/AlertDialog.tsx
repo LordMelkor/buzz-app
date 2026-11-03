@@ -73,7 +73,7 @@ export function AlertDialog({
                 <IconButton
                   aria-label="Close"
                   tabIndex={
-                    initialFocus === undefined && !focusEntered ? -1 : undefined
+                    initialFocus === undefined && !focusEntered ? -1 : 0
                   }
                   variant="subtle"
                   size="compact"

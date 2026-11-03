@@ -118,6 +118,12 @@ export default defineConfig(async ({ command, mode }) => {
         authorizedViewer: env.BUZZ_DEV_VIEWER,
         relayUrl: defaultRelay,
         communityAliases: aliases,
+        builderlab: {
+          api: `${builderlabUrl.replace(/\/$/, "")}/api/goose`,
+          appsBase: (
+            await import("./src/bundled/builderlab/apps/environment.ts")
+          ).controlPlane(builderlabUrl),
+        },
       }),
     );
   const profileReadyToken = process.env.BUZZ_PROFILE_VITE_READY_TOKEN;

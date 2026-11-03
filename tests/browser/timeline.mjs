@@ -83,28 +83,45 @@ export async function keyScroll(page, key, scroller = history(page)) {
   await gesture(page, scroller, "keydown", () => page.keyboard.press(key));
 }
 
-export async function anchor(page) {
-  return history(page).evaluate((element) => {
-    const bounds = element.getBoundingClientRect();
-    const rows = Array.from(element.querySelectorAll("[data-message-id]"));
-    // Prefer a whole paragraph, but tall messages can leave only clipped rows.
-    // Track the first intersecting row in that case, as the reader does. The
-    // same-ID/Y assertion below still detects displacement after a resize.
-    const row =
-      rows.find((row) => {
-        const rect = row.querySelector("p").getBoundingClientRect();
-        return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
-      }) ??
-      rows.find((row) => {
-        const rect = row.getBoundingClientRect();
-        return rect.bottom > bounds.top && rect.top < bounds.bottom;
-      });
-    if (!row) throw new Error("No visible message anchor");
-    return {
-      id: row.dataset.messageId,
-      y: row.querySelector("p").getBoundingClientRect().top - bounds.top,
-    };
-  });
+// With `scrollBy`, scroll by that many px and read at the resulting scroll
+// event, before rows measure: the timeline's held reader re-reads its row then.
+export async function anchor(page, held, scrollBy = 0) {
+  return history(page).evaluate(
+    (element, [held, scrollBy]) => {
+      const read = () => {
+        const bounds = element.getBoundingClientRect();
+        const rows = Array.from(element.querySelectorAll("[data-message-id]"));
+        const inView = (row) => {
+          const rect = row.getBoundingClientRect();
+          return rect.bottom > bounds.top && rect.top < bounds.bottom;
+        };
+        // A held reader keeps its row while any part of it is in view, as the
+        // timeline does across a drag. Otherwise prefer a whole paragraph, but
+        // tall messages can leave only clipped rows. Track the first
+        // intersecting row in that case, as the reader does. The same-ID/Y
+        // assertion below still detects displacement after a resize.
+        const row =
+          rows.find((row) => row.dataset.messageId === held && inView(row)) ??
+          rows.find((row) => {
+            const rect = row.querySelector("p").getBoundingClientRect();
+            return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+          }) ??
+          rows.find(inView);
+        if (!row) throw new Error("No visible message anchor");
+        return {
+          id: row.dataset.messageId,
+          y: row.querySelector("p").getBoundingClientRect().top - bounds.top,
+        };
+      };
+      if (!scrollBy) return read();
+      const scrolled = new Promise((resolve) =>
+        element.addEventListener("scroll", resolve, { once: true }),
+      );
+      element.scrollTop += scrollBy;
+      return scrolled.then(read);
+    },
+    [held, scrollBy],
+  );
 }
 export async function expectAnchor(page, expected) {
   await expect

@@ -43,12 +43,27 @@ export class ByteLru<T> {
     if (bytes > this.maxBytes || this.maxEntries < 1) return false;
     this.items.set(key, { value, bytes });
     this.bytes += bytes;
+    this.evict();
+    return true;
+  }
+  /** Replace a present entry without making it the most recent. */
+  replace(key: string, value: T, bytes = byteSize(value)): boolean {
+    const entry = this.items.get(key);
+    if (!entry || bytes > this.maxBytes) {
+      this.delete(key);
+      return false;
+    }
+    this.bytes += bytes - entry.bytes;
+    this.items.set(key, { value, bytes });
+    this.evict();
+    return true;
+  }
+  private evict() {
     for (const oldest of this.items.keys()) {
       if (this.items.size <= this.maxEntries && this.bytes <= this.maxBytes)
         break;
       this.delete(oldest);
     }
-    return true;
   }
   delete(key: string) {
     const entry = this.items.get(key);

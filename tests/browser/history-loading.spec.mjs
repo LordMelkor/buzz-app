@@ -311,28 +311,41 @@ test.describe("pages inside one second", () => {
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
     try {
+      // The press records the topmost whole paragraph as the reading anchor.
+      // The timeline holds that row in place while any part of it stays in
+      // view, even as rows above it measure and move.
+      let held = await anchor(page);
       const height = await history(page).evaluate((e) => e.scrollHeight);
       pending.release();
       await expect
         .poll(() => history(page).evaluate((e) => e.scrollHeight))
         .toBeGreaterThan(height);
       await settle(page);
+      await expectAnchor(page, held);
       // A scrollbar drag moves the scroller with no further input events,
       // into older rows that measure as they mount, short of the loaded top.
+      // Once a step carries the held row out of view, the timeline holds the
+      // row it reads at that scroll instead. Reading after the step settles
+      // could pick another row once rows above it measure.
       let step = 0;
+      let handOvers = 0;
       for (
         ;
         step < 10 && (await history(page).evaluate((e) => e.scrollTop)) >= 150;
         step++
       ) {
-        const before = await anchor(page);
-        await history(page).evaluate((e) => {
-          e.scrollTop -= 150;
-        });
+        const read = await anchor(page, held.id, -150);
+        if (read.id === held.id) held = { ...held, y: held.y + 150 };
+        else {
+          held = read;
+          handOvers++;
+        }
         await settle(page);
-        await expectAnchor(page, { ...before, y: before.y + 150 });
+        await expectAnchor(page, held);
       }
-      expect(step).toBeGreaterThanOrEqual(3);
+      // The drag hands over at least once and keeps asserting after it.
+      expect(step).toBeGreaterThanOrEqual(6);
+      expect(handOvers).toBeGreaterThan(0);
     } finally {
       await page.mouse.up();
     }

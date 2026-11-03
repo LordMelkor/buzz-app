@@ -151,6 +151,7 @@ import {
   readUnfinished,
   setAttention,
   writeArchiveUnchecked,
+  recentEntries,
   removeRecord,
   splitLegacyRecords,
   writeRecord,
@@ -158,6 +159,7 @@ import {
   writeUnfinished,
   withProgress,
   type AgentRecord,
+  type AttentionEntry,
   type TimerProgress,
   type SkippedObject,
   type Team,
@@ -272,6 +274,9 @@ export type AgentViewProps<Config = unknown> = {
   initialTranscript?: TranscriptRequest;
   /** Closes the panel showing the tab. */
   close?: () => void;
+  /** Opens a channel, or a thread by its root, in the agent's community;
+   * absent where the host can't open one. */
+  openConversation?: (channelId: string, threadRootId?: string) => void;
   /** Replaces the type's whole config. Spread `agent.config` to change one
    * field, or tabs that each save a part will erase each other's fields. A
    * hosted type's tabs save to its provider instead; for them this rejects. */
@@ -303,12 +308,16 @@ export type AgentTab<Config = unknown> = Readonly<{
   component: ComponentType<AgentViewProps<Config>>;
 }>;
 /** A tab a plugin adds to the settings of every agent running on this device,
- * whatever its type. It reads the agent and saves through the plugin's own
- * `agents`. */
+ * whatever its type, or only those `when` accepts. It reads the agent and
+ * saves through the plugin's own `agents`. */
 export type AgentAddedTab = Readonly<{
   id: string;
   title: string;
   component: ComponentType<{ agent: Agent }>;
+  /** Whether the tab shows for this agent; absent, it shows for each. */
+  when?: (agent: Agent) => boolean;
+  /** Calls `listener` when `when` may answer differently. */
+  subscribe?: (listener: () => void) => () => void;
 }>;
 export type RegisteredAgentAddedTab = Contribution<AgentAddedTab>;
 /** One of an agent's conversation sessions on this device. Without `root` it
@@ -1031,7 +1040,8 @@ export type Agents = {
   register<Config>(type: AgentType<Config>): void;
   types(): readonly RegisteredAgentType[];
   /** Adds a tab to the settings of every agent running on this device,
-   * whatever its type, after Activity. It shows while the plugin is on. */
+   * whatever its type, or of those its `when` accepts, after Activity. It
+   * shows while the plugin is on. */
   registerTab(tab: AgentAddedTab): void;
   /** The tabs active plugins add now. */
   addedTabs(): readonly RegisteredAgentAddedTab[];
@@ -1906,6 +1916,7 @@ export class AgentsService extends Service implements Agents {
         },
       },
       activity: localActivity,
+      channel: (agent, event) => this.channelOf(agent, event),
       soloChat: (agent, channel, signal) =>
         soloChat(() => this.relay(agent.key), agent.owner, channel, signal),
       remembered: (key, slug, body) => this.coreMemory.wrote(key, slug, body),
@@ -1913,12 +1924,21 @@ export class AgentsService extends Service implements Agents {
         this.history(
           key,
           object,
-          events
-            ?.map(
-              (event) =>
-                `${new Date(event.created_at * 1000).toISOString()} · ${event.pubkey}\n${event.content}`,
-            )
-            .join("\n\n"),
+          events?.map((event) => ({
+            id: event.id,
+            at: event.created_at,
+            author: event.pubkey,
+            channel: event.tags.find(([name]) => name === "h")?.[1],
+            text: event.content,
+            mentions: event.tags.flatMap(([name, value]) =>
+              name === "p" && value ? [value] : [],
+            ),
+            mentionReferences: event.tags.flatMap((tag) =>
+              tag.length === 2 && tag[0] === "mention" && tag[1]
+                ? [tag[1]]
+                : [],
+            ),
+          })),
           Math.floor(Date.now() / 1000),
         ),
       finished: (key) => {
@@ -2069,10 +2089,21 @@ export class AgentsService extends Service implements Agents {
     if (
       !/^[a-z0-9][a-z0-9._-]*$/.test(tab.id ?? "") ||
       !tab.title ||
-      typeof tab.component !== "function"
+      typeof tab.component !== "function" ||
+      (tab.when !== undefined && typeof tab.when !== "function") ||
+      (tab.subscribe !== undefined && typeof tab.subscribe !== "function")
     )
       throw new Error("Agent tabs need an id, a title and a component");
     this.tabContributions.register(this.ctx, tab);
+    // A new state object, so views asking `when` render again.
+    const { subscribe } = tab;
+    if (subscribe)
+      this.ctx.effect(() =>
+        subscribe(() => {
+          this.state = Object.freeze({ ...this.state });
+          this.notify();
+        }),
+      );
   }
   addedTabs = () => this.tabContributions.snapshot();
   controlAttention() {
@@ -2327,27 +2358,23 @@ export class AgentsService extends Service implements Agents {
   private history(
     key: AgentKey,
     object: AttentionObject,
-    output?: string,
+    events: readonly AttentionEntry[] = [],
     lastWokeAt?: number,
   ) {
     void this.queued(key, async () => {
       const record = this.records[key];
       if (!record || record.attention[object.slug] !== object) return;
-      const prior = record.attentionHistory?.[object.slug];
+      const { output, ...prior } = record.attentionHistory?.[object.slug] ?? {};
+      const kept = recentEntries([...(prior.events ?? []), ...events]);
+      // Entries replace the one string a watch kept before them.
       const entry = {
         ...prior,
         ...(lastWokeAt !== undefined ? { lastWokeAt } : {}),
-        ...(output !== undefined
-          ? {
-              output: [prior?.output, output]
-                .filter((part) => part !== undefined && part !== "")
-                .join(prior?.output?.endsWith("\n") ? "" : "\n")
-                .slice(-16384)
-                .split("\n")
-                .slice(-40)
-                .join("\n"),
-            }
-          : {}),
+        ...(kept.length
+          ? { events: kept }
+          : output !== undefined
+            ? { output }
+            : {}),
       };
       await this.commit(key, record, {
         ...record,
@@ -2370,7 +2397,10 @@ export class AgentsService extends Service implements Agents {
             !object.value.enabled
           )
             throw new Error("This source watch is no longer enabled");
-          this.history(key, object, text);
+          // Output keeps its end, where a failure is summarised.
+          this.history(key, object, [
+            { at: Math.floor(Date.now() / 1000), text: text.slice(-2000) },
+          ]);
           this.runners.wakeSource(
             key,
             {

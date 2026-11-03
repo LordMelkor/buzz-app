@@ -2,12 +2,31 @@ import { expect, it, vi } from "vitest";
 import type { RelaySession } from "../relay/session";
 import { parseKitRecord } from "../channel-templates/model";
 import {
+  validateWorkspace,
   loadChatSetup,
   readWorkspace,
   projectTemplateId,
   workspaceCanvas,
   workspaceDirectories,
 } from "./workspace";
+
+it.each([{ folders: [] }, { folders: [" ", "\t"] }])(
+  "requires a nonempty folder only in worktree mode (%j)",
+  ({ folders }) => {
+    const workspace = { folders, canvas: "Keep this" };
+    expect(validateWorkspace(workspace)).toEqual({
+      folders: [],
+      canvas: "Keep this",
+    });
+    const worktree = { location: "~/worktrees", baseBranch: "main" };
+    expect(() => validateWorkspace({ ...workspace, worktree })).toThrow(
+      "Choose a workspace folder, worktree location, and base branch.",
+    );
+    expect(
+      validateWorkspace({ ...workspace, folders: [" ~/repo "], worktree }),
+    ).toEqual({ ...workspace, folders: ["~/repo"], worktree });
+  },
+);
 
 it("round trips folders, worktrees and Canvas through existing template records", async () => {
   const workspace = {

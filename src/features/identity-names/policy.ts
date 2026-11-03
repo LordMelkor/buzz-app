@@ -14,14 +14,29 @@ export function resolveIdentityNames(
   candidates?: readonly string[],
 ) {
   viewer = viewer?.toLowerCase();
+  const selected =
+    candidates && new Set(candidates.map((key) => key.toLowerCase()));
+  // Outside a selection, rows only supply agent owners' names. Drop the rest
+  // first: callers pass the whole directory for scopes of a few keys.
+  if (selected) {
+    const owners = new Set(
+      identities.flatMap((row) =>
+        row.ownerPubkey && selected.has(row.pubkey.toLowerCase())
+          ? [row.ownerPubkey.toLowerCase()]
+          : [],
+      ),
+    );
+    identities = identities.filter((row) => {
+      const key = row.pubkey.toLowerCase();
+      return selected.has(key) || owners.has(key);
+    });
+  }
   const unique = new Map(
     identities.map((row) => [
       row.pubkey.toLowerCase(),
       { ...row, ownerPubkey: row.ownerPubkey?.toLowerCase() },
     ]),
   );
-  const selected =
-    candidates && new Set(candidates.map((key) => key.toLowerCase()));
   // Compare every displayed alias, but repeated configurations of one key
   // are not competing identities. The last alias supplies that key's result.
   const aliases = new Map(

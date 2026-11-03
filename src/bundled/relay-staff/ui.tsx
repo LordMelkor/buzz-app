@@ -1,10 +1,4 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  type ReactNode,
-} from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import { nip19 } from "nostr-tools";
 import { formatPublicKey } from "../../shared/identity/public-key";
 import { relativeTimestamp } from "../../shared/relative-timestamp";
@@ -279,19 +273,6 @@ export const containsSecretKey = (text: string) =>
 /** Shown wherever `containsSecretKey` refuses an input. */
 export const SECRET_KEY_WARNING =
   "That looks like a private key. Never paste it here.";
-
-/** How long typing must pause before a search request is signed and sent. */
-export const SEARCH_DEBOUNCE_MS = 250;
-
-/** `value` once it has stopped changing for `ms`. */
-export function useDebounced<T>(value: T, ms: number) {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(value), ms);
-    return () => clearTimeout(timer);
-  }, [value, ms]);
-  return settled;
-}
 
 /** Hex, or an npub, as a lowercase hex public key. */
 export function publicKeyInput(text: string): string | null {

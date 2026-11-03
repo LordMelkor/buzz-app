@@ -166,15 +166,11 @@ it("shows one bubble per emoji, counts unique people, and removes all my duplica
   expect(preview.textContent).toContain("You");
   expect(preview.textContent).toContain(other.pubkey.slice(0, 10));
   fireEvent.click(own);
-  const operation = h.session.outbox?.snapshot()[0];
-  expect(operation?.event).toMatchObject({
-    kind: 5,
-    tags: expect.arrayContaining([
-      ["e", mine.id],
-      ["e", duplicate.id],
-    ]),
-  });
-  expect(operation?.event.tags).not.toContainEqual(["e", theirs.id]);
+  const deletions = h.session.outbox?.snapshot().map((item) => item.event);
+  expect(deletions?.every((event) => event.kind === 5)).toBe(true);
+  expect(
+    deletions?.map((event) => event.tags.filter(([name]) => name === "e")),
+  ).toEqual([[["e", mine.id]], [["e", duplicate.id]]]);
   expect(
     screen
       .getByRole("button", { name: `👍: ${other.pubkey.slice(0, 10)}` })

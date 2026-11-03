@@ -24,7 +24,11 @@ import type {
 } from "../../features/conversation/contracts";
 import type { Navigation } from "../../features/navigation/controller";
 import type { NavigationScope } from "../../features/navigation/targets";
-import { useChannelList, useRelayConnection } from "../../features/relay/react";
+import {
+  useChannelList,
+  useProfileGeneration,
+  useRelayConnection,
+} from "../../features/relay/react";
 import { selectProfiles } from "../../features/relay/profile-selection";
 import { useIdentityNames } from "../../features/identity-names/react";
 import { messagePreview } from "../../features/notifications/content";
@@ -601,12 +605,14 @@ function InboxList({
     selection.snapshot,
   );
   const name = useIdentityNames(session.names);
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
     // A settled discovery revision can retire earlier optional profile reads.
     void list.asOf;
+    void profileGeneration;
     if (profileIds.length && list.status === "ready")
       void session.profiles.ensure(profileIds, "background").catch(() => {});
-  }, [session, profileIds, list.status, list.asOf]);
+  }, [session, profileIds, list.status, list.asOf, profileGeneration]);
   useLayoutEffect(() => {
     const id = focusRow.current;
     if (id === undefined || pending) return;
@@ -859,17 +865,20 @@ function InboxList({
     if (failure || pending || document.activeElement !== document.body) return;
     fallbackControl.current?.focus({ preventScroll: true });
   }, [failure, pending]);
+  function showView(value: ShowFilter) {
+    if (value === show) return;
+    cancelRetry();
+    setSelectedTarget(undefined);
+    setFilter({ show: value });
+  }
+  const filtered =
+    activity !== "all" || senderFilter !== "everyone" || unreadOnly;
   const toolbar = (
     <header className={styles.toolbar}>
       <InboxFilters
         view={drafts ? "drafts" : activity}
         show={show}
-        onShowChange={(value) => {
-          if (value === show) return;
-          cancelRetry();
-          setSelectedTarget(undefined);
-          setFilter({ show: value });
-        }}
+        onShowChange={showView}
         sender={senderFilter}
         unreadOnly={unreadOnly}
         triggerRef={fallbackControl}
@@ -989,13 +998,23 @@ function InboxList({
                           : "Mentions, direct messages, and replies in threads you participate in appear here."
                       }
                       action={
-                        show === "archived" && unreadOnly ? (
+                        filtered || show === "archived" ? (
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => setFilter({ attention: "all" })}
+                            onClick={() => {
+                              // Status stays; an unfiltered archive returns to Inbox.
+                              if (filtered)
+                                setFilter({
+                                  activity: "all",
+                                  sender: "everyone",
+                                  attention: "all",
+                                });
+                              else showView("inbox");
+                              fallbackControl.current?.focus();
+                            }}
                           >
-                            Show all archived conversations
+                            {filtered ? "Clear filters" : "Show Inbox"}
                           </Button>
                         ) : undefined
                       }

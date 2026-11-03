@@ -47,6 +47,12 @@ test("account menu choices remain reachable across themes, widths and enlarged t
   page,
   app,
 }, testInfo) => {
+  // Boot in Light instead of reloading over a booting app, which WebKit can
+  // fail with an internal error.
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("buzz-appearance.v1"))
+      localStorage.setItem("buzz-appearance.v1", "light");
+  });
   await page.goto(app.origin);
   const trigger = page.getByRole("button", {
     name: "Your profile",
@@ -59,11 +65,12 @@ test("account menu choices remain reachable across themes, widths and enlarged t
   });
   const choices = page.getByRole("menu", { name: "Appearance", exact: true });
   for (const mode of ["light", "dark"]) {
-    await page.evaluate(
-      (mode) => localStorage.setItem("buzz-appearance.v1", mode),
-      mode,
-    );
-    await page.reload();
+    if (mode === "dark") {
+      await page.evaluate(() =>
+        localStorage.setItem("buzz-appearance.v1", "dark"),
+      );
+      await page.reload();
+    }
     await expect(page.locator("html")).toHaveAttribute("data-color-mode", mode);
     for (const width of [1280, 800, 390]) {
       await page.setViewportSize({ width, height: 950 });

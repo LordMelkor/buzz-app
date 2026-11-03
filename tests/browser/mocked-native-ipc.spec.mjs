@@ -9,6 +9,8 @@ import {
   getPublicKey,
   verifyEvent,
 } from "nostr-tools";
+import { hexToBytes } from "nostr-tools/utils";
+import { schnorr } from "@noble/curves/secp256k1.js";
 
 // Browser boundary: real page reload, localStorage admission and IndexedDB outbox
 // persistence through the packaged adapter. Failure matrices live in Vitest.
@@ -55,6 +57,10 @@ test("mocked native IPC admission and uncertain delivery survive page reload wit
         expect(payload.community).toBe(community);
         return finalizeEvent(payload.event, key);
       }
+      if (command === "relay_verify_signatures")
+        return payload.claims.map(({ id, pubkey, sig }) =>
+          schnorr.verify(hexToBytes(sig), hexToBytes(id), hexToBytes(pubkey)),
+        );
       expect(command).toBe("relay_http");
       expect(payload.community).toBe(community);
       const body = payload.body ? JSON.parse(payload.body) : undefined;

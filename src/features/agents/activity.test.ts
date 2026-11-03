@@ -401,6 +401,29 @@ it("notifies the working-channel subscriber only on set changes, including timer
   unsubscribe();
   f.release();
 });
+it("does not notify snapshot subscribers when typing pulses only refresh an unchanged typer set", async () => {
+  const f = fixture();
+  f.send(f.item("mystery")); // Recognize the agent without working evidence.
+  const channel = (id: string) => ({ tags: [["h", id]] });
+  f.activity.channelEvents([
+    typingEvent(),
+    typingEvent(undefined, channel("b")),
+  ]);
+  const listener = vi.fn();
+  const unsubscribe = f.activity.queries.subscribe(listener);
+  const before = f.snapshot();
+  for (const id of ["a", "b", "a"]) {
+    await vi.advanceTimersByTimeAsync(3000);
+    f.activity.channelEvents([typingEvent(undefined, channel(id))]);
+  }
+  expect(listener).not.toHaveBeenCalled();
+  expect(f.snapshot().typing).toBe(before.typing);
+  await vi.advanceTimersByTimeAsync(8000);
+  expect(f.snapshot().typing).toEqual([]);
+  expect(listener).toHaveBeenCalledTimes(2); // Each scope expires on its own.
+  unsubscribe();
+  f.release();
+});
 it("keeps agent-management requests out of activity", () => {
   const f = fixture();
   f.send(

@@ -1,3 +1,4 @@
+import { SEARCH_DEBOUNCE_MS } from "../../shared/search-debounce";
 // @vitest-environment jsdom
 import {
   act,
@@ -318,7 +319,7 @@ it("lists open channels the viewer hasn't joined below joined ones, after a paus
     expect(t.result().items.map((item) => item.id)).toEqual(["mine"]);
     expect(t.result().status).toBe("Searching open channels…");
     expect(searchPublic).not.toHaveBeenCalled();
-    act(() => vi.advanceTimersByTime(180));
+    act(() => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(searchPublic).toHaveBeenCalledWith(
       "crew",
       expect.objectContaining({ priority: "foreground" }),
@@ -346,7 +347,7 @@ it("keeps joined matches when open-channel search fails", async () => {
       get: () => undefined,
     });
     render(t.element("crew"));
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(t.result().items.map((item) => item.id)).toEqual(["mine"]);
     expect(t.result().status).toBe("Could not search open channels.");
     expect(t.result().retry).toBeTypeOf("function");
@@ -400,7 +401,7 @@ it("lists open channels after joined ones, each ranked by match", async () => {
       get: (id: string) => previews.get(id),
     });
     render(t.element("ops"));
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(t.result().items.map((item) => item.id)).toEqual([
       "mine-tie",
       "mine-word",
@@ -444,7 +445,7 @@ it("completes open channels by word runs, without scattered letters", async () =
       get: (id: string) => previews.get(id),
     });
     render(t.element("bc"));
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(t.result().items.map((item) => item.id)).toEqual(["runs"]);
   } finally {
     vi.useRealTimers();
@@ -473,7 +474,7 @@ it("finds multi-word open channel names by prefix", async () => {
       get: (id: string) => [review, prose].find((entry) => entry.id === id),
     });
     render(t.element("design r"));
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(searchPublic).toHaveBeenCalledWith("design r", expect.anything());
     expect(t.result().items.map((item) => item.id)).toEqual(["review"]);
   } finally {
@@ -525,7 +526,7 @@ it("never offers a private search result", async () => {
       ],
     });
     render(t.element("ops"));
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(t.result().items.map((item) => item.id)).toEqual(["public"]);
   } finally {
     vi.useRealTimers();
@@ -543,7 +544,7 @@ it("reserves rows for open channels when joined matches fill the list", async ()
     searching(t, { team: [openChannel("open-team", "team")] });
     render(t.element("team"));
     expect(t.result().status).toBe("Searching open channels…");
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     const ids = t.result().items.map((item) => item.id);
     expect(ids).toHaveLength(20);
     expect(ids.slice(0, 19)).toEqual(
@@ -565,14 +566,14 @@ it("says when the search covered only the newest page, beside rows already shown
     const t = fixture([channel("mine", { name: "crew" })]);
     searching(t, { crew: [], zzz: [] }, { partial: true });
     const view = render(t.element("crew"));
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(t.result().items.map((item) => item.id)).toEqual(["mine"]);
     expect(t.result().status).toBe(
       "Only the newest open channels were searched.",
     );
     // Prose that matches nothing keeps the popup hidden.
     view.rerender(t.element("zzz"));
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(t.result().items).toEqual([]);
     expect(t.result().status).toBeUndefined();
   } finally {
@@ -586,7 +587,7 @@ it("reports a failed open-channel search and retries it on request", async () =>
     const t = fixture([]);
     const searchPublic = searching(t, { ops: new Error("rate limited") });
     render(t.element("ops"));
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(t.result().items).toEqual([]);
     expect(t.result().status).toBe("Could not search open channels.");
     expect(searchPublic).toHaveBeenCalledTimes(1);
@@ -594,7 +595,7 @@ it("reports a failed open-channel search and retries it on request", async () =>
       t.result().retry?.();
     });
     expect(t.result().status).toBe("Searching open channels…");
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(searchPublic).toHaveBeenCalledTimes(2);
   } finally {
     vi.useRealTimers();
@@ -610,7 +611,7 @@ it("keeps still-matching open rows while the next keystroke's search runs", asyn
       ops: "pending",
     });
     const view = render(t.element("op"));
-    await act(async () => vi.advanceTimersByTime(180));
+    await act(async () => vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS));
     expect(t.result().items.map((item) => item.id)).toEqual(["opal", "ops"]);
     // The composer remounts its completion on every edit.
     view.unmount();

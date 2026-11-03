@@ -73,12 +73,42 @@ test("reading anchor handles clipped paragraphs and still detects displacement",
     p.style.height = "40px";
   });
   expect(await anchor(page)).toEqual({ id: "next", y: 130 });
+  // A held row wins over that whole paragraph while any part of it is in
+  // view; once out of view, the rules above apply again.
+  expect(await anchor(page, "clipped")).toEqual({ id: "clipped", y: -10 });
+  expect(await anchor(page, "above")).toEqual({ id: "next", y: 130 });
   await history(page)
     .locator("[data-message-id]")
     .evaluateAll((rows) => {
       for (const row of rows) row.style.top = "300px";
     });
   await expect(anchor(page)).rejects.toThrow("No visible message anchor");
+});
+
+test("reading anchor after a scroll reads at the scroll event, before later frames", async ({
+  page,
+}) => {
+  await page.setContent(`
+    <section role="region" aria-label="Channel message history"
+      style="position:fixed;top:100px;height:200px;width:400px;overflow:auto">
+      <div style="height:600px"></div>
+      <div data-message-id="row" style="position:absolute;top:250px">
+        <p style="margin:0;height:50px">Below until scrolled</p>
+      </div>
+    </section>
+  `);
+  // A later frame carries the row out of view, as a size batch can move rows.
+  await history(page).evaluate((element) =>
+    element.addEventListener(
+      "scroll",
+      () =>
+        requestAnimationFrame(() => {
+          element.querySelector("[data-message-id]").style.top = "400px";
+        }),
+      { once: true },
+    ),
+  );
+  expect(await anchor(page, undefined, 100)).toEqual({ id: "row", y: 150 });
 });
 
 test("reading setup rejects an immobile timeline instead of accepting a bottom anchor", async ({

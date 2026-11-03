@@ -1,3 +1,4 @@
+import { useChannelHistoryFocus } from "./useChannelHistoryFocus";
 import type { Conversation } from "../../features/conversation/service";
 import { StartLinkedChat, canStartLinkedChat } from "./StartLinkedChat";
 import {
@@ -1775,6 +1776,15 @@ function ChannelWorkspace({
     (current.archived ||
       (current.readOnly &&
         (!current.cached || current.viewerRole === "guest")));
+  useChannelHistoryFocus(
+    historyContainer,
+    navigation,
+    current?.viewerRole === "guest" &&
+      !current.cached &&
+      !membersOpen &&
+      !showingMediaReview,
+    contentReadyChannel === currentId,
+  );
   // The conversation: full width for Solo, or the first main-pane tab.
   const body = (
     <>
@@ -1910,7 +1920,6 @@ function ChannelWorkspace({
     >
       {current && membersOpen && (
         <ChannelMembersDialog
-          communityScope={scope}
           key={current.id}
           session={queries}
           channelId={current.id}

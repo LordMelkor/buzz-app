@@ -62,14 +62,30 @@ behavior on the label, so a rename touches copy only.
   admission as any Solo send: missing tagged agents are added, then the message
   is queued. Nothing about the start is saved separately. A retry in the same
   view reuses the requested channel; after an interruption the chat exists with
-  the text still in its composer. Setup that fails or is interrupted leaves a
-  working chat without that setup; it never holds the message. Draft settings
-  remain local until first send and use Solo's defaults namespace.
+  the text still in its composer. A start the relay refuses makes no chat: the
+  chat and what was sent in it are withdrawn, and an error says why. If New
+  chat is still blank (no text beyond tags, no files, settings and workspace
+  unchanged, Chat settings closed), the prompt, its mentions or the agents
+  picked for it, its files, the draft settings and the workspace go back into
+  it. A draft begun since is kept, even one that couldn't be saved or an
+  earlier refused prompt, and the new prompt is lost, as it is when it can't
+  be saved on this device. The error says which happened, and names anything
+  else of the prompt's that couldn't be saved. Setup that fails or is
+  interrupted leaves a working chat without that setup; it never holds the
+  message. Draft settings remain local until first send and use Solo's
+  defaults namespace.
 - New Solo chats are created with the `buzz.solo` label and no `about` text, so
   a relay without NIP-CL labels cannot start one. The label is a routing hint for
   agents: answer as one channel-scoped, top-level conversation. It is not access
   authority. The in-app agent harness reads it from the channel list; remote
   harnesses that only read `about` need to learn the label.
+- The Buzz tools' `channel_create` with `solo` sends the same create for any
+  caller, including the standalone stdio server: signed by the caller, with the
+  label and any `members` it names. The caller is the creator, so an agent's
+  key makes a chat its human members see as shared, not their own. It sends no
+  message, so no agent turn starts, and it does not file the chat in a
+  workspace. It cannot check NIP-CL support first, so on a relay that drops the
+  label it reports an ordinary private channel instead.
 - **Share** opens the same access dialog from Solo and Messages. This flow
   preserves channel ID, history, Canvas, existing members,
   Solo label and workspace filing. It neither promotes a conversation nor
@@ -130,12 +146,25 @@ behavior on the label, so a rename touches copy only.
   archive read has settled. A chosen agent missing for another reason is stood in
   for without replacing the choice. Until an agent is explicitly saved as the
   bestie, including for an automatic pick, a stand-in or a failed save, **Make my
-  bestie** stays offered. Nothing is picked until the account record has been read
-  and its archive read has settled, so a new chat is never tagged for a stale
-  pick. A new chat tags the current default once each time it is shown; the tag
-  isn't saved until the draft is edited, so showing an untouched new chat again
-  uses the current default. Archive rereads, failed rereads and reconnects keep
-  the last known archives, so a known deletion is never forgotten and a live
+  bestie** stays offered. When the Bestie plugin is enabled, the explicit
+  account-saved choice also owns its pinned sidebar destination; automatic and
+  stand-in defaults do not. The pinned destination reuses the newest verified
+  one-to-one DM whose only other member is that exact agent, opening one through
+  the shared DM service only when none exists. It is an ordinary DM with the same
+  history, draft, threads and unread state—not a Solo chat or a second message
+  store. While promoted, that DM is omitted from the ordinary Messages inventory;
+  replacing or deleting the Bestie, disabling the plugin, or losing the exact
+  roster match restores the ordinary row. The pinned navigation row adopts the
+  agent's name and avatar. Global search shows the same identity with **Bestie**
+  as supporting text and matches either name; the separate agent result remains
+  a **New chat** action rather than another route to the pinned DM.
+
+  Nothing is picked until the account record has been read and its archive read
+  has settled, so a new chat is never tagged for a stale pick. A new chat tags the
+  current default once each time it is shown; the tag isn't saved until the draft
+  is edited, so showing an untouched new chat again uses the current default.
+  Archive rereads, failed rereads and reconnects keep the last known archives, so
+  a known deletion is never forgotten and a live
   choice never disappears.
   Follow-ups keep all exact agents notified by the previous send, just like
   Team threads, including the shared Remember mentioned agents preference.

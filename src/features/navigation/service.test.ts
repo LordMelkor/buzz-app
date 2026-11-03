@@ -162,6 +162,37 @@ it("preserves opening focus through session binding, resolution and retry, not l
   expect(request().focus).toBe("content");
 });
 
+it("exposes Back/Forward through session binding, not openings or retry, and keeps each visit's positions", async () => {
+  const t = setup();
+  const nav = t.host.navigation;
+  const relay = provideRelay(t.ctx);
+  const request = () => t.host.request(nav.snapshot().attempt, t.owner).request;
+  const first = t.presentation.request.forSession(relay, relay.snapshot());
+  expect(first.traversal).toBeUndefined();
+  expect(first.complete({ status: "opened" })).toBe(true);
+  await t.promise;
+  void nav.open(settings);
+  // Leaving revokes the visit's presentation, which can still record its place.
+  expect(first.signal.aborted).toBe(true);
+  first.savePosition("thread", { top: 1 });
+  const other = request();
+  expect(other.traversal).toBeUndefined();
+  expect(other.position("thread")).toBeUndefined();
+  other.savePosition("thread", { top: 2 });
+  nav.back();
+  const returned = request().forSession(relay, relay.snapshot());
+  expect(returned.entryId).toBe(first.entryId);
+  expect(returned.traversal).toBe(true);
+  expect(returned.position("thread")).toEqual({ top: 1 });
+  expect(returned.position("timeline")).toBeUndefined();
+  void nav.retry();
+  expect(
+    request().forSession(relay, relay.snapshot()).traversal,
+  ).toBeUndefined();
+  void nav.open(target);
+  expect(request().traversal).toBeUndefined();
+});
+
 it("returning to a retained connection mints fresh authority without reviving its old request", async () => {
   const t = setup();
   const source = provideRelay(t.ctx);

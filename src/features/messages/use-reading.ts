@@ -15,6 +15,9 @@ type Reading = {
   rootId?: string | undefined;
   scroller: RefObject<HTMLElement | null>;
   settled: RefObject<boolean>;
+  /** True while the list shows its latest row in place of the reader's own,
+   * still loading: the rows shown are read, but that bottom is not caught up. */
+  restoring?: (() => boolean) | undefined;
   /** False: this list marks nothing read; its owner decides what was read. */
   enabled?: boolean | undefined;
 };
@@ -35,6 +38,7 @@ export function useReading({
   rootId,
   scroller,
   settled,
+  restoring,
   enabled = true,
 }: Reading) {
   const composer = useMessageEditScope()?.input;
@@ -232,7 +236,7 @@ export function useReading({
         const visible = new Set(visibleIds());
         // A row appearing only at the end of the interval has not had a dwell.
         const remained = ids.filter((id) => visible.has(id));
-        const caughtUp = bottom && bottom === bottomId();
+        const caughtUp = bottom && bottom === bottomId() && !restoring?.();
         if (
           (remained.length || caughtUp) &&
           session.unread.sync().capability === "frontier-sync" &&
@@ -317,6 +321,7 @@ export function useReading({
     rootId,
     scroller,
     settled,
+    restoring,
     composer,
     enabled,
   ]);

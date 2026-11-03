@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import { TeamMentionAvatars } from "./TeamMentionAvatars";
 import {
   PopoverRoot,
@@ -92,7 +93,9 @@ export function MentionPicker({
     draftRoster?.map((person) => person.pubkey) ?? channel?.members;
   // Only an open chooser demands names; typing must not join every member.
   const memberKey = open && !draftRoster ? (members?.join(":") ?? "") : "";
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (draftRoster || !open || !memberKey) return;
     let current = true;
     void session.profiles
@@ -106,7 +109,7 @@ export function MentionPicker({
     return () => {
       current = false;
     };
-  }, [session, open, memberKey, draftRoster]);
+  }, [session, open, memberKey, draftRoster, profileGeneration]);
   const chooseRecipient = (
     recipient: (typeof candidates)[number]["recipient"],
   ) => {

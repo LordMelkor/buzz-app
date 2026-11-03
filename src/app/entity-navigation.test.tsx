@@ -909,21 +909,23 @@ it("lists active primary pages in their sidebar and header placements", async ()
   );
 
   // The Attention tab is on by default, and attention keeps running without it.
+  // Bestie adds its own tab beside it.
   const providers = () =>
     current.agents.attentionProviders().map(({ provider }) => provider);
+  const tabs = () =>
+    current.agents
+      .addedTabs()
+      .map((tab) => tab.key)
+      .sort();
   await waitFor(() =>
-    expect(current.agents.addedTabs().map((tab) => tab.key)).toEqual([
-      "buzz.watching/watching",
-    ]),
+    expect(tabs()).toEqual(["buzz.bestie/bestie", "buzz.watching/watching"]),
   );
   await act(() => current.plugins.change("disable", "buzz.watching"));
-  await waitFor(() => expect(current.agents.addedTabs()).toEqual([]));
+  await waitFor(() => expect(tabs()).toEqual(["buzz.bestie/bestie"]));
   expect(providers()).toContain("attention/command");
   await act(() => current.plugins.change("enable", "buzz.watching"));
   await waitFor(() =>
-    expect(current.agents.addedTabs().map((tab) => tab.key)).toEqual([
-      "buzz.watching/watching",
-    ]),
+    expect(tabs()).toEqual(["buzz.bestie/bestie", "buzz.watching/watching"]),
   );
 
   await act(() => current.plugins.change("disable", "buzz.agents"));

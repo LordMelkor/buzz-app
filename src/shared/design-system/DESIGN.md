@@ -870,6 +870,23 @@ A sidebar unread cue is strong (`prominent`) only when a DM, a mention of you or
 a thread reply waits past its edge; ordinary unread uses the `subtle` Button,
 whose light gray fill holds up over the list where glass would disappear.
 
+Arriving at a message, by link, search, the inbox or closing its thread,
+briefly marks it. A filled bubble takes `affordance-message-highlight` (your
+own, `affordance-message-own-highlight`) as a see-through layer: the regular
+overlay step, about twice hover, in the direction the bubble's chips already
+take, so chips stay readable on top. While the cue shows it replaces hover
+rather than stacking on it. A row without a filled bubble (membership lines,
+emoji-only, attachments, tables and diffs) is washed with
+`surface-message-highlight` instead. The cue is paint-only and
+belongs to the message reveal, so every route that lands on a message gets it;
+a reveal behind a covering panel, restored scroll and your own send do not.
+Each row type marks its paint surface with `data-highlight-surface`, which
+excludes the day divider. The cue waits until the message and the list around
+it have held still for 200ms (at most 1.5s), so it never flashes while a fresh
+channel is still loading, then holds about a second and fades over about a
+second. A repeat arrival restarts the cue. Reduced motion holds the tint the
+same time and removes it without fading.
+
 The message hover toolbar uses the 12px rounded-container radius
 with a 2px inset. Its independent icon actions retain their shared 10px corners.
 
@@ -898,7 +915,8 @@ extra-small capsule uses `text-caption`. For a caption-sized inline choice such 
 the composer's model name, `size="inline"` keeps a 24px minimum target with 4px
 horizontal padding and icon gap, and 12px icons. Pair it with `variant="ghost"`
 for an unframed label; shared hover, disabled, and keyboard focus still apply.
-Compact Selects use `appearance="link"` for a text-and-caret choice, such as channel access, without a capsule or horizontal
+Compact Select buttons with leading artwork use an 8px leading inset and a 12px
+trailing inset, giving the caret room at the edge. Compact Selects use `appearance="link"` for a text-and-caret choice, such as channel access, without a capsule or horizontal
 button inset. It uses regular body-small type and a 24px minimum target with
 the text at its bottom edge, so supporting copy follows without an extra gap;
 it retains the Select's keyboard behavior and focus treatment.
@@ -995,7 +1013,8 @@ hint. The caller owns its column width; in PreferenceRow a compact choice takes 
 most 60% of the row, beyond its min-content width, so a long value ellipsizes
 before the row title loses its words. Other trailing controls keep their width.
 `align="end"` anchors a trailing choice popup to the trigger’s right edge; the
-default remains `start`. Pass `disabled` explicitly when the choice is unavailable. An option may include one concise supporting
+default remains `start`. Set a group's `separator` to insert a divider before that
+group, keeping related choices together. Pass `disabled` explicitly when the choice is unavailable. An option may include one concise supporting
 description; Select shows it as a byline in the popup while the closed trigger
 retains only the option label. For searchable choices, use the shared Combobox parts; keep
 filtering, custom-value commits, and async requests with the feature. Its Control
@@ -1046,7 +1065,8 @@ InputGroup shares the inline frame for SearchField and Combobox. Icons use an
 the input or action,
 while the frame owns the active perimeter stroke. Read-only values can be
 read and copied; disabled actions cannot change a value. Search clear restores
-input focus. Features still own filtering, custom values, and async recovery.
+input focus. SearchField `trailing` places auxiliary actions after Clear inside
+the shared frame. Features still own filtering, custom values, and async recovery.
 
 SearchField, Combobox.Control, and code Textarea default to no autocorrection,
 capitalization, or spellcheck. Callers can override these defaults explicitly.

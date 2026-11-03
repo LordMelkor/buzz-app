@@ -78,6 +78,17 @@
   padding: 0;
   display: grid;
 }
+.attention-recent {
+  gap: var(--space-3);
+}
+.attention-recent > li {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.attention-recent > li + li {
+  padding-block-start: var(--space-3);
+}
 .attention-list > li + li {
   border-top: 1px solid var(--border-standard);
 }

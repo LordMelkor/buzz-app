@@ -328,6 +328,66 @@ test("statuses edit, synchronize, clear, reject stale traffic and retain failed 
     await expect(dmName.locator("[data-compact]")).toHaveCount(0);
     await expect(bobByline.locator("[data-compact]")).toHaveCount(0);
     await expect(page.getByText("Stale", { exact: true })).toHaveCount(0);
+    // Text or several emoji in the emoji tag, from another client, use the
+    // byline's room, then truncate inside the status before the one-word
+    // author gives up any width. Only the inline axis clips, so emoji ink
+    // beyond the line box still paints.
+    const freeText = "🐝 working from the office Buzzin'";
+    for (const [button, label] of [
+      ["Free-text Bob", freeText],
+      ["Emoji-run Bob", "🐝🏠🎉🚀🌊🔥🍕🎸👩‍💻🏳️‍🌈 Buzzin'"],
+    ]) {
+      await page.setViewportSize({ width: 1440, height: 950 });
+      await page.getByRole("button", { name: button, exact: true }).click();
+      const fallback = bobByline.locator(`[aria-label="${label}"]`);
+      await expect(fallback).toBeVisible();
+      const layout = () =>
+        fallback.evaluate((status) => {
+          const text = status.firstElementChild;
+          const author = status.parentElement.querySelector("strong");
+          return {
+            clipped: text.scrollWidth > text.clientWidth,
+            fits:
+              text.getBoundingClientRect().right <=
+              status.getBoundingClientRect().right + 0.5,
+            ink: getComputedStyle(text).overflowY,
+            author: author.scrollWidth > author.clientWidth,
+          };
+        });
+      await expect
+        .poll(layout)
+        .toEqual({ clipped: false, fits: true, ink: "visible", author: false });
+      await page.setViewportSize({ width: 480, height: 950 });
+      await expect
+        .poll(layout)
+        .toEqual({ clipped: true, fits: true, ink: "visible", author: false });
+    }
+    // A multi-word name wraps at spaces, so it must keep every pixel, staying
+    // on one line, while the status is still above its 2.5-emoji floor.
+    await page.goto(
+      new URL("?name=Alexandra Kowalski-Nguyen", page.url()).href,
+    );
+    await page.setViewportSize({ width: 1440, height: 950 });
+    await page
+      .getByRole("button", { name: "Free-text Bob", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        bobByline.locator(`[aria-label="${freeText}"]`).evaluate((status) => {
+          const text = status.firstElementChild;
+          const author = status.parentElement.querySelector("strong");
+          return {
+            clipped: text.scrollWidth > text.clientWidth,
+            aboveFloor:
+              status.getBoundingClientRect().width >
+              2.5 * parseFloat(getComputedStyle(text).fontSize) + 1,
+            wrapped:
+              author.getBoundingClientRect().height >
+              1.5 * parseFloat(getComputedStyle(author).lineHeight),
+          };
+        }),
+      )
+      .toEqual({ clipped: true, aboveFloor: true, wrapped: false });
     // A long name must still shrink/fade and leave the status visible.
     await page.goto(
       new URL(
@@ -346,8 +406,13 @@ test("statuses edit, synchronize, clear, reject stale traffic and retain failed 
         .poll(() =>
           status.evaluate((element) => {
             const bounds = element.getBoundingClientRect();
+            const glyph = element.firstElementChild.getBoundingClientRect();
             const row = element.closest("button").getBoundingClientRect();
-            return bounds.width >= 15 && bounds.right <= row.right;
+            return (
+              bounds.width >= 15 &&
+              glyph.right <= bounds.right + 0.5 &&
+              bounds.right <= row.right
+            );
           }),
         )
         .toBe(true);
@@ -355,6 +420,70 @@ test("statuses edit, synchronize, clear, reject stale traffic and retain failed 
         "mask-image",
         /linear-gradient/,
       );
+    }
+    // When a long byline name runs out of room, the glyph keeps its rendered
+    // width instead of shrinking and painting past its box.
+    const glyph = bobByline.locator('[aria-label="🏠 Working remotely"]');
+    await expect(glyph).toBeVisible();
+    await expect
+      .poll(() =>
+        glyph.evaluate((element) => {
+          const author = element.parentElement.querySelector("strong");
+          return {
+            fits:
+              element.firstElementChild.getBoundingClientRect().right <=
+              element.getBoundingClientRect().right + 0.5,
+            wrapped:
+              author.getBoundingClientRect().height >
+              1.5 * parseFloat(getComputedStyle(author).lineHeight),
+          };
+        }),
+      )
+      .toEqual({ fits: true, wrapped: true });
+    // An image keeps its size beside the long name as well.
+    await page.getByRole("button", { name: "Custom Bob", exact: true }).click();
+    for (const scope of [dmName, bobByline]) {
+      const image = scope
+        .getByRole("img", { name: ":party: Celebrating", exact: true })
+        .locator("img");
+      await expect
+        .poll(() =>
+          image.evaluate((element) => {
+            const { width, height } = element.getBoundingClientRect();
+            return width > 0 && width === height;
+          }),
+        )
+        .toBe(true);
+    }
+    // Text yields to the long name only down to its first grapheme and an
+    // ellipsis, never a bare ellipsis.
+    await page
+      .getByRole("button", { name: "Free-text Bob", exact: true })
+      .click();
+    for (const scope of [dmName, bobByline]) {
+      const status = scope.locator(`[aria-label="${freeText}"]`);
+      await expect
+        .poll(() =>
+          status.evaluate((element) => {
+            const text = element.firstElementChild;
+            const first = document.createRange();
+            first.setStart(text.firstChild, 0);
+            first.setEnd(text.firstChild, "🐝".length);
+            const style = getComputedStyle(text);
+            const canvas = document.createElement("canvas").getContext("2d");
+            canvas.font = `${style.fontSize} ${style.fontFamily}`;
+            const shown = text.getBoundingClientRect();
+            return {
+              clipped: text.scrollWidth > text.clientWidth,
+              floor:
+                shown.width + 0.5 >=
+                first.getBoundingClientRect().width +
+                  canvas.measureText("…").width,
+              fits: shown.right <= element.getBoundingClientRect().right + 0.5,
+            };
+          }),
+        )
+        .toEqual({ clipped: true, floor: true, fits: true });
     }
     expect(errors.unexplained()).toEqual([]);
   } finally {

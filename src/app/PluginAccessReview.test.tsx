@@ -121,3 +121,66 @@ it("shows a registered harness title while keeping its exact key in details", as
   fireEvent.click(trigger);
   await waitFor(() => expect(screen.getByText("third/custom")).toBeVisible());
 });
+
+const managed = (managedFiles: boolean): PluginManifest => ({
+  ...manifest(false),
+  host: { managedFiles },
+});
+it("discloses managed save limits and retention without implying file-reading authority", async () => {
+  render(<PluginAccessReview manifest={managed(true)} />);
+  expect(screen.queryByRole("button", { name: /Read your files/ })).toBeNull();
+  fireEvent.click(
+    screen.getByRole("button", { name: /Save temporary plugin files/ }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByText(/Shared storage is limited to 64 MiB and 16 files/),
+    ).toBeVisible(),
+  );
+  expect(
+    screen.getByText(
+      /This does not grant file reading or arbitrary-path writes/,
+    ),
+  ).toBeVisible();
+});
+it.each([
+  [false, true, "Added"],
+  [true, false, "Removed"],
+] as const)(
+  "compares managed save access from %s to %s",
+  (before, after, change) => {
+    render(
+      <PluginAccessReview
+        manifest={managed(after)}
+        previousManifest={managed(before)}
+      />,
+    );
+    expect(
+      within(
+        screen.getByRole("region", { name: `${change} declarations` }),
+      ).getByRole("button", { name: /Save temporary plugin files/ }),
+    ).toBeVisible();
+  },
+);
+it("uses the existing unchanged disclosure for managed saves", () => {
+  const { rerender } = render(
+    <PluginAccessReview
+      manifest={managed(true)}
+      previousManifest={managed(true)}
+    />,
+  );
+  expect(screen.getByText("No declared access changes")).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: /Save temporary plugin files/ }),
+  ).toBeNull();
+  rerender(
+    <PluginAccessReview
+      manifest={managed(true)}
+      previousManifest={managed(true)}
+      unchangedOnly
+    />,
+  );
+  expect(
+    screen.getByRole("button", { name: /Save temporary plugin files/ }),
+  ).toBeVisible();
+});

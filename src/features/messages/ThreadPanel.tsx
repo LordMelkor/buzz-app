@@ -27,8 +27,8 @@ import { XIcon } from "../../shared/design-system/icons/index";
 import type { ConversationExtensions } from "../conversation/contracts";
 import type { ChannelMessage } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
-import type { ThreadView } from "../relay/threads";
-import { useRowProfiles } from "../relay/react";
+import type { ThreadRetarget, ThreadView } from "../relay/threads";
+import { useProfileGeneration, useRowProfiles } from "../relay/react";
 import { rowProfileIds } from "../relay/membership";
 import { MessageRow, type MessageLinkOrigin } from "./MessageRow";
 import { continuesMessageGroup } from "./message-grouping";
@@ -191,6 +191,11 @@ type SelectionFailure = {
   pending: boolean;
   retry(): void;
 };
+/** Where the reader left a routed visit: a row's offset, or else the end. */
+type ThreadPlace = {
+  anchor?: { id: string; top: number; ancestors: readonly string[] };
+};
+const THREAD_PLACE = "thread";
 /** Reader lifetime follows the open thread; navigation owns only a reveal request. */
 function RetainedThreadPanel(props: ThreadPanelProps) {
   type Opening = {
@@ -208,6 +213,8 @@ function RetainedThreadPanel(props: ThreadPanelProps) {
   const [pending, setPending] = useState(false);
   const retrying = useRef(false);
   const [attempt, retry] = useState(0);
+  // A route to the thread already shown waits while retarget confirms it.
+  const [routing, setRouting] = useState<PageNavigation>();
   useEffect(
     () => () => {
       current.current?.view.dispose();
@@ -265,7 +272,15 @@ function RetainedThreadPanel(props: ThreadPanelProps) {
         return;
       }
       if (prior?.view.snapshot().root) {
-        const result = await prior.view.retarget(messageId, signal);
+        if (navigation) setRouting(navigation);
+        let result: ThreadRetarget;
+        try {
+          result = await prior.view.retarget(messageId, signal);
+        } finally {
+          setRouting((routing) =>
+            routing === navigation ? undefined : routing,
+          );
+        }
         if (signal.aborted || current.current !== prior) return;
         if (result === "selected") {
           const next = { ...prior, messageId, navigation, revealRequest };
@@ -353,6 +368,7 @@ function RetainedThreadPanel(props: ThreadPanelProps) {
           view={opening.view}
           messageId={opening.messageId}
           navigation={opening.navigation}
+          routePending={!!routing}
           revealRequest={opening.revealRequest}
           selectionFailure={
             failure && { ...failure, pending, retry: retryNavigation }
@@ -491,8 +507,13 @@ function ThreadMessages({
   onDraftSaved,
   selectionFailure,
   onResolvedRoot,
+  routePending,
 }: {
   onResolvedRoot?: ThreadPanelProps["onResolvedRoot"];
+  /** A route to this reader is on its way: until it lands, a reader not yet
+   * shown stays hidden and unread rather than showing a place the route
+   * replaces. */
+  routePending?: boolean | undefined;
   /** A same-thread link that couldn't open; the current thread stays usable. */
   selectionFailure?: SelectionFailure | undefined;
   /** Solo agents answer at top level, so a Solo thread is read-only. */
@@ -632,16 +653,19 @@ function ThreadMessages({
     [snapshot.status, rows, session.viewer],
   );
   const authors = [...new Set(rows.flatMap(rowProfileIds))].sort().join(":");
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (authors)
       void session.profiles
         .ensure(authors.split(":"), "background")
         .catch(() => {});
-  }, [session.profiles, authors]);
+  }, [session.profiles, authors, profileGeneration]);
   const profiles = useRowProfiles(session.profiles, rows);
   const agentPubkeys = useKnownAgentPubkeys(session, profiles);
   const scroller = useRef<HTMLElement>(null);
   const positioned = useRef(false);
+  const shown = useRef(active);
   const readingSettled = useRef(false);
   const [initialPositioned, setInitialPositioned] = useState(false);
   const follow = useRef(true);
@@ -697,6 +721,14 @@ function ThreadMessages({
     },
     [],
   );
+  // Back/Forward to a visit with a recorded place returns there instead of
+  // replaying its opening, unless that place can no longer be shown.
+  const [lostPlace, setLostPlace] = useState<AbortSignal>();
+  const returning =
+    !!navigation?.traversal &&
+    lostPlace !== navigation.signal &&
+    navigation.position(THREAD_PLACE) !== undefined;
+  const restoredVisit = useRef<AbortSignal | undefined>(undefined);
   const olderAnchor = useRef<
     { id: string; top: number; ancestors: readonly string[] } | undefined
   >(undefined);
@@ -811,6 +843,8 @@ function ThreadMessages({
   const rootTarget =
     navigation?.target.kind === "conversation" &&
     navigation.target.threadRootId === messageId;
+  // Ordinary opens are positioned, not revealed; so is a return to a saved place.
+  const positionedVisit = rootTarget || returning;
   // Reopening an already-shown thread selects nothing new, so its reader needs
   // a focus handoff to start reading. First positioning leaves the opening's
   // tab/composer focus handoff alone.
@@ -826,7 +860,7 @@ function ThreadMessages({
       !navigation ||
       navigation.signal.aborted ||
       navigation.focus === "preserve" ||
-      !rootTarget ||
+      !positionedVisit ||
       !active ||
       !positioned.current ||
       !element
@@ -844,7 +878,7 @@ function ThreadMessages({
   const positioning =
     !revealSelected &&
     !initialPositioned &&
-    (!navigation || rootTarget) &&
+    (!navigation || positionedVisit) &&
     snapshot.status !== "error";
   const [inlineReveal, setInlineReveal] = useState<AbortSignal>();
   // biome-ignore lint/correctness/useExhaustiveDependencies: each reveal request needs its own signal.
@@ -855,7 +889,7 @@ function ThreadMessages({
     return () => request.abort();
   }, [revealSelected, revealRequest]);
   const revealSignal =
-    inlineReveal ?? (rootTarget ? undefined : navigation?.signal);
+    inlineReveal ?? (positionedVisit ? undefined : navigation?.signal);
   const revealed = useMessageReveal({
     scroller,
     focus: !(
@@ -870,6 +904,49 @@ function ThreadMessages({
     complete: completeTarget,
     prepare: prepareTarget,
   });
+  // Leaving a visit once it was presented, by navigating on, hiding or
+  // unmounting, records where the reader was. A return counts only once
+  // restored, so an unrestored return keeps the place it came back for. New
+  // replies don't record one; a relay rebind does, mid-visit, but restoring
+  // that place leaves the reader where they already are. A reader whose route
+  // is withdrawn records again when it leaves, is hidden, is shown again or
+  // the next route arrives, before that route can restore the place. No
+  // reading is captured while it is hidden, and showing it again restores the
+  // reading first, so an offset the browser dropped meanwhile is never saved.
+  const leftTree = useRef(tree);
+  leftTree.current = tree;
+  const withdrawn = useRef<() => void>(undefined);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hiding or showing the reader again records its place too.
+  useLayoutEffect(() => {
+    if (!navigation) return withdrawn.current;
+    withdrawn.current = undefined;
+    return () => {
+      const presented = returning
+        ? restoredVisit.current === navigation.signal
+        : (rootTarget && positioned.current) ||
+          revealed.current === navigation.signal;
+      if (!presented) return;
+      const record = () => {
+        const reading = resizePosition.current;
+        if (!reading) return;
+        const id = reading.anchor?.element.dataset.messageId;
+        navigation.savePosition(
+          THREAD_PLACE,
+          follow.current || !reading.anchor || !id
+            ? {}
+            : {
+                anchor: {
+                  id,
+                  top: reading.anchor.top,
+                  ancestors: leftTree.current.ancestors(id),
+                },
+              },
+        );
+      };
+      record();
+      withdrawn.current = record;
+    };
+  }, [navigation, active, returning, rootTarget, revealed]);
   useEffect(() => {
     if (!navigation || navigation.signal.aborted) return;
     // Each failure is shown in the thread, next to its own Try again.
@@ -1021,10 +1098,11 @@ function ThreadMessages({
   useLayoutEffect(() => {
     const element = scroller.current;
     if (!element || navigation?.signal.aborted) return;
-    // Restored background tabs verify their target without competing for focus.
+    // Restored background tabs and returning visits verify their target without
+    // revealing it.
     if (
       navigation &&
-      !active &&
+      (!active || returning) &&
       snapshot.targetStatus === "ready" &&
       snapshot.target?.id === messageId &&
       revealed.current !== navigation.signal
@@ -1058,20 +1136,60 @@ function ThreadMessages({
     // too. With no explicit anchor, keep the saved first visible row in place
     // through this commit's layout shift. A scroll since that save is newer
     // reader intent and wins. A drop in scrollTop while the scroll range shrank
-    // is the browser clamping it during this commit's layout, not the reader.
+    // is the browser clamping it during this commit's layout, not the reader;
+    // nor is any change while the reader was hidden, where WebKit drops the
+    // offset under display: none and would show the reader at its top.
     const reading = resizePosition.current;
     const clamped =
       reading !== undefined &&
       element.scrollTop < reading.scrollTop &&
       element.scrollHeight - element.clientHeight <
         reading.contentHeight - reading.height;
+    const reshown = active && !shown.current;
+    shown.current = active;
+    // Back/Forward returns once to where this visit was left: its row, with
+    // the branch holding it reopened, or else its nearest ancestor shown.
+    // When neither is loaded the visit opens again as it first did.
     if (
+      navigation &&
+      returning &&
+      restoredVisit.current !== navigation.signal
+    ) {
+      const { anchor } = navigation.position(THREAD_PLACE) as ThreadPlace;
+      const closed = anchor
+        ? tree.ancestors(anchor.id).filter((id) => !expanded.has(id))
+        : [];
+      if (closed.length) {
+        setExpanded((current) => new Set([...current, ...closed]));
+        return;
+      }
+      const row =
+        anchor &&
+        [anchor.id, ...anchor.ancestors]
+          .map((id) =>
+            element.querySelector<HTMLElement>(`[data-message-id="${id}"]`),
+          )
+          .find((row) => row);
+      if (anchor && !row) {
+        revealed.current = undefined;
+        setLostPlace(navigation.signal);
+        return;
+      }
+      restoredVisit.current = navigation.signal;
+      targetAnchor.current = undefined;
+      follow.current = !row;
+      if (row && anchor)
+        element.scrollTop += readingDrift(element, {
+          element: row,
+          top: anchor.top,
+        });
+    } else if (
       !olderAnchor.current &&
       targetAnchor.current === undefined &&
       !follow.current &&
       !jumpingToLatest.current &&
       reading?.anchor &&
-      (reading.scrollTop === element.scrollTop || clamped) &&
+      (reading.scrollTop === element.scrollTop || clamped || reshown) &&
       element.contains(reading.anchor.element)
     )
       correctScrollTop(element, readingDrift(element, reading.anchor));
@@ -1106,8 +1224,10 @@ function ThreadMessages({
     // subsequent live changes follow only while the reader is at the bottom.
     if (follow.current) element.scrollTop = element.scrollHeight;
     positioned.current = true;
-    setInitialPositioned(true);
-    readingPositioned(element);
+    if (!routePending) {
+      setInitialPositioned(true);
+      readingPositioned(element);
+    }
     if (jumpingToLatest.current) {
       setShowJumpToLatest(false);
     } else {
@@ -1134,7 +1254,9 @@ function ThreadMessages({
     profiles,
     sent,
     navigation,
+    routePending,
     rootTarget,
+    returning,
     revealed,
     selectedOffset,
     tree,
@@ -1166,6 +1288,7 @@ function ThreadMessages({
     if (
       !positioned.current ||
       readingSettled.current ||
+      routePending ||
       (navigation && !rootTarget && revealed.current !== navigation.signal)
     )
       return;
@@ -1176,7 +1299,7 @@ function ThreadMessages({
       readingSettled.current = true;
       readingPositioned(scroller.current);
     }
-  }, [active, navigation, rootTarget, revealed, snapshot]);
+  }, [active, navigation, routePending, rootTarget, revealed, snapshot]);
   // An own send can land in the middle of a branch, not at the list bottom.
   // biome-ignore lint/correctness/useExhaustiveDependencies: Retry DOM lookup after history or branch visibility changes.
   useLayoutEffect(() => {

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { finalizeEvent, nip44 } from "nostr-tools";
 import { connectNativeTransport } from "./native";
 import { createSidebarPreferencesStore } from "./sidebar-preferences-store";
-import { keypair } from "./testing";
+import { keypair, nativeSignatureChecks } from "./testing";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -70,6 +70,8 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation(async (command, args) => {
       if (command === "identity_restore") return viewer.pubkey;
+      if (command === "relay_verify_signatures")
+        return nativeSignatureChecks(args);
       if (command === "relay_sign")
         return finalizeEvent(
           (args as { event: Parameters<typeof finalizeEvent>[0] }).event,

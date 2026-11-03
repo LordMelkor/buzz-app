@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { getEventHash, verifyEvent, verifiedSymbol } from "nostr-tools";
-import { createEventVerifier, eventDto } from "./events";
+import { createEventVerifier, eventDto, hasEventProof } from "./events";
 import { connectBrokerTransport, connectSignedTransport } from "./transport";
-import { hostSigner, keypair, signed } from "./testing";
+import { hostSigner, keypair, nativeSignatureChecks, signed } from "./testing";
 import { ByteLru } from "./budget";
 
 // Count the actual dependency verifier; never replace its cryptographic result.
@@ -107,7 +107,19 @@ it("a different valid signature for the same event ID earns a new proof", () => 
   expect(verifyEvent).toHaveBeenCalledTimes(3);
 });
 
-it("evicts the oldest proof at the fixed 2048-entry bound and re-verifies it", () => {
+it("keeps no proof for an ephemeral event, which a relay never sends again", () => {
+  const verify = createEventVerifier();
+  const typing = signed(key, { kind: 20002, content: "", tags: [["h", "a"]] });
+  verify(typing);
+  verify(JSON.parse(JSON.stringify(typing)));
+  expect(verifyEvent).toHaveBeenCalledTimes(2);
+  const addressable = signed(key, { kind: 30000, content: "", tags: [] });
+  verify(addressable);
+  verify(JSON.parse(JSON.stringify(addressable)));
+  expect(verifyEvent).toHaveBeenCalledTimes(3);
+});
+
+it("evicts the oldest proof at the fixed 8192-entry bound and re-verifies it", () => {
   // Observe the real memo populated by cryptographic verification, then fill its
   // remaining slots directly. Cache pressure needs opaque entries, not thousands
   // of signatures generated and verified inside one runner deadline.
@@ -116,15 +128,15 @@ it("evicts the oldest proof at the fixed 2048-entry bound and re-verifies it", (
   verify(wire());
   const memo = writes.mock.contexts[0] as ByteLru<string>;
   writes.mockRestore();
-  expect(memo.maxEntries).toBe(2048);
-  expect(memo.maxBytes).toBe(2048 * 192);
-  for (let i = 0; i < 2047; i++) memo.set(`filler:${i}`, "opaque", 192);
-  expect(memo.stats()).toEqual({ entries: 2048, bytes: 2048 * 192 });
+  expect(memo.maxEntries).toBe(8192);
+  expect(memo.maxBytes).toBe(8192 * 192);
+  for (let i = 0; i < 8191; i++) memo.set(`filler:${i}`, "opaque", 192);
+  expect(memo.stats()).toEqual({ entries: 8192, bytes: 8192 * 192 });
   expect(memo.peek(event.id)).toBe(event.sig);
 
   const newest = signed(key, { kind: 9, content: "newest", tags: [] });
   verify(newest);
-  expect(memo.stats()).toEqual({ entries: 2048, bytes: 2048 * 192 });
+  expect(memo.stats()).toEqual({ entries: 8192, bytes: 8192 * 192 });
   expect(memo.peek(event.id)).toBeUndefined();
   expect(verifyEvent).toHaveBeenCalledTimes(2);
   verify(newest);
@@ -176,3 +188,48 @@ it.each(["broker", "signed"])(
     await expect(first.query(filters, aborted.signal)).rejects.toThrow();
   },
 );
+
+it("batches memo misses and admits only independently verified native results", async () => {
+  const check = vi.fn(async (claims: readonly { sig: string }[]) =>
+    nativeSignatureChecks({ claims }),
+  );
+  const { native } = createEventVerifier(undefined, check);
+  if (!native) throw new Error("expected a native verifier");
+  const batch = async (values: unknown[]) =>
+    native.settle(values.map((value) => native.prepare(value)));
+  const second = signed(key, { kind: 9, content: "second", tags: [] });
+  const events = await batch([wire(), second]);
+  expect(check).toHaveBeenCalledTimes(1);
+  expect(check.mock.calls[0]?.[0]).toEqual([
+    { id: event.id, pubkey: event.pubkey, sig: event.sig },
+    { id: second.id, pubkey: second.pubkey, sig: second.sig },
+  ]);
+  expect(verifyEvent).not.toHaveBeenCalled();
+  expect(events.map((item) => item?.[verifiedSymbol])).toEqual([true, true]);
+  expect(events.every((item) => item && hasEventProof(item))).toBe(true);
+  expect(Object.isFrozen(events[0])).toBe(true);
+  await batch([wire()]); // remembered: no host call
+  expect(check).toHaveBeenCalledTimes(1);
+  await expect(batch([{ ...wire(), content: "changed" }])).rejects.toThrow(
+    "invalidly signed",
+  );
+  const forged = { ...signed(other, { kind: 9, content: "x", tags: [] }) };
+  expect(
+    await batch([wire(), { ...forged, sig: "0".repeat(128) }, forged]),
+  ).toEqual([event, undefined, forged]);
+  const calls = check.mock.calls.length;
+  expect(await batch([forged, { ...forged, sig: "0".repeat(128) }])).toEqual([
+    forged,
+    undefined,
+  ]);
+  expect(check).toHaveBeenCalledTimes(calls + 1); // A failed signature never earns a proof.
+  check.mockResolvedValueOnce([]);
+  await expect(
+    batch([second, { ...forged, sig: "0".repeat(128) }]),
+  ).rejects.toThrow("invalidly signed");
+  check.mockRejectedValueOnce(new Error("host failed"));
+  await expect(batch([{ ...forged, sig: "0".repeat(128) }])).rejects.toThrow(
+    "host failed",
+  );
+  expect(createEventVerifier().native).toBeUndefined();
+});

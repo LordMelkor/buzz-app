@@ -36,6 +36,8 @@ export function systemPrompt(
     team?: string;
     /** The agent's `core` memory; `null` when it has none yet. */
     memory?: string | null;
+    /** Its recent notes, as `recentNotesSection` gives them. */
+    notes?: string;
   }>,
 ) {
   const model = input.scope === "thread" ? threadModel : channelModel;
@@ -55,6 +57,7 @@ export function systemPrompt(
       : "",
     input.team?.trim() ?? "",
     coreMemorySection(input.memory),
+    input.notes ?? "",
   ]
     .filter(Boolean)
     .join("\n\n");

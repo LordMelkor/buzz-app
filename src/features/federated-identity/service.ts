@@ -17,10 +17,18 @@ export type SessionSnapshot = Readonly<{
     id: string;
     identityOrigin: string;
     apiBasePath: string;
+    /** `at-launch` builds sign in before the app opens; see LaunchSignIn. */
+    signIn: "on-demand" | "at-launch";
+    /** Display name for sign-in copy, such as "Block". */
+    organization: string | null;
   }> | null;
   revision: string;
   email: string | null;
   failure: string | null;
+  /** When the signed-in session ends (RFC 3339). */
+  expiresAt: string | null;
+  /** The session ends soon; signing in again now keeps the app open. */
+  expiring: boolean;
 }>;
 export type AuthenticatedRequest = Readonly<{
   path: string;
@@ -56,6 +64,8 @@ export class FederatedIdentityService
       revision: "",
       email: null,
       failure: nativeIdentityEnabled() ? null : "desktop-required",
+      expiresAt: null,
+      expiring: false,
     }) as SessionSnapshot,
     listeners: new Set<() => void>(),
     epoch: 0,

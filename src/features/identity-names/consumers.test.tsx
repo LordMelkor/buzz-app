@@ -4,7 +4,7 @@ stubAvatarBrowserApis();
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createRef } from "react";
+import { createRef, useSyncExternalStore } from "react";
 import { Context } from "@deepseek-ai/cordis";
 import userEvent from "@testing-library/user-event";
 import { PluginRuntime } from "../../plugins/runtime";
@@ -385,8 +385,12 @@ it.each(["live", "reconnect", "clear-cache"] as const)(
 it("uses channel scope in link previews and activity, and participant scope in sidebar DMs", async () => {
   const f = fixture();
   function Sidebar() {
+    const list = useSyncExternalStore(
+      f.session.channels.subscribeList,
+      f.session.channels.list,
+    );
     const labels = useChannelLabels(
-      f.session.channels.list().channels,
+      list.channels,
       f.session.profiles,
       f.session.names,
     );

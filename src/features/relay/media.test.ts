@@ -53,6 +53,27 @@ it.each([
   expect(image.decode).toHaveBeenCalledTimes(decoded ? 1 : 0);
 });
 
+it("settled avatars are not reloaded until the intent TTL passes", async () => {
+  vi.useFakeTimers();
+  try {
+    const created = stubImages();
+    const media = createMediaPreparation();
+    media.prepare(["a", "b"]);
+    created[0]?.onload?.();
+    created[1]?.onerror?.();
+    await flushDecode();
+    // A loaded avatar and a failed one both settle; repeated intent skips them.
+    media.prepare(["a", "b"]);
+    media.warm(["a", "b"]);
+    expect(created).toHaveLength(2);
+    vi.advanceTimersByTime(5 * 60_000);
+    media.prepare(["a", "b"]);
+    expect(created).toHaveLength(4);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("Save-Data disables warming but nothing else", () => {
   stubImages();
   vi.stubGlobal("navigator", { connection: { saveData: true } });

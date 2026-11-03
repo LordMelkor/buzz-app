@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import Markdown from "react-markdown";
 import { parseBuzzLink } from "../../features/navigation/buzz-links";
 import { profileKey } from "../../features/profiles/target";
@@ -80,6 +81,7 @@ type Draft = {
   base: string | null;
   input: string;
 };
+const noMembers: readonly string[] = [];
 const empty: Draft = { content: "", original: "", base: null, input: "" };
 const statuses: [Status, string][] = [
   ["todo", "To do"],
@@ -145,7 +147,7 @@ export function TodosPanel({
     (channel) => channel.id === context.channelId,
   )?.members;
   const resolveName = (pubkey: string, fallback: string) =>
-    resolveIdentity(pubkey, fallback, members ?? []);
+    resolveIdentity(pubkey, fallback, members ?? noMembers);
   const key = `todos-draft-v1:${context.channelId}`;
   const [saved] = useState(() => readDraft(context.scope, key));
   const savedDirty = !!saved && saved.content !== saved.original;
@@ -348,8 +350,10 @@ export function TodosPanel({
     .join(":");
   const [namesError, setNamesError] = useState(false);
   const [namesRetry, setNamesRetry] = useState(0);
+  const profileGeneration = useProfileGeneration(people.profiles);
   useEffect(() => {
     void namesRetry; // Explicit user retry reruns this owned read.
+    void profileGeneration;
     let current = true;
     people.channels.ensureList();
     void people.profiles
@@ -365,7 +369,7 @@ export function TodosPanel({
     return () => {
       current = false;
     };
-  }, [people, peopleKey, active, namesRetry]);
+  }, [people, peopleKey, active, namesRetry, profileGeneration]);
   const keyLabels = publicKeyLabels(peopleKey.split(":"));
   const userLabel = (pubkey: string, fallback = "") => {
     const key = keyLabels.get(pubkey) ?? pubkey;

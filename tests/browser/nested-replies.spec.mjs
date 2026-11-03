@@ -339,7 +339,9 @@ test("nested replies send, stay open, and reveal through links at readable panel
   const linkRow = page.locator(
     `[data-channel-timeline] [data-message-id="${linked.id}"]`,
   );
-  await linkRow.getByRole("link", { name: "Alpha", exact: true }).click();
+  await linkRow
+    .getByRole("link", { name: "Fixture Reader in #Alpha", exact: true })
+    .click();
   await expect(grandchildRow).toBeInViewport();
   await expect(grandchildRow).toBeFocused();
   await expect
@@ -575,7 +577,7 @@ test("an exact linked reply stays readable when its parent is outside loaded his
   await open(page, app);
   await page
     .locator(`[data-channel-timeline] [data-message-id="${link.id}"]`)
-    .getByRole("link", { name: "Alpha", exact: true })
+    .getByRole("link", { name: "Alice Fixture in #Alpha", exact: true })
     .click();
   const panel = page.getByRole("complementary", {
     name: "Thread",
@@ -729,6 +731,9 @@ for (const width of [1492, 1280, 1024, 700, 390])
     const expandAll = async () => {
       const branch = branchFor(ids[0]);
       await expect(branch).toHaveAttribute("data-open", "false");
+      await expect(
+        panel.getByRole("region", { name: "Thread messages", exact: true }),
+      ).toHaveAttribute("aria-busy", "false");
       await branch
         .locator(":scope > div")
         .nth(1)

@@ -92,6 +92,67 @@ it("uses the supplied window owner for GIF discovery, search, retry and selectio
   }
 });
 
+it("searches GIFs only from two characters and shows the default GIFs for one", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  const asset = {
+    url: "https://example.test/hello.gif",
+    width: 100,
+    height: 100,
+    size: 20,
+  };
+  const search = vi.fn(async (_community: string, query: string) => [
+    {
+      id: 1,
+      slug: query ? "found" : "hello",
+      title: query ? "Found" : "Hello",
+      preview: asset,
+      original: asset,
+    },
+  ]);
+  const owner = createRelaySession(null);
+  try {
+    render(
+      <EmojiPicker
+        session={owner.session}
+        scope={`https://example.test:${"ab".repeat(32)}`}
+        disabled={false}
+        insert={vi.fn()}
+        gifRequests={{ supports: vi.fn(async () => true), search }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Emoji and GIFS" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "GIF" }));
+    await screen.findByRole("button", { name: "Choose Hello" });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const input = screen.getByRole("searchbox", { name: "Search GIFs" });
+    fireEvent.change(input, { target: { value: "h" } });
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Choose Hello" })).toBeVisible();
+    fireEvent.change(input, { target: { value: "he" } });
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(search).toHaveBeenLastCalledWith(
+      "https://example.test",
+      "he",
+      expect.any(AbortSignal),
+    );
+    expect(search).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+    expect(
+      await screen.findByRole("button", { name: "Choose Found" }),
+    ).toBeVisible();
+  } finally {
+    vi.useRealTimers();
+    owner.dispose();
+  }
+});
+
 it.each(["metaKey", "ctrlKey"])(
   "opens GIF search from the owning composer with %s+G",
   async (modifier) => {

@@ -151,6 +151,22 @@ it("shows the organization account and signs out of it once", async () => {
   expect(await screen.findByRole("button", { name: "Sign in" })).toBeVisible();
 });
 
+it("shows when the organization sign-in ends", () => {
+  const h = federatedFixture();
+  const expiresAt = "2026-11-08T19:00:00Z";
+  h.publish({ status: "signed-in", email: "a@example.com", expiresAt });
+  render(<IdentitySettings viewer={viewer} federatedIdentity={h.service} />, {
+    wrapper: ToastProvider,
+  });
+  const expires = new Date(expiresAt).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const subtitle = screen.getByText(/^Expires at /);
+  expect(subtitle).toHaveTextContent(`Expires at ${expires}Lets you`);
+  expect(subtitle.querySelector("br")).not.toBeNull();
+});
+
 it("signs in to the organization once when signed out", async () => {
   const h = federatedFixture();
   render(

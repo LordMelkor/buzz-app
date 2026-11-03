@@ -113,11 +113,16 @@ space. Once settled, sidebar rows, bylines and the editor's emoji button show th
 default 💬. Rows and bylines keep the full status in their label and tooltip, and
 the editor's button names the shortcode in its hint; tooltips and profiles show
 the shortcode as status text.
-Set or clear your own status from the top-right profile menu. Shared design-system
-Avatar and Button use the host-loaded styles directly. The profile content marks its
-`data-buzz-ui` boundary and uses shared heading/body/mono roles; its stylesheet
-owns layout, not component overrides. No new theme owner, second global reset or
-shell migration. Designers own later refinement.
+Set or clear your own status from the top-right profile menu. When the community
+accepts status updates, your own profile also opens the same editor from a button
+above **Edit profile**: **Update status** when you have one, **Set a status** when
+you don't. It saves to that profile's community, closes if the community or
+identity changes, and returns focus to the button, whose label follows the result.
+A status wider than the profile column ends in an ellipsis.
+Shared design-system Avatar and Button use the host-loaded styles directly. The
+profile content marks its `data-buzz-ui` boundary and uses shared heading/body/mono
+roles; its stylesheet owns layout, not component overrides. No new theme owner,
+second global reset or shell migration. Designers own later refinement.
 
 Agent hints change avatar shape, not authority:
 
