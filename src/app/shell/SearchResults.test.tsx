@@ -2279,6 +2279,11 @@ it("looks up an author by name only from two characters", async () => {
     const view = render(<SearchResults {...props} query="from:@a" />);
     await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     expect(searchProfiles).not.toHaveBeenCalled();
+    // No lookup ran, so the picker asks for more text rather than reporting none.
+    expect(
+      screen.getByText("Type at least 2 characters to search people."),
+    ).toBeVisible();
+    expect(screen.queryByText(/No matching people/)).toBeNull();
     view.rerender(<SearchResults {...props} query="from:@al" />);
     await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     expect(searchProfiles).toHaveBeenCalledExactlyOnceWith(

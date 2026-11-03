@@ -1160,6 +1160,28 @@ describe("resume after a continuous membership replay", () => {
     expect(owner.snapshot().status).toBe("reconciled");
   });
 
+  it("owes a snapshot read after a drop or a marker that failed to apply, until a read or resume succeeds", async () => {
+    const f = fixture();
+    const owner = f.make();
+    await owner.ready;
+    await owner.refresh();
+    expect(owner.owed()).toBe(false);
+    const marker = await otherDeviceMarker(f);
+    // A live marker that cannot be decoded.
+    f.host.decode.mockRejectedValueOnce(new Error("undecodable"));
+    owner.accept([marker]);
+    await vi.waitFor(() => expect(owner.snapshot().status).toBe("error"));
+    expect(owner.owed()).toBe(true);
+    await owner.refresh();
+    expect(owner.owed()).toBe(false);
+    // A drop owes it; a resume from a continuous replay pays it.
+    owner.stale();
+    expect(owner.owed()).toBe(true);
+    await owner.resume();
+    expect(owner.owed()).toBe(false);
+    expect(f.reader.read).toHaveBeenCalledTimes(2);
+  });
+
   it("reads the snapshot again when a drop cancelled a live marker still being ingested", async () => {
     const f = fixture();
     const owner = f.make();

@@ -4,9 +4,11 @@ import type { Credential } from "../../bundled/builderlab/oauth/browser";
 import type { HostRequest } from "../host/service";
 import { BackupError, type BackupStatus, createBackupStatus } from "./backup";
 import { BACKUP_FAILURES } from "./backup-failure";
+import { federatedFixture } from "../federated-identity/testing";
 import {
   backupOfferedFor,
   builderlabAccount,
+  federatedBuilderlabAccount,
   seededAccount,
 } from "./builderlab-account";
 
@@ -1246,5 +1248,141 @@ describe("backup", () => {
         });
       },
     );
+  });
+});
+
+describe("federatedBuilderlabAccount", () => {
+  const signedIn = async () => {
+    const fi = federatedFixture();
+    await fi.service.signIn();
+    return {
+      ...fi,
+      credential: { ...credential, value: fi.service.snapshot().revision },
+    };
+  };
+
+  it("sends the card's routes through the NIP-FI forwarder under the session's API base, with no session credential", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      id: "e".repeat(64),
+      pubkey,
+      kind: 24243,
+      sig: "s".repeat(128),
+    });
+    const fi = await signedIn();
+    fi.request
+      .mockResolvedValueOnce(answer(200, { identity: null }))
+      .mockResolvedValueOnce(
+        answer(200, {
+          challenge_id: "550e8400-e29b-41d4-a716-446655440000",
+          nonce: "n",
+          verification_code: "123456",
+          origin: "https://t.example",
+          expires_at: "2999-01-01T00:00:00Z",
+        }),
+      )
+      .mockResolvedValueOnce(answer(200, { identity: { pubkey_hex: pubkey } }));
+    await federatedBuilderlabAccount(fi.credential, fi.service, untouched).bind(
+      pubkey,
+    );
+    const headers = {
+      "Content-Type": "application/json",
+      Origin: "https://t.example",
+    };
+    expect(fi.request.mock.calls.map(([input]) => input)).toEqual([
+      {
+        path: "/api/goose/v1/buzz/nostr-identities/current",
+        method: "POST",
+        headers,
+        body: "{}",
+      },
+      {
+        path: "/api/goose/v1/buzz/nostr-identities/challenge",
+        method: "POST",
+        headers,
+        body: JSON.stringify({ origin: "https://t.example" }),
+      },
+      expect.objectContaining({
+        path: "/api/goose/v1/buzz/nostr-identities/verify",
+      }),
+    ]);
+  });
+
+  it("refuses without a request once the session it signed in with has changed", async () => {
+    const fi = await signedIn();
+    const account = federatedBuilderlabAccount(
+      fi.credential,
+      fi.service,
+      untouched,
+    );
+    await fi.service.signIn();
+    await expect(account.linkedKey()).rejects.toThrow(signedOut);
+    fi.publish({ status: "signed-out" });
+    await expect(account.ownedCommunities()).rejects.toThrow(signedOut);
+    expect(fi.request).not.toHaveBeenCalled();
+  });
+
+  it("refuses without a request while the session it signed in with is unavailable", async () => {
+    const fi = await signedIn();
+    const account = federatedBuilderlabAccount(
+      fi.credential,
+      fi.service,
+      untouched,
+    );
+    fi.publish({ status: "unavailable", failure: "storage-unavailable" });
+    expect(fi.service.snapshot().revision).toBe(fi.credential.value);
+    await expect(account.linkedKey()).rejects.toThrow(signedOut);
+    expect(fi.request).not.toHaveBeenCalled();
+  });
+
+  it("answers backup status as unavailable without a request and hands the uploader the session revision", async () => {
+    const fi = await signedIn();
+    const watchers: { onmessage: (status: BackupStatus) => void }[] = [];
+    const send = vi.fn(async (command: string, args?: unknown) => {
+      if (command === "nsec_backup_watch")
+        watchers.push((args as { onEvent: (typeof watchers)[number] }).onEvent);
+      else if (command === "nsec_backup_state")
+        return { seq: 1, pass: 0, builderlab: true, status: "idle" };
+    });
+    const account = federatedBuilderlabAccount(fi.credential, fi.service, {
+      ...noRecovery,
+      backup: createBackupStatus(send as never),
+      setBackupChoice: () =>
+        Promise.resolve({ available: true, pubkey, automatic: true } as never),
+    });
+    expect(await account.backupStatus()).toBe("unavailable");
+    vi.mocked(invoke).mockImplementation(async (_command, args) =>
+      (args as { federated?: string | null }).federated ? 1 : null,
+    );
+    const done = account.backUp(pubkey);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    watchers[0]?.onmessage({
+      seq: 2,
+      pass: 1,
+      builderlab: true,
+      status: "complete",
+    });
+    await done;
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      [
+        "nsec_backup_session",
+        {
+          source: "builderlab",
+          credential: null,
+          federated: fi.credential.value,
+          generation: expect.any(Number),
+        },
+      ],
+      // The Builderlab plugin hands over the same session, so it stays.
+      [
+        "nsec_backup_session",
+        {
+          source: "builderlab",
+          credential: null,
+          federated: fi.credential.value,
+          generation: expect.any(Number),
+        },
+      ],
+    ]);
+    expect(fi.request).not.toHaveBeenCalled();
   });
 });

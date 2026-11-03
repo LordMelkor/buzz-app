@@ -13,6 +13,8 @@ import {
   type RelayFetch,
 } from "./find-community";
 
+import { communityName } from "./community-name";
+
 type State =
   | { status: "finding" }
   | { status: "found"; found: FoundCommunity }
@@ -47,11 +49,14 @@ export function FindCommunity({
   onJoin,
   request = nativeRelayFetch,
   titleId,
+  onboarding = false,
 }: {
   url: string;
   onCancel: () => void;
   request?: RelayFetch;
   titleId?: string;
+  /** Uses the first-run page action layout; in-app dialogs keep their own. */
+  onboarding?: boolean;
 } & (
   | {
       /** Takes over a found community instead of showing Join Community; the lookup page stays until the caller moves on. */
@@ -114,7 +119,9 @@ export function FindCommunity({
           <div className="flex flex-col gap-6">
             <p className="m-0 font-mono text-body text-subtle">{host}</p>
             <div>
-              <Button onClick={cancel}>Cancel</Button>
+              <Button size={onboarding ? "lg" : "md"} onClick={cancel}>
+                Cancel
+              </Button>
             </div>
           </div>
         </LoadingRegion>
@@ -129,11 +136,17 @@ export function FindCommunity({
         <p role="alert" className="text-body text-danger">
           {message}
         </p>
-        <div className="flex gap-3">
-          <Button onClick={cancel}>Cancel</Button>
+        <div
+          className="flex gap-3"
+          data-onboarding-actions={onboarding ? "" : undefined}
+        >
+          <Button size={onboarding ? "lg" : "md"} onClick={cancel}>
+            Cancel
+          </Button>
           {retry && (
             <Button
               variant="prominent"
+              size={onboarding ? "lg" : "md"}
               onClick={() => setState({ status: "finding" })}
             >
               Retry
@@ -144,6 +157,7 @@ export function FindCommunity({
     );
   }
   const { found } = state;
+  const name = communityName(found.name, found.host);
   const policy = found.policy;
   const needsAge = policy?.age_attestation_required === true;
   const needsAgreement = Boolean(
@@ -163,11 +177,19 @@ export function FindCommunity({
   return (
     <>
       {heading("Join Community")}
-      <div className="flex items-center gap-3">
-        <Avatar alt="" fallback={found.host} src={found.icon} />
-        <p className="m-0 min-w-0 flex-1 truncate font-mono text-label text-standard">
-          {found.host}
-        </p>
+      <div className="flex items-center gap-3 rounded-[var(--radius-row)] bg-surface-inset p-4">
+        <Avatar
+          alt=""
+          fallback={name}
+          fallbackSurface="panel"
+          src={found.icon}
+          shape="squircle"
+          size="large"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="m-0 break-words text-body text-standard">{name}</p>
+          <p className="m-0 break-all text-body text-subtle">{found.url}</p>
+        </div>
       </div>
       {(needsAge || needsAgreement) && (
         <div className="flex flex-col gap-3">
@@ -216,12 +238,20 @@ export function FindCommunity({
           Joining…
         </p>
       )}
-      <div className="flex gap-3">
-        <Button onClick={cancel} disabled={joining}>
+      <div
+        className="flex gap-3"
+        data-onboarding-actions={onboarding ? "" : undefined}
+      >
+        <Button
+          size={onboarding ? "lg" : "md"}
+          onClick={cancel}
+          disabled={joining}
+        >
           Cancel
         </Button>
         <Button
           variant="prominent"
+          size={onboarding ? "lg" : "md"}
           disabled={!consented || joining}
           onClick={() => void join()}
         >

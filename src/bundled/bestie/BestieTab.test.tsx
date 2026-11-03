@@ -3,11 +3,12 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
-import type { Agent, Agents } from "../../features/agents/service";
+import type { Agent, AgentChange, Agents } from "../../features/agents/service";
 import type { RelayData } from "../../features/relay/service";
 import { readView, writeView } from "../../shared/view-state";
 import { bestieTab } from "./BestieTab";
-import { memory, withFeature } from "./features";
+import { validateObject } from "../../features/agents/attention";
+import { checkinHourly, memory, withFeature } from "./features";
 
 afterEach(() => {
   cleanup();
@@ -16,6 +17,8 @@ afterEach(() => {
 
 const OWNER = "f".repeat(64);
 const SCOPE = `https://relay.example:${OWNER}`;
+const NO_CHANNELS = { channels: [] };
+const DM = "0f0f0f0f-0000-4000-8000-000000000001";
 const member = (name: string, digit: string): Agent =>
   ({
     key: digit.repeat(64),
@@ -25,7 +28,8 @@ const member = (name: string, digit: string): Agent =>
     owner: OWNER,
     relay: "wss://relay.example",
     place: "here",
-  }) as Agent;
+    attention: {},
+  }) as unknown as Agent;
 const ada = member("Ada", "a");
 const bea = member("Bea", "b");
 
@@ -64,6 +68,13 @@ function community(saved: string | undefined, agents = [ada, bea]) {
     status: "ready",
     scope: SCOPE,
     session: {
+      viewer: OWNER,
+      directMessages: { open: vi.fn(async () => DM) },
+      channels: {
+        list: () => NO_CHANNELS,
+        subscribeList: () => () => {},
+        ensureList: () => () => {},
+      },
       mainAgent,
       agentChoices: {
         snapshot: () => choices,
@@ -111,7 +122,7 @@ it("shows on the saved Bestie only, and moves when Change picks another", async 
   expect(screen.getByText("This is your Bestie")).toBeVisible();
   // A type without instructions has nothing to switch.
   expect(screen.getByText("Remembers you")).toBeVisible();
-  expect(screen.queryByRole("switch")).toBeNull();
+  expect(screen.queryByRole("switch", { name: "Remembers you" })).toBeNull();
   changed.mockClear();
   await user.click(screen.getByRole("button", { name: "Change" }));
   // Change offers every other agent you can make Bestie.
@@ -306,7 +317,7 @@ it("says why a save failed and lets the switch be tried again", async () => {
     "Connect to the community to save",
   );
   expect(remembers).not.toBeChecked();
-  expect(remembers).toBeEnabled();
+  expect(remembers).not.toHaveAttribute("aria-disabled", "true");
   // A config with no instructions yet gets the section alone.
   expect(save).toHaveBeenCalledWith(ada.key, {
     config: { instructions: withFeature("", memory, true) },
@@ -328,9 +339,245 @@ it("offers no switch while the agent's instructions can't be read here", () => {
       }
     />,
   );
-  expect(screen.queryByRole("switch")).toBeNull();
+  expect(screen.queryByRole("switch", { name: "Remembers you" })).toBeNull();
+  // Each setting's row says why, check-ins too.
   expect(
-    screen.getByText("This agent's instructions could not be read"),
-  ).toBeVisible();
+    screen.getAllByText("This agent's instructions could not be read"),
+  ).toHaveLength(2);
   expect(save).not.toHaveBeenCalled();
+});
+
+it("checks in every hour only while memory is on, with a timer in the owner's DM", async () => {
+  const user = userEvent.setup();
+  const { relay } = community(ada.pubkey);
+  const { agents, save } = host();
+  const Tab = bestieTab(relay, agents).component;
+  const base = { instructions: "head-1" };
+  const remembering = withFeature("Be brief.", memory, true);
+  const off = {
+    ...ada,
+    config: { instructions: "Be brief." },
+    configBase: base,
+  };
+  const { rerender } = render(<Tab agent={off as Agent} />);
+  const hourly = () => screen.getByRole("switch", { name: "Every hour" });
+  // Memory is off, so check-ins can't be turned on.
+  expect(hourly()).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByText("Turn on Remembers you first.")).toBeVisible();
+
+  const on = { ...off, config: { instructions: remembering } } as Agent;
+  rerender(<Tab agent={on} />);
+  expect(hourly()).not.toBeChecked();
+  await user.click(hourly());
+  // The timer first, then the instructions that say what it is for.
+  expect(save).toHaveBeenCalledTimes(2);
+  const [[, timers], [, instructions]] = save.mock.calls as [
+    [string, AgentChange],
+    [string, AgentChange],
+  ];
+  expect(instructions).toEqual({
+    config: { instructions: withFeature(remembering, checkinHourly, true) },
+    base,
+  });
+  // Turning it on lets the agent's Attention run.
+  expect(timers.attentionEnabled).toBe(true);
+  expect(timers.attention?.["watch/bestie-hourly-check-in"]).toMatchObject({
+    type: "timer",
+    interest_id: "bestie-hourly-check-in",
+    interval_secs: 3600,
+    max_occurrences: null,
+    expires_at: null,
+    channel: DM,
+    enabled: true,
+  });
+  // The objects are ones Attention accepts.
+  for (const [slug, value] of Object.entries(timers.attention ?? {}))
+    expect(validateObject(slug, value)).toBeUndefined();
+
+  // On means the section and the timer are both there.
+  const checking = {
+    ...on,
+    config: { instructions: withFeature(remembering, checkinHourly, true) },
+    attention: {
+      "interest/bestie-hourly-check-in": { value: { type: "interest" } },
+      "watch/bestie-hourly-check-in": {
+        value: { type: "timer", enabled: true },
+      },
+    },
+  } as unknown as Agent;
+  rerender(<Tab agent={checking} />);
+  expect(hourly()).toBeChecked();
+  // With Attention not running here, as while Watching is off, it says so.
+  expect(screen.getByText(/^Paused: watches aren't running/)).toBeVisible();
+  rerender(<Tab agent={{ ...checking, attentionEnabled: true } as Agent} />);
+  expect(screen.queryByText(/^Paused/)).toBeNull();
+  rerender(<Tab agent={{ ...checking, attention: {} } as Agent} />);
+  expect(hourly()).not.toBeChecked();
+  rerender(<Tab agent={checking} />);
+
+  const removed = {
+    attention: {
+      "interest/bestie-hourly-check-in": null,
+      "watch/bestie-hourly-check-in": null,
+    },
+  };
+  // Memory off takes check-ins with it, and leaves Attention's switch alone.
+  save.mockClear();
+  await user.click(screen.getByRole("switch", { name: "Remembers you" }));
+  expect(save.mock.calls).toEqual([
+    [ada.key, removed],
+    [ada.key, { config: { instructions: "Be brief." }, base }],
+  ]);
+
+  // Check-ins off removes only their section and timer.
+  save.mockClear();
+  await user.click(hourly());
+  expect(save.mock.calls).toEqual([
+    [ada.key, removed],
+    [ada.key, { config: { instructions: remembering.trimEnd() }, base }],
+  ]);
+
+  // Left on after memory went some other way, it can still be turned off.
+  rerender(
+    <Tab
+      agent={
+        {
+          ...checking,
+          config: {
+            instructions: withFeature("Be brief.", checkinHourly, true),
+          },
+        } as Agent
+      }
+    />,
+  );
+  expect(hourly()).toBeChecked();
+  expect(hourly()).not.toHaveAttribute("aria-disabled", "true");
+});
+
+/** Ada with memory on and check-ins off, ready to turn Every hour on. */
+function remembering(attentionEnabled = false) {
+  return {
+    ...ada,
+    config: { instructions: withFeature("Be brief.", memory, true) },
+    attentionEnabled,
+  } as Agent;
+}
+const TIMER = "watch/bestie-hourly-check-in";
+const INTEREST = "interest/bestie-hourly-check-in";
+
+it("undoes a failed check-in's timer, so none runs behind a switch that reads off", async () => {
+  const user = userEvent.setup();
+  const { relay } = community(ada.pubkey);
+  const { agents, save } = host();
+  const Tab = bestieTab(relay, agents).component;
+  render(<Tab agent={remembering()} />);
+  const hourly = screen.getByRole("switch", { name: "Every hour" });
+  save
+    .mockResolvedValueOnce()
+    .mockRejectedValueOnce(new Error("Instructions changed elsewhere"));
+  await user.click(hourly);
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Instructions changed elsewhere",
+  );
+  // The timer and its Interest are removed again, and Attention, which this
+  // turned on, goes back off.
+  expect(save).toHaveBeenCalledTimes(3);
+  expect(save.mock.calls[2]).toEqual([
+    ada.key,
+    { attention: { [INTEREST]: null, [TIMER]: null }, attentionEnabled: false },
+  ]);
+  expect(hourly).not.toBeChecked();
+  // Trying again saves it all again.
+  save.mockClear();
+  await user.click(hourly);
+  expect(save).toHaveBeenCalledTimes(2);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("leaves Attention on after a failed check-in when it was already on", async () => {
+  const user = userEvent.setup();
+  const { relay } = community(ada.pubkey);
+  const { agents, save } = host();
+  const Tab = bestieTab(relay, agents).component;
+  render(<Tab agent={remembering(true)} />);
+  save
+    .mockResolvedValueOnce()
+    .mockRejectedValueOnce(new Error("Instructions changed elsewhere"));
+  await user.click(screen.getByRole("switch", { name: "Every hour" }));
+  await screen.findByRole("alert");
+  expect(save.mock.calls[2]).toEqual([
+    ada.key,
+    { attention: { [INTEREST]: null, [TIMER]: null } },
+  ]);
+});
+
+it("offers to remove a timer left without its section when undoing fails too", async () => {
+  const user = userEvent.setup();
+  const { relay } = community(ada.pubkey);
+  const { agents, save } = host();
+  const Tab = bestieTab(relay, agents).component;
+  const { rerender } = render(<Tab agent={remembering()} />);
+  save
+    .mockResolvedValueOnce()
+    .mockRejectedValueOnce(new Error("Instructions changed elsewhere"))
+    .mockRejectedValueOnce(new Error("Offline"));
+  await user.click(screen.getByRole("switch", { name: "Every hour" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Instructions changed elsewhere Its timer may still be saved; remove it below.",
+  );
+  // The agent as saved: the timer is there, its section isn't.
+  const [[, timers]] = save.mock.calls as [[string, AgentChange]];
+  const left = {
+    ...remembering(),
+    attentionEnabled: true,
+    attention: Object.fromEntries(
+      Object.entries(timers.attention ?? {}).map(([slug, value]) => [
+        slug,
+        { slug, value, modifiedAt: 1 },
+      ]),
+    ),
+  } as unknown as Agent;
+  rerender(<Tab agent={left} />);
+  expect(screen.getByRole("switch", { name: "Every hour" })).not.toBeChecked();
+  save.mockClear();
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  expect(save.mock.calls[0]).toEqual([
+    ada.key,
+    { attention: { [INTEREST]: null, [TIMER]: null } },
+  ]);
+});
+
+it("says a check-in paused in Attention is paused, and how to restart it", async () => {
+  const user = userEvent.setup();
+  const { relay } = community(ada.pubkey);
+  const { agents, save } = host();
+  const Tab = bestieTab(relay, agents).component;
+  const paused = {
+    ...remembering(true),
+    config: {
+      instructions: withFeature(
+        withFeature("Be brief.", memory, true),
+        checkinHourly,
+        true,
+      ),
+    },
+    attention: {
+      [INTEREST]: { value: { type: "interest" } },
+      [TIMER]: { value: { type: "timer", enabled: false } },
+    },
+  } as unknown as Agent;
+  render(<Tab agent={paused} />);
+  const hourly = screen.getByRole("switch", { name: "Every hour" });
+  // Still on, so Off still removes it.
+  expect(hourly).toBeChecked();
+  expect(
+    screen.getByText(
+      "Paused in Attention. Turn Every hour off and on again to restart it.",
+    ),
+  ).toBeVisible();
+  await user.click(hourly);
+  expect(save.mock.calls[0]).toEqual([
+    ada.key,
+    { attention: { [INTEREST]: null, [TIMER]: null } },
+  ]);
 });

@@ -17,6 +17,7 @@ import type {
   ManagedEntry,
   ManagedPlugins as Policy,
 } from "../plugins/types";
+import { createPluginInstallRequests } from "../plugins/installer";
 import { ManagedPlugins } from "./ManagedPlugins";
 
 afterEach(cleanup);
@@ -84,7 +85,11 @@ function show(
   manager: unknown,
   managed: Policy | undefined,
   plugins: Catalog["plugins"] = [],
-  extra: { busy?: boolean; strict?: boolean } = {},
+  extra: {
+    busy?: boolean;
+    strict?: boolean;
+    holdReview?: () => () => void;
+  } = {},
 ) {
   const ui = (
     <ManagedPlugins
@@ -92,6 +97,7 @@ function show(
       managed={managed}
       catalog={catalog(plugins)}
       busy={extra.busy ?? false}
+      holdReview={extra.holdReview}
     />
   );
   return render(extra.strict ? <StrictMode>{ui}</StrictMode> : ui);
@@ -173,6 +179,36 @@ it("reviews at the pinned commit, then installs and enables only after confirmat
   );
   expect(imports.discard).toHaveBeenCalledWith("preview");
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+const market = { id: "example.market", name: "Market" };
+
+it("holds install requests off while a managed review is open, including one already admitted", async () => {
+  const { manager } = harness();
+  const requests = createPluginInstallRequests();
+  const source = {
+    repository: "https://example.com/other.git",
+    reference: "main",
+  };
+  show(manager, ready([entry("missing")]), [], {
+    strict: true,
+    holdReview: requests.holdReview,
+  });
+  const admitted = requests.request(source, market);
+  const id = requests.snapshot()?.id ?? 0;
+  fireEvent.click(
+    screen.getByRole("button", { name: "Review and install example.managed" }),
+  );
+  const dialog = await screen.findByRole("dialog");
+  expect(requests.claim(id)).toBe(false);
+  await expect(admitted).resolves.toBe("unavailable");
+  await expect(requests.request(source, market)).resolves.toBe("unavailable");
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  const later = requests.request(source, market);
+  expect(requests.snapshot()).toBeDefined();
+  requests.settle(requests.snapshot()?.id ?? 0, "cancelled");
+  await later;
 });
 
 it("keeps a new plugin disabled when the user opts out", async () => {

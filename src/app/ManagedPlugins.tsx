@@ -31,12 +31,14 @@ export function ManagedPlugins({
   catalog,
   busy,
   authorizeGit,
+  holdReview,
 }: {
   plugins: PluginManager;
   managed: ManagedPolicy | undefined;
   catalog: Catalog;
   busy: boolean;
   authorizeGit?: Authorize | undefined;
+  holdReview?: (() => () => void) | undefined;
 }) {
   const [reviewingId, setReviewingId] = useState<string>();
   const trigger = useRef<HTMLElement | null>(null);
@@ -54,6 +56,7 @@ export function ManagedPlugins({
           : undefined
       }
       authorizeGit={authorizeGit}
+      holdReview={holdReview}
       returnFocus={() => trigger.current}
       onClose={() => setReviewingId(undefined)}
     />
@@ -156,6 +159,7 @@ export function ManagedPluginUpdate({
   source,
   entry,
   authorizeGit,
+  holdReview,
   returnFocus,
 }: {
   plugins: PluginManager;
@@ -164,6 +168,7 @@ export function ManagedPluginUpdate({
   source: string;
   entry: ManagedEntry;
   authorizeGit?: Authorize | undefined;
+  holdReview?: (() => () => void) | undefined;
   returnFocus?: () => HTMLElement | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -196,6 +201,7 @@ export function ManagedPluginUpdate({
           source={source}
           entry={entry}
           authorizeGit={authorizeGit}
+          holdReview={holdReview}
           returnFocus={() => returnFocus?.() ?? trigger.current}
           onClose={() => setOpen(false)}
         />
@@ -219,6 +225,7 @@ function ManagedPluginReview({
   source,
   entry,
   authorizeGit,
+  holdReview,
   returnFocus,
   onClose,
 }: {
@@ -229,11 +236,13 @@ function ManagedPluginReview({
   /** The live recommendation; undefined once the policy no longer lists it. */
   entry: ManagedEntry | undefined;
   authorizeGit?: Authorize | undefined;
+  holdReview?: (() => () => void) | undefined;
   returnFocus: () => HTMLElement | null;
   onClose: () => void;
 }) {
   const imports = plugins.imports;
   const key = entry && entryKey(entry);
+  useEffect(() => holdReview?.(), [holdReview]);
   const [attempt, setAttempt] = useState(0);
   const [review, setReview] = useState<Review>({ status: "loading" });
   const [installing, setInstalling] = useState(false);

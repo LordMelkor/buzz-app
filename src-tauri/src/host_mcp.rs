@@ -47,6 +47,8 @@ use tauri::ipc::Channel;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Semaphore};
 use tokio_util::sync::CancellationToken;
+mod authorization;
+pub(crate) use authorization::plugin_host_mcp_authorize;
 
 /// Servers running at once across all plugins.
 const MAX_SERVERS: usize = 64;
@@ -94,6 +96,7 @@ struct Shared {
     claim: AtomicU8,
     /// Explicitly let clients holding the token join the same session.
     shared_session: bool,
+    authorization: Mutex<Option<authorization::Exchange>>,
     events: Channel<McpEvent>,
     stop: CancellationToken,
     pending: Mutex<Pending>,
@@ -173,6 +176,7 @@ impl HostMcpServers {
             session: secret()?,
             claim: AtomicU8::new(UNCLAIMED),
             shared_session,
+            authorization: Mutex::new(None),
             events,
             stop: CancellationToken::new(),
             pending: Mutex::default(),
@@ -281,6 +285,9 @@ async fn answer(
     shared: &Shared,
     request: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    if request.uri().path() == "/authorize/exchange" {
+        return Ok(authorization::exchange(shared, request).await);
+    }
     let (status, body, joined) = match refuse(shared, &request) {
         Err(status) => (status, None, false),
         Ok(named) => {

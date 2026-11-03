@@ -4631,3 +4631,31 @@ it("rejects adding a recipient when retained duplicate mentions fill the limit",
   );
   expect(h.input).toHaveValue(text);
 });
+
+it("toggles inline code, quote and code block with Slack's chords as well as Buzz's", async () => {
+  vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  try {
+    const h = mount();
+    await h.user.keyboard("{Meta>}{Shift>}c{/Shift}{/Meta}");
+    expect(h.formats()).toContain("code");
+    await h.user.keyboard("{Meta>}{Shift>}c{/Shift}{/Meta}");
+    expect(h.formats()).not.toContain("code");
+    fireEvent.keyDown(h.input, {
+      key: "(",
+      code: "Digit9",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(h.formats()).toContain("blockquote");
+    fireEvent.keyDown(h.input, {
+      key: "Ç",
+      code: "KeyC",
+      metaKey: true,
+      altKey: true,
+      shiftKey: true,
+    });
+    expect(h.formats()).toContain("code_block");
+  } finally {
+    vi.restoreAllMocks();
+  }
+});

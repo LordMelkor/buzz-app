@@ -100,7 +100,7 @@ test("binary upload signs exact bytes for the captured community; existing proxy
         "expiration",
         String(auth.created_at + Math.ceil(UPLOAD_TIMEOUT_MS / 1000) + 60),
       ]);
-      return Response.json(descriptor(bytes, other));
+      return Response.json({ ...descriptor(bytes, other), dim: "640x400" });
     }
     expect(auth.tags).toContainEqual(["t", "get"]);
     return new Response(bytes, {
@@ -123,7 +123,7 @@ test("binary upload signs exact bytes for the captured community; existing proxy
     expect(uploaded.status).toBe(200);
     const result = await uploaded.json();
     const { uploaded: _uploaded, ...expected } = descriptor(bytes, other);
-    expect(result).toEqual(expected);
+    expect(result).toEqual({ ...expected, dim: "640x400" });
     const downloaded = await fetch(
       `${endpoint}/media?url=${encodeURIComponent(result.url)}`,
     );
@@ -380,9 +380,14 @@ test("two in-flight uploads bound admission; disconnect cancels upstream and fre
 test("declared and streamed request budgets reject before signing or forwarding", async () => {
   const forward = vi.fn();
   for (const declared of [true, false]) {
-    // Exceed the real configured budget in one chunk, before spooling to disk.
-    // The meter's cumulative behavior is covered separately with a small limit.
-    const req = Readable.from([Buffer.alloc(UPLOAD_MAX_BYTES + 1)]);
+    const req = Readable.from(
+      (function* () {
+        // Cross the cumulative limit without hashing/spooling the entire budget.
+        // The second chunk fits by itself; the preceding byte makes it too large.
+        yield Buffer.from("x");
+        yield Buffer.alloc(UPLOAD_MAX_BYTES);
+      })(),
+    );
     req.headers = declared
       ? { "content-length": String(UPLOAD_MAX_BYTES + 1) }
       : {};

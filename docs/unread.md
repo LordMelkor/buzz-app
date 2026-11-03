@@ -155,7 +155,9 @@ timeline and the thread being read, without reading unopened threads' replies.
   the sweep; the first failure is rethrown afterwards. A channel whose grant is
   revoked before its turn is skipped, not failed; like a grant that arrives
   mid-sweep, it waits for the next explicit action. The community switcher's
-  Mark all as read uses it for the selected community only.
+  Mark all as read and the Shift+Escape shortcut (after a confirmation) use it
+  for the selected community only, through one shared action and toast copy.
+  Escape marks the open conversation through `markChannelRead`.
 - `markUnreadLocal(target)` is durable **on this browser profile/device only**.
   Automatic reading does not clear it. An explicit mark-through clears that
   target's local mark. `syncedManualUnread` is `false`.

@@ -11,6 +11,11 @@ import { continuingNames } from "./mention-ranking";
 import { namedCandidates, spaceMention } from "./use-mention-choices";
 import { teamBlocksSpace } from "./use-team-mentions";
 import { MENTION_RESOLVE_TIMEOUT_MS } from "../../features/conversation/completion";
+import { searchable } from "../../shared/search-debounce";
+import {
+  PROFILE_CACHE_BASE,
+  profileRosterRoom,
+} from "../../features/relay/budget";
 import {
   fetchMentionDirectoryPage,
   type MentionDirectoryPage,
@@ -111,7 +116,13 @@ async function resolve(
   // read leaves its name missing, which only keeps the local step off.
   if (!roster && members.length)
     await session.profiles
-      .ensure(members.slice(0, 1024), "background")
+      .ensure(
+        members.slice(
+          0,
+          profileRosterRoom(session.profiles.limit?.() ?? PROFILE_CACHE_BASE),
+        ),
+        "background",
+      )
       .catch(() => {});
   if (invite) {
     const release = session.agentChoices.retain();
@@ -200,6 +211,8 @@ async function resolve(
     !channel?.archived &&
     !channel?.readOnly;
   if (!outside) return decide([], true, name);
+  // Like the chooser, text too short to search leaves the directory unread.
+  if (!searchable(name)) return null;
   const page = await fetchMentionDirectoryPage(session, name, signal);
   // A truncated page may hide a namesake, as it does for Space in the chooser.
   if (signal.aborted || page.more) return null;

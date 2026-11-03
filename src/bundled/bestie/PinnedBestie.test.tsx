@@ -8,6 +8,7 @@ import { composerDOMFixture } from "../../features/messages/composer-testing";
 import { createAgentChoices } from "../../features/agents/choices";
 import { createAgentLibrary } from "../../features/agents/library";
 import { localAgentsFixture } from "../../features/agents/local-testing";
+import type { Agents } from "../../features/agents/service";
 import type { ConversationHostServices } from "../../features/conversation/ConversationHost";
 import {
   createNavigationController,
@@ -280,6 +281,12 @@ async function fixture({
     },
     navigation: { open: vi.fn() },
   } as unknown as ConversationHostServices;
+  const agents = {
+    subscribe: () => () => {},
+    snapshot: () => undefined,
+    types: () => empty,
+    find: () => undefined,
+  } as unknown as Agents;
   return {
     viewer: viewer.pubkey,
     scope,
@@ -322,6 +329,7 @@ async function fixture({
           host={host}
           extensions={extensions}
           navigator={renderedNavigator}
+          agents={agents}
           navigation={navigation}
         />
       </ToastProvider>
@@ -335,6 +343,7 @@ async function fixture({
             host={host}
             extensions={extensions}
             navigator={navigator}
+            agents={agents}
           />
         </ToastProvider>,
         { reactStrictMode: true },
@@ -741,6 +750,27 @@ it("recovers a saved agent missing from a partial inventory through refresh", as
     complete: true,
   });
   expect(f.session.agentChoices.snapshot()).not.toHaveProperty("error");
+});
+
+it("replaces a missing saved Bestie from the chooser in place", async () => {
+  const f = await fixture();
+  f.choose(pollen);
+  f.makePollenIneligible();
+  f.mount();
+  expect(
+    await screen.findByRole("heading", { name: "Pollen is no longer here" }),
+  ).toBeVisible();
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole("combobox", {
+      name: "Choose an eligible agent or create a new one:",
+    }),
+  );
+  await user.click(await screen.findByRole("option", { name: /^Fizz / }));
+  expect(
+    await screen.findByRole("textbox", { name: "Message Fizz" }),
+  ).toBeVisible();
+  expect(f.open).toHaveBeenCalledWith([fizz], expect.any(AbortSignal));
 });
 
 it("does not use a known-archived identity's DM during partial discovery", async () => {

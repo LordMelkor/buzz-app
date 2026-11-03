@@ -93,6 +93,65 @@ export function useMessageDeletion() {
     : undefined;
 }
 
+/**
+ * Selected-message keys act as the message menu does, read when the key is
+ * pressed. Delete covers your own messages; the menu also deletes for agent
+ * owners, which needs ownership evidence a key cannot wait for.
+ */
+export function useMessageKeyActions(session: RelaySession) {
+  const management = useContext(Management);
+  const editor = useMessageEditScope();
+  return useMemo(() => {
+    if (!management) return undefined;
+    const joined = (row: ChannelMessage) => {
+      const channel = session.channels
+        .list()
+        .channels.find((item) => item.id === row.channelId);
+      return channel &&
+        !channel.cached &&
+        (!channel.readOnly || channel.viewerRole === "guest") &&
+        !row.membership &&
+        !row.diff &&
+        (!row.delivery || ["accepted", "seen"].includes(row.delivery))
+        ? channel
+        : undefined;
+    };
+    return {
+      canDelete(row: ChannelMessage) {
+        const channel = joined(row);
+        return (
+          !!channel &&
+          !channel.readOnly &&
+          !channel.archived &&
+          !!session.viewer &&
+          row.authorId === session.viewer &&
+          !!session.outbox?.supports(5)
+        );
+      },
+      remove(row: ChannelMessage) {
+        management.remove(row, undefined, () => editor?.focusTarget() ?? null);
+      },
+      canMarkUnread(row: ChannelMessage) {
+        if (!joined(row)) return false;
+        const attention = session.unread.attention(row.channelId, row.id);
+        return !attention.unread && !attention.forced;
+      },
+      markUnread(row: ChannelMessage) {
+        management.report(undefined);
+        void session.unread
+          .markMessageUnread(row.channelId, row.id)
+          .catch((cause) =>
+            management.report(
+              cause instanceof Error
+                ? cause.message
+                : "Could not update unread state. Try again.",
+            ),
+          );
+      },
+    };
+  }, [management, editor, session]);
+}
+
 /** Recovery stays outside virtualized rows; each conversation has one edit destination. */
 export function MessageManagement({
   session,

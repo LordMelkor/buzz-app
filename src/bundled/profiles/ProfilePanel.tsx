@@ -486,23 +486,27 @@ function ProfileDetails({
           </div>
           <div className={styles.identity}>
             <h2 className="text-body-lg">{name}</h2>
-            {profile?.verified?.fullName && (
-              <p className="text-body-sm text-secondary">
-                {profile.verified.fullName}
-              </p>
-            )}
             {profile?.verified && (
-              <p className="text-body-sm text-secondary">
+              <p
+                className={`${styles.verifiedName} text-body-sm text-secondary`}
+              >
+                <span>
+                  {profile.verified.fullName ?? `@${profile.verified.username}`}
+                </span>
                 {profile.verified.status === "checked" && (
                   <CheckCircleIcon
                     aria-hidden="true"
                     className={styles.verificationIcon}
                   />
-                )}{" "}
+                )}
+              </p>
+            )}
+            {profile?.verified && (
+              <p className="text-body-sm text-secondary">
                 {profile.verified.status === "checked"
                   ? `Name verified by ${profile.verified.issuerLabel}`
                   : `Cached verification from ${profile.verified.issuerLabel}`}{" "}
-                · @{profile.verified.username}
+                {profile.verified.fullName && `· @${profile.verified.username}`}
               </p>
             )}
             {presence !== "unknown" && (

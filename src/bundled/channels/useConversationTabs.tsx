@@ -995,6 +995,8 @@ export function useConversationTabs({
             onKeyDown={(event) => {
               if (
                 event.key === "Escape" &&
+                // Shift+Escape is Mark all as read, not a dismissal.
+                !event.shiftKey &&
                 !event.nativeEvent.isComposing &&
                 event.nativeEvent.keyCode !== 229 &&
                 !event.defaultPrevented &&

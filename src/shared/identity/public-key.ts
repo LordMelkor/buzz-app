@@ -52,3 +52,9 @@ export function publicKeyLabels(
     ]),
   );
 }
+
+/** Compact single-line public identity with recognizable leading and trailing characters. */
+export function abbreviatedPublicKey(pubkey: string): string | undefined {
+  const npub = canonicalPublicKey(pubkey);
+  return npub ? `${npub.slice(0, 10)}...${npub.slice(-10)}` : undefined;
+}

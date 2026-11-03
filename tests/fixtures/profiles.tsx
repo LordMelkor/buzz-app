@@ -177,7 +177,9 @@ function session() {
                     ["username", "viewer"],
                     ["issuer_label", "Example"],
                     ["verified_at", "1000000"],
-                    ["full_name", "Viewer Example"],
+                    ...(new URLSearchParams(location.search).has("no-full-name")
+                      ? []
+                      : [["full_name", "Viewer Example"]]),
                   ],
                 }),
               ),

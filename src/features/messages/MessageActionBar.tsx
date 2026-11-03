@@ -213,19 +213,17 @@ function MessageActionBarControls({
             Reply
           </MenuItem>
         )}
-        {children && (
-          <MenuItem
-            disabled={!link || copying}
-            onClick={() => {
-              if (link) void copy(() => link, "Link");
-            }}
-          >
-            <MenuIcon>
-              <LinkIcon />
-            </MenuIcon>
-            Copy link
-          </MenuItem>
-        )}
+        <MenuItem
+          disabled={!link || copying}
+          onClick={() => {
+            if (link) void copy(() => link, "Link");
+          }}
+        >
+          <MenuIcon>
+            <LinkIcon />
+          </MenuIcon>
+          Copy link
+        </MenuItem>
         {overflowItems}
       </AfterMenuClose.Provider>
     </MenuPopup>
@@ -293,6 +291,7 @@ function MessageActionBarControls({
           {/* biome-ignore lint/a11y/useSemanticElements: This groups message actions, not form fields. */}
           <div
             className={styles.messageActions}
+            data-message-actions=""
             ref={barRef}
             popover={floating ? "manual" : undefined}
             role="group"
@@ -316,9 +315,9 @@ function MessageActionBarControls({
               />
             )}
             <IconButton
-              hint={link ? "familiar" : "helpful"}
+              hint="familiar"
               aria-label="Copy link"
-              title={link ? "Copy link" : "Message link unavailable"}
+              title="Copy link"
               size="sm"
               disabled={!link || copying}
               icon={<LinkIcon />}

@@ -108,13 +108,26 @@ impl HostProcesses {
     }
     /// Starts `command`, owned by `plugin`, and streams its output to `on_event`,
     /// unless the page that asked during `page` has since gone.
+    #[cfg(test)]
     fn start(
+        &self,
+        page: u64,
+        plugin: String,
+        program: &str,
+        command: Command,
+        on_event: Channel<ProcessEvent>,
+    ) -> Result<u64, String> {
+        self.start_with_read_lease(page, plugin, program, command, on_event, None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn start_with_read_lease(
         &self,
         page: u64,
         plugin: String,
         program: &str,
         mut command: Command,
         on_event: Channel<ProcessEvent>,
+        read_lease: Option<crate::host_files::FileReadLease>,
     ) -> Result<u64, String> {
         let state = self.clone();
         let mut registry = self.registry();
@@ -212,6 +225,9 @@ impl HostProcesses {
             // going, and may run until it unloads, taking the exit for a failure.
             let reloaded = registry.page != page;
             drop(registry);
+            // The child and all output readers have actually settled. Release before
+            // Exit so a caller awaiting its complete byte snapshot can then delete.
+            drop(read_lease);
             if !reloaded {
                 let _ = on_event.send(ProcessEvent::Exit {
                     code: status.and_then(|status| status.code()),
@@ -309,6 +325,12 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
     mcp: Option<ProcessMcpConnection>,
     protection: Option<ProcessProtection>,
 ) -> Result<u64, String> {
+    // Any plugin process with either ID conservatively blocks managed deletion
+    // app-wide, regardless of program/path. Attachment adapters use these IDs.
+    // Reserve before awaits; the actual child/output monitor owns the lease.
+    let read_lease = matches!(process_id.as_str(), "read" | "read-protected")
+        .then(crate::host_files::FileReadLease::new)
+        .transpose()?;
     let page = processes.page();
     let plugin = id.clone();
     let (declared, registry) = with_manager(manager, move |manager| {
@@ -450,7 +472,14 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
     #[cfg(unix)]
     command.as_std_mut().process_group(0);
 
-    processes.start(page, plugin, &declared.program, command, on_event)
+    processes.start_with_read_lease(
+        page,
+        plugin,
+        &declared.program,
+        command,
+        on_event,
+        read_lease,
+    )
 }
 
 /// The verified target stays inside the MCP prefix and the same containment.

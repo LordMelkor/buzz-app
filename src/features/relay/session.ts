@@ -146,6 +146,11 @@ export type EventViewSnapshot = Readonly<{
  * kick or DM, or a dropped fan-out. Any completed full read restarts it. */
 export const ROSTER_BACKSTOP_INTERVAL = 15 * 60_000;
 
+/** The live recovery tick repairs unread at most this often. The live stream
+ * carries every unread change; this read only backs up what it can lose with
+ * no signal: a channel the relay pruned from a batch, or a dropped fan-out. */
+export const UNREAD_BACKSTOP_INTERVAL = 15 * 60_000;
+
 /** A read of named authors' profiles only. Profiles do not depend on channels,
  * so no channel access change, including a denied channel list, can stale it. */
 function isProfileFilter(filter: ReadFilter) {
@@ -855,7 +860,8 @@ export function createRelaySession(
         unread.accept(visible);
         writes?.observe(visible);
         if (epoch !== accessEpoch) return;
-        profiles.accept(visible);
+        // A profile read's signal lets the directory publish its pages once.
+        profiles.accept(visible, signal);
         if (epoch !== accessEpoch) return;
         emoji.accept(visible);
         if (epoch !== accessEpoch) return;
@@ -1595,19 +1601,30 @@ export function createRelaySession(
   const mainAgent = (() => {
     const read = transport?.readMainAgent;
     const write = transport?.writeMainAgent;
+    const clear = transport?.clearMainAgent;
     const bounded = (ms: number) =>
       AbortSignal.any([lifetime.signal, AbortSignal.timeout(ms)]);
     // One change at a time, so the last choice is the one confirmed.
     let writes = Promise.resolve();
-    const queue = (change: () => Promise<void>) => {
+    const queue = <T>(change: () => Promise<T>) => {
       const next = writes.then(change);
-      writes = next.catch(() => {});
+      writes = next.then(
+        () => {},
+        () => {},
+      );
       return next;
     };
     return read && write
       ? Object.freeze({
           read: () => read(bounded(10_000)),
-          write: (agent: string) => queue(() => write(agent, bounded(20_000))),
+          write: (agent: string | null) =>
+            queue(() => write(agent, bounded(20_000))),
+          ...(clear
+            ? {
+                clear: (expected: string) =>
+                  queue(() => clear(expected, bounded(20_000))),
+              }
+            : {}),
         })
       : undefined;
   })();
@@ -3075,6 +3092,14 @@ export function createRelaySession(
   // the sidebar page to mount and observe them.
   if (options.warm) void sidebarPreferences.queries.ensure();
   let refreshedGeneration = -1;
+  /** When unread was last asked for a full repair: a connection's first
+   * establishment, then the recovery tick's backstop. */
+  let unreadRepairedAt = 0;
+  const repairUnread = (covered = false) => {
+    // A covered resume reads no snapshot, so it cannot replace the backstop.
+    if (!covered) unreadRepairedAt = Date.now();
+    unread.reconnect(covered);
+  };
   /** Held profiles still need a full read: none has completed since the
    * session started or since the last one was asked for. */
   let profilesOwed = true;
@@ -3148,7 +3173,7 @@ export function createRelaySession(
         }
         return;
       }
-      unread.reconnect(continuous);
+      repairUnread(continuous);
       // Only while this same connection is still up.
       if (generation === liveGeneration && memoryConnected)
         void (continuous ? reminders?.resume() : reminders?.recover());
@@ -3524,7 +3549,12 @@ export function createRelaySession(
         Date.now() - rosterReadAt >= ROSTER_BACKSTOP_INTERVAL
       )
         refreshRoster();
-      unread.reconnect();
+      // A failed repair retries on the next tick, as the roster does.
+      if (
+        unread.owed() ||
+        Date.now() - unreadRepairedAt >= UNREAD_BACKSTOP_INTERVAL
+      )
+        repairUnread();
     },
     denied(channelId, reason) {
       if (!closed) channels.denyChannel(channelId, new Error(reason));

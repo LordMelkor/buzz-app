@@ -114,9 +114,67 @@ export async function chooseDefaultAgent(
   remember(account, pubkey);
 }
 
-/** A deleted agent stops being the main agent everywhere it was chosen; the
- * next available one takes over and is saved on this device. One left on the
- * account is stood in for like any deleted choice, until the next choice. */
+/** Saves that the viewer has no main agent. A failed account write restores
+ * the prior device choice unless a newer choice superseded this attempt. */
+export async function clearDefaultAgent(session: RelaySession, scope: string) {
+  const account = session.mainAgent;
+  const previous = chosenAgent(scope);
+  if (account) explicit.add(account);
+  cache(scope, null);
+  if (!account) return;
+  const attempt = advance(account);
+  try {
+    await account.write(null);
+  } catch {
+    if (revision(account) === attempt) {
+      if (previous) setDefaultAgent(scope, previous);
+      if (readValues.has(account)) {
+        remember(account, readValues.get(account));
+      } else if (readFailures.has(account)) {
+        adopted.delete(account);
+        readErrors.set(
+          account,
+          readFailures.get(account) ??
+            "Your Bestie couldn't be read from your account.",
+        );
+        saved.set(account, saved.get(account));
+        notifySaved();
+      }
+    }
+    throw new Error(
+      "Removing your Bestie couldn't be saved to your account. Try again.",
+    );
+  }
+  if (revision(account) === attempt) remember(account, undefined);
+}
+
+/** Clears a deleted agent from the account only when it is still the saved
+ * choice. Another agent chosen on the account is left alone. */
+export async function clearDeletedDefaultAgent(
+  session: RelaySession,
+  scope: string,
+  pubkey: string,
+) {
+  const account = session.mainAgent;
+  if (!account) return false;
+  if (account.clear) {
+    explicit.add(account);
+    const attempt = advance(account);
+    const next = await account.clear(pubkey);
+    if (revision(account) === attempt) {
+      const local = chosenAgent(scope);
+      if (local === undefined || local === pubkey) cache(scope, next ?? null);
+      remember(account, next);
+    }
+    return next === undefined;
+  }
+  if ((await account.read()) !== pubkey) return false;
+  await clearDefaultAgent(session, scope);
+  return true;
+}
+
+/** A deleted agent stops being the main agent everywhere it was chosen on this
+ * device. Account cleanup is separate because it needs the owning session. */
 export function forgetDefaultAgent(pubkey: string) {
   clearViewValue(KEY, pubkey);
   for (const [scope, agent] of unsaved)

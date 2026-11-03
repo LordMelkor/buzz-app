@@ -40,8 +40,10 @@ const indexes = new WeakMap<
 /**
  * The choices, in their given order, with a label or alias that the query can
  * match: a superset of every choice that `rankMentions` or `exactMention` keeps
- * for this query. A binary search of the list's name index finds them, so a
- * keystroke costs O(log n + matches) instead of a scan of every choice.
+ * for this query, and every choice with a name that starts with the query,
+ * which the Space check for longer names relies on. A binary search of the
+ * list's name index finds them, so a keystroke costs O(log n + matches)
+ * instead of a scan of every choice.
  */
 export function matchingMentions(
   choices: readonly MentionChoice[],

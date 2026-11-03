@@ -14,6 +14,7 @@ import {
   type ChannelMessage,
 } from "./contracts";
 import {
+  IMETA_DIM,
   projectMarkdownAttachments,
   relayHashBasename,
   safeAttachmentName,
@@ -102,7 +103,7 @@ export function parseAttachments(
     seen.add(url);
     // Treat signed metadata as untrusted layout input. Invalid/missing dimensions
     // use the renderer's stable fallback rather than image-load-driven geometry.
-    const dim = /^(\d{1,6})x(\d{1,6})$/.exec(fields.dim ?? "");
+    const dim = IMETA_DIM.exec(fields.dim ?? "");
     const width = Number(dim?.[1]),
       height = Number(dim?.[2]);
     const blurhash = validatedBlurhash(fields.blurhash);

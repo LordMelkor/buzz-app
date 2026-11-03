@@ -51,6 +51,15 @@
     min-width: 0;
     gap: var(--space-row-gap);
   }
+  /* Profile choices need a full-width label with comfortable side insets. */
+  .buzz-button[data-size="row"] {
+    padding: var(--space-2) var(--space-4);
+  }
+  .buzz-button[data-size="row"] > .buzz-button-label {
+    flex: 1;
+    justify-content: flex-start;
+    text-align: left;
+  }
   .buzz-button-label > svg,
   .buzz-button-spinner {
     width: var(--space-6);
@@ -393,6 +402,17 @@
     flex: 0 0 auto;
     padding: 0;
   }
+  /* Message hover actions are quiet until an individual control is engaged. */
+  [data-message-actions]
+  .buzz-button[data-icon-variant]:not(
+    [data-disabled],
+    :disabled,
+    :hover,
+    :focus-visible,
+    :active
+  ) {
+    color: var(--text-subtle);
+  }
   .buzz-button[data-icon-variant][data-size="sm"] {
     width: var(--size-control-sm);
     height: var(--size-control-sm);
@@ -661,6 +681,7 @@
   ) {
     background: transparent;
   }
+  .buzz-button[data-variant="prominent"][data-disabled]:not([data-loading]),
   .buzz-button[data-variant="outline"][data-disabled]:not([data-loading]) {
     box-shadow: inset 0 0 0 1px var(--border-standard);
   }
@@ -765,6 +786,11 @@
     place-content: center;
   }
 
+  .buzz-avatar[data-fallback-surface="panel"]:has([data-avatar-fallback]) {
+    background: var(--surface-panel);
+    color: var(--text-standard);
+  }
+
   /* Matches reply-stack artwork inside its 24px slot and 1.5px ring. */
   .buzz-avatar[data-size="compact"] {
     @apply text-caption;
@@ -776,6 +802,12 @@
     @apply text-caption;
     width: 1.5rem;
     height: 1.5rem;
+  }
+
+  .buzz-avatar[data-size="tiny"] {
+    @apply text-caption;
+    width: var(--space-4);
+    height: var(--space-4);
   }
 
   .buzz-avatar[data-size="large"] {
@@ -879,6 +911,13 @@
     border-radius: var(--radius-container);
     background: var(--surface-panel);
     box-shadow: var(--shadow-panel);
+  }
+
+  /* Shared with Builderlab/Auth0 standalone account setup cards. */
+  .panel[data-shape="card"] {
+    height: auto;
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
   }
 
   .panel[data-shape="capsule"] {
@@ -1133,6 +1172,11 @@
     border-radius: var(--radius-pill);
     background: var(--surface-control-selected);
     box-shadow: var(--shadow-xs);
+  }
+  /* Only a new selection travels; resizing the selected tab follows layout. */
+  .buzz-tabs:is([data-variant="segmented"], [data-variant="segmented-icons"])
+  .buzz-tabs-indicator:not([data-selection-change]) {
+    transition: none;
   }
 
   /* --- panel: an underline on a plain surface ---------------- */

@@ -1,4 +1,5 @@
-import { useId, useState } from "react";
+import { OnboardingBack } from "./OnboardingBack";
+import { useState } from "react";
 import { enteredRelayOrigin } from "../communities/destination";
 import { parsePastedInvite } from "../communities/invite-link";
 import { Button } from "../../shared/design-system/ui/Button";
@@ -34,15 +35,16 @@ export function CommunityUrlField({
   onUrlChange,
   onSubmit,
   disabled = false,
+  onBack,
 }: {
   url: string;
   onUrlChange: (url: string) => void;
   /** Receives the canonical secure origin, and an invite link's code ("" for an address). */
   onSubmit: (origin: string, code: string) => void;
   disabled?: boolean;
+  onBack?: () => void;
 }) {
   const [invalid, setInvalid] = useState(false);
-  const errorId = useId();
   const entered = enteredCommunity(url);
   const submit = () => {
     if (entered) onSubmit(entered.origin, entered.code);
@@ -50,17 +52,22 @@ export function CommunityUrlField({
   };
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-end gap-3">
-        <div className="min-w-0 flex-1">
-          <Field label="Community URL" invalid={invalid} disabled={disabled}>
+      <div className="flex flex-col gap-12">
+        <div className="min-w-0 w-full">
+          <Field
+            label="Community address or invite link"
+            error={
+              invalid ? "Enter a community address or invite link." : undefined
+            }
+            disabled={disabled}
+          >
             <Input
               inputMode="url"
               autoComplete="off"
               spellCheck={false}
-              placeholder="relay.example.com"
+              placeholder="community.example"
               value={url}
               disabled={disabled}
-              aria-describedby={invalid ? errorId : undefined}
               onChange={(event) => {
                 onUrlChange(event.target.value);
                 setInvalid(false);
@@ -74,15 +81,18 @@ export function CommunityUrlField({
             />
           </Field>
         </div>
-        <Button variant="prominent" disabled={disabled} onClick={submit}>
-          Continue
-        </Button>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>{onBack && <OnboardingBack onClick={onBack} />}</div>
+          <Button
+            size="lg"
+            variant="prominent"
+            disabled={disabled}
+            onClick={submit}
+          >
+            Continue
+          </Button>
+        </div>
       </div>
-      {invalid && (
-        <p id={errorId} role="alert" className="m-0 text-body-sm text-danger">
-          Please enter a valid community URL
-        </p>
-      )}
     </div>
   );
 }

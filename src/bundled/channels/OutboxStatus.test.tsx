@@ -131,6 +131,27 @@ it("routes an ordinary addition retry through fresh membership checks", async ()
   expect(retry).not.toHaveBeenCalled();
 });
 
+it("retries a guest addition as a guest", async () => {
+  const { add } = show({
+    ...invitation,
+    event: {
+      ...invitation.event,
+      tags: [
+        ["h", "channel"],
+        ["p", "person"],
+        ["role", "guest"],
+      ],
+    },
+    recovery: { key: "member-add:channel:person", value: "1" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(add).toHaveBeenCalledExactlyOnceWith("channel", "person", {
+      role: "guest",
+    }),
+  );
+});
+
 it.each(
   (["failed", "unknown", "admitted"] as const).flatMap((failure) =>
     [false, true].map((restart) => ({ failure, restart })),

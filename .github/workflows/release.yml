@@ -18,6 +18,7 @@ permissions:
   contents: read
 
 env:
+  BUZZ_EXTERNAL_MCP_COMMUNITIES: https://buzz.block.builderlab.xyz
   # Legacy login origin, only when FI is not configured: the build scripts
   # reject a nonempty legacy origin alongside the FI descriptor.
   BUZZ_BUILDERLAB_URL: ${{ !vars.BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG && (vars.BUZZ_BUILDERLAB_URL || 'https://app.builderlab.xyz') || '' }}

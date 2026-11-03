@@ -292,6 +292,13 @@ For choices that must stay within a modal, pass its element to
 and the shared popup scrolls within the resulting available height; keep the portal.
 Use their supported `padding`/alignment props; do not add another padded card inside
 the popup or cancel its styles. Keep long lists scrollable and all actions reachable.
+For a short searchable identity picker, `Combobox.Popup size="compact"` caps the
+surface at 20rem or the available height, keeping search visible above scrollable
+results. It accommodates roughly four avatar-and-detail rows, not a fixed result
+count. Bestie opens below its field with `side="bottom"` and
+`collisionAvoidance={{ side: "none", align: "shift" }}`: the viewport may shorten
+its list rather than flip it over the introduction. Other comboboxes retain their
+existing viewport-sized, automatically flipping popup.
 
 Opening a dialog from a menu needs a deliberate focus handoff: dismiss the menu
 without stealing focus from the new dialog. On completion, return focus to the
@@ -887,8 +894,14 @@ channel is still loading, then holds about a second and fades over about a
 second. A repeat arrival restarts the cue. Reduced motion holds the tint the
 same time and removes it without fading.
 
-The message hover toolbar uses the 12px rounded-container radius
-with a 2px inset. Its independent icon actions retain their shared 10px corners.
+The horizontal message hover toolbar sits above the bubble, with reaction,
+reply, copy-link and overflow icon actions. It uses `popover-surface` with
+a 12px control radius and 2px inset. Its icon actions use `text-subtle` at rest
+and retain the shared hover, focus and disabled states and 10px corners.
+
+Message-author artwork uses Avatar `default` (32px) in channel/DM timelines,
+`small` (24px) in threads, and `tiny` (16px) in nested replies. Profile triggers
+retain a 32px target even when their artwork is smaller.
 
 Secondary actions on rows inside a compact inset container, currently queued
 follow-ups, use Button `subtle-muted` with `size="caption"`: a 32px control
@@ -1581,8 +1594,8 @@ Values scale with the host interface-size preference.
   independent from caption even though their sizes currently match. `text-mono-lg` and
   `text-mono-sm` are compatibility aliases for this same setting, not extra sizes.
 - Caption uses 12/16 and 0.0133em tracking. Buzz’s `text-body` uses 14/20; `text-label` uses 16/24 and `text-body-lg` uses 20/28.
-- Message prose uses `text-message`: 14px with 1.625 leading (22.75px at
-  default), matching Berd’s relaxed reply rhythm for both sent and received
+- Message prose uses `text-message`: 14px with 22/14 leading (22px at
+  default), keeping a compact reading rhythm for both sent and received
   messages. The message renderer uses `space-4` between prose blocks, with
   `space-2` between an introductory paragraph and its following list. Labels,
   controls, code, tables and headings retain their existing type roles.
@@ -2083,3 +2096,24 @@ chevron. Unavailable chat cards retain a lock and unavailable accessible text;
 unknown access does not earn a chevron. Display chat cards as **Chat:**, while
 accepting legacy **Session:** and **Session ·** authored links without rewriting
 historical messages or their receipts.
+
+
+### Mobile-aligned onboarding
+
+The first-launch welcome uses mobile's fixed light chartreuse artwork (#d7d72e)
+with dark and pale-blue decorative bees. Use the existing light scope for readable
+shared controls even when the app is dark. The exact artwork hues are confined to
+IdentitySetup.module.css; controls keep shared prominent/subtle/ghost recipes.
+Subsequent setup screens use the current mode's opaque panel surface, a reading
+column, and bottom-stacked 52px capsule actions. Desktop-only key recovery, backup
+consent and migration choices retain their existing behavior.
+
+At the owner's direction to match mobile, the onboarding scope maps its complete
+heading role to Inter 30/36 regular with -1px tracking and body to 16/24 regular
+with -0.25px tracking, in rem units. This is local to the first-launch composition;
+it does not change the app-wide type ramp. Decorative motion stops for reduced
+motion and hidden documents; it never owns focus or blocks an action.
+
+### Standalone account cards
+
+First-run setup uses `Panel shape="card"`, matching Builderlab/Auth0: content-sized, `radius-card` corners and `shadow-card` lift. Compose a 490px reading column with space-8 insets, title/body-sm typography, shared Field/Input controls and large capsule actions. Keep welcome artwork separate from these opaque setup cards.

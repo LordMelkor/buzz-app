@@ -167,9 +167,21 @@ impl AppAgentHost {
         pubkey: String,
         relay: String,
     ) -> Result<(AppAgent, Arc<Secret>, Admission), String> {
+        self.signer_for(pubkey, relay, Duration::ZERO).await
+    }
+    /// As [`Self::signer`], with evidence valid for at least `valid_for`.
+    async fn signer_for(
+        &self,
+        pubkey: String,
+        relay: String,
+        valid_for: Duration,
+    ) -> Result<(AppAgent, Arc<Secret>, Admission), String> {
         let incarnation = self.tokens.stamp(&pubkey, &relay)?;
         let (agent, key) = self.key(self.agent(pubkey, relay).await?).await?;
-        let evidence = self.tokens.authorize(&agent, &key, incarnation).await?;
+        let evidence = self
+            .tokens
+            .authorize_for(&agent, &key, incarnation, valid_for)
+            .await?;
         Ok((agent, key, evidence))
     }
     /// Saves an imported identity with its key, opening the agent's next
@@ -1131,8 +1143,12 @@ async fn upload(
 }
 
 /// The URL of repository `repo` of `owner` in the agent's community, and the
-/// `Authorization` header Git sends there as the agent for the next minute.
-/// The key stays native; the header grants only that repository.
+/// headers Git sends there as the agent for the next minute, one per line:
+/// `Authorization`, then the agent's sign-in evidence when the community
+/// requires it. The key stays native. These are the only assertion headers
+/// that leave native code: the NIP-98 proof grants only that repository for 60
+/// seconds; the assertion is scoped to the relay for its issuer's lifetime and
+/// is bound to the agent's key (NIP-FI, Assertion–key binding).
 #[tauri::command]
 pub(crate) async fn app_agent_git_auth(
     state: tauri::State<'_, AppAgentHost>,
@@ -1141,17 +1157,28 @@ pub(crate) async fn app_agent_git_auth(
     owner: String,
     repo: String,
 ) -> Result<Value, String> {
-    use base64::Engine;
-    let (agent, key) = state.key(state.agent(pubkey, relay).await?).await?;
+    let (agent, key, evidence) = state.signer_for(pubkey, relay, GIT_EVIDENCE).await?;
     let (url, auth) = agent.git_auth(&key, &owner, &repo)?;
     let auth = serde_json::to_vec(&auth).map_err(|_| "Could not authorize Git")?;
-    Ok(serde_json::json!({
-        "url": url,
-        "header": format!(
-            "Authorization: Nostr {}",
-            base64::engine::general_purpose::STANDARD.encode(auth)
-        ),
-    }))
+    evidence.dispatch()?;
+    Ok(serde_json::json!({ "url": url, "header": git_headers(&auth, evidence.header()) }))
+}
+
+/// How long the Git headers must stay valid: the minute the `repo` tool
+/// promises, and a margin for a command that starts at its end.
+const GIT_EVIDENCE: Duration = Duration::from_secs(70);
+
+/// Git's header lines for a signed `auth` and the agent's sign-in `evidence`.
+fn git_headers(auth: &[u8], evidence: Option<&str>) -> String {
+    use base64::Engine;
+    let auth = format!(
+        "Authorization: Nostr {}",
+        base64::engine::general_purpose::STANDARD.encode(auth)
+    );
+    match evidence {
+        Some(evidence) => format!("{auth}\n{}: {evidence}", assertion::HEADER),
+        None => auth,
+    }
 }
 
 /// The largest image an agent is shown. Claude takes 5 MiB of base64 on its
@@ -1417,6 +1444,15 @@ async fn post(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn git_headers_add_sign_in_evidence_only_when_present() {
+        assert_eq!(git_headers(b"{}", None), "Authorization: Nostr e30=");
+        assert_eq!(
+            git_headers(b"{}", Some("Bearer token")),
+            "Authorization: Nostr e30=\nNostr-Federated-Identity: Bearer token"
+        );
+    }
 
     #[test]
     fn declining_storage_upgrade_leaves_files_unchanged() {

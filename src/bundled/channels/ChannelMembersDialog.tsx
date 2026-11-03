@@ -2209,14 +2209,14 @@ export function ChannelMembersDialog({
                 )}
                 {!search.loading && !search.error && !available.length && (
                   <p className="px-control-inset text-body-sm text-subtle">
-                    {search.tooShort
-                      ? `Type at least ${SEARCH_MIN_CHARS} characters to search people.`
-                      : !solo
-                        ? "No other matching people or agents."
-                        : !canAddSoloAgents
-                          ? "No other matching people."
-                          : agentChoices.pending
-                            ? "Loading agents…"
+                    {solo && canAddSoloAgents && agentChoices.pending
+                      ? "Loading agents…"
+                      : search.tooShort
+                        ? `Type at least ${SEARCH_MIN_CHARS} characters to search people.`
+                        : !solo
+                          ? "No other matching people or agents."
+                          : !canAddSoloAgents
+                            ? "No other matching people."
                             : "No other matching people or agents."}
                   </p>
                 )}

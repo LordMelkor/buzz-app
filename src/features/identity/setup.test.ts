@@ -30,7 +30,7 @@ it("retries from the failed step and rests where the steps would have", async ()
   const after = ok("After");
   await setup.start([before, failing.step, after], {
     status: "paused",
-    at: "backup-offer",
+    at: "key-choice",
   });
   expect(setup.snapshot()).toEqual({
     status: "failed",
@@ -41,7 +41,7 @@ it("retries from the failed step and rests where the steps would have", async ()
 
   failing.heal();
   await setup.retry();
-  expect(setup.snapshot()).toEqual({ status: "paused", at: "backup-offer" });
+  expect(setup.snapshot()).toEqual({ status: "paused", at: "key-choice" });
   expect(before.run).toHaveBeenCalledTimes(1);
   expect(failing.run).toHaveBeenCalledTimes(2);
   expect(after.run).toHaveBeenCalledTimes(1);
@@ -208,4 +208,26 @@ it("a step that rests idle ends setup past the caller's rest, also when a retry 
   // Idle, unlike done, lets setup start again.
   await setup.start([], { status: "paused", at: "key-choice" });
   expect(setup.snapshot()).toEqual({ status: "paused", at: "key-choice" });
+});
+
+it.each([
+  ["transient backup", true, false, "timeout"],
+  ["non-backup step", false, false, "unavailable"],
+  ["unfinished linking", true, true, "not_offered"],
+] as const)("cannot bypass %s", async (_name, backup, links, kind) => {
+  const setup = createSetup();
+  const after = ok("Finish");
+  await setup.start([
+    {
+      label: "Fail",
+      backup,
+      run: async () => {
+        throw new BackupError(kind);
+      },
+    },
+    { ...after, links },
+  ]);
+  await setup.continueWithoutBackup();
+  expect(setup.snapshot().status).toBe("failed");
+  expect(after.run).not.toHaveBeenCalled();
 });

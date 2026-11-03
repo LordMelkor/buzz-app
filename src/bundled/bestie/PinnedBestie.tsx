@@ -10,6 +10,7 @@ import type { ConversationExtensions } from "../../features/conversation/contrac
 import type { ConversationHostServices } from "../../features/conversation/ConversationHost";
 import type { Navigation } from "../../features/navigation/controller";
 import type { PageNavigation } from "../../features/navigation/service";
+import type { Agents } from "../../features/agents/service";
 import { targetKey } from "../../features/navigation/targets";
 import { messageViewKey } from "../../features/messages/view-key";
 import { useAgentChoices } from "../../features/agents/use-choices";
@@ -29,6 +30,7 @@ import {
   PanelHeaderLabel,
 } from "../../shared/design-system/ui/PanelHeader";
 import { bestieChat } from "./chat";
+import { BestieChooser } from "./BestieChooser";
 import { bestieBaseTarget, bestieRoute, bestieThreadTarget } from "./routes";
 import styles from "./PinnedBestie.module.css";
 
@@ -39,12 +41,14 @@ export function PinnedBestie({
   host,
   extensions,
   navigator,
+  agents,
   navigation,
 }: {
   relay: RelayData;
   host: ConversationHostServices;
   extensions: ConversationExtensions;
   navigator: Navigation;
+  agents: Agents;
   navigation?: PageNavigation | undefined;
 }) {
   const connection = useRelayConnection(relay);
@@ -141,25 +145,36 @@ export function PinnedBestie({
             description="Reading the agents available in this community."
           />
         </LoadingRegion>
-      ) : (
+      ) : choices.error || !choices.complete ? (
         <Notice
-          title={
-            choices.error
-              ? "Your agents are unavailable"
-              : `${name} is no longer here`
-          }
+          title="Your agents are unavailable"
           description={
-            choices.error ??
-            "Choose another bestie from an eligible agent’s actions menu."
+            choices.error ?? "Buzz couldn’t finish reading your agents."
           }
           action={
-            choices.error ? (
-              <Button onClick={() => void session.agentChoices.refresh()}>
-                Try again
-              </Button>
-            ) : undefined
+            <Button
+              onClick={() =>
+                void session.agentChoices.refresh(true, { fresh: true })
+              }
+            >
+              Try again
+            </Button>
           }
         />
+      ) : (
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
+          <div className="w-full max-w-md">
+            <BestieChooser
+              key={scope}
+              session={session}
+              scope={scope}
+              community={connection.origin}
+              agents={agents}
+              title={`${name} is no longer here`}
+              description="Choose an eligible agent, or create one to make your new Bestie."
+            />
+          </div>
+        </div>
       );
   } else {
     content =

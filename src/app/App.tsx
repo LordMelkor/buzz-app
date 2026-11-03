@@ -23,6 +23,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { Dialog } from "../shared/design-system/ui/Dialog";
 import { UpdateNotice } from "../features/updates/UpdateNotice";
 import { RejectedLinkNotice } from "../features/navigation/RejectedLinkNotice";
+import { ExternalAuthorizationDialog } from "../features/agents/ExternalAuthorizationDialog";
 import { CreationReview } from "../bundled/agents/CreationReview";
 import { UpdateReview } from "../bundled/agents/UpdateReview";
 import { InterruptedNotice } from "../features/agents/InterruptedNotice";
@@ -89,6 +90,7 @@ export function App({ services }: { services: AppServices }) {
             identity={services.identity}
             communities={services.communities}
             invites={services.invites}
+            federatedIdentity={services.firstRunFederatedIdentity}
           >
             <LaunchSignIn identity={services.federatedIdentity}>
               <ConnectedApp services={services} />
@@ -633,6 +635,12 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
           >
             <UpdateNotice updates={services.updates} />
             <RejectedLinkNotice links={services.rejectedLinks} />
+            <ExternalAuthorizationDialog
+              connection={services.externalApps}
+              agents={services.agents}
+              communities={services.communities}
+              relay={services.relay}
+            />
             <InterruptedNotice agents={services.agents} />
             <CreationReview agents={services.agents} />
             <UpdateReview agents={services.agents} />
@@ -734,6 +742,7 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
                     notifications={services.notifications}
                     updates={services.updates}
                     navigation={route.request}
+                    installRequests={services.pluginInstallRequests}
                     navigationPane
                     onDeparturePending={(pending) => {
                       const client = services.communities.snapshot();

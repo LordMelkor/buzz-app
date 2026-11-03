@@ -1,4 +1,5 @@
 import {
+  VERIFIED_PROFILE_MAX_SYNCS,
   verifiedProfileFilter,
   type VerifiedProfileFilter,
   type VerifiedProfileSink,
@@ -455,8 +456,12 @@ export function subscribeRelayTraffic(
     wire?: string;
   };
   const syncs = new Set<SyncWire>();
+  // Artifact and verified-profile syncs share the wire budget but are admitted
+  // from separate pools, so a large roster cannot refuse an artifact view.
+  const profileSyncs = new Set<SyncWire>();
   const syncWires = new Map<string, SyncWire>();
   function endSync(sync: SyncWire, reason: string) {
+    profileSyncs.delete(sync);
     if (!syncs.delete(sync)) return;
     if (sync.wire) syncWires.delete(sync.wire);
     sync.sink.closed(reason);
@@ -1532,8 +1537,9 @@ export function subscribeRelayTraffic(
           sync.sink.event(checked);
         } else if (data[0] === "EOSE") sync.sink.eose();
         else if (data[0] === "CLOSED") {
+          // `disconnected:` is reserved for local socket loss.
           const reason =
-            typeof data[2] === "string"
+            typeof data[2] === "string" && !data[2].startsWith("disconnected:")
               ? data[2].slice(0, 512)
               : "error: relay closed the sync";
           // The quota is shared: the view's restart and every other queued
@@ -1734,7 +1740,7 @@ export function subscribeRelayTraffic(
         );
         return () => {};
       }
-      if (syncs.size >= ARTIFACT_SYNC_MAX_VIEWS) {
+      if (syncs.size - profileSyncs.size >= ARTIFACT_SYNC_MAX_VIEWS) {
         queueMicrotask(() =>
           sink.closed("error: artifact sync capacity reached"),
         );
@@ -1760,15 +1766,17 @@ export function subscribeRelayTraffic(
         );
         return () => {};
       }
-      if (syncs.size >= ARTIFACT_SYNC_MAX_VIEWS) {
+      if (profileSyncs.size >= VERIFIED_PROFILE_MAX_SYNCS) {
         queueMicrotask(() =>
           sink.closed("error: profile sync capacity reached"),
         );
         return () => {};
       }
       syncs.add(sync);
+      profileSyncs.add(sync);
       syncInterests();
       return () => {
+        profileSyncs.delete(sync);
         if (!syncs.delete(sync)) return;
         if (sync.wire) {
           syncWires.delete(sync.wire);
@@ -1924,6 +1932,7 @@ export function subscribeRelayTraffic(
       clearTimeout(retryTimer);
       const ending = [...syncs];
       syncs.clear();
+      profileSyncs.clear();
       clearSocket();
       routes.clear();
       routeSnapshots.clear();
