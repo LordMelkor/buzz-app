@@ -309,10 +309,12 @@ function ReactorItems({
     <>
       {people.map((authorId) => {
         const profile = loaded.get(authorId) ?? profiles?.get(authorId);
+        // A profile without a name carries a hex fragment, not a name.
+        const known = profile?.nameIsFallback ? undefined : profile?.name;
         const name =
           authorId === session.viewer
             ? "You"
-            : (profile?.name ?? keys.get(authorId) ?? "Unknown person");
+            : (known ?? keys.get(authorId) ?? "Unknown person");
         const agent = !!agentPubkeys?.has(authorId);
         const target = profileTarget(authorId, { agent });
         const destination =
@@ -330,7 +332,7 @@ function ReactorItems({
               leading={
                 <Avatar
                   alt=""
-                  fallback={profile?.name ?? name}
+                  fallback={known ?? name}
                   src={avatarMedia(profile?.picture, session.media)}
                   size="small"
                   shape={agent || profile?.isAgent ? "squircle" : "circle"}

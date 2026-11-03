@@ -448,6 +448,46 @@ it("says when names in the full list could not load and retries on reopening", a
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
+it("names reactors whose profile has no name by the shared labels", async () => {
+  const nameless = keypair();
+  const people = [nameless, keypair(), keypair(), keypair()];
+  const h = harness(people.map((person, index) => react(person, 2 + index)));
+  render(<h.Controls />);
+  act(() => screen.getByRole("button", { name: "👍: 4 people" }).focus());
+  const preview = await screen.findByRole("dialog", { name: "👍 reactions" });
+  fireEvent.click(within(preview).getByRole("button", { name: "and 1 other" }));
+  const list = await screen.findByRole("menu");
+  reveal(within(list).getAllByRole("menuitem"));
+  // An about-only kind 0 is a profile that names no one.
+  const body = (index: number) =>
+    index ? { name: `Person ${index}` } : { about: "No name here" };
+  const named = () =>
+    within(list).queryAllByRole("menuitem", { name: /^Person \d$/ }).length ===
+    3;
+  // Profile reads run one at a time, so answer each as it is issued.
+  for (let read = 0; read < 10 && !named(); read++)
+    await act(async () => {
+      for (const entry of h.wire.pending)
+        if (entry.filters[0]?.kinds?.includes(0))
+          entry.respond(
+            people.flatMap((person, index) =>
+              entry.filters[0]?.authors?.includes(person.pubkey)
+                ? [profile(person, body(index))]
+                : [],
+            ),
+          );
+      await flush();
+    });
+  expect(named()).toBe(true);
+  const label = publicKeyLabels(people.map((person) => person.pubkey)).get(
+    nameless.pubkey,
+  );
+  if (!label) throw new Error("Expected a public-key label");
+  const row = within(list).getByRole("menuitem", { name: label });
+  // Its initial is the key label's, as for a reactor with no profile.
+  expect(row.querySelector("[data-avatar-fallback]")?.textContent).toBe("N");
+});
+
 it("asks again for names a disconnect cancels, without reporting a reconnect's re-read", async () => {
   // A browser's DOMException is an Error, so the reader's cancellation reads
   // as cancelled. jsdom's is not, and would read as a failure.
