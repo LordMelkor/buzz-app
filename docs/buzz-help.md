@@ -52,6 +52,11 @@ the interface unless an available tool actually supports that action.
 
 ## Conversations and communities
 
+- With **Voice Notes** enabled, use the microphone in the composer to record
+  and attach a voice note. Sending requires ffmpeg on the host computer. Sent
+  notes support playback and seeking. Visible notes load their duration and,
+  when needed, derive a waveform from the audio; these appear after loading.
+
 - **Solo** organizes your chats with agents. Choose **New chat**, select or tag
   an agent, and send a message. Solo conversations continue at the chat's top
   level rather than requiring a new thread for each reply. Solo chats can also

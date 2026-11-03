@@ -142,8 +142,21 @@ test("record, preview, send and play the chat card with speed and seeking", {
   const initialCard = page
     .getByRole("group", { name: "Voice note", exact: true })
     .first();
-  await expect(initialCard.locator("audio")).toHaveJSProperty("readyState", 0);
-  await expect(initialCard.getByRole("slider")).toBeDisabled();
+  await expect(initialCard.getByRole("slider")).toBeEnabled();
+  await expect(initialCard.getByRole("slider")).toHaveAttribute(
+    "aria-valuetext",
+    "0:00 of 0:03",
+  );
+  await expect(initialCard.locator("audio")).toHaveJSProperty("paused", true);
+  await expect
+    .poll(() =>
+      initialCard
+        .locator("span[style]")
+        .evaluateAll((bars) =>
+          bars.some((bar) => Number.parseFloat(bar.style.height) > 3),
+        ),
+    )
+    .toBe(true);
   await record(page);
   await expect(page.getByRole("textbox")).toBeFocused();
   const composer = page.getByRole("form", {
@@ -393,4 +406,45 @@ test("rejects a full attachment draft before opening the microphone", async ({
   );
   expect(new Set(uploaded.map((item) => item.url)).size).toBe(10);
   expect(uploaded.every((item) => !item.voice)).toBe(true);
+});
+
+test("reuploaded voice-note bytes regain duration and waveform without message metadata", async ({
+  page,
+}) => {
+  const bytes = await page.evaluate(async () => {
+    const source = window.voiceFixture.media(
+      `https://fixture.test/media/${"a".repeat(64)}.mp4`,
+    );
+    return [...new Uint8Array(await (await fetch(source)).arrayBuffer())];
+  });
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "voice-note-downloaded.wav",
+    mimeType: "audio/wav",
+    buffer: Buffer.from(bytes),
+  });
+  const composer = page.getByRole("form", {
+    name: "Send a message to general",
+  });
+  await composer
+    .getByRole("button", { name: "Send message", exact: true })
+    .click();
+  await expect
+    .poll(() => page.evaluate(() => window.voiceFixture.report.published))
+    .toBe(1);
+  const card = page
+    .getByRole("group", { name: "Voice note", exact: true })
+    .last();
+  await expect(card.getByRole("slider")).toHaveAttribute(
+    "aria-valuetext",
+    "0:00 of 0:03",
+  );
+  await expect
+    .poll(() =>
+      card
+        .locator("span[style]")
+        .evaluateAll((bars) =>
+          bars.some((bar) => Number.parseFloat(bar.style.height) > 3),
+        ),
+    )
+    .toBe(true);
 });

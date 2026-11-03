@@ -320,6 +320,7 @@ export function attachmentMessage(
       throw new UploadError("invalid");
     const result = validateUploadResult(item, origin, item.size, item.name);
     const name = attachmentName(item.name);
+    if (item.voice) validateVoiceMetadata(item.voice);
     tags.push([
       "imeta",
       `url ${result.url}`,
@@ -328,7 +329,8 @@ export function attachmentMessage(
       `x ${result.sha256}`,
       `filename ${name}`,
       ...(result.dim ? [`dim ${result.dim}`] : []),
-      ...(item.voice ? voiceMetadataTags(item.voice) : []),
+      // The relay rejects waveform imeta fields. Recorded duration is also
+      // not authoritative after conversion; playback reads the media duration.
     ]);
     return attachmentMarkdown(name, result);
   });
@@ -338,7 +340,9 @@ export function attachmentMessage(
   };
 }
 
-function voiceMetadataTags(voice: NonNullable<UploadedAttachment["voice"]>) {
+function validateVoiceMetadata(
+  voice: NonNullable<UploadedAttachment["voice"]>,
+) {
   if (
     !Number.isFinite(voice.duration) ||
     voice.duration <= 0 ||
@@ -349,5 +353,4 @@ function voiceMetadataTags(voice: NonNullable<UploadedAttachment["voice"]>) {
     voice.waveform.some((n) => !Number.isInteger(n) || n < 0 || n > 100)
   )
     throw new UploadError("invalid");
-  return [`duration ${voice.duration}`, `waveform ${voice.waveform.join(" ")}`];
 }

@@ -357,12 +357,12 @@ it("preserves sent attachment metadata and resolved media in the window presenta
     await vi.waitFor(() => expect(h.discussion.snapshot().writable).toBe(true));
     const files = [
       {
-        name: "voice-note-test.m4a",
-        type: "audio/mp4",
+        name: "voice-note-test.mp4",
+        type: "video/mp4",
         voice: { duration: 1.5, waveform: [0, 25, 100] },
         size: 23,
         sha256: "a".repeat(64),
-        url: `https://fixture.example/media/${"a".repeat(64)}`,
+        url: `https://fixture.example/media/${"a".repeat(64)}.mp4`,
       },
       {
         name: "photo.png",
@@ -405,8 +405,7 @@ it("preserves sent attachment metadata and resolved media in the window presenta
     );
     expect(row.attachments[0]).toMatchObject({
       voiceNote: true,
-      waveform: [0, 25, 100],
-      duration: 1.5,
+      kind: "audio",
     });
     h.rows([
       {
