@@ -494,7 +494,9 @@ Desktop builds configured with `BUZZ_NSEC_BACKUP_SERVICE_URL` and
 automatic-backup choice, Builderlab login, and matching key
 binding. Unset, self-managed, corrupt or mismatched consent prevents all backup
 requests, including retries. These are paired
-native build-process inputs; unset leaves the feature disabled. The service URL
+native build-process inputs; unset or empty leaves the feature disabled. Preview
+releases that sign in to `app.builderlab.xyz` set them to that origin's
+`/api/goose` service and the `backup/bb-public/production` namespace. The service URL
 includes its API prefix and must use HTTPS. Existing login credentials are accepted
 only for the matching trusted build origin. Without a qualifying login, backup
 defers without opening a browser or delaying identity readiness.

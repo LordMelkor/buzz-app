@@ -242,8 +242,13 @@ fn configure_nsec_backup() {
     const NAMESPACE: &str = "BUZZ_NSEC_BACKUP_NAMESPACE";
     println!("cargo:rerun-if-env-changed={SERVICE}");
     println!("cargo:rerun-if-env-changed={NAMESPACE}");
-    let service = std::env::var(SERVICE).ok();
-    let namespace = std::env::var(NAMESPACE).ok();
+    // Empty is unset, so a workflow can clear both inputs for builds without backup.
+    let service = std::env::var(SERVICE)
+        .ok()
+        .filter(|value| !value.is_empty());
+    let namespace = std::env::var(NAMESPACE)
+        .ok()
+        .filter(|value| !value.is_empty());
     if let Some(config) = nsec_backup_config::configured(service.as_deref(), namespace.as_deref())
         .unwrap_or_else(|error| panic!("{error}"))
     {
