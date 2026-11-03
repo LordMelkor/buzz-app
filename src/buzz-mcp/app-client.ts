@@ -188,6 +188,14 @@ export function appClient(
           check();
           return plugins.disable(id);
         },
+        request: (input) => {
+          check();
+          return plugins.request(input);
+        },
+        status: (requestId) => {
+          check();
+          return plugins.status(requestId);
+        },
       },
     }),
     ...(handoff
