@@ -14,6 +14,7 @@ import { ConversationPresentation } from "../conversation/ConversationPresentati
 import { MessageReactionControls, MessageReactions } from "./MessageReactions";
 import { profileTarget } from "../profiles/target";
 import { PREVIEW_REST_MS } from "../../shared/design-system/ui/hoverIntent";
+import { publicKeyLabels } from "../../shared/identity/public-key";
 import { createRelaySession } from "../relay/session";
 import {
   flush,
@@ -436,16 +437,33 @@ it("says when names in the full list could not load and retries on reopening", a
   expect(items).toHaveLength(9);
   // After the rows: a failed later page must not push the visible ones down.
   expect(items.at(-1)?.nextElementSibling).toBe(note);
+  // Unnamed (the preview's read found no profile) and unresolved rows read as
+  // the shared public-key labels, distinguishable across the group.
+  const labels = publicKeyLabels(people.map((person) => person.pubkey));
+  for (const [index, name] of [...labels.values()].entries())
+    expect(within(list).getByRole("menuitem", { name })).toBe(items[index]);
   fireEvent.keyDown(list, { key: "Escape" });
   await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   await open(2);
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-it("does not report names that a reconnect cancels and reads again", async () => {
+it("asks again for names a disconnect cancels, without reporting a reconnect's re-read", async () => {
+  // A browser's DOMException is an Error, so the reader's cancellation reads
+  // as cancelled. jsdom's is not, and would read as a failure.
+  vi.stubGlobal(
+    "DOMException",
+    class extends Error {
+      constructor(message?: string, name = "Error") {
+        super(message);
+        this.name = name;
+      }
+    },
+  );
   const last = keypair();
   const people = [...Array.from({ length: 8 }, () => keypair()), last];
   const h = harness(people.map((person, index) => react(person, 2 + index)));
+  act(() => h.live.state({ status: "connected", routes: [] }));
   render(<h.Controls />);
   const lists = (entry: (typeof h.wire.pending)[number]) =>
     !!entry.filters[0]?.authors?.includes(last.pubkey);
@@ -470,6 +488,15 @@ it("does not report names that a reconnect cancels and reads again", async () =>
   );
   const list = await screen.findByRole("menu");
   reveal(within(list).getAllByRole("menuitem"));
+  const dropped = await listRead();
+  // A dropped connection cancels in-flight reads, and nothing reads them again.
+  await act(async () => {
+    h.live.state({ status: "retrying", routes: [] });
+    await flush();
+  });
+  expect(dropped?.signal?.aborted).toBe(true);
+  // Rows still in view ask again.
+  reveal(within(list).getAllByRole("menuitem"));
   const cancelled = await listRead();
   // A restored connection cancels pending profile reads, then reads them again.
   await act(async () => {
@@ -477,6 +504,7 @@ it("does not report names that a reconnect cancels and reads again", async () =>
     await flush();
   });
   expect(cancelled?.signal?.aborted).toBe(true);
+  reveal(within(list).getAllByRole("menuitem"));
   const again = await listRead();
   await act(async () => {
     again?.respond([profile(last, { name: "Last person" })]);

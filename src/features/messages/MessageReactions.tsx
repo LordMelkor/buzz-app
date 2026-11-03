@@ -39,6 +39,7 @@ import type { RelaySession } from "../relay/session";
 import type { OutgoingEvent } from "../relay/outbox";
 import { readErrorKind } from "../relay/errors";
 import { selectProfiles } from "../relay/profile-selection";
+import { publicKeyLabels } from "../../shared/identity/public-key";
 import { recordReaction, useQuickReactions } from "./quick-reactions";
 import styles from "./Messages.module.css";
 
@@ -261,6 +262,7 @@ function ReactorItems({
 }) {
   const requested = useRef(new Set<string>());
   const [failed, setFailed] = useState(false);
+  const [released, setReleased] = useState(0);
   // Show any names already loaded; request only the rows that come into view.
   const selection = useMemo(
     () => selectProfiles(session.profiles, people),
@@ -271,7 +273,8 @@ function ReactorItems({
     selection.snapshot,
     selection.snapshot,
   );
-  // biome-ignore lint/correctness/useExhaustiveDependencies: people adds rows to observe.
+  const keys = useMemo(() => publicKeyLabels(people), [people]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: people and released add rows to observe.
   useEffect(() => {
     const root = popup.current;
     if (!root) return;
@@ -285,9 +288,13 @@ function ReactorItems({
           return [id];
         });
         if (!page.length) return;
-        // A reconnect cancels pending reads and then reads them again itself.
         session.profiles.ensure(page, "background").catch((error) => {
-          if (readErrorKind(error) !== "cancelled") setFailed(true);
+          if (readErrorKind(error) !== "cancelled") return setFailed(true);
+          // A reconnect reads pending ids again itself; a disconnect only
+          // cancels them. Observe these rows again: those in view ask again,
+          // joining the reconnect's read or reading now.
+          for (const id of page) requested.current.delete(id);
+          setReleased((count) => count + 1);
         });
       },
       // The visible rows and the next screenful, far below the request budget.
@@ -297,7 +304,7 @@ function ReactorItems({
       if (!requested.current.has(row.dataset.reactor ?? ""))
         observer.observe(row);
     return () => observer.disconnect();
-  }, [popup, people, session]);
+  }, [popup, people, session, released]);
   return (
     <>
       {people.map((authorId) => {
@@ -305,7 +312,7 @@ function ReactorItems({
         const name =
           authorId === session.viewer
             ? "You"
-            : (profile?.name ?? authorId.slice(0, 10));
+            : (profile?.name ?? keys.get(authorId) ?? "Unknown person");
         const agent = !!agentPubkeys?.has(authorId);
         const target = profileTarget(authorId, { agent });
         const destination =
