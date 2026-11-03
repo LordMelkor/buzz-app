@@ -1,6 +1,5 @@
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -119,7 +118,8 @@ export function ResizeHandle({
     observer.observe(panel);
     return () => observer.disconnect();
   }, [direction]);
-  useEffect(() => () => finish(), [finish]);
+  // Restore a drag preview before a replacement owner commits its width.
+  useLayoutEffect(() => () => finish(), [finish]);
 
   return (
     <hr

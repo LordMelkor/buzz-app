@@ -22,6 +22,12 @@
 .ownActions {
   flex-direction: column;
 }
+.verificationIcon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: middle;
+}
 .portrait {
   flex: 0 0 auto;
   width: 5rem;

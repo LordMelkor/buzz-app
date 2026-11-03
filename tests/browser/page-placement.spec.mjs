@@ -281,6 +281,38 @@ test("a page sidebar uses the shell slot, generic toggle, theme, and narrow draw
     (element) => element.getBoundingClientRect().width,
   );
   expect(wideSize).toBeGreaterThan(220);
+  const resizeHandle = page.getByRole("separator", {
+    name: "Resize sidebar",
+  });
+  await expect(resizeHandle).toHaveAttribute("aria-valuenow", "260");
+  await page.screenshot({
+    path: test.info().outputPath("page-sidebar-before-resize.png"),
+  });
+  const handleBounds = await resizeHandle.boundingBox();
+  if (!handleBounds) throw new Error("Page sidebar resize handle has no box");
+  const handleX = handleBounds.x + handleBounds.width / 2;
+  const handleY = handleBounds.y + handleBounds.height / 2;
+  await page.mouse.move(handleX, handleY);
+  await page.mouse.down();
+  await page.mouse.move(handleX + 80, handleY, { steps: 8 });
+  await page.mouse.up();
+  await expect
+    .poll(() =>
+      resizeHandle.evaluate(
+        (element) =>
+          element.previousElementSibling.getBoundingClientRect().width,
+      ),
+    )
+    .toBe(340);
+  await expect
+    .poll(() =>
+      sidebar.evaluate((element) => element.getBoundingClientRect().width),
+    )
+    .toBe(340);
+  await expect(resizeHandle).toHaveAttribute("aria-valuenow", "340");
+  await page.screenshot({
+    path: test.info().outputPath("page-sidebar-after-resize.png"),
+  });
 
   await page.evaluate(() => {
     document.documentElement.style.fontSize = "200%";

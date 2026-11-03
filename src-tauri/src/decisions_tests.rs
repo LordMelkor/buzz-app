@@ -704,3 +704,40 @@ fn the_webview_names_backends_and_answers_as_documented() {
         json!({ "type": "yes_no", "probability": 0.5 })
     );
 }
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn development_decisions_keep_native_validation_and_send_only_a_public_revision_to_loopback()
+{
+    let reply = json!({ "model": "test", "answers": { "a": { "noul": { "value": 0.7 } } } });
+    let (url, seen) = server(vec![Some((200, "", reply.to_string()))]).await;
+    let origin = reqwest::Url::parse(&url)
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    let endpoint = development_endpoint(&origin).unwrap();
+    let (_, keys) = keys(None);
+    let host = decisions(&endpoint);
+    let result = host
+        .decide(
+            &keys,
+            Backend::Builderlab,
+            session("public-revision"),
+            in_community(request(
+                json!({ "a": { "type": "yes_no", "instructions": "test" } }),
+            )),
+        )
+        .await;
+    assert!(matches!(result, Decided::Answered { .. }));
+    let head = &seen.lock().unwrap()[0].0;
+    assert!(head.contains("x-bb-session-credential: public-revision"));
+    assert!(head.contains(&format!("origin: {origin}")));
+    for invalid in [
+        "https://evil.example",
+        "http://127.0.0.1:1430/path",
+        "http://user@localhost:1430",
+        "http://localhost",
+    ] {
+        assert!(development_endpoint(invalid).is_err());
+    }
+}

@@ -292,6 +292,13 @@ For choices that must stay within a modal, pass its element to
 and the shared popup scrolls within the resulting available height; keep the portal.
 Use their supported `padding`/alignment props; do not add another padded card inside
 the popup or cancel its styles. Keep long lists scrollable and all actions reachable.
+For a short searchable identity picker, `Combobox.Popup size="compact"` caps the
+surface at 20rem or the available height, keeping search visible above scrollable
+results. It accommodates roughly four avatar-and-detail rows, not a fixed result
+count. Bestie opens below its field with `side="bottom"` and
+`collisionAvoidance={{ side: "none", align: "shift" }}`: the viewport may shorten
+its list rather than flip it over the introduction. Other comboboxes retain their
+existing viewport-sized, automatically flipping popup.
 
 Opening a dialog from a menu needs a deliberate focus handoff: dismiss the menu
 without stealing focus from the new dialog. On completion, return focus to the

@@ -53,6 +53,8 @@
     "allow-relay-sign-read-state",
     "allow-relay-publish-read-state",
     "allow-relay-http",
+    "allow-relay-http-cancel",
+    "allow-relay-verify-signatures",
     "allow-relay-workflow-runs",
     "allow-relay-admin-discover",
     "allow-relay-admin-request",
@@ -184,6 +186,7 @@
     "core:resources:allow-close",
     "allow-update-restart",
     "core:window:allow-close",
+    "core:window:allow-is-focused",
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     {

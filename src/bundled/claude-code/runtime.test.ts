@@ -97,10 +97,12 @@ function setup(
   };
   const host = { spawn, request: vi.fn() } as unknown as Host;
   const read = vi.fn(async (_filters: readonly ReadFilter[]) => thread);
-  const memoryRead = vi.fn(async () => ({
-    entries: [] as readonly MemoryEntry[],
-    partial: false,
-  }));
+  const memoryRead = vi.fn(
+    async (_pubkey: string, _signal: AbortSignal, _slug?: string) => ({
+      entries: [] as readonly MemoryEntry[],
+      partial: false,
+    }),
+  );
   const session = {
     workflowAuthority: options.workflowAuthority,
     read,
@@ -839,7 +841,7 @@ it("puts the agent's teams in its system prompt, resuming idle sessions when the
   runtime.dispose();
 });
 
-it("starts each session from the host's core memory, reading none from the relay", async () => {
+it("starts each session from the host's core memory, reading only recent notes from the relay", async () => {
   const { deliver, claudes, core, memoryRead } = setup();
   const mention = (id: string) =>
     deliver({
@@ -862,13 +864,157 @@ it("starts each session from the host's core memory, reading none from the relay
   await flush(10);
   expect(asked("1")).toContain("<core-memory>\nI am Claude.\n</core-memory>");
   expect(core).toHaveBeenCalledWith(self);
-  expect(memoryRead).not.toHaveBeenCalled();
+  // Core memory comes from the host; the relay reads are yesterday's and
+  // today's notes, each by its slug.
+  expect(memoryRead).toHaveBeenCalledTimes(2);
+  for (const [pubkey, , slug] of memoryRead.mock.calls) {
+    expect(pubkey).toBe(self);
+    expect(slug).toMatch(/^mem\/notes\/\d{4}-\d{2}-\d{2}$/);
+  }
   // The host could not read it: the session starts without it.
   core.mockResolvedValueOnce(undefined);
   await mention("2");
   await flush(10);
   expect(asked("2")).toContain("## Agent Memory");
   expect(asked("2")).not.toContain("<core-memory>");
+});
+
+it("starts a session without recent notes the relay is slow to give", async () => {
+  const { deliver, claudes, memoryRead } = setup();
+  memoryRead.mockImplementation(() => new Promise(() => {}));
+  await deliver({
+    type: "mention",
+    event: message("1", "@Claude 1", {
+      tags: [
+        ["h", channel],
+        ["p", self],
+      ],
+    }),
+  });
+  await vi.waitFor(
+    () =>
+      expect(claudes().find((process) => process.prompts.length)).toBeDefined(),
+    { timeout: 4_000 },
+  );
+  expect(
+    systemPromptOf(claudes().find((process) => process.prompts.length)),
+  ).not.toContain("<recent-notes>");
+});
+
+it("stops a stalled startup notes read when its budget runs out, so another agent's slow memory read still succeeds", async () => {
+  vi.useFakeTimers();
+  // AbortSignal.timeout runs on real time; put it on the fake clock.
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    const controller = new AbortController();
+    setTimeout(
+      () => controller.abort(new DOMException("", "TimeoutError")),
+      ms,
+    );
+    return controller.signal;
+  });
+  try {
+    const other = "d".repeat(64);
+    const stopped: (string | undefined)[] = [];
+    // The agent's notes never answer, and stop only when told to. Another
+    // agent's core memory takes 2.5 seconds, behind the session's real
+    // serialized memory reads.
+    const queue = createAgentMemories(
+      (agent, signal, slug) =>
+        agent === other
+          ? new Promise((done) =>
+              setTimeout(
+                () =>
+                  done({
+                    entries: [
+                      {
+                        slug: "core",
+                        body: "I am another.",
+                        eventId: "e".repeat(64),
+                        createdAt: 1,
+                      },
+                    ],
+                    partial: false,
+                  }),
+                2_500,
+              ),
+            )
+          : new Promise((_, fail) =>
+              signal.addEventListener("abort", () => {
+                stopped.push(slug);
+                fail(signal.reason);
+              }),
+            ),
+      alice,
+      () => true,
+    ).capability;
+    const f = setup();
+    f.memoryRead.mockImplementation(queue.read);
+    void f.deliver({
+      type: "mention",
+      event: message("1", "@Claude 1", {
+        tags: [
+          ["h", channel],
+          ["p", self],
+        ],
+      }),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const read = (
+      f.runtime as unknown as {
+        memories(
+          pubkey: string,
+          slug?: string,
+        ): ReturnType<BuzzClient["memories"]>;
+      }
+    ).memories(other, "core");
+    // The start gives up on its notes at two seconds, and both reads stop.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(stopped).toHaveLength(2);
+    for (const slug of stopped) expect(slug).toMatch(/^mem\/notes\//);
+    expect(f.claudes().find((process) => process.prompts.length)).toBeDefined();
+    await vi.advanceTimersByTimeAsync(2_500);
+    await expect(read).resolves.toMatchObject({
+      entries: [{ slug: "core", body: "I am another." }],
+    });
+  } finally {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  }
+});
+
+it("starts each session with the agent's recent notes after its core memory", async () => {
+  const { deliver, claudes, core, memoryRead } = setup();
+  core.mockResolvedValueOnce("I am Claude.");
+  memoryRead.mockImplementation(async (_pubkey, _signal, slug) => ({
+    entries: slug?.startsWith("mem/notes/")
+      ? [
+          {
+            slug,
+            body: `Noted in ${slug}.`,
+            eventId: "e".repeat(64),
+            createdAt: 1,
+          },
+        ]
+      : [],
+    partial: false,
+  }));
+  await deliver({
+    type: "mention",
+    event: message("1", "@Claude 1", {
+      tags: [
+        ["h", channel],
+        ["p", self],
+      ],
+    }),
+  });
+  await flush(10);
+  const prompt = systemPromptOf(
+    claudes().find((process) => process.prompts.length),
+  );
+  const [yesterday, today] = memoryRead.mock.calls.map(([, , slug]) => slug);
+  expect(prompt).toContain(
+    `</core-memory>\n\n<recent-notes>\n<note slug="${yesterday}">\nNoted in ${yesterday}.\n</note>\n<note slug="${today}">`,
+  );
 });
 
 it("names the agent in its system prompt, resuming idle sessions when it is renamed", async () => {
@@ -2241,10 +2387,16 @@ it("method calls: a session launch makes no config call on the relay session; on
   await flush(10);
   expect(f.claudes()).toHaveLength(1);
   expect(systemPromptOf(f.claudes()[0])).toContain("I am Claude.");
-  // The start makes no config requests. The only call is the conversation's
-  // name lookup for the sender and mentioned agent, which requests only
-  // profiles missing from the cache (none when both are cached).
-  expect(made()).toEqual({
+  // The start makes no config requests. The only calls are the agent's
+  // recent notes, by slug, and the conversation's name lookup for the sender
+  // and mentioned agent, which requests only profiles missing from the cache
+  // (none when both are cached).
+  const { "agentMemories.read": notes, ...rest } = made();
+  expect(notes?.map(([pubkey, , slug]) => [pubkey, slug])).toEqual([
+    [self, expect.stringMatching(/^mem\/notes\/\d{4}-\d{2}-\d{2}$/)],
+    [self, expect.stringMatching(/^mem\/notes\/\d{4}-\d{2}-\d{2}$/)],
+  ]);
+  expect(rest).toEqual({
     "profiles.ensure": [[[alice, self], "foreground"]],
   });
 });
@@ -2390,6 +2542,8 @@ it("controls an idle Claude session without sending a message, and rejects reset
   const agent = { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent;
   try {
     await f.deliver({ type: "mention", event: root });
+    // The start reads the agent's recent notes first.
+    await flush(10);
     const process = f.claudes()[0];
     if (!process) throw new Error("Expected Claude process");
     await vi.waitFor(() => expect(process.prompts).toHaveLength(1));
@@ -2420,6 +2574,7 @@ it("controls an idle Claude session without sending a message, and rejects reset
         ],
       }),
     });
+    await flush(10);
     expect(f.claudes()).toHaveLength(2);
     expect(f.claudes()[1]?.options.args).not.toContain("--resume");
   } finally {
@@ -2488,6 +2643,8 @@ it("keeps an accepted Claude handoff past its deadline while compaction runs", a
   let finishCompaction: (() => void) | undefined;
   try {
     await f.deliver({ type: "mention", event: root });
+    // The start reads the agent's recent notes first.
+    await flush(10);
     const process = f.claudes()[0];
     if (!process) throw new Error("Expected Claude process");
     await vi.waitFor(() => expect(process.prompts).toHaveLength(1));

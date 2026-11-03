@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { Agent, Agents } from "./service";
 import { agentSections } from "./tabs";
 
@@ -166,4 +166,43 @@ it("adds plugin tabs to local agents only, before History", () => {
       ?.render(),
   );
   expect(screen.getByText("Watching Ada")).toBeInTheDocument();
+});
+
+it("adds a plugin tab only to the agents its `when` accepts", () => {
+  const tab = (id: string, when?: (agent: Agent) => boolean) => ({
+    id,
+    key: `example/${id}`,
+    pluginId: "example",
+    revision: "1",
+    title: id,
+    component: () => null,
+    ...(when && { when }),
+  });
+  const agents = {
+    configHistory: () => undefined,
+    addedTabs: () => [
+      tab("every"),
+      tab("ada", (shown) => shown.name === "Ada"),
+      tab("broken", () => {
+        throw new Error("broken");
+      }),
+    ],
+  } as unknown as Agents;
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const values = (name: string) =>
+    agentSections({
+      agents,
+      agent: { ...agent, name },
+      type: undefined,
+      memories: undefined,
+    }).map((section) => section.value);
+  expect(values("Ada")).toEqual([
+    "agent:added:example/every",
+    "agent:added:example/ada",
+    "agent:memory",
+  ]);
+  // A tab whose `when` throws hides only itself.
+  expect(values("Bea")).toEqual(["agent:added:example/every", "agent:memory"]);
+  expect(error).toHaveBeenCalled();
+  error.mockRestore();
 });

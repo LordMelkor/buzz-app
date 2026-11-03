@@ -34,6 +34,7 @@ export const historySize = 640;
 // broker/subscriber and model only the upstream relay policy with ephemeral keys.
 export const test = base.extend({
   productionBroker: [false, { option: true }],
+  builderlab: [{}, { option: true }],
   /** The production broker's live setup deadline. It runs in Node, so the
    * page clock cannot hold it; a test that keeps EOSE pending sets it longer. */
   liveSetupTimeoutMs: [undefined, { option: true }],
@@ -95,6 +96,7 @@ export const test = base.extend({
   historyRowsPerSecond: [1, { option: true }],
   channelIds: [channels, { option: true }],
   developmentReact: [false, { option: true, scope: "worker" }],
+  builderlabLogin: [false, { option: true, scope: "worker" }],
   pluginFixtures: [false, { option: true, scope: "worker" }],
   localAgentActivity: [false, { option: true, scope: "worker" }],
   pairingFixture: [false, { option: true, scope: "worker" }],
@@ -107,6 +109,7 @@ export const test = base.extend({
       browserName,
       browser,
       productionBroker,
+      builderlab,
       liveSetupTimeoutMs,
       actionProfile,
       agentMessageDeletion,
@@ -2028,6 +2031,22 @@ export const test = base.extend({
         })
       : undefined;
     const middleware = async (request, response, next) => {
+      // Development-React journeys restore the shared login at startup too.
+      // This synthetic host has no Builderlab account; keep its stream open
+      // until the page disconnects, just like the real broker's signed-out state.
+      if (
+        request.method === "GET" &&
+        request.url === "/api/builderlab/events"
+      ) {
+        response.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-store",
+        });
+        response.write(
+          `data: ${JSON.stringify({ revision: "fixture", pending: false, auth: null })}\n\n`,
+        );
+        return;
+      }
       if (!request.url?.startsWith("/api/relay/")) return next();
       try {
         const parts = request.url.split("/");
@@ -2292,6 +2311,7 @@ export const test = base.extend({
                   next();
                 });
                 const broker = relayBrokerPlugin({
+                  builderlab,
                   archiveFile: ":memory:",
                   relayUrl: fixtureRelayUrl,
                   communityAliases: fixtureAliases,
@@ -2765,6 +2785,7 @@ export const test = base.extend({
         ...(report.sidebarRemovalFailures ?? []),
         ...(report.sidebarPreferenceFailures ?? []),
         ...(report.startupFailures ?? []),
+        ...(report.builderlabFailures ?? []),
       ];
       // Activity reads retry a 502 quietly, so their journeys inject a 403.
       const activityFailures = [...(report.sidebarActivityFailures ?? [])];

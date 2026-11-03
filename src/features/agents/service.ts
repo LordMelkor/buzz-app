@@ -175,7 +175,10 @@ import { readInterrupted, writeInterrupted } from "./interrupted";
 import { AttentionSources, type AttentionProducer } from "./attention-sources";
 import { type AddedTool, BUZZ_SESSION } from "../../buzz-mcp/session-tools";
 import { nameSoloChat } from "./solo-chat-name";
-import { forgetDefaultAgent } from "../solo/default-agent";
+import {
+  clearDeletedDefaultAgent,
+  forgetDefaultAgent,
+} from "../solo/default-agent";
 
 /** Where an agent runs: `here`, with its key on this device; `hosted`, by its
  * type's provider; or `elsewhere`, on another of the owner's devices. Only an
@@ -307,12 +310,16 @@ export type AgentTab<Config = unknown> = Readonly<{
   component: ComponentType<AgentViewProps<Config>>;
 }>;
 /** A tab a plugin adds to the settings of every agent running on this device,
- * whatever its type. It reads the agent and saves through the plugin's own
- * `agents`. */
+ * whatever its type, or only those `when` accepts. It reads the agent and
+ * saves through the plugin's own `agents`. */
 export type AgentAddedTab = Readonly<{
   id: string;
   title: string;
   component: ComponentType<{ agent: Agent }>;
+  /** Whether the tab shows for this agent; absent, it shows for each. */
+  when?: (agent: Agent) => boolean;
+  /** Calls `listener` when `when` may answer differently. */
+  subscribe?: (listener: () => void) => () => void;
 }>;
 export type RegisteredAgentAddedTab = Contribution<AgentAddedTab>;
 /** One of an agent's conversation sessions on this device. Without `root` it
@@ -1035,7 +1042,8 @@ export type Agents = {
   register<Config>(type: AgentType<Config>): void;
   types(): readonly RegisteredAgentType[];
   /** Adds a tab to the settings of every agent running on this device,
-   * whatever its type, after Activity. It shows while the plugin is on. */
+   * whatever its type, or of those its `when` accepts, after Activity. It
+   * shows while the plugin is on. */
   registerTab(tab: AgentAddedTab): void;
   /** The tabs active plugins add now. */
   addedTabs(): readonly RegisteredAgentAddedTab[];
@@ -1887,6 +1895,7 @@ export class AgentsService extends Service implements Agents {
         },
       },
       activity: localActivity,
+      channel: (agent, event) => this.channelOf(agent, event),
       soloChat: (agent, channel, signal) =>
         soloChat(() => this.relay(agent.key), agent.owner, channel, signal),
       remembered: (key, slug, body) => this.coreMemory.wrote(key, slug, body),
@@ -2059,10 +2068,21 @@ export class AgentsService extends Service implements Agents {
     if (
       !/^[a-z0-9][a-z0-9._-]*$/.test(tab.id ?? "") ||
       !tab.title ||
-      typeof tab.component !== "function"
+      typeof tab.component !== "function" ||
+      (tab.when !== undefined && typeof tab.when !== "function") ||
+      (tab.subscribe !== undefined && typeof tab.subscribe !== "function")
     )
       throw new Error("Agent tabs need an id, a title and a component");
     this.tabContributions.register(this.ctx, tab);
+    // A new state object, so views asking `when` render again.
+    const { subscribe } = tab;
+    if (subscribe)
+      this.ctx.effect(() =>
+        subscribe(() => {
+          this.state = Object.freeze({ ...this.state });
+          this.notify();
+        }),
+      );
   }
   addedTabs = () => this.tabContributions.snapshot();
   controlAttention() {
@@ -3606,6 +3626,14 @@ export class AgentsService extends Service implements Agents {
     // one that is not stays listed here with Forget.
     const shown = this.selectedOrigin();
     const rows = this.liveRows(pubkey);
+    const roleBindings = [
+      ...new Map(
+        rows.flatMap((row) => {
+          const binding = this.bindingOf(row);
+          return binding ? [[binding.scope, binding] as const] : [];
+        }),
+      ).values(),
+    ];
     const unfinished = `${identity.name} isn't deleted yet and may still be in some channels. It stays stopped; Delete it again to finish.`;
     // Left its home, which keeps its config: that is archived first, so a
     // failure leaves it listed here to Delete again.
@@ -3649,6 +3677,17 @@ export class AgentsService extends Service implements Agents {
     // Drops its settings.
     await this.refresh();
     forgetDefaultAgent(pubkey);
+    const failed: string[] = [];
+    for (const binding of roleBindings)
+      try {
+        await clearDeletedDefaultAgent(binding.session, binding.scope, pubkey);
+      } catch {
+        failed.push(binding.origin);
+      }
+    if (failed.length)
+      throw new Error(
+        `${identity.name} was deleted, but Buzz couldn't clear it as your Bestie in ${failed.join(", ")}. Open Bestie to choose another.`,
+      );
   }
   /** Archives the config channel in the agent's home community, which it is
    * no longer a member of. Nothing to do when its config never synced. */
@@ -3912,7 +3951,13 @@ export class AgentsService extends Service implements Agents {
       await this.writeUnfinished(
         this.unfinished.filter((setup) => setup.pubkey !== pubkey),
       );
-      await handOnMainAgent(binding.session, pubkey);
+      try {
+        await handOnMainAgent(binding.session, pubkey);
+      } catch {
+        throw new Error(
+          `${agent.name} was deleted, but Buzz couldn't clear it as your Bestie. Open Bestie to choose another.`,
+        );
+      }
     });
   }
   private async exclusive<T>(pubkey: string, step: () => Promise<T>) {
@@ -5457,6 +5502,7 @@ async function leaveCommunity(
 async function handOnMainAgent(session: RelaySession, pubkey: string) {
   await session.agentChoices.refresh(true, { fresh: true });
   forgetDefaultAgent(pubkey);
+  await clearDeletedDefaultAgent(session, session.scope, pubkey);
 }
 /** The membership's community, as its owner knows it. */
 /** The origin of the agent's home community, as native saved it on the row:

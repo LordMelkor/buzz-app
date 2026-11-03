@@ -852,8 +852,8 @@ export const COMPONENTS: readonly ComponentDefinition[] = [
     purpose:
       "Search and choose from a set of options. The field includes a browse control and a shared option popup. A dropdown trigger can place search inside the popup.",
     behavior:
-      "Base UI owns keyboard navigation and selection; callers own filtering, custom values and async discovery.",
-    variants: ["default", "compact", "loading", "disabled"],
+      "Base UI owns keyboard navigation, selection and positioning; callers own filtering, custom values and async discovery. Compact popups keep search visible above scrollable results and can retain a preferred side within the available height.",
+    variants: ["default", "compact", "compact popup", "loading", "disabled"],
     status: "proposed",
     collection: "components",
     source: "shared/design-system/ui/Combobox.tsx",

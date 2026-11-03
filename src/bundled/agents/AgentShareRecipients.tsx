@@ -4,6 +4,7 @@ import { useSyncExternalStore, type Ref } from "react";
 import { usePeople } from "../../features/direct-messages/usePeople";
 import type { RelaySession } from "../../features/relay/session";
 import { avatarMedia } from "../../shared/avatar-source";
+import { SEARCH_MIN_CHARS } from "../../shared/search-debounce";
 import { CheckIcon, HashIcon } from "../../shared/design-system/icons";
 import { Avatar } from "../../shared/design-system/ui/Avatar";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
@@ -140,9 +141,11 @@ export function AgentShareRecipients({
           !people.length &&
           !channels.length && (
             <p className={`${styles.note} text-body-sm text-subtle`}>
-              {needle
-                ? "No people or channels match your search."
-                : "No one else to send to yet."}
+              {directory.tooShort
+                ? `Type at least ${SEARCH_MIN_CHARS} characters to search people.`
+                : needle
+                  ? "No people or channels match your search."
+                  : "No one else to send to yet."}
             </p>
           )
         )}

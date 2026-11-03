@@ -14,6 +14,7 @@ import {
 } from "../search/usage";
 import { useSearchHighlight } from "../search/use-search-highlight";
 import { publicKeyLabels } from "../../shared/identity/public-key";
+import { SEARCH_MIN_CHARS } from "../../shared/search-debounce";
 import { Avatar } from "../../shared/design-system/ui/Avatar";
 import { Button } from "../../shared/design-system/ui/Button";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
@@ -239,7 +240,7 @@ export function RecipientPicker({
   // A search still running, failed, or with more pages could hold that longer
   // name or a namesake, so Space waits for the full list.
   const exactRecipient = () =>
-    listed && !directory.loading && !directory.error
+    listed && !directory.loading && !directory.error && !directory.tooShort
       ? exactName(eligible, namesOf, query)
       : undefined;
   const loadingRows = useRef(10);
@@ -561,7 +562,13 @@ export function RecipientPicker({
                   </Virtualizer>
                   {!directory.loading &&
                     !directory.error &&
-                    !candidates.length && <p>No matching people.</p>}
+                    !candidates.length && (
+                      <p>
+                        {directory.tooShort
+                          ? `Type at least ${SEARCH_MIN_CHARS} characters to search people.`
+                          : "No matching people."}
+                      </p>
+                    )}
                   {directory.loading &&
                     (!query.trim() || !candidates.length) && (
                       <div role="status" aria-label="Loading people">

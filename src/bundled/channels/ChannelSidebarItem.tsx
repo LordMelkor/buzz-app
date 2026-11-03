@@ -74,6 +74,7 @@ export const ChannelSidebarItem = memo(function ChannelSidebarItem(
   props: ItemProps,
 ) {
   const { channel, session, working } = props;
+  const muted = useConfirmedMute(session, channel.id);
   const { agents, agentProfiles, waiting } = useWorkingAgents(
     session,
     channel.id,
@@ -83,6 +84,7 @@ export const ChannelSidebarItem = memo(function ChannelSidebarItem(
     session,
     channel.id,
     channel.channelType === "dm",
+    muted,
   );
   return (
     <ChannelSidebarItemCore
@@ -91,6 +93,7 @@ export const ChannelSidebarItem = memo(function ChannelSidebarItem(
       agentProfiles={agentProfiles}
       waiting={waiting}
       ordinary={ordinary}
+      muted={muted}
     />
   );
 });
@@ -100,8 +103,8 @@ function useOrdinaryUnread(
   session: RelaySession,
   channelId: string,
   dm: boolean,
+  muted: boolean,
 ) {
-  const muted = useConfirmedMute(session, channelId);
   const target = useMemo(
     () => ({ kind: "channel" as const, channelId }),
     [channelId],
@@ -141,11 +144,13 @@ function ChannelSidebarItemCore({
   agentProfiles,
   waiting,
   ordinary,
+  muted,
 }: ItemProps & {
   waiting: boolean;
   agents: readonly string[];
   agentProfiles: ReadonlyMap<string, Profile>;
   ordinary: boolean;
+  muted: boolean;
 }) {
   const peer =
     channel.channelType === "dm" && channel.participants?.length === 1
@@ -163,6 +168,7 @@ function ChannelSidebarItemCore({
       channel={channel}
       working={agents.length > 0}
       ordinary={ordinary}
+      muted={muted}
       dmVisualSpacing={channel.channelType === "dm"}
       icon={
         channel.channelType === "dm" ? (

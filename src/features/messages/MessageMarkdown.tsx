@@ -1,6 +1,5 @@
 import { useChannelIdentityNames } from "../identity-names/react";
 import {
-  Children,
   createContext,
   isValidElement,
   memo,
@@ -17,6 +16,7 @@ import type { ComposerSession } from "./composer-session";
 import { MessageLink } from "../conversation/MessageLink";
 import { parseBuzzLink } from "../navigation/buzz-links";
 import { messageLinkParts } from "./message-link-parts";
+import { labelText } from "./label-text";
 import {
   ReferenceText,
   channelForLink,
@@ -413,14 +413,6 @@ function remarkInlineContent(protectedContent: ProtectedContent) {
 
 const transformUrl: UrlTransform = (value) =>
   parseBuzzLink(value) || profileKey(value) ? value : safeLinkUrl(value);
-const labelText = (children: ReactNode): string =>
-  Children.toArray(children)
-    .map((child) =>
-      isValidElement<{ children?: ReactNode }>(child)
-        ? labelText(child.props.children)
-        : String(child),
-    )
-    .join("");
 
 type MessageComponents = {
   [Tag in "p" | "a" | "img" | "span" | "pre"]: (

@@ -8,7 +8,7 @@ import {
   requestLeave,
   type CommunityInfo,
 } from "./api";
-import { keypair, signed } from "../relay/testing";
+import { keypair, nativeSignatureChecks, signed } from "../relay/testing";
 import { fetchCommunityPresentation } from "./community-icon";
 import { NOT_A_COMMUNITY_ERROR } from "../relay/native";
 
@@ -36,6 +36,8 @@ beforeEach(() => {
   respond = () => ({ body: {} });
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "identity_restore") return key.pubkey;
+    if (command === "relay_verify_signatures")
+      return nativeSignatureChecks(args);
     if (command === "relay_sign")
       return signed(key, (args as { event: EventTemplate }).event);
     if (command !== "relay_http")

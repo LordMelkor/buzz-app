@@ -603,33 +603,72 @@ it("keeps Solo unread labels and markers independent of mute", () => {
   expect(view.container.querySelector("[data-channel-unread]")).toBeNull();
 });
 
-it("quiets confirmed muted backlog, restores it on unmute, and preserves directed and manual attention", () => {
-  const state = owner();
-  const view = render(
-    <ChannelSidebarItem {...itemProps(state.session, false)} />,
-  );
-  const row = () => view.container.querySelector("[data-channel-sidebar-row]");
-  act(() => state.unread(2));
-  expect(row()).toHaveAttribute("data-ordinary");
-  act(() => state.mute(true));
-  expect(row()).not.toHaveAttribute("data-ordinary");
-  expect(view.container.querySelector("[data-channel-unread]")).toBeNull();
-  act(() => state.unread(3));
-  expect(row()).not.toHaveAttribute("data-ordinary");
-  act(() => state.mute(false));
-  expect(row()).toHaveAttribute("data-ordinary");
-  act(() => state.mute(true));
-  act(() => state.unread(4, 1));
-  expect(row()).not.toHaveAttribute("data-ordinary");
-  expect(
-    view.container.querySelector("[data-channel-priority]"),
-  ).not.toBeNull();
-  act(() => state.manual());
-  expect(row()).toHaveAttribute("data-ordinary");
-  expect(
-    screen.getByRole("img", { name: "Marked unread on this device only" }),
-  ).toBeInTheDocument();
-});
+it.each([
+  { channelType: "stream", mutedIndicators: 0 },
+  { channelType: "dm", mutedIndicators: 1 },
+] as const)(
+  "replaces the muted $channelType unread dot with a bell, restores it on unmute, and retains unread evidence",
+  ({ channelType, mutedIndicators }) => {
+    const state = owner();
+    const view = render(
+      <ChannelSidebarItem
+        {...itemProps(state.session, false, {
+          id: "alpha",
+          name: "Alpha",
+          channelType,
+        })}
+      />,
+    );
+    const row = () =>
+      view.container.querySelector("[data-channel-sidebar-row]");
+    expect(
+      screen.queryByRole("img", { name: "Muted" }),
+    ).not.toBeInTheDocument();
+    act(() => state.mute(true));
+    expect(screen.getByRole("img", { name: "Muted" })).toBeInTheDocument();
+    expect(row()).not.toHaveAttribute("data-ordinary");
+    act(() => state.mute(false));
+    act(() => state.unread(2));
+    expect(row()).toHaveAttribute("data-ordinary");
+    act(() => state.mute(true));
+    expect(row()?.hasAttribute("data-ordinary")).toBe(channelType === "dm");
+    act(() => state.unread(3, 0));
+    expect(row()?.hasAttribute("data-ordinary")).toBe(channelType === "dm");
+    expect(
+      view.container.querySelectorAll("[data-channel-unread]"),
+    ).toHaveLength(mutedIndicators);
+    expect(
+      view.container.querySelectorAll("[data-channel-priority]"),
+    ).toHaveLength(0);
+    expect(screen.getByRole("img", { name: "Muted" })).toBeInTheDocument();
+    act(() => state.mute(false));
+    expect(row()).toHaveAttribute("data-ordinary");
+    expect(
+      screen.queryByRole("img", { name: "Muted" }),
+    ).not.toBeInTheDocument();
+    expect(
+      view.container.querySelectorAll("[data-channel-priority]"),
+    ).toHaveLength(mutedIndicators);
+    act(() => state.mute(true));
+    act(() => state.unread(4, 1));
+    expect(row()?.hasAttribute("data-ordinary")).toBe(channelType === "dm");
+    expect(view.container.querySelector("[data-channel-priority]")).toBeNull();
+    expect(
+      screen.getByRole("img", { name: /4 observed unread messages/ }),
+    ).toBeInTheDocument();
+    act(() => state.mute(false));
+    expect(
+      view.container.querySelector("[data-channel-priority]"),
+    ).toBeInTheDocument();
+    act(() => state.mute(true));
+    act(() => state.manual());
+    expect(row()).toHaveAttribute("data-ordinary");
+    expect(
+      screen.getByRole("img", { name: "Marked unread on this device only" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Muted" })).toBeInTheDocument();
+  },
+);
 
 it("keeps cached mute from quieting unread but retains confirmed mute through read failures", async () => {
   const data: SidebarPreferences = {

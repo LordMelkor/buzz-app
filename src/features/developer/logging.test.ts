@@ -33,9 +33,16 @@ it("updates existing/future tags and never coalesces the firehose", () => {
   expect(getLogger("future").level).toBe(4);
   for (let i = 0; i < 20; i++) log.debug("same frame");
   expect(records).toHaveLength(20);
+  vi.useFakeTimers({ now: 1700000000000 });
+  for (let i = 0; i < 10; i++) {
+    vi.setSystemTime(1700000060000 - i); // Each frame's clock steps back.
+    log.debug("same frame");
+  }
+  vi.useRealTimers();
+  expect(records).toHaveLength(30);
   setLogLevel("silent");
   log.error("hidden too");
-  expect(records).toHaveLength(20);
+  expect(records).toHaveLength(30);
   unsubscribe();
   expect(isLogLevel("constructor")).toBe(false);
   expect(isLogLevel(4)).toBe(false);

@@ -19,6 +19,7 @@ import { npubEncode } from "nostr-tools/nip19";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { useEffect } from "react";
+import type { LiveCallbacks } from "../../features/relay/live";
 import { createRelaySession } from "../../features/relay/session";
 import {
   keypair,
@@ -39,6 +40,7 @@ import type { RelayEvent } from "../../features/relay/events";
 import { PublishRejected } from "../../features/relay/outbox";
 import type { AgentLibrary } from "../../features/agents/library";
 import { localAgentsFixture } from "../../features/agents/local-testing";
+import { SEARCH_DEBOUNCE_MS } from "../../shared/search-debounce";
 import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { profileTarget } from "../../features/profiles/target";
 import { ChannelMembersButton } from "./ChannelMembersDialog";
@@ -97,7 +99,16 @@ async function setup(
   agents?: Agents,
   options: {
     archivedAgent?: boolean;
+    extraMembers?: number;
+    memberProfiles?: RelayEvent[];
+    pendingMemberNames?: Promise<void>;
     channelCreation?: boolean;
+    memberWrites?: boolean;
+    searchProfiles?: (
+      query: string,
+      limit: number,
+      page: number,
+    ) => Promise<RelayEvent[]>;
     communities?: CommunityReader;
   } = {},
 ) {
@@ -113,7 +124,14 @@ async function setup(
   const control = localAgentsFixture([agent]);
   const id = "11111111-1111-4111-8111-111111111111";
   const target = localAgent ? agent.pubkey : person.pubkey;
-  const members = [viewer.pubkey];
+  const members = [
+    viewer.pubkey,
+    ...Array.from({ length: options.extraMembers ?? 0 }, (_, i) =>
+      (i + 10000).toString(16).padStart(64, "0"),
+    ),
+    ...(options.memberProfiles ?? []).map((event) => event.pubkey),
+  ];
+  let live: LiveCallbacks | undefined;
   let clock = 1700000000;
   let failure = "";
   let applyAddition = true;
@@ -154,6 +172,7 @@ async function setup(
       content: "",
       tags: [["-"], ...(options.archivedAgent ? [["p", agent.pubkey]] : [])],
     }),
+    ...(options.memberProfiles ?? []),
     profile(viewer, { name: "Carl" }),
     personProfile,
   ];
@@ -166,12 +185,19 @@ async function setup(
       missingNames &&
       filters.some(
         (filter) =>
-          filter.kinds?.includes(0) && filter.authors?.includes(viewer.pubkey),
+          filter.kinds?.includes(0) &&
+          filter.authors?.includes(
+            options.extraMembers
+              ? (members[1] ?? viewer.pubkey)
+              : viewer.pubkey,
+          ),
       )
     ) {
       await nameRetry;
       throw new Error("Names unavailable");
     }
+    if (filters.some((filter) => filter.kinds?.includes(0)))
+      await options.pendingMemberNames;
     if (filters.some((filter) => filter.kinds?.includes(39002)))
       await rosterRead;
     return [roster(relay, id, members, clock), ...stableEvents].filter(
@@ -192,9 +218,20 @@ async function setup(
       scope: "https://relay.example.test",
       media: () => undefined,
       query,
+      subscribe: (callbacks) => {
+        live = callbacks;
+        return { update() {}, retry() {}, dispose() {} };
+      },
+      ...(options.searchProfiles
+        ? { searchProfiles: options.searchProfiles }
+        : {}),
       readAgentLibrary,
       writer: {
-        kinds: [9, 9000, ...(options.channelCreation === false ? [] : [9007])],
+        kinds: [
+          9,
+          ...(options.memberWrites === false ? [] : [9000]),
+          ...(options.channelCreation === false ? [] : [9007]),
+        ],
         sign: async (template) => signed(viewer, template),
         publish,
       },
@@ -224,7 +261,21 @@ async function setup(
   const user = userEvent.setup();
   const trigger = screen.getByRole("button", { name: "Access" });
   await user.click(trigger);
-  if (missingNames) await screen.findByText(/Some names could not load/);
+  if (
+    options.pendingMemberNames &&
+    !options.extraMembers &&
+    !options.memberProfiles
+  )
+    await screen.findByRole("status", { name: "Loading members" });
+  else if (
+    options.pendingMemberNames ||
+    options.extraMembers ||
+    options.memberProfiles
+  )
+    await within(
+      await screen.findByRole("region", { name: "Member list" }),
+    ).findAllByRole("listitem");
+  else if (missingNames) await screen.findByText(/Some names could not load/);
   else await screen.findByText("Carl (you)");
   return {
     user,
@@ -239,6 +290,10 @@ async function setup(
     relay,
     person,
     viewer,
+    replaceRoster: (keys: string[]) => {
+      members.splice(0, members.length, ...keys);
+      live?.receive([roster(relay, id, members, ++clock)]);
+    },
     delayRoster: () => {
       applyAddition = false;
     },
@@ -1197,6 +1252,27 @@ it("searches outside the roster, prevents double submission, and moves confirmed
   expect(t.session.channels.list().channels[0]?.members).toContain(
     t.person.pubkey,
   );
+});
+it("sends a relay member search only from two typed characters", async () => {
+  const t = await setup();
+  const searches = () =>
+    t.query.mock.calls.filter(([filters]) =>
+      filters.some((filter) => filter.search),
+    );
+  // user-event awaits a real setTimeout(0), so these steps drive fireEvent.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const input = screen.getByRole("searchbox");
+  fireEvent.change(input, { target: { value: "M" } });
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+  expect(searches()).toHaveLength(0);
+  // No search ran, so the dialog asks for more text rather than reporting none.
+  expect(
+    screen.getByText("Type at least 2 characters to search people."),
+  ).toBeVisible();
+  expect(screen.queryByText(/^No other matching/)).toBeNull();
+  fireEvent.change(input, { target: { value: "Mo" } });
+  await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+  expect(searches()).toHaveLength(1);
 });
 it("highlights the first person not in the channel so Enter adds them once", async () => {
   const t = await setup();
@@ -3273,5 +3349,427 @@ it.each([false, true])(
     ).toHaveAttribute("placeholder", "Search members");
     expect(load).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
+  },
+);
+
+it("pages a large roster without waiting for optional names or exceeding the profile request budget", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    const t = await setup("stream", false, false, undefined, undefined, {
+      extraMembers: 1024,
+      pendingMemberNames: pending,
+    });
+    const list = screen.getByRole("region", {
+      name: "Member list",
+    });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(50);
+    expect(screen.queryByText("Loading members…")).not.toBeInTheDocument();
+    const pages = within(list).getByRole("navigation", {
+      name: "People member pages",
+    });
+    expect(
+      within(pages).getByRole("button", { name: "Previous" }),
+    ).toBeDisabled();
+    await t.user.click(within(pages).getByRole("button", { name: "Next" }));
+    expect(within(pages).getByText("2 of 21")).toBeVisible();
+    expect(within(list).getAllByRole("listitem")).toHaveLength(50);
+    await act(async () => release());
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    const batches = t.query.mock.calls
+      .flatMap(([filters]) => filters)
+      .filter((filter) => filter.kinds?.includes(0) && filter.authors?.length);
+    expect(batches.length).toBeGreaterThan(1);
+    expect(batches.every((filter) => (filter.authors?.length ?? 0) <= 50)).toBe(
+      true,
+    );
+    expect(
+      screen.queryByText(/Some names could not load/),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("searchbox"), {
+      target: { value: (11023).toString(16).padStart(64, "0") },
+    });
+    await vi.waitFor(() =>
+      expect(within(list).getAllByRole("listitem")).toHaveLength(1),
+    );
+    await t.user.clear(screen.getByRole("searchbox"));
+    await vi.waitFor(() =>
+      expect(within(list).getByText("1 of 21")).toBeVisible(),
+    );
+  } finally {
+    await act(async () => release());
+  }
+});
+
+it("keeps the current member page through live removals and clamps a shortened roster", async () => {
+  const t = await setup("stream", false, false, undefined, undefined, {
+    extraMembers: 125,
+  });
+  await act(async () => t.session.profiles.ensure([t.viewer.pubkey]));
+  const keys = Array.from({ length: 125 }, (_, i) =>
+    (i + 10000).toString(16).padStart(64, "0"),
+  );
+  const pages = () =>
+    screen.getByRole("navigation", { name: "People member pages" });
+  const rows = () =>
+    within(screen.getByRole("region", { name: "Member list" }))
+      .getAllByRole("listitem")
+      .map((row) => row.textContent);
+  await t.user.click(within(pages()).getByRole("button", { name: "Next" }));
+  expect(within(pages()).getByText("2 of 3")).toBeVisible();
+  expect(within(pages()).getByText("2 of 3")).toHaveTextContent("Page 2 of 3");
+  await act(async () => t.replaceRoster([t.viewer.pubkey, ...keys.slice(1)]));
+  expect(within(pages()).getByText("2 of 3")).toBeVisible();
+  await t.user.click(within(pages()).getByRole("button", { name: "Next" }));
+  expect(within(pages()).getByText("3 of 3")).toBeVisible();
+  await act(async () =>
+    t.replaceRoster([t.viewer.pubkey, ...keys.slice(1, 75)]),
+  );
+  expect(within(pages()).getByText("2 of 2")).toBeVisible();
+  expect(within(pages()).getByRole("button", { name: "Next" })).toBeDisabled();
+  const clampedRows = rows();
+  await act(async () => t.replaceRoster([t.viewer.pubkey, ...keys.slice(1)]));
+  expect(within(pages()).getByText("2 of 3")).toBeVisible();
+  expect(rows()).toHaveLength(50);
+  expect(rows().slice(0, clampedRows.length)).toEqual(clampedRows);
+  await t.user.click(within(pages()).getByRole("button", { name: "Previous" }));
+  await t.user.click(within(pages()).getByRole("button", { name: "Next" }));
+  await act(async () =>
+    t.replaceRoster([t.viewer.pubkey, ...keys.slice(1, 25)]),
+  );
+  const shortenedRows = rows();
+  await act(async () => t.replaceRoster([t.viewer.pubkey, ...keys.slice(1)]));
+  expect(within(pages()).getByText("1 of 3")).toBeVisible();
+  expect(rows()).toHaveLength(50);
+  expect(rows().slice(0, shortenedRows.length)).toEqual(shortenedRows);
+});
+
+it.each([true, false])(
+  "finds an unvisited member by name (member writes: %s)",
+  async (memberWrites) => {
+    const matches: RelayEvent[] = [];
+    const otherMatches = Array.from({ length: 30 }, (_, i) =>
+      profile(keypair(), { name: `Aardvark outsider ${i}` }),
+    );
+    const memberProfiles = Array.from({ length: 75 }, (_, i) =>
+      profile(keypair(), { name: `Aardvark member ${i}` }),
+    );
+    const t = await setup("stream", false, false, undefined, undefined, {
+      memberProfiles,
+      memberWrites,
+      searchProfiles: async (_query, _limit, page) =>
+        !memberWrites && page === 1 ? otherMatches : matches,
+    });
+    await vi.waitFor(() =>
+      expect(
+        screen.getByRole("region", { name: "Member list" }),
+      ).toHaveAttribute("data-refreshing", "false"),
+    );
+    const target =
+      memberProfiles.find(
+        (event) => !t.session.profiles.snapshot().has(event.pubkey),
+      ) ?? memberProfiles[0];
+    if (!target) throw new Error("Missing member fixture");
+    const name = JSON.parse(target.content).name as string;
+    matches.push(target);
+    await t.user.type(screen.getByRole("searchbox"), name);
+    if (!memberWrites)
+      await t.user.click(
+        await screen.findByRole("button", { name: "Find more matches" }),
+      );
+    await within(
+      screen.getByRole("region", { name: "Member list" }),
+    ).findByText(nameText(name));
+  },
+);
+
+it("loads another member page after a previous page fails", async () => {
+  const t = await setup("stream", false, false, undefined, undefined, {
+    extraMembers: 749,
+  });
+  const data = memberData();
+  await vi.waitFor(() =>
+    expect(data).toHaveAttribute("data-refreshing", "false"),
+  );
+  const original = t.query.getMockImplementation();
+  if (!original) throw new Error("Missing query fixture");
+  t.query.mockImplementation(async (filters) => {
+    if (filters.some((filter) => filter.kinds?.includes(0)))
+      throw new Error("Names unavailable");
+    return original(filters);
+  });
+  const next = within(
+    screen.getByRole("navigation", { name: "People member pages" }),
+  ).getByRole("button", { name: "Next" });
+  await t.user.click(next);
+  await screen.findByText(/Some names could not load/);
+  await vi.waitFor(() =>
+    expect(data).toHaveAttribute("data-refreshing", "false"),
+  );
+  const before = t.query.mock.calls.length;
+  t.query.mockImplementation(original);
+  await t.user.click(next);
+  await vi.waitFor(() =>
+    expect(data).toHaveAttribute("data-refreshing", "false"),
+  );
+  expect(t.query.mock.calls.length).toBeGreaterThan(before);
+  expect(
+    screen.queryByText(/Some names could not load/),
+  ).not.toBeInTheDocument();
+});
+
+it("keeps the visible member page and focus stable while names arrive", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const memberProfiles = Array.from({ length: 125 }, (_, i) =>
+    profile(keypair(), {
+      name: `Member ${String(i).padStart(3, "0")}`,
+      is_agent: true,
+    }),
+  );
+  try {
+    const t = await setup("stream", false, false, undefined, undefined, {
+      memberProfiles,
+      pendingMemberNames: pending,
+    });
+    const list = screen.getByRole("region", { name: "Member list" });
+    const pages = within(list).getByRole("navigation", {
+      name: "People member pages",
+    });
+    await t.user.click(within(pages).getByRole("button", { name: "Next" }));
+    const rows = within(list).getAllByRole("listitem");
+    const first = rows[0];
+    if (!first) throw new Error("Missing first member row");
+    const focused = within(first).getAllByRole("button")[0];
+    if (!focused) throw new Error("Missing member action");
+    focused.focus();
+    await act(async () => release());
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    expect(
+      [...t.session.profiles.snapshot().values()].some((profile) =>
+        profile.name.startsWith("Member "),
+      ),
+    ).toBe(true);
+    const loadedRows = within(list).getAllByRole("listitem");
+    expect(loadedRows).toHaveLength(rows.length);
+    expect(loadedRows.every((row, i) => row === rows[i])).toBe(true);
+    expect(focused).toHaveFocus();
+    expect(within(list).getAllByText(/^Member /).length).toBeGreaterThan(0);
+    await t.user.click(screen.getByRole("button", { name: "Close" }));
+    await t.user.click(screen.getByRole("button", { name: "Access" }));
+    await within(memberData()).findByRole("heading", { name: /^Agents ·/ });
+  } finally {
+    await act(async () => release());
+  }
+});
+
+const retainedMemberProfiles = Array.from({ length: 1100 }, (_, i) =>
+  profile(keypair(), { name: `Member ${String(i).padStart(4, "0")}` }),
+);
+it("keeps named members in order through live roster changes", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    const t = await setup("stream", false, false, undefined, undefined, {
+      memberProfiles: retainedMemberProfiles,
+      pendingMemberNames: pending,
+    });
+    const pages = screen.getByRole("navigation", {
+      name: "People member pages",
+    });
+    await t.user.click(within(pages).getByRole("button", { name: "Next" }));
+    await act(async () => release());
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    const rows = () => within(memberData()).getAllByRole("listitem");
+    const before = rows();
+    const first = before[0];
+    if (!first) throw new Error("Missing member row");
+    const focused = within(first).getAllByRole("button")[0];
+    if (!focused) throw new Error("Missing member action");
+    focused.focus();
+    const removed = retainedMemberProfiles.find(
+      (event) => !t.session.profiles.snapshot().has(event.pubkey),
+    );
+    if (!removed) throw new Error("Missing off-page member");
+    const keys = [
+      t.viewer.pubkey,
+      ...retainedMemberProfiles.map((event) => event.pubkey),
+    ];
+    await act(async () =>
+      t.replaceRoster(keys.filter((key) => key !== removed.pubkey)),
+    );
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    expect(within(pages).getByText("2 of 22")).toBeVisible();
+    expect(rows().every((row, i) => row === before[i])).toBe(true);
+    expect(focused).toHaveFocus();
+    await act(async () => t.replaceRoster(keys));
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    expect(rows().every((row, i) => row === before[i])).toBe(true);
+    expect(focused).toHaveFocus();
+  } finally {
+    await act(async () => release());
+  }
+});
+
+const retainedTimelineProfiles = Array.from({ length: 20 }, (_, i) =>
+  profile(keypair(), { name: `Timeline ${i}` }),
+);
+
+it("retains visible and unrelated profiles when opening a roster above directory capacity", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const memberProfiles = retainedMemberProfiles;
+  const timeline = retainedTimelineProfiles;
+  try {
+    const t = await setup("stream", false, false, undefined, undefined, {
+      memberProfiles,
+      pendingMemberNames: pending,
+    });
+    const original = t.query.getMockImplementation();
+    if (!original) throw new Error("Missing query fixture");
+    t.query.mockImplementation(async (filters) =>
+      filters.some((filter) =>
+        filter.authors?.includes(timeline[0]?.pubkey ?? ""),
+      )
+        ? timeline
+        : original(filters),
+    );
+    await act(async () => {
+      await t.session.profiles.ensure(timeline.map((event) => event.pubkey));
+    });
+    await act(async () => release());
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    expect(
+      timeline.every((event) =>
+        t.session.profiles.snapshot().has(event.pubkey),
+      ),
+    ).toBe(true);
+    const list = screen.getByRole("region", { name: "Member list" });
+    expect(
+      within(list)
+        .getAllByRole("listitem")
+        .every((row) => /Member |Carl/.test(row.textContent ?? "")),
+    ).toBe(true);
+    const pages = within(list).getByRole("navigation", {
+      name: "People member pages",
+    });
+    await t.user.click(within(pages).getByRole("button", { name: "Next" }));
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    expect(
+      within(list)
+        .getAllByRole("listitem")
+        .every((row) => /Member |Carl/.test(row.textContent ?? "")),
+    ).toBe(true);
+    await t.user.click(within(pages).getByRole("button", { name: "Previous" }));
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    expect(
+      within(list)
+        .getAllByRole("listitem")
+        .every((row) => /Member |Carl/.test(row.textContent ?? "")),
+    ).toBe(true);
+    expect(
+      timeline.every((event) =>
+        t.session.profiles.snapshot().has(event.pubkey),
+      ),
+    ).toBe(true);
+  } finally {
+    await act(async () => release());
+  }
+});
+
+it("hides search feedback until the initial roster is available", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const results = Array.from({ length: 30 }, (_, i) =>
+    profile(keypair(), { name: `Zed ${i}` }),
+  );
+  const searchProfiles = vi.fn(async () => results);
+  try {
+    const t = await setup("stream", false, false, undefined, undefined, {
+      pendingMemberNames: pending,
+      searchProfiles,
+    });
+    await t.user.type(screen.getByRole("searchbox"), "Zed");
+    await vi.waitFor(() => expect(searchProfiles).toHaveBeenCalled());
+    // Flush the completed search while the independent roster read stays held.
+    await act(async () => {
+      await searchProfiles.mock.results[0]?.value;
+    });
+    expect(
+      screen.getByRole("status", { name: "Loading members" }),
+    ).toBeVisible();
+    expect(screen.queryByText("Searching…")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Find more matches" }),
+    ).not.toBeInTheDocument();
+    await act(async () => release());
+    expect(
+      await screen.findByRole("button", { name: "Find more matches" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("status", { name: "Loading members" }),
+    ).not.toBeInTheDocument();
+  } finally {
+    await act(async () => release());
+  }
+});
+
+it.each([0, 75])(
+  "filters broad relay hits by member name fields (extra members: %s)",
+  async (extraMembers) => {
+    const unrelated = profile(keypair(), {
+      name: "Unrelated member",
+      about: "ZeldaUnique in biography",
+    });
+    const named = profile(keypair(), { name: "ZeldaUnique Person" });
+    const alias = profile(keypair(), {
+      name: "ZeldaUniqueHandle",
+      display_name: "Different display",
+    });
+    const memberProfiles = [unrelated, named, alias];
+    const t = await setup("stream", false, false, undefined, undefined, {
+      extraMembers,
+      memberProfiles,
+      searchProfiles: async (query) =>
+        query === "ZeldaUnique" ? memberProfiles : [],
+    });
+    await vi.waitFor(() =>
+      expect(memberData()).toHaveAttribute("data-refreshing", "false"),
+    );
+    await t.user.type(screen.getByRole("searchbox"), "ZeldaUnique");
+    const list = screen.getByRole("region", { name: "Member list" });
+    await within(list).findByText(nameText("Different display"));
+    expect(
+      within(list).getByText(nameText("ZeldaUnique Person")),
+    ).toBeVisible();
+    expect(
+      within(list).queryByText(nameText("Unrelated member")),
+    ).not.toBeInTheDocument();
   },
 );

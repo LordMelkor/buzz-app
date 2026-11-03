@@ -1,3 +1,4 @@
+import { SEARCH_DEBOUNCE_MS } from "../../shared/search-debounce";
 import type { ConversationHostServices } from "../conversation/ConversationHost";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
@@ -633,6 +634,44 @@ it("Space waits for a longer name after any word break", async () => {
   ).not.toBeInTheDocument();
 });
 
+it("Space does not pick a one-character name the unread directory could continue", async () => {
+  const t = setup();
+  const q = { pubkey: "a".repeat(64), name: "Q" };
+  t.directMessages.people.mockImplementation(async (query, page) =>
+    !query && page === 1
+      ? { people: [q], hasMore: true }
+      : new Promise(() => {}),
+  );
+  t.mount();
+  await screen.findByRole("option", { name: "Q" });
+  await t.user.type(recipient(), "q");
+  await screen.findByRole("option", { name: "Q" });
+  await t.user.keyboard(" ");
+  expect(recipient()).toHaveValue("q ");
+  expect(
+    screen.queryByRole("button", { name: "Remove Q" }),
+  ).not.toBeInTheDocument();
+  expect(
+    t.directMessages.people.mock.calls.filter(([query]) => query === "q"),
+  ).toEqual([]);
+});
+
+it("explains the minimum instead of reporting no people for one character", async () => {
+  const t = setup();
+  t.directMessages.people.mockImplementation(async (query, page) =>
+    !query && page === 1
+      ? { people: people.slice(0, 1), hasMore: true }
+      : new Promise(() => {}),
+  );
+  t.mount();
+  await screen.findByRole("option", { name: "Person 1" });
+  await t.user.type(recipient(), "z");
+  expect(
+    await screen.findByText("Type at least 2 characters to search people."),
+  ).toBeVisible();
+  expect(screen.queryByText("No matching people.")).toBeNull();
+});
+
 it("Space does not pick while the rest of the list failed to load", async () => {
   const t = setup();
   const kim = { pubkey: "a".repeat(64), name: "Kim" };
@@ -1105,7 +1144,7 @@ it("filters the completed directory immediately without loading or searching aga
   vi.useFakeTimers();
   fireEvent.change(recipient(), { target: { value: "Still nobody" } });
   try {
-    await act(() => vi.advanceTimersByTimeAsync(200));
+    await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   } finally {
     vi.useRealTimers();
   }
@@ -1129,13 +1168,13 @@ it("searches again for people added after a completed directory when New message
   try {
     t.mount();
     fireEvent.change(recipient(), { target: { value: "New colleague" } });
-    await act(() => vi.advanceTimersByTimeAsync(200));
+    await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     await act(() => vi.advanceTimersToNextFrame());
     expect(screen.getByRole("option", { name: "New colleague" })).toBeVisible();
     // The reopened list is reused; a completed search is not read again.
     fireEvent.change(recipient(), { target: { value: "" } });
     fireEvent.change(recipient(), { target: { value: "New colleague" } });
-    await act(() => vi.advanceTimersByTimeAsync(200));
+    await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   } finally {
     vi.useRealTimers();
   }
@@ -1170,7 +1209,7 @@ it("repeats a search completed during an earlier visit while the directory is in
   try {
     t.mount();
     fireEvent.change(recipient(), { target: { value: "Ali" } });
-    await act(() => vi.advanceTimersByTimeAsync(200));
+    await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     await act(() => vi.advanceTimersToNextFrame());
   } finally {
     vi.useRealTimers();
@@ -1178,6 +1217,38 @@ it("repeats a search completed during an earlier visit while the directory is in
   expect(await screen.findByRole("option", { name: "Alice" })).toBeVisible();
   expect(t.directMessages.people.mock.calls.slice(requests)).toEqual([
     ["Ali", 1, expect.any(AbortSignal)],
+  ]);
+});
+
+it("browses an empty query but searches an incomplete directory only from two characters", async () => {
+  const t = setup();
+  t.directMessages.people.mockImplementation(async (query, page) => {
+    if (!query)
+      return page === 1
+        ? { people: people.slice(0, 1), hasMore: true }
+        : new Promise(() => {});
+    return { people: [], hasMore: false };
+  });
+  t.mount();
+  await screen.findByRole("option", { name: "Person 1" });
+  expect(t.directMessages.people).toHaveBeenCalledWith(
+    "",
+    1,
+    expect.any(AbortSignal),
+  );
+  const requests = t.directMessages.people.mock.calls.length;
+  vi.useFakeTimers();
+  try {
+    fireEvent.change(recipient(), { target: { value: "P" } });
+    await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(t.directMessages.people).toHaveBeenCalledTimes(requests);
+    fireEvent.change(recipient(), { target: { value: "Pe" } });
+    await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(t.directMessages.people.mock.calls.slice(requests)).toEqual([
+    ["Pe", 1, expect.any(AbortSignal)],
   ]);
 });
 
@@ -1304,7 +1375,7 @@ it("keeps searching past pages of excluded agents and never announces a false em
   const t = setup();
   const foreign = {
     pubkey: "a".repeat(64),
-    name: "C agent",
+    name: "Cy agent",
     isAgent: true as const,
   };
   const human = { pubkey: "b".repeat(64), name: "Cynthia" };
@@ -1319,10 +1390,10 @@ it("keeps searching past pages of excluded agents and never announces a false em
   });
   t.mount();
   await waitFor(() => expect(recipient()).toBeEnabled());
-  await t.user.type(recipient(), "C");
+  await t.user.type(recipient(), "Cy");
   await waitFor(() =>
     expect(t.directMessages.people).toHaveBeenCalledWith(
-      "C",
+      "Cy",
       2,
       expect.any(AbortSignal),
     ),

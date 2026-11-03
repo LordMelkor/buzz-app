@@ -12,6 +12,7 @@ import { percentile } from "../src/features/developer/client-metrics.ts";
 import {
   CHANNEL_KINDS,
   LIVE_REPLAY_LIMIT,
+  LIVE_BATCH_SIZE,
   SETUP_CONCURRENCY,
   subscribeRelayTraffic,
 } from "../src/features/relay/live.ts";
@@ -99,6 +100,7 @@ export function runStrategy({
     failures: {},
   };
   const requests = new Map(); // wire id → { sent, channels }
+  const liveOnlyChannels = new Set();
   const coverage = new Map(
     strategy.kind === "idle" ? [] : channels.map((id) => [id, "pending"]),
   );
@@ -174,12 +176,22 @@ export function runStrategy({
       if (frame[0] === "CLOSE") requests.delete(frame[1]);
       if (frame[0] !== "REQ" || frame[1] === CANARY) return;
       result.reqs++;
-      const ids = frame
-        .slice(2)
+      const filters = frame.slice(2);
+      const ids = filters
         .flatMap((filter) => filter["#h"] ?? [])
         .filter((id) => coverage.has(id));
-      for (const id of ids) coverage.set(id, "pending");
-      requests.set(frame[1], { sent: now(), channels: ids });
+      const replay =
+        strategy.kind === "client" &&
+        ids.length > 0 &&
+        filters.every((filter) => filter.limit > 0) &&
+        ids.every((id) => liveOnlyChannels.has(id));
+      if (strategy.kind === "client")
+        for (const filter of filters)
+          if (filter.limit === 0)
+            for (const id of filter["#h"] ?? []) liveOnlyChannels.add(id);
+      const pending = replay ? [] : ids;
+      for (const id of pending) coverage.set(id, "pending");
+      requests.set(frame[1], { sent: now(), channels: pending });
     },
     received(data) {
       result.bytes += data.length;
@@ -270,7 +282,9 @@ export function runStrategy({
       },
       connect,
       undefined,
-      strategy.size === Number.POSITIVE_INFINITY ? 1024 : strategy.size,
+      strategy.size === Number.POSITIVE_INFINITY
+        ? Math.ceil(channels.length / LIVE_BATCH_SIZE) + 2
+        : strategy.size,
     );
     // This roster represents joined channels, matching the app's batchable scope.
     owner.update(channels, channels);

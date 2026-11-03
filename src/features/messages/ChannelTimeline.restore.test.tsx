@@ -348,6 +348,55 @@ it("keeps a held reader when measured row offsets change without total height", 
   expect(region.scrollTop).toBe(350);
 });
 
+it("keeps fractional correction residue from accumulating during a held drag", async () => {
+  const h = mount(true);
+  await frame();
+  const region = screen.getByRole("region", {
+    name: "Channel message history",
+  });
+  let offset = 0;
+  let rowTop = 1520;
+  // WebKit quantizes scrollTop even when measured row offsets are fractional.
+  Object.defineProperty(region, "scrollTop", {
+    configurable: true,
+    get: () => offset,
+    set: (value: number) => {
+      offset = Math.trunc(value);
+    },
+  });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      return new DOMRect(0, this.closest("ol") ? rowTop - offset : 0, 800, 100);
+    },
+  );
+  region.scrollTop = 1400;
+  fireEvent.scroll(region);
+  fireEvent.keyDown(region, { key: "Home", ctrlKey: true });
+  rowTop = 520;
+  region.scrollTop = 400;
+  fireEvent.scroll(region);
+  fireEvent.pointerDown(region);
+  h.append();
+  await h.measured();
+  let expectedY = 120;
+  for (let step = 0; step < 8; step++) {
+    rowTop += 1.75;
+    await act(async () => {
+      (screen.getByRole("list").firstElementChild as HTMLElement).style.top =
+        `${step + 1}px`;
+    });
+    // The automatic correction emits a scroll event; it is not a new user position.
+    fireEvent.scroll(region);
+    expect(Math.abs(rowTop - offset - expectedY)).toBeLessThan(1);
+    if (step === 3) {
+      region.scrollTop -= 150;
+      expectedY += 150;
+      fireEvent.scroll(region);
+    }
+  }
+  fireEvent.pointerUp(region);
+});
+
 it("retargets a held reader when its former row is below the viewport", async () => {
   const h = mount(true);
   await frame();

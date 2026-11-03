@@ -4081,3 +4081,111 @@ mod federated_header {
         stream_block(false).await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelled_native_reads_close_their_connection_and_writes_refuse_an_id() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = Url::parse(&format!("http://{}/query", listener.local_addr().unwrap())).unwrap();
+    let (connections, accepted) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            if connections.send(stream).is_err() {
+                break;
+            }
+        }
+    });
+    let id = "22222222-2222-4222-8222-222222222222";
+    let read = tokio::spawn(async move {
+        let host = IdentityHost::fixture();
+        let request = send(
+            &host,
+            None,
+            url,
+            "POST",
+            Some("[]".into()),
+            true,
+            MAX_RESPONSE,
+        );
+        cancellable(Some(id), "POST", "/query", request).await
+    });
+    let mut stream = accepted.recv_timeout(Duration::from_secs(5)).unwrap();
+    relay_http_cancel(id.into()).unwrap();
+    assert_eq!(read.await.unwrap().unwrap().status, CANCELLED_READ);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut buffer = [0; 4096];
+    let closed = loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break true,
+            Ok(_) => continue,
+            Err(error) => break error.kind() == std::io::ErrorKind::ConnectionReset,
+        }
+    };
+    assert!(closed, "a cancelled read kept its relay connection open");
+
+    // A cancel that overtakes its read IPC still wins.
+    let early = "33333333-3333-4333-8333-333333333333";
+    relay_http_cancel(early.into()).unwrap();
+    let response = cancellable(Some(early), "POST", "/profiles/search", async {
+        unreachable!("an already cancelled read must not be sent")
+    })
+    .await
+    .unwrap();
+    assert_eq!(response.status, CANCELLED_READ);
+
+    // A dispatched write may already have reached the relay.
+    let Err(error) = cancellable(Some(id), "POST", "/events", async {
+        unreachable!("a write with a cancel id must not be sent")
+    })
+    .await
+    else {
+        panic!("a write accepted a cancel id");
+    };
+    assert!(error.to_string().contains("cannot be cancelled"));
+}
+
+#[tokio::test]
+async fn native_signature_checks_reject_tampered_and_malformed_claims() {
+    let secp = secp256k1::Secp256k1::new();
+    let keys = secp256k1::Keypair::from_secret_key(
+        &secp,
+        &secp256k1::SecretKey::from_byte_array([7; 32]).unwrap(),
+    );
+    let digest = [9u8; 32];
+    let claim = |id: [u8; 32], sig: &str| SignatureClaim {
+        id: id.iter().map(|b| format!("{b:02x}")).collect(),
+        pubkey: keys.x_only_public_key().0.to_string(),
+        sig: sig.into(),
+    };
+    let sig = secp.sign_schnorr_no_aux_rand(&digest, &keys).to_string();
+    let checked = relay_verify_signatures(vec![
+        claim(digest, &sig),
+        claim([8; 32], &sig),
+        claim(digest, &"0".repeat(128)),
+        claim(digest, "zz"),
+    ])
+    .await
+    .unwrap();
+    assert_eq!(checked, [true, false, false, false]);
+}
+
+#[tokio::test]
+async fn finished_native_reads_release_their_cancel_slot() {
+    // More completed reads than the registry holds, some failing: each frees its id.
+    for read in 0..100 {
+        let id = format!("{read:08}-4444-4444-8444-444444444444");
+        let result = cancellable(Some(&id), "POST", "/query", async move {
+            if read % 2 == 0 {
+                Ok(cancelled_read())
+            } else {
+                Err("relay down".into())
+            }
+        })
+        .await;
+        match result {
+            Ok(_) => assert_eq!(read % 2, 0),
+            Err(error) => assert_eq!(error.to_string(), "relay down"),
+        }
+    }
+}

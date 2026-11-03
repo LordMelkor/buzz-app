@@ -1,3 +1,12 @@
+/* Page sidebars keep their CSS role inside this host-resized outer track. */
+/* biome-ignore lint/correctness/noUnknownPseudoClass: CSS Modules global selector targets the shared sidebar role. */
+.sidebar > :global(.shell-sidebar-default) {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  margin-inline-end: 0;
+}
+
 /* The shell's shared panel gutter follows the sidebar. Center the existing hit
    target in that gutter without changing its width or the sidebar's geometry. */
 .handle[aria-orientation="vertical"] {

@@ -1,7 +1,7 @@
 import { FadingLabel } from "./FadingLabel";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
-import { XIcon } from "../../shared/design-system/icons/index";
+import { BellSlashIcon, XIcon } from "../../shared/design-system/icons/index";
 import { useId, type ReactElement, type ReactNode } from "react";
 import type { ChannelSummary } from "../../features/relay/contracts";
 import styles from "./ChannelSidebarRow.module.css";
@@ -13,6 +13,7 @@ export function ChannelSidebarRow({
   badge,
   working = false,
   ordinary = false,
+  muted = false,
   dmVisualSpacing = false,
   wrapSelect,
   selected,
@@ -29,6 +30,7 @@ export function ChannelSidebarRow({
   working?: boolean;
   /** Ordinary unread backlog emphasises the label. */
   ordinary?: boolean;
+  muted?: boolean;
   dmVisualSpacing?: boolean;
   wrapSelect?: ((trigger: ReactElement) => ReactNode) | undefined;
   selected?: string | undefined;
@@ -52,9 +54,14 @@ export function ChannelSidebarRow({
       label={
         <span
           className={styles.nameContent}
-          data-name-accessory={nameAccessory ? "" : undefined}
+          data-name-accessory={muted || nameAccessory ? "" : undefined}
         >
           <FadingLabel className={styles.label}>{channel.name}</FadingLabel>
+          {muted && (
+            <span className={styles.muted} role="img" aria-label="Muted">
+              <BellSlashIcon size={14} />
+            </span>
+          )}
           {nameAccessory}
         </span>
       }

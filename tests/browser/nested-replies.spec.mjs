@@ -731,6 +731,9 @@ for (const width of [1492, 1280, 1024, 700, 390])
     const expandAll = async () => {
       const branch = branchFor(ids[0]);
       await expect(branch).toHaveAttribute("data-open", "false");
+      await expect(
+        panel.getByRole("region", { name: "Thread messages", exact: true }),
+      ).toHaveAttribute("aria-busy", "false");
       await branch
         .locator(":scope > div")
         .nth(1)

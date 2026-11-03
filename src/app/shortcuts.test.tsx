@@ -9,8 +9,10 @@ import { PanelWorkspace } from "../features/panels/PanelWorkspace";
 import { ShortcutsService } from "../features/shortcuts/service";
 import { forwardTerminalKey } from "../features/shortcuts/terminal-key-event";
 import { createShortcutBindings } from "../features/shortcuts/preferences";
+import { createNavigationController } from "../features/navigation/controller";
+import { createMemoryHistory } from "../features/navigation/history";
 import { createAppearance } from "../shared/theme/service";
-import { registerAppShortcuts } from "./shortcuts";
+import { registerAppShortcuts, registerNavigationShortcuts } from "./shortcuts";
 
 const close = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: vi.fn(() => true) }));
@@ -536,6 +538,47 @@ it.each(["MacIntel", "Win32", "Linux x86_64"])(
       expect(press(filter, paneKey).defaultPrevented).toBe(false);
     } finally {
       Reflect.deleteProperty(document, "elementsFromPoint");
+      await h.dispose();
+    }
+  },
+);
+
+it.each([
+  ["Win32", { ctrlKey: true }],
+  ["MacIntel", { metaKey: true }],
+])(
+  "%s Mod+/ opens Settings at Shortcuts while typing; Mod+Shift+? stays with the OS",
+  async (platform, mod) => {
+    const h = harness(platform);
+    const controller = createNavigationController(createMemoryHistory());
+    const { navigation } = controller;
+    const remove = registerNavigationShortcuts(h.shortcuts, navigation);
+    const target = () => navigation.snapshot().attempt.entry.target;
+    const composer = document.createElement("textarea");
+    document.body.append(composer);
+    composer.focus();
+    try {
+      expect(
+        press(composer, { ctrlKey: false, key: "/", ...mod }).defaultPrevented,
+      ).toBe(true);
+      expect(target()).toEqual({
+        version: 1,
+        kind: "settings",
+        section: "shortcuts",
+      });
+      void navigation.open({ version: 1, kind: "home" });
+      for (const chord of [
+        { key: "?", shiftKey: true, ...mod },
+        { key: "/" },
+      ]) {
+        expect(
+          press(composer, { ctrlKey: false, ...chord }).defaultPrevented,
+        ).toBe(false);
+      }
+      expect(target()).toEqual({ version: 1, kind: "home" });
+    } finally {
+      remove();
+      controller.dispose();
       await h.dispose();
     }
   },

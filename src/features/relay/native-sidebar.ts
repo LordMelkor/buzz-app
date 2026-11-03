@@ -182,13 +182,30 @@ export function nativeSidebar(transport: ReadTransport) {
       const current = await head("main-agent", signal);
       return current.createdAt ? mainAgent(current.payload) : undefined;
     },
-    async writeMainAgent(agent: string, signal: AbortSignal) {
-      if (!agentKey.test(agent)) throw new Error("Invalid main agent intent");
+    async writeMainAgent(agent: string | null, signal: AbortSignal) {
+      if (agent !== null && !agentKey.test(agent))
+        throw new Error("Invalid main agent intent");
       await mutate(
         "main-agent",
         signal,
         () => ({ next: { version: 1, agent }, result: undefined }),
         (value) => value.agent === agent,
+        "The main agent changed on another device; reload and try again",
+      );
+    },
+    async clearMainAgent(expected: string, signal: AbortSignal) {
+      if (!agentKey.test(expected))
+        throw new Error("Invalid main agent intent");
+      return mutate(
+        "main-agent",
+        signal,
+        (current) => {
+          const agent = mainAgent(current);
+          return agent === expected
+            ? { next: { version: 1, agent: null }, result: undefined }
+            : { next: current, result: agent };
+        },
+        (value) => mainAgent(value) !== expected,
         "The main agent changed on another device; reload and try again",
       );
     },

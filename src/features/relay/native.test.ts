@@ -16,7 +16,7 @@ import {
   nativeRelaySigner,
   nativeWriteKinds,
 } from "./native";
-import { keypair, message, signed } from "./testing";
+import { keypair, message, nativeSignatureChecks, signed } from "./testing";
 import { createOutbox, type OutgoingEvent, PublishRejected } from "./outbox";
 import { createMessages } from "./messages";
 import { createRelaySession } from "./session";
@@ -89,6 +89,8 @@ beforeEach(() => {
     if (command === "relay_socket_connect") return "public";
     if (command === "relay_socket_close") return;
     if (command === "identity_restore") return viewer.pubkey;
+    if (command === "relay_verify_signatures")
+      return nativeSignatureChecks(args);
     if (command === "relay_sign") {
       expect(
         Object.keys((args as { event: EventTemplate }).event).sort(),
@@ -449,6 +451,10 @@ it("rejects tampered reads and keeps refusals distinct from uncertain receipts",
   const event = message(viewer, "channel", "original", 1700000000);
   respond = () => ({ body: [{ ...event, content: "tampered" }] });
   await expect(transport.query([{ kinds: [9], limit: 10 }])).rejects.toThrow();
+  respond = () => ({ body: [event, { ...event, sig: "0".repeat(128) }] });
+  await expect(transport.query([{ kinds: [9], limit: 10 }])).rejects.toThrow(
+    "invalidly signed",
+  );
   assert.exists(transport.writer);
   respond = () => ({ status: 403, body: { error: "denied" } });
   await expect(
@@ -530,10 +536,19 @@ it("authenticates live traffic with the native signer and verifies incoming chan
     await socket.receive(["EOSE", route[1]]);
     const incoming = message(keypair(), "channel", "Live reply", 1700000002);
     await socket.receive(["EVENT", route[1], incoming]);
+    await vi.waitFor(() => expect(receive).toHaveBeenCalled());
     expect(receive).toHaveBeenCalledWith([incoming], {
       phase: "live",
       channelId: "channel",
     });
+    expect(vi.mocked(invoke).mock.calls).toContainEqual([
+      "relay_verify_signatures",
+      {
+        claims: [
+          { id: incoming.id, pubkey: incoming.pubkey, sig: incoming.sig },
+        ],
+      },
+    ]);
     expect(
       vi
         .mocked(invoke)
@@ -1033,6 +1048,8 @@ it("routes lifecycle sign/publish separately from the message writer and preserv
   const event = signed(viewer, template);
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "identity_restore") return viewer.pubkey;
+    if (command === "relay_verify_signatures")
+      return nativeSignatureChecks(args);
     if (command === "relay_http")
       return {
         status: 200,

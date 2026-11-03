@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { SearchField } from "../../shared/design-system/ui/SearchField";
 import { Button } from "../../shared/design-system/ui/Button";
 import { fetchKlipyGifs, type KlipyGif } from "../../features/relay/gifs";
+import { searchable, useDebounced } from "../../shared/search-debounce";
 import "../../shared/design-system/styles/scrollbars.css";
 import styles from "./Emoji.module.css";
 
@@ -36,7 +37,6 @@ export function GifPicker({
   select(gif: KlipyGif): void;
 }) {
   const [query, setQuery] = useState(initialQuery);
-  const [debouncedQuery, setDebouncedQuery] = useState(initialQuery.trim());
   const [gifs, setGifs] = useState<KlipyGif[]>();
   const [error, setError] = useState<string>();
   const [attempt, retry] = useState(0);
@@ -45,13 +45,10 @@ export function GifPicker({
   useLayoutEffect(() => {
     input.current?.focus();
   }, []);
-  useEffect(() => {
-    const timeout = window.setTimeout(
-      () => setDebouncedQuery(query.trim()),
-      500,
-    );
-    return () => window.clearTimeout(timeout);
-  }, [query]);
+  // The provider is external, so typing waits longer than relay search.
+  const settled = useDebounced(query.trim(), 500);
+  // Text too short to search shows the unsearched GIFs.
+  const debouncedQuery = searchable(settled) ? settled : "";
   // biome-ignore lint/correctness/useExhaustiveDependencies: attempt explicitly retries the same request.
   useEffect(() => {
     if (!enabled) return;

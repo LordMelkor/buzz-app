@@ -827,10 +827,12 @@ it("shows historical verification time and issuer, discloses cache, and hides di
     expect(screen.getByText(/Last verified/)).toHaveTextContent(/1970/);
     expect(screen.getByText(/current issuer endorsement/)).toBeVisible();
     act(() => live.state({ status: "connecting", routes: [] }));
-    expect(screen.getByText(/Cached verification/)).toBeVisible();
+    expect(await screen.findByText(/Cached verification/)).toBeVisible();
     expect(screen.getByText(/Cached evidence/)).toBeVisible();
     await act(async () => live.state({ status: "connected", routes: [] }));
-    expect(screen.queryByText("Name verified by Example")).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByText("Name verified by Example")).toBeNull(),
+    );
     expect(screen.queryByText("Alice Example")).toBeNull();
     expect(screen.queryByText(/Cached verification/)).toBeNull();
   } finally {

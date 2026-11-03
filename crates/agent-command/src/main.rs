@@ -1,9 +1,25 @@
 //! One initialized app-held MCP session, inherited by a command and its children.
-//! No relay credentials, configuration files, or owner-identity fallback.
-use reqwest::{header::HeaderMap, Client, Url};
+//! No relay credentials or owner-identity fallback. A plugin may also advertise
+//! one of its sessions to the user's other local agents with `--advertise`; they
+//! run this helper without an inherited session and it finds the advertisement.
+use http_body_util::{BodyExt, Full};
+use hyper::{
+    body::Bytes,
+    header::{HeaderMap, HeaderName, ACCEPT, CONTENT_TYPE, HOST},
+    StatusCode,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, path::Path, process::Command, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Write,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
+use tokio::{net::TcpStream, time::Instant};
+use url::{Position, Url};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const CONNECTION: &str = "BUZZ_AGENT_CONNECTION";
@@ -20,10 +36,21 @@ struct Header {
     value: String,
 }
 struct Session {
-    client: Client,
     url: Url,
     headers: HeaderMap,
+    /// Read from an advertisement, so its server may have closed since and its port
+    /// may now belong to another user's process.
+    advertised: bool,
 }
+/// The server refused the request.
+#[derive(Debug)]
+struct Status(StatusCode);
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Buzz answered {}", self.0)
+    }
+}
+impl std::error::Error for Status {}
 impl Session {
     fn open(connection: Connection) -> Result<Self> {
         let url = Url::parse(&connection.url)?;
@@ -37,18 +64,14 @@ impl Session {
         let mut headers = HeaderMap::new();
         for header in connection.headers {
             headers.insert(
-                reqwest::header::HeaderName::from_bytes(header.name.as_bytes())?,
+                HeaderName::from_bytes(header.name.as_bytes())?,
                 header.value.parse()?,
             );
         }
         Ok(Self {
-            client: Client::builder()
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(60))
-                .build()?,
             url,
             headers,
+            advertised: false,
         })
     }
     async fn rpc(&mut self, method: &str, params: Value, notify: bool) -> Result<Value> {
@@ -56,22 +79,31 @@ impl Session {
         if !notify {
             body["id"] = json!(1);
         }
-        let response = self
-            .client
-            .post(self.url.clone())
-            .headers(self.headers.clone())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .body(serde_json::to_vec(&body)?)
-            .send()
-            .await?
-            .error_for_status()?;
-        if let Some(session) = response.headers().get("mcp-session-id") {
-            self.headers.insert("mcp-session-id", session.clone());
-            self.headers
-                .insert("mcp-protocol-version", PROTOCOL.parse()?);
-        }
-        let bytes = response.bytes().await?;
+        let mut request =
+            hyper::Request::post(&self.url[Position::BeforePath..Position::AfterQuery])
+                .header(HOST, &self.url[Position::BeforeHost..Position::AfterPort])
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "application/json, text/event-stream")
+                .body(Full::new(Bytes::from(serde_json::to_vec(&body)?)))?;
+        request.headers_mut().extend(self.headers.clone());
+        let bytes = tokio::time::timeout(Duration::from_secs(60), async {
+            let stream = self.connect().await?;
+            let (mut sender, connection) =
+                hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await?;
+            tokio::spawn(connection);
+            let response = sender.send_request(request).await?;
+            if !response.status().is_success() {
+                return Err(Status(response.status()).into());
+            }
+            if let Some(session) = response.headers().get("mcp-session-id") {
+                self.headers.insert("mcp-session-id", session.clone());
+                self.headers
+                    .insert("mcp-protocol-version", PROTOCOL.parse()?);
+            }
+            Ok::<_, Box<dyn std::error::Error>>(response.into_body().collect().await?.to_bytes())
+        })
+        .await
+        .map_err(|_| "Buzz did not answer within a minute")??;
         if bytes.is_empty() {
             return Ok(json!({}));
         }
@@ -80,6 +112,27 @@ impl Session {
             return Err(error.to_string().into());
         }
         Ok(reply.get("result").cloned().ok_or("Missing MCP result")?)
+    }
+    /// Connects to the server. An advertised one gets nothing, not even a request
+    /// line, until this user's process is shown to hold the server's side of this
+    /// very connection; the host takes one request per connection.
+    async fn connect(&self) -> Result<TcpStream> {
+        let port = self.url.port_or_known_default().ok_or("No port")?;
+        let stream = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port))).await?;
+        if self.advertised {
+            let client = stream.local_addr()?.port();
+            // The server's side has an owning process only once the server accepts it.
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !serves_this_user(port, client).await? {
+                if Instant::now() >= deadline {
+                    return Err(
+                        "Could not confirm that this user's Buzz serves an advertised port".into(),
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        Ok(stream)
     }
     fn connection(&self) -> Result<String> {
         Ok(serde_json::to_string(&Connection {
@@ -128,38 +181,274 @@ impl Session {
             .status()?;
         Ok(status.code().unwrap_or(1))
     }
-    async fn call(&mut self, args: &[String]) -> Result<i32> {
+    async fn call(mut self, args: &[String]) -> Result<i32> {
         if !self.headers.contains_key("mcp-session-id") {
             return Err("Run buzz inside an agent command".into());
         }
         let tools = self.rpc("tools/list", json!({}), false).await?;
-        if args == ["tools"] {
-            println!("{}", tools["tools"]);
-            return Ok(0);
-        }
-        let (name, arguments) = arguments(args, &tools)?;
-        let result = self
-            .rpc(
-                "tools/call",
-                json!({"name":name,"arguments":arguments}),
-                false,
-            )
-            .await?;
-        if let Some(content) = result["content"].as_array() {
-            for block in content {
-                if let Some(text) = block["text"].as_str() {
-                    println!("{text}");
-                }
+        run(vec![(self, tools)], args).await
+    }
+}
+/// Lists or calls the tools of `live` sessions, newest first; a name the newest
+/// offers wins over the same name in another Buzz window.
+async fn run(mut live: Vec<(Session, Value)>, args: &[String]) -> Result<i32> {
+    let mut names = HashSet::new();
+    let catalog: Vec<Value> = live
+        .iter()
+        .flat_map(|(_, tools)| tools["tools"].as_array().cloned().unwrap_or_default())
+        .filter(|tool| names.insert(tool["name"].to_string()))
+        .collect();
+    if args == ["tools"] {
+        println!("{}", Value::Array(catalog));
+        return Ok(0);
+    }
+    let (name, arguments) = arguments(args, &json!({ "tools": catalog }))?;
+    let (session, _) = live
+        .iter_mut()
+        .find(|(_, tools)| offers(tools, &name))
+        .ok_or("Unknown agent tool")?;
+    let result = session
+        .rpc(
+            "tools/call",
+            json!({"name":name,"arguments":arguments}),
+            false,
+        )
+        .await?;
+    if let Some(content) = result["content"].as_array() {
+        for block in content {
+            if let Some(text) = block["text"].as_str() {
+                println!("{text}");
             }
         }
-        Ok(i32::from(result["isError"] == true))
     }
+    Ok(i32::from(result["isError"] == true))
+}
+fn offers(tools: &Value, name: &str) -> bool {
+    tools["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
+}
+
+/// Same-user-private advertisements: the user's own agents may use them, other
+/// users may not, and nothing here is an account key.
+fn advertisements() -> Result<PathBuf> {
+    let home = std::env::home_dir().ok_or("No home directory")?;
+    let directory = home.join(".buzz-foundation").join("agent-connections");
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        builder.mode(0o700);
+        builder.create(&directory)?;
+        let metadata = std::fs::symlink_metadata(&directory)?;
+        if !metadata.is_dir() || metadata.uid() != std::fs::metadata(&home)?.uid() {
+            return Err("The agent connection directory is not private".into());
+        }
+        if metadata.mode() & 0o077 != 0 {
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    #[cfg(not(unix))]
+    builder.create(&directory)?;
+    Ok(directory)
+}
+/// Publishes this inherited, already-initialized session; it lasts as long as the
+/// plugin's server, and callers drop it once that stops answering.
+fn advertise(connection: &str) -> Result<i32> {
+    let session = Session::open(serde_json::from_str(connection)?)?;
+    if !session.headers.contains_key("mcp-session-id") {
+        return Err("Advertise an app-held session from inside an agent command".into());
+    }
+    let directory = advertisements()?;
+    // Written whole under a dot name, then renamed, so readers never see part of it.
+    let mut file = tempfile::Builder::new()
+        .prefix(".")
+        .rand_bytes(16)
+        .tempfile_in(&directory)?;
+    file.write_all(session.connection()?.as_bytes())?;
+    let name = file
+        .path()
+        .file_name()
+        .ok_or("No file name")?
+        .to_string_lossy()[1..]
+        .to_owned();
+    file.persist(directory.join(format!("{name}.json")))?;
+    Ok(0)
+}
+/// Sessions plugins advertised that still answer, newest first, up to the first
+/// that offers `wanted`. One whose server is gone is removed: a later server
+/// never accepts its token.
+async fn discovered(wanted: Option<&str>) -> Result<Vec<(Session, Value)>> {
+    let directory = advertisements()?;
+    #[cfg(unix)]
+    let owner = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(&directory)?);
+    // Another caller may prune a file while this one lists them.
+    let mut files: Vec<_> = std::fs::read_dir(directory)?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let metadata = std::fs::symlink_metadata(&path).ok()?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                // A directory once open to others may still hold their files.
+                if metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
+                    return None;
+                }
+            }
+            let name = path.file_name()?.to_str()?;
+            (metadata.is_file() && name.ends_with(".json") && !name.starts_with('.'))
+                .then_some((metadata.modified().ok()?, path))
+        })
+        .collect();
+    files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    let (mut live, mut unreachable) = (Vec::new(), None);
+    for (_, path) in files {
+        let Some(mut session) = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|connection| Session::open(connection).ok())
+            .filter(|session| session.headers.contains_key("mcp-session-id"))
+        else {
+            continue;
+        };
+        session.advertised = true;
+        match session.rpc("tools/list", json!({}), false).await {
+            Ok(tools) => {
+                // Older servers cannot win the call, so a stalled one need not delay it.
+                let found = wanted.is_some_and(|name| offers(&tools, name));
+                live.push((session, tools));
+                if found {
+                    break;
+                }
+            }
+            Err(error) if gone(error.as_ref()) => {
+                let _ = std::fs::remove_file(&path);
+            }
+            Err(error) => {
+                let cause = std::iter::successors(Some(error.as_ref()), |error| error.source());
+                unreachable = Some(format!(
+                    "Could not reach Buzz: {}",
+                    cause.last().unwrap_or(&*error)
+                ));
+            }
+        }
+    }
+    if live.is_empty() {
+        return Err(unreachable
+            .unwrap_or_else(|| "No running Buzz offers agent tools to this user's agents".into())
+            .into());
+    }
+    Ok(live)
+}
+/// Whether a process of this account holds the server's side of the loopback
+/// connection from `client` to `server`. Missing, partial, or failed evidence is no.
+#[cfg(target_os = "macos")]
+async fn serves_this_user(server: u16, client: u16) -> Result<bool> {
+    // lsof may list every user's files, so the selection names this account's UID and
+    // the answer is checked against it too.
+    let uid = unsafe { libc::geteuid() };
+    let mut lsof = tokio::process::Command::new("/usr/sbin/lsof")
+        .args([
+            "-a",
+            "-u",
+            &uid.to_string(),
+            "-nP",
+            "-w",
+            "-sTCP:ESTABLISHED",
+            "-Fpun",
+        ])
+        .arg(format!("-iTCP@127.0.0.1:{client}"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("Could not check the advertised server: {error}"))?;
+    let mut stdout = lsof.stdout.take().ok_or("No lsof output")?;
+    let mut output = Vec::new();
+    let finished = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut output).await?;
+        lsof.wait().await
+    })
+    .await;
+    let Ok(status) = finished else {
+        let _ = lsof.kill().await;
+        return Ok(false);
+    };
+    Ok(status?.success() && lsof_shows(&String::from_utf8_lossy(&output), uid, server, client))
+}
+#[cfg(target_os = "linux")]
+async fn serves_this_user(server: u16, client: u16) -> Result<bool> {
+    let table = std::fs::read_to_string("/proc/net/tcp")
+        .map_err(|error| format!("Could not check the advertised server: {error}"))?;
+    Ok(proc_shows(
+        &table,
+        unsafe { libc::geteuid() },
+        server,
+        client,
+    ))
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+async fn serves_this_user(_: u16, _: u16) -> Result<bool> {
+    Err("Advertised sessions are not supported on this platform".into())
+}
+/// lsof `-F pun` output in which every process is `uid`'s and one holds the server's
+/// side: local `server`, remote `client`.
+#[cfg(any(target_os = "macos", test))]
+fn lsof_shows(output: &str, uid: u32, server: u16, client: u16) -> bool {
+    let side = format!("n127.0.0.1:{server}->127.0.0.1:{client}");
+    let (mut owner, mut found) = (false, false);
+    for line in output.lines() {
+        if line.starts_with('p') {
+            owner = false;
+        } else if let Some(id) = line.strip_prefix('u') {
+            if id.parse() != Ok(uid) {
+                return false;
+            }
+            owner = true;
+        } else if line == side {
+            if !owner {
+                return false;
+            }
+            found = true;
+        }
+    }
+    found
+}
+/// A `/proc/net/tcp` row for the server's side, established and owned by `uid`.
+/// Until accepted it has no inode and an unrelated UID, such as the overflow UID.
+#[cfg(any(target_os = "linux", test))]
+fn proc_shows(table: &str, uid: u32, server: u16, client: u16) -> bool {
+    let loopback = format!("{:08X}", u32::from_ne_bytes([127, 0, 0, 1]));
+    let (local, remote) = (
+        format!("{loopback}:{server:04X}"),
+        format!("{loopback}:{client:04X}"),
+    );
+    table.lines().skip(1).any(|row| {
+        let fields: Vec<_> = row.split_whitespace().collect();
+        fields.get(1) == Some(&local.as_str())
+            && fields.get(2) == Some(&remote.as_str())
+            && fields.get(3) == Some(&"01")
+            && fields.get(7).and_then(|id| id.parse().ok()) == Some(uid)
+            && fields.get(9).is_some_and(|inode| *inode != "0")
+    })
+}
+/// Nothing listens on the server's port, or it no longer admits the session. A
+/// connection the caller's own sandbox denied proves neither, so its file stays.
+fn gone(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<Status>()
+        .is_some_and(|status| status.0 == StatusCode::NOT_FOUND)
+        || error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::ConnectionRefused)
 }
 fn arguments(args: &[String], catalog: &Value) -> Result<(String, Value)> {
     let explicit = args.first().is_some_and(|arg| arg == "call");
-    let (name, rest) = args[usize::from(explicit)..].split_first().ok_or(
-        "Usage: buzz tools | buzz <tool> --field value | buzz call <tool> '<JSON object>'",
-    )?;
+    let (name, rest) = args[usize::from(explicit)..]
+        .split_first()
+        .ok_or("Name a tool; --help shows the usage")?;
     let tool = catalog["tools"]
         .as_array()
         .and_then(|tools| tools.iter().find(|tool| tool["name"] == name.as_str()))
@@ -214,19 +503,49 @@ fn main() {
                 .into());
         }
 
-        let connection = serde_json::from_str(
-            &std::env::var(CONNECTION).map_err(|_| "An app-held agent connection is required")?,
-        )?;
-        let mut session = Session::open(connection)?;
+        let inherited = std::env::var(CONNECTION).ok();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        if Path::new(&args[0]).file_stem().and_then(|s| s.to_str()) == Some("buzz") {
-            runtime.block_on(session.call(&args[1..]))
-        } else if args.get(1).is_some_and(|arg| arg == "--launch") {
-            runtime.block_on(session.launch(&args[2..]))
-        } else {
-            Err("Expected --launch command [arguments]".into())
+        let required = || {
+            inherited
+                .as_deref()
+                .ok_or("An app-held agent connection is required")
+        };
+        let buzz = Path::new(&args[0]).file_stem().and_then(|s| s.to_str()) == Some("buzz");
+        match args.get(1).map(String::as_str) {
+            Some("--launch") if !buzz => runtime
+                .block_on(Session::open(serde_json::from_str(required()?)?)?.launch(&args[2..])),
+            Some("--advertise") if !buzz => advertise(required()?),
+            Some("--help" | "-h") | None => {
+                // An agent outside a command has no `buzz` alias; it keeps using this path.
+                let program = if buzz {
+                    "buzz".to_owned()
+                } else if args[0].contains(char::is_whitespace) {
+                    format!("'{}'", args[0])
+                } else {
+                    args[0].clone()
+                };
+                println!(
+                    "Usage: {program} tools | {program} <tool> --field value | {program} call <tool> '<JSON object>'"
+                );
+                Ok(0)
+            }
+            _ => match &inherited {
+                Some(connection) => runtime
+                    .block_on(Session::open(serde_json::from_str(connection)?)?.call(&args[1..])),
+                None => {
+                    let args = &args[1..];
+                    let wanted = if args == ["tools"] {
+                        None
+                    } else {
+                        args.get(usize::from(args[0] == "call"))
+                    };
+                    runtime.block_on(async {
+                        run(discovered(wanted.map(String::as_str)).await?, args).await
+                    })
+                }
+            },
         }
     })();
     match result {
@@ -265,5 +584,46 @@ mod tests {
         );
         assert!(arguments(&["owner-secret".into()], &tools).is_err());
         assert!(arguments(&["call".into(), "mem_set".into(), "[]".into()], &tools).is_err());
+    }
+    #[test]
+    fn trusts_only_this_users_side_of_the_server() {
+        let ours = "n127.0.0.1:2001->127.0.0.1:2000";
+        let theirs = "n127.0.0.1:2000->127.0.0.1:2001";
+        let shows = |output: &str| lsof_shows(output, 501, 2000, 2001);
+        assert!(shows(&format!(
+            "p9\nu501\nf4\n{ours}\np10\nu501\nf5\n{theirs}\n"
+        )));
+        // Before the server accepts, only the caller's own side is listed.
+        assert!(!shows(&format!("p9\nu501\nf4\n{ours}\n")));
+        assert!(!shows(&format!("p10\nu502\nf5\n{theirs}\n")));
+        assert!(!shows(&format!(
+            "p9\nu501\nf4\n{ours}\np10\nu0\nf5\n{theirs}\n"
+        )));
+        assert!(!shows(&format!("p10\nf5\n{theirs}\n")));
+        assert!(!shows(&format!("{theirs}\n")));
+        assert!(!shows(""));
+
+        let loopback = format!("{:08X}", u32::from_ne_bytes([127, 0, 0, 1]));
+        let row = |local: u16, remote: u16, state: &str, uid: u32| {
+            format!("   0: {loopback}:{local:04X} {loopback}:{remote:04X} {state} 0:0 0:0 0 {uid} 0 7\n")
+        };
+        let shows = |rows: &[String]| {
+            proc_shows(
+                &format!("  sl  local_address\n{}", rows.concat()),
+                501,
+                2000,
+                2001,
+            )
+        };
+        assert!(shows(&[
+            row(2001, 2000, "01", 501),
+            row(2000, 2001, "01", 501)
+        ]));
+        assert!(!shows(&[row(2001, 2000, "01", 501)]));
+        assert!(!shows(&[row(2000, 2001, "01", 502)]));
+        assert!(!shows(&[row(2000, 2001, "08", 501)]));
+        assert!(!shows(&[row(2000, 0, "0A", 501)]));
+        let unaccepted = row(2000, 2001, "01", 501).replace(" 7\n", " 0\n");
+        assert!(!shows(&[row(2001, 2000, "01", 501), unaccepted]));
     }
 }

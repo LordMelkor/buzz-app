@@ -13,6 +13,7 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 export async function buildApp(
   {
     developmentReact,
+    builderlabLogin,
     pluginFixtures,
     companionFixture,
     localAgentActivity,
@@ -69,6 +70,12 @@ export async function buildApp(
           : []),
       ],
       define: {
+        ...(builderlabLogin
+          ? {
+              "import.meta.env.VITE_BUZZ_BUILDERLAB_URL":
+                '"https://app.builderlab.xyz"',
+            }
+          : {}),
         ...(developmentReact ? { "import.meta.env.DEV": "true" } : {}),
         "import.meta.env.VITE_BUZZ_LIVE": '"1"',
         "import.meta.env.VITE_BUZZ_COMMUNITY_ALIASES":

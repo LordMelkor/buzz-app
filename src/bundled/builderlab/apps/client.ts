@@ -3,7 +3,7 @@
 // session goes as `Authorization: BBIdentity <session>`, and the gateway
 // exchanges it for the control plane's own token.
 import type { Host, HostResponse } from "../../../features/host/service";
-import type { OAuthSession } from "../oauth/session";
+import type { BuilderlabSession } from "../session";
 
 /** The Apps protocol `bl` speaks, which the control plane checks. */
 const PROTOCOL = "0.2.0";
@@ -29,11 +29,13 @@ export type AppsClient = ReturnType<typeof createAppsClient>;
 
 export function createAppsClient(
   host: Host,
-  session: OAuthSession,
+  session: BuilderlabSession,
   base: string,
+  transport?: Pick<Host, "request" | "upload">,
 ) {
+  const http = transport ?? host;
   // One client belongs to one tool operation, including all its HTTP steps.
-  let owner: ReturnType<OAuthSession["credential"]> | undefined;
+  let owner: ReturnType<BuilderlabSession["credential"]> | undefined;
   const credential = () => {
     if (session.snapshot().status !== "signed-in")
       throw new Error(`Builderlab is not signed in. ${SIGN_IN}`);
@@ -41,6 +43,9 @@ export function createAppsClient(
     if (owner && current !== owner)
       throw new Error("Builderlab sign-in changed. Start a new Apps request.");
     owner = current;
+    if (transport) return "";
+    if (!("value" in current) || typeof current.value !== "string")
+      throw new Error(SIGN_IN);
     return current.value;
   };
   const headers = (secret: string) => ({
@@ -72,12 +77,14 @@ export function createAppsClient(
       // Never hand the session on, even if a server echoed it.
       throw new Error(
         `${what} failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`.replaceAll(
-          secret,
+          secret || "\u0000",
           "[redacted]",
         ),
       );
     }
-    return JSON.parse(JSON.stringify(body).replaceAll(secret, "[redacted]"));
+    return JSON.parse(
+      JSON.stringify(body).replaceAll(secret || "\u0000", "[redacted]"),
+    );
   };
   const call = async (
     method: "GET" | "POST" | "PUT" | "DELETE",
@@ -86,7 +93,7 @@ export function createAppsClient(
     body?: Json,
   ): Promise<Json> => {
     const secret = credential();
-    const response = await host.request({
+    const response = await http.request({
       url: `${base}${path}`,
       method,
       headers: {
@@ -190,7 +197,7 @@ export function createAppsClient(
           error instanceof Error ? error.message : "Request failed";
         throw new Error(
           `Create stopped during ${step} for app_id=${id}: ${detail}. The reservation may already exist; inspect or resume this exact app before creating a replacement.`.replaceAll(
-            secret,
+            secret || "\u0000",
             "[redacted]",
           ),
         );
@@ -198,9 +205,9 @@ export function createAppsClient(
     },
     /** Uploads `artifact` as the app's next version. */
     async deploy(id: string, artifact: string) {
-      if (!host.upload) throw new Error("Deploying needs the Buzz desktop app");
+      if (!http.upload) throw new Error("Deploying needs the Buzz desktop app");
       const secret = credential();
-      const response = await host.upload({
+      const response = await http.upload({
         url: `${base}${app(id, "deploy")}`,
         headers: headers(secret),
         file: {

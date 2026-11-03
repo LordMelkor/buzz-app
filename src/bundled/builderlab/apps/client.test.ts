@@ -112,7 +112,7 @@ it("preserves the reserved app ID when sign-out interrupts initialization", asyn
   expect(request).toHaveBeenCalledTimes(3);
 });
 
-async function setup(responses: HostResponse[], signedIn = true) {
+async function setup(responses: HostResponse[], signedIn = true, dev = false) {
   const session = createOAuthSession(async () => ({
     value: "secret-session",
     account: {
@@ -131,7 +131,10 @@ async function setup(responses: HostResponse[], signedIn = true) {
     return response;
   };
   const host = { request: vi.fn(next), upload: vi.fn(next) } as unknown as Host;
-  return { client: createAppsClient(host, session, BASE), requests };
+  return {
+    client: createAppsClient(host, session, BASE, dev ? host : undefined),
+    requests,
+  };
 }
 
 it("plans and reserves a static app with the Builderlab session", async () => {
@@ -506,3 +509,28 @@ it("rejects URLs outside the deployed app hostname shapes", () => {
   ])
     expect(isAppUrl(url), url).toBe(false);
 });
+
+it.each(["reserve", "initialize"] as const)(
+  "keeps dev create errors and the recovery app ID readable after %s fails",
+  async (step) => {
+    const { client, requests } = await setup(
+      [
+        contract(),
+        json(200, {
+          app_id: "recovery-app",
+          initialize: { required: true, recommended: true },
+        }),
+        ...(step === "initialize"
+          ? [json(200, { app_id: "recovery-app" })]
+          : []),
+        json(503, { error: { message: "gateway unavailable" } }),
+      ],
+      true,
+      true,
+    );
+    await expect(client.create("Demo")).rejects.toThrow(
+      `Create stopped during ${step} for app_id=recovery-app: ${step === "reserve" ? "Reserving" : "Initializing"} failed (HTTP 503): gateway unavailable. The reservation may already exist; inspect or resume this exact app before creating a replacement.`,
+    );
+    expect(requests).toHaveLength(step === "reserve" ? 3 : 4);
+  },
+);

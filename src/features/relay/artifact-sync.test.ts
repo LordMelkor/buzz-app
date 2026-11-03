@@ -5,7 +5,8 @@ import {
   type ArtifactSyncSink,
 } from "./artifact-sync";
 import { createLiveAdmission, subscribeRelayTraffic } from "./live";
-import { keypair, signed } from "./testing";
+import { keypair, nativeSignatureChecks, signed } from "./testing";
+import type { SignatureVerifier } from "./events";
 
 const key = keypair();
 const C1 = "11111111-1111-4111-8111-111111111111";
@@ -258,6 +259,75 @@ class Socket {
 }
 
 describe("live socket sync wire", () => {
+  it("native verification closes only the invalid sync and orders the other sync's EOSE", async () => {
+    const viewer = keypair();
+    const socket = new Socket();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const check = vi.fn<SignatureVerifier>(async (claims) => {
+      await held;
+      return nativeSignatureChecks({ claims });
+    });
+    const receive = vi.fn();
+    const owner = subscribeRelayTraffic(
+      "wss://relay.test",
+      async (event) => signed(viewer, event),
+      viewer.pubkey,
+      { receive, state: vi.fn(), established: vi.fn(), denied: vi.fn() },
+      () => socket as unknown as WebSocket,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      check,
+    );
+    const failed = { event: vi.fn(), eose: vi.fn(), closed: vi.fn() };
+    const healthy = { event: vi.fn(), eose: vi.fn(), closed: vi.fn() };
+    try {
+      owner.syncArtifacts?.(artifactSyncFilter(filter), failed);
+      owner.syncArtifacts?.(artifactSyncFilter(filter), healthy);
+      await socket.receive(["AUTH", "challenge"]);
+      const auth = socket.sent.find((frame) => frame[0] === "AUTH")?.[1] as {
+        id: string;
+      };
+      await socket.receive(["OK", auth.id, true]);
+      const reqs = socket.sent.filter(
+        (frame) => frame[0] === "REQ" && String(frame[1]).startsWith("sync-"),
+      );
+      expect(reqs).toHaveLength(2);
+      const event = head("native");
+      const frames = [
+        socket.receive([
+          "EVENT",
+          nth(reqs, 0)[1],
+          { ...event, sig: "0".repeat(128) },
+        ]),
+        socket.receive(["EOSE", nth(reqs, 0)[1]]),
+        socket.receive(["EVENT", nth(reqs, 1)[1], event]),
+        socket.receive(["EOSE", nth(reqs, 1)[1]]),
+      ];
+      await vi.waitFor(() => expect(check).toHaveBeenCalledOnce());
+      expect(healthy.event).not.toHaveBeenCalled();
+      expect(healthy.eose).not.toHaveBeenCalled();
+      release();
+      await Promise.all(frames);
+      expect(failed.closed).toHaveBeenCalledWith(
+        "error: relay supplied an invalid event",
+      );
+      expect(failed.event).not.toHaveBeenCalled();
+      expect(failed.eose).not.toHaveBeenCalled();
+      expect(healthy.event).toHaveBeenCalledWith(event);
+      expect(healthy.eose).toHaveBeenCalledOnce();
+      expect(healthy.closed).not.toHaveBeenCalled();
+      expect(receive).not.toHaveBeenCalled();
+    } finally {
+      release();
+      owner.dispose();
+    }
+  });
   it("sends one REQ after auth, routes its frames to the sink only, and ends it when the socket drops", async () => {
     vi.useFakeTimers();
     const viewer = keypair();

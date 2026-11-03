@@ -99,7 +99,16 @@ export const nativeWriteKinds = [
   ...WORKFLOW_KINDS,
 ] as const;
 
-/** Cancellation fences JS results; a dispatched native write may still complete. */
+/** Searches and reads native code may abandon. Mirrors `cancellable_read` in
+ * `src-tauri/src/relay.rs`. */
+const CANCELLABLE_READS = new Set([
+  "/query",
+  "/profiles/search",
+  "/gifs/search",
+]);
+
+/** Cancellation stops a native read at once; a dispatched native write may
+ * still complete, so it only fences the JS result. */
 export async function nativeRelayRequest(
   community: string,
   path: string,
@@ -111,20 +120,33 @@ export async function nativeRelayRequest(
     AbortSignal.timeout(30_000),
   ]);
   bounded.throwIfAborted();
-  const result = await invoke<{
-    status: number;
-    headers: Record<string, string>;
-    body: string;
-  }>("relay_http", {
-    community: communityDestination(community).url,
-    path,
-    method: body === undefined ? "GET" : "POST",
-    body: body === undefined ? null : JSON.stringify(body),
-  });
-  // IPC cannot abort reqwest. Retain the shared admission slot until native work
-  // settles (bounded by its timeout), then reject any obsolete result.
-  bounded.throwIfAborted();
-  return nativeResponse(result);
+  const id =
+    body !== undefined && CANCELLABLE_READS.has(path)
+      ? crypto.randomUUID()
+      : undefined;
+  const cancel = () => {
+    invoke("relay_http_cancel", { id }).catch(() => {});
+  };
+  if (id) bounded.addEventListener("abort", cancel, { once: true });
+  try {
+    const result = await invoke<{
+      status: number;
+      headers: Record<string, string>;
+      body: string;
+    }>("relay_http", {
+      community: communityDestination(community).url,
+      path,
+      method: body === undefined ? "GET" : "POST",
+      body: body === undefined ? null : JSON.stringify(body),
+      ...(id ? { id } : {}),
+    });
+    // The shared admission slot stays held until native work settles: at
+    // once for a cancelled read, otherwise within its timeout.
+    bounded.throwIfAborted();
+    return nativeResponse(result);
+  } finally {
+    if (id) bounded.removeEventListener("abort", cancel);
+  }
 }
 
 function nativeResponse(result: {
@@ -313,6 +335,8 @@ export function nativeRelaySigner(community: string): Signer {
     },
     upload: (file, signal) => nativeUpload(origin, file, signal),
     media: nativeMediaUrl,
+    verifySignatures: (claims) =>
+      nativeReadInvoke<boolean[]>("relay_verify_signatures", { claims }),
   };
 }
 

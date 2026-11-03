@@ -241,20 +241,43 @@ export function createMessages(
       .flatMap((event) => linkedCopies(event, channelId))
       .filter((event) => !ids.includes(event.id));
     const all = [...ids, ...new Set(linked.map((event) => event.id))];
-    const removed = all.length <= 100 ? all : ids;
-    const targets = [...originals, ...(all.length <= 100 ? linked : [])];
-    return writer(5, channelId, authorization).send({
-      kind: 5,
-      content: "",
-      tags: [
-        ["h", channelId],
-        ...removed.map((id) => ["e", id]),
-        ...[...new Set(targets.map((event) => event.kind))].map((kind) => [
-          "k",
-          String(kind),
+    const targets = [
+      ...new Map(
+        [...originals, ...(all.length <= 100 ? linked : [])].map((event) => [
+          event.id,
+          event,
         ]),
-      ],
+      ).values(),
+    ];
+    // The relay accepts exactly one target per deletion, so each copy gets its
+    // own event. One that cannot be queued does not stop the rest; any failure
+    // is reported once every other target has been attempted.
+    const queue = writer(5, channelId, authorization);
+    const failures: unknown[] = [];
+    const operations = targets.flatMap((event) => {
+      try {
+        return [
+          queue.send({
+            kind: 5,
+            content: "",
+            tags: [
+              ["h", channelId],
+              ["e", event.id],
+              ["k", String(event.kind)],
+            ],
+          }),
+        ];
+      } catch (cause) {
+        failures.push(cause);
+        return [];
+      }
     });
+    if (failures.length)
+      throw new Error(
+        `Could not delete ${failures.length} of ${targets.length} linked messages`,
+        { cause: failures[0] },
+      );
+    return operations[0] as string;
   };
   return Object.freeze({
     send(

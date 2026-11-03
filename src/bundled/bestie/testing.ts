@@ -74,7 +74,7 @@ export async function bestieFixture(
   options: {
     mainAgent?: {
       read(signal: AbortSignal): Promise<string | undefined>;
-      write(agent: string, signal: AbortSignal): Promise<void>;
+      write(agent: string | null, signal: AbortSignal): Promise<void>;
     };
   } = {},
 ) {

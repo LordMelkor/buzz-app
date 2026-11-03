@@ -79,6 +79,13 @@ behavior on the label, so a rename touches copy only.
   agents: answer as one channel-scoped, top-level conversation. It is not access
   authority. The in-app agent harness reads it from the channel list; remote
   harnesses that only read `about` need to learn the label.
+- The Buzz tools' `channel_create` with `solo` sends the same create for any
+  caller, including the standalone stdio server: signed by the caller, with the
+  label and any `members` it names. The caller is the creator, so an agent's
+  key makes a chat its human members see as shared, not their own. It sends no
+  message, so no agent turn starts, and it does not file the chat in a
+  workspace. It cannot check NIP-CL support first, so on a relay that drops the
+  label it reports an ordinary private channel instead.
 - **Share** opens the same access dialog from Solo and Messages. This flow
   preserves channel ID, history, Canvas, existing members,
   Solo label and workspace filing. It neither promotes a conversation nor
@@ -129,8 +136,10 @@ behavior on the label, so a rename touches copy only.
   the default agent for this account/community. **Agents → right-click or "..." →
   Make my bestie** explicitly saves that agent as the bestie; its card then shows
   **Bestie**. That choice is saved to the account as a private `main-agent` record,
-  so every install adopts it once per session. Only this explicit choice writes
-  the record; a deleted agent left on it is stood in for until the next choice.
+  so every install adopts it once per session. Explicit choices write the
+  record. A finished deletion writes no Bestie when a fresh account read still
+  names the deleted agent. A different choice visible to that read stays; the
+  read/replace cannot protect a concurrent choice on another device before publish.
   The choice stays until it is changed or the agent is deleted, and it is still
   tagged when its runtime is signed out or broken. Without a choice, or after the
   chosen agent is deleted, the first managed agent, then the first selectable

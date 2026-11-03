@@ -299,16 +299,17 @@ a failure mechanism; it does not on its own identify a live incident's cause.
 `dm-labels.spec.mjs` builds the actual page and uses the production broker with
 signed, ephemeral fixture profiles. The real **Refresh channels** control reads a
 complete roster omitting a channel. Without remounting the page or opening the DM
-first, its sidebar must reacquire names after the session's safety purge. A hidden
-channel disappearing while the initial profile fetch is held must cancel that read
-and issue a fresh one; an already-loaded name must clear and then recover. Finally,
-opening the DM checks the shared label in the conversation title.
+first, its sidebar must keep the DM name through the session's purge, with no
+repeated name read. A hidden channel disappearing while the initial profile fetch is
+held must not cancel that read: it finishes and the name lands. An already-loaded
+name must stay. Finally, opening the DM checks the shared label in the conversation
+title.
 
-This guards full-roster page-to-hook wiring, not just the hook in isolation. The
-hidden-channel cold case must fail if the page filters the roster before passing
-it to the hook. The six colocated hook/session cases also cover archived channels,
-stale replies, and empty/failed profile results without retries on ordinary message
-traffic. The existing channel-opening journey keeps optional names behind reading.
+This guards the page's DM labels through the real purge. It no longer proves that
+`ChannelsPage` passes the full roster to the hook: names now survive without the
+membership retry. The six colocated hook cases cover that retry for empty/failed
+profile results (once on a roster change, never on ordinary message traffic), plus
+archived channels and a read that finishes after the deletion. The existing channel-opening journey keeps optional names behind reading.
 
 These tests model roster removal and explicitly refresh: they do **not** establish
 which event or reconnect triggers deployed deletion catch-up, or require the

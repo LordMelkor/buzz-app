@@ -1,3 +1,5 @@
+export const REPLY_CORRELATION_MS = 120_000;
+
 export type LocalWorkState =
   | "waiting"
   | "working"
@@ -19,8 +21,18 @@ export type LocalWork = Readonly<{
   channelId: string;
   messageId: string;
   threadRootId: string;
+  /** The request is in this thread; absent means channel-level work. */
+  thread?: true;
+  /** The request is in a relay-verified Solo chat, not a DM or channel. */
+  soloChat?: true;
+  /** The Solo chat's existing display name when this work started. */
+  conversationName?: string;
   state: LocalWorkState;
   startedAt: number;
+  /** This run's messages still awaiting publication acknowledgement. */
+  publishing?: number;
+  /** Recent messages this run published here; their relay echoes are not separate alerts. */
+  replyMessages?: readonly Readonly<{ id: string; acknowledgedAt: number }>[];
   error?: string;
   /** Latest live step, as the harness named it; display only. */
   step?: WorkStep;
@@ -59,6 +71,7 @@ export function createLocalAgentActivity() {
   const stops = new Map<symbol, () => Promise<void>>();
   /** How to ask each retryable request again, while its row is kept. */
   const retries = new Map<symbol, () => void>();
+  const replyTimers = new Map<symbol, ReturnType<typeof setTimeout>>();
   const publish = () => {
     work = Object.freeze([...entries.values()]);
     for (const listener of workListeners) listener();
@@ -128,6 +141,8 @@ export function createLocalAgentActivity() {
         LocalWork,
         | "state"
         | "startedAt"
+        | "publishing"
+        | "replyMessages"
         | "error"
         | "dismissed"
         | "stoppable"
@@ -136,16 +151,22 @@ export function createLocalAgentActivity() {
       retry?: () => void,
     ) {
       // Keep the newest accepted handling of one exact message; late completions
-      // retain their own token and cannot overwrite its replacement.
+      // retain their own token and cannot overwrite its replacement. A retry
+      // still owns the prior attempt's fresh reply IDs, because those relay
+      // echoes may arrive after the activity row is replaced.
+      let replaced: LocalWork | undefined;
       for (const [id, row] of entries)
         if (
           row.scope === input.scope &&
           row.agent === input.agent &&
           row.messageId === input.messageId
         ) {
+          replaced = row;
           entries.delete(id);
           stops.delete(id);
           retries.delete(id);
+          clearTimeout(replyTimers.get(id));
+          replyTimers.delete(id);
         }
       // Display budget only, independent of execution. Old settled evidence goes first.
       if (entries.size >= 512) {
@@ -156,19 +177,70 @@ export function createLocalAgentActivity() {
           entries.delete(victim[0]);
           stops.delete(victim[0]);
           retries.delete(victim[0]);
+          clearTimeout(replyTimers.get(victim[0]));
+          replyTimers.delete(victim[0]);
         }
       }
       const id = Symbol();
       if (retry) retries.set(id, retry);
+      const expireReplies = () => {
+        replyTimers.delete(id);
+        const current = entries.get(id);
+        if (!current?.replyMessages?.length) return;
+        const now = Date.now();
+        const replyMessages = current.replyMessages.filter(
+          (item) => now - item.acknowledgedAt <= REPLY_CORRELATION_MS,
+        );
+        if (replyMessages.length !== current.replyMessages.length) {
+          const { replyMessages: _replyMessages, ...rest } = current;
+          entries.set(
+            id,
+            Object.freeze({
+              ...rest,
+              ...(replyMessages.length ? { replyMessages } : {}),
+            }),
+          );
+          publish();
+        }
+        const oldest = replyMessages[0];
+        if (oldest)
+          replyTimers.set(
+            id,
+            setTimeout(
+              expireReplies,
+              Math.max(
+                0,
+                oldest.acknowledgedAt + REPLY_CORRELATION_MS - Date.now() + 1,
+              ),
+            ),
+          );
+      };
+      const startedAt = Math.max(Date.now(), (replaced?.startedAt ?? -1) + 1);
+      const replyMessages = replaced?.replyMessages?.filter(
+        (item) => startedAt - item.acknowledgedAt <= REPLY_CORRELATION_MS,
+      );
       entries.set(
         id,
         Object.freeze({
           ...input,
           state: "waiting",
-          startedAt: Date.now(),
+          startedAt,
+          ...(replyMessages?.length ? { replyMessages } : {}),
           ...(retry ? { retryable: true } : {}),
         }),
       );
+      const oldest = replyMessages?.[0];
+      if (oldest)
+        replyTimers.set(
+          id,
+          setTimeout(
+            expireReplies,
+            Math.max(
+              0,
+              oldest.acknowledgedAt + REPLY_CORRELATION_MS - Date.now() + 1,
+            ),
+          ),
+        );
       publish();
       const update = (
         state: LocalWorkState,
@@ -200,7 +272,79 @@ export function createLocalAgentActivity() {
         publish();
       };
       return {
+        channelId: input.channelId,
         started: () => update("working"),
+        confirmSolo: (conversationName?: string) => {
+          const current = entries.get(id);
+          if (!current || current.soloChat) return;
+          entries.set(
+            id,
+            Object.freeze({
+              ...current,
+              soloChat: true,
+              ...(conversationName?.trim()
+                ? { conversationName: conversationName.trim() }
+                : {}),
+            }),
+          );
+          publish();
+        },
+        sending: () => {
+          const current = entries.get(id);
+          if (!current) return () => {};
+          entries.set(
+            id,
+            Object.freeze({
+              ...current,
+              publishing: (current.publishing ?? 0) + 1,
+            }),
+          );
+          publish();
+          let active = true;
+          return () => {
+            if (!active) return;
+            active = false;
+            const latest = entries.get(id);
+            if (!latest?.publishing) return;
+            const publishing = latest.publishing - 1;
+            const { publishing: _publishing, ...rest } = latest;
+            entries.set(
+              id,
+              Object.freeze({ ...rest, ...(publishing ? { publishing } : {}) }),
+            );
+            publish();
+          };
+        },
+        reply: (messageId: string) => {
+          const current = entries.get(id);
+          if (
+            !current ||
+            current.replyMessages?.some((item) => item.id === messageId)
+          )
+            return;
+          const now = Date.now();
+          const replyMessages = [
+            ...(current.replyMessages ?? []).filter(
+              (item) => now - item.acknowledgedAt <= REPLY_CORRELATION_MS,
+            ),
+            Object.freeze({ id: messageId, acknowledgedAt: now }),
+          ];
+          entries.set(id, Object.freeze({ ...current, replyMessages }));
+          clearTimeout(replyTimers.get(id));
+          const oldest = replyMessages[0];
+          if (oldest)
+            replyTimers.set(
+              id,
+              setTimeout(
+                expireReplies,
+                Math.max(
+                  0,
+                  oldest.acknowledgedAt + REPLY_CORRELATION_MS - Date.now() + 1,
+                ),
+              ),
+            );
+          publish();
+        },
         // Keep the exact request outcome after the harness acknowledges a
         // newer message, without presenting the earlier work as successful.
         supersede: () => update("superseded"),
@@ -233,6 +377,8 @@ export function createLocalAgentActivity() {
         remove: () => {
           stops.delete(id);
           retries.delete(id);
+          clearTimeout(replyTimers.get(id));
+          replyTimers.delete(id);
           if (entries.delete(id)) publish();
         },
       };
@@ -247,6 +393,8 @@ export function createLocalAgentActivity() {
           entries.delete(id);
           stops.delete(id);
           retries.delete(id);
+          clearTimeout(replyTimers.get(id));
+          replyTimers.delete(id);
           changed = true;
         }
       if (changed) publish();

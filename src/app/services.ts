@@ -131,7 +131,9 @@ export function createServices() {
     undefined,
     (target) => notificationAuthorized(communities, target),
   );
-  ctx.effect(() => bindMessageNotifications(notifications, communities));
+  ctx.effect(() =>
+    bindMessageNotifications(notifications, communities, localActivity.reader),
+  );
   const inviteIntent = createInviteIntent();
   const invites = {
     ...inviteIntent,
@@ -213,6 +215,7 @@ export function createServices() {
     identity,
     browser,
     notifications,
+    agentActivity: localActivity.reader,
     navigation,
     navigationHost,
     shortcuts,

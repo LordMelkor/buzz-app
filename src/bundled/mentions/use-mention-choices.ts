@@ -391,7 +391,11 @@ export function useMentionChoices(
       });
     }
   }
-  const complete = !directory.loading && !directory.error && !directory.more;
+  const complete =
+    !directory.loading &&
+    !directory.error &&
+    !directory.more &&
+    !directory.tooShort;
   return useMemo(() => {
     const evidence = { pending, missingNames, complete };
     const live = byKey(candidates);
