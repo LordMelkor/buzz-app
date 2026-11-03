@@ -1,3 +1,4 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useConversationPresentation } from "./ConversationPresentation";
 import {
   useContext,
@@ -224,6 +225,18 @@ export function MessageLink({
       if (internal) {
         event.preventDefault();
         openInternal();
+        return;
+      }
+      // Tauri's automatic external-link opener skips Command-clicks.
+      if (external && event.metaKey && event.button === 0 && isTauri()) {
+        event.preventDefault();
+        setNotice(undefined);
+        void invoke("plugin:opener|open_url", { url }).catch(() => {
+          setNotice({
+            text: "Couldn’t open the link in your browser.",
+            error: true,
+          });
+        });
         return;
       }
       if (
