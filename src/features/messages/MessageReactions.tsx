@@ -7,11 +7,9 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { Button } from "../../shared/design-system/ui/Button";
 import { PreviewCard } from "../../shared/design-system/ui/PreviewCard";
 import { ReactionDelivery, ReactionTool } from "../conversation/ReactionTool";
-import { InlineText } from "../conversation/InlineText";
 import type {
   ComposerTool,
   ContributionReader,
@@ -26,7 +24,6 @@ import type { CustomEmoji } from "../relay/emoji";
 import type { RelaySession } from "../relay/session";
 import type { OutgoingEvent } from "../relay/outbox";
 import { selectProfiles } from "../relay/profile-selection";
-import { recordReaction, useQuickReactions } from "./quick-reactions";
 import styles from "./Messages.module.css";
 
 type Props = {
@@ -41,7 +38,7 @@ const noSubscribe = () => () => {};
 const noOperations = Object.freeze([]);
 const empty = () => noOperations;
 
-function useReactionAction({ row, session, scope, disabled }: Props) {
+function useReactionAction({ row, session, disabled }: Props) {
   const presented = useConversationPresentation();
   const [error, setError] = useState<string>();
   const active = useRef(false);
@@ -77,7 +74,6 @@ function useReactionAction({ row, session, scope, disabled }: Props) {
       if (mine.length) session.messages.remove(mine.map((event) => event.id));
       else {
         session.messages.react(row.id, content, emoji);
-        recordReaction(scope, content);
       }
       setError(undefined);
       return true;
@@ -93,31 +89,11 @@ function useReactionAction({ row, session, scope, disabled }: Props) {
   return { toggle, disabled: disabled || busy, error };
 }
 
-function ReactionLabel({
-  reaction,
-  row,
-  inline,
-  session,
-}: {
-  reaction: MessageReaction;
-  row: ChannelMessage;
-  inline: ContributionReader<InlineRenderer>;
-  session: RelaySession;
-}) {
-  return (
-    <InlineText
-      registry={inline}
-      content={{ text: reaction.content, message: row, reaction }}
-      media={session.media}
-    />
-  );
-}
-
 const catalogIndexes = new WeakMap<
   readonly CustomEmoji[],
   ReadonlyMap<string, CustomEmoji>
 >();
-/** Every row looks up its quick reactions on each render; index each catalog snapshot once. */
+/** Resolve picker selections against one index per custom-emoji catalog snapshot. */
 function catalogEmoji(entries: readonly CustomEmoji[], content: string) {
   if (!content.startsWith(":")) return undefined;
   let index = catalogIndexes.get(entries);
@@ -128,56 +104,19 @@ function catalogEmoji(entries: readonly CustomEmoji[], content: string) {
   return index.get(content.toLowerCase());
 }
 
-/** PR 1's quick-control slot. The emoji contribution continues to own its picker. */
+/** The emoji contribution owns the single reaction-picker action. */
 export function MessageReactionControls(props: Props) {
-  const { row, session, scope, inline, tools } = props;
+  const { row, session, scope, tools } = props;
   const catalog = useSyncExternalStore(
     session.emoji.subscribe,
     session.emoji.snapshot,
     session.emoji.snapshot,
   );
-  const shortcuts = useQuickReactions(scope, catalog.entries);
   const action = useReactionAction(props);
   const select = (content: string) =>
     action.toggle(content, catalogEmoji(catalog.entries, content));
   return (
     <>
-      {shortcuts.map((content) => {
-        const emoji = catalogEmoji(catalog.entries, content);
-        const mine = row.reactions.some(
-          (reaction) =>
-            reaction.content === content &&
-            reaction.emoji?.url === emoji?.url &&
-            reaction.events.some((event) => event.authorId === session.viewer),
-        );
-        return (
-          <span key={content} className={styles.quickReaction}>
-            <IconButton
-              size="sm"
-              variant="ghost"
-              disabled={action.disabled}
-              aria-label={`${mine ? "Remove" : "React with"} ${content}`}
-              aria-pressed={mine}
-              onClick={() => select(content)}
-              icon={
-                <span
-                  className={styles.quickReactionGlyph}
-                  data-emoji={emoji ? undefined : content}
-                >
-                  {emoji && (
-                    <ReactionLabel
-                      row={row}
-                      inline={inline}
-                      session={session}
-                      reaction={{ content, emoji, events: [] }}
-                    />
-                  )}
-                </span>
-              }
-            />
-          </span>
-        );
-      })}
       <ReactionTool
         registry={tools}
         session={session}

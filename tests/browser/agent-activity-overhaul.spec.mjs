@@ -26,7 +26,12 @@ test("removing a reaction from a tall message preserves the reading position", a
   );
   await expect(row).toBeVisible();
   await hoverMessage(row);
-  await row.getByRole("button", { name: "React with 👍", exact: true }).click();
+  await row.getByRole("button", { name: "Add reaction", exact: true }).click();
+  await page.locator('em-emoji-picker input[type="search"]').fill("thumbsup");
+  await page
+    .locator("em-emoji-picker")
+    .getByRole("button", { name: "👍", exact: true })
+    .click();
   const reaction = row.locator('button[data-reaction="👍"]');
   await expect(reaction).toHaveAttribute("aria-pressed", "true");
   app.edit(

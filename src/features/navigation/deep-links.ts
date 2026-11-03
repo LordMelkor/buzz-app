@@ -10,6 +10,10 @@ import { parseBuzzLink } from "./buzz-links";
 import { entityTarget } from "../repos/routes";
 import type { Navigation, OpenFailure, OpenResult } from "./controller";
 import { parseOpenTarget, type OpenTarget } from "./targets";
+import {
+  parseExternalAuthorization,
+  type ExternalAuthorization,
+} from "../agents/external-connection";
 
 export type DeepLinkStep =
   | Readonly<{ open: OpenTarget }>
@@ -34,6 +38,7 @@ export type DeepLinkHost = Readonly<{
   }>;
   /** Invite presentation belongs to the community switcher, not navigation. */
   invite?: (invite: InviteLink, viewer: string) => void;
+  authorize?: (request: ExternalAuthorization, viewer: string) => void;
 }>;
 type Client = Pick<ClientSnapshot, "status" | "viewer" | "selected">;
 
@@ -121,6 +126,7 @@ export function bindDeepLinks(
     | {
         url: string;
         invite: InviteLink | null;
+        authorization: ExternalAuthorization | null;
         plugin: boolean;
         /** Names no destination, so no account or community binds it. */
         invalid: boolean;
@@ -179,6 +185,7 @@ export function bindDeepLinks(
       !incoming.plugin &&
       ((incoming.viewer && incoming.viewer !== client.viewer) ||
         (!incoming.invite &&
+          !incoming.authorization &&
           incoming.selected &&
           incoming.selected !== client.selected))
     ) {
@@ -189,6 +196,13 @@ export function bindDeepLinks(
     if (client.status === "loading")
       return Promise.resolve({ status: "failed", reason: "unavailable" });
     const invite = incoming.invite;
+    if (incoming.authorization) {
+      if (!client.viewer || client.status !== "ready")
+        return Promise.resolve({ status: "failed", reason: "unavailable" });
+      held = undefined;
+      host.authorize?.(incoming.authorization, client.viewer);
+      return Promise.resolve({ status: "cancelled" });
+    }
     if (invite && (!client.viewer || client.status !== "ready")) {
       // Retain the invite through identity setup and client restoration.
       return Promise.resolve({ status: "failed", reason: "unavailable" });
@@ -219,7 +233,10 @@ export function bindDeepLinks(
       !held.invalid &&
       !held.plugin &&
       ((held.viewer && held.viewer !== client.viewer) ||
-        (!held.invite && held.selected && held.selected !== client.selected))
+        (!held.invite &&
+          !held.authorization &&
+          held.selected &&
+          held.selected !== client.selected))
     ) {
       held = undefined;
       host.fail("denied");
@@ -263,11 +280,13 @@ export function bindDeepLinks(
         if (epoch !== clientEpoch && !plugin) continue;
         const client = communities.snapshot();
         const invite = parseInviteLink(url);
+        const authorization = parseExternalAuthorization(url);
         held = {
           url,
           invite,
+          authorization,
           plugin,
-          invalid: !invite && !buzzLink(url),
+          invalid: !invite && !authorization && !buzzLink(url),
           launch,
           viewer: client.viewer,
           selected: client.selected,
@@ -286,7 +305,10 @@ export function bindDeepLinks(
     const next = communities.snapshot();
     if (
       (client.viewer && client.viewer !== next.viewer) ||
-      (client.selected && client.selected !== next.selected && !held?.invite)
+      (client.selected &&
+        client.selected !== next.selected &&
+        !held?.invite &&
+        !held?.authorization)
     )
       clientEpoch++;
     client = next;

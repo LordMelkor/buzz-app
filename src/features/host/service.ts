@@ -123,6 +123,12 @@ export type HostMcpServer = Readonly<{
   close(): Promise<void>;
   /** Resolves once it has stopped. */
   closed: Promise<void>;
+  authorize?(request: McpAuthorization): Promise<void>;
+}>;
+export type McpAuthorization = Readonly<{
+  callback: string;
+  state: string;
+  code_challenge: string;
 }>;
 type McpEvent =
   | { type: "message"; request: number; body: string }
@@ -132,6 +138,7 @@ type McpEvent =
  * itself and grant every client the same authority. Defaults to false. */
 export type HostMcpOptions = Readonly<{ sharedSession?: boolean }>;
 export interface Host {
+  denyMcpAuthorization?(request: McpAuthorization): Promise<void>;
   runCommand(id: string, input?: string): Promise<string | null>;
   /** Starts a process the manifest declares in `host.processes`. It lives until
    * it exits, is killed, or the plugin unloads. Desktop only. */
@@ -447,7 +454,26 @@ export class HostService extends Service implements Host {
       ]),
       close,
       closed,
+      authorize: (request: McpAuthorization) =>
+        invoke<void>("plugin_host_mcp_authorize", {
+          id: owner.id,
+          revision: owner.revision,
+          handle: server.handle,
+          request,
+        }).catch(rethrow),
     });
+  }
+
+  async denyMcpAuthorization(request: McpAuthorization) {
+    const owner = this.ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("External authorization requires Buzz desktop");
+    await invoke<void>("plugin_host_mcp_authorize", {
+      id: owner.id,
+      revision: owner.revision,
+      handle: null,
+      request,
+    }).catch(rethrow);
   }
 
   // Methods, not fields: `this.ctx` is then the calling plugin's scope.

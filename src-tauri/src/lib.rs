@@ -108,7 +108,8 @@ use host_files::{
     plugin_host_save_bytes,
 };
 use host_mcp::{
-    plugin_host_mcp_close, plugin_host_mcp_reply, plugin_host_mcp_serve, HostMcpServers,
+    plugin_host_mcp_authorize, plugin_host_mcp_close, plugin_host_mcp_reply, plugin_host_mcp_serve,
+    HostMcpServers,
 };
 use host_process::{
     plugin_host_process_kill, plugin_host_process_spawn, plugin_host_process_write, HostProcesses,
@@ -721,6 +722,7 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         plugin_host_process_write,
         plugin_host_process_kill,
         plugin_host_mcp_serve,
+        plugin_host_mcp_authorize,
         plugin_host_mcp_reply,
         plugin_host_mcp_close,
         plugin_host_read_file,

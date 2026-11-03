@@ -1,6 +1,9 @@
 import type {} from "../navigation/service";
 import { appClient, readFile } from "../../buzz-mcp/app-client";
 import { respond } from "../../buzz-mcp/rpc";
+import { respondExternal } from "../../buzz-mcp/external";
+import type { ExternalScope } from "./external-connection";
+import { externalMcpEnabled } from "./external-connection";
 import { connectMcp } from "../../buzz-mcp/connection";
 import type {
   HostMcpServer,
@@ -1080,6 +1083,14 @@ export type Agents = {
    * it; like any type whose agents run here, it has `run`. A kept handle
    * throws once this no longer holds, so ask again when acting. */
   handle(agent: AgentKey): AgentHandle | undefined;
+  canConnectExternal(agent: AgentKey): boolean;
+  /** Creates a separate owner-approved external grant in the selected community. */
+  connectExternal(
+    agent: AgentKey,
+    signal: AbortSignal,
+    connected: () => void,
+    scopes?: readonly ExternalScope[],
+  ): Promise<HostMcpServer>;
   /** The owner's connection to a running agent's community, which need not be
    * the selected one: read the agent's conversations through this. */
   relay(agent: AgentKey): RelayData | undefined;
@@ -2460,6 +2471,114 @@ export class AgentsService extends Service implements Agents {
   handle(key: AgentKey) {
     const owner = this.ctx.pluginOwner;
     return owner && this.runners.handle(key, owner.id);
+  }
+  canConnectExternal(key: AgentKey) {
+    const handle = this.runners.handle(key);
+    return (
+      externalMcpEnabled(this.communities.snapshot().selected) &&
+      !!handle &&
+      !handle.protection
+    );
+  }
+  async connectExternal(
+    key: AgentKey,
+    signal: AbortSignal,
+    connected: () => void,
+    scopes: readonly ExternalScope[] = ["read", "post"],
+  ) {
+    if (this.ctx.pluginOwner?.id !== "buzz.agents")
+      throw new Error("Authorize external apps in Buzz.");
+    const host = this.ctx.host;
+    if (!host?.serveMcp)
+      throw new Error("External connections require Buzz desktop.");
+    const handle = this.runners.handle(key);
+    if (!handle)
+      throw new Error("This agent is not running in this copy of Buzz.");
+    if (handle.protection)
+      throw new Error("Protected agents cannot use external connections.");
+    const relay = this.relay(key);
+    const session = relay?.snapshot().session;
+    const agent = this.agent(key);
+    const source = ownerReads(relay, handle.pubkey);
+    const selected = this.communities.snapshot();
+    if (!externalMcpEnabled(selected.selected))
+      throw new Error("External apps are not enabled for this community.");
+    if (
+      !source ||
+      !relay ||
+      !session ||
+      !agent ||
+      !selected.selected ||
+      selected.viewer !== handle.owner ||
+      relayOrigin(selected.selected) !== relayOrigin(agent.relay)
+    )
+      throw new Error("Select this agent's connected community first.");
+    const controller = new AbortController();
+    const lifetime = AbortSignal.any([signal, controller.signal]);
+    const check = () => {
+      lifetime.throwIfAborted();
+      handle.attention.enabled();
+      const current = this.communities.snapshot();
+      if (
+        current.viewer !== selected.viewer ||
+        current.selected !== selected.selected ||
+        !externalMcpEnabled(current.selected) ||
+        ownerReads(this.relay(key), handle.pubkey)?.connection !==
+          source.connection ||
+        !session.agentChoices
+          .snapshot()
+          .selectable.some((agent) => agent.pubkey === handle.pubkey)
+      )
+        throw new Error(
+          "The external connection has ended. Authorize the external app again in Buzz.",
+        );
+    };
+    const changed = () => {
+      try {
+        check();
+      } catch {
+        controller.abort();
+      }
+    };
+    const stops = [
+      this.subscribe(changed),
+      this.communities.subscribe(changed),
+      relay.subscribe(changed),
+      session.agentChoices.subscribe(changed),
+    ];
+    const release = () => {
+      for (const stop of stops) stop();
+    };
+    try {
+      check();
+      const server = await connectMcp(
+        host.serveMcp.bind(host),
+        (signal) => {
+          const client = appClient(handle, {
+            signal,
+            check,
+            relayAuthor: source.relayAuthor?.(),
+            signingAuthority: source.workflowAuthority(),
+            read: async () => {
+              throw new Error("External connections cannot read files.");
+            },
+            memories: async () => {
+              throw new Error("External connections cannot read memory.");
+            },
+          });
+          return (message) => {
+            check();
+            return respondExternal(client, message, connected, scopes);
+          };
+        },
+        lifetime,
+      );
+      void server.closed.then(release);
+      return server;
+    } catch (error) {
+      release();
+      throw error;
+    }
   }
   note(key: AgentKey, channelId: string, text: string, root?: string) {
     return this.runners.note(key, channelId, text, root);

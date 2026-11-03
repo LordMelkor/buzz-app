@@ -188,8 +188,7 @@ for (const direction of ["forward", "backward"]) {
     await page.keyboard.press(direction === "forward" ? "Tab" : "Shift+Tab");
     await expect(
       actions.getByRole("button", {
-        name:
-          direction === "forward" ? "React with 👍" : "More message actions",
+        name: direction === "forward" ? "Add reaction" : "More message actions",
         exact: true,
       }),
     ).toBeFocused();
@@ -197,7 +196,7 @@ for (const direction of ["forward", "backward"]) {
     await page.keyboard.press(direction === "forward" ? "Tab" : "Shift+Tab");
     await expect(
       actions.getByRole("button", {
-        name: direction === "forward" ? "React with ❤️" : "Copy link",
+        name: direction === "forward" ? "Reply" : "Copy link",
         exact: true,
       }),
     ).toBeFocused();
@@ -262,6 +261,7 @@ test("message actions reveal, copy, restore focus and reply across responsive la
   ).toBeVisible();
   const copiedLink = await page.evaluate(() => window.copiedMessages.at(-1));
   expect(copiedLink).toBe(`buzz://message?channel=alpha&id=${event.id}`);
+  await hoverMessage(row);
   await row.getByRole("button", { name: "Reply", exact: true }).click();
   const panel = page.getByRole("complementary", {
     name: "Thread",
@@ -270,7 +270,10 @@ test("message actions reveal, copy, restore focus and reply across responsive la
   const root = panel.locator(`[data-message-id="${event.id}"]`);
   await expect(root).toBeVisible();
   // A pointer click leaves focus on the control; the bar still follows hover.
-  const copyLink = row.getByRole("button", { name: "Copy link", exact: true });
+  const copyLink = row.getByRole("button", {
+    name: "Copy link",
+    exact: true,
+  });
   await hoverMessage(row);
   await copyLink.click();
   await root.hover();
@@ -327,8 +330,11 @@ test("message actions reveal, copy, restore focus and reply across responsive la
   await page.mouse.move(0, 0);
   await expect(actions).toHaveCSS("opacity", "0");
   await hoverMessage(root);
-  await root
-    .getByRole("button", { name: "React with 👍", exact: true })
+  await root.getByRole("button", { name: "Add reaction", exact: true }).click();
+  await page.locator('em-emoji-picker input[type="search"]').fill("thumbsup");
+  await page
+    .locator("em-emoji-picker")
+    .getByRole("button", { name: "👍", exact: true })
     .click();
   await expect(
     root.getByRole("button", {
@@ -372,6 +378,7 @@ test("message actions reveal, copy, restore focus and reply across responsive la
   });
   await expect(replyBox).toBeFocused();
   await replyBox.fill("Keep this reply draft");
+  await hoverMessage(row);
   await hoverMessage(row);
   await row.getByRole("button", { name: "Reply", exact: true }).click();
   await expect(replyBox).toBeFocused();
@@ -510,7 +517,12 @@ test("DM actions open the correct reply thread", async ({ page, app }) => {
   const event = app.append("primary", channel, "DM menu check");
   const row = timeline.locator(`[data-message-id="${event.id}"]`);
   await hoverMessage(row);
-  await row.getByRole("button", { name: "React with 👍", exact: true }).click();
+  await row.getByRole("button", { name: "Add reaction", exact: true }).click();
+  await page.locator('em-emoji-picker input[type="search"]').fill("thumbsup");
+  await page
+    .locator("em-emoji-picker")
+    .getByRole("button", { name: "👍", exact: true })
+    .click();
   await expect(
     row.getByRole("button", {
       name: "👍: You",
@@ -542,6 +554,7 @@ test("DM actions open the correct reply thread", async ({ page, app }) => {
     page.getByRole("menuitem", { name: "Copy message", exact: true }),
   ).toBeVisible();
   await page.keyboard.press("Escape");
+  await hoverMessage(row);
   await row.getByRole("button", { name: "Reply", exact: true }).click();
   await expect(
     page
@@ -553,6 +566,7 @@ test("DM actions open the correct reply thread", async ({ page, app }) => {
     exact: true,
   });
   await expect(replyBox).toBeFocused();
+  await hoverMessage(row);
   await hoverMessage(row);
   await row.getByRole("button", { name: "Reply", exact: true }).click();
   await expect(replyBox).toBeFocused();
@@ -633,7 +647,9 @@ test("narrow timeline continuation actions never cover prose or move adjacent ro
     const toolbar = await actions.boundingBox();
     expect(
       toolbar.y + toolbar.height <= prose.y ||
-        toolbar.x + toolbar.width <= prose.x,
+        toolbar.x + toolbar.width <= prose.x ||
+        toolbar.y >= prose.y + prose.height ||
+        toolbar.x >= prose.x + prose.width,
     ).toBe(true);
     await expect(actions).toHaveCSS("position", "fixed");
     expect((await following.boundingBox()).y).toBe(baseline.y);
@@ -808,7 +824,7 @@ test("live grouped appends preserve avatar focus in channel and thread", async (
     await expect(preview).toBeHidden();
     await page.keyboard.press("Tab");
     await expect(
-      row.getByRole("button", { name: "React with 👍", exact: true }),
+      row.getByRole("button", { name: "Add reaction", exact: true }),
     ).toBeFocused();
     await expect(avatar).toHaveCount(0);
     await composer.focus();

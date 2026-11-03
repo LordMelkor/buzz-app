@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import {
+  checkinHourly,
   type Feature,
   featureState,
   hasFeature,
@@ -174,4 +175,12 @@ it("keeps the owner's line ending, or its absence, through on and off", () => {
       false,
     ),
   ).toBe("Be brief.\n");
+});
+
+it("has the check-in read the private channels Bestie was added to", () => {
+  const load = checkinHourly.text
+    .split("\n")
+    .find((line) => line.startsWith("1. LOAD."));
+  expect(load).toContain("each private channel you have been added to");
+  expect(load).toContain("you are a guest there and can't post");
 });

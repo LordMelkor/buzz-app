@@ -404,7 +404,7 @@ function AvatarSpecimen() {
       <SpecimenGroup
         label="Status badge and rounded cutout"
         code={`<div className="flex flex-wrap items-center gap-4">
-  {(["compact", "small", "default", "large"] as const).map((size) => (
+  {(["tiny", "compact", "small", "default", "large"] as const).map((size) => (
 
       <Avatar
         src={avatarUrl}
@@ -437,17 +437,19 @@ function AvatarSpecimen() {
 </div>`}
       >
         <div className="component-specimen-row">
-          {(["compact", "small", "default", "large"] as const).map((size) => (
-            <Specimen key={size} prop={`${size} · online`}>
-              <Avatar
-                src={avatarUrl}
-                alt="Morgan Martin"
-                fallback="Morgan"
-                size={size}
-                statusBadge="online"
-              />
-            </Specimen>
-          ))}
+          {(["tiny", "compact", "small", "default", "large"] as const).map(
+            (size) => (
+              <Specimen key={size} prop={`${size} · online`}>
+                <Avatar
+                  src={avatarUrl}
+                  alt="Morgan Martin"
+                  fallback="Morgan"
+                  size={size}
+                  statusBadge="online"
+                />
+              </Specimen>
+            ),
+          )}
           {(["away", "offline"] as const).map((status) => (
             <Specimen key={status} prop={`large · ${status}`}>
               <Avatar
@@ -472,7 +474,7 @@ function AvatarSpecimen() {
       <SpecimenGroup
         label="Agent shape (proposed)"
         code={`<div className="flex flex-wrap items-center gap-4">
-  {(["compact", "small", "default", "large"] as const).map((size) => (
+  {(["tiny", "compact", "small", "default", "large"] as const).map((size) => (
 
       <Avatar
         src={avatarUrl}
@@ -510,18 +512,20 @@ function AvatarSpecimen() {
 </div>`}
       >
         <div className="component-specimen-row">
-          {(["compact", "small", "default", "large"] as const).map((size) => (
-            <Specimen key={size} prop={`squircle · ${size} · online`}>
-              <Avatar
-                src={avatarUrl}
-                alt="Agent artwork"
-                fallback="Agent"
-                shape="squircle"
-                size={size}
-                statusBadge="online"
-              />
-            </Specimen>
-          ))}
+          {(["tiny", "compact", "small", "default", "large"] as const).map(
+            (size) => (
+              <Specimen key={size} prop={`squircle · ${size} · online`}>
+                <Avatar
+                  src={avatarUrl}
+                  alt="Agent artwork"
+                  fallback="Agent"
+                  shape="squircle"
+                  size={size}
+                  statusBadge="online"
+                />
+              </Specimen>
+            ),
+          )}
           {(["away", "offline"] as const).map((status) => (
             <Specimen key={status} prop={`squircle · large · ${status}`}>
               <Avatar

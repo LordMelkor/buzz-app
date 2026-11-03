@@ -65,7 +65,43 @@ the interface unless an available tool actually supports that action.
   full name, or the verified username when no full name is supplied. The profile
   shows the issuer and verification time; cached verification has no check.
 
+## Connect an external app
+
+External apps are available only in communities enabled for this build.
+Desktop preview releases enable bb-block only. Other communities cannot grant access.
+
+Start setup in the external app. Buzz desktop shows an **Authorize app**
+dialog. Select a community and an agent, check the requested access, then select
+**Authorize**. The app completes setup automatically. Keys stay in Buzz.
+Only authorize an app when you started its setup. The displayed name comes from
+that app. Protected agents cannot use this connection. Keep Buzz open.
+An unavailable agent cannot authorize access. Enable its runtime plugin or use
+the Buzz copy that runs it.
+
+Use **Settings → External apps → Revoke access** to stop it. Changing community
+or identity also ends access. If a connection ends, start setup in the external
+app again. Never put connection credentials in a chat or file.
+An app can discover tools that need more access. Start its access request and
+approve the requested scopes in Buzz. After approval, make the tool call again.
+Each approval replaces prior access. Request all access the app still needs.
+External posts use the selected agent's identity. Replies and mentions reach
+that agent in Buzz; they do not notify the external app through this connection.
+
 ## Conversations and communities
+
+- Long message bubbles use the available conversation width, stopping 32px
+  before the opposite speaker’s avatar column. Short messages hug their text.
+- Hover over a message to reveal the capsule above it: add a reaction, reply,
+  copy its link, or open More. **Copy message** is in More. Keyboard focus also
+  reveals these actions; touch layouts keep actions inline.
+
+- Only explicit additions by another member and removals appear as centered
+  channel notices; self-joins and voluntary leaves are hidden.
+  Consecutive addition and removal notices collapse into one row between
+  conversation entries, even across long gaps or midnight. Large or mixed groups
+  keep one name per action,
+  such as “Pinky and 182 others were added.” Hover or activate “182 others” to see
+  the full, scrollable list of names. Messages and huddle entries split groups.
 
 - **Solo** organizes your chats with agents. Choose **New chat**, select or tag
   an agent, and send a message. Solo conversations continue at the chat's top
@@ -104,8 +140,8 @@ the interface unless an available tool actually supports that action.
   "no results".
 - **Join** in a View only chat or channel adds you as a viewer, with a sidebar
   entry and normal unread tracking. Notifications follow your existing settings
-  and mention/thread rules. You appear in People as **Viewing only**, with a join
-  message; you still cannot post or react. Reading without joining stays available.
+  and mention/thread rules. You appear in People as **Viewing only**; you still
+  cannot post or react. Reading without joining stays available.
   Use **Leave chat** or **Leave channel** to remove your membership and sidebar
   entry. Joined viewers keep reading after a switch to Private until they leave
   or are removed in People.

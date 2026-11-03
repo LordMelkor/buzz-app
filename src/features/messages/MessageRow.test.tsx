@@ -1308,11 +1308,18 @@ it.each(["peer", "own"] as const)(
               "Mark unread",
               "Copy message",
               "Send to channel",
+              "Copy link",
               "Delete message",
               "Follow thread",
               "Report",
             ]
-          : ["Mark unread", "Copy message", "Follow thread", "Report"],
+          : [
+              "Mark unread",
+              "Copy message",
+              "Copy link",
+              "Follow thread",
+              "Report",
+            ],
       );
     } finally {
       cleanup();
@@ -1353,7 +1360,7 @@ it.each(["sending", "failed"] as const)(
       await screen.findByRole("menu");
       expect(
         screen.getAllByRole("menuitem").map((item) => item.textContent),
-      ).toEqual(["Copy message"]);
+      ).toEqual(["Copy message", "Copy link"]);
       expect(screen.queryByRole("separator")).toBeNull();
     } finally {
       cleanup();
@@ -1943,7 +1950,7 @@ it("keeps audio and video players between their original image runs", () => {
 });
 
 it.each([true, false])(
-  "uses the shared small avatar without shrinking profile controls (clickable=%s)",
+  "uses smaller shared avatars without shrinking thread profile controls (clickable=%s)",
   (clickable) => {
     const props = {
       row: { ...row, authorId: "a".repeat(64) },
@@ -1958,7 +1965,7 @@ it.each([true, false])(
     const view = renderDom(<MessageRow {...props} compactAvatar />);
     expect(view.container.querySelector(".buzz-avatar")).toHaveAttribute(
       "data-size",
-      "small",
+      "tiny",
     );
     if (clickable) {
       expect(
@@ -1968,7 +1975,7 @@ it.each([true, false])(
     view.rerender(<MessageRow {...props} />);
     expect(view.container.querySelector(".buzz-avatar")).toHaveAttribute(
       "data-size",
-      clickable ? "fill" : "default",
+      "small",
     );
     view.unmount();
   },

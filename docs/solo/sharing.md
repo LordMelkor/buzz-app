@@ -115,7 +115,7 @@ ordinary chat link. They read without joining and cannot send messages, react or
 The relay's ordinary Guest/default-Guest write policy enforces this boundary;
 the absent composer is only its client presentation. View-only access grants no
 membership and adds no sidebar entry for a visitor. **Join** adds a visitor as a
-Guest, listed in People as **Viewing only**, and posts the ordinary join message.
+Guest, listed in People as **Viewing only**.
 The chat then appears under Solo/Chats with normal unread tracking; notifications
 follow existing settings and mention/thread rules. It stays read-only. **Leave
 chat** removes membership and the sidebar entry; an open chat can still be read

@@ -541,7 +541,12 @@ test("branch hooks land on each reply's avatar across sides and row shapes", asy
   await reacted.scrollIntoViewIfNeeded();
   await hoverMessage(reacted);
   await reacted
-    .getByRole("button", { name: "React with 👍", exact: true })
+    .getByRole("button", { name: "Add reaction", exact: true })
+    .click();
+  await page.locator('em-emoji-picker input[type="search"]').fill("thumbsup");
+  await page
+    .locator("em-emoji-picker")
+    .getByRole("button", { name: "👍", exact: true })
     .click();
   await expect(
     reacted.getByRole("button", { name: /👍/ }).last(),

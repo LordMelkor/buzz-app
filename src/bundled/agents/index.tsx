@@ -7,6 +7,10 @@ import { AgentCardAttachment, isAgentCard } from "./AgentCardAttachment";
 import { availableAgentProviderRoute } from "./routes";
 import { developerMode } from "../../features/developer/mode";
 import { withImportScenario } from "../../features/developer/agent-import-scenario";
+import { isTauri } from "@tauri-apps/api/core";
+import type {} from "../../features/agents/external-connection";
+import { ExternalConnectionSettings } from "./ExternalConnectionSettings";
+import { externalMcpEnabled } from "../../features/agents/external-connection";
 
 export const inject = [
   "pages",
@@ -17,6 +21,8 @@ export const inject = [
   "host",
   "conversation",
   "decisions",
+  "settingsCards",
+  "externalApps",
 ];
 export const apply: PluginModule["apply"] = (ctx) => {
   registerAttention(ctx);
@@ -24,6 +30,30 @@ export const apply: PluginModule["apply"] = (ctx) => {
   registerDecideTool(ctx.agents, ctx.decisions);
   const { relay, navigation: navigator } = ctx;
   const agents = developerMode ? withImportScenario(ctx.agents) : ctx.agents;
+  if (isTauri()) {
+    const connection = ctx.externalApps;
+    ctx.effect(() =>
+      connection.bind({
+        connect: ctx.agents.connectExternal.bind(ctx.agents),
+        deny: (request) => {
+          if (!ctx.host.denyMcpAuthorization)
+            throw new Error("External authorization is unavailable");
+          return ctx.host.denyMcpAuthorization(request);
+        },
+      }),
+    );
+    ctx.settingsCards.register({
+      id: "external-apps",
+      title: "External apps",
+      visibility: {
+        snapshot: () =>
+          externalMcpEnabled(ctx.communityReader.snapshot().selected),
+        subscribe: (listener) => ctx.communityReader.subscribe(listener),
+        ensure: () => () => {},
+      },
+      component: () => <ExternalConnectionSettings connection={connection} />,
+    });
+  }
   ctx.conversation.registerAttachment({
     id: "agent-card",
     title: "Agent card",
