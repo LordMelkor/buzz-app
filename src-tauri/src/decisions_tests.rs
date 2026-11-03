@@ -429,8 +429,8 @@ async fn the_callers_timeout_bounds_the_call() {
     assert_eq!(seen.lock().unwrap().len(), 1);
 }
 
-fn session(value: &str) -> Option<Zeroizing<String>> {
-    Some(Zeroizing::new(value.into()))
+fn session(value: &str) -> Option<SignIn> {
+    Some(SignIn::Session(Zeroizing::new(value.into())))
 }
 
 /// `request` for a community, as callers send it.
@@ -621,6 +621,113 @@ async fn only_a_builderlab_401_ends_the_sign_in_and_none_touch_the_key() {
         assert_eq!(*store.reads.lock().unwrap(), 0);
         assert_eq!(store.key.lock().unwrap().as_deref(), Some("k"));
     }
+}
+
+/// An FI build's sign-in at the test server, with that session's revision.
+fn federated_at(url: &str) -> (FederatedIdentity, String) {
+    let origin = url.trim_end_matches("/decide").to_owned();
+    let fi = crate::federated_identity::testing::signed_in_at(origin);
+    let revision = fi.with_session(|_, current, _| current.to_owned()).unwrap();
+    (fi, revision)
+}
+fn yes_no_in_community() -> Request {
+    in_community(request(
+        json!({ "a": { "type": "yes_no", "instructions": "x" } }),
+    ))
+}
+
+#[tokio::test]
+async fn an_fi_build_sends_its_native_session_as_bearer_to_its_identity_origin() {
+    let reply = json!({ "model": "jev-1.13.0", "answers": { "a": { "noul": { "value": 0.4 } } } });
+    let (url, seen) = server(vec![Some((200, "", reply.to_string()))]).await;
+    let (fi, revision) = federated_at(&url);
+    let (store, keys) = keys(Some("k"));
+    // The build's own Builderlab endpoint is not used.
+    let host = decisions("http://127.0.0.1:9/unused");
+    let result = decide_federated(&host, &keys, &fi, &revision, yes_no_in_community()).await;
+    assert_eq!(
+        result,
+        Decided::Answered {
+            backend: Backend::Builderlab,
+            model: "jev-1.13.0".into(),
+            answers: BTreeMap::from([("a".into(), Answer::YesNo { probability: 0.4 })]),
+        }
+    );
+    let (head, _) = seen.lock().unwrap()[0].clone();
+    // The identity origin's API base path, as for other Builderlab calls.
+    assert!(
+        head.starts_with("post /api/v3/builderlab/decisions "),
+        "{head}"
+    );
+    let bearer = "authorization: bearer fixture-session-token"; // sadscan:disable np.http.2 (FI test fixture token)
+    assert!(head.lines().any(|line| line == bearer), "{head}");
+    assert!(!head.contains("x-bb-session-credential"), "{head}");
+    assert!(
+        head.lines()
+            .any(|line| line == "x-buzz-community: buzz.example.org"),
+        "{head}"
+    );
+    assert_eq!(*store.reads.lock().unwrap(), 0);
+    assert!(!serde_json::to_string(&result)
+        .unwrap()
+        .contains("fixture-session-token"));
+}
+
+#[tokio::test]
+async fn an_fi_call_needs_the_session_it_started_under() {
+    let (url, seen) = server(vec![]).await;
+    let (fi, revision) = federated_at(&url);
+    let (_, keys) = keys(None);
+    let host = decisions(&url);
+    let missing = Decided::Failed {
+        backend: Backend::Builderlab,
+        reason: Failure::MissingCredentials,
+    };
+    for stale in ["", "another-revision"] {
+        assert_eq!(
+            decide_federated(&host, &keys, &fi, stale, yes_no_in_community()).await,
+            missing,
+            "{stale}"
+        );
+    }
+    fi.sign_out_for_test();
+    assert_eq!(
+        decide_federated(&host, &keys, &fi, &revision, yes_no_in_community()).await,
+        missing
+    );
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_fi_401_refuses_only_the_call_after_asking_the_adapter_once() {
+    // Builderlab refuses the call; the adapter's session route then fails
+    // without denying the session.
+    let (url, seen) = server(vec![
+        Some((401, "", String::new())),
+        Some((503, "", String::new())),
+    ])
+    .await;
+    let (fi, revision) = federated_at(&url);
+    let (_, keys) = keys(None);
+    assert_eq!(
+        decide_federated(
+            &decisions(&url),
+            &keys,
+            &fi,
+            &revision,
+            yes_no_in_community()
+        )
+        .await,
+        Decided::Failed {
+            backend: Backend::Builderlab,
+            reason: Failure::Unauthorized
+        }
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(seen[1].0.starts_with("get /v1/session "), "{}", seen[1].0);
+    // Not `session_expired`: the webview never ends the shared FI session.
+    assert!(federated_sign_in(&fi, &revision).is_some());
 }
 
 /// An OpenAI model's answer, which Builderlab maps to System One's shape:

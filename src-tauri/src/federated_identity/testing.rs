@@ -10,6 +10,20 @@ pub(crate) fn signed_in(adapter_base: String, relay: &str, required: bool) -> Fe
     owner.discovered(relay, required);
     owner
 }
+/// A signed-in session whose identity origin and adapter are both `origin`,
+/// a plain loopback fixture, so granted API calls and the adapter's session
+/// route reach one test server.
+pub(crate) fn signed_in_at(origin: String) -> FederatedIdentity {
+    let mut owner = tests::at_adapter(Arc::new(tests::Memory::default()), origin.clone());
+    Arc::get_mut(&mut owner.0)
+        .unwrap()
+        .config
+        .as_mut()
+        .unwrap()
+        .identity_origin = origin;
+    owner.install(tests::record());
+    owner
+}
 /// A signed-in session for an organization community at `relay` that has
 /// not been discovered yet.
 fn undiscovered(adapter_base: String, relay: &str) -> FederatedIdentity {

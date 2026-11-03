@@ -8,9 +8,12 @@
 //!   only native code reads (see `jev.rs`).
 //! - `builderlab`: the build's Builderlab (`BUZZ_BUILDERLAB_URL`), with the
 //!   Builderlab sign-in the webview holds. Builds without one have no
-//!   `builderlab` endpoint. It takes System One's request and answer shapes,
+//!   `builderlab` endpoint. An FI build instead calls the API of its identity
+//!   origin with the native NIP-FI session, which the webview never sees, as
+//!   its other Builderlab calls do. It takes System One's request and answer shapes,
 //!   answers with Jev unless asked for another model, and bills the
 //!   request's community, so a call without one is not sent.
+use crate::federated_identity::FederatedIdentity;
 use crate::jev::JevHost;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -126,6 +129,21 @@ pub(crate) enum Decided {
     },
 }
 
+/// The Builderlab sign-in a call sends.
+pub(crate) enum SignIn {
+    /// The legacy OAuth credential the webview holds.
+    Session(Zeroizing<String>),
+    /// An FI build's native session, which Builderlab takes as Bearer.
+    Bearer(Zeroizing<String>),
+}
+impl SignIn {
+    fn secret(&self) -> &str {
+        match self {
+            Self::Session(secret) | Self::Bearer(secret) => secret,
+        }
+    }
+}
+
 pub(crate) struct Endpoints {
     pub(crate) typesafe: String,
     /// `None` when the build has no Builderlab.
@@ -175,7 +193,7 @@ impl DecisionsHost {
         &self,
         keys: &JevHost,
         backend: Backend,
-        session: Option<Zeroizing<String>>,
+        session: Option<SignIn>,
         request: Request,
     ) -> Decided {
         let failed = |reason| Decided::Failed { backend, reason };
@@ -226,7 +244,7 @@ impl DecisionsHost {
                         .ok_or(Failure::ServiceError)?;
                     let session = session
                         .as_ref()
-                        .filter(|s| !s.trim().is_empty())
+                        .filter(|s| !s.secret().trim().is_empty())
                         .ok_or(Failure::MissingCredentials)?;
                     let post = client.post(endpoint);
                     #[cfg(debug_assertions)]
@@ -241,8 +259,13 @@ impl DecisionsHost {
                     } else {
                         post
                     };
-                    post.header("x-bb-session-credential", session.as_str())
-                        .header("x-buzz-community", community.as_deref().unwrap_or_default())
+                    match session {
+                        SignIn::Session(credential) => {
+                            post.header("x-bb-session-credential", credential.as_str())
+                        }
+                        SignIn::Bearer(token) => post.bearer_auth(token.as_str()),
+                    }
+                    .header("x-buzz-community", community.as_deref().unwrap_or_default())
                 }
             };
             let response = post
@@ -570,15 +593,80 @@ fn development_endpoint(origin: &str) -> Result<String, String> {
     Ok(format!("{origin}/api/builderlab/decisions"))
 }
 
+/// The FI session `revision`, if it is still the current one, and the
+/// decisions route under the identity origin's API, where the build's other
+/// Builderlab calls go.
+fn federated_sign_in(fi: &FederatedIdentity, revision: &str) -> Option<(Option<String>, SignIn)> {
+    fi.with_session(|token, current, config| {
+        (current == revision).then(|| {
+            (
+                builderlab_endpoint(&config.identity_origin, &config.api_base_path),
+                SignIn::Bearer(token.clone()),
+            )
+        })
+    })
+    .flatten()
+}
+
+/// Builderlab with an FI build's native session. Only the session the caller
+/// started under may answer. A 401 refuses this call only: the adapter, asked
+/// once, decides whether the session ended, as for other granted calls.
+async fn decide_federated(
+    host: &DecisionsHost,
+    keys: &JevHost,
+    fi: &FederatedIdentity,
+    revision: &str,
+    request: Request,
+) -> Decided {
+    let backend = Backend::Builderlab;
+    let Some((builderlab, session)) = federated_sign_in(fi, revision) else {
+        return Decided::Failed {
+            backend,
+            reason: Failure::MissingCredentials,
+        };
+    };
+    let scoped = DecisionsHost {
+        endpoints: Endpoints {
+            typesafe: host.endpoints.typesafe.clone(),
+            builderlab,
+        },
+        slots: host.slots.clone(),
+        timeout: host.timeout,
+    };
+    match scoped.decide(keys, backend, Some(session), request).await {
+        Decided::Failed {
+            reason: Failure::SessionExpired,
+            ..
+        } => {
+            fi.recheck(revision).await;
+            Decided::Failed {
+                backend,
+                reason: Failure::Unauthorized,
+            }
+        }
+        decided => decided,
+    }
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri passes each IPC field as an argument.
 pub(crate) async fn decide(
     keys: tauri::State<'_, JevHost>,
     host: tauri::State<'_, DecisionsHost>,
+    fi: tauri::State<'_, FederatedIdentity>,
     backend: Backend,
     request: Request,
     session: Option<String>,
     broker: Option<DevelopmentSession>,
+    federated: Option<String>,
 ) -> Result<Decided, String> {
+    // An FI build names its native session by revision; the token stays here.
+    if let Some(revision) = federated {
+        if backend != Backend::Builderlab || session.is_some() || broker.is_some() {
+            return Err("Invalid federated session".into());
+        }
+        return Ok(decide_federated(&host, &keys, &fi, &revision, request).await);
+    }
     if let Some(broker) = broker {
         #[cfg(not(debug_assertions))]
         {
@@ -602,13 +690,13 @@ pub(crate) async fn decide(
                 .decide(
                     &keys,
                     backend,
-                    Some(Zeroizing::new(broker.revision)),
+                    Some(SignIn::Session(Zeroizing::new(broker.revision))),
                     request,
                 )
                 .await);
         }
     }
-    let session = session.map(Zeroizing::new);
+    let session = session.map(|s| SignIn::Session(Zeroizing::new(s)));
     Ok(host.decide(&keys, backend, session, request).await)
 }
 
