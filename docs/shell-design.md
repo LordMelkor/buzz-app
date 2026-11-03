@@ -10,6 +10,10 @@ required, including when older preferences saved it disabled. Navigation removes
 disabled optional plugins
 from page choices; a retained destination whose provider is unavailable displays
 an explicit failure with retry instead of silently selecting another page.
+A page already on screen is never replaced by that failure: when a later attempt
+on the same visit (a retry, a same-target open, a reopen after sign-in) times out
+or is unavailable, the page stays. Lost access and rejected incoming links still
+show their failure.
 Browser controls, host shortcuts and toolbar arrows traverse the same visit history.
 Settings sections are destinations presented as a modal over the last workspace.
 The host retains that workspace presentation while Settings is current, without

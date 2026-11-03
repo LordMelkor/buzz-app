@@ -110,6 +110,10 @@ export function createNavigationController(
   // key-setup gate, IdentitySetup, hides the app for minutes), so it runs only
   // while one is attached.
   let presenters = 0;
+  // The visit whose page is on screen. A later attempt on it (a retry, a
+  // same-target open, a reopen after sign-in) that cannot finish leaves that
+  // page up: background work never replaces content already shown.
+  let shown: string | undefined;
   let ingressRetry: (() => Promise<OpenResult>) | undefined;
   const listeners = new Set<() => void>();
   // Commit state and capture each caller's result before invoking external code.
@@ -160,8 +164,21 @@ export function createNavigationController(
       timeoutMs,
     );
   }
-  function finish(operation: Operation, result: OpenResult) {
+  function finish(operation: Operation, outcome: OpenResult) {
     if (operation !== active || !operation.pending) return;
+    // Only a transient failure keeps the shown page; lost access, a missing
+    // destination or a rejected incoming link still replaces it.
+    const result: OpenResult =
+      outcome.status === "failed" &&
+      !outcome.presented &&
+      !snapshot.ingress &&
+      operation.attempt.entry.id === shown &&
+      (outcome.reason === "timeout" ||
+        outcome.reason === "unavailable" ||
+        outcome.reason === "host-error")
+        ? { ...outcome, presented: true }
+        : outcome;
+    if (result.status === "opened") shown = operation.attempt.entry.id;
     settle(operation, result);
     snapshot = Object.freeze({
       ...snapshot,
@@ -207,6 +224,7 @@ export function createNavigationController(
     }
     const controller = new AbortController();
     const state = history.snapshot();
+    if (state.current.id !== shown) shown = undefined;
     const attempt: OpenAttempt = Object.freeze({
       id: crypto.randomUUID(),
       entry: state.current,

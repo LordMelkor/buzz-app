@@ -240,6 +240,76 @@ describe("navigation attempts over one history driver", () => {
     expect(attempt.signal.reason).toBe(NAVIGATION_ABORTED);
     expect(nav.snapshot().presented).toBeUndefined();
   });
+  it("keeps a shown page when a later attempt on its visit cannot finish", async () => {
+    vi.useFakeTimers();
+    const { host, navigation: nav } = setup();
+    void nav.open(page);
+    host.complete(nav.snapshot().attempt, { status: "opened" });
+    // A background retry times out: the page stays, with its authority.
+    const retry = nav.retry();
+    const retried = nav.snapshot().attempt;
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(retry).resolves.toEqual({
+      status: "failed",
+      reason: "timeout",
+      presented: true,
+    });
+    expect(nav.snapshot()).toMatchObject({
+      status: "failed",
+      reason: "timeout",
+      presented: true,
+    });
+    expect(retried.signal.aborted).toBe(false);
+    // So does a same-target open the page reports unavailable.
+    void nav.open(page);
+    host.complete(nav.snapshot().attempt, {
+      status: "failed",
+      reason: "unavailable",
+    });
+    expect(nav.snapshot()).toMatchObject({ status: "failed", presented: true });
+    // Lost access still replaces it.
+    void nav.retry();
+    host.complete(nav.snapshot().attempt, {
+      status: "failed",
+      reason: "denied",
+    });
+    expect(nav.snapshot().status).toBe("failed");
+    expect(nav.snapshot().presented).toBeUndefined();
+  });
+  it("replaces a page with a failure once another visit was opened over it", async () => {
+    vi.useFakeTimers();
+    const { host, navigation: nav } = setup();
+    void nav.open(page);
+    host.complete(nav.snapshot().attempt, { status: "opened" });
+    void nav.open(settings);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(nav.snapshot()).toMatchObject({
+      status: "failed",
+      reason: "timeout",
+    });
+    expect(nav.snapshot().presented).toBeUndefined();
+    // Back to the page: its content is no longer what is shown.
+    nav.back();
+    expect(nav.snapshot().entry.target).toEqual(page);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(nav.snapshot()).toMatchObject({
+      status: "failed",
+      reason: "timeout",
+    });
+    expect(nav.snapshot().presented).toBeUndefined();
+  });
+  it("still shows an incoming link's failure over a shown page", () => {
+    const { host, navigation: nav } = setup();
+    void nav.open(page);
+    host.complete(nav.snapshot().attempt, { status: "opened" });
+    host.fail("unavailable", () => Promise.resolve({ status: "cancelled" }));
+    expect(nav.snapshot()).toMatchObject({
+      status: "failed",
+      reason: "unavailable",
+      ingress: true,
+    });
+    expect(nav.snapshot().presented).toBeUndefined();
+  });
   it("rejects invalid targets before cancelling or moving the current intent", async () => {
     const { navigation: nav } = setup();
     void nav.open(settings);
