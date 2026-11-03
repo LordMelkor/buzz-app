@@ -922,6 +922,7 @@ function Composer({
     return result;
   }
   const [error, setError] = useState<string>();
+  const [pasteTooLong, setPasteTooLong] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string>();
   const focusRestoredDraft = useRef(false);
   const beforeEdit = useRef<
@@ -940,6 +941,10 @@ function Composer({
     setLinkEdit(null);
     completion.invalidate();
   });
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A changed draft or edit target retires feedback about the previous paste.
+  useEffect(() => {
+    setPasteTooLong(false);
+  }, [draft, editing.target]);
   const editScope = useMessageEditScope();
   const editableRows = () =>
     editMessages ??
@@ -3073,7 +3078,12 @@ function Composer({
               channelId={channelId}
               extensions={extensions}
               emoji={emojiCatalog.entries}
+              onPasteTooLong={() => setPasteTooLong(true)}
+              aria-describedby={
+                pasteTooLong ? `${inputId}-paste-error` : undefined
+              }
               onDraftChange={(next) => {
+                setPasteTooLong(false);
                 const textChanged = next.text !== valueRef.current.text;
                 // The default tag's prefill shows without being saved.
                 if (seeding.current) {
@@ -3346,6 +3356,14 @@ function Composer({
         {!editing.target && compacting && (
           <p className={styles.composerStatus} role="status">
             Compacting session…
+          </p>
+        )}
+        {pasteTooLong && (
+          <p id={`${inputId}-paste-error`} role="alert">
+            This paste would make your message too long.{" "}
+            {canAttach && !editing.target
+              ? "Shorten it or attach the text as a file."
+              : "Shorten the text and try again."}
           </p>
         )}
         {(error || editing.error) && (

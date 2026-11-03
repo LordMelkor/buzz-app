@@ -87,6 +87,9 @@ the interface unless an available tool actually supports that action.
   it searches only once that word has at least three characters, even with
   `from:` or `in:`. A shorter last word shows how many characters to type, not
   "no results".
+- **Long text pastes** that exceed the message limit show an error and leave
+  your draft unchanged. Shorten the text, or save it as a text file and use
+  **Attach files** where uploads are available.
 - **File sharing** is available through **Attach files** in the composer when
   uploads are available. Files and media are shared with the conversation's
   members. Do not promise support for every file type or size.

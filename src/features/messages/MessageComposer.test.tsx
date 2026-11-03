@@ -12926,3 +12926,72 @@ it("removing a pending chip abandons its resolution, and redo starts it again", 
     restarted.resolve(null);
   }
 });
+
+describe("oversized paste feedback", () => {
+  const pasteText = (input: ComposerInputElement, text: string) => {
+    act(() => {
+      input.focus();
+      fireEvent.paste(input, {
+        clipboardData: {
+          items: [],
+          getData: (type: string) => (type === "text/plain" ? text : ""),
+        },
+      });
+    });
+  };
+
+  it("announces rejection, keeps the saved draft and clears feedback on recovery", () => {
+    const h = mount();
+    h.fill("Keep this draft.");
+    pasteText(h.input(), "x".repeat(16001));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This paste would make your message too long. Shorten the text and try again.",
+    );
+    expect(h.input()).toHaveAccessibleDescription(
+      /This paste would make your message too long/,
+    );
+    expect(h.input()).toHaveValue("Keep this draft.");
+    expect(readView("scope", "draft:channel", null)).toMatchObject({
+      text: "Keep this draft.",
+    });
+    expect(h.messages.send).not.toHaveBeenCalled();
+    pasteText(h.input(), " OK");
+    expect(h.input()).toHaveValue("Keep this draft. OK");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(h.input()).not.toHaveAttribute("aria-describedby");
+    pasteText(h.input(), "x".repeat(16001));
+    h.retarget({ channelId: "other-channel" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("offers a file only when the composer supports attachments", () => {
+    const h = mount();
+    h.retarget({ session: { ...h.session, attachments: { upload: vi.fn() } } });
+    pasteText(h.input(), "x".repeat(16001));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Shorten it or attach the text as a file.",
+    );
+  });
+
+  it("counts staged chat cards against the paste budget", () => {
+    const link = "[Session: PR 45 fixes](buzz://channel/session-id)";
+    writeView("scope", "draft:channel", {
+      text: "",
+      recipients: [],
+      chatCards: [link],
+    });
+    const h = mount();
+    const available = 16000 - link.length - 2;
+    pasteText(h.input(), "x".repeat(available + 1));
+    expect(h.input()).toHaveValue("");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This paste would make your message too long.",
+    );
+    pasteText(h.input(), "x".repeat(available));
+    expect(h.input()).toHaveValue("x".repeat(available));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(
+      screen.getByRole("region", { name: "Chat attachments" }),
+    ).toBeVisible();
+  });
+});

@@ -373,6 +373,8 @@ export type EditableInputProps = Omit<
   onDraftChange(draft: MentionDraft): void;
   onFormatsChange(active: readonly ComposerFormat[]): void;
   onEditLink?(edit: ComposerLinkEdit): void;
+  /** A paste would exceed the serialized message budget; nothing was inserted. */
+  onPasteTooLong?(): void;
   /** Vet a pasted identity link as a notification recipient: the recipient under
    * its current name, or null to keep the display-only chip. */
   acceptRecipient?(pubkey: string): MentionRecipient | null;
@@ -391,6 +393,7 @@ export function EditableInput({
   onDraftChange,
   onFormatsChange,
   onEditLink,
+  onPasteTooLong,
   acceptRecipient,
   ...events
 }: EditableInputProps & {
@@ -406,6 +409,7 @@ export function EditableInput({
     onDraftChange,
     onFormatsChange,
     onEditLink,
+    onPasteTooLong,
     acceptRecipient,
     disabled,
     placeholder,
@@ -417,6 +421,7 @@ export function EditableInput({
     onDraftChange,
     onFormatsChange,
     onEditLink,
+    onPasteTooLong,
     acceptRecipient,
     disabled,
     placeholder,
@@ -736,6 +741,7 @@ export function EditableInput({
       range?: { start: number; end: number },
       terminator?: ":",
       focus = true,
+      onTooLong?: () => void,
     ) => {
       if (!editable() || composing.current || editor.composing) return false;
       if (terminator) {
@@ -822,14 +828,25 @@ export function EditableInput({
       if (
         composerMarkdown(projectComposerDocument(tr.doc).draft).length >
         current.current.maxLength
-      )
+      ) {
+        onTooLong?.();
         return !!terminator; // The typed colon landed even if conversion cannot.
+      }
       const unconverted = editor.state;
       editor.dispatch(focus ? tr.scrollIntoView() : tr);
       if (terminator && editor.state !== unconverted) separateHistory = true;
       if (focus) editor.focus();
       return true;
     };
+    const insertPastedText = (text: string) =>
+      insert(
+        text,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        current.current.onPasteTooLong,
+      );
     /** Paste this app's own copied blocks and marks as the nodes they are. One
      * paragraph joins the caret's line; anything else lands as sibling blocks,
      * splitting the caret's paragraph rather than merging into its text. The
@@ -895,8 +912,10 @@ export function EditableInput({
       if (
         composerMarkdown(projectComposerDocument(tr.doc).draft).length >
         current.current.maxLength
-      )
+      ) {
+        current.current.onPasteTooLong?.();
         return null;
+      }
       editor.dispatch(tr.scrollIntoView());
       editor.focus();
       return { from, to: editor.state.selection.to };
@@ -2043,7 +2062,7 @@ export function EditableInput({
             // Raw text replaces the selection with the caret's marks: no copied
             // structure, links, selection linking, URL spacing or recipients.
             if (raw) {
-              if (plain) insert(plain);
+              if (plain) insertPastedText(plain);
               return true;
             }
             const code = editor.state.selection.$from.parent.type.spec.code;
@@ -2122,7 +2141,7 @@ export function EditableInput({
                 current.current.maxLength
             )
               text += " ";
-            if (!insert(text)) return true;
+            if (!insertPastedText(text)) return true;
             const inserted = projection().source(editor.state.selection.to);
             if (reuse) {
               const pos = editor.state.selection.to + 1;
