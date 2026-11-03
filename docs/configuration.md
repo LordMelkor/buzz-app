@@ -8,6 +8,7 @@ Build defaults are readable binary data, **never secret storage**.
 
 | Input | Consumer and boundary |
 | --- | --- |
+| `BUZZ_EXTERNAL_MCP_COMMUNITIES` | Frontend build: space-separated secure community origins allowed to authorize external MCP access. Empty disables access. See below. |
 | `BUZZ_BUILDERLAB_URL` | Shared frontend/native build: public login URL and the bundled plugin's native grants; no runtime override. |
 | `BUZZ_BUILDERLAB_APPS_DOMAIN` | Shared frontend/native build: exact Apps cookie domain paired with the login origin for native viewer SSO; no runtime override. |
 | `BUZZ_DEFAULT_COMMUNITY_URL` | Packaged frontend build: secure relay origin to select once, after identity setup, only when this viewer has no saved community record. Saved choices, including Personal space, always win. Unset in OSS builds. |
@@ -27,6 +28,19 @@ configuration; they do not configure Agents. Restart Vite to change broker or
 routing configuration. Production frontend builds never load the dev broker or
 expose its auto-open seed. They can separately opt into the packaged community
 default below.
+
+## External MCP community flag
+
+`BUZZ_EXTERNAL_MCP_COMMUNITIES` is a space-separated list of `https://` or
+`wss://` community origins. The default is empty, which disables external MCP
+access in all communities. Invalid origins fail the build. The value is
+compiled into the frontend; a launched app cannot change it through its environment.
+
+The desktop preview workflow sets this flag to
+`https://buzz.block.builderlab.xyz` for bb-block only. Community names do not
+grant access. The Agents service compares the exact canonical origin before
+opening a connection and on each tool call. Consent disables other communities,
+and Settings hides External apps there. Normal agent MCP servers are unchanged.
 
 ## Packaged community default
 

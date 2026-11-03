@@ -29,6 +29,7 @@ import {
 import { newer } from "../features/relay/events";
 import { CANVAS_BYTES } from "../features/channel-templates/model";
 import { threadReference } from "../features/relay/thread-reference";
+import { parseBuzzLink } from "../features/navigation/buzz-links";
 import { soloChannelMetadata } from "../features/relay/discovery";
 import { channelLabelTags } from "../features/relay/channel-labels";
 import { SOLO_LABEL, SOLO_NAMED_LABEL } from "../features/solo/labels";
@@ -195,6 +196,10 @@ export const TOOLS: readonly Tool[] = [
     {
       channel: str,
       thread: str,
+      message_url: {
+        type: "string",
+        description: "Buzz message link; replaces channel and thread.",
+      },
       q: str,
       author: {
         type: "string",
@@ -617,6 +622,19 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
 
   async read(tools, args) {
     const { client, context } = tools;
+    if (args.message_url !== undefined) {
+      if (args.channel !== undefined || args.thread !== undefined)
+        throw new Error(
+          "message_url cannot be combined with channel or thread.",
+        );
+      const link =
+        typeof args.message_url === "string"
+          ? parseBuzzLink(args.message_url)
+          : null;
+      if (link?.format !== "legacy" || !link.messageId)
+        throw new Error("message_url must be a Buzz message link.");
+      args = { ...args, channel: link.channelId, thread: link.messageId };
+    }
     const limit = typeof args.limit === "number" ? args.limit : undefined;
     const before = unixTime(args, "before");
     const since = unixTime(args, "since");

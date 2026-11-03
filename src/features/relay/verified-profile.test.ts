@@ -3,6 +3,7 @@ import { eventDto } from "./events";
 import { keypair, signed } from "./testing";
 import { createVerifiedProfileDirectory } from "./verified-profile-directory";
 import {
+  VERIFIED_PROFILE_BATCH,
   verifiedProfile,
   verifiedProfileAuthority,
   verifiedProfileDiscovery,
@@ -1019,6 +1020,77 @@ it("publishes a pre-EOSE change after an open batch is rebuilt", async () => {
     rebuilt.sink.eose();
     expect(h.changed).toHaveBeenCalledTimes(1);
     expect(h.directory.snapshot().get(alice.pubkey)?.verifiedAt).toBe(12);
+  } finally {
+    h.directory.dispose();
+  }
+});
+
+it("grows with the profile limit and evicts the least recently ensured when it shrinks", async () => {
+  const h = harness();
+  try {
+    h.directory.resize(1025);
+    h.directory.ensure([alice.pubkey]);
+    await Promise.resolve();
+    h.subscriptions[0]?.sink.event(projection());
+    h.directory.ensure(
+      Array.from({ length: 1024 }, (_, i) => i.toString(16).padStart(64, "0")),
+    );
+    expect(h.directory.snapshot().has(alice.pubkey)).toBe(true);
+    h.changed.mockClear();
+    h.directory.resize(1024);
+    expect(h.directory.snapshot().has(alice.pubkey)).toBe(false);
+    expect(h.changed).toHaveBeenCalledTimes(1);
+  } finally {
+    h.directory.dispose();
+  }
+});
+
+it("shrinks a full head cache by request order, not by arrival order", async () => {
+  const h = harness();
+  const carol = keypair();
+  try {
+    // The directory follows any limit; three heads stand for a full cache.
+    h.directory.resize(3);
+    const subjects = [alice.pubkey, bob.pubkey, carol.pubkey];
+    h.directory.ensure(subjects);
+    await Promise.resolve();
+    const [batch] = h.subscriptions;
+    assert(batch);
+    for (const subject of subjects) batch.sink.event(projection(10, subject));
+    batch.sink.eose();
+    expect(h.directory.snapshot().size).toBe(3);
+    // The first head to arrive is now the most recently requested.
+    h.directory.ensure([alice.pubkey]);
+    h.changed.mockClear();
+    h.directory.resize(2);
+    const snapshot = h.directory.snapshot();
+    expect([...snapshot.keys()].sort()).toEqual(
+      [alice.pubkey, carol.pubkey].sort(),
+    );
+    expect(h.changed).toHaveBeenCalledTimes(1);
+  } finally {
+    h.directory.dispose();
+  }
+});
+
+it("stops the syncs a shrink emptied without another ensure", async () => {
+  const h = harness();
+  try {
+    h.directory.resize(VERIFIED_PROFILE_BATCH + 1);
+    const old = Array.from({ length: VERIFIED_PROFILE_BATCH }, (_, i) =>
+      (i + 1).toString(16).padStart(64, "0"),
+    );
+    h.directory.ensure(old);
+    await Promise.resolve();
+    h.directory.ensure([alice.pubkey]);
+    await Promise.resolve();
+    const [full, recent] = h.subscriptions;
+    assert(full && recent);
+    // Shrinking to one keeps the most recently requested subject only.
+    h.directory.resize(1);
+    await Promise.resolve();
+    expect(full.stopped).toBe(true);
+    expect(recent.stopped).toBe(false);
   } finally {
     h.directory.dispose();
   }

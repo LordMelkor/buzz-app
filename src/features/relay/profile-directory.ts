@@ -8,7 +8,12 @@ import { retryRead } from "./read-retry";
 import { attestedOwner } from "../agents/owner-attestation";
 import { hasEventProof } from "./events";
 import type { Outbox } from "./outbox";
-import { ByteLru } from "./budget";
+import {
+  ByteLru,
+  PROFILE_CACHE_BASE,
+  PROFILE_CACHE_MAX,
+  PROFILE_ENTRY_BYTES,
+} from "./budget";
 import type { Profile } from "./contracts";
 import type { RelayEvent } from "./events";
 import { newer } from "./events";
@@ -33,6 +38,17 @@ export interface ProfileQueries {
    * notifies after it removes content, so only names still on screen are
    * reread. */
   generation?(): number;
+  /** Room for `members` more profiles while a view of that many people is
+   * open, within the hard limit. Growth is immediate. After a release, the
+   * next task returns the limit to the largest remaining reservation and
+   * evicts the least recently used profiles past it. */
+  reserve?(members: number): () => void;
+  /** Profiles the cache can hold now; one ensure may ask for at most this many. */
+  limit?(): number;
+  /** Moves when the budget drops loaded profiles or a shrink cancels pending
+   * background reads. A view that requested names once and skips repeats must
+   * request again after it moves. */
+  evictions?(): number;
 }
 
 /** Authors per profile read, the reader's largest page. A page that fills it
@@ -55,21 +71,34 @@ export function createProfileDirectory(
     ): (() => void) | undefined;
   },
 ) {
-  const events = new ByteLru<RelayEvent>(1024, 2 * 1024 * 1024);
+  let limit = PROFILE_CACHE_BASE;
+  const events = new ByteLru<RelayEvent>(limit, limit * PROFILE_ENTRY_BYTES);
+  // One entry per open view; the largest sets the limit.
+  const reservations = new Set<{ members: number }>();
+  let shrinking: ReturnType<typeof setTimeout> | undefined;
   const owners = new WeakMap<RelayEvent, string>();
-  const pending = new Map<
-    string,
-    {
-      work: Promise<void>;
-      authors: string[];
-      priority: Priority;
-      reading: boolean;
-    }
-  >();
+  type Batch = {
+    work: Promise<void>;
+    authors: string[];
+    priority: Priority;
+    reading: boolean;
+    refresh: boolean;
+    cancel: AbortController;
+  };
+  const pending = new Map<string, Batch>();
+  // The batch each read attempt's signal belongs to, so the session's accept
+  // of that read's answer can be told apart from live traffic.
+  const attempts = new WeakMap<AbortSignal, Batch>();
+  // Background reads a shrink cancelled; counted with evictions.
+  let cancelled = 0;
   const listeners = new Set<() => void>();
   let snapshot: ReadonlyMap<string, Profile> = new Map();
   // Replaced, never mutated, so stores can compare it like `snapshot`.
   let unnamed: ReadonlySet<string> = new Set();
+  // Absences this connection has read. Background enrichment does not
+  // reread them: the live profiles route delivers a later kind 0. Scheduling
+  // state only; `unnamed` is what consumers see, and it survives reconnect.
+  const absent = new Set<string>();
   // Keys with kind-0 metadata. A verified-only overlay must not satisfy ensure.
   let loaded: ReadonlySet<string> = new Set();
   let controller = new AbortController();
@@ -92,7 +121,19 @@ export function createProfileDirectory(
       },
       verification.refresh,
     );
-  function accept(incoming: readonly RelayEvent[]) {
+  // A background read of many pages publishes once, when its pages settle:
+  // every publish refolds all profiles and wakes every listener, and an open
+  // mention menu re-ranks its whole roster on each one. The session accepts
+  // each page before the read returns it, with that read's signal. Live
+  // traffic has no read signal and publishes at once.
+  let folded = false;
+  function flush() {
+    if (folded && !closed) publish(true);
+  }
+  function accept(incoming: readonly RelayEvent[], read?: AbortSignal) {
+    take(incoming, !!read && attempts.get(read)?.priority === "background");
+  }
+  function take(incoming: readonly RelayEvent[], fold: boolean) {
     if (closed) return;
     let changed = false;
     const attested: Promise<boolean>[] = [];
@@ -101,6 +142,7 @@ export function createProfileDirectory(
       const previous = events.peek(event.pubkey);
       if (newer(previous, event) === previous) continue;
       events.set(event.pubkey, event);
+      absent.delete(event.pubkey);
       if (hasEventProof(event))
         attested.push(
           attestedOwner(event).then((owner) => {
@@ -112,7 +154,8 @@ export function createProfileDirectory(
         );
       changed = true;
     }
-    if (changed) publish(true);
+    if (changed && fold) folded = true;
+    else if (changed) publish(true);
     // One notification per batch: every publish refolds all profiles, and
     // listeners refold every cached channel.
     if (attested.length)
@@ -122,6 +165,7 @@ export function createProfileDirectory(
   }
   /** Notifies on display changes, and on winning-event changes for `event()` readers. */
   function publish(headChanged = false) {
+    folded = false;
     const next = foldProfiles([
       ...events.keys().flatMap((id) => {
         const event = events.peek(id);
@@ -202,11 +246,34 @@ export function createProfileDirectory(
     for (const listener of listeners) notify(listener);
   }
   /** A completed read that returned no kind 0 is evidence too: the identity is known unnamed. */
-  function missed(ids: readonly string[]) {
-    const fresh = ids.filter((id) => !snapshot.has(id) && !unnamed.has(id));
+  function missed(
+    ids: readonly string[],
+    returned: ReadonlySet<string>,
+    fold = false,
+  ) {
+    // The cache may already have evicted a returned kind 0; it is not absent.
+    // A folded page is accepted but not yet published.
+    for (const id of ids)
+      if (!loaded.has(id) && !events.peek(id) && !returned.has(id)) {
+        // Re-adding moves a reconfirmed absence to the end of the trim order.
+        absent.delete(id);
+        absent.add(id);
+      }
+    for (const id of absent) {
+      if (absent.size <= 1024) break;
+      absent.delete(id);
+    }
+    const fresh = ids.filter(
+      (id) =>
+        !snapshot.has(id) &&
+        !events.peek(id) &&
+        !unnamed.has(id) &&
+        !returned.has(id),
+    );
     if (!fresh.length) return;
-    unnamed = new Set([...unnamed, ...fresh].slice(-1024));
-    for (const listener of listeners) notify(listener);
+    unnamed = new Set([...unnamed, ...fresh].slice(-limit));
+    if (fold) folded = true;
+    else for (const listener of listeners) notify(listener);
   }
   async function ensure(
     ids: readonly string[],
@@ -215,7 +282,7 @@ export function createProfileDirectory(
   ) {
     if (closed) throw new DOMException("Session closed", "AbortError");
     const unique = [...new Set(ids)];
-    if (!refresh && unique.length > 1024)
+    if (!refresh && unique.length > limit)
       throw new Error("Profile request exceeds the directory budget");
     // A hit marks the profile recently used, so the budget evicts profiles
     // nobody has asked for rather than the oldest ones still on screen.
@@ -240,7 +307,18 @@ export function createProfileDirectory(
         }
         waiting.add(batch.work);
       }
-      return !batch && (refresh || !loaded.has(id));
+      return (
+        !batch &&
+        (refresh ||
+          !(
+            // A folded page is loaded before its publish.
+            loaded.has(id) ||
+            events.peek(id) ||
+            // Only while still reported unnamed, so a skip never leaves an
+            // identity neither named nor unnamed.
+            (priority === "background" && absent.has(id) && unnamed.has(id))
+          ))
+      );
     });
     for (let offset = 0; offset < missing.length; offset += PROFILE_PAGE) {
       const authors = missing.slice(offset, offset + PROFILE_PAGE);
@@ -249,51 +327,119 @@ export function createProfileDirectory(
         authors,
         priority,
         reading: false,
+        refresh,
+        cancel: new AbortController(),
         work: Promise.resolve(),
       };
-      batch.work = retryRead(async (signal) => {
-        // A promotion during backoff applies to the next attempt instead.
-        batch.reading = true;
-        try {
-          const result = await reader.read(
-            [{ kinds: [0], authors, limit: PROFILE_PAGE }],
-            { signal, priority: batch.priority },
-          );
-          answered = true;
-          return result;
-        } finally {
-          batch.reading = false;
-        }
-      }, signal)
+      batch.work = retryRead(
+        async (signal) => {
+          // A promotion during backoff applies to the next attempt instead.
+          batch.reading = true;
+          attempts.set(signal, batch);
+          try {
+            const result = await reader.read(
+              [{ kinds: [0], authors, limit: PROFILE_PAGE }],
+              { signal, priority: batch.priority },
+            );
+            answered = true;
+            return result;
+          } finally {
+            batch.reading = false;
+          }
+        },
+        AbortSignal.any([signal, batch.cancel.signal]),
+      )
         .then((result) => {
-          if (signal.aborted) return;
-          accept(result.filter((event) => authors.includes(event.pubkey)));
+          if (signal.aborted || batch.cancel.signal.aborted) return;
+          // A foreground reader that joined this read gets its names at once.
+          const fold = batch.priority === "background";
+          const profiles = result.filter((event) =>
+            authors.includes(event.pubkey),
+          );
+          take(profiles, fold);
           // A page at the limit may have left out authors who do have one.
-          if (result.length < PROFILE_PAGE) missed(authors);
+          if (result.length < PROFILE_PAGE)
+            missed(
+              authors,
+              new Set(profiles.map((event) => event.pubkey)),
+              fold,
+            );
         })
         .catch((error: unknown) => {
+          // A shrink cancels a background read quietly; evictions() tells its
+          // requester to ask again.
+          if (batch.cancel.signal.aborted) return;
           // The old directory contract silently discards a retired success.
           if (!signal.aborted || !answered) throw error;
         })
         .finally(() => {
           for (const id of authors)
             if (pending.get(id) === batch) pending.delete(id);
+          // A failed page ends its ensure early; publish the rest once idle.
+          if (!pending.size) flush();
         });
       for (const id of authors) pending.set(id, batch);
       waiting.add(batch.work);
     }
     await Promise.all(waiting);
+    // Every caller sees its names published when its ensure resolves, also
+    // one that joined another caller's read.
+    flush();
   }
   function clear() {
     controller.abort();
     controller = new AbortController();
     pending.clear();
+    absent.clear();
     events.clear();
     verified?.clear();
     unnamed = new Set();
     generation++;
     // Notify even when nothing was loaded: an aborted read still needs a retry.
     publish(true);
+  }
+  function resize() {
+    clearTimeout(shrinking);
+    shrinking = undefined;
+    let reserved = 0;
+    for (const { members } of reservations)
+      reserved = Math.max(reserved, members);
+    const next = Math.min(PROFILE_CACHE_MAX, PROFILE_CACHE_BASE + reserved);
+    if (next === limit) return;
+    const shrink = next < limit;
+    limit = next;
+    verified?.resize(limit);
+    let dropped = events.resize(limit, limit * PROFILE_ENTRY_BYTES) > 0;
+    // A read still in flight from the larger limit would land as the newest
+    // entries and push out names the next view just loaded. Foreground reads
+    // and reconnect refreshes keep going.
+    if (shrink)
+      for (const batch of new Set(pending.values())) {
+        if (batch.priority !== "background" || batch.refresh) continue;
+        batch.cancel.abort();
+        for (const id of batch.authors)
+          if (pending.get(id) === batch) pending.delete(id);
+        cancelled++;
+        dropped = true;
+      }
+    if (unnamed.size > limit) {
+      unnamed = new Set([...unnamed].slice(-limit));
+      dropped = true;
+    }
+    if (dropped) publish(true);
+  }
+  function reserve(members: number) {
+    const reservation = {
+      members: Number.isFinite(members) ? Math.max(0, Math.floor(members)) : 0,
+    };
+    reservations.add(reservation);
+    resize();
+    return () => {
+      if (!reservations.delete(reservation) || closed) return;
+      // Shrink after the current task: a view that releases and reserves again
+      // in one commit (a roster count change, a remount) keeps its profiles.
+      shrinking ??= setTimeout(resize);
+    };
   }
   const queries: ProfileQueries = Object.freeze({
     snapshot: () => snapshot,
@@ -307,6 +453,9 @@ export function createProfileDirectory(
     event: (pubkey: string) => events.peek(pubkey),
     unnamed: () => unnamed,
     generation: () => generation,
+    reserve,
+    limit: () => limit,
+    evictions: () => events.evictions + cancelled,
     owner: (pubkey: string) => {
       const event = events.peek(pubkey);
       return event ? owners.get(event) : undefined;
@@ -339,6 +488,8 @@ export function createProfileDirectory(
       controller.abort();
       controller = new AbortController();
       pending.clear();
+      // A kind 0 published while offline was not delivered live.
+      absent.clear();
       return ensure(ids, "background", true);
     },
     event: (id: string) => events.peek(id),
@@ -350,6 +501,7 @@ export function createProfileDirectory(
       clear();
       // After clear(): disposing the verified directory schedules a flush.
       clearTimeout(verifiedFlush);
+      clearTimeout(shrinking);
       listeners.clear();
     },
   };

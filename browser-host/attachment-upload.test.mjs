@@ -381,10 +381,10 @@ test("declared and streamed request budgets reject before signing or forwarding"
   for (const declared of [true, false]) {
     const req = Readable.from(
       (function* () {
-        const chunk = Buffer.alloc(1024 * 1024);
-        for (let size = 0; size < UPLOAD_MAX_BYTES; size += chunk.length)
-          yield chunk;
+        // Cross the cumulative limit without hashing/spooling the entire budget.
+        // The second chunk fits by itself; the preceding byte makes it too large.
         yield Buffer.from("x");
+        yield Buffer.alloc(UPLOAD_MAX_BYTES);
       })(),
     );
     req.headers = declared

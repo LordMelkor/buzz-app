@@ -103,16 +103,20 @@ use buzzodz_plugins::{
 use deep_links::{deep_link_take, deep_link_watch, DeepLinks};
 use dock::{dock_permission, unread_indicator_set};
 use host_command::plugin_host_run_command;
-use host_files::{plugin_host_read_file, plugin_host_resolve_directory, plugin_host_save_bytes};
+use host_files::{
+    plugin_host_delete_managed_file, plugin_host_read_file, plugin_host_resolve_directory,
+    plugin_host_save_bytes,
+};
 use host_mcp::{
-    plugin_host_mcp_close, plugin_host_mcp_reply, plugin_host_mcp_serve, HostMcpServers,
+    plugin_host_mcp_authorize, plugin_host_mcp_close, plugin_host_mcp_reply, plugin_host_mcp_serve,
+    HostMcpServers,
 };
 use host_process::{
     plugin_host_process_kill, plugin_host_process_spawn, plugin_host_process_write, HostProcesses,
 };
 use host_request::{
     plugin_host_call_context, plugin_host_request, plugin_host_request_bytes, plugin_host_upload,
-    HostCalls,
+    plugin_host_upload_bytes_once, HostCalls,
 };
 use notifications::{notification_show, Notifications};
 #[cfg(target_os = "macos")]
@@ -614,6 +618,7 @@ async fn update_restart<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(
 }
 fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        window_state::onboarding_preserve_window,
         huddle_window_reset_incoming,
         huddle_window_open,
         huddle_window_update,
@@ -709,12 +714,15 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         plugin_host_call_context,
         plugin_host_request,
         plugin_host_request_bytes,
+        plugin_host_upload_bytes_once,
         plugin_host_save_bytes,
+        plugin_host_delete_managed_file,
         plugin_host_upload,
         plugin_host_process_spawn,
         plugin_host_process_write,
         plugin_host_process_kill,
         plugin_host_mcp_serve,
+        plugin_host_mcp_authorize,
         plugin_host_mcp_reply,
         plugin_host_mcp_close,
         plugin_host_read_file,

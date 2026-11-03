@@ -32,6 +32,7 @@ import {
   restoredFeature,
   withFeature,
 } from "./features";
+import { PrivateChannels } from "./PrivateChannels";
 
 type TabAgents = Pick<Agents, "save" | "types">;
 
@@ -169,11 +170,8 @@ function BestieTab({
           title="Check-ins"
           subtitle="Every hour. Not set up yet."
         />
-        <PreferenceRow
-          title="Private channels Bestie can read"
-          subtitle="Not set up yet. Bestie can already read every public channel."
-        />
       </SettingsGroup>
+      <PrivateChannels session={session} bestie={agent.pubkey} />
       {bestie.view}
     </div>
   );

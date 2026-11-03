@@ -16,6 +16,7 @@ afterEach(() => {
 
 const OWNER = "f".repeat(64);
 const SCOPE = `https://relay.example:${OWNER}`;
+const NO_CHANNELS = { channels: [] };
 const member = (name: string, digit: string): Agent =>
   ({
     key: digit.repeat(64),
@@ -64,6 +65,12 @@ function community(saved: string | undefined, agents = [ada, bea]) {
     status: "ready",
     scope: SCOPE,
     session: {
+      viewer: OWNER,
+      channels: {
+        list: () => NO_CHANNELS,
+        subscribeList: () => () => {},
+        ensureList: () => () => {},
+      },
       mainAgent,
       agentChoices: {
         snapshot: () => choices,
@@ -111,7 +118,7 @@ it("shows on the saved Bestie only, and moves when Change picks another", async 
   expect(screen.getByText("This is your Bestie")).toBeVisible();
   // A type without instructions has nothing to switch.
   expect(screen.getByText("Remembers you")).toBeVisible();
-  expect(screen.queryByRole("switch")).toBeNull();
+  expect(screen.queryByRole("switch", { name: "Remembers you" })).toBeNull();
   changed.mockClear();
   await user.click(screen.getByRole("button", { name: "Change" }));
   // Change offers every other agent you can make Bestie.
@@ -306,7 +313,7 @@ it("says why a save failed and lets the switch be tried again", async () => {
     "Connect to the community to save",
   );
   expect(remembers).not.toBeChecked();
-  expect(remembers).toBeEnabled();
+  expect(remembers).not.toHaveAttribute("aria-disabled", "true");
   // A config with no instructions yet gets the section alone.
   expect(save).toHaveBeenCalledWith(ada.key, {
     config: { instructions: withFeature("", memory, true) },
@@ -328,7 +335,7 @@ it("offers no switch while the agent's instructions can't be read here", () => {
       }
     />,
   );
-  expect(screen.queryByRole("switch")).toBeNull();
+  expect(screen.queryByRole("switch", { name: "Remembers you" })).toBeNull();
   expect(
     screen.getByText("This agent's instructions could not be read"),
   ).toBeVisible();

@@ -148,7 +148,7 @@ function relayAnswer(args: unknown) {
 
 const notice = () => screen.queryByText("This destination couldn’t open");
 const signIn = () =>
-  screen.queryByRole("button", { name: "Sign in with email" });
+  screen.queryByRole("button", { name: "Sign in with Builderlab" });
 async function firstRun() {
   const current = createServices();
   services = current;

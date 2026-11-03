@@ -1,21 +1,23 @@
 import { test, expect } from "./source-fixture.mjs";
 
-// Hold native motion at its lifecycle boundary, including delayed transitions.
+// Capture transitions at the DOM-change boundary. transitionrun is queued and
+// can arrive after a busy renderer has already finished the entrance.
 async function holdPickerMotion(page) {
   await page.evaluate(() => {
-    for (const type of ["transitionrun", "animationstart"]) {
-      document.addEventListener(
-        type,
-        (event) => {
-          const root = event.target.closest('[role="dialog"] [role="group"]');
-          for (const animation of root?.getAnimations({ subtree: true }) ??
-            []) {
-            animation.pause();
-          }
-        },
-        true,
-      );
-    }
+    new MutationObserver(() => {
+      for (const root of document.querySelectorAll(
+        '[role="dialog"] [role="group"]',
+      )) {
+        for (const animation of root.getAnimations({ subtree: true })) {
+          animation.pause();
+        }
+      }
+    }).observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "style", "data-starting-style"],
+    });
   });
 }
 

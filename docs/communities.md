@@ -471,3 +471,9 @@ while keeping the local name unchanged. No remote membership, profile, or policy
 acceptance is created by this fixture. Live validation with an authorized identity can restore existing profiles and
 read selected communities without posting test messages. The fixture itself is
 not evidence of live access; see [manual fixture setup](contributing.md#manual-browser-fixtures).
+
+First-run profile setup preserves an existing relay profile, including one without
+a display name, and skips editing it. When restoring multiple saved communities
+without a requested destination, Buzz prefers one with an existing profile. After
+admission, new-profile setup offers Continue without a Back action: returning to
+selection would not undo the membership already granted by the community.

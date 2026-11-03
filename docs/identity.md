@@ -2,7 +2,7 @@
 
 Native macOS, Windows and Linux without the live development broker open on a
 welcome screen when no human key exists on this device: **Buzz** — "Your people,
-your agents, your projects — all in one place." — with **Sign in with email**
+your agents, your projects — all in one place." — with **Sign in with Builderlab**
 (the label the Buzz mobile client uses; first-run copy never names the sign-in
 provider) and a live **Community URL** field with **Continue** beside it (the
 same field and normalisation as Join a community below). Sign in runs the
@@ -18,7 +18,7 @@ the choice that opened the page.
 
 In federated-identity builds (`BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG`) the
 bundled Builderlab plugin has no network grant of its own: its Builderlab calls
-go through the native FI session (#1461). There, **Sign in with email** is the
+go through the native FI session (#1461). There, **Sign in with Builderlab** is the
 native [organization sign-in](#native-federated-session-module), whose browser
 step, code exchange and token stay native. A session that already exists,
 including one saved by an earlier run, signs in again, so the browser can
@@ -29,7 +29,7 @@ bundled plugin's installation, fenced to that session, and a backup hands the
 uploader the session's revision. Native admission checks only that
 installation's grant, so this works whether or not the plugin has started. The
 forwarder grants no backup-status route, so Welcome back offers no restore and
-an imported key is offered the backup. The session outlives first run: sign-in
+an imported key is backed up automatically. The session outlives first run: sign-in
 at launch finds it signed in.
 
 A URL given on the welcome screen is looked up first, before sign-in and before
@@ -54,7 +54,7 @@ another Builderlab deployment, and every community in a build whose
 `BUZZ_BUILDERLAB_URL` is another origin or empty, pauses on **Connect to
 {host}**: nothing a relay publishes names its sign-in portal, so the user
 chooses. The page says only that Buzz relies on a key for the user's identity; its choices are
-**Sign in with email**, which signs in at `BUZZ_BUILDERLAB_URL` and
+**Sign in with Builderlab**, which signs in at `BUZZ_BUILDERLAB_URL` and
 continues exactly as the welcome screen's own button does (the landing shows
 the sign-in pending with the address held; the key it creates is linked to that
 account and backed up there), and setup then lands on **Join Community** for
@@ -63,8 +63,8 @@ the address;
 signed in, continues from there with no link step and no backup offer; **Back**
 returns to the welcome screen with the address kept.
 
-Success continues to a **Setting up Buzz** page that shows the current step
-beside a spinner. It first runs **Checking your account**, a real read of the
+Success continues to **Getting ready**, with an animated bee. Detailed operation
+status remains available to screen readers without a visible second line. It first runs **Checking your account**, a real read of the
 Nostr key bound to the signed-in Builderlab account
 (`POST /api/goose/v1/buzz/nostr-identities/current` at the portal that signed
 the user in, authenticated with the first-run session credential and sent
@@ -94,59 +94,30 @@ where the backup step can run (see
 [automatic backup](#automatic-backup-and-optional-recovery)); kgoose answers
 `404` wherever backups are not configured. Not sent, a `404` or any failure
 leaves the lookup unavailable rather than empty, and never fails setup: it only
-decides whether Welcome back offers a restore and whether an import needs the
-backup offer.
+decides whether Welcome back offers a restore and whether an import needs
+automatic backup.
 
-**Not linked** then pauses on **Set up your key**: when the lookup listed no
-backups, it says no backed-up key was found for this account, so Buzz will
-make one (an unavailable or failed lookup says nothing either way, nor does
-one that lists backups, which outlive an unlink), and it says that an
-encrypted copy is backed up to the account, which Block can use to restore the
-key on the user's other devices. Under the body it says who is signed in
-(*Signed in as {email}.*, or *Signed in.* when the portal sent no address), so
-a wrong account is visible before any key exists. Like the welcome screen, it
-stacks its choices at the bottom: **Create my key** (primary) above a quieter
-**I already have a key** and **Use a different account**, which signs the
-first-run session out and returns to the welcome screen with the typed address
-kept and no key created. The browser may still hold the portal's own cookie
-session, so the next **Sign in with email** can re-select the same account
-unless the user signs out of the portal in the browser first; first run cannot
-end that session. Choosing Create my key is the backup consent (see
-[consent hooks](#automatic-backup-consent-hooks)). It runs **Creating keys**,
-which generates a Nostr key through the same native create command as the key
-setup screen, so the next launch opens as a returning user; then **Linking your key**, which
-binds that key to the signed-in account at the same portal (kgoose's binding
-challenge, signed natively as a kind-24243 event, then verified — the flow the
-hosted-communities card drives), sending nothing more when the account already
-holds the key; then **Backing up your key**, which waits for the native
-uploader to confirm the backup
-([automatic backup](#automatic-backup-and-optional-recovery)). First run never
-shows the new key; Settings → Identity can reveal it later.
+**Not linked** pauses on **Get started with Buzz**. **Create my key** creates
+and links a key; **Use an existing key** opens **Enter your private key**. **Use a different
+account** signs out the first-run session and returns to the welcome screen.
+The browser may retain its portal session. This choice page shows the signed-in
+email so the account can be checked before linking a key.
 
-**I already have a key** opens **Enter your private key** while setup stays
-paused, laid out as the onboarding import screen (centred heading and body,
-**Continue with this key** above **Back** at the bottom): a masked private-key
-field —
-paste or type an `nsec1…` key,
-or drop or choose a text file of at most 1 KiB whose first line is one — with
-**Reveal private key**, a live *Public identity* npub preview under a valid key
-(never hex), and classified messages for anything else: a NIP-49 `ncryptsec1…`
-backup is refused as *Password-protected backups aren’t supported here yet*
-(the app has no NIP-49 decryption), other text as *That doesn’t look like a
-valid nsec*. **Back** returns to Set up your key with the typed key discarded;
-**Continue with this key**, enabled only for a valid nsec, stores it through the
-same native import command as the key setup screen (`identity_import`, which
-takes the nsec as typed) behind *Importing your key…*, shown on the same
-screen. A native refusal — an
-invalid key, or a key already saved in this slot — appears under the field with
-the form kept. An imported key is then linked to the account like a created
-one and pauses on **Back up this key?**, since importing never uploads
-silently: Buzz can keep an encrypted copy in the account, which Block can use
-to restore this key, including anywhere else it is used. **Not now** carries on without a
-backup; **Back it up**, the backup consent for that key, runs **Backing up your
-key**. An import from **Connect to {host}**, with no Builderlab sign-in, has
-no account to link the key to or back it up in, so it skips the link and the
-offer and continues at once.
+Builderlab setup automatically backs up the created key after linking it to the
+signed-in account and waits for the uploader. The create/import screens disclose
+this behavior. A failed backup stays in setup with **Try again**, preserving the
+key on this device; it cannot be bypassed by disabling backup. If the session
+has expired, retry signs in again and must return to the original account before
+uploading. A canceled sign-in or different account leaves setup and the key intact. First run never
+reveals a newly created key; Settings → Identity can reveal it later.
+
+**Enter your private key** accepts a plain-text `nsec1…` key or a text file up to 1 KiB.
+The input stays masked until **Reveal private key** is selected using the eye
+inside the field; **Hide private key** masks it again. The public identity preview uses npub. NIP-49 encrypted backups are not supported;
+invalid input stays on the form. **I lost my key** sits under the input. **Back**
+discards the draft. A successful account-backed import links the key and automatically backs it up
+unless that key already has a backup. An import without Builderlab
+sign-in skips linking and backup. Importing without a Builderlab account never uploads the key.
 
 **Linked** pauses on **Welcome back**: the account is already linked to a Buzz
 identity — the key on the user's other device — shown as the full npub under
@@ -159,44 +130,32 @@ same import page, which here accepts only the linked key: any other valid nsec
 is refused under the field with *That isn’t the key linked to this account. It
 expects npub1…*, and **Back** returns to Welcome back. **Recover from another
 device** is *Coming soon* (device pairing is its future entry). Last in the
-stack, **Use a different account** is the same exit as on Set up your key: it
+stack, **Use a different account** is the same exit as on Get started with Buzz: it
 signs the session out and returns to the welcome screen without importing,
 restoring or replacing the linked key. The imported
 key is already the account's, so nothing is linked. Unless the lookup already
-lists it, a successful import then pauses on **Back up this key?** as on a new
-account; a listed key continues without the offer.
+lists it, a successful import automatically backs up the key as on a new
+account; a listed key continues without another upload.
 
-**Restore from backup** runs native recovery (see
-[optional recovery](#automatic-backup-and-optional-recovery)), which opens its
-own browser sign-in: the first-run one is not reused. Above the recovery, the
-page centres its heading and, only while it waits for that sign-in or offers
-the linked key, *Your key is stored securely on this device.*: an outcome that
-restores nothing drops the line, and the unavailable copy below replaces it. Of
-the keys it recovers, only the linked one is offered; a recovery without it
-says *None of your backups holds the key linked to this account, so nothing was
-restored.*, installs nothing and offers **Enter your private key**, which opens
-the import page. Installing the key continues as an import does, without the
-backup offer: the key is already backed up. Where recovery is unavailable for
-the deployment or refused for the account (public organizations are refused by
-design), the page says *Backup restore isn’t available for this account* and
-offers **Enter your private key**, which opens the import page, never a retry.
-Any other failure offers **Try recovery again**. **Back** cancels the recovery
-and returns to Welcome back.
+**Restore your key** opens native recovery in a separate browser sign-in.
+Only the account’s linked key can be installed. While waiting, **Cancel** cancels
+the attempt; during installation, navigation is disabled. A successful install
+continues directly to community restoration and the next required step, without
+another Welcome back confirmation. One status screen shows **Restoring your key…**
+throughout recovery, with a browser sign-in hint while waiting. Failure shows **Couldn’t restore your key**,
+with **Enter my private key**, **I lost my key**, optional **Try again**, then Back.
+Retry is available for transient errors and partially retrieved backups, but not
+for unavailable/refused recovery, a complete empty result or complete mismatch.
+Leaving or retrying cancels the native attempt first. Nothing claims the key is
+saved before installation succeeds.
 
-On Welcome back, **I lost this key** (quieter) runs **Finding communities**, a real read of the
-communities the account owns
-(`POST /api/goose/v1/buzz/communities/list`), and shows **Start over with a new
-key**: a new key loses everything the old one could reach; *Communities you
-own* lists their hostnames (*None* when empty, or that the list could not be
-loaded), and memberships in other people's communities cannot be listed and are
-lost too. The page also says that starting over unlinks the old key, then
-creates a new key, links it to the account and keeps an encrypted copy that
-Block can use to restore it, so choosing it is the new key's backup consent.
-**Back** returns to Welcome back; **Start over with a new key** (destructive)
-runs **Creating keys**, then *Unlinking your old key*, which deletes the old
-key's binding (`POST /api/goose/v1/buzz/nostr-identities/delete`), then
-**Linking your key** and **Backing up your key** for the new key, with no key
-choice between. The old key stays linked until the new one is on the device,
+**I lost my key** opens **Lost your key?**, which first suggests checking another
+signed-in device or a usable backup. Starting over replaces the linked key;
+old messages and profiles are not deleted, but access does not carry over.
+Owned community hostnames appear only when present; a failed lookup still shows
+its error. **Go back** returns to the prior screen. **Start over with a new key**
+creates a key, unlinks the old key, links the new one, then automatically backs it up.
+The old key stays linked until the new one is on the device,
 and binding never overwrites, so the unlink comes after creation and before
 the link. The unlink checks the bound key first: it sends nothing more when
 the account holds no key or the new one, fails when it holds a third key, and
@@ -221,20 +180,15 @@ which stays on the error and is logged in development builds. Once a key is on
 the device, the page also says what is undone: *Your key is saved on this
 device, but it isn’t linked to your account or backed up yet.* when
 the unlink or link failed (a key that isn't linked can't be backed up),
-otherwise *Your key is saved on this device, but it isn’t backed up yet.* A
-failure that may clear offers **Try again** (primary), which repeats the failed
-step and the rest of the lane, never creating a second key: for the account
-check, unlink or link, no answer, too many requests (HTTP 429) or a server
-error (HTTP 5xx), and for the link also a link request that expired, was
-already used or could not be found, since Try again asks for a new one; for a
-backup, Builderlab being unreachable or slow to confirm. A lapsed sign-in is
-never retried, since Try again would send the same sign-in. A failed unlink or
-link with a key on the device blocks: nothing links the key later, so the page
-offers only **Try again**, whatever the failure, and no way past it. A failed
-backup also offers **Continue without backup**, which writes nothing and skips
-the remaining steps for the end of the lane below (Finding communities on a
-linked account, then the restore); a later sign-in runs the backup again.
-Before a key exists, the page offers **Back** to the welcome screen instead.
+otherwise *Your key is saved on this device.* **Try again** repeats the failed step and the rest of the
+lane without creating another key. An expired backup session prompts sign-in
+again and verifies the original account subject before uploading. Canceled or
+wrong-account sign-in leaves setup and the key intact. When backup is explicitly unavailable in the build or not offered by the
+account, **Continue without backup** skips only that backup step and runs the
+remaining community setup. It retains the saved linked key and does not persist
+a backup opt-out. Transient backup failures remain retry-only; linking cannot
+be bypassed.
+Before a key exists, the page also offers **Back** to the welcome screen.
 
 Within one first-run session the Join page exits only through a join or a
 restored community; there is no skip. That holds only while the app stays
@@ -392,19 +346,14 @@ claim or the read — shows the lookup's unreachable copy; a device that will
 not keep the join's record shows the journal's storage message. Both offer
 **Back**. An existing relay profile seeds the empty local default.
 
-When no profile exists anywhere — the relay held no kind 0 for the key and the
-device's local default has no name (read before the join, since `joined` adopts
-a relay profile into an empty default) — the gate stays up for **Set up your
-profile** (`src/features/identity/ProfileStep.tsx`): the shared profile
-fields — avatar, required display name, optional description — prefilled with
-the local part of the Builderlab email as the name (blank when the key was
-imported without a Builderlab sign-in). The same rule applies after
-*Restoring your communities*: if none of the admitted destinations held a
-profile and the local default has none, the step is shown for the selected
-one, and a handed-off address opens in the dialog only after it, so the
-dialog's own profile step starts from the name given here. A relay that
-already holds the key's profile, or a local default with a name, skips the
-step. **Continue** is the dialog's profile step (`completeJoin`): the draft is
+When the admitted relay profile has no trimmed nonempty name, the gate stays up
+for **Set up your profile** (`src/features/identity/ProfileStep.tsx`). The shared
+fields show an optional avatar and required name, suggested from the Builderlab
+email when there is no existing relay profile. The same prompt follows community
+restoration when the selected relay profile has no name. A named relay profile
+skips it. Restored memberships are already saved: this prompt is not a persistent
+relaunch gate for those existing memberships. **Continue** uses the dialog's
+profile completion (`completeJoin`): the draft is
 recorded in the join journal, the profile is read afresh, the kind 0 is
 published to that one relay through the same signed `relay_sign` +
 `POST /events` route Settings → Profile uses when the draft differs from what
@@ -412,9 +361,9 @@ the relay holds, and it is read back; only a readback that is current saves the
 membership (and the result as the device's local default for later joins) and
 enters the app on the community. A rejected publish, or a readback the relay
 has since superseded, stays on the step with the error inline and the draft
-intact. **Skip for now** saves the membership alone, publishes nothing, and
-enters the app; Settings → Profile remains the
-editor. Denied/unavailable/corrupt storage is not first run: like the page
+intact. **Go back** returns to community selection without completing the join.
+A trimmed nonempty name is required; the avatar is optional. Settings → Profile
+remains the editor. Denied/unavailable/corrupt storage is not first run: like the page
 shown while the saved identity opens, it is titled **Your Buzz identity**, and
 it keeps the **Retry secure storage access** path.
 
@@ -579,12 +528,12 @@ until the plugin hands it over again, when that session changes or the app
 restarts. A pass that stops to wait for consent, a session or a key binding
 fails the step, since nothing would wake it again before first run ends. The
 failed page names the reason without any service response. The automatic choice
-stays on after a failure, Continue without backup included, so a later
+stays on after a failure, so a later
 Builderlab sign-in may still finish the backup the user asked for. The step
 hands a sign-in over only when this build's uploader can back up to Builderlab.
 Anywhere else (a build without backup configured) the step fails at once as
-*Key backup isn’t available in this version of Buzz.* without saving the
-choice, and the user continues without backup.
+*Key backup isn’t configured for this build. You can continue without a backup.* without saving
+the choice. First-run failures offer retry and preserve the saved key.
 
 When secure storage confirms absence, native recovery commands support explicit
 browser sign-in. The session and recovered keys remain native; the renderer sees
@@ -844,12 +793,10 @@ The native identity service exposes `getBackupChoice()` and
 `setBackupChoice(pubkey, automatic)`. These APIs expose public metadata and do not
 change identity readiness. Reading a choice does not contact a server; saving
 automatic backup wakes the existing native uploader if a session is connected.
-First run's selections are **Create my key**, **Start over with a new key** and,
-for an imported key, **Back it up**: each page discloses that Block can restore
-the key (an imported one including anywhere else it is used) before **Backing
-up your key** saves `automatic: true`. Account sign-in, the key setup screen,
-an import without Builderlab sign-in and **Not now** do not imply consent, and Settings has no
-selection.
+Builderlab first run discloses automatic backup before creating, replacing or
+importing a key, then enables it after linking. There is no separate backup-choice
+screen or failure bypass. Independent imports without Builderlab sign-in do not
+enable backup. Settings retains control over future automatic uploads.
 
 The choice is bound to the current public key and trusted build-configured backup
 service and namespace. Missing or mismatched metadata returns no choice;

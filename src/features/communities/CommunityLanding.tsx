@@ -34,6 +34,23 @@ export function CommunityLanding({
     settingsCards.has("block.builderlab/login"),
   );
   const opened = invite ?? joining;
+  if (opened)
+    return (
+      <CommunityDialog
+        key={invite ? invite.requestId : `${opened.community} ${opened.code}`}
+        communities={communities}
+        federatedIdentity={federatedIdentity}
+        mode="join"
+        onboarding
+        submittedDestination={!invite}
+        invite={opened}
+        onJoined={onJoined}
+        close={() => {
+          setJoining(undefined);
+          if (invite) onInviteClose(invite.requestId);
+        }}
+      />
+    );
   return (
     <OnboardingScreen
       labelledBy="community-landing-title"
@@ -78,23 +95,9 @@ export function CommunityLanding({
       }
     >
       {hostedAvailable && (
-        <Button size="lg" variant="ghost" onClick={onCreate}>
+        <Button size="lg" variant="subtle" onClick={onCreate}>
           Create a community
         </Button>
-      )}
-      {opened && (
-        <CommunityDialog
-          key={invite ? invite.requestId : `${opened.community} ${opened.code}`}
-          communities={communities}
-          federatedIdentity={federatedIdentity}
-          mode="join"
-          invite={opened}
-          onJoined={onJoined}
-          close={() => {
-            setJoining(undefined);
-            if (invite) onInviteClose(invite.requestId);
-          }}
-        />
       )}
     </OnboardingScreen>
   );

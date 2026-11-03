@@ -143,9 +143,12 @@ export function useFloatingActionBar(
         y <= content.bottom
       )
         return true;
-      if (y < toolbar.bottom || y > content.bottom) return false;
-      const span = content.bottom - toolbar.bottom;
-      const fraction = span > 0 ? (y - toolbar.bottom) / span : 0;
+      // Browser hit testing can round a fractional toolbar edge inward.
+      // Keep the active path through that edge pixel until the bar takes over.
+      const toolbarBottom = Math.floor(toolbar.bottom);
+      if (y < toolbarBottom || y > content.bottom) return false;
+      const span = content.bottom - toolbarBottom;
+      const fraction = span > 0 ? (y - toolbarBottom) / span : 0;
       const left = Math.min(
         content.left,
         toolbar.left + (content.left - toolbar.left) * fraction,
@@ -239,16 +242,21 @@ export function useFloatingActionBar(
     const workspaceSelector = "[data-main-workspace], [data-panel-workspace]";
     const workspace = row.closest(workspaceSelector);
     let frame = 0;
-    const updateVisibility = () => {
+    // Returns whether the row shows as revealed. Positioning defers that row
+    // write until the bar is placed, so an offscreen frame writes nothing.
+    const updateVisibility = (reveal = true) => {
       const blocked = behindActiveOverlay(row);
       const ownsPopup = !!bar.querySelector(
         '[aria-haspopup][aria-expanded="true"]',
       );
       // The toolbar yields, but its popup must still identify the target message.
-      row.toggleAttribute("data-actions-revealed", !blocked || ownsPopup);
+      const revealed = !blocked || ownsPopup;
+      if (reveal) row.toggleAttribute("data-actions-revealed", revealed);
       bar.style.visibility = blocked ? "hidden" : "";
+      return revealed;
     };
     const hide = () => {
+      row.removeAttribute("data-actions-revealed");
       contentBounds.current = null;
       if (bar.hasAttribute("popover")) bar.hidePopover?.();
       // Closed popovers return to their slot's containing block. Viewport offsets
@@ -320,7 +328,7 @@ export function useFloatingActionBar(
       }
       // Hide the painting and keyboard controls without moving the anchor of
       // a picker launched from this bar. Base UI owns dismissal/return focus.
-      updateVisibility();
+      const rowRevealed = updateVisibility(false);
       // Style reads are cheap here: the rect reads above already left layout clean.
       const style = getComputedStyle(bar);
       const overlap = Number.parseFloat(style.scrollMarginBlockStart) || 0;
@@ -360,6 +368,9 @@ export function useFloatingActionBar(
         hide();
         return;
       }
+      // The row's siblings observer would reschedule on every row write; an
+      // unchanged toggle records no mutation.
+      row.toggleAttribute("data-actions-revealed", rowRevealed);
       // Keep the pane header clickable as actions scroll beneath its edge.
       const hidden = viewport ? viewport.top - paintedTop : 0;
       bar.style.clipPath =

@@ -455,7 +455,7 @@ it.each([
   },
 );
 
-it("keeps membership notices visible in personal chats", () => {
+it("shows only explicit additions and removals in personal chats", () => {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
   vi.stubGlobal(
@@ -466,6 +466,7 @@ it("keeps membership notices visible in personal chats", () => {
     },
   );
   const viewer = keypair();
+  const actor = keypair();
   const owner = createRelaySession({
     viewer: viewer.pubkey,
     relayAuthor: keypair().pubkey,
@@ -510,32 +511,42 @@ it("keeps membership notices visible in personal chats", () => {
         onOpenLink={() => false}
       />,
     );
-    expect(screen.getByText("You joined")).toBeVisible();
-    view.rerender(
-      <ChannelTimeline
-        channelId="alpha"
-        scope="membership"
-        viewer={viewer.pubkey}
-        queries={owner.session}
-        window={{
-          ...window,
-          rows: [
-            {
-              ...row,
-              id: "left",
-              membership: {
-                type: "member_left",
-                actor: viewer.pubkey,
-                target: viewer.pubkey,
+    expect(view.container.querySelector("[data-membership-row]")).toBeNull();
+    for (const [type, actorId, expected] of [
+      ["member_joined", actor.pubkey, "You were added by"],
+      ["member_removed", actor.pubkey, "You were removed by"],
+      ["member_left", viewer.pubkey, undefined],
+    ] as const) {
+      view.rerender(
+        <ChannelTimeline
+          channelId="alpha"
+          scope="membership"
+          viewer={viewer.pubkey}
+          queries={owner.session}
+          window={{
+            ...window,
+            rows: [
+              {
+                ...row,
+                id: type,
+                membership: { type, actor: actorId, target: viewer.pubkey },
               },
-            },
-          ],
-        }}
-        chatPresentation
-        onOpenLink={() => false}
-      />,
-    );
-    expect(screen.getByText("You left the channel")).toBeVisible();
+            ],
+          }}
+          chatPresentation
+          onOpenLink={() => false}
+        />,
+      );
+      if (expected) {
+        const notice = view.container.querySelector("[data-membership-row]");
+        expect(notice).toBeVisible();
+        expect(notice).toHaveTextContent(expected);
+      } else {
+        expect(
+          view.container.querySelector("[data-membership-row]"),
+        ).toBeNull();
+      }
+    }
     view.unmount();
   } finally {
     owner.dispose();

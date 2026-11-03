@@ -1203,6 +1203,9 @@ export function relayBrokerPlugin({
                 ? null
                 : (await policyResponse.json()).policy;
             return json(res, 200, {
+              membershipRequired:
+                Array.isArray(info.supported_nips) &&
+                info.supported_nips.includes(43),
               name: info.name,
               icon: info.icon,
               policy: policy ?? null,

@@ -216,8 +216,8 @@ function setup(
         expect(owner.session.channels.list().status).toBe("ready"),
       );
     },
-    add: (signal = new AbortController().signal) =>
-      addChannelMember(owner.session, id, person.pubkey, signal),
+    add: (signal = new AbortController().signal, intent = {}) =>
+      addChannelMember(owner.session, id, person.pubkey, signal, intent),
   };
 }
 it("adds a private-channel participant explicitly and confirms the live roster using membership capability alone", async () => {
@@ -244,6 +244,66 @@ it("uses the bot role for an existing library agent", async () => {
   await t.setAgent();
   await t.add();
   expect(t.publish.mock.calls[0]?.[0].tags).toContainEqual(["role", "bot"]);
+});
+it("uses the guest role for an agent when the addition asks for it", async () => {
+  const t = setup();
+  await t.ready();
+  await t.setAgent();
+  await t.add(undefined, { role: "guest" });
+  const tags = t.publish.mock.calls[0]?.[0].tags;
+  expect(tags).toContainEqual(["role", "guest"]);
+  expect(tags).not.toContainEqual(["role", "bot"]);
+});
+it("never retries a failed Bot addition for a guest add, in the session or after restart", async () => {
+  const t = setup();
+  await t.ready();
+  await t.setAgent();
+  const guest = () =>
+    t.session.memberAdditions.add(t.id, t.person.pubkey, { role: "guest" });
+  t.setFail("Not committed");
+  await expect(t.managedAdd()).rejects.toThrow(/Not committed/);
+  t.setFail("");
+  const saved = t.records()[0];
+  expect(saved?.event.tags).toContainEqual(["role", "bot"]);
+  await expect(guest()).rejects.toThrow(/another role/);
+  t.restart();
+  await t.ready();
+  await t.setAgent();
+  await expect(guest()).rejects.toThrow(/another role/);
+  // Only the first Bot attempt was ever sent, and its receipt is kept.
+  expect(t.publish).toHaveBeenCalledOnce();
+  expect(t.records()).toHaveLength(1);
+  expect(t.records()[0]).toMatchObject({ event: { id: saved?.event.id } });
+  expect(t.records()[0]?.acknowledged).toBeFalsy();
+  expect(t.session.channels.list().channels[0]?.members).not.toContain(
+    t.person.pubkey,
+  );
+  // Removing the Not sent item in Outbox clears the way for the guest add.
+  const id = saved?.event.id;
+  if (!id) throw new Error("Expected the Bot receipt");
+  await t.session.outbox?.dismiss(id);
+  await guest();
+  expect(t.publish).toHaveBeenCalledTimes(2);
+  const sent = t.publish.mock.calls[1]?.[0];
+  expect(sent?.id).not.toBe(id);
+  expect(sent?.tags).toContainEqual(["role", "guest"]);
+  expect(sent?.tags).not.toContainEqual(["role", "bot"]);
+});
+it("doesn't join or race an addition still under way with another role", async () => {
+  const t = setup();
+  await t.ready();
+  await t.setAgent();
+  const first = t.managedAdd();
+  await expect(
+    t.session.memberAdditions.add(t.id, t.person.pubkey, { role: "guest" }),
+  ).rejects.toThrow(/another role/);
+  await first;
+  expect(t.publish).toHaveBeenCalledOnce();
+  expect(t.publish.mock.calls[0]?.[0].tags).toContainEqual(["role", "bot"]);
+  expect(t.publish.mock.calls[0]?.[0].tags).not.toContainEqual([
+    "role",
+    "guest",
+  ]);
 });
 it("adds a participant despite a private channel's saved Guest default", async () => {
   const t = setup("stream", "private", "guest");

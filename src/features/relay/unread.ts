@@ -300,14 +300,24 @@ export function createUnread({
   }
 
   let bytes = 0;
+  // Per member list: a large channel would otherwise be scanned for the
+  // viewer on every event.
+  const viewerIn = new WeakMap<readonly string[], boolean>();
+  const member = (members: readonly string[] | undefined) => {
+    if (!members) return false;
+    let found = viewerIn.get(members);
+    if (found === undefined) {
+      found = members.includes(viewer);
+      if (Object.isFrozen(members)) viewerIn.set(members, found);
+    }
+    return found;
+  };
   const allowed = (id: string) =>
     channels
       .list()
       .channels.some(
         (channel) =>
-          channel.id === id &&
-          !channel.cached &&
-          channel.members?.includes(viewer),
+          channel.id === id && !channel.cached && member(channel.members),
       );
   const keyFor = (target: ReadTarget) =>
     `${target.channelId}:${targetKey(target)}`;

@@ -85,6 +85,8 @@ export function validChannelCommand(event) {
           String(Number(ttlValue)) === ttlValue))
     );
   }
+  // An invitation may name the participant role, or the read-only guest role
+  // Bestie joins private channels with. It never names a role above member.
   if (event.kind === 9000)
     return (
       event.content === "" &&
@@ -92,7 +94,7 @@ export function validChannelCommand(event) {
         (tags.length === 3 &&
           tags[2].length === 2 &&
           tags[2][0] === "role" &&
-          tags[2][1] === "member")) &&
+          (tags[2][1] === "member" || tags[2][1] === "guest"))) &&
       p?.length === 2 &&
       p[0] === "p" &&
       /^[0-9a-f]{64}$/.test(p[1])

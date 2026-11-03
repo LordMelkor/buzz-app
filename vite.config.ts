@@ -65,6 +65,11 @@ export default defineConfig(async ({ command, mode }) => {
   const live = command === "serve" && Boolean(env.BUZZ_DEV_VIEWER?.trim());
   const aliases = env.BUZZ_COMMUNITY_ALIASES ?? "";
   parseCommunityAliases(aliases);
+  const externalMcpCommunities = (env.BUZZ_EXTERNAL_MCP_COMMUNITIES ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(relayOrigin)
+    .join(" ");
   // Public routing configuration only; the viewer pin and credentials stay in Node.
   const defaultRelay = env.BUZZ_RELAY_URL?.trim();
   const defaultOrigin = defaultRelay ? relayOrigin(defaultRelay) : "";
@@ -148,6 +153,9 @@ export default defineConfig(async ({ command, mode }) => {
         command === "serve" && env.BUZZ_DEV_NOTIFICATIONS === "0" ? "1" : "0",
       ),
       "import.meta.env.VITE_BUZZ_COMMUNITY_ALIASES": JSON.stringify(aliases),
+      "import.meta.env.VITE_BUZZ_EXTERNAL_MCP_COMMUNITIES": JSON.stringify(
+        externalMcpCommunities,
+      ),
       "import.meta.env.VITE_BUZZ_BUILDERLAB_URL": JSON.stringify(builderlabUrl),
       "import.meta.env.VITE_BUZZ_FEDERATED_IDENTITY": JSON.stringify(
         federatedUrl === undefined ? "0" : "1",

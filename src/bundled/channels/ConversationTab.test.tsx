@@ -205,6 +205,7 @@ it.each(["thread", "conversation"] as const)(
     const session = {
       viewer: "viewer",
       channels: { list: () => snapshot, subscribeList: () => () => {} },
+      profiles: {},
       unread: { enterChannel, leaveChannel },
     } as unknown as RelaySession;
     const props = {
@@ -256,6 +257,7 @@ it.each(["thread", "conversation"] as const)(
     const session = {
       viewer: "viewer",
       channels: { list: () => snapshot, subscribeList: () => () => {} },
+      profiles: {},
       unread: { enterChannel, leaveChannel: vi.fn() },
     } as unknown as RelaySession;
     render(

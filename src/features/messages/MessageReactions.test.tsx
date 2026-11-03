@@ -57,7 +57,21 @@ const registry = <T,>(
   subscribe: () => () => {},
 });
 const inline = registry<InlineRenderer>([]);
-const tools = registry<ComposerTool>([]);
+const tools = registry<ComposerTool>([
+  {
+    key: "picker",
+    pluginId: "picker",
+    revision: "one",
+    id: "picker",
+    title: "Picker",
+    component: () => null,
+    reactionComponent: ({ select, disabled }: ReactionToolProps) => (
+      <button type="button" disabled={disabled} onClick={() => select("👍")}>
+        Choose reaction
+      </button>
+    ),
+  },
+]);
 const root = message(other, "c", "Message", 1);
 const react = (key = viewer, time = 2) =>
   signed(key, {
@@ -120,14 +134,16 @@ function harness(
     return (
       row && (
         <>
-          <MessageReactionControls
-            row={audience ? { ...row, audience } : row}
-            session={owner.session}
-            scope="test"
-            disabled={disabled}
-            tools={pickerTools}
-            inline={inline}
-          />
+          <div data-testid="reaction-controls">
+            <MessageReactionControls
+              row={audience ? { ...row, audience } : row}
+              session={owner.session}
+              scope="test"
+              disabled={disabled}
+              tools={pickerTools}
+              inline={inline}
+            />
+          </div>
           <MessageReactions
             {...(onFocusedRemoval ? { onFocusedRemoval } : {})}
             row={audience ? { ...row, audience } : row}
@@ -150,8 +166,8 @@ it("shows one bubble per emoji, counts unique people, and removes all my duplica
   const h = harness([mine, duplicate, theirs]);
   render(<h.Controls />);
   expect(
-    screen.getAllByRole("button", { name: /React with|Remove/ }),
-  ).toHaveLength(3);
+    screen.queryAllByRole("button", { name: /React with|Remove/ }),
+  ).toHaveLength(0);
   expect(
     screen.getByTestId("reaction-row").querySelectorAll("[data-reaction]"),
   ).toHaveLength(1);
@@ -339,7 +355,11 @@ it("keeps failed first-reaction delivery visible and retries the same event", as
   });
   const h = harness([], publish);
   render(<h.Controls />);
-  fireEvent.click(screen.getByRole("button", { name: "React with ❤️" }));
+  fireEvent.click(
+    within(screen.getByTestId("reaction-controls")).getByRole("button", {
+      name: "Choose reaction",
+    }),
+  );
   await act(async () => {
     await flush();
     await flush();
@@ -357,10 +377,17 @@ it("keeps failed first-reaction delivery visible and retries the same event", as
 it("prevents duplicate submissions and unavailable-message actions", async () => {
   const h = harness();
   const view = render(<h.Controls disabled />);
-  fireEvent.click(screen.getByRole("button", { name: "React with 👍" }));
+  fireEvent.click(
+    within(screen.getByTestId("reaction-controls")).getByRole("button", {
+      name: "Choose reaction",
+    }),
+  );
   expect(h.session.outbox?.snapshot()).toHaveLength(0);
   view.rerender(<h.Controls />);
-  const button = screen.getByRole("button", { name: "React with 👍" });
+  const button = within(screen.getByTestId("reaction-controls")).getByRole(
+    "button",
+    { name: "Choose reaction" },
+  );
   fireEvent.click(button);
   fireEvent.click(button);
   expect(h.session.outbox?.snapshot()).toHaveLength(1);

@@ -52,7 +52,26 @@ it never adds a second one. **Restore** puts back the original section in
 place of its two markers and what lies between them, when they still show
 where it starts and ends; otherwise fix its markers in Instructions. Off
 deletes no memory, and the agent's core memory is still in every prompt;
-clear memory in the Memory tab. The tab's other settings are not set up yet.
+clear memory in the Memory tab.
+
+**Private channels Bestie can read** lists the private channels you share with
+Bestie, each with **Remove**, which asks first, as the Members dialog does.
+**Add to a channel** (**Choose…**) and **Add to
+all my private channels** add it to the private channels you are in, most
+recently active first; each channel's members see that you added it. Bestie
+joins as a guest, so it reads the channel but can't post there. Each
+action has a row of its own, so in a narrow panel its button wraps under it.
+Until your channel list has loaded in full, the section says so instead of
+saying Bestie is in none: a failed read offers **Retry**, the channels already
+known keep their rows, and **Add to all** waits for the full list. A channel
+known only from a cached list offers no change until it is read again.
+When a row or the Add rows leave with focus in them, focus moves to the
+control now in their place, or to the section heading if none is left, unless
+you already moved it elsewhere.
+Changing your Bestie stops an **Add to all** still under way.
+Public channels
+need nothing: agents read them already. Check-ins and adding Bestie to new
+channels you create are not set up yet.
 
 ### Choosing a Bestie
 

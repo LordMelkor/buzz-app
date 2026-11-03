@@ -24,6 +24,8 @@ export function metadataName(event: RelayEvent): string | undefined {
   return name;
 }
 
+const noMembers: readonly string[] = Object.freeze([]);
+
 /** A Solo chat: a private stream carrying the Solo label. Never access. */
 export function soloChannelMetadata(event: RelayEvent): boolean {
   return (
@@ -301,16 +303,45 @@ export class DiscoveryState {
   canWrite(id: string): boolean {
     return this.canParticipate(id) && this.viewerRole(id) !== "guest";
   }
+  // Per signed roster event, so a large roster is not parsed, sorted and
+  // scanned for the (fixed) viewer again on every `get`.
+  private readonly parsed = new WeakMap<
+    RelayEvent,
+    { members: readonly string[]; viewerRole: ChannelSummary["viewerRole"] }
+  >();
+  private parse(roster: RelayEvent) {
+    let parsed = this.parsed.get(roster);
+    if (!parsed) {
+      const entries = roster.tags.filter(
+        ([key, value]) => key === "p" && value === this.viewer,
+      );
+      const role = entries.length === 1 ? entries[0]?.[3] : undefined;
+      parsed = {
+        members: Object.freeze(
+          [
+            ...new Set(
+              roster.tags.flatMap(([name, value]) =>
+                name === "p" && value && /^[0-9a-f]{64}$/.test(value)
+                  ? [value]
+                  : [],
+              ),
+            ),
+          ].sort(),
+        ),
+        // A contradictory guest entry cannot restore writing through another role.
+        viewerRole: entries.some((entry) => entry[3] === "guest")
+          ? "guest"
+          : ["owner", "admin", "member", "bot"].includes(role ?? "")
+            ? (role as ChannelSummary["viewerRole"])
+            : undefined,
+      };
+      this.parsed.set(roster, parsed);
+    }
+    return parsed;
+  }
   private viewerRole(id: string): ChannelSummary["viewerRole"] {
-    const entries = this.rosters
-      .get(id)
-      ?.tags.filter(([key, value]) => key === "p" && value === this.viewer);
-    // A contradictory guest entry cannot restore writing through another role.
-    if (entries?.some((entry) => entry[3] === "guest")) return "guest";
-    const role = entries?.length === 1 ? entries[0]?.[3] : undefined;
-    return ["owner", "admin", "member", "bot"].includes(role ?? "")
-      ? (role as ChannelSummary["viewerRole"])
-      : undefined;
+    const roster = this.rosters.get(id);
+    return roster && this.parse(roster).viewerRole;
   }
   authorized(id: string): boolean {
     const roster = this.rosters.get(id);
@@ -399,17 +430,7 @@ export class DiscoveryState {
             description: tag(event, "about") ?? "",
           }
         : {}),
-      members: Object.freeze(
-        [
-          ...new Set(
-            roster?.tags.flatMap(([name, value]) =>
-              name === "p" && value && /^[0-9a-f]{64}$/.test(value)
-                ? [value]
-                : [],
-            ),
-          ),
-        ].sort(),
-      ),
+      members: roster ? this.parse(roster).members : noMembers,
       ...(this.hidden(id) ? { hidden: true } : {}),
       ...(this.isPrivate(id) ? { private: true } : {}),
       ...(channelType ? { channelType } : {}),

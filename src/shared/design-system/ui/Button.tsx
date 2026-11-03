@@ -22,6 +22,7 @@ type ButtonVariant =
 type ButtonSize =
   | "caption"
   | "inline"
+  | "row"
   | "xs"
   | "sm"
   | "md"

@@ -1191,7 +1191,7 @@ entry.
 
 `host.requestOnce?.(request, { callId })` is an explicit opt-in, desktop-only POST
 primitive for non-idempotent submissions on compatible hosts.
-Ordinary `request`, byte GET/save, uploads, processes and publication do not
+Ordinary `request`, byte GET/save, archive uploads, processes and publication do not
 automatically opt in; there is no endpoint-specific URL or content logic. Check the method
 before starting work; missing native context also rejects without falling back to
 ordinary `request`. A compatible frontend **and** native release are required.
@@ -1225,17 +1225,76 @@ unknown outcome; changed payload under the same authority rejects as a conflict.
 Neither returns cached success or sends again, including after failure or timeout.
 Never mint a fresh identity or refresh authority to retry an unknown submission.
 
-Native retains at most 1024 compact digest claims per process, with no eviction or
-rearming on completion, unload, grant change or page load; capacity/poison/generation
-exhaustion fails closed. Old boot/page envelopes reject after restart/reload. Fiber
-disposal blocks new cooperative calls and suppresses late success, but cannot undo
+Native retains at most 1024 compact digest claims per page generation, with no
+rearming on completion, unload or grant change. Advancing the native page generation
+clears its claims; old boot/page envelopes are rejected before claim lookup and
+cannot use the freed capacity. Capacity/poison/generation exhaustion fails closed.
+Fiber disposal blocks new cooperative calls and suppresses late success, but cannot undo
 an admitted upstream request. An in-place fiber restart creates a fresh activation;
 old in-flight calls remain inactive. Restart must not be used to retry an unknown
 submission. This is **same-envelope host dispatch protection**,
 not durable exactly-once execution, server/proxy deduplication, spend approval,
 upstream cancellation, a malicious-plugin sandbox or deduplication of fresh authorities.
 Plugin persistence and non-resuming approval policy remain the caller's responsibility.
+In particular, this blocks same-envelope IPC-fallback resends only: fresh calls,
+proxy/server retries and work after a client disconnect remain outside its scope.
+When supported by the destination, send the recorded `callId` as its server
+idempotency key as well (for example in an `Idempotency-Key` header). Do not mint
+a new key to recover an unknown outcome.
 Actual WebView fallback/runtime acceptance is distinct from native fixture tests.
+
+### Protected in-memory multipart uploads
+
+Compatible desktop frontend/native pairs expose optional
+`host.uploadBytesOnce(bytes, {url, field, name, contentType, fields?}, {callId, isEligible?})`.
+Check `typeof host.uploadBytesOnce === "function"` before work requiring it; an
+absent method or incompatible native host must fail closed, with no renderer
+fetch, ordinary request/upload, process, file, or IPC fallback.
+
+This POST sends one nonempty in-memory `Uint8Array` of at most 16 MiB. The host
+copies bytes and metadata synchronously before awaiting native authority, and
+builds the multipart boundary and body in native code. It requires only the exact
+HTTPS origin in `host.networkOrigins`: neither `host.files` nor
+`host.managedFiles` is needed, and no path is accepted. URL credentials, caller
+headers, cookies, redirects, and HTTP client retries are not permitted. Text
+fields are optional (at most 16 string values, each at most 8 KiB in UTF-8).
+The filename and all form names must be 1–256 ASCII bytes containing only letters,
+digits, dots, underscores or hyphens, with no leading dot. A filename is a single
+name, never a path; separators, control characters and dotfiles are refused.
+`contentType` must be exactly `image/png`, `image/jpeg` or `image/webp`, and native
+magic-byte sniffing must match that declaration. This signature check is not a
+full image decode or a guarantee that downstream image processing is safe.
+The full ASCII-escaped IPC metadata, including
+the authority envelope, is bounded to 16 KiB. The frontend reserves 512 bytes for
+that envelope. Unicode text values are preserved.
+
+The deadline is fixed at 30 seconds. Responses use the existing bounded
+`HostResponse`: status, at most 64 headers totaling 16 KiB excluding `Set-Cookie`,
+and at most 16 MiB of UTF-8 body. This operation shares the existing app-wide byte
+work permit and bounded FIFO admission queue with byte GET/save. At most 16 callers
+wait; queue overflow refuses before consumption/dispatch. Waiting is charged to
+the same entry deadline, and multipart/body cloning starts only after admission.
+This is a work-admission bound, not a whole-process IPC or RSS memory bound.
+
+Upload authority uses the same boot/page, fiber activation, canonical UUID
+`callId`, final synchronous eligibility check, consumed-envelope storage and
+late-result suppression as `requestOnce`. Its operation kind is distinct from a
+text POST; use a separate recorded callId for each submission. The payload digest
+binds exact URL, form metadata and bytes, not a randomized multipart boundary.
+Repeated or conflicting native dispatch of the same upload envelope refuses,
+including after ambiguous failure, timeout, or a lost reply. This prevents
+same-envelope host/IPC resends, not durable exactly-once execution; use an upstream
+idempotency key when supported, and never mint a new callId to retry an unknown
+outcome. Missing raw IPC support rejects JSON/array fallback before consumption.
+
+Plugin author types export `AddedTool`, `BuzzClient` and `Media` from
+`@buzz/author`; an added tool can use its supplied `client.media(url)` to read
+community media. In the native client, optional base64 `Media.data` is present
+only for JPEG, PNG, GIF or WebP of at most 3,932,160 decoded bytes (3.75 MiB; up to
+5 MiB base64). Larger media can be saved by that API but omit `data`; the 16 MiB
+upload limit does not increase the inline-media limit. Consumers must handle
+missing data and validate their own media/type/size policy without assuming a
+file-read capability.
 
 ### Bounded binary retrieval and temporary managed files
 
@@ -1288,7 +1347,8 @@ mismatch. No filename, destination, content type, expiry or reader grant is supp
 by the caller. `expiresAt` is safe-integer Unix milliseconds from the host clock.
 
 Saves use one flat `plugin-artifacts` child of app-data storage, host expiry/UUID
-names and exclusive file creation. Unix uses 0700 root/0600 files with ownership
+names and exclusive file creation. New names also include a digest of the owning
+plugin ID; no caller path/name is accepted. Unix uses 0700 root/0600 files with ownership
 and link checks; other desktop platforms rely on private app storage conventions.
 This is trusted same-user storage, not isolation from malicious plugins or other
 code with the user's access. A fixed cross-process try-lock covers expiry sweeping,
@@ -1304,6 +1364,30 @@ another file is created, without evicting unexpired files. Failures remove outpu
 best-effort; residue remains counted. There is no index, sidecar, recovery adoption,
 content deduplication or temporary-to-final file service.
 
+Optional `host.deleteManagedFile(path)` requires `host.managedFiles` and the current
+enabled plugin revision, not `host.files`. It accepts only a direct, host-generated
+file in this root whose owner digest matches the calling plugin ID, including
+files saved by its earlier revisions. It never follows links or deletes a different
+plugin's file. Legacy files without an owner digest cannot be deleted through this
+API and retain their expiry behavior. Deleting a missing file rejects.
+
+Deletion shares byte GET/save's bounded FIFO admission and single work permit,
+with a 30-second deadline including queue time. Saves and deletes in this app
+serialize before taking the storage lock; another process holding that lock can
+still refuse as busy. A queued timeout says the file was not deleted and does
+not dispatch filesystem work. After dispatch to the blocking worker, a timeout
+may have an unknown outcome; that worker retains admission until it completes.
+
+Await attachment sends before deleting their source. Deletion conservatively
+refuses app-wide while **any plugin's** `host.readFile` call or declared process
+named `read`/`read-protected` is admitted or running, regardless of its program,
+path or owner. One unrelated or stalled reader can therefore block every plugin's
+managed deletion until its actual work completes, even after an async timeout or
+kill request. A delete that wins before read admission makes that later read fail
+as missing; it does not reserve paths for future sends or other processes. Retry
+a known in-use refusal after the work completes, but never automatically retry an
+ambiguous deletion timeout.
+
 Expiry is host wall-clock save time plus 24 hours and a 30-second save window.
 Files survive normal plugin unload, disable/update and app restart. Expired files
 are swept only on a new save; there is no startup sweep/background deletion timer.
@@ -1312,8 +1396,14 @@ existing explicit app-data erase removes this root. Clock changes, user deletion
 erase or disk loss can invalidate retention assumptions; do not treat the path as
 a durable archive or an unqualified availability guarantee.
 
-One process-local, nonqueued byte-work permit is shared by GET/save. Blocking save
-work owns its permit and root lock through actual completion, even after the
+One process-local byte-work permit is shared by GET/save/managed deletion/uploadBytesOnce.
+A FIFO semaphore queues at most 16 waiting calls, rejects overflow, and charges
+queue time to each call's existing deadline (GET 1–30000 ms, save/delete/upload
+30 seconds). Expired/canceled waiters leave
+the queue without dispatch; raw saves do not clone their body until admitted.
+The one-admitted-operation/16 MiB work bound is unchanged, but waiting IPC input
+buffers still exist: this is not a whole-process memory bound. Blocking save work
+owns its permit and root lock through actual completion, even after the
 30-second async deadline. Timeout suppresses handoff and eventual cleanup is
 best-effort, not proof of rollback or completed deletion. Native checks current
 enabled revision/managedFiles at admission and immediately before result eligibility.

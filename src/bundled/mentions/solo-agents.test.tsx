@@ -48,7 +48,15 @@ import {
 import { MENTION_RESOLVE_TIMEOUT_MS } from "../../features/conversation/completion";
 import { createProfileDirectory } from "../../features/relay/profile-directory";
 import type { RelayEvent } from "../../features/relay/events";
-import { keypair, profile } from "../../features/relay/testing";
+import {
+  PROFILE_CACHE_BASE,
+  PROFILE_CACHE_MAX,
+} from "../../features/relay/budget";
+import {
+  keypair,
+  profile,
+  unsignedProfiles,
+} from "../../features/relay/testing";
 // jsdom lacks scrollIntoView; the search highlight keeps its row in view.
 beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -3965,6 +3973,162 @@ it("Space keeps waiting after a member's profile read fails until a retry settle
     await act(async () => h.reads[1]?.resolve([]));
     await waitFor(() => expect(h.result()?.spaceId).toBe(h.member));
     expect(h.canSpace(h.member)).toBe(true);
+  } finally {
+    h.dispose();
+  }
+});
+
+function rosterFixture(
+  members: readonly string[],
+  second: readonly string[] = [],
+  answer: (authors: readonly string[]) => RelayEvent[] = () => [],
+) {
+  const h = setup();
+  const reads: { authors: readonly string[] }[] = [];
+  const directory = createProfileDirectory({
+    read: async (filters) => {
+      const authors = filters[0]?.authors ?? [];
+      reads.push({ authors });
+      return answer(authors);
+    },
+  });
+  const list = {
+    status: "ready" as const,
+    channels: [
+      { id: "parent", channelType: "stream" as const, members },
+      { id: "second", channelType: "stream" as const, members: second },
+    ],
+  };
+  const names = bindNames(
+    { profiles: directory.queries, agentLibrary: h.library.queries },
+    { snapshot: () => [createAgentDirectory()], subscribe: () => () => {} },
+  );
+  const session = {
+    ...h.session,
+    profiles: directory.queries,
+    names,
+    channels: { ...h.session.channels, list: () => list },
+    directMessages: {
+      ...h.session.directMessages,
+      people: () => new Promise<DirectoryPage>(() => {}),
+    },
+  } as unknown as RelaySession;
+  const mount = (channelId = "parent") =>
+    render(
+      <MentionCompletion
+        session={session}
+        scope="space-test"
+        channelId={channelId}
+        observation={{ revision: 1, text: "@jo", start: 3, end: 3 }}
+        query={{ start: 0, end: 3, query: "jo" }}
+        publish={vi.fn()}
+      />,
+    );
+  return {
+    reads,
+    directory,
+    mount,
+    requested: () => new Set(reads.flatMap((read) => read.authors)),
+    dispose() {
+      names.dispose();
+      directory.dispose();
+      h.library.dispose();
+    },
+  };
+}
+
+it("loads an open channel's whole roster when it reserves room past the base", async () => {
+  const roster = unsignedProfiles(1100).map((event) => event.pubkey);
+  const h = rosterFixture(roster);
+  const release = h.directory.queries.reserve?.(roster.length);
+  try {
+    const view = h.mount();
+    await waitFor(() => expect(h.requested().size).toBe(1100));
+    view.unmount();
+  } finally {
+    release?.();
+    h.dispose();
+  }
+});
+
+it("keeps the base cache for other names when a roster passes the cap", async () => {
+  const roster = unsignedProfiles(11_000, "M");
+  const byKey = new Map(roster.map((event) => [event.pubkey, event]));
+  const h = rosterFixture(
+    roster.map((event) => event.pubkey),
+    [],
+    (authors) => authors.flatMap((id) => byKey.get(id) ?? []),
+  );
+  const others = unsignedProfiles(PROFILE_CACHE_BASE, "O");
+  h.directory.accept(others);
+  const release = h.directory.queries.reserve?.(roster.length);
+  try {
+    expect(h.directory.queries.limit?.()).toBe(PROFILE_CACHE_MAX);
+    const view = h.mount();
+    await waitFor(() =>
+      expect(h.requested().size).toBe(PROFILE_CACHE_MAX - PROFILE_CACHE_BASE),
+    );
+    await waitFor(() =>
+      expect(h.directory.queries.snapshot().size).toBe(PROFILE_CACHE_MAX),
+    );
+    // The roster used only its reserved room: no other name was evicted.
+    expect(
+      others.every((event) => h.directory.queries.snapshot().has(event.pubkey)),
+    ).toBe(true);
+    view.unmount();
+  } finally {
+    release?.();
+    h.dispose();
+  }
+});
+
+it("loads a second large channel's whole roster after the first one's", async () => {
+  const first = unsignedProfiles(1500, "A").map((event) => event.pubkey);
+  const second = unsignedProfiles(1500, "B").map((event) => event.pubkey);
+  const h = rosterFixture(first, second);
+  let release = h.directory.queries.reserve?.(first.length);
+  try {
+    let view = h.mount();
+    await waitFor(() => expect(h.requested().size).toBe(1500));
+    view.unmount();
+    // Navigating swaps one equal reservation for the other: nothing shrinks
+    // or evicts, so only this roster's own requests may use its allowance.
+    release?.();
+    release = h.directory.queries.reserve?.(second.length);
+    view = h.mount("second");
+    await waitFor(() =>
+      expect(second.every((id) => h.requested().has(id))).toBe(true),
+    );
+    view.unmount();
+  } finally {
+    release?.();
+    h.dispose();
+  }
+});
+
+it("asks again for a member's name after the cache evicted it, but not for a known-unnamed one", async () => {
+  const member = keypair();
+  const ghost = keypair();
+  const h = rosterFixture([member.pubkey, ghost.pubkey]);
+  try {
+    h.directory.accept([profile(member, { name: "Jo" })]);
+    let view = h.mount();
+    // The read finds no profile for the ghost, so it is known unnamed.
+    await waitFor(() =>
+      expect(h.directory.queries.unnamed?.().has(ghost.pubkey)).toBe(true),
+    );
+    view.unmount();
+    expect(h.requested().has(member.pubkey)).toBe(false);
+    expect(h.reads).toHaveLength(1);
+    // Unrelated profiles push the member out of the 1,024-entry base.
+    h.directory.accept(unsignedProfiles(1024, "Other "));
+    expect(h.directory.queries.snapshot().has(member.pubkey)).toBe(false);
+    view = h.mount();
+    await waitFor(() => expect(h.requested().has(member.pubkey)).toBe(true));
+    view.unmount();
+    expect(
+      h.reads.filter((read) => read.authors.includes(ghost.pubkey)),
+    ).toHaveLength(1);
   } finally {
     h.dispose();
   }

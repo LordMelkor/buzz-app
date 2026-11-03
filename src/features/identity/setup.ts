@@ -1,3 +1,4 @@
+import { BackupError } from "./backup";
 import type { Communities } from "../communities/service";
 import type { FirstRunAccount, OwnedCommunity } from "./builderlab-account";
 import { type Restored, restoreKnown } from "./restore-communities";
@@ -9,10 +10,12 @@ export type SetupStep = Readonly<{
   run: () => Promise<void> | Promise<Resting | undefined>;
   /** Links the key on this device to the account: skipping it leaves the key unlinked. */
   links?: boolean;
+  /** Only backup steps may be continued when the deployment lacks support. */
+  backup?: boolean;
 }>;
 /**
  * Where setup rests for a decision: the connect choice for a found
- * community that is not Builderlab-hosted, the key choice, an import, the backup offer after an import,
+ * community that is not Builderlab-hosted, the key choice, an import,
  * or the returning-user pages (Welcome back, a restore from backup, the
  * start-over page for a lost key).
  */
@@ -21,7 +24,6 @@ export type SetupPause =
   | "key-choice"
   | "key-import"
   | "welcome-back"
-  | "backup-offer"
   | "key-restore"
   | "key-lost";
 export type SetupSnapshot = Readonly<
@@ -35,6 +37,7 @@ export type SetupSnapshot = Readonly<
       retryable: boolean;
       /** Continuing past the failure skips the link, so the key stays unlinked. */
       skipsLink: boolean;
+      unsupportedBackup?: boolean;
     }
   | { status: "done" }
 >;
@@ -65,7 +68,7 @@ function saved(identity: Identity) {
 /** Creates a key on this device, which the account steps then act on. */
 export function createKey(identity: Identity): SetupStep {
   return {
-    label: "Creating keys…",
+    label: "Creating your key…",
     run: async () => {
       await identity.create();
       saved(identity);
@@ -157,6 +160,7 @@ export function backUp(
 ): SetupStep {
   return {
     label: "Backing up your key…",
+    backup: true,
     run: () => account.backUp(viewer(identity)),
   };
 }
@@ -203,7 +207,7 @@ export function restoreCommunities(
 
 /**
  * Real: the keys the signed-in account holds a backup of, which decide whether
- * Welcome back offers a restore and an import still needs the backup offer.
+ * Welcome back offers a restore and an import still needs backup.
  * Reported as `undefined` where backup status is unavailable (most Builderlab
  * deployments today) or failed, never as a failed setup: the pages work without it, and
  * no copy implies the user lost a backup.
@@ -227,8 +231,8 @@ export function checkBackup(
  * done, or a pause the caller resumes with another `start` — unless a step
  * picked another resting state. No steps means "nothing more to do" and
  * rests at once. A failed setup may also be resumed: by `retry` from the
- * failed step, or once a key exists, by Continue from the failed page, which
- * skips the steps left and rests on the Join page rather than the landing.
+ * failed step. Only explicitly unsupported backup can be continued without;
+ * unfinished linking and transient backup failures cannot be skipped.
  */
 export function createSetup() {
   let state: SetupSnapshot = { status: "idle" };
@@ -261,6 +265,12 @@ export function createSetup() {
             "retryable" in error &&
             error.retryable === true,
           skipsLink: left.some((step) => step.links === true),
+          ...(step.backup &&
+          !left.some((step) => step.links) &&
+          error instanceof BackupError &&
+          (error.kind === "unavailable" || error.kind === "not_offered")
+            ? { unsupportedBackup: true }
+            : {}),
         });
         return;
       }
@@ -289,6 +299,16 @@ export function createSetup() {
       if (!from) return;
       failed = undefined;
       await run(from.steps, from.rest);
+    },
+    /** Continue only an unsupported backup, preserving every subsequent step. */
+    async continueWithoutBackup() {
+      const from =
+        state.status === "failed" && state.unsupportedBackup
+          ? failed
+          : undefined;
+      if (!from) return;
+      failed = undefined;
+      await run(from.steps.slice(1), from.rest);
     },
     reset() {
       if (state.status === "running") return;

@@ -9,6 +9,8 @@ import type { RelaySession } from "../relay/session";
 import type { JoinPolicy } from "./join-policy";
 import type { PersonalProfile } from "./service";
 export type CommunityInfo = {
+  /** NIP-43 is advertised only when Buzz enforces relay membership. */
+  membershipRequired?: boolean;
   name?: string;
   icon?: string;
   policy: JoinPolicy | null;

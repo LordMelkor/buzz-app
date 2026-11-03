@@ -728,6 +728,33 @@ it("a mention keystroke checks longer names only on choices the query matches", 
   }
 });
 
+it("Retry rereads members whose names a background read found missing", async () => {
+  const h = fixture({ count: 3 });
+  const nameless = h.people[2]?.pubkey ?? "";
+  (h.session.profiles.snapshot() as Map<string, unknown>).delete(nameless);
+  const ensure = vi.fn(async () => {});
+  Object.assign(h.session.profiles, { ensure });
+  const menu = inline(h.session);
+  try {
+    await waitFor(() => expect(menu.result()?.retry).toBeDefined());
+    expect(ensure).toHaveBeenLastCalledWith(
+      expect.arrayContaining([nameless]),
+      "background",
+    );
+    act(() => menu.result()?.retry?.());
+    // Background enrichment skips known absences; an explicit Retry does not.
+    await waitFor(() =>
+      expect(ensure).toHaveBeenLastCalledWith(
+        expect.arrayContaining([nameless]),
+        "foreground",
+      ),
+    );
+  } finally {
+    menu.view.unmount();
+    h.library.dispose();
+  }
+});
+
 it("an open chooser relabels choices when only names change", async () => {
   const h = fixture();
   let name = "Before";
