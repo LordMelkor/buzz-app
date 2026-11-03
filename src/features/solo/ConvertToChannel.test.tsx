@@ -15,7 +15,7 @@ import { createChannelDetails } from "../relay/channel-details";
 import { createRelaySession } from "../relay/session";
 import { PublishRejected } from "../relay/outbox";
 import { SOLO_LABEL } from "./labels";
-import { chatConversion } from "./conversion";
+import { chatConversion, conversionLabel } from "./conversion";
 import { ConvertToChannel, canConvertToChannel } from "./ConvertToChannel";
 
 const id = "11111111-1111-4111-8111-111111111111";
@@ -286,7 +286,7 @@ it("preselects Public when the open chat has the default Member admission", asyn
   expect(accessControl()).toHaveTextContent("Public");
 });
 
-it("retains View only through uncertain-save recovery and rejects changed admission", async () => {
+it("retires superseded View-only recovery after Finish rejects changed admission and reload/remount", async () => {
   const h = setup(true, "public", "member");
   await ready();
   await selectAccess("View only");
@@ -307,9 +307,29 @@ it("retains View only through uncertain-save recovery and rejects changed admiss
     "settings changed",
   );
   expect(h.unfile).not.toHaveBeenCalled();
-  h.admission("guest");
-  fireEvent.click(finish);
-  await waitFor(() => expect(h.close).toHaveBeenCalledOnce());
+  expect(chatConversion(h.session, id)).toBeUndefined();
+  fireEvent.click(screen.getByRole("button", { name: "Reload chat details" }));
+  await screen.findByText("Only a Solo chat can be converted.");
+  expect(
+    screen.queryByRole("button", { name: "Finish conversion" }),
+  ).toBeNull();
+  expect(confirm()).toBeDisabled();
+  cleanup();
+  render(<ConvertToChannel session={h.session} id={id} close={h.close} />);
+  await screen.findByText("Only a Solo chat can be converted.");
+  expect(
+    screen.queryByRole("button", { name: "Finish conversion" }),
+  ).toBeNull();
+  expect(conversionLabel(h.session, id)).toBe("Convert to channel");
+  expect(
+    canConvertToChannel(h.session, {
+      id,
+      name: "Original",
+      channelType: "stream",
+    }),
+  ).toBe(false);
+  expect(h.close).not.toHaveBeenCalled();
+  expect(h.unfile).not.toHaveBeenCalled();
   expect(h.publish).toHaveBeenCalledOnce();
 });
 
@@ -330,6 +350,34 @@ it("does not offer completion when the confirmed conversion has different admiss
   ).toBeNull();
   expect(confirm()).toBeDisabled();
   expect(h.unfile).not.toHaveBeenCalled();
+  expect(chatConversion(h.session, id)).toBeUndefined();
+});
+
+it("keeps Finish recovery after a transient read failure and completes without republishing", async () => {
+  const h = setup(true, "public", "guest");
+  await ready();
+  h.publish.mockRejectedValueOnce(new Error("lost acknowledgment"));
+  fireEvent.click(confirm());
+  await screen.findByRole("alert");
+  h.mounted.unmount();
+  h.converted("public", "guest");
+  await h.session.channelDetails.check(id);
+  render(<ConvertToChannel session={h.session} id={id} close={h.close} />);
+  const finish = await screen.findByRole("button", {
+    name: "Finish conversion",
+  });
+  const receipt = chatConversion(h.session, id);
+  h.read.mockRejectedValueOnce(new Error("Details unavailable"));
+  fireEvent.click(finish);
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Details unavailable",
+  );
+  expect(chatConversion(h.session, id)).toBe(receipt);
+  await waitFor(() => expect(finish).toBeEnabled());
+  fireEvent.click(finish);
+  await waitFor(() => expect(h.close).toHaveBeenCalledOnce());
+  expect(h.publish).toHaveBeenCalledOnce();
+  expect(h.unfile).toHaveBeenCalledOnce();
 });
 it.each(["authority", "conflict"])(
   "fresh %s prevents conversion and reload explicitly recovers",

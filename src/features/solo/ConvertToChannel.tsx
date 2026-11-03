@@ -1,5 +1,11 @@
 import { prepareSoloMove } from "../channel-navigation/solo-navigation";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { ComponentProps } from "react";
 import type { RelaySession } from "../relay/session";
 import type { ChannelSummary } from "../relay/contracts";
@@ -49,6 +55,17 @@ export function canConvertToChannel(
 
 const withoutSolo = (labels: readonly string[] | undefined) =>
   (labels ?? []).filter((label) => label !== SOLO_LABEL);
+
+function matchesConversion(base: ChannelDetails, receipt: ChatConversion) {
+  return (
+    !soloLabels(base.labels) &&
+    base.name === receipt.draft.name &&
+    base.visibility === receipt.draft.visibility &&
+    (receipt.draft.joinRole === undefined ||
+      base.joinRole === receipt.draft.joinRole) &&
+    base.ttlSeconds === receipt.draft.ttlSeconds
+  );
+}
 
 /** Clear the Solo label, drop the chat's project filing, then hand off navigation. */
 export function ConvertToChannel({
@@ -100,12 +117,7 @@ export function ConvertToChannel({
     base &&
     receipt &&
     !attempt &&
-    !soloLabels(base.labels) &&
-    base.name === receipt.draft.name &&
-    base.visibility === receipt.draft.visibility &&
-    (receipt.draft.joinRole === undefined ||
-      base.joinRole === receipt.draft.joinRole) &&
-    base.ttlSeconds === receipt.draft.ttlSeconds
+    matchesConversion(base, receipt)
   );
   const canFinish = converted || confirmedElsewhere;
   // Uncertain intent belongs to the details owner, including admission.
@@ -113,6 +125,24 @@ export function ConvertToChannel({
   const selectedAccess = savedDraft
     ? generalAccessValue(savedDraft)
     : (access ?? (base ? generalAccessValue(base) : "private"));
+
+  const acceptDetails = useCallback(
+    (next: ChannelDetails) => {
+      setBase(next);
+      const saved = chatConversion(session, id);
+      // A fresh superseding edit retires only unconfirmed local orchestration.
+      // Durable uncertainty and a completed metadata phase retain their owners.
+      if (
+        saved &&
+        !saved.running &&
+        !saved.converted &&
+        !details.snapshot(id) &&
+        !matchesConversion(next, saved)
+      )
+        updateChatConversion(session, id, undefined);
+    },
+    [details, id, session],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -129,14 +159,14 @@ export function ConvertToChannel({
     void details
       .load(id, active)
       .then((next) => {
-        if (!active.aborted) setBase(next);
+        if (!active.aborted) acceptDetails(next);
       })
       .catch((reason) => {
         if (!active.aborted)
           setError(reason instanceof Error ? reason.message : String(reason));
       });
     return () => controller.abort();
-  }, [details, id, signal]);
+  }, [details, id, signal, acceptDetails]);
 
   const run = async (action: "convert" | "reload" | "check" | "finish") => {
     const controller = lifetime.current;
@@ -159,7 +189,7 @@ export function ConvertToChannel({
     try {
       if (action === "reload") {
         const next = await details.load(id, active);
-        if (!active.aborted) setBase(next);
+        if (!active.aborted) acceptDetails(next);
       } else {
         if (chatConversion(session, id)?.running)
           throw new Error("Conversion is already in progress in another view.");
@@ -188,17 +218,14 @@ export function ConvertToChannel({
           if (action === "check") await details.check(id, active);
           else if (action === "finish") {
             const fresh = await details.load(id, active);
-            if (
-              soloLabels(fresh.labels) ||
-              fresh.name !== exact.draft.name ||
-              fresh.visibility !== exact.draft.visibility ||
-              (exact.draft.joinRole !== undefined &&
-                fresh.joinRole !== exact.draft.joinRole) ||
-              fresh.ttlSeconds !== exact.draft.ttlSeconds
-            )
+            if (!matchesConversion(fresh, exact)) {
+              setBase(fresh);
+              if (!details.snapshot(id))
+                updateChatConversion(session, id, undefined);
               throw new Error(
                 "Channel settings changed. Reload details before continuing.",
               );
+            }
           } else if (base)
             await applySharedChannelDetails(
               session,

@@ -192,7 +192,10 @@ metadata phase, with a shared running guard. It is not permission evidence or a
 persistent transaction. After the label edit succeeds but project unfiling fails,
 the dialog says **Channel converted. Finish removing it from its Solo project.**
 **Finish conversion** re-reads details, confirms the label is gone and the
-settings are unchanged, and retries only the preference write. Restart loses the
+settings are unchanged, and retries only the preference write. Failed reads keep
+the recovery entry. A verified superseding settings edit retires an unconfirmed
+conversion receipt, including after Reload or reopening the dialog; it does not
+rewrite those settings or remove project filing. Restart loses the
 orchestration receipt, not access or the channel: the conversation is already an
 ordinary Team channel, and a leftover project assignment for a channel without the
 label is ignored by Solo.
