@@ -402,6 +402,17 @@
     flex: 0 0 auto;
     padding: 0;
   }
+  /* Message hover actions are quiet until an individual control is engaged. */
+  [data-message-actions]
+  .buzz-button[data-icon-variant]:not(
+    [data-disabled],
+    :disabled,
+    :hover,
+    :focus-visible,
+    :active
+  ) {
+    color: var(--text-subtle);
+  }
   .buzz-button[data-icon-variant][data-size="sm"] {
     width: var(--size-control-sm);
     height: var(--size-control-sm);
@@ -791,6 +802,12 @@
     @apply text-caption;
     width: 1.5rem;
     height: 1.5rem;
+  }
+
+  .buzz-avatar[data-size="tiny"] {
+    @apply text-caption;
+    width: var(--space-4);
+    height: var(--space-4);
   }
 
   .buzz-avatar[data-size="large"] {

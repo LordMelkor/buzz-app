@@ -64,9 +64,9 @@
   --text-body-sm--line-height: 1.4285714285714286;
   --text-body-sm--letter-spacing: -0.0025em;
   --text-body-sm--font-weight: var(--type-weight-normal);
-  /* Message prose keeps interface sizing with Berd's relaxed reading rhythm. */
+  /* Message prose keeps interface sizing with a compact reading rhythm. */
   --text-message: var(--type-size-14);
-  --text-message--line-height: 1.625;
+  --text-message--line-height: 1.5714285714285714;
   --text-message--letter-spacing: -0.0025em;
   --text-message--font-weight: var(--type-weight-normal);
   --text-label: var(--type-size-16);

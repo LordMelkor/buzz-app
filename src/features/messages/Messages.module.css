@@ -167,14 +167,13 @@
   flex: 1;
   min-width: 0;
 }
-/* Reserve the opposing avatar column when space permits. At narrow widths or
-   enlarged text, keep enough of the row for readable words. The own avatar
-   remains outside this body in its existing flex column. */
+/* Long bubbles stop 32px before the opposite avatar's visible inner edge.
+   Avatars sit space-1 from their body, including the wider timeline gutter. */
 .message:has(> .messageGutter) > .messageBody {
-  max-width: min(
-    85%,
-    46rem,
-    max(60%, calc(100% - 2 * var(--message-side-space) - var(--space-4)))
+  /* The rem-based clearance grows with enlarged text; keep a readable floor. */
+  max-width: max(
+    60%,
+    calc(100% - 2 * var(--message-side-space) + var(--space-1) - var(--space-8))
   );
 }
 .message[data-viewer-message] > .messageBody {
@@ -207,7 +206,9 @@
 }
 .author {
   font-weight: var(--type-weight-medium);
+  flex-shrink: 0;
   min-width: 0;
+  max-width: 100%;
 }
 .authorAgentIcon {
   display: inline-block;
@@ -673,10 +674,11 @@ html[data-keyboard-navigation] .attachmentImage:focus-visible {
   padding-inline-start: var(--space-1);
 }
 .composerInput {
+  box-sizing: border-box;
   position: relative;
   min-width: 0;
   width: 100%;
-  padding-inline: 0;
+  padding-inline: var(--space-1);
 }
 .composer .composerInput [data-placeholder]::before {
   color: var(--text-metadata);
@@ -1846,6 +1848,21 @@ html[data-keyboard-navigation] .text pre code:focus-visible {
 html[data-keyboard-navigation] .membership .membershipName:focus-visible {
   --link-text: var(--text-link);
 }
+.membershipPeople {
+  max-height: min(20rem, 50vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-top: var(--space-2);
+  @apply text-body-sm text-standard;
+}
+.membershipPeople ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
 .membershipAvatars,
 .mentionRecipients {
   /* How far each avatar tucks under the next; the stack's trailing padding
@@ -1962,42 +1979,7 @@ html[data-keyboard-navigation] .membership .membershipName:focus-visible {
   --floating-radius: var(--radius-control);
   --floating-inset: var(--space-half);
 }
-.quickReactionGlyph {
-  pointer-events: none;
-  transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.quickReactionGlyph[data-emoji]::before {
-  content: attr(data-emoji);
-}
-@media (hover: hover) and (pointer: fine) and (
-    prefers-reduced-motion: no-preference
-  ) {
-  html:not([data-keyboard-input])
-    .quickReaction
-    button:enabled:hover
-    .quickReactionGlyph {
-    transform: translateY(-1px) scale(1.12);
-  }
-  html:not([data-keyboard-input])
-    .quickReaction
-    button:enabled:active
-    .quickReactionGlyph {
-    transform: scale(0.96);
-  }
-}
-html[data-keyboard-input] .quickReactionGlyph {
-  transition: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .quickReactionGlyph {
-    transition: none;
-  }
-}
 @media (hover: hover) and (pointer: fine) {
-  /* Preserve main's author-line anchor without reserving extra message space. */
   .messageHeader {
     position: relative;
   }
@@ -2385,12 +2367,6 @@ html[data-keyboard-navigation] .replyBranchCollapse:focus-visible {
   display: flex;
   justify-content: center;
   align-items: flex-start;
-}
-/* The picker retains every reaction when the shortcut strip cannot fit. */
-@container message-row (max-width: 16.25rem) {
-  .quickReaction {
-    display: none;
-  }
 }
 /* A persistent sidebar can leave less than one indent of spare reading space. */
 @container messages (max-width: 20rem) {
@@ -2809,13 +2785,13 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
 
 .message[data-layout="timeline"],
 .feed .message[data-layout="continuation"] {
-  --message-side-space: calc(var(--size-control) + var(--space-3));
+  --message-side-space: calc(var(--size-control-sm) + var(--space-3));
 }
 .message[data-layout="timeline"] .messageGutter {
-  flex-basis: var(--size-control);
+  flex-basis: var(--size-control-sm);
 }
 .feed .message[data-layout="continuation"] .messageGutter {
-  flex-basis: var(--size-control);
+  flex-basis: var(--size-control-sm);
 }
 .text pre {
   text-wrap-style: auto;
@@ -2958,7 +2934,7 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
   box-sizing: border-box;
   width: fit-content;
   font-size: var(--text-body-sm);
-  max-width: min(100%, calc(60ch + 2 * var(--space-4)));
+  max-width: 100%;
   min-width: 0;
   margin-top: var(--space-1);
   padding: var(--space-2) var(--space-4);
@@ -3017,12 +2993,12 @@ html[data-keyboard-navigation] .rawDiff:focus-visible {
   user-select: none;
   position: absolute;
   bottom: 0;
-  right: calc(100% + var(--space-2));
+  right: calc(100% + var(--space-1));
   display: flex;
 }
 .message[data-viewer-message] .messageAvatar {
   right: auto;
-  left: calc(100% + var(--space-2));
+  left: calc(100% + var(--space-1));
 }
 .messageBubble > :is(.text, .plainText) {
   margin: 0;
@@ -3432,8 +3408,8 @@ html[data-keyboard-navigation] .audienceLine:focus-visible {
 .audienceAvatar {
   display: grid;
   flex: none;
-  inline-size: calc(var(--size-control-sm) * 0.75);
-  block-size: calc(var(--size-control-sm) * 0.75);
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
 }
 .audienceArrow {
   flex: none;

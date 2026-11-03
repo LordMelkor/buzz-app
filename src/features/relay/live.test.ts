@@ -31,7 +31,10 @@ import { createRelaySession } from "./session";
 import { liveRecoveryStatus } from "./live-recovery";
 import { createPresence } from "../presence/presence";
 import { matchesEvent } from "./projection";
-import { verifiedProfileFilter } from "./verified-profile";
+import {
+  VERIFIED_PROFILE_MAX_SYNCS,
+  verifiedProfileFilter,
+} from "./verified-profile";
 type WireFilter = {
   kinds: number[];
   "#h"?: string[];
@@ -4699,7 +4702,7 @@ it("bounds profile syncs even without channel routes", async () => {
     await h.first.auth();
     assert.exists(h.owner.syncVerifiedProfiles);
     const filter = verifiedProfileFilter("a".repeat(64), ["b".repeat(64)]);
-    for (let i = 0; i < 32; i++)
+    for (let i = 0; i < VERIFIED_PROFILE_MAX_SYNCS; i++)
       release.push(
         h.owner.syncVerifiedProfiles(filter, {
           event() {},
@@ -4721,7 +4724,59 @@ it("bounds profile syncs even without channel routes", async () => {
     );
     expect(
       h.first.requests().filter((request) => request[1].startsWith("sync-")),
-    ).toHaveLength(32);
+    ).toHaveLength(VERIFIED_PROFILE_MAX_SYNCS);
+  } finally {
+    for (const close of release) close();
+    h.owner.dispose();
+  }
+});
+it("admits a full directory's profile syncs without refusing artifact views", async () => {
+  vi.useFakeTimers();
+  const h = setup([]);
+  const release: (() => void)[] = [];
+  const sink = { event() {}, eose() {}, closed: vi.fn() };
+  const artifact = {
+    artifact: "current" as const,
+    "#h": ["11111111-1111-4111-8111-111111111111"],
+  };
+  try {
+    await h.first.auth();
+    assert.exists(h.owner.syncVerifiedProfiles);
+    assert.exists(h.owner.syncArtifacts);
+    // The largest directory needs this many 128-subject batches.
+    expect(VERIFIED_PROFILE_MAX_SYNCS).toBe(80);
+    const filter = verifiedProfileFilter("a".repeat(64), ["b".repeat(64)]);
+    for (let i = 0; i < VERIFIED_PROFILE_MAX_SYNCS; i++)
+      release.push(h.owner.syncVerifiedProfiles(filter, sink));
+    for (let i = 0; i < 32; i++)
+      release.push(h.owner.syncArtifacts(artifact, sink));
+    await Promise.resolve();
+    expect(sink.closed).not.toHaveBeenCalled();
+    const refused = vi.fn();
+    release.push(
+      h.owner.syncArtifacts(artifact, {
+        event() {},
+        eose() {},
+        closed: refused,
+      }),
+    );
+    await Promise.resolve();
+    expect(refused).toHaveBeenCalledExactlyOnceWith(
+      "error: artifact sync capacity reached",
+    );
+    expect(
+      h.first.requests().filter((request) => request[1].startsWith("sync-")),
+    ).toHaveLength(VERIFIED_PROFILE_MAX_SYNCS + 32);
+    // A released profile sync frees its own pool, not the artifact pool.
+    release.shift()?.();
+    const again = vi.fn();
+    release.push(
+      h.owner.syncArtifacts(artifact, { event() {}, eose() {}, closed: again }),
+    );
+    await Promise.resolve();
+    expect(again).toHaveBeenCalledExactlyOnceWith(
+      "error: artifact sync capacity reached",
+    );
   } finally {
     for (const close of release) close();
     h.owner.dispose();

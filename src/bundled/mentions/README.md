@@ -407,6 +407,13 @@ bin/pnpm exec vitest run src/bundled/mentions/mention-ranking.test.ts \
   the host holds and settles the chip in
   [MessageComposer.tsx](../../features/messages/MessageComposer.tsx).
 - Query syntax: [mention-query.ts](mention-query.ts).
+- Member names for Space (§5): the menu loads the whole roster in the background
+  ([MentionCompletion.tsx](MentionCompletion.tsx)). The shared profile cache holds
+  1,024 profiles; an open channel adds room for its roster, up to 10,240 in total
+  ([profile-directory.ts](../../features/relay/profile-directory.ts)). Past that
+  cap, a member whose name is not loaded, and not confirmed absent, keeps the
+  local Space shortcut off until a read settles it. Selection after a complete
+  directory search still applies (§5).
 - Recipient admission (host): [mention-admission.ts](../../features/messages/mention-admission.ts).
   Explicit-choice recency (host): [mention-history.ts](../../features/messages/mention-history.ts).
 - Outside-channel prompt (host): [useNonmemberMentions.tsx](../../features/messages/useNonmemberMentions.tsx).

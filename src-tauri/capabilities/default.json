@@ -116,6 +116,7 @@
     "allow-plugin-host-process-write",
     "allow-plugin-host-process-kill",
     "allow-plugin-host-mcp-serve",
+    "allow-plugin-host-mcp-authorize",
     "allow-plugin-host-mcp-reply",
     "allow-plugin-host-mcp-close",
     "allow-plugin-host-read-file",

@@ -287,16 +287,47 @@ async fn a_failure_mid_stream_ends_the_response_short_of_its_length() {
     assert_eq!(reply.status, 200);
     assert_eq!(length(&reply), total as usize);
     assert_eq!(reply.body, &blob[..BLOCK as usize]);
-    // A whole 200 shorter than its `Content-Length`.
-    let (whole, _, _) = whole_media_server(
-        blob[..2 * BLOCK as usize].to_vec(),
-        Some(total),
-        Duration::ZERO,
-    );
-    let url = whole
-        .join(&format!("/media/{}.mp4", "5".repeat(64)))
-        .unwrap();
-    let reply = get(&stream, &url, "").await;
+    // Keep the truncated origin open until the downstream response starts.
+    // Otherwise EOF may win the initial spool read and correctly return 502,
+    // exercising an opening failure instead of the intended mid-stream failure.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = Url::parse(&format!(
+        "http://{}/media/{}.mp4",
+        listener.local_addr().unwrap(),
+        "5".repeat(64)
+    ))
+    .unwrap();
+    let (close_origin, wait_for_response) = std::sync::mpsc::channel::<()>();
+    let partial = blob[..2 * BLOCK as usize].to_vec();
+    let origin = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0];
+        while !request.ends_with(b"\r\n\r\n") {
+            socket.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        socket
+            .write_all(&media_response(
+                "200 OK",
+                &format!("Content-Length: {total}\r\n"),
+                &partial,
+            ))
+            .unwrap();
+        // Dropping the sender also releases the fixture during panic cleanup.
+        let _ = wait_for_response.recv();
+    });
+    let mut socket = open(&stream, &url, "", 0).await;
+    let mut response = Vec::new();
+    let mut byte = [0];
+    while !response.ends_with(b"\r\n\r\n") {
+        socket.read_exact(&mut byte).await.unwrap();
+        response.push(byte[0]);
+    }
+    drop(close_origin);
+    socket.read_to_end(&mut response).await.unwrap();
+    origin.join().unwrap();
+    let reply = parse_reply(&response);
     assert_eq!(reply.status, 200);
     assert_eq!(length(&reply), total as usize);
     assert!(reply.body.len() < total as usize);

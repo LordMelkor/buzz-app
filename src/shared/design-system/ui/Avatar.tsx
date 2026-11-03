@@ -16,7 +16,7 @@ export const AvatarArtworkContext = createContext<
   ((src: string) => ReactNode) | null
 >(null);
 
-type AvatarSize = "compact" | "small" | "default" | "large" | "fill";
+type AvatarSize = "tiny" | "compact" | "small" | "default" | "large" | "fill";
 type ImageStatus = "loading" | "loaded" | "failed";
 
 // WebKit re-requests cached custom-scheme images on lazy remounts. Remember a

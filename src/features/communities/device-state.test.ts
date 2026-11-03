@@ -3,7 +3,6 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { RelaySession } from "../relay/session";
 import { useChannelTabState } from "../../bundled/channels/useChannelTabState";
-import { recordReaction } from "../messages/quick-reactions";
 import { readView, writeView } from "../../shared/view-state";
 import { purgeCommunityDeviceState } from "./device-state";
 import { localCommunityNameKey } from "./names";
@@ -71,8 +70,11 @@ it("forgets every store partitioned to the left community and viewer, and nothin
   writeView(`${origin}:${other}`, "draft:general", "another viewer");
   // A scope that merely extends the left one is a different partition.
   writeView(`${scope}0`, "draft:general", "longer viewer");
-  recordReaction(scope, "🎉");
-  recordReaction(`${kept}:${viewer}`, "🎉");
+  localStorage.setItem(reactions(scope), '[{"emoji":"🎉","count":1,"used":1}]');
+  localStorage.setItem(
+    reactions(`${kept}:${viewer}`),
+    '[{"emoji":"🎉","count":1,"used":1}]',
+  );
   localStorage.setItem(receipt(scope), "1");
   localStorage.setItem(receipt(`${kept}:${viewer}`), "1");
   localStorage.setItem(follows(scope), "[]");
@@ -108,7 +110,7 @@ it("forgets every store partitioned to the left community and viewer, and nothin
 it("clears the remaining stores when one is unavailable and reports each failure by store", async () => {
   const scope = `${origin}:${viewer}`;
   writeView(scope, "draft:general", "unsent");
-  recordReaction(scope, "🎉");
+  localStorage.setItem(reactions(scope), '[{"emoji":"🎉","count":1,"used":1}]');
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   // Key enumeration fails, which the view and channel-setup sweeps rely on.
   const denied = new Error("denied");

@@ -894,8 +894,14 @@ channel is still loading, then holds about a second and fades over about a
 second. A repeat arrival restarts the cue. Reduced motion holds the tint the
 same time and removes it without fading.
 
-The message hover toolbar uses the 12px rounded-container radius
-with a 2px inset. Its independent icon actions retain their shared 10px corners.
+The horizontal message hover toolbar sits above the bubble, with reaction,
+reply, copy-link and overflow icon actions. It uses `popover-surface` with
+a 12px control radius and 2px inset. Its icon actions use `text-subtle` at rest
+and retain the shared hover, focus and disabled states and 10px corners.
+
+Message-author artwork uses Avatar `default` (32px) in channel/DM timelines,
+`small` (24px) in threads, and `tiny` (16px) in nested replies. Profile triggers
+retain a 32px target even when their artwork is smaller.
 
 Secondary actions on rows inside a compact inset container, currently queued
 follow-ups, use Button `subtle-muted` with `size="caption"`: a 32px control
@@ -1588,8 +1594,8 @@ Values scale with the host interface-size preference.
   independent from caption even though their sizes currently match. `text-mono-lg` and
   `text-mono-sm` are compatibility aliases for this same setting, not extra sizes.
 - Caption uses 12/16 and 0.0133em tracking. Buzz’s `text-body` uses 14/20; `text-label` uses 16/24 and `text-body-lg` uses 20/28.
-- Message prose uses `text-message`: 14px with 1.625 leading (22.75px at
-  default), matching Berd’s relaxed reply rhythm for both sent and received
+- Message prose uses `text-message`: 14px with 22/14 leading (22px at
+  default), keeping a compact reading rhythm for both sent and received
   messages. The message renderer uses `space-4` between prose blocks, with
   `space-2` between an introductory paragraph and its following list. Labels,
   controls, code, tables and headings retain their existing type roles.

@@ -618,6 +618,11 @@ it.each([
   ["search", { q: "hello" }],
   ["current thread", {}],
   ["explicit thread", { thread: nested }],
+  ["message link", { message_url: `buzz://message?channel=chan&id=${nested}` }],
+  [
+    "message search",
+    { message_url: `buzz://message?channel=chan&id=${nested}`, q: "hello" },
+  ],
 ] as const)(
   "keeps agent ownership and nested reply context in a %s read",
   async (_, args) => {

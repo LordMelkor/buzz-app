@@ -599,3 +599,53 @@ it.each([false, true])(
     }
   },
 );
+
+it("labels a scope from its own keys and their owners, not the whole profile cache", () => {
+  const me = "1".repeat(64),
+    owner = "2".repeat(64),
+    a = "a".repeat(64),
+    b = "b".repeat(64);
+  const crowd = Array.from(
+    { length: 500 },
+    (_, index) =>
+      [index.toString(16).padStart(64, "c"), { name: "Honey" }] as const,
+  );
+  const profiles = new Map<
+    string,
+    { name: string; isAgent?: true; ownerPubkey?: string }
+  >([
+    ...crowd,
+    [owner, { name: "Wes" }],
+    [a, { name: "Honey", isAgent: true, ownerPubkey: owner }],
+    [b, { name: "Honey", isAgent: true, ownerPubkey: me }],
+  ]);
+  const library = { status: "ready" as const, definitions: [], identities: [] };
+  const source: NameSource = {
+    viewer: me,
+    profiles: {
+      snapshot: () => profiles,
+      ensure: async () => {},
+      subscribe: () => () => {},
+    },
+    agentLibrary: {
+      snapshot: () => library,
+      subscribe: () => () => {},
+      refresh: async () => {},
+      retain: () => () => {},
+    },
+  };
+  const resolve = vi.fn(defaultNamingPolicy.resolve);
+  const provider = createNameProvider({ ...defaultNamingPolicy, resolve });
+  const scoped = provider.scope(source, [a, b]);
+  // The owner outside the scope still qualifies its agent's name.
+  expect(scoped(a)?.name).toBe("Wes’s Honey");
+  expect(scoped(b)?.name).toBe("Honey");
+  const rows = resolve.mock.calls[0]?.[0] ?? [];
+  expect(new Set(rows.map((row) => row.pubkey))).toEqual(
+    new Set([a, b, owner]),
+  );
+  // Unscoped lookups still see every cached namesake.
+  expect(provider.scope(source)(crowd[0]?.[0] as string)?.name).not.toBe(
+    "Honey",
+  );
+});

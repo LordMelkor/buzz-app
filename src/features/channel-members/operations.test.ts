@@ -48,3 +48,40 @@ it("session disposal cancels the continuation and clears recovery state", async 
     "connection closed",
   );
 });
+
+it("passes a requested guest role to the addition, and only to that one", async () => {
+  const roles: (string | undefined)[] = [];
+  const owner = createMemberAdditions(
+    new AbortController().signal,
+    async (_channel, _person, intent) => {
+      roles.push(intent.role);
+    },
+  );
+  await owner.add("channel", "agent", { role: "guest" });
+  await owner.add("other", "agent");
+  expect(roles).toEqual(["guest", undefined]);
+});
+
+it("joins an addition under way only when it asks for the same role", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const roles: (string | undefined)[] = [];
+  const add = vi.fn(
+    async (_channel: string, _agent: string, intent: object) => {
+      roles.push((intent as { role?: string }).role);
+      await gate;
+    },
+  );
+  const owner = createMemberAdditions(new AbortController().signal, add);
+  const first = owner.add("channel", "agent");
+  expect(owner.add("channel", "agent")).toBe(first);
+  await expect(
+    owner.add("channel", "agent", { role: "guest" }),
+  ).rejects.toThrow(/another role/);
+  release();
+  await first;
+  expect(add).toHaveBeenCalledOnce();
+  expect(roles).toEqual([undefined]);
+});

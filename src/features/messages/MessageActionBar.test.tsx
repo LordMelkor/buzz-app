@@ -499,6 +499,7 @@ it("prevents duplicate clipboard writes until the first settles", async () => {
     expect(link.hasAttribute("disabled")).toBe(true);
     fireEvent.click(link);
     expect(write).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith("buzz://link");
     expect(
       screen.getByRole("button", { name: "Reply" }).hasAttribute("disabled"),
     ).toBe(true);

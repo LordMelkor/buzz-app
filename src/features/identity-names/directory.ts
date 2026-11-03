@@ -1,4 +1,4 @@
-import type { NamingIdentity } from "./policy";
+import { scopeKeys, type NamingIdentity } from "./policy";
 import type { NameProvider, NameSource, NamingPolicy } from "./service";
 import type { LocalAgents } from "../agents/local";
 import { relayOrigin } from "../communities/destination";
@@ -137,11 +137,26 @@ export function createNameProvider(
       };
     });
     const displayedKeys = new Set(displayed.map((fact) => fact.pubkey));
+    // A scope only labels its selection and its agents' owners. Look those up
+    // instead of passing every cached identity, so a scope costs its own size
+    // rather than the whole profile cache.
+    let rows: Iterable<NamingIdentity> = identities.values();
+    if (selection) {
+      const facts = new Map<string, NamingIdentity[]>();
+      for (const fact of displayed)
+        facts.set(fact.pubkey, [...(facts.get(fact.pubkey) ?? []), fact]);
+      const keys = scopeKeys(selection, (key) => {
+        const row = identities.get(key);
+        return [...(row ? [row] : []), ...(facts.get(key) ?? [])];
+      });
+      rows = [...keys].flatMap((key) => {
+        const row = identities.get(key);
+        return row ? [row] : [];
+      });
+    }
     return policy.resolve(
       [
-        ...[...identities.values()].filter(
-          (row) => !displayedKeys.has(row.pubkey),
-        ),
+        ...[...rows].filter((row) => !displayedKeys.has(row.pubkey)),
         ...displayed,
       ],
       source.viewer,

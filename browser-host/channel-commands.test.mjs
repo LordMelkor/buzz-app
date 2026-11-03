@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { validChannelCommand } from "./channel-commands.mjs";
 const id = "11111111-1111-4111-8111-111111111111";
-it("allows ordinary invitations with an optional explicit participant role", () => {
+it("allows ordinary invitations with an optional participant or guest role", () => {
   const invite = {
     kind: 9000,
     created_at: 1,
@@ -18,7 +18,13 @@ it("allows ordinary invitations with an optional explicit participant role", () 
       tags: [...invite.tags, ["role", "member"]],
     }),
   ).toBe(true);
-  for (const role of ["owner", "admin", "guest", "bot", ""]) {
+  expect(
+    validChannelCommand({
+      ...invite,
+      tags: [...invite.tags, ["role", "guest"]],
+    }),
+  ).toBe(true);
+  for (const role of ["owner", "admin", "bot", "Guest", ""]) {
     expect(
       validChannelCommand({
         ...invite,
@@ -109,6 +115,9 @@ it("accepts one trailing outbox identifier for invitations and rejects ambiguous
     client = ["client-id", id];
   expect(validChannelCommand(invite([h, p, client]))).toBe(true);
   expect(validChannelCommand(invite([h, p, ["role", "member"], client]))).toBe(
+    true,
+  );
+  expect(validChannelCommand(invite([h, p, ["role", "guest"], client]))).toBe(
     true,
   );
   for (const tags of [

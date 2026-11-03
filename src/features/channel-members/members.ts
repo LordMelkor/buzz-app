@@ -85,6 +85,8 @@ export type MemberAdditionIntent = {
   id?: string;
   confirmed?: boolean;
   dismissed?: boolean;
+  /** Adds the person as a guest, who can read but not post. */
+  role?: "guest";
 };
 
 /** Explicit single-person intent. Membership truth and pending writes stay session-owned. */
@@ -145,12 +147,7 @@ export async function addChannelMember(
     : (saved.find(({ event, acknowledged }) =>
         intent.id
           ? event.id === intent.id
-          : !acknowledged &&
-            matchesTarget(event) &&
-            !event.tags.some(
-              ([tag, value]) =>
-                tag === "role" && value !== "bot" && value !== "member",
-            ),
+          : !acknowledged && matchesTarget(event),
       ) ??
       // Keep a resolved legacy Guest outcome actionable after restart.
       (soloParticipant && channel()?.members?.includes(pubkey)
@@ -159,6 +156,12 @@ export async function addChannelMember(
               acknowledged && matchesTarget(event) && noRole(event),
           )
         : undefined));
+  // A saved addition finishes only with the role this one asks for.
+  const savedRole = pending?.event.tags.find(([tag]) => tag === "role")?.[1];
+  const sameRole = intent.role
+    ? savedRole === intent.role
+    : savedRole === undefined || savedRole === "bot" || savedRole === "member";
+
   const recovery = { key: `member-add:${channelId}:${pubkey}`, value: "1" };
   // A saved share may finish its exact Bot grant; it cannot authorize a new one.
   const recoveringSoloAgent =
@@ -207,6 +210,11 @@ export async function addChannelMember(
     );
   if (soloParticipant && pending && noRole(pending.event))
     intent.id = pending.event.id;
+  if (pending && !sameRole && !channel()?.members?.includes(pubkey))
+    throw new Error(
+      "An addition of this member with another role is still in Outbox. Retry it there to finish it, or remove it once it shows Not sent, then try again.",
+    );
+
   if (pending && !pending.acknowledged)
     await outbox.recover(pending.event.id, recovery);
   check();
@@ -295,6 +303,7 @@ export async function addChannelMember(
     throw new Error(
       "This addition expired. Remove its Not sent item in Outbox, then try again.",
     );
+
   beforeDispatch?.();
   const id = pending?.event.id ?? outbox.send(invitation(), recovery);
   if (pending?.delivery === "failed" || pending?.delivery === "unknown")
@@ -310,14 +319,16 @@ export async function addChannelMember(
     const current = channel();
     // Solo sharing and private-channel invitations grant participation explicitly,
     // independently of the admission default for public visitors.
-    const role = isAgent
-      ? "bot"
-      : soloParticipant ||
-          (current?.visibility === "private" &&
-            (current.channelType === "stream" ||
-              current.channelType === "forum"))
-        ? "member"
-        : undefined;
+    const role = intent.role
+      ? intent.role
+      : isAgent
+        ? "bot"
+        : soloParticipant ||
+            (current?.visibility === "private" &&
+              (current.channelType === "stream" ||
+                current.channelType === "forum"))
+          ? "member"
+          : undefined;
     return {
       kind: 9000,
       content: "",

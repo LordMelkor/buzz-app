@@ -23,6 +23,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { Dialog } from "../shared/design-system/ui/Dialog";
 import { UpdateNotice } from "../features/updates/UpdateNotice";
 import { RejectedLinkNotice } from "../features/navigation/RejectedLinkNotice";
+import { ExternalAuthorizationDialog } from "../features/agents/ExternalAuthorizationDialog";
 import { CreationReview } from "../bundled/agents/CreationReview";
 import { UpdateReview } from "../bundled/agents/UpdateReview";
 import { InterruptedNotice } from "../features/agents/InterruptedNotice";
@@ -634,6 +635,12 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
           >
             <UpdateNotice updates={services.updates} />
             <RejectedLinkNotice links={services.rejectedLinks} />
+            <ExternalAuthorizationDialog
+              connection={services.externalApps}
+              agents={services.agents}
+              communities={services.communities}
+              relay={services.relay}
+            />
             <InterruptedNotice agents={services.agents} />
             <CreationReview agents={services.agents} />
             <UpdateReview agents={services.agents} />

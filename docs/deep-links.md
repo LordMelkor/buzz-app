@@ -17,6 +17,7 @@ its `#buzz=` address form.
 
 The OS ingress accepts the Buzz link forms and nothing else:
 
+- `buzz://mcp-authorize?version=1&client=<name>&callback=<loopback-url>&state=<state>&scope=<scopes>&code_challenge=<challenge>&code_challenge_method=S256`
 - `buzz://message?channel=<id>&id=<event>[&thread=<root>]`
 - `buzz://plugin-install?repository=<encoded-https-or-ssh-url>[&ref=<encoded-branch-or-tag>]`
 - `buzz://channel/<id>`
@@ -28,6 +29,8 @@ The OS ingress accepts the Buzz link forms and nothing else:
 - `buzz://connect?relay=<wss-url>`
 - `buzz://add-community?relay=<wss-url>[&name=<name>]`
 - `buzz://plugin?id=<plugin id>[&page=<page id>][&route.<key>=<value>...]`
+
+External authorization links show owner consent. They never grant access on arrival. The [external app protocol](agents.md#external-app-authorization) defines the callback, S256 exchange, scopes, and expiry. Handshake values stay outside navigation history.
 
 Plugin install links open **Settings > Plugins > Manage plugins** and fetch a
 preview from the Git repository and optional branch or tag. The repository accepts

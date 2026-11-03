@@ -1753,7 +1753,7 @@ test("real outbox creates, invites and sends", async () => {
   }
 });
 
-test("member addition works without channel creation, while role elevation remains rejected", async () => {
+test("member and guest additions work without channel creation, while role elevation remains rejected", async () => {
   const h = await harness(success);
   let traffic;
   let owner;
@@ -1789,7 +1789,24 @@ test("member addition works without channel creation, while role elevation remai
       ).toBe("accepted"),
     );
     expect(h.publications).toHaveLength(2);
-    for (const role of ["owner", "admin", "guest"]) {
+    // Bestie joins a private channel as a guest: the same template through
+    // the outbox, with its trailing client-id, is signed and published.
+    const guestId = owner.outbox.send({
+      kind: 9000,
+      content: "",
+      tags: [...tags, ["role", "guest"]],
+    });
+    await vi.waitFor(() =>
+      expect(
+        owner.local.snapshot().find((row) => row.event.id === guestId)
+          ?.delivery,
+      ).toBe("accepted"),
+    );
+    expect(h.publications).toHaveLength(3);
+    expect(h.publications[2].tags).toEqual(
+      expect.arrayContaining([["role", "guest"]]),
+    );
+    for (const role of ["owner", "admin"]) {
       const denied = await h.post("sign", {
         kind: 9000,
         content: "",

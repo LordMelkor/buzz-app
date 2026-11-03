@@ -13,6 +13,10 @@ import { teamBlocksSpace } from "./use-team-mentions";
 import { MENTION_RESOLVE_TIMEOUT_MS } from "../../features/conversation/completion";
 import { searchable } from "../../shared/search-debounce";
 import {
+  PROFILE_CACHE_BASE,
+  profileRosterRoom,
+} from "../../features/relay/budget";
+import {
   fetchMentionDirectoryPage,
   type MentionDirectoryPage,
 } from "./useMentionDirectory";
@@ -112,7 +116,13 @@ async function resolve(
   // read leaves its name missing, which only keeps the local step off.
   if (!roster && members.length)
     await session.profiles
-      .ensure(members.slice(0, 1024), "background")
+      .ensure(
+        members.slice(
+          0,
+          profileRosterRoom(session.profiles.limit?.() ?? PROFILE_CACHE_BASE),
+        ),
+        "background",
+      )
       .catch(() => {});
   if (invite) {
     const release = session.agentChoices.retain();

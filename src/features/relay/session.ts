@@ -860,7 +860,8 @@ export function createRelaySession(
         unread.accept(visible);
         writes?.observe(visible);
         if (epoch !== accessEpoch) return;
-        profiles.accept(visible);
+        // A profile read's signal lets the directory publish its pages once.
+        profiles.accept(visible, signal);
         if (epoch !== accessEpoch) return;
         emoji.accept(visible);
         if (epoch !== accessEpoch) return;

@@ -57,12 +57,15 @@ import {
   createPluginInstallerService,
 } from "../plugins/installer";
 import { withTimeout } from "../plugins/timeout";
+import { createExternalApps } from "../features/agents/external-connection";
 
 export function createServices() {
   const appearance = createAppearance();
   const shortcutBindings = createShortcutBindings();
   const updates = createUpdates();
   const ctx = new Context();
+  const externalApps = createExternalApps();
+  ctx.provide("externalApps", externalApps);
   new HostService(ctx);
   const federatedIdentity = new FederatedIdentityService(ctx);
   // An FI build's Welcome calls the session as the Builderlab plugin's
@@ -182,6 +185,7 @@ export function createServices() {
   const deepLinks = {
     ...navigationHost,
     invite: invites.open,
+    authorize: externalApps.open,
     rejected: rejectedLinks.reject,
     accepted: () => rejectedLinks.clear(),
     // As the router decides: Inbox waits on startup and its own activation.
@@ -259,6 +263,7 @@ export function createServices() {
     invites,
     rejectedLinks,
     deepLinks,
+    externalApps,
     appearance,
     updates,
     dispose() {

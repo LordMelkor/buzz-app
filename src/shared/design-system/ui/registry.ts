@@ -544,6 +544,7 @@ export const COMPONENTS: readonly ComponentDefinition[] = [
       "Show a person or agent with an image or stable fallback. Use a circle for a person and a squircle for an agent, based on identity data supplied by the caller.",
     behavior: "Base UI Avatar.",
     variants: [
+      "tiny",
       "compact",
       "small",
       "default",
