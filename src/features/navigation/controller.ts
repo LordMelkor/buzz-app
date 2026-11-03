@@ -545,7 +545,8 @@ export function createNavigationController(
           disposed ||
           attempt !== active.attempt ||
           attempt.signal.aborted ||
-          !active.pending
+          // A kept page may still normalize before its late answer.
+          (!active.pending && !active.late)
         )
           return false;
         try {

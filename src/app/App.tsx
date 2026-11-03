@@ -298,8 +298,12 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
       close={launcher.close}
     />
   );
-  // A page that presents its own failure in place stays on screen.
-  const failedPage = route.state.status === "failed" && !route.state.presented;
+  // A page that presents its own failure in place stays on screen. A kept
+  // timeout stays only while that page is drawn, not the host's loading state.
+  const failedPage =
+    route.state.status === "failed" &&
+    (!route.state.presented ||
+      (route.state.reason === "timeout" && route.waiting));
   const pageOwnsCompanion =
     !!workspace.page?.companion &&
     (settings

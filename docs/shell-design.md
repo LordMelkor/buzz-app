@@ -12,8 +12,10 @@ from page choices; a retained destination whose provider is unavailable displays
 an explicit failure with retry instead of silently selecting another page.
 A page or Settings section already on screen is not replaced when a later
 attempt on the same visit (a retry, a same-target open, a reopen after sign-in)
-times out: it stays. A failure the page reports itself, lost access, a removed page and a
-rejected incoming link still show the host's failure.
+times out: it stays, and may still update its address and answer late. A failure
+the page reports itself, lost access, a removed page and a rejected incoming link
+still show the host's failure, as does that timeout while the host shows its
+loading state in place of the page.
 Browser controls, host shortcuts and toolbar arrows traverse the same visit history.
 Settings sections are destinations presented as a modal over the last workspace.
 The host retains that workspace presentation while Settings is current, without

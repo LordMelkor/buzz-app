@@ -299,6 +299,27 @@ describe("navigation attempts over one history driver", () => {
       expect(nav.snapshot().presented).toBeUndefined();
     }
   });
+  it("lets a kept page normalize its address before its late answer", async () => {
+    vi.useFakeTimers();
+    const { host, navigation: nav } = setup();
+    void nav.open(page);
+    host.complete(nav.snapshot().attempt, { status: "opened" });
+    void nav.retry();
+    const kept = nav.snapshot().attempt;
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(nav.snapshot()).toMatchObject({ status: "failed", presented: true });
+    // The page learns its address only after the deadline, then answers.
+    const routed: OpenTarget = { ...page, route: { version: 1, params: "a" } };
+    expect(host.resolve(kept, routed)).toBe(true);
+    const current = nav.snapshot().attempt;
+    expect(current.entry.id).toBe(kept.entry.id);
+    expect(current.entry.target).toEqual(routed);
+    expect(host.complete(kept, { status: "opened" })).toBe(false);
+    expect(host.complete(current, { status: "opened" })).toBe(true);
+    expect(nav.snapshot().status).toBe("opened");
+    // Once answered, the attempt no longer accepts a late address.
+    expect(host.resolve(current, page)).toBe(false);
+  });
   it("replaces a page with a failure once another visit was opened over it", async () => {
     vi.useFakeTimers();
     const { host, navigation: nav } = setup();
