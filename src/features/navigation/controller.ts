@@ -173,13 +173,17 @@ export function createNavigationController(
       !(operation.pending || (late && operation.late))
     )
       return;
+    const kept = operation.late;
     operation.late = false;
     // A page that stays silent past the deadline keeps showing what it showed.
     // A page that reports its own failure (unavailable, denied), and a rejected
     // incoming link, still replace it with the host's explanation and Retry.
+    // A timeout reported for a kept attempt means the host is not drawing its
+    // page after all, so the host's failure covers it.
     const result: OpenResult =
       outcome.status === "failed" &&
       outcome.reason === "timeout" &&
+      !kept &&
       !snapshot.ingress &&
       operation.attempt.entry.id === shown
         ? { ...outcome, presented: true }

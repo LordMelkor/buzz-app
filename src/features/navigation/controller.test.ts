@@ -320,6 +320,30 @@ describe("navigation attempts over one history driver", () => {
     // Once answered, the attempt no longer accepts a late address.
     expect(host.resolve(current, page)).toBe(false);
   });
+  it("lets the host replace a kept page whose deadline passed while it was not drawn", async () => {
+    vi.useFakeTimers();
+    const { host, navigation: nav } = setup();
+    void nav.open(page);
+    host.complete(nav.snapshot().attempt, { status: "opened" });
+    void nav.retry();
+    const kept = nav.snapshot().attempt;
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(nav.snapshot()).toMatchObject({ status: "failed", presented: true });
+    // The host was drawing its loading state, so its failure covers the page.
+    expect(host.complete(kept, { status: "failed", reason: "timeout" })).toBe(
+      true,
+    );
+    expect(nav.snapshot()).toMatchObject({
+      status: "failed",
+      reason: "timeout",
+    });
+    expect(nav.snapshot().presented).toBeUndefined();
+    expect(kept.signal.aborted).toBe(true);
+    // Its card covers the page, so a later timeout on this visit shows it too.
+    void nav.retry();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(nav.snapshot().presented).toBeUndefined();
+  });
   it("replaces a page with a failure once another visit was opened over it", async () => {
     vi.useFakeTimers();
     const { host, navigation: nav } = setup();

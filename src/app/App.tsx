@@ -298,12 +298,30 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
       close={launcher.close}
     />
   );
-  // A page that presents its own failure in place stays on screen. A kept
-  // timeout stays only while that page is drawn, not the host's loading state.
-  const failedPage =
+  // A page that presents its own failure in place stays on screen.
+  const failedPage = route.state.status === "failed" && !route.state.presented;
+  // A kept timeout keeps only a page that is drawn. If the deadline passed
+  // while the host drew its loading state instead, report it as the host's own
+  // failure, so its card and Retry show. Loading that starts later over a kept
+  // page stays a loading state.
+  const drawsLoading =
+    route.waiting || (!settings && (startup === "loading" || restoring));
+  const keptTimeout =
     route.state.status === "failed" &&
-    (!route.state.presented ||
-      (route.state.reason === "timeout" && route.waiting));
+    route.state.presented &&
+    route.state.reason === "timeout"
+      ? route.state.attempt
+      : undefined;
+  const decidedTimeout = useRef<typeof keptTimeout>(undefined);
+  useLayoutEffect(() => {
+    if (!keptTimeout || decidedTimeout.current === keptTimeout) return;
+    decidedTimeout.current = keptTimeout;
+    if (drawsLoading)
+      services.navigationHost.complete(keptTimeout, {
+        status: "failed",
+        reason: "timeout",
+      });
+  }, [services, keptTimeout, drawsLoading]);
   const pageOwnsCompanion =
     !!workspace.page?.companion &&
     (settings

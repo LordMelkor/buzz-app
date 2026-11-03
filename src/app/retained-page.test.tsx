@@ -51,6 +51,11 @@ vi.mock("../bundled", () => ({
             component: () => <p>Gated controls</p>,
           });
           ctx.pages.register({
+            id: "other",
+            title: "Other",
+            component: () => <p>Other content</p>,
+          });
+          ctx.pages.register({
             id: "held",
             title: "Held",
             handlesNavigation: true,
@@ -98,6 +103,7 @@ function start(
     pluginId: "test.held",
     pageId: "held",
   },
+  prepare?: (services: AppServices) => void,
 ) {
   window.history.replaceState(
     null,
@@ -106,8 +112,26 @@ function start(
   );
   const current = createServices();
   services = current;
+  prepare?.(current);
   render(<App services={current} />);
   return current;
+}
+
+// Text of every node added to the page until the returned stop is called, so a
+// card drawn for one commit is still caught.
+function recordFrames() {
+  const added: string[] = [];
+  const collect = (records: MutationRecord[]) => {
+    for (const record of records)
+      for (const node of record.addedNodes) added.push(node.textContent ?? "");
+  };
+  const frames = new MutationObserver(collect);
+  frames.observe(document.body, { childList: true, subtree: true });
+  return () => {
+    collect(frames.takeRecords());
+    frames.disconnect();
+    return added;
+  };
 }
 
 it("keeps a shown page on screen when a background reopen times out", async () => {
@@ -214,17 +238,16 @@ it("rejects a kept page's late answer once another visit replaced it", async () 
   act(() => {
     void current.navigation.open({
       version: 1,
-      kind: "settings",
-      section: "appearance",
+      kind: "page",
+      pluginId: "test.held",
+      pageId: "other",
     });
   });
-  expect(
-    await screen.findByRole("heading", { name: "Conversations" }),
-  ).toBeVisible();
+  expect(await screen.findByText("Other content")).toBeVisible();
   await waitFor(() =>
     expect(current.navigation.snapshot().status).toBe("opened"),
   );
-  // The old page's answer, address or failure, no longer reaches anything.
+  // Another page replaced it: the old page's address, success or failure is refused.
   let answers: boolean[] = [];
   act(() => {
     answers = [
@@ -236,7 +259,7 @@ it("rejects a kept page's late answer once another visit replaced it", async () 
   expect(answers).toEqual([false, false, false]);
   expect(current.navigation.snapshot()).toMatchObject({
     status: "opened",
-    entry: { target: { kind: "settings" } },
+    entry: { target: { pageId: "other" } },
   });
   expect(
     screen.queryByRole("heading", { name: "This page isn’t available" }),
@@ -255,10 +278,8 @@ it("keeps a shown Settings section when a background reopen times out", async ()
   await waitFor(() =>
     expect(current.navigation.snapshot().status).toBe("opened"),
   );
-  // Settings answers each open at once, after its render; record every frame
-  // in between so a card drawn for one commit is still caught.
-  const frames = new MutationObserver(() => {});
-  frames.observe(document.body, { childList: true, subtree: true });
+  // Settings answers each open at once, after its render.
+  const frames = recordFrames();
   act(() => {
     void current.navigation.retry();
     current.navigationHost.complete(current.navigation.snapshot().attempt, {
@@ -266,14 +287,9 @@ it("keeps a shown Settings section when a background reopen times out", async ()
       reason: "timeout",
     });
   });
-  const added = frames
-    .takeRecords()
-    .flatMap((record) => [...record.addedNodes])
-    .map((node) => node.textContent ?? "");
-  frames.disconnect();
-  expect(added.some((text) => text.includes("This page isn’t available"))).toBe(
-    false,
-  );
+  expect(
+    frames().some((text) => text.includes("This page isn’t available")),
+  ).toBe(false);
   expect(screen.getByRole("heading", { name: "Conversations" })).toBeVisible();
   // Its late answer reopens the visit.
   await waitFor(() =>
@@ -304,20 +320,89 @@ it("shows the card when a kept timeout leaves only the loading state", async () 
       reason: "timeout",
     });
   });
+  // Nothing of the section was drawn, so the host reports its own failure.
   expect(current.navigation.snapshot()).toMatchObject({
     status: "failed",
-    presented: true,
+    reason: "timeout",
   });
+  expect(current.navigation.snapshot().presented).toBeUndefined();
   expect(
     screen.getByRole("heading", { name: "This page isn’t available" }),
   ).toBeVisible();
-  // Once authorized, the section is drawn and its late answer reopens it.
+  // The card stays once loading ends, and Try again reopens the section.
   act(() => setGate(true));
+  expect(
+    screen.getByRole("heading", { name: "This page isn’t available" }),
+  ).toBeVisible();
+  act(() => screen.getByRole("button", { name: "Try again" }).click());
   expect(await screen.findByText("Gated controls")).toBeVisible();
   await waitFor(() =>
     expect(current.navigation.snapshot().status).toBe("opened"),
   );
+});
+
+it("keeps a loading state, not the card, when loading starts after a kept timeout", async () => {
+  // Plugin state the test can change and announce, as a restart would.
+  let announce = () => {};
+  let override: ReturnType<AppServices["plugins"]["snapshot"]> | undefined;
+  const current = start(undefined, (services) => {
+    const plugins = services.plugins;
+    const snapshot = plugins.snapshot;
+    vi.spyOn(plugins, "snapshot").mockImplementation(
+      () => override ?? snapshot.call(plugins),
+    );
+    const subscribe = services.plugins.subscribe;
+    vi.spyOn(services.plugins, "subscribe").mockImplementation((listener) => {
+      const previous = announce;
+      announce = () => {
+        previous();
+        listener();
+      };
+      return subscribe(listener);
+    });
+  });
+  expect(await screen.findByText("Held content")).toBeVisible();
+  await waitFor(() =>
+    expect(current.navigation.snapshot().status).toBe("opened"),
+  );
+  const frames = recordFrames();
+  // The deadline passes while the page is drawn, and it stays.
+  page.answer = false;
+  act(() => void current.navigation.retry());
+  act(() => {
+    current.navigationHost.complete(current.navigation.snapshot().attempt, {
+      status: "failed",
+      reason: "timeout",
+    });
+  });
+  expect(screen.getByText("Held content")).toBeVisible();
+  // Later its plugin restarts in the background: the host draws its loading
+  // state over the kept page, not the card.
+  const snapshot = current.plugins.snapshot();
+  const held = snapshot.activation["test.held"];
+  if (!held) throw new Error("Missing held plugin");
+  override = {
+    ...snapshot,
+    activation: {
+      ...snapshot.activation,
+      "test.held": { ...held, status: "starting" },
+    },
+  };
+  act(() => announce());
+  expect(screen.queryByText("Held content")).toBeNull();
+  expect(current.navigation.snapshot()).toMatchObject({
+    status: "failed",
+    presented: true,
+  });
+  // The restart ends and the page answers.
+  page.answer = true;
+  override = undefined;
+  act(() => announce());
+  expect(await screen.findByText("Held content")).toBeVisible();
+  await waitFor(() =>
+    expect(current.navigation.snapshot().status).toBe("opened"),
+  );
   expect(
-    screen.queryByRole("heading", { name: "This page isn’t available" }),
-  ).toBeNull();
+    frames().some((text) => text.includes("This page isn’t available")),
+  ).toBe(false);
 });
