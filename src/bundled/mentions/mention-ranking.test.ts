@@ -5,6 +5,7 @@ import {
   continuingNames,
   exactMention,
   matchingMentions,
+  moreMentions,
   rankMentions,
   type MentionChoice,
 } from "./mention-ranking";
@@ -128,6 +129,45 @@ it("orders mixed people and agents the same way from every input order", () => {
     ]);
 });
 
+it("a limit keeps the first rows of the full order, and counts agree with it", () => {
+  // Namesake agents, people, members, outsiders and equal labels, so every
+  // ranking key decides some pair.
+  const names = ["Honey", "Honey Bee", "honey", "Hank", "Bea", "Zed"];
+  const rows = Array.from({ length: 240 }, (_, i) => {
+    const name = names[i % names.length] ?? "";
+    const key = i.toString(16).padStart(64, "0");
+    return {
+      ...choice("0", name, {
+        agent: i % 3 === 0,
+        owned: i % 5 === 0,
+        managed: i % 7 === 0,
+        member: i % 4 !== 0,
+        ...(i % 11 ? {} : { elsewhere: "Other" }),
+        label: i % 2 ? `${name} · ${key.slice(-4)}` : name,
+        aliases: i % 13 ? [name] : [],
+      }),
+      recipient: { pubkey: key, name },
+    };
+  });
+  const history = new Map(
+    rows.flatMap((c, i) => (i % 9 ? [] : [[c.recipient.pubkey, i]])),
+  );
+  const presence = (key: string) =>
+    ["online", "away", "unknown"][Number.parseInt(key.slice(-1), 16) % 3] ??
+    "unknown";
+  for (const query of ["", "h", "honey", "honey b", "bea", "nobody"]) {
+    const full = rankMentions(rows, query, history, presence);
+    for (const limit of [0, 1, 7, 50, full.length, full.length + 1])
+      expect(rankMentions(rows, query, history, presence, limit)).toEqual(
+        full.slice(0, limit),
+      );
+    for (const limit of [0, 1, 50, Math.max(0, full.length - 1), full.length])
+      expect(moreMentions(rows, query, limit)).toBe(full.length > limit);
+  }
+  // A bare `@` has no exact or continuing name.
+  expect(continuingNames(rows, " ")).toEqual([]);
+  expect(exactMention(rows, "")).toBeUndefined();
+});
 it("a known longer name continues the query, except an identity's own beside its exact name", () => {
   const longer = choice("1", "Mira Example");
   expect(continuedMention([longer], "mira")).toBe(true);

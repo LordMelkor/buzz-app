@@ -14,22 +14,22 @@ export type MentionChoice = ReturnType<typeof mentionCandidates>[number] & {
 };
 const normalized = normalizeName;
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-const nameMatch = (text: string, query: string) =>
-  query ? (matchPerson(text, query)?.tier ?? Infinity) : 0;
-function baseMatch(choice: MentionChoice, query: string) {
-  return Math.min(
-    ...choice.aliases.map((name) => nameMatch(name, normalized(query))),
-  );
-}
-export function mentionMatch(choice: MentionChoice, query: string) {
-  const needle = normalized(query);
-  if (!needle) return 0;
+const nameMatch = (text: string, needle: string) =>
+  needle ? (matchPerson(text, needle)?.tier ?? Infinity) : 0;
+const aliasMatch = (choice: MentionChoice, needle: string) =>
+  Math.min(...choice.aliases.map((name) => nameMatch(name, needle)));
+/** `mentionMatch` for an already normalized, non-empty needle. */
+function labelMatch(choice: MentionChoice, needle: string) {
   // No known name means the displayed label is only an identity fallback.
   if (!choice.aliases.length) return Infinity;
   // Rank what the user sees before other real names for the same identity.
   const visible = nameMatch(choice.label, needle);
   if (Number.isFinite(visible)) return visible;
-  return 4 + baseMatch(choice, query);
+  return 4 + aliasMatch(choice, needle);
+}
+export function mentionMatch(choice: MentionChoice, query: string) {
+  const needle = normalized(query);
+  return needle ? labelMatch(choice, needle) : 0;
 }
 // One sorted index of name starts per immutable choice list. Choices with a
 // name too long to index are always kept for ranking to match directly.
@@ -86,59 +86,115 @@ export function matchingMentions(
     .sort((a, b) => a - b)
     .flatMap((owner) => choices[owner] ?? []);
 }
+type Ranked = {
+  c: MentionChoice;
+  tier: readonly number[];
+  label: string;
+  block: string;
+  blockLabel: string;
+  recent: number;
+  online: number;
+};
+const byRank = (a: Ranked, b: Ranked) => {
+  for (let i = 0; i < a.tier.length; i += 1) {
+    const d = (a.tier[i] ?? 0) - (b.tier[i] ?? 0);
+    if (d) return d;
+  }
+  return (
+    compare(a.blockLabel, b.blockLabel) ||
+    compare(a.block, b.block) ||
+    b.recent - a.recent ||
+    Number(b.c.managed) - Number(a.c.managed) ||
+    a.online - b.online ||
+    compare(a.label, b.label) ||
+    compare(a.c.recipient.pubkey, b.c.recipient.pubkey)
+  );
+};
+/**
+ * The first `limit` of `items` in `order`, as a stable sort would give them.
+ * Most items lose to the current last kept item in one comparison, so taking
+ * the top 50 of n costs about n comparisons instead of a full n log n sort.
+ */
+function first<T>(items: T[], order: (a: T, b: T) => number, limit: number) {
+  if (limit >= items.length) return items.sort(order);
+  const kept: T[] = [];
+  for (const item of items) {
+    const last = kept[kept.length - 1];
+    if (kept.length === limit && last !== undefined && order(item, last) >= 0)
+      continue;
+    // After every equal kept item, as a stable sort keeps input order.
+    let low = 0;
+    let high = kept.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (order(item, kept[middle] as T) < 0) high = middle;
+      else low = middle + 1;
+    }
+    kept.splice(low, 0, item);
+    if (kept.length > limit) kept.pop();
+  }
+  return kept;
+}
 /**
  * Sorts by per-choice keys, so the order is transitive for any mix of people
  * and agents. Another community's agents follow everyone here. After match quality, your own agents come first. Agents that
  * share a name form one block at its first visible label; recency, managed,
- * and presence order only that block.
+ * and presence order only that block. With `limit` (a whole number, 0 or
+ * more), only the first `limit` choices of that order are returned.
  */
 export function rankMentions(
   choices: readonly MentionChoice[],
   query: string,
   history?: ReadonlyMap<string, number>,
   presence: (key: string) => string = () => "unknown",
+  limit = Infinity,
 ) {
-  const keyed = choices
-    .filter((c) => Number.isFinite(mentionMatch(c, query)))
-    .map((c) => {
-      const tier = [
-        c.member ? 0 : 1,
-        c.elsewhere ? 1 : 0,
-        mentionMatch(c, query),
-        baseMatch(c, query),
-        c.agent && c.owned ? 0 : 1,
-      ];
-      return {
-        c,
-        tier,
-        label: normalized(c.label),
-        // People never join a block. On an equal label they sort first.
-        block: c.agent
-          ? `1${JSON.stringify([tier, normalized(c.recipient.name)])}`
-          : `0${c.recipient.pubkey}`,
-        recent: history?.get(c.recipient.pubkey) ?? 0,
-        online: { online: 0, away: 1 }[presence(c.recipient.pubkey)] ?? 2,
-      };
+  const needle = normalized(query);
+  const keyed: Ranked[] = [];
+  for (const c of choices) {
+    const match = needle ? labelMatch(c, needle) : 0;
+    if (!Number.isFinite(match)) continue;
+    const tier = [
+      c.member ? 0 : 1,
+      c.elsewhere ? 1 : 0,
+      match,
+      aliasMatch(c, needle),
+      c.agent && c.owned ? 0 : 1,
+    ];
+    keyed.push({
+      c,
+      tier,
+      label: normalized(c.label),
+      // People never join a block. On an equal label they sort first.
+      block: c.agent
+        ? `1${JSON.stringify([tier, normalized(c.recipient.name)])}`
+        : `0${c.recipient.pubkey}`,
+      blockLabel: "",
+      recent: history?.get(c.recipient.pubkey) ?? 0,
+      online: { online: 0, away: 1 }[presence(c.recipient.pubkey)] ?? 2,
     });
-  const first = new Map<string, string>();
-  for (const k of keyed) {
-    const label = first.get(k.block);
-    if (label === undefined || k.label < label) first.set(k.block, k.label);
   }
-  const blockLabel = (k: (typeof keyed)[number]) => first.get(k.block) ?? "";
-  return keyed
-    .sort(
-      (a, b) =>
-        a.tier.reduce((d, value, i) => d || value - (b.tier[i] ?? 0), 0) ||
-        compare(blockLabel(a), blockLabel(b)) ||
-        compare(a.block, b.block) ||
-        b.recent - a.recent ||
-        Number(b.c.managed) - Number(a.c.managed) ||
-        a.online - b.online ||
-        compare(a.label, b.label) ||
-        compare(a.c.recipient.pubkey, b.c.recipient.pubkey),
-    )
-    .map((k) => k.c);
+  const blockLabels = new Map<string, string>();
+  for (const k of keyed) {
+    const label = blockLabels.get(k.block);
+    if (label === undefined || k.label < label)
+      blockLabels.set(k.block, k.label);
+  }
+  for (const k of keyed) k.blockLabel = blockLabels.get(k.block) ?? "";
+  return first(keyed, byRank, limit).map((k) => k.c);
+}
+/** Whether more than `limit` choices rank for the query, without ranking them. */
+export function moreMentions(
+  choices: readonly MentionChoice[],
+  query: string,
+  limit: number,
+) {
+  const needle = normalized(query);
+  if (!needle) return choices.length > limit;
+  let count = 0;
+  for (const c of choices)
+    if (Number.isFinite(labelMatch(c, needle)) && ++count > limit) return true;
+  return false;
 }
 const choiceNames = (c: MentionChoice) => [...c.aliases, c.label];
 /**
@@ -156,6 +212,8 @@ export function continuingNames(
 ) {
   const needle = normalized(query);
   const names = new Map<string, string>();
+  // No name continues an empty query; skip folding every name at a bare `@`.
+  if (!needle) return [];
   for (const c of choices) {
     // `Example Agent` never keeps `example` from selecting the agent that is
     // also named `Example`.
