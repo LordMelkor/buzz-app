@@ -366,9 +366,9 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
         : { scope: null }),
     });
   };
+  // As for pages, a timed-out reopen of the shown section keeps its editor.
   const settingsUnavailable =
-    (!route.state.ingress && !!route.failure) ||
-    route.state.status === "failed";
+    (!route.state.ingress && !!route.failure) || failedPage;
   const settingsBlocked = settingsUnavailable || route.waiting;
   const settingsScope =
     route.target.kind === "settings"

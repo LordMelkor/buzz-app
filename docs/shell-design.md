@@ -10,9 +10,9 @@ required, including when older preferences saved it disabled. Navigation removes
 disabled optional plugins
 from page choices; a retained destination whose provider is unavailable displays
 an explicit failure with retry instead of silently selecting another page.
-A workspace page already on screen is not replaced when a later attempt on the
-same visit (a retry, a same-target open, a reopen after sign-in) times out: the
-page stays. A failure the page reports itself, lost access, a removed page and a
+A page or Settings section already on screen is not replaced when a later
+attempt on the same visit (a retry, a same-target open, a reopen after sign-in)
+times out: it stays. A failure the page reports itself, lost access, a removed page and a
 rejected incoming link still show the host's failure.
 Browser controls, host shortcuts and toolbar arrows traverse the same visit history.
 Settings sections are destinations presented as a modal over the last workspace.

@@ -62,13 +62,14 @@ afterEach(async () => {
   window.history.replaceState(null, "", "/");
 });
 
-function start() {
-  const target = {
+function start(
+  target: Record<string, unknown> = {
     version: 1,
     kind: "page",
     pluginId: "test.held",
     pageId: "held",
-  };
+  },
+) {
   window.history.replaceState(
     null,
     "",
@@ -155,4 +156,42 @@ it("replaces a kept page when it reports its own failure after the deadline", as
     await screen.findByRole("heading", { name: "This page isn’t available" }),
   ).toBeVisible();
   expect(screen.queryByText("Held content")).toBeNull();
+});
+
+it("keeps a shown Settings section when a background reopen times out", async () => {
+  const current = start({
+    version: 1,
+    kind: "settings",
+    section: "appearance",
+  });
+  expect(
+    await screen.findByRole("heading", { name: "Conversations" }),
+  ).toBeVisible();
+  await waitFor(() =>
+    expect(current.navigation.snapshot().status).toBe("opened"),
+  );
+  // Settings answers each open at once, after its render; record every frame
+  // in between so a card drawn for one commit is still caught.
+  const frames = new MutationObserver(() => {});
+  frames.observe(document.body, { childList: true, subtree: true });
+  act(() => {
+    void current.navigation.retry();
+    current.navigationHost.complete(current.navigation.snapshot().attempt, {
+      status: "failed",
+      reason: "timeout",
+    });
+  });
+  const added = frames
+    .takeRecords()
+    .flatMap((record) => [...record.addedNodes])
+    .map((node) => node.textContent ?? "");
+  frames.disconnect();
+  expect(added.some((text) => text.includes("This page isn’t available"))).toBe(
+    false,
+  );
+  expect(screen.getByRole("heading", { name: "Conversations" })).toBeVisible();
+  // Its late answer reopens the visit.
+  await waitFor(() =>
+    expect(current.navigation.snapshot().status).toBe("opened"),
+  );
 });
