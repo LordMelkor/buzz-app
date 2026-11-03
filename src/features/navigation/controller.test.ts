@@ -266,6 +266,23 @@ describe("navigation attempts over one history driver", () => {
     expect(nav.snapshot().reason).toBeUndefined();
     expect(nav.snapshot().presented).toBeUndefined();
     expect(host.complete(retried, { status: "opened" })).toBe(false);
+    // A late failure the page reports itself replaces it, as an early one does.
+    void nav.retry();
+    const slow = nav.snapshot().attempt;
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(nav.snapshot()).toMatchObject({ status: "failed", presented: true });
+    expect(
+      host.complete(slow, { status: "failed", reason: "unavailable" }),
+    ).toBe(true);
+    expect(nav.snapshot()).toMatchObject({
+      status: "failed",
+      reason: "unavailable",
+    });
+    expect(nav.snapshot().presented).toBeUndefined();
+    expect(slow.signal.aborted).toBe(true);
+    // The card now covers the page, so this visit opens afresh.
+    void nav.retry();
+    host.complete(nav.snapshot().attempt, { status: "opened" });
     // A same-target open that times out keeps it too.
     void nav.open(page);
     await vi.advanceTimersByTimeAsync(15_000);
@@ -276,7 +293,7 @@ describe("navigation attempts over one history driver", () => {
       host.complete(nav.snapshot().attempt, { status: "failed", reason });
       expect(nav.snapshot()).toMatchObject({ status: "failed", reason });
       expect(nav.snapshot().presented).toBeUndefined();
-      // The visit is still the one shown: a later timeout keeps it again.
+      // The reported failure covered the page: a later timeout shows the card.
       void nav.retry();
       await vi.advanceTimersByTimeAsync(15_000);
       expect(nav.snapshot().presented).toBeUndefined();

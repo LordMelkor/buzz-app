@@ -166,8 +166,14 @@ export function createNavigationController(
       timeoutMs,
     );
   }
-  function finish(operation: Operation, outcome: OpenResult) {
-    if (operation !== active || !operation.pending) return;
+  /** `late`: the page's own answer to a kept attempt, after its deadline. */
+  function finish(operation: Operation, outcome: OpenResult, late = false) {
+    if (
+      operation !== active ||
+      !(operation.pending || (late && operation.late))
+    )
+      return;
+    operation.late = false;
     // A page that stays silent past the deadline keeps showing what it showed.
     // A page that reports its own failure (unavailable, denied), and a rejected
     // incoming link, still replace it with the host's explanation and Retry.
@@ -182,9 +188,11 @@ export function createNavigationController(
     if (result.status === "opened") shown = operation.attempt.entry.id;
     // The host's failure now covers the page.
     else if (result.status === "failed" && !result.presented) shown = undefined;
+    // A late answer resolves no caller: settle already ran at the deadline.
     settle(operation, result);
+    const { reason: _reason, presented: _presented, ...current } = snapshot;
     snapshot = Object.freeze({
-      ...snapshot,
+      ...current,
       status: result.status,
       ...(result.status === "failed"
         ? {
@@ -567,15 +575,8 @@ export function createNavigationController(
           (!active.pending && !active.late)
         )
           return false;
-        if (active.pending) finish(active, result);
-        else {
-          // A kept page that answers after its deadline recovers its visit.
-          if (result.status !== "opened") return false;
-          active.late = false;
-          const { reason: _reason, presented: _presented, ...rest } = snapshot;
-          snapshot = Object.freeze({ ...rest, status: "opened" });
-          emit();
-        }
+        // A kept page may still answer after its deadline, either way.
+        finish(active, result, true);
         return true;
       });
     },

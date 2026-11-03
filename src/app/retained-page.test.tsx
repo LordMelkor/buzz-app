@@ -127,3 +127,32 @@ it("still replaces the page when it reports its own failure", async () => {
   ).toBeVisible();
   expect(screen.queryByText("Held content")).toBeNull();
 });
+
+it("replaces a kept page when it reports its own failure after the deadline", async () => {
+  const current = start();
+  expect(await screen.findByText("Held content")).toBeVisible();
+  await waitFor(() =>
+    expect(current.navigation.snapshot().status).toBe("opened"),
+  );
+  page.answer = false;
+  act(() => void current.navigation.retry());
+  const attempt = current.navigation.snapshot().attempt;
+  act(() => {
+    current.navigationHost.complete(attempt, {
+      status: "failed",
+      reason: "timeout",
+    });
+  });
+  expect(screen.getByText("Held content")).toBeVisible();
+  // The page's own lookup fails after the deadline.
+  act(() => {
+    current.navigationHost.complete(attempt, {
+      status: "failed",
+      reason: "unavailable",
+    });
+  });
+  expect(
+    await screen.findByRole("heading", { name: "This page isn’t available" }),
+  ).toBeVisible();
+  expect(screen.queryByText("Held content")).toBeNull();
+});
