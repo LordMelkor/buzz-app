@@ -240,7 +240,7 @@ describe("navigation attempts over one history driver", () => {
     expect(attempt.signal.reason).toBe(NAVIGATION_ABORTED);
     expect(nav.snapshot().presented).toBeUndefined();
   });
-  it("keeps a shown page when a later attempt on its visit cannot finish", async () => {
+  it("keeps a shown page when a later attempt on its visit times out", async () => {
     vi.useFakeTimers();
     const { host, navigation: nav } = setup();
     void nav.open(page);
@@ -260,21 +260,27 @@ describe("navigation attempts over one history driver", () => {
       presented: true,
     });
     expect(retried.signal.aborted).toBe(false);
-    // So does a same-target open the page reports unavailable.
-    void nav.open(page);
-    host.complete(nav.snapshot().attempt, {
-      status: "failed",
-      reason: "unavailable",
-    });
-    expect(nav.snapshot()).toMatchObject({ status: "failed", presented: true });
-    // Lost access still replaces it.
-    void nav.retry();
-    host.complete(nav.snapshot().attempt, {
-      status: "failed",
-      reason: "denied",
-    });
-    expect(nav.snapshot().status).toBe("failed");
+    // The page answers late: its visit is open again, once.
+    expect(host.complete(retried, { status: "opened" })).toBe(true);
+    expect(nav.snapshot().status).toBe("opened");
+    expect(nav.snapshot().reason).toBeUndefined();
     expect(nav.snapshot().presented).toBeUndefined();
+    expect(host.complete(retried, { status: "opened" })).toBe(false);
+    // A same-target open that times out keeps it too.
+    void nav.open(page);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(nav.snapshot()).toMatchObject({ status: "failed", presented: true });
+    // A failure the page reports itself still replaces it.
+    for (const reason of ["unavailable", "denied"] as const) {
+      void nav.retry();
+      host.complete(nav.snapshot().attempt, { status: "failed", reason });
+      expect(nav.snapshot()).toMatchObject({ status: "failed", reason });
+      expect(nav.snapshot().presented).toBeUndefined();
+      // The visit is still the one shown: a later timeout keeps it again.
+      void nav.retry();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(nav.snapshot().presented).toBeUndefined();
+    }
   });
   it("replaces a page with a failure once another visit was opened over it", async () => {
     vi.useFakeTimers();
@@ -298,7 +304,7 @@ describe("navigation attempts over one history driver", () => {
     });
     expect(nav.snapshot().presented).toBeUndefined();
   });
-  it("still shows an incoming link's failure over a shown page", () => {
+  it("still shows an incoming link's failure over a shown page", async () => {
     const { host, navigation: nav } = setup();
     void nav.open(page);
     host.complete(nav.snapshot().attempt, { status: "opened" });
@@ -307,6 +313,16 @@ describe("navigation attempts over one history driver", () => {
       status: "failed",
       reason: "unavailable",
       ingress: true,
+    });
+    expect(nav.snapshot().presented).toBeUndefined();
+    // Its card covers the page: reopening the page and timing out shows the
+    // card, not a page that never answered.
+    vi.useFakeTimers();
+    void nav.open(page);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(nav.snapshot()).toMatchObject({
+      status: "failed",
+      reason: "timeout",
     });
     expect(nav.snapshot().presented).toBeUndefined();
   });

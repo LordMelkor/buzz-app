@@ -102,6 +102,8 @@ export function createNavigationController(
     timer?: ReturnType<typeof setTimeout> | undefined;
     /** Cancels a failed visit's reopen after sign-in. */
     reauthorizing?: () => void;
+    /** Timed out on the shown page, which stayed: it may still answer. */
+    late?: boolean;
   };
   let disposed = false;
   let active: Operation;
@@ -111,8 +113,8 @@ export function createNavigationController(
   // while one is attached.
   let presenters = 0;
   // The visit whose page is on screen. A later attempt on it (a retry, a
-  // same-target open, a reopen after sign-in) that cannot finish leaves that
-  // page up: background work never replaces content already shown.
+  // same-target open, a reopen after sign-in) that times out leaves that page
+  // up: background work never replaces content already shown.
   let shown: string | undefined;
   let ingressRetry: (() => Promise<OpenResult>) | undefined;
   const listeners = new Set<() => void>();
@@ -166,19 +168,20 @@ export function createNavigationController(
   }
   function finish(operation: Operation, outcome: OpenResult) {
     if (operation !== active || !operation.pending) return;
-    // Only a transient failure keeps the shown page; lost access, a missing
-    // destination or a rejected incoming link still replaces it.
+    // A page that stays silent past the deadline keeps showing what it showed.
+    // A page that reports its own failure (unavailable, denied), and a rejected
+    // incoming link, still replace it with the host's explanation and Retry.
     const result: OpenResult =
       outcome.status === "failed" &&
-      !outcome.presented &&
+      outcome.reason === "timeout" &&
       !snapshot.ingress &&
-      operation.attempt.entry.id === shown &&
-      (outcome.reason === "timeout" ||
-        outcome.reason === "unavailable" ||
-        outcome.reason === "host-error")
+      operation.attempt.entry.id === shown
         ? { ...outcome, presented: true }
         : outcome;
+    if (result !== outcome) operation.late = true;
     if (result.status === "opened") shown = operation.attempt.entry.id;
+    // The host's failure now covers the page.
+    else if (result.status === "failed" && !result.presented) shown = undefined;
     settle(operation, result);
     snapshot = Object.freeze({
       ...snapshot,
@@ -561,10 +564,18 @@ export function createNavigationController(
           disposed ||
           attempt !== active.attempt ||
           attempt.signal.aborted ||
-          !active.pending
+          (!active.pending && !active.late)
         )
           return false;
-        finish(active, result);
+        if (active.pending) finish(active, result);
+        else {
+          // A kept page that answers after its deadline recovers its visit.
+          if (result.status !== "opened") return false;
+          active.late = false;
+          const { reason: _reason, presented: _presented, ...rest } = snapshot;
+          snapshot = Object.freeze({ ...rest, status: "opened" });
+          emit();
+        }
         return true;
       });
     },
