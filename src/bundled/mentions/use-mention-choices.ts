@@ -22,12 +22,19 @@ import { directoryChanges, mentionCandidates } from "./mention-candidates";
 import { useListedChannel } from "../../features/relay/listed-channel";
 import { useNamesRevision } from "../../features/identity-names/react";
 import {
+  useVerifiedNames,
+  withVerifiedNames,
+  type VerifiedPerson,
+} from "../../features/profiles/useVerifiedNames";
+import {
   exactMention,
   matchingMentions,
   rankMentions,
   type MentionChoice,
 } from "./mention-ranking";
-type Person = ReturnType<typeof useMentionDirectory>["people"][number];
+type Person = VerifiedPerson<
+  ReturnType<typeof useMentionDirectory>["people"][number]
+>;
 const activityFields = new Set(["preview", "lastActivityAt"]);
 /** Equal but for the preview and activity time a new message changes. */
 function sameMentionFields(a: ChannelSummary, b: ChannelSummary) {
@@ -71,7 +78,13 @@ function page(session: ComposerSession, people: readonly Person[]) {
   const key = JSON.stringify(
     [...people]
       .sort((a, b) => (a.pubkey < b.pubkey ? -1 : a.pubkey > b.pubkey ? 1 : 0))
-      .map(({ pubkey, name, isAgent }) => [pubkey, name, !!isAgent]),
+      .map(({ pubkey, name, isAgent, fullName, profileNames }) => [
+        pubkey,
+        name,
+        !!isAgent,
+        fullName ?? "",
+        profileNames ?? [],
+      ]),
   );
   const seen = pages.get(session) ?? new Map<string, readonly Person[]>();
   pages.set(session, seen);
@@ -256,14 +269,20 @@ export function useMentionChoices(
   const key = JSON.stringify([channelId, invite, query, open, !!roster]);
   const same = installed?.session === session && installed.key === key;
   const carried = same ? installed.people : none;
+  // Searched people the community verified carry their verified names.
+  const verified = useVerifiedNames(session, directory.people);
+  const searched = useMemo(
+    () => withVerifiedNames(directory.people, verified, profiles),
+    [directory.people, verified, profiles],
+  );
   const people = useMemo(() => {
-    if (!carried.length) return directory.people;
-    const known = new Set(directory.people.map((person) => person.pubkey));
+    if (!carried.length) return searched;
+    const known = new Set(searched.map((person) => person.pubkey));
     return [
-      ...directory.people,
+      ...searched,
       ...carried.filter((person) => !known.has(person.pubkey)),
     ];
-  }, [directory.people, carried]);
+  }, [searched, carried]);
   const current = useCallback(
     () =>
       namedCandidates(

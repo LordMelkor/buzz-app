@@ -96,3 +96,32 @@ it("directory people that change nothing can be left out", () => {
       rows(changes),
     );
 });
+
+it("carries verified full names and the profile names a verified person was found by", () => {
+  const session = fresh();
+  const verifiedProfiles = new Map<string, unknown>([
+    ...profiles,
+    [key(4), { name: "cy", verified: { fullName: "Cy Young" } }],
+  ]);
+  Object.assign(session, { profiles: { snapshot: () => verifiedProfiles } });
+  const found = rows(
+    [
+      {
+        pubkey: key(8),
+        name: "kgraham",
+        fullName: "Kevin Graham",
+        profileNames: ["Kevin"],
+      },
+    ],
+    session,
+  );
+  const byKey = new Map(found.map((row) => [row.recipient.pubkey, row]));
+  expect(byKey.get(key(8))).toMatchObject({
+    recipient: { name: "kgraham" },
+    fullName: "Kevin Graham",
+    aliases: ["kgraham", "Kevin Graham", "Kevin"],
+  });
+  // A member's full name comes from the shared verified profile.
+  expect(byKey.get(key(4))?.fullName).toBe("Cy Young");
+  expect(byKey.get(key(1))).not.toHaveProperty("fullName");
+});

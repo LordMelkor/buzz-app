@@ -382,7 +382,14 @@ export function MentionPicker({
               {...highlight.listProps}
             >
               {candidates.map(
-                ({ recipient, label, agent, elsewhere, disabled: reason }) => {
+                ({
+                  recipient,
+                  label,
+                  agent,
+                  elsewhere,
+                  disabled: reason,
+                  fullName,
+                }) => {
                   // Each addressed agent's row shows a check; fill is only
                   // the keyboard and pointer highlight.
                   const addressed = !!audience?.recipients.some(
@@ -415,13 +422,22 @@ export function MentionPicker({
                             />
                           </span>
                           {reason && <small>{reason}</small>}
-                          {!members?.includes(recipient.pubkey) && (
+                          {(fullName ||
+                            !members?.includes(recipient.pubkey)) && (
                             <small className="text-caption text-subtle">
-                              {inviteAgents
-                                ? parentAdmission
-                                  ? "Adds to channel when you send"
-                                  : "Adds to chat when you send"
-                                : outsideMentionDetail(channel, elsewhere)}
+                              {/* A verified full name sits beside the detail. */}
+                              {[
+                                fullName,
+                                members?.includes(recipient.pubkey)
+                                  ? undefined
+                                  : inviteAgents
+                                    ? parentAdmission
+                                      ? "Adds to channel when you send"
+                                      : "Adds to chat when you send"
+                                    : outsideMentionDetail(channel, elsewhere),
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
                             </small>
                           )}
                         </span>

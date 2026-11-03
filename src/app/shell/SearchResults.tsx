@@ -76,6 +76,7 @@ import {
   parseSearchOperators,
 } from "./parseSearchOperators";
 import { avatarMedia } from "../../shared/avatar-source";
+import { useVerifiedNames } from "../../features/profiles/useVerifiedNames";
 import { sortParticipantNames } from "../../features/identity-names/participant-order";
 
 function conversationName(
@@ -343,6 +344,7 @@ export function SearchResults({
     peopleNeedle,
     peopleActive,
   );
+  const directoryVerified = useVerifiedNames(session, personDirectory.people);
   useMentionArchives(session, showAuthorPicker || peopleActive);
   // People labels come from one names scope built each render.
   useNamesRevision(session.names, peopleActive);
@@ -585,7 +587,7 @@ export function SearchResults({
     const pageVerified = (pubkey: string) =>
       profiles.get(pubkey)?.verified
         ? undefined
-        : personDirectory.verified.get(pubkey);
+        : directoryVerified.get(pubkey);
     const verifiedOf = (pubkey: string) =>
       profiles.get(pubkey)?.verified ?? pageVerified(pubkey);
     const searched = new Map<string, readonly string[]>();

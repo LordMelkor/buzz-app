@@ -160,37 +160,45 @@ export function MentionCompletion({
       model.candidates.flatMap((c) => (c.agent ? [c.recipient.pubkey] : [])),
     );
     const available = [
-      ...matching.map(({ recipient, label, elsewhere, disabled }) => ({
-        disabled,
-        canSelect: (key: string) =>
-          (key !== " " || !teams.blocksSpace) &&
-          model.canSelect(recipient.pubkey, key === " "),
-        id: recipient.pubkey,
-        label,
-        detail:
-          disabled ??
-          (memberKeys.has(recipient.pubkey)
-            ? recipient.pubkey
-            : inviteAgents
-              ? `${parentAdmission ? "Adds to channel" : "Adds to chat"} · ${recipient.pubkey}`
-              : outsideMentionDetail(channel, elsewhere)),
-        preview: (
-          <Avatar
-            alt=""
-            fallback={label}
-            src={avatarMedia(
-              profiles.get(recipient.pubkey)?.picture ??
-                model.directory.people.find(
-                  (person) => person.pubkey === recipient.pubkey,
-                )?.picture,
-              session.media,
-            )}
-            size="default"
-            shape={agentKeys.has(recipient.pubkey) ? "squircle" : "circle"}
-          />
-        ),
-        edit: { mention: recipient },
-      })),
+      ...matching.map(
+        ({ recipient, label, elsewhere, disabled, fullName }) => ({
+          disabled,
+          canSelect: (key: string) =>
+            (key !== " " || !teams.blocksSpace) &&
+            model.canSelect(recipient.pubkey, key === " "),
+          id: recipient.pubkey,
+          label,
+          detail:
+            disabled ??
+            // A verified full name sits beside the detail.
+            [
+              fullName,
+              memberKeys.has(recipient.pubkey)
+                ? recipient.pubkey
+                : inviteAgents
+                  ? `${parentAdmission ? "Adds to channel" : "Adds to chat"} · ${recipient.pubkey}`
+                  : outsideMentionDetail(channel, elsewhere),
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          preview: (
+            <Avatar
+              alt=""
+              fallback={label}
+              src={avatarMedia(
+                profiles.get(recipient.pubkey)?.picture ??
+                  model.directory.people.find(
+                    (person) => person.pubkey === recipient.pubkey,
+                  )?.picture,
+                session.media,
+              )}
+              size="default"
+              shape={agentKeys.has(recipient.pubkey) ? "squircle" : "circle"}
+            />
+          ),
+          edit: { mention: recipient },
+        }),
+      ),
       ...matchingTeams.map((team) => ({
         id: team.id,
         label: team.name,
