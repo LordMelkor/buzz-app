@@ -1131,8 +1131,9 @@ async fn upload(
 }
 
 /// The URL of repository `repo` of `owner` in the agent's community, and the
-/// `Authorization` header Git sends there as the agent for the next minute.
-/// The key stays native; the header grants only that repository.
+/// headers Git sends there as the agent for the next minute, one per line:
+/// `Authorization`, then the agent's sign-in evidence when the community
+/// requires it. The key stays native; the headers grant only that repository.
 #[tauri::command]
 pub(crate) async fn app_agent_git_auth(
     state: tauri::State<'_, AppAgentHost>,
@@ -1141,17 +1142,24 @@ pub(crate) async fn app_agent_git_auth(
     owner: String,
     repo: String,
 ) -> Result<Value, String> {
-    use base64::Engine;
-    let (agent, key) = state.key(state.agent(pubkey, relay).await?).await?;
+    let (agent, key, evidence) = state.signer(pubkey, relay).await?;
     let (url, auth) = agent.git_auth(&key, &owner, &repo)?;
     let auth = serde_json::to_vec(&auth).map_err(|_| "Could not authorize Git")?;
-    Ok(serde_json::json!({
-        "url": url,
-        "header": format!(
-            "Authorization: Nostr {}",
-            base64::engine::general_purpose::STANDARD.encode(auth)
-        ),
-    }))
+    evidence.dispatch()?;
+    Ok(serde_json::json!({ "url": url, "header": git_headers(&auth, evidence.header()) }))
+}
+
+/// Git's header lines for a signed `auth` and the agent's sign-in `evidence`.
+fn git_headers(auth: &[u8], evidence: Option<&str>) -> String {
+    use base64::Engine;
+    let auth = format!(
+        "Authorization: Nostr {}",
+        base64::engine::general_purpose::STANDARD.encode(auth)
+    );
+    match evidence {
+        Some(evidence) => format!("{auth}\n{}: {evidence}", assertion::HEADER),
+        None => auth,
+    }
 }
 
 /// The largest image an agent is shown. Claude takes 5 MiB of base64 on its
@@ -1415,6 +1423,15 @@ async fn post(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn git_headers_add_sign_in_evidence_only_when_present() {
+        assert_eq!(super::git_headers(b"{}", None), "Authorization: Nostr e30=");
+        assert_eq!(
+            super::git_headers(b"{}", Some("Bearer token")),
+            "Authorization: Nostr e30=\nNostr-Federated-Identity: Bearer token"
+        );
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
