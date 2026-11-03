@@ -84,12 +84,14 @@ export function createVerifiedProfileDirectory(
           heads.clear();
         }
         // An equal refresh keeps the current object, so unchanged heads keep
-        // their projections.
+        // their projections. Re-enabling starts a new one: whatever was checked
+        // under the withdrawn authority must be checked again.
         if (
+          !enabled ||
           authority?.pubkey !== next.pubkey ||
           authority.multipleIssuers !== next.multipleIssuers
         )
-          authority = next;
+          authority = { ...next };
         enabled = true;
         schedule();
       }
@@ -325,6 +327,9 @@ export function createVerifiedProfileDirectory(
       // Stop the live syncs a shrink emptied now, not at the next ensure.
       schedule();
     },
+    /** The current authority, or undefined while discovery disables marks. */
+    authority: (): VerifiedProfileAuthority | undefined =>
+      enabled ? authority : undefined,
     snapshot(): ReadonlyMap<string, VerifiedProfile> {
       const currentAuthority = authority;
       if (!enabled || !currentAuthority) return new Map();

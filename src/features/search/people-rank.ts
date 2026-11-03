@@ -7,8 +7,13 @@ export type PersonCandidate = {
   label: string;
   /** The kind-0 handle, shown beside the label, when it differs from it. */
   username?: string | undefined;
+  /** A community-verified full name, shown beside the label's detail. */
+  fullName?: string | undefined;
   /** A managed agent's own name, matched but not shown, as in mentions. */
   agentName?: string | undefined;
+  /** The profile name and handle the directory found this person by, matched
+   * but not shown once a verified name replaces them. */
+  profileNames?: readonly string[] | undefined;
   agent: boolean;
   /** peopleRelationships rank: lower is closer. */
   relationship: number;
@@ -19,21 +24,27 @@ export type PersonCandidate = {
 export const personKey = (pubkey: string) => `person:${pubkey}`;
 
 /**
- * How well a person matches the typed text, or undefined. The shown label and
- * username use the shared name rule (person-match). A hidden agent name ranks
- * after every shown name, as `mentionMatch` ranks hidden aliases.
+ * How well a person matches the typed text, or undefined. The shown label,
+ * username and verified full name use the shared name rule (person-match). A
+ * hidden agent or profile name ranks after every shown name, as `mentionMatch`
+ * ranks hidden aliases.
  */
 export function personMatch(person: PersonCandidate, needle: string) {
   // Blank suggestions have no exact name; relationship and usage order them.
   if (!needle.trim()) return 1;
   const tier = (name: string | undefined) =>
     name === undefined ? undefined : matchPerson(name, needle)?.tier;
-  const shown = [tier(person.label), tier(person.username)].filter(
-    (value) => value !== undefined,
-  );
+  const shown = [
+    tier(person.label),
+    tier(person.username),
+    tier(person.fullName),
+  ].filter((value) => value !== undefined);
   if (shown.length) return Math.min(...shown);
-  const hidden = tier(person.agentName);
-  return hidden === undefined ? undefined : 4 + hidden;
+  const hidden = [
+    tier(person.agentName),
+    ...(person.profileNames ?? []).map(tier),
+  ].filter((value) => value !== undefined);
+  return hidden.length ? 4 + Math.min(...hidden) : undefined;
 }
 
 /**

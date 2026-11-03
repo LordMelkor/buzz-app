@@ -2304,6 +2304,7 @@ export function createRelaySession(
           : {}),
       },
       searchProfiles,
+      () => profiles.queries.verifiedAuthority?.(),
     ),
     unread: unread.capability,
     sidebarPreferences: sidebarPreferences.queries,

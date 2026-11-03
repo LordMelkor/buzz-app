@@ -5,6 +5,14 @@ import type { ReadTransport } from "./transport";
 import type { RelayReader } from "./reader";
 import type { Outbox } from "./outbox";
 import type { ProfileSearch } from "./profile-search";
+import { newer, type RelayEvent } from "./events";
+import {
+  verifiedProfile,
+  verifiedProfileFilter,
+  verifiedProfileSubject,
+  type VerifiedProfile,
+  type VerifiedProfileAuthority,
+} from "./verified-profile";
 
 /** The longest text the community people search accepts. */
 export const PEOPLE_SEARCH_MAX_LENGTH = 100;
@@ -19,6 +27,7 @@ export function createDirectMessages(
   lifetime: AbortSignal,
   directoryReader: RelayReader,
   searchProfiles: ProfileSearch,
+  verifiedAuthority: () => VerifiedProfileAuthority | undefined,
 ) {
   const available = !!transport?.openDirectMessage && !!outbox?.supports(9);
   const opened = new Set<(id: string) => void>();
@@ -79,6 +88,46 @@ export function createDirectMessages(
           ),
         hasMore: events.length >= limit,
       };
+    },
+    /** One bounded read of the community's verified names for a search page,
+     * with the authority that checked them. Like `people`, it stays out of the
+     * shared profile views. Undefined when nothing was checked: the community
+     * advertises no authority, or it changed during the read. */
+    async verified(
+      pubkeys: readonly string[],
+      signal: AbortSignal,
+    ): Promise<
+      | {
+          authority: VerifiedProfileAuthority;
+          profiles: ReadonlyMap<string, VerifiedProfile>;
+        }
+      | undefined
+    > {
+      const authority = verifiedAuthority();
+      if (!authority) return undefined;
+      if (!pubkeys.length) return { authority, profiles: new Map() };
+      const active = AbortSignal.any([lifetime, signal]);
+      const events = await directoryReader.read(
+        [verifiedProfileFilter(authority.pubkey, pubkeys)],
+        { signal: active, priority: "background" },
+      );
+      active.throwIfAborted();
+      if (verifiedAuthority() !== authority) return undefined;
+      // The newest head per subject decides, so a newer malformed one hides
+      // an older name, as in the shared directory.
+      const heads = new Map<string, RelayEvent>();
+      for (const event of events) {
+        const subject = verifiedProfileSubject(event, authority);
+        if (subject && pubkeys.includes(subject))
+          heads.set(subject, newer(heads.get(subject), event));
+      }
+      const profiles = new Map(
+        [...heads].flatMap(([subject, event]) => {
+          const profile = verifiedProfile(event, authority, true);
+          return profile ? [[subject, profile] as const] : [];
+        }),
+      );
+      return { authority, profiles };
     },
     async open(pubkeys: readonly string[], signal: AbortSignal) {
       if (!available || !transport?.openDirectMessage)

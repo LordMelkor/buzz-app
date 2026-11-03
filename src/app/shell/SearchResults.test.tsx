@@ -4135,7 +4135,10 @@ function peopleSession(
     messageable?: true;
   }[] = [],
 ) {
-  const people = vi.fn(async () => ({ people: directory, hasMore: false }));
+  const people = vi.fn(async (_query?: string) => ({
+    people: directory,
+    hasMore: false,
+  }));
   const open = vi.fn(async (_pubkeys: readonly string[]) => "started-dm");
   const source = session.agentChoices;
   const choices = { ...source.snapshot(), identities: agents, selectable: [] };
@@ -5610,5 +5613,290 @@ it("leaves sidebar-hidden DMs out of the rows but keeps their message hits", asy
     cleanup();
     owner.dispose();
     clearViewScope(scope);
+  }
+});
+
+it("loads verified names for a settled search page in the background and shows them beside the detail", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    kevin = keypair(),
+    newcomer = keypair();
+  const reads: {
+    subjects: readonly string[] | undefined;
+    signal: AbortSignal | undefined;
+    release: () => void;
+  }[] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: { pubkey: relay.pubkey, multipleIssuers: false },
+    async query(filters, signal) {
+      if (!filters.some((filter) => filter.kinds?.includes(30382))) return [];
+      await new Promise<void>((release) =>
+        reads.push({ subjects: filters[0]?.["#d"], signal, release }),
+      );
+      return [
+        eventDto(
+          signed(relay, {
+            kind: 30382,
+            created_at: 1_000_000,
+            content: "",
+            tags: [
+              ["d", kevin.pubkey],
+              ["p", kevin.pubkey],
+              ["active", "true"],
+              ["display_name", "kgraham"],
+              ["username", "kgraham"],
+              ["issuer_label", "Block"],
+              ["verified_at", "1000000"],
+              ["full_name", "Kevin Graham"],
+            ],
+          }),
+        ),
+      ];
+    },
+  });
+  const t = peopleSession(owner.session);
+  let settle = () => {};
+  const page = new Promise<void>((release) => (settle = release));
+  t.people.mockImplementation(async (query?: string) => {
+    await page;
+    return {
+      people: [
+        { pubkey: kevin.pubkey, name: "Kevin" },
+        ...(query === "kevin gr"
+          ? [{ pubkey: newcomer.pubkey, name: "Kevin Gr" }]
+          : []),
+      ],
+      hasMore: false,
+    };
+  });
+  const props = {
+    session: t.session,
+    onQueryChange() {},
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: vi.fn(),
+  };
+  try {
+    const mounted = render(<SearchResults {...props} query="kevin" />);
+    await waitFor(() => expect(t.people).toHaveBeenCalled());
+    // Nothing verified is read before the page settles.
+    expect(reads).toHaveLength(0);
+    await act(async () => settle());
+    const people = await screen.findByRole("group", { name: "People" });
+    await waitFor(() => expect(reads).toHaveLength(1));
+    // The page shows its profile names while the verified read is held.
+    expect(within(people).getByRole("option")).toHaveTextContent(
+      "KevinStart a direct message",
+    );
+    expect(within(people).getByRole("option")).not.toHaveTextContent("Graham");
+    await act(async () => reads[0]?.release());
+    await waitFor(() =>
+      expect(within(people).getByRole("option")).toHaveTextContent(
+        /kgrahamKevin Graham · Start a direct message$/,
+      ),
+    );
+    // Refining the query keeps the row by its verified full name and does not
+    // ask about someone already looked up.
+    mounted.rerender(<SearchResults {...props} query="kevin g" />);
+    await waitFor(() =>
+      expect(t.people).toHaveBeenLastCalledWith(
+        "kevin g",
+        1,
+        expect.anything(),
+      ),
+    );
+    expect(within(people).getByRole("option")).toHaveTextContent(
+      "Kevin Graham",
+    );
+    // A page with someone new asks only about them, and a newer query
+    // cancels that held read.
+    mounted.rerender(<SearchResults {...props} query="kevin gr" />);
+    await waitFor(() => expect(reads).toHaveLength(2));
+    expect(reads[1]?.subjects).toEqual([newcomer.pubkey]);
+    mounted.rerender(<SearchResults {...props} query="kevin gra" />);
+    await waitFor(() => expect(reads[1]?.signal?.aborted).toBe(true));
+  } finally {
+    for (const read of reads) read.release();
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("reuses shared verified names and reads only the rest of a search page", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    known = keypair(),
+    kevin = keypair();
+  const assertion = (subject: string, display: string, full: string) =>
+    eventDto(
+      signed(relay, {
+        kind: 30382,
+        created_at: 1_000_000,
+        content: "",
+        tags: [
+          ["d", subject],
+          ["p", subject],
+          ["active", "true"],
+          ["display_name", display],
+          ["username", display],
+          ["issuer_label", "Block"],
+          ["verified_at", "1000000"],
+          ["full_name", full],
+        ],
+      }),
+    );
+  const searched: (readonly string[] | undefined)[] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: { pubkey: relay.pubkey, multipleIssuers: false },
+    async query(filters) {
+      const filter = filters.find((item) => item.kinds?.includes(30382));
+      if (!filter) return [];
+      searched.push(filter["#d"]);
+      // The relay fails this read: the page keeps its profile names.
+      throw new ReadError("unavailable", "Relay unavailable");
+    },
+    subscribe(callbacks) {
+      callbacks.state({ status: "connected", routes: [] });
+      return {
+        update() {},
+        retry() {},
+        dispose() {},
+        syncVerifiedProfiles(_filter, sink) {
+          sink.event(assertion(known.pubkey, "kmorgan", "Kevin Morgan"));
+          sink.eose();
+          return () => {};
+        },
+      };
+    },
+  });
+  const t = peopleSession(owner.session, [
+    { pubkey: known.pubkey, name: "Kevin" },
+    { pubkey: kevin.pubkey, name: "Kevin" },
+  ]);
+  try {
+    void owner.session.profiles.ensure([known.pubkey]);
+    await waitFor(() =>
+      expect(
+        owner.session.profiles.snapshot().get(known.pubkey)?.verified,
+      ).toBeDefined(),
+    );
+    render(
+      <SearchResults
+        session={t.session}
+        query="kevin"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(searched).toEqual([[kevin.pubkey]]));
+    const people = await screen.findByRole("group", { name: "People" });
+    // The shared directory names the known Kevin without a search read.
+    await waitFor(() =>
+      expect(
+        within(people)
+          .getAllByRole("option")
+          .map((row) => row.textContent),
+      ).toEqual([
+        // The exact profile name ranks first; the failed read keeps it.
+        expect.stringMatching(/KevinStart a direct message$/),
+        expect.stringMatching(/kmorganKevin Morgan · Start a direct message$/),
+      ]),
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("keeps a row found by its profile name once a verified name replaces it, drops page names when discovery withdraws the authority, and checks again when it returns", async () => {
+  vi.useFakeTimers();
+  const relay = keypair(),
+    viewer = keypair(),
+    kevin = keypair(),
+    other = keypair();
+  const advertised = { pubkey: relay.pubkey, multipleIssuers: false };
+  let discovery: typeof advertised | null = advertised,
+    display = "kgraham",
+    reads = 0;
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: advertised,
+    readVerifiedProfileAuthority: async () => discovery && { ...discovery },
+    async query(filters) {
+      const filter = filters.find((item) => item.kinds?.includes(30382));
+      if (!filter?.["#d"]?.includes(kevin.pubkey)) return [];
+      reads++;
+      // No optional full name: only the profile name matches "kevin".
+      return [
+        eventDto(
+          signed(relay, {
+            kind: 30382,
+            created_at: 1_000_000 + reads,
+            content: "",
+            tags: [
+              ["d", kevin.pubkey],
+              ["p", kevin.pubkey],
+              ["active", "true"],
+              ["display_name", display],
+              ["username", display],
+              ["issuer_label", "Block"],
+              ["verified_at", "1000000"],
+            ],
+          }),
+        ),
+      ];
+    },
+    subscribe(callbacks) {
+      callbacks.state({ status: "connected", routes: [] });
+      return {
+        update() {},
+        retry() {},
+        dispose() {},
+        syncVerifiedProfiles: () => () => {},
+      };
+    },
+  });
+  const t = peopleSession(owner.session, [
+    { pubkey: kevin.pubkey, name: "Kevin" },
+  ]);
+  const settle = (ms: number) =>
+    act(async () => vi.advanceTimersByTimeAsync(ms));
+  const row = () =>
+    within(screen.getByRole("group", { name: "People" })).getByRole("option");
+  try {
+    // Shared demand for someone else arms the discovery refresh.
+    void owner.session.profiles.ensure([other.pubkey]);
+    render(
+      <SearchResults
+        session={t.session}
+        query="kevin"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={vi.fn()}
+      />,
+    );
+    await settle(SEARCH_DEBOUNCE_MS);
+    await settle(0);
+    expect(row()).toHaveTextContent(/kgrahamStart a direct message$/);
+    discovery = null;
+    await settle(5 * 60_000);
+    await settle(1_000);
+    expect(row()).toHaveTextContent(/KevinStart a direct message$/);
+    // The same key, re-enabled, checks the page again instead of restoring
+    // what the withdrawn authority checked.
+    discovery = advertised;
+    display = "knew";
+    await settle(5 * 60_000);
+    await settle(1_000);
+    expect(row()).toHaveTextContent(/knewStart a direct message$/);
+    expect(reads).toBe(2);
+  } finally {
+    cleanup();
+    owner.dispose();
   }
 });

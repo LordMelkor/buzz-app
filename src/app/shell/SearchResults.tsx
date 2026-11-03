@@ -574,15 +574,36 @@ export function SearchResults({
     >();
     // Ties keep this order, as in New message: the directory's rows first, in
     // the relay's order, then cached profiles, then agents. A cached profile
-    // still supplies a directory row's facts.
+    // still supplies a directory row's facts. Where the shared profiles have
+    // not verified a row, a name verified for this page names it as they would.
     const cached = (pubkey: string) => {
       const profile = profiles.get(pubkey);
       return profile && (!profile.nameIsFallback || profile.username)
         ? profile
         : undefined;
     };
-    for (const person of personDirectory.people)
-      sources.set(person.pubkey, cached(person.pubkey) ?? person);
+    const pageVerified = (pubkey: string) =>
+      profiles.get(pubkey)?.verified
+        ? undefined
+        : personDirectory.verified.get(pubkey);
+    const verifiedOf = (pubkey: string) =>
+      profiles.get(pubkey)?.verified ?? pageVerified(pubkey);
+    const searched = new Map<string, readonly string[]>();
+    for (const person of personDirectory.people) {
+      const source = cached(person.pubkey) ?? person;
+      const found = pageVerified(person.pubkey);
+      // The relay matched these names; a verified name must not lose the row.
+      searched.set(
+        person.pubkey,
+        [person.name, person.username].filter((name) => name !== undefined),
+      );
+      sources.set(
+        person.pubkey,
+        found
+          ? { ...source, name: found.displayName, username: found.username }
+          : source,
+      );
+    }
     for (const [pubkey, profile] of profiles)
       if (!sources.has(pubkey) && cached(pubkey)) sources.set(pubkey, profile);
     for (const agent of [
@@ -609,17 +630,24 @@ export function SearchResults({
         ? []
         : [{ pubkey, source, agent }];
     });
-    // Namesakes are told apart within these destinations. Directory rows are
-    // not in the shared profile cache, so they supply their own names.
+    // Namesakes are told apart within these destinations. Directory rows that
+    // the shared profile cache does not name supply their own names.
     const candidates = eligible.map(({ pubkey }) => pubkey);
-    const displayFacts = personDirectory.people
-      .filter((person) => sources.get(person.pubkey) === person)
-      .map((person) => ({
-        pubkey: person.pubkey,
-        name: person.name,
-        ...(person.isAgent ? { isAgent: true } : {}),
-        ...(person.ownerPubkey ? { ownerPubkey: person.ownerPubkey } : {}),
-      }));
+    const displayFacts = personDirectory.people.flatMap((person) => {
+      const source = sources.get(person.pubkey);
+      return source && source !== profiles.get(person.pubkey)
+        ? [
+            {
+              pubkey: person.pubkey,
+              name: source.name,
+              ...(person.isAgent ? { isAgent: true } : {}),
+              ...(person.ownerPubkey
+                ? { ownerPubkey: person.ownerPubkey }
+                : {}),
+            },
+          ]
+        : [];
+    });
     const named = session.names?.scope(candidates, displayFacts);
     for (const { pubkey, source, agent } of eligible) {
       const dm = relationships.dm(pubkey);
@@ -628,8 +656,11 @@ export function SearchResults({
       people.push({
         pubkey,
         label: named?.(pubkey)?.name ?? source.name,
-        username: source.username,
+        // A verified username is often the verified name itself.
+        username: source.username !== source.name ? source.username : undefined,
+        fullName: verifiedOf(pubkey)?.fullName,
         agentName: agentName !== source.name ? agentName : undefined,
+        profileNames: searched.get(pubkey),
         agent,
         relationship: relationships.rank(pubkey),
         usageKeys: [personKey(pubkey), ...(dm ? [`channel:${dm}`] : [])],
@@ -928,6 +959,7 @@ export function SearchResults({
       label: person.label,
       ...(matches?.length ? { matches } : {}),
       detail: [
+        person.fullName,
         person.username && `@${person.username}`,
         newSession
           ? "New chat"

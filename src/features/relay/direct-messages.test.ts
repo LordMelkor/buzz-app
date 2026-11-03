@@ -1,8 +1,11 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createRelaySession } from "./session";
+import { createDirectMessages } from "./direct-messages";
+import type { RelayReader } from "./reader";
+import type { VerifiedProfileAuthority } from "./verified-profile";
 import { keypair, profile, roster, signed } from "./testing";
 import { PublishRejected } from "./outbox";
-import type { ReadFilter, RelayEvent } from "./events";
+import { eventDto, type ReadFilter, type RelayEvent } from "./events";
 import type { RelayWriter } from "./transport";
 
 const id = "11111111-1111-4111-8111-111111111111";
@@ -315,4 +318,185 @@ describe("directory browsing beyond the shared profile budget", () => {
       t.owner.dispose();
     }
   });
+});
+
+describe("verified names for a search page", () => {
+  const assertion = (
+    author: ReturnType<typeof keypair>,
+    subject: string,
+    names: { display: string; full?: string },
+    created_at = 1_000_000,
+  ) =>
+    signed(author, {
+      kind: 30382,
+      created_at,
+      content: "",
+      tags: [
+        ["d", subject],
+        ["p", subject],
+        ["active", "true"],
+        ["display_name", names.display],
+        ["username", names.display],
+        ["issuer_label", "Example"],
+        ["verified_at", String(created_at)],
+        ...(names.full ? [["full_name", names.full]] : []),
+      ],
+    });
+  function verifiedSetup(advertised: boolean) {
+    const viewer = keypair(),
+      relay = keypair(),
+      stranger = keypair(),
+      kevin = keypair(),
+      renamed = keypair(),
+      unasked = keypair();
+    const events = [
+      assertion(relay, kevin.pubkey, {
+        display: "kgraham",
+        full: "Kevin Graham",
+      }),
+      assertion(
+        stranger,
+        kevin.pubkey,
+        { display: "forged", full: "Forged" },
+        2_000_000,
+      ),
+      assertion(relay, renamed.pubkey, { display: "old", full: "Old Name" }),
+      // A newer malformed head hides the older name at its address.
+      signed(relay, {
+        kind: 30382,
+        created_at: 2_000_000,
+        content: "",
+        tags: [
+          ["d", renamed.pubkey],
+          ["p", renamed.pubkey],
+        ],
+      }),
+      assertion(relay, unasked.pubkey, { display: "unasked" }),
+    ];
+    // Transports admit signed events; the relay key decides, not the signature alone.
+    const query = vi.fn(async (_filters: readonly ReadFilter[]) =>
+      events.map((event) => eventDto(event)),
+    );
+    const owner = createRelaySession({
+      viewer: viewer.pubkey,
+      relayAuthor: relay.pubkey,
+      media: () => undefined,
+      query,
+      ...(advertised
+        ? { verifiedProfiles: { pubkey: relay.pubkey, multipleIssuers: false } }
+        : {}),
+    });
+    return { owner, query, relay, kevin, renamed };
+  }
+
+  it("reads one bounded filter by the relay and keeps only its valid newest heads", async () => {
+    const t = verifiedSetup(true);
+    try {
+      const verified = await t.owner.session.directMessages.verified(
+        [t.kevin.pubkey, t.renamed.pubkey],
+        new AbortController().signal,
+      );
+      expect(t.query).toHaveBeenCalledOnce();
+      expect(t.query.mock.calls[0]?.[0]).toEqual([
+        {
+          kinds: [30382],
+          authors: [t.relay.pubkey],
+          // The reader canonicalizes value order.
+          "#d": [t.kevin.pubkey, t.renamed.pubkey].sort(),
+          limit: 2,
+        },
+      ]);
+      expect(verified?.authority.pubkey).toBe(t.relay.pubkey);
+      expect([...(verified?.profiles.keys() ?? [])]).toEqual([t.kevin.pubkey]);
+      expect(verified?.profiles.get(t.kevin.pubkey)).toMatchObject({
+        displayName: "kgraham",
+        username: "kgraham",
+        fullName: "Kevin Graham",
+      });
+      // The shared profile views are not filled by a search read.
+      expect(
+        t.owner.session.profiles.snapshot().get(t.kevin.pubkey),
+      ).toBeUndefined();
+    } finally {
+      t.owner.dispose();
+    }
+  });
+
+  it("reads nothing where the community advertises no verified names", async () => {
+    const t = verifiedSetup(false);
+    try {
+      const verified = await t.owner.session.directMessages.verified(
+        [t.kevin.pubkey],
+        new AbortController().signal,
+      );
+      // Nothing was checked, so a caller must not remember it as absent.
+      expect(verified).toBeUndefined();
+      expect(t.query).not.toHaveBeenCalled();
+    } finally {
+      t.owner.dispose();
+    }
+  });
+
+  it("cancels with the caller", async () => {
+    const t = verifiedSetup(true);
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      await expect(
+        t.owner.session.directMessages.verified(
+          [t.kevin.pubkey],
+          controller.signal,
+        ),
+      ).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      t.owner.dispose();
+    }
+  });
+
+  const changes: [string, () => VerifiedProfileAuthority | undefined][] = [
+    ["withdrawn", () => undefined],
+    ["rotated", () => ({ pubkey: keypair().pubkey, multipleIssuers: false })],
+  ];
+  it.each(changes)(
+    "checks nothing when the authority is %s during the read",
+    async (_change, next) => {
+      const relay = keypair(),
+        kevin = keypair();
+      let authority: VerifiedProfileAuthority | undefined = {
+        pubkey: relay.pubkey,
+        multipleIssuers: false,
+      };
+      let release = () => {};
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const directoryReader = {
+        async read() {
+          await held;
+          return [
+            assertion(relay, kevin.pubkey, {
+              display: "kgraham",
+              full: "Kevin Graham",
+            }),
+          ];
+        },
+      } as unknown as RelayReader;
+      const directMessages = createDirectMessages(
+        null,
+        directoryReader,
+        undefined as never,
+        undefined,
+        undefined,
+        new AbortController().signal,
+        directoryReader,
+        undefined as never,
+        () => authority,
+      );
+      const pending = directMessages.verified(
+        [kevin.pubkey],
+        new AbortController().signal,
+      );
+      authority = next();
+      release();
+      await expect(pending).resolves.toBeUndefined();
+    },
+  );
 });

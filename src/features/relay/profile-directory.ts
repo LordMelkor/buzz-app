@@ -49,6 +49,9 @@ export interface ProfileQueries {
    * background reads. A view that requested names once and skips repeats must
    * request again after it moves. */
   evictions?(): number;
+  /** The community's current verified-profile authority, or undefined while
+   * it advertises none. Subscribers are notified when it changes. */
+  verifiedAuthority?(): VerifiedProfileAuthority | undefined;
 }
 
 /** Authors per profile read, the reader's largest page. A page that fills it
@@ -163,7 +166,9 @@ export function createProfileDirectory(
         if (!closed && settled.some(Boolean)) publish(true);
       });
   }
-  /** Notifies on display changes, and on winning-event changes for `event()` readers. */
+  let publishedAuthority: VerifiedProfileAuthority | undefined;
+  /** Notifies on display changes, on winning-event changes for `event()`
+   * readers, and on verified-authority changes for `verifiedAuthority()`. */
   function publish(headChanged = false) {
     folded = false;
     const next = foldProfiles([
@@ -242,7 +247,9 @@ export function createProfileDirectory(
       snapshot = next;
       if ([...unnamed].some((id) => next.has(id)))
         unnamed = new Set([...unnamed].filter((id) => !next.has(id)));
-    } else if (!headChanged) return;
+    } else if (!headChanged && publishedAuthority === verified?.authority())
+      return;
+    publishedAuthority = verified?.authority();
     for (const listener of listeners) notify(listener);
   }
   /** A completed read that returned no kind 0 is evidence too: the identity is known unnamed. */
@@ -456,6 +463,7 @@ export function createProfileDirectory(
     reserve,
     limit: () => limit,
     evictions: () => events.evictions + cancelled,
+    verifiedAuthority: () => verified?.authority(),
     owner: (pubkey: string) => {
       const event = events.peek(pubkey);
       return event ? owners.get(event) : undefined;

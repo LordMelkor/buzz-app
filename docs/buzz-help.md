@@ -64,6 +64,9 @@ the interface unless an available tool actually supports that action.
 - Where a community verifies names, the profile check appears beside the verified
   full name, or the verified username when no full name is supplied. The profile
   shows the issuer and verification time; cached verification has no check.
+  In search, a verified person shows their verified name with the full name
+  beside it, and the full name matches as you type. People are still found by
+  their profile names first.
 
 ## Connect an external app
 

@@ -513,12 +513,18 @@ it("hides cached marks on successful disable, retains history, and reconciles af
     first.event(projection());
     first.eose();
     expect(h.directory.snapshot().get(alice.pubkey)?.status).toBe("checked");
+    const withdrawn = h.directory.authority();
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     expect(refresh).toHaveBeenCalledTimes(1);
+    expect(h.directory.authority()).toBeUndefined();
     expect(h.directory.snapshot().size).toBe(0);
     expect(h.subscriptions[0]?.stopped).toBe(true);
     first.event(projection(30)); // retired subscriptions cannot edit history
     await vi.advanceTimersByTimeAsync(5 * 60_000);
+    // The same key, re-enabled, is a new authority: nothing checked under the
+    // withdrawn one counts as checked by it.
+    expect(h.directory.authority()).toEqual(withdrawn);
+    expect(h.directory.authority()).not.toBe(withdrawn);
     expect(h.directory.snapshot().get(alice.pubkey)).toMatchObject({
       verifiedAt: 10,
       status: "cached",
@@ -1093,5 +1099,47 @@ it("stops the syncs a shrink emptied without another ensure", async () => {
     expect(recent.stopped).toBe(false);
   } finally {
     h.directory.dispose();
+  }
+});
+
+it("notifies profile subscribers when discovery withdraws the authority, even with no verified profile shown", async () => {
+  vi.useFakeTimers();
+  const { createRelaySession } = await import("./session");
+  const { scriptedTransport } = await import("./testing");
+  const wire = scriptedTransport(alice.pubkey, relay.pubkey);
+  const owner = createRelaySession({
+    ...wire.transport,
+    query: async () => [],
+    verifiedProfiles: authority,
+    readVerifiedProfileAuthority: async () => null,
+    subscribe(callbacks) {
+      callbacks.state({ status: "connected", routes: [] });
+      return {
+        update() {},
+        retry() {},
+        dispose() {},
+        syncVerifiedProfiles: () => () => {},
+      };
+    },
+  });
+  const profiles = owner.session.profiles;
+  try {
+    // Demand arms the discovery refresh; nobody here has a verified profile.
+    void profiles.ensure([alice.pubkey]);
+    await vi.advanceTimersByTimeAsync(0);
+    const before = profiles.snapshot();
+    expect(profiles.verifiedAuthority?.()).toMatchObject(authority);
+    const notified = vi.fn();
+    const stop = profiles.subscribe(notified);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    // The directory coalesces its publish to the next macrotask.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(profiles.verifiedAuthority?.()).toBeUndefined();
+    expect(profiles.snapshot()).toBe(before);
+    expect(notified).toHaveBeenCalled();
+    stop();
+  } finally {
+    owner.dispose();
+    vi.useRealTimers();
   }
 });
