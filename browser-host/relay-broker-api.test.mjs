@@ -3918,6 +3918,26 @@ test("inventory rejects foreign pages, ignores invalid heads and follows exact-k
   }
 });
 
+test.each([[], [1, 42], [1, 42, 43]])(
+  "join discovery exposes membership enforcement for %j",
+  async (...nips) => {
+    const h = await harness((call) =>
+      Response.json(
+        call.url === fixtureRelayUrl
+          ? { name: "Community", supported_nips: nips }
+          : { policy: null },
+      ),
+    );
+    try {
+      expect(await (await h.get("info")).json()).toMatchObject({
+        membershipRequired: nips.includes(43),
+      });
+    } finally {
+      await h.close();
+    }
+  },
+);
+
 test("Builderlab HTTP accepts full agent instructions and isolates the fixed native routes", async () => {
   let openLogin;
   const opened = new Promise((resolve) => {

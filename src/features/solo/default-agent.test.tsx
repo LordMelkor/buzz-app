@@ -7,6 +7,8 @@ import { createAgentLibrary } from "../agents/library";
 import type { RelaySession } from "../relay/session";
 import { readView } from "../../shared/view-state";
 import {
+  clearDefaultAgent,
+  clearDeletedDefaultAgent,
   chooseDefaultAgent,
   forgetDefaultAgent,
   restoreDefaultAgent,
@@ -390,8 +392,8 @@ function accountSession(
         read = () => resolve(record);
       });
     }),
-    write: vi.fn(async (agent: string) => {
-      saved = agent;
+    write: vi.fn(async (agent: string | null) => {
+      saved = agent ?? undefined;
     }),
     saved: () => saved,
     resolve: () => read(),
@@ -453,6 +455,50 @@ it("keeps automatic picks on the device and saves explicit choices to the accoun
   await act(() => chooseDefaultAgent(session, "account", "b".repeat(64)));
   expect(screen.getByRole("status").textContent).toBe("Second");
   expect(account.saved()).toBe("b".repeat(64));
+});
+
+it("saves no Bestie to the account and restores the device choice when that save fails", async () => {
+  const scope = "clear-account";
+  const pubkey = "b".repeat(64);
+  setDefaultAgent(scope, pubkey);
+  const write = vi.fn(async (_agent: string | null) => {
+    throw new Error("offline");
+  });
+  const session = {
+    mainAgent: { read: async () => pubkey, write },
+  } as unknown as RelaySession;
+  await expect(clearDefaultAgent(session, scope)).rejects.toThrow(
+    "Removing your Bestie couldn't be saved to your account. Try again.",
+  );
+  expect(write).toHaveBeenCalledWith(null);
+  expect(readView(scope, "solo:default-agent", null)).toBe(pubkey);
+});
+
+it("clears a deleted agent only when it is still the account's Bestie", async () => {
+  const scope = "delete-account";
+  const deleted = "b".repeat(64);
+  const other = "a".repeat(64);
+  let saved: string | undefined = other;
+  const write = vi.fn(async (agent: string | null) => {
+    saved = agent ?? undefined;
+  });
+  const clear = vi.fn(async (expected: string) => {
+    if (saved === expected) saved = undefined;
+    return saved;
+  });
+  const session = {
+    mainAgent: { read: async () => saved, write, clear },
+  } as unknown as RelaySession;
+  expect(await clearDeletedDefaultAgent(session, scope, deleted)).toBe(false);
+  expect(write).not.toHaveBeenCalled();
+  expect(clear).toHaveBeenCalledWith(deleted);
+  expect(readView(scope, "solo:default-agent", null)).toBe(other);
+  saved = deleted;
+  setDefaultAgent(scope, deleted);
+  expect(await clearDeletedDefaultAgent(session, scope, deleted)).toBe(true);
+  expect(clear).toHaveBeenCalledWith(deleted);
+  expect(write).not.toHaveBeenCalled();
+  expect(saved).toBeUndefined();
 });
 
 it("restores an abandoned replacement without overwriting a newer choice", () => {

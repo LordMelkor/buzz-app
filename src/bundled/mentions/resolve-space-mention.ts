@@ -11,6 +11,7 @@ import { continuingNames } from "./mention-ranking";
 import { namedCandidates, spaceMention } from "./use-mention-choices";
 import { teamBlocksSpace } from "./use-team-mentions";
 import { MENTION_RESOLVE_TIMEOUT_MS } from "../../features/conversation/completion";
+import { searchable } from "../../shared/search-debounce";
 import {
   fetchMentionDirectoryPage,
   type MentionDirectoryPage,
@@ -200,6 +201,8 @@ async function resolve(
     !channel?.archived &&
     !channel?.readOnly;
   if (!outside) return decide([], true, name);
+  // Like the chooser, text too short to search leaves the directory unread.
+  if (!searchable(name)) return null;
   const page = await fetchMentionDirectoryPage(session, name, signal);
   // A truncated page may hide a namesake, as it does for Space in the chooser.
   if (signal.aborted || page.more) return null;

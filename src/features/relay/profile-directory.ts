@@ -70,17 +70,30 @@ export function createProfileDirectory(
   let snapshot: ReadonlyMap<string, Profile> = new Map();
   // Replaced, never mutated, so stores can compare it like `snapshot`.
   let unnamed: ReadonlySet<string> = new Set();
+  // Absences this connection has read. Background enrichment does not
+  // reread them: the live profiles route delivers a later kind 0. Scheduling
+  // state only; `unnamed` is what consumers see, and it survives reconnect.
+  const absent = new Set<string>();
   // Keys with kind-0 metadata. A verified-only overlay must not satisfy ensure.
   let loaded: ReadonlySet<string> = new Set();
   let controller = new AbortController();
   let closed = false;
   let generation = 0;
+  // Verified heads arrive one relay frame at a time, and each publish refolds
+  // every profile. Coalesce them to one publish per macrotask so socket frames,
+  // input and paint run between refolds instead of behind a burst.
+  let verifiedFlush: ReturnType<typeof setTimeout> | undefined;
   const verified =
     verification &&
     createVerifiedProfileDirectory(
       verification.authority,
       verification.subscribe,
-      () => publish(),
+      () => {
+        verifiedFlush ??= setTimeout(() => {
+          verifiedFlush = undefined;
+          if (!closed) publish();
+        });
+      },
       verification.refresh,
     );
   function accept(incoming: readonly RelayEvent[]) {
@@ -92,6 +105,7 @@ export function createProfileDirectory(
       const previous = events.peek(event.pubkey);
       if (newer(previous, event) === previous) continue;
       events.set(event.pubkey, event);
+      absent.delete(event.pubkey);
       if (hasEventProof(event))
         attested.push(
           attestedOwner(event).then((owner) => {
@@ -193,8 +207,21 @@ export function createProfileDirectory(
     for (const listener of listeners) notify(listener);
   }
   /** A completed read that returned no kind 0 is evidence too: the identity is known unnamed. */
-  function missed(ids: readonly string[]) {
-    const fresh = ids.filter((id) => !snapshot.has(id) && !unnamed.has(id));
+  function missed(ids: readonly string[], returned: ReadonlySet<string>) {
+    // The cache may already have evicted a returned kind 0; it is not absent.
+    for (const id of ids)
+      if (!loaded.has(id) && !returned.has(id)) {
+        // Re-adding moves a reconfirmed absence to the end of the trim order.
+        absent.delete(id);
+        absent.add(id);
+      }
+    for (const id of absent) {
+      if (absent.size <= 1024) break;
+      absent.delete(id);
+    }
+    const fresh = ids.filter(
+      (id) => !snapshot.has(id) && !unnamed.has(id) && !returned.has(id),
+    );
     if (!fresh.length) return;
     unnamed = new Set([...unnamed, ...fresh].slice(-1024));
     for (const listener of listeners) notify(listener);
@@ -208,6 +235,9 @@ export function createProfileDirectory(
     const unique = [...new Set(ids)];
     if (!refresh && unique.length > 1024)
       throw new Error("Profile request exceeds the directory budget");
+    // A hit marks the profile recently used, so the budget evicts profiles
+    // nobody has asked for rather than the oldest ones still on screen.
+    for (const id of unique) events.get(id);
     verified?.ensure(unique);
     const signal = controller.signal;
     const waiting = new Set<Promise<void>>();
@@ -228,7 +258,16 @@ export function createProfileDirectory(
         }
         waiting.add(batch.work);
       }
-      return !batch && (refresh || !loaded.has(id));
+      return (
+        !batch &&
+        (refresh ||
+          !(
+            loaded.has(id) ||
+            // Only while still reported unnamed, so a skip never leaves an
+            // identity neither named nor unnamed.
+            (priority === "background" && absent.has(id) && unnamed.has(id))
+          ))
+      );
     });
     for (let offset = 0; offset < missing.length; offset += PROFILE_PAGE) {
       const authors = missing.slice(offset, offset + PROFILE_PAGE);
@@ -255,9 +294,13 @@ export function createProfileDirectory(
       }, signal)
         .then((result) => {
           if (signal.aborted) return;
-          accept(result.filter((event) => authors.includes(event.pubkey)));
+          const profiles = result.filter((event) =>
+            authors.includes(event.pubkey),
+          );
+          accept(profiles);
           // A page at the limit may have left out authors who do have one.
-          if (result.length < PROFILE_PAGE) missed(authors);
+          if (result.length < PROFILE_PAGE)
+            missed(authors, new Set(profiles.map((event) => event.pubkey)));
         })
         .catch((error: unknown) => {
           // The old directory contract silently discards a retired success.
@@ -276,6 +319,7 @@ export function createProfileDirectory(
     controller.abort();
     controller = new AbortController();
     pending.clear();
+    absent.clear();
     events.clear();
     verified?.clear();
     unnamed = new Set();
@@ -327,6 +371,8 @@ export function createProfileDirectory(
       controller.abort();
       controller = new AbortController();
       pending.clear();
+      // A kind 0 published while offline was not delivered live.
+      absent.clear();
       return ensure(ids, "background", true);
     },
     event: (id: string) => events.peek(id),
@@ -336,6 +382,8 @@ export function createProfileDirectory(
       verified?.dispose();
       unsubscribeLocal?.();
       clear();
+      // After clear(): disposing the verified directory schedules a flush.
+      clearTimeout(verifiedFlush);
       listeners.clear();
     },
   };

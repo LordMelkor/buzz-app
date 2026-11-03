@@ -372,7 +372,13 @@ it("keeps narrow contributed sidebars in the existing Escape-dismissed navigatio
   expect(nav).toHaveAttribute("aria-hidden", "false");
   const action = screen.getByRole("button", { name: "Sidebar action" });
   action.focus();
+  // Closing the drawer consumes Escape, so a window-level Escape shortcut
+  // (mark as read) does not also fire.
+  const reachedWindow = vi.fn((event: KeyboardEvent) => event.defaultPrevented);
+  window.addEventListener("keydown", reachedWindow);
   await userEvent.keyboard("{Escape}");
+  window.removeEventListener("keydown", reachedWindow);
+  expect(reachedWindow).toHaveReturnedWith(true);
   expect(nav).toHaveAttribute("aria-hidden", "true");
   expect(screen.getByRole("button", { name: "Show navigation" })).toHaveFocus();
 

@@ -3635,6 +3635,24 @@ it.each([
     }
   },
 );
+it("the resolver leaves a one-character outside name unread and unselected", async () => {
+  const h = spaceFixture("Member");
+  try {
+    await waitFor(() => expect(h.people).toHaveBeenCalledTimes(1));
+    const calls = h.people.mock.calls.length;
+    await expect(
+      resolveSpaceMention(
+        h.session,
+        { channelId: "parent", selected: [] },
+        "q",
+        new AbortController().signal,
+      ),
+    ).resolves.toBeNull();
+    expect(h.people).toHaveBeenCalledTimes(calls);
+  } finally {
+    h.dispose();
+  }
+});
 /** A resolution for assertions: the recipient, null, or the continuing names. */
 const outcomeOf = (outcome: SpaceMentionResolution | undefined) =>
   outcome && "continued" in outcome

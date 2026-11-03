@@ -55,6 +55,7 @@ import { PluginImport } from "./PluginImport";
 import { ManagedPluginUpdate, ManagedPlugins } from "./ManagedPlugins";
 import { managedBy, pendingManaged } from "../plugins/managed";
 import { RecommendationCount } from "./RecommendationCount";
+import type { PluginInstallRequests } from "../plugins/installer";
 import { PluginReadme } from "./PluginReadme";
 import { bundledReadmes } from "../bundled/readmes";
 import { bundledIcons } from "../bundled/icons";
@@ -224,6 +225,7 @@ function PluginProvenance({
 }
 
 const noAccessSubscription = () => () => {};
+const noInstallRequest = () => undefined;
 
 function restrictedPlugin(plugin: PluginInfo) {
   return (
@@ -299,6 +301,7 @@ function PluginDetails({
   reviewRequested,
   onReviewHandled,
   initialUpdateAvailable,
+  holdReview,
 }: {
   plugin: PluginInfo;
   managed?: ReturnType<typeof managedBy>;
@@ -317,6 +320,7 @@ function PluginDetails({
   reviewRequested: boolean;
   onReviewHandled(): void;
   initialUpdateAvailable: boolean;
+  holdReview: (() => () => void) | undefined;
 }) {
   const accessReason = restrictedPlugin(plugin)
     ? accessMessage(plugin, access)
@@ -344,7 +348,8 @@ function PluginDetails({
       className={styles.pluginAside}
       aria-label={`${plugin.manifest.name} details`}
       onKeyDown={(event) => {
-        if (event.defaultPrevented || event.key !== "Escape") return;
+        if (event.defaultPrevented || event.key !== "Escape" || event.shiftKey)
+          return;
         event.stopPropagation();
         onClose();
       }}
@@ -498,6 +503,7 @@ function PluginDetails({
           busy={busy}
           source={managed.source}
           entry={managed.entry}
+          holdReview={holdReview}
           returnFocus={() => close.current}
           {...(authorizeGit ? { authorizeGit } : {})}
         />
@@ -510,6 +516,7 @@ function PluginDetails({
           onUpdateAvailableChange={onUpdateAvailableChange}
           reviewRequested={reviewRequested}
           onReviewHandled={onReviewHandled}
+          holdReview={holdReview}
           statusTarget={installedStatus}
           returnFocus={() => close.current}
           updateId={plugin.manifest.id}
@@ -621,6 +628,7 @@ export function Settings({
   notifications,
   updates,
   navigation,
+  installRequests,
   onSection,
   onProvider,
   onPluginImportClosed,
@@ -644,6 +652,7 @@ export function Settings({
   navigation?:
     | import("../features/navigation/service").PageNavigation
     | undefined;
+  installRequests?: PluginInstallRequests | undefined;
   onSection?: (section: string) => void;
   onProvider?: ((provider?: string) => void) | undefined;
   onPluginImportClosed?: (() => void) | undefined;
@@ -653,6 +662,22 @@ export function Settings({
 }) {
   useEffect(() => cards.retainVisibility(), [cards]);
   useEffect(() => adminAccess?.ensure(), [adminAccess]);
+  const installRequest = useSyncExternalStore(
+    installRequests?.subscribe ?? noAccessSubscription,
+    installRequests?.snapshot ?? noInstallRequest,
+  );
+  const settingsMounted = useRef(false);
+  useEffect(() => {
+    settingsMounted.current = true;
+    return () => {
+      settingsMounted.current = false;
+      queueMicrotask(() => {
+        const waiting = installRequests?.snapshot();
+        if (!settingsMounted.current && waiting)
+          installRequests?.end(waiting.id);
+      });
+    };
+  }, [installRequests]);
   const membershipAccess = useSyncExternalStore(
     adminAccess?.subscribe ?? noAccessSubscription,
     () => adminAccess?.status("buzz.moderation") ?? "unavailable",
@@ -689,6 +714,10 @@ export function Settings({
     [contributed, departureCommunity],
   );
   const [selected, setSelected] = useState(defaultSection);
+  // Shortcuts lists every binding with its own controls, so it is built on
+  // first visit rather than with every Settings open, then kept like the rest.
+  const [shortcutsVisited, setShortcutsVisited] = useState(false);
+  if (selected === "shortcuts" && !shortcutsVisited) setShortcutsVisited(true);
   // A switch made from inside the content hides or removes the control that
   // made it, so focus moves into the section it opened.
   const contentFocus = useRef<string>(undefined);
@@ -1211,11 +1240,13 @@ export function Settings({
           />
         </div>
         <div hidden={selected !== "shortcuts"}>
-          <ShortcutSettings
-            shortcuts={shortcuts}
-            bindings={shortcutBindings}
-            plugins={plugins}
-          />
+          {shortcutsVisited && (
+            <ShortcutSettings
+              shortcuts={shortcuts}
+              bindings={shortcutBindings}
+              plugins={plugins}
+            />
+          )}
         </div>
         <div hidden={selected !== "agents"}>
           <AgentSettings
@@ -1339,6 +1370,7 @@ export function Settings({
                 catalog={catalog}
                 busy={busy}
                 authorizeGit={authorizePluginGit}
+                holdReview={installRequests?.holdReview}
               />
             )}
             {catalog && (
@@ -1390,6 +1422,12 @@ export function Settings({
                 requestSignal={navigation?.signal}
                 onClosed={() => onPluginImportClosed?.()}
                 actionTarget={pluginImportActions}
+                request={installRequest}
+                onRequestSettled={installRequests?.settle}
+                onRequestClaimed={installRequests?.claim}
+                onRequestConfirmed={installRequests?.confirm}
+                onRequestEnded={installRequests?.end}
+                holdReview={installRequests?.holdReview}
                 plugins={plugins}
                 catalog={catalog}
                 busy={busy}
@@ -1514,6 +1552,7 @@ export function Settings({
           authorizeGit={authorizePluginGit}
           reviewRequested={reviewPluginId === selectedPlugin.manifest.id}
           onReviewHandled={() => setReviewPluginId(undefined)}
+          holdReview={installRequests?.holdReview}
           onUpdateAvailableChange={(available) =>
             setUpdateChecks((current) => {
               const id = selectedPlugin.manifest.id;

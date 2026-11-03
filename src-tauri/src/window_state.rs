@@ -19,7 +19,65 @@ pub(crate) fn builder() -> Builder {
 }
 
 // Called from app setup, after the configured main window has been created.
+const INTRO_GEOMETRY: &str = "onboarding-window-restore.json";
+
+/// Preserve normal geometry for the next launch, without resizing this session.
+#[tauri::command]
+pub(crate) fn onboarding_preserve_window<R: Runtime>(
+    window: tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Main window required".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let native = window.ns_window().map_err(|error| error.to_string())?;
+        let native: &objc2_app_kit::NSWindow = unsafe { &*native.cast() };
+        native.setAnimationBehavior(objc2_app_kit::NSWindowAnimationBehavior::None);
+    }
+    let app = window.app_handle();
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let target = dir.join(INTRO_GEOMETRY);
+    if target.exists() {
+        return Ok(());
+    }
+    app.save_window_state(
+        StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN,
+    )
+    .map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(dir.join(app.filename())).map_err(|e| e.to_string())?;
+    preserve_intro_geometry(&target, &bytes)
+}
+
+fn preserve_intro_geometry(target: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    if target.exists() {
+        return Ok(());
+    }
+    if saved_geometry(bytes, "main").is_none() {
+        return Err("Window geometry unavailable".into());
+    }
+    std::fs::write(target, bytes).map_err(|e| e.to_string())
+}
+
 pub(crate) fn restore<R: Runtime>(window: &Window<R>) -> tauri::Result<()> {
+    let pending = window
+        .app_handle()
+        .path()
+        .app_config_dir()?
+        .join(INTRO_GEOMETRY);
+    if let Ok(bytes) = std::fs::read(&pending) {
+        if let Some(saved) = saved_geometry(&bytes, window.label()) {
+            window.set_fullscreen(false)?;
+            window.unmaximize()?;
+            restore_geometry_from(window, Some(bytes))?;
+            window.set_fullscreen(saved.fullscreen)?;
+            if saved.maximized {
+                window.maximize()?;
+            }
+            std::fs::remove_file(pending)?;
+            return Ok(());
+        }
+    }
     if let Err(error) = restore_geometry(window) {
         eprintln!("Could not restore Buzz window geometry: {error}");
     }
@@ -44,7 +102,7 @@ struct SavedGeometry {
     #[serde(rename = "decorated")]
     _decorated: bool,
     #[serde(rename = "fullscreen")]
-    _fullscreen: bool,
+    fullscreen: bool,
 }
 
 fn saved_geometry(bytes: &[u8], label: &str) -> Option<SavedGeometry> {
@@ -55,13 +113,20 @@ fn saved_geometry(bytes: &[u8], label: &str) -> Option<SavedGeometry> {
 }
 
 fn restore_geometry<R: Runtime>(window: &Window<R>) -> tauri::Result<()> {
+    restore_geometry_from(window, None)
+}
+
+fn restore_geometry_from<R: Runtime>(
+    window: &Window<R>,
+    override_bytes: Option<Vec<u8>>,
+) -> tauri::Result<()> {
     let path = window
         .app_handle()
         .path()
         .app_config_dir()?
         .join(window.app_handle().filename());
-    let Some(saved) = std::fs::read(path)
-        .ok()
+    let Some(saved) = override_bytes
+        .or_else(|| std::fs::read(path).ok())
         .and_then(|bytes| saved_geometry(&bytes, window.label()))
     else {
         return Ok(());
@@ -403,6 +468,26 @@ mod tests {
         let app = mock_builder().build(context).unwrap();
         assert_eq!(app.path().app_config_dir().unwrap(), dir.path());
         (dir, app)
+    }
+
+    #[test]
+    fn onboarding_snapshot_is_kept_until_next_launch_restore() {
+        let (dir, app) = fixture();
+        let mut plugin = super::builder().build();
+        plugin.initialize(app.handle(), Value::Null).unwrap();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let window = webview.as_ref().window();
+        plugin.window_created(window.clone());
+        let path = dir.path().join(super::INTRO_GEOMETRY);
+        let bytes = serde_json::to_vec(&saved_state(100, 120, 960, 640)).unwrap();
+        super::preserve_intro_geometry(&path, &bytes).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        super::onboarding_preserve_window(webview).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        super::restore(&window).unwrap();
+        assert!(!path.exists());
     }
 
     #[test]

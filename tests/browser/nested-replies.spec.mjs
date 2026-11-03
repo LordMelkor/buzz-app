@@ -156,7 +156,9 @@ test("nested replies send, stay open, and reveal through links at readable panel
   await expect(editor).toHaveJSProperty("value", "Unsent nested draft");
   await editor.fill("");
   await expect(editor).toHaveJSProperty("value", "");
+  // Up selects the newest message in the thread; E edits it in this composer.
   await editor.press("ArrowUp");
+  await page.keyboard.press("e");
   const editInput = panel.getByRole("textbox", {
     name: "Edit message",
     exact: true,

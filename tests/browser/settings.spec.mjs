@@ -1028,11 +1028,11 @@ test("discarding community setup leaves the published profile unchanged", async 
     .fill("wss://primary.example");
   await button(page, "Continue").click();
   await expect(
-    page.getByRole("heading", { name: "Your profile in Primary", exact: true }),
+    page.getByRole("heading", { name: "Your profile", exact: true }),
   ).toBeVisible();
   const setup = page.getByRole("dialog").filter({
     has: page.getByRole("heading", {
-      name: "Your profile in Primary",
+      name: "Your profile",
       exact: true,
     }),
   });
@@ -1041,7 +1041,7 @@ test("discarding community setup leaves the published profile unchanged", async 
     exact: true,
   });
   await expect(name).toHaveValue("Fixture Reader");
-  await expect(button(page, "Open community")).toBeEnabled();
+  await expect(button(page, "Continue")).toBeEnabled();
   await name.fill("Community-only draft");
   await setup.getByRole("button", { name: "Edit avatar" }).click();
   const avatarEditor = page.getByRole("dialog", { name: "Edit avatar" });

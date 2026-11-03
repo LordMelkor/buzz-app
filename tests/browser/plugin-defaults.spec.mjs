@@ -51,9 +51,15 @@ test("Bestie opts in without changing the other bundled defaults and survives re
     .getByRole("button", { name: "Bestie", exact: true });
   await expect(destination).toBeVisible();
   await destination.click();
+  const bestiePage = page.getByRole("region", { name: "Bestie" });
+  await expect(bestiePage).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Meet your Bestie" }),
+    bestiePage.getByRole("heading", { name: "Choose your bestie agent" }),
   ).toBeVisible();
+  const createAgent = bestiePage.getByRole("button", {
+    name: "Create agent",
+  });
+  await expect(createAgent).toBeVisible();
   await plugins(page);
   await bestie.click();
   await expect(bestie).toHaveAccessibleName(/^Enable /);

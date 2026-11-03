@@ -12,6 +12,8 @@ import {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAgentChoices } from "../../features/agents/use-choices";
+import { MessageLink } from "../../features/conversation/MessageLink";
+import { labelText } from "../../features/messages/label-text";
 import { useIdentityNames } from "../../features/identity-names/react";
 import {
   MAX_MARKDOWN_LENGTH,
@@ -63,6 +65,11 @@ import styles from "./NotesPage.module.css";
 import { formatPublicKey } from "../../shared/identity/public-key";
 import type { PageProps } from "../../features/pages/service";
 import type { Navigation } from "../../features/navigation/controller";
+import {
+  buzzLinkTarget,
+  parseBuzzLink,
+} from "../../features/navigation/buzz-links";
+import type { NavigationScope } from "../../features/navigation/targets";
 import { notesRoute, notesTarget, type NotesRoute } from "./routes";
 import type { Panels, RegisteredPanel } from "../../features/panels/service";
 import { profileTarget } from "../../features/profiles/target";
@@ -167,31 +174,35 @@ export function NotesPage({
     () => navigation?.forSession(relay, connection),
     [navigation, relay, connection],
   );
+  const scope = useMemo(
+    () =>
+      connection.viewer && connection.scope
+        ? {
+            viewer: connection.viewer,
+            communityOrigin: connection.scope.slice(
+              0,
+              -(connection.viewer.length + 1),
+            ),
+          }
+        : undefined,
+    [connection.viewer, connection.scope],
+  );
   useEffect(() => {
     if (
       request?.target.kind !== "page" ||
       request.target.scope !== undefined ||
       connection.status !== "ready" ||
-      !connection.viewer ||
-      !connection.scope
+      !scope
     )
       return;
-    request.resolve({
-      ...request.target,
-      scope: {
-        viewer: connection.viewer,
-        communityOrigin: connection.scope.slice(
-          0,
-          -(connection.viewer.length + 1),
-        ),
-      },
-    });
-  }, [request, connection]);
+    request.resolve({ ...request.target, scope });
+  }, [request, connection.status, scope]);
   if (connection.status === "ready")
     return (
       <NotesCommunity
         key={`${connection.scope}:${connection.generation}`}
         session={connection.session}
+        scope={scope}
         navigation={request}
         navigator={navigator}
         panels={panels}
@@ -216,10 +227,14 @@ export function NotesPage({
 
 export function NotesCommunity({
   session,
+  scope,
   navigation,
   navigator,
   panels,
-}: { session: RelaySession } & NotesNavigation) {
+}: {
+  session: RelaySession;
+  scope?: NavigationScope | undefined;
+} & NotesNavigation) {
   const choices = useAgentChoices(session);
   const resolveName = useIdentityNames(session.names);
   const candidates = useMemo(
@@ -245,6 +260,7 @@ export function NotesCommunity({
     <NoteCollection
       key={authors}
       session={session}
+      scope={scope}
       navigation={navigation}
       navigator={navigator}
       panels={panels}
@@ -262,6 +278,7 @@ export function NotesCommunity({
 
 function NoteCollection({
   session,
+  scope,
   authors,
   agents: ownedAgents,
   pending,
@@ -273,6 +290,7 @@ function NoteCollection({
   panels,
 }: NotesNavigation & {
   session: RelaySession;
+  scope?: NavigationScope | undefined;
   authors: string;
   agents: readonly {
     pubkey: string;
@@ -547,6 +565,12 @@ function NoteCollection({
     setProfile("");
     setSelected(noteActive);
     visit({ author, note: noteActive }, true);
+  };
+  const openLink = (url: string) => {
+    const target = scope && buzzLinkTarget(url, scope);
+    if (!target || !navigator) return false;
+    void navigator.open(target);
+    return true;
   };
   const canProfile = (pubkey: string) =>
     !!panels?.resolve(profileTarget(pubkey, { agent: true }) ?? "");
@@ -855,6 +879,8 @@ function NoteCollection({
                   content: (
                     <NoteBody
                       note={note}
+                      session={session}
+                      openLink={openLink}
                       openProfile={
                         canProfile(note.pubkey)
                           ? () => openProfile(note.pubkey)
@@ -944,12 +970,16 @@ function NoteTime({ note }: { note: EventData }) {
 
 function NoteBody({
   note,
+  session,
+  openLink,
   author,
   picture,
   openProfile,
 }: {
   openProfile?: (() => void) | undefined;
   note: EventData;
+  session: RelaySession;
+  openLink(url: string): boolean;
   author: string;
   picture?: string | undefined;
 }) {
@@ -970,22 +1000,28 @@ function NoteBody({
         ) : (
           <Markdown
             remarkPlugins={[remarkGfm]}
-            urlTransform={(url) => safeLinkUrl(url) ?? null}
+            urlTransform={(url) =>
+              parseBuzzLink(url) ? url : (safeLinkUrl(url) ?? null)
+            }
             components={{
               img: ({ alt }) => alt ?? null,
-              a: ({ children, href, title }) =>
-                href ? (
-                  <a
-                    href={href}
-                    title={title}
-                    target="_blank"
-                    rel="noopener noreferrer"
+              a: ({ children, href }) => {
+                if (!href) return children;
+                // A raw autolink shows its destination's name, as in messages.
+                const label = labelText(children);
+                const raw = label === href;
+                return (
+                  <MessageLink
+                    url={href}
+                    label={raw ? undefined : label}
+                    registry={undefined}
+                    session={session}
+                    onOpenLink={openLink}
                   >
-                    {children}
-                  </a>
-                ) : (
-                  children
-                ),
+                    {raw ? undefined : children}
+                  </MessageLink>
+                );
+              },
             }}
           >
             {note.content}

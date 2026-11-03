@@ -99,7 +99,7 @@ test("binary upload signs exact bytes for the captured community; existing proxy
         "expiration",
         String(auth.created_at + Math.ceil(UPLOAD_TIMEOUT_MS / 1000) + 60),
       ]);
-      return Response.json(descriptor(bytes, other));
+      return Response.json({ ...descriptor(bytes, other), dim: "640x400" });
     }
     expect(auth.tags).toContainEqual(["t", "get"]);
     return new Response(bytes, {
@@ -122,7 +122,7 @@ test("binary upload signs exact bytes for the captured community; existing proxy
     expect(uploaded.status).toBe(200);
     const result = await uploaded.json();
     const { uploaded: _uploaded, ...expected } = descriptor(bytes, other);
-    expect(result).toEqual(expected);
+    expect(result).toEqual({ ...expected, dim: "640x400" });
     const downloaded = await fetch(
       `${endpoint}/media?url=${encodeURIComponent(result.url)}`,
     );
@@ -381,10 +381,10 @@ test("declared and streamed request budgets reject before signing or forwarding"
   for (const declared of [true, false]) {
     const req = Readable.from(
       (function* () {
-        const chunk = Buffer.alloc(1024 * 1024);
-        for (let size = 0; size < UPLOAD_MAX_BYTES; size += chunk.length)
-          yield chunk;
+        // Cross the cumulative limit without hashing/spooling the entire budget.
+        // The second chunk fits by itself; the preceding byte makes it too large.
         yield Buffer.from("x");
+        yield Buffer.alloc(UPLOAD_MAX_BYTES);
       })(),
     );
     req.headers = declared

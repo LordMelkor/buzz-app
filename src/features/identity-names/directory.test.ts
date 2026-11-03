@@ -459,6 +459,49 @@ it("keeps every DM scope of a sidebar pass for the next pass", () => {
   expect(resolve).toHaveBeenCalledTimes(dms.length);
 });
 
+it("labels a frozen member list like an equal unfrozen one, across interleaved scopes", () => {
+  const [a, b, d] = ["a", "b", "d"].map((key) => key.repeat(64));
+  if (!a || !b || !d) throw new Error("Missing fixture keys");
+  const profiles = new Map([
+    [a, { name: "Alex" }],
+    [b, { name: "Alex" }],
+    [d, { name: "Dana" }],
+  ]);
+  const library = {
+    status: "ready",
+    definitions: [],
+    identities: [],
+  } as const;
+  const source: NameSource = {
+    profiles: {
+      snapshot: () => profiles,
+      subscribe: () => () => {},
+      ensure: async () => {},
+    },
+    agentLibrary: {
+      snapshot: () => library,
+      subscribe: () => () => {},
+      refresh: async () => {},
+      retain: () => () => {},
+    },
+  };
+  const resolve = vi.fn(defaultNamingPolicy.resolve);
+  const names = bindNames(source, {
+    snapshot: () => [createNameProvider({ id: "spy", resolve })],
+    subscribe: () => () => {},
+  });
+  const members = Object.freeze([b.toUpperCase(), a]);
+  const suffixed = (key: string) => `Alex · ${npubEncode(key).slice(-4)}`;
+  for (let pass = 0; pass < 2; pass++) {
+    expect(names.resolve(a, "", members)).toBe(suffixed(a));
+    expect(names.resolve(d, "", [d])).toBe("Dana");
+    expect(names.resolve(b, "", members)).toBe(suffixed(b));
+    expect(names.resolve(a, "", [a, b])).toBe(suffixed(a));
+  }
+  // The frozen list and its equal unfrozen copy share one policy run.
+  expect(resolve).toHaveBeenCalledTimes(2);
+});
+
 it.each(
   [
     '{"about":"Artwork-only agent"}',

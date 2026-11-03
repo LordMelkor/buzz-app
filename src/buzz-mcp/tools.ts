@@ -2335,7 +2335,7 @@ async function start(tools: Tools, channel: string, name: string) {
   return created;
 }
 
-/** The repository's URL and a Git command with its header. */
+/** The repository's URL and a Git command with its headers, one per line. */
 async function access(
   gitAuth: NonNullable<BuzzClient["gitAuth"]>,
   event: BuzzEvent,
@@ -2343,8 +2343,11 @@ async function access(
   const { url, header } = await gitAuth(event.pubkey, tag(event, "d") ?? "");
   return [
     `${tag(event, "name") ?? tag(event, "d")}: ${url}`,
-    "For the next 60 seconds, pass this header to each git command (call again for a new one; never save it):",
-    `git -c http.${url}.extraHeader='${header}' clone ${url}`,
+    "For the next 60 seconds, pass these headers to each git command (call again for a new one; never save it):",
+    `git ${header
+      .split("\n")
+      .map((line) => `-c http.${url}.extraHeader='${line}' `)
+      .join("")}clone ${url}`,
   ].join("\n");
 }
 

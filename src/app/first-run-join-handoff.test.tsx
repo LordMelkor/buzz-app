@@ -237,12 +237,17 @@ async function firstRunWithAddress(
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000);
   });
+  await user.click(
+    await screen.findByRole("button", { name: "Other options" }),
+  );
   await user.type(
-    await screen.findByRole("textbox", { name: "Community URL" }),
+    await screen.findByRole("textbox", {
+      name: "Community address or invite link",
+    }),
     `${address}{Enter}`,
   );
   await user.click(
-    await screen.findByRole("button", { name: "Sign in with email" }),
+    await screen.findByRole("button", { name: "Sign in with Builderlab" }),
   );
   await user.click(
     await screen.findByRole("button", { name: "Create my key" }),
@@ -346,9 +351,7 @@ async function accessStep(
   dialog: HTMLElement,
 ) {
   await user.click(within(dialog).getByRole("button", { name: "Continue" }));
-  const field = await within(dialog).findByLabelText(
-    "Invite code (if required)",
-  );
+  const field = await within(dialog).findByLabelText("Invite code");
   expect(field).toHaveValue(code);
   // Nothing is claimed until the user continues from this step.
   expect(inviteRequests()).toEqual([]);
@@ -371,7 +374,7 @@ it.each([
     if (published) {
       await user.click(
         within(dialog).getByRole("checkbox", {
-          name: "I agree to this community’s Terms of Service and Privacy Notice.",
+          name: "I agree to this community’s Terms of Service.",
         }),
       );
       await user.click(
@@ -443,9 +446,7 @@ it("a refused handed-off code keeps the dialog open with the refusal and stays o
     "/api/invites/claim",
   );
   expect(joinDialog()).toBe(dialog);
-  expect(
-    within(dialog).getByLabelText("Invite code (if required)"),
-  ).toHaveValue(code);
+  expect(within(dialog).getByLabelText("Invite code")).toHaveValue(code);
   expect(current.communities.snapshot()).toMatchObject({
     memberships: [{ id: relayA }],
     selected: relayA,

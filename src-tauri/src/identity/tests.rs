@@ -733,7 +733,7 @@ pub(crate) fn write_denied_fixture() -> (IdentityHost, impl Fn()) {
 }
 
 #[tokio::test]
-async fn main_agent_signer_admits_only_one_agent() {
+async fn main_agent_signer_admits_one_agent_or_a_cleared_choice() {
     use serde_json::json;
     let host = super::IdentityHost::fixture();
     let payload = json!({"version": 1, "agent": "ab".repeat(32)});
@@ -746,9 +746,18 @@ async fn main_agent_signer_admits_only_one_agent() {
         host.decode_sidebar(vec![event]).await.unwrap()["main-agent"],
         payload
     );
+    let payload = json!({"version": 1, "agent": null});
+    let event = host
+        .sign_sidebar("main-agent".into(), payload.clone(), 101)
+        .await
+        .unwrap();
+    host.admit_sidebar(event.clone()).await.unwrap();
+    assert_eq!(
+        host.decode_sidebar(vec![event]).await.unwrap()["main-agent"],
+        payload
+    );
     for invalid in [
         json!({"version": 1}),
-        json!({"version": 1, "agent": null}),
         json!({"version": 2, "agent": "ab".repeat(32)}),
         json!({"version": 1, "agent": "AB".repeat(32)}),
         json!({"version": 1, "agent": "ab".repeat(31)}),

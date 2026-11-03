@@ -715,6 +715,9 @@ function FullPageSurfaceSpecimen() {
 function PanelSpecimen() {
   return (
     <div className="component-specimen-stack">
+      <Panel as="div" shape="card" aria-label="Account card surface">
+        <div className="p-8">Standalone account card</div>
+      </Panel>
       <Panel as="div" shape="capsule" aria-label="Capsule surface">
         <div className="p-2">Shell control group</div>
       </Panel>

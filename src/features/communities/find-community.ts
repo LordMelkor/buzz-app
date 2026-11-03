@@ -2,11 +2,12 @@ import { nativeRelayRequest, relaySelf } from "../relay/native";
 import { communityIcon } from "./community-icon";
 import { joinPolicy, type JoinPolicy } from "./join-policy";
 
-/** Only what a relay publishes before admission: no name, owner or member count. */
+/** Public relay metadata available before admission; no owner or member count. */
 export type FoundCommunity = {
   /** Canonical secure origin. */
   url: string;
   host: string;
+  name?: string | undefined;
   icon?: string | undefined;
   /** The relay deployment's key (NIP-11 `self`), when it is well-formed. */
   self?: string | undefined;
@@ -57,6 +58,7 @@ export async function findCommunity(
   return {
     url,
     host: new URL(url).host,
+    name: typeof info.name === "string" ? info.name : undefined,
     icon: communityIcon(info.icon),
     self: relaySelf(info),
     policy: await policyAnswer(await policy),

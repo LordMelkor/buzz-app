@@ -6,6 +6,7 @@ export type { Context } from "@deepseek-ai/cordis";
 export type {
   Host,
   HostRequest,
+  HostByteUpload,
   HostRequestOnceOptions,
   HostResponse,
   HostByteRequest,
@@ -25,6 +26,11 @@ export type {
   SidebarSectionRow,
   SidebarSections,
 } from "../features/channel-navigation/sidebar-sections-service";
+export type {
+  PluginInstallOutcome,
+  PluginInstallSource,
+  PluginInstaller,
+} from "./installer";
 export type {
   Panel,
   Panels,
@@ -161,3 +167,6 @@ export type {
   SessionSnapshot,
   AuthenticatedRequest,
 } from "../features/federated-identity/service";
+
+export type { AddedTool } from "../buzz-mcp/session-tools";
+export type { BuzzClient, Media } from "../buzz-mcp/client";

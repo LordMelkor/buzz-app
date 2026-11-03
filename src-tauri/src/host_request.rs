@@ -5,7 +5,7 @@ use buzzodz_plugins::HostGrants;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -56,7 +56,9 @@ impl HostCalls {
             state.page = state
                 .page
                 .and_then(|p| p.checked_add(1))
-                .filter(|p| *p <= 9_007_199_254_740_991)
+                .filter(|p| *p <= 9_007_199_254_740_991);
+            // Old envelopes fail the page check before lookup, so they cannot use freed capacity.
+            state.consumed.clear();
         }
     }
     fn context(&self, label: &str) -> Result<CallContext, String> {
@@ -266,6 +268,153 @@ pub(crate) async fn plugin_host_request<R: tauri::Runtime>(
         .map_err(|_| "Host request timed out")?
 }
 
+const MAX_UPLOAD_METADATA: usize = 16 * 1024;
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ByteUpload {
+    url: String,
+    field: String,
+    name: String,
+    content_type: String,
+    #[serde(default)]
+    fields: BTreeMap<String, String>,
+}
+impl ByteUpload {
+    fn fingerprint(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+        // Reuse the bounded metadata shape, including deterministic BTreeMap order.
+        let metadata = serde_json::to_vec(self).map_err(|_| "Invalid upload metadata")?;
+        Ok(fingerprint([metadata.as_slice(), bytes]))
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ByteUploadMetadata {
+    id: String,
+    revision: String,
+    upload: ByteUpload,
+    once: Once,
+}
+fn validate_byte_upload(upload: &ByteUpload, bytes: &[u8]) -> Result<reqwest::Url, String> {
+    if bytes.is_empty() || bytes.len() > MAX_RESPONSE_BYTES {
+        return Err("Invalid upload bytes".into());
+    }
+    // One safe filename and safe form names; no paths or multipart header syntax.
+    let safe_name = |name: &str| {
+        !name.is_empty()
+            && name.len() <= 256
+            && !name.starts_with('.')
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    };
+    if !safe_name(&upload.name)
+        || !safe_name(&upload.field)
+        || upload.fields.len() > 16
+        || upload
+            .fields
+            .iter()
+            .any(|(name, value)| !safe_name(name) || value.len() > MAX_HEADER_BYTES)
+    {
+        return Err("Invalid upload form".into());
+    }
+    // This is a signature check, not an image decoder or a claim of image safety.
+    let matches_type = match upload.content_type.as_str() {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(b"\xff\xd8\xff"),
+        "image/webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+        _ => false,
+    };
+    if !matches_type {
+        return Err("Upload type must be PNG, JPEG or WebP with matching magic bytes".into());
+    }
+    let (url, _, _) = validate_request(&HostRequest {
+        url: upload.url.clone(),
+        method: "POST".into(),
+        headers: BTreeMap::new(),
+        body: None,
+        timeout_ms: None,
+    })?;
+    Ok(url)
+}
+
+/// Raw-only admission: JSON/array fallback never reaches consumption or HTTP.
+#[tauri::command]
+pub(crate) async fn plugin_host_upload_bytes_once<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
+    calls: tauri::State<'_, HostCalls>,
+    manager: tauri::State<'_, PluginManager>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<HostResponse, String> {
+    let deadline = tokio::time::Instant::now() + DEADLINE;
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Protected upload body must be raw bytes; outcome may be unknown".into());
+    };
+    let metadata = request
+        .headers()
+        .get("x-buzz-upload")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| v.len() <= MAX_UPLOAD_METADATA)
+        .ok_or("Invalid upload metadata")?;
+    let ByteUploadMetadata {
+        id,
+        revision,
+        upload,
+        once,
+    } = serde_json::from_str(metadata).map_err(|_| "Invalid upload metadata")?;
+    if id.is_empty() || id.len() > 256 || revision.is_empty() || revision.len() > 128 {
+        return Err("Invalid upload metadata".into());
+    }
+    let url = validate_byte_upload(&upload, bytes)?;
+    let operation = async {
+        // One FIFO queue and work permit for GET/save/upload; queue time is part
+        // of this call's entry deadline. Do not clone/build multipart while waiting.
+        let _place = crate::host_files::byte_admission(deadline).await?;
+        byte_origin(manager, &id, &revision, &url).await?;
+        calls.consume(
+            webview.label(),
+            "upload-bytes",
+            &id,
+            &revision,
+            &once,
+            upload.fingerprint(bytes)?,
+        )?;
+        send_byte_upload(url, &upload, bytes)
+            .await
+            .map_err(|error| format!("{error}; outcome unknown"))
+    };
+    tokio::time::timeout_at(deadline, operation)
+        .await
+        .map_err(|_| "Host upload timed out; outcome unknown")?
+}
+
+async fn send_byte_upload(
+    url: reqwest::Url,
+    upload: &ByteUpload,
+    bytes: &[u8],
+) -> Result<HostResponse, String> {
+    let (content_type, body) = multipart(
+        &upload.fields,
+        &upload.field,
+        &upload.name,
+        &upload.content_type,
+        bytes,
+    )?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .timeout(DEADLINE)
+        .build()
+        .map_err(|_| "Host request client is unavailable")?;
+    read_response(
+        client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body),
+    )
+    .await
+}
+
 /// A GET with no caller headers or body; byte limits apply to actual chunks.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -282,9 +431,7 @@ pub(crate) async fn plugin_host_request_bytes(
     revision: String,
     request: ByteRequest,
 ) -> Result<tauri::ipc::Response, String> {
-    let _place = crate::host_files::BYTE_WORK
-        .try_acquire()
-        .map_err(|_| "A byte operation is already under way")?;
+    let entered = tokio::time::Instant::now();
     let timeout = request.timeout_ms.unwrap_or(30_000);
     if request.max_bytes == 0
         || request.max_bytes > MAX_RESPONSE_BYTES
@@ -299,19 +446,18 @@ pub(crate) async fn plugin_host_request_bytes(
         body: None,
         timeout_ms: Some(timeout),
     })?;
+    let end = entered + Duration::from_millis(timeout);
     let operation = async {
+        let _place = crate::host_files::byte_admission(end).await?;
         byte_origin(manager.clone(), &id, &revision, &url).await?;
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_millis(timeout))
-            .build()
-            .map_err(|_| "Host request client is unavailable")?;
-        let (status, headers, bytes) =
-            read_bytes(client.get(url.clone()), request.max_bytes).await?;
+        let get = client(false)?
+            .get(url.clone())
+            .timeout(Duration::from_millis(timeout));
+        let (status, headers, bytes) = read_bytes(get, request.max_bytes).await?;
         byte_origin(manager, &id, &revision, &url).await?;
         byte_frame(status, headers, bytes).map(tauri::ipc::Response::new)
     };
-    tokio::time::timeout(Duration::from_millis(timeout), operation)
+    tokio::time::timeout_at(end, operation)
         .await
         .map_err(|_| "Host byte request timed out")?
 }
@@ -378,18 +524,24 @@ pub(crate) async fn plugin_host_upload(
         if bytes.len() as u64 > MAX_UPLOAD_BYTES {
             return Err("The upload file is too large".into());
         }
-        let (content_type, body) = multipart(&upload.fields, &upload.file, &bytes)?;
+        let (content_type, body) = multipart(
+            &upload.fields,
+            &upload.file.field,
+            &upload.file.name,
+            &upload.file.content_type,
+            &bytes,
+        )?;
         let mut headers = headers;
         headers.insert(
             reqwest::header::CONTENT_TYPE,
             HeaderValue::from_str(&content_type).map_err(|_| "Invalid upload")?,
         );
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(UPLOAD_DEADLINE)
-            .build()
-            .map_err(|_| "Host request client is unavailable")?;
-        read_response(client.post(url).headers(headers).body(body)).await
+        let post = client(false)?
+            .post(url)
+            .headers(headers)
+            .body(body)
+            .timeout(UPLOAD_DEADLINE);
+        read_response(post).await
     };
     tokio::time::timeout(UPLOAD_DEADLINE, operation)
         .await
@@ -430,11 +582,12 @@ fn upload_path(
 }
 
 /// A `multipart/form-data` body: the text fields, then the file.
-fn multipart(
+fn validate_form(
     fields: &BTreeMap<String, String>,
-    file: &UploadFile,
-    bytes: &[u8],
-) -> Result<(String, Vec<u8>), String> {
+    field: &str,
+    name: &str,
+    content_type: &str,
+) -> Result<(), String> {
     // Names and types go into headers inside the body, so they stay plain.
     let plain = |text: &str| {
         !text.is_empty()
@@ -444,15 +597,26 @@ fn multipart(
                 .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\')
     };
     if fields.len() > 16
-        || !plain(&file.field)
-        || !plain(&file.name)
-        || !plain(&file.content_type)
+        || !plain(field)
+        || !plain(name)
+        || !plain(content_type)
         || fields
             .iter()
             .any(|(name, value)| !plain(name) || value.len() > MAX_HEADER_BYTES)
     {
         return Err("Invalid upload form".into());
     }
+    Ok(())
+}
+
+fn multipart(
+    fields: &BTreeMap<String, String>,
+    field: &str,
+    name: &str,
+    content_type: &str,
+    bytes: &[u8],
+) -> Result<(String, Vec<u8>), String> {
+    validate_form(fields, field, name, content_type)?;
     let boundary = format!("buzz-{}", uuid::Uuid::new_v4().simple());
     let mut body = Vec::with_capacity(bytes.len() + 1024);
     for (name, value) in fields {
@@ -466,7 +630,7 @@ fn multipart(
     body.extend(
         format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
-            file.field, file.name, file.content_type
+            field, name, content_type
         )
         .as_bytes(),
     );
@@ -562,22 +726,40 @@ async fn send_request_with_policy(
     deadline: Duration,
     protected: bool,
 ) -> Result<HostResponse, String> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+    let mut request = client(protected)?
+        .request(method, url)
+        .headers(headers)
         .timeout(deadline);
-    let client = if protected {
-        client.retry(reqwest::retry::never())
-    } else {
-        client
-    };
-    let client = client
-        .build()
-        .map_err(|_| "Host request client is unavailable")?;
-    let mut request = client.request(method, url).headers(headers);
     if let Some(body) = body {
         request = request.body(body);
     }
     read_response(request).await
+}
+
+/// Shared clients, as for agent requests, so plugin requests reuse
+/// connections instead of building a client and opening a connection on every
+/// call. Each request sets its own timeout. A protected request is never
+/// retried or pooled.
+fn client(protected: bool) -> Result<&'static reqwest::Client, String> {
+    static PLAIN: OnceLock<Result<reqwest::Client, reqwest::Error>> = OnceLock::new();
+    static PROTECTED: OnceLock<Result<reqwest::Client, reqwest::Error>> = OnceLock::new();
+    let cell = if protected { &PROTECTED } else { &PLAIN };
+    cell.get_or_init(|| {
+        let builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        if protected {
+            // No idle connections, so each one-time request opens its own
+            // (reqwest is built without HTTP/2, so none are shared either).
+            builder
+                .retry(reqwest::retry::never())
+                .pool_max_idle_per_host(0)
+        } else {
+            // A connection idle across sleep may be dead; open a new one.
+            builder.pool_idle_timeout(Duration::from_secs(30))
+        }
+        .build()
+    })
+    .as_ref()
+    .map_err(|_| "Host request client is unavailable".into())
 }
 
 /// Sends `request` and reads its bounded response, without its cookies.
@@ -839,7 +1021,8 @@ mod tests {
             content_type: "application/gzip".into(),
         };
         let fields = BTreeMap::from([("version_id".to_string(), "v1".to_string())]);
-        let (content_type, body) = multipart(&fields, &file, b"GZ").unwrap();
+        let (content_type, body) =
+            multipart(&fields, &file.field, &file.name, &file.content_type, b"GZ").unwrap();
         let boundary = content_type
             .strip_prefix("multipart/form-data; boundary=")
             .unwrap();
@@ -851,7 +1034,10 @@ mod tests {
         );
         for bad in ["a\"b", "a b", "", "a\r\nb"] {
             let fields = BTreeMap::from([(bad.to_string(), "v".to_string())]);
-            assert!(multipart(&fields, &file, b"").is_err(), "{bad:?}");
+            assert!(
+                multipart(&fields, &file.field, &file.name, &file.content_type, b"").is_err(),
+                "{bad:?}"
+            );
         }
     }
 
@@ -879,6 +1065,44 @@ mod tests {
             "https://outside.example/"
         );
         assert!(!response.headers.contains_key("set-cookie"));
+    }
+
+    #[tokio::test]
+    async fn request_transport_pools_only_unprotected_connections() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = reqwest::Url::parse(&format!(
+            "http://{}/graphql",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = accepted.clone();
+        std::thread::spawn(move || {
+            for socket in listener.incoming() {
+                let mut socket = socket.unwrap();
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let mut request = [0u8; 1024];
+                    while matches!(socket.read(&mut request), Ok(count) if count > 0) {
+                        let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+                    }
+                });
+            }
+        });
+        for protected in [false, false, true, true] {
+            send_request_with_policy(
+                url.clone(),
+                reqwest::Method::POST,
+                HeaderMap::new(),
+                None,
+                DEADLINE,
+                protected,
+            )
+            .await
+            .unwrap();
+        }
+        // Two plain requests share one connection; each protected one opens its own.
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
     #[tokio::test]

@@ -441,6 +441,13 @@ Windows/Linux consume held-key repeats without closing further tabs or the windo
 Window buttons and Alt+F4 always retain their window-only behavior. The bottom
 terminal drawer keeps its existing Cmd/Ctrl+J/Hide behavior. Browser-build
 shortcuts are unchanged.
+Shift+Escape asks "Mark everything as read?" in the shared `AlertDialog` (Cancel has
+initial focus; focus returns to the element that had it) and then runs the community
+menu's Mark all as read action and toasts. `MarkAllReadShortcut` registers it as a host
+shortcut only while the selected community's session is connected, and it is
+unavailable without `frontier-sync` or when no channel shows unread. It works while
+typing and yields to terminals and open dialogs. On a narrow layout, Escape that closes
+the navigation drawer is consumed, so it never also marks anything read.
 Feature-local details such as harness logs remain tied to their owning profile;
 closing that profile or losing authorization also removes its log tab.
 Right-click any channel tab and choose **Close all tabs** to close this channel's

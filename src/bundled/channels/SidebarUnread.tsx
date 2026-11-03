@@ -12,6 +12,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { CONVERSATION_LIST_LABEL, UNREAD_MARKERS } from "./conversation-rows";
 import styles from "./Channels.module.css";
 
 export type UnreadDmPreview = {
@@ -34,9 +35,7 @@ function unreadEdges(list: HTMLElement): Edges {
   const viewport = list.getBoundingClientRect();
   if (!list.clientHeight || !viewport.width) return edges;
   const rows = new Set<HTMLButtonElement>();
-  for (const marker of list.querySelectorAll(
-    "[data-channel-unread], [data-channel-activity]",
-  )) {
+  for (const marker of list.querySelectorAll(UNREAD_MARKERS)) {
     const row = marker.closest("button");
     if (row) rows.add(row);
   }
@@ -232,7 +231,7 @@ export function SidebarUnread({
   });
   return (
     <SidebarList
-      navigation={{ label: "Subscribed channels", ref: list }}
+      navigation={{ label: CONVERSATION_LIST_LABEL, ref: list }}
       contentRef={content}
       overlay={edgeCues}
     >

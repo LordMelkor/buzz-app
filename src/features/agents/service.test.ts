@@ -34,7 +34,10 @@ import {
   it,
   vi,
 } from "vitest";
-import { forgetDefaultAgent } from "../solo/default-agent";
+import {
+  clearDeletedDefaultAgent,
+  forgetDefaultAgent,
+} from "../solo/default-agent";
 import { AgentConfigStore, type Subject } from "./agent-config";
 import type { Mode } from "./agent-start";
 import { channelTemplates } from "../channel-templates/local";
@@ -105,6 +108,7 @@ const records = vi.hoisted(() => ({
 }));
 vi.mock("../solo/default-agent", async (original) => ({
   ...(await original<typeof import("../solo/default-agent")>()),
+  clearDeletedDefaultAgent: vi.fn(async () => false),
   forgetDefaultAgent: vi.fn(),
 }));
 // Each community's config channels, when a test brings them up: the service's
@@ -4624,11 +4628,29 @@ it("keeps a Delete that fails partway listed and stopped, deletes nothing, and r
     fresh: true,
   });
   expect(forgetDefaultAgent).toHaveBeenCalledWith(bot);
+  expect(clearDeletedDefaultAgent).toHaveBeenCalledWith(
+    session,
+    `https://relay.example.test:${viewer}`,
+    bot,
+  );
   expect(
     vi.mocked(session.agentChoices.refresh).mock.invocationCallOrder[0],
   ).toBeLessThan(
     vi.mocked(forgetDefaultAgent).mock.invocationCallOrder[0] ?? 0,
   );
+});
+
+it("reports a Bestie account cleanup failure after the agent is deleted", async () => {
+  const { service } = await setup();
+  await service.create({ type: "example/echo", name: "Echo" });
+  vi.mocked(clearDeletedDefaultAgent).mockRejectedValueOnce(
+    new Error("account offline"),
+  );
+  await expect(service.remove(bot)).rejects.toThrow(
+    "Echo was deleted, but Buzz couldn't clear it as your Bestie",
+  );
+  expect(service.find(bot)).toBeUndefined();
+  expect(forgetDefaultAgent).toHaveBeenCalledWith(bot);
 });
 
 it("shows an agent whose settings could not be saved with its type's defaults", async () => {

@@ -27,6 +27,18 @@ export type HostUpload = Readonly<{
     contentType: string;
   }>;
 }>;
+/** One in-memory multipart part plus bounded text fields. Desktop only. */
+export type HostByteUpload = Readonly<{
+  url: string;
+  /** 1–256 ASCII letters/digits/dots/underscores/hyphens; no leading dot. */
+  field: string;
+  /** One filename with the same safe characters; no leading dot or path. */
+  name: string;
+  /** Exactly image/png, image/jpeg or image/webp, matching the bytes' signature. */
+  contentType: string;
+  /** At most 16 text fields, safe names, each value at most 8192 UTF-8 bytes. */
+  fields?: Readonly<Record<string, string>>;
+}>;
 export type HostResponse = Readonly<{
   status: number;
   headers: Readonly<Record<string, string>>;
@@ -144,9 +156,18 @@ export interface Host {
   resolveDirectory?: (path: string) => Promise<string>;
   request(input: HostRequest): Promise<HostResponse>;
   /** POST-only, desktop and compatible native host required. A repeated call
-   * authority rejects with unknown outcome, never resubmits or caches success. */
+   * authority rejects with unknown outcome, never resubmits or caches success.
+   * Blocks IPC-fallback resends only, not fresh calls or upstream retries.
+   * Also send callId as a server idempotency key when the server supports it. */
   requestOnce?: (
     input: HostRequest,
+    options: HostRequestOnceOptions,
+  ) => Promise<HostResponse>;
+  /** Protected multipart POST; no file grant, IPC fallback or automatic retry.
+   * Copies 1–16777216 bytes before awaiting native authority. */
+  uploadBytesOnce?: (
+    bytes: Uint8Array,
+    input: HostByteUpload,
     options: HostRequestOnceOptions,
   ) => Promise<HostResponse>;
   /** No automatic replay protection or text/array fallback. */
@@ -157,6 +178,10 @@ export interface Host {
     bytes: Uint8Array,
     input: Readonly<{ sha256: string }>,
   ) => Promise<HostSavedBytes>;
+  /** Removes this plugin's own managed file. Await attachment sends first;
+   * Conservatively refuses app-wide while any plugin's host.readFile call or
+   * process named read/read-protected is active, regardless of program/path. */
+  deleteManagedFile?: (path: string) => Promise<void>;
   /** Uploads a file as `request` sends a body. Desktop only. */
   upload?: (input: HostUpload) => Promise<HostResponse>;
   prepareRemoteAgentAuthorization?: (
@@ -468,70 +493,54 @@ export class HostService extends Service implements Host {
     input: HostRequest,
     { callId, isEligible }: HostRequestOnceOptions,
   ): Promise<HostResponse> {
-    const ctx = this.ctx;
-    const owner = ctx.pluginOwner;
+    const owner = this.ctx.pluginOwner;
     if (!owner || !isTauri())
       throw new Error("Protected requests require an installed desktop plugin");
     if (input.method !== "POST" || !UUID.test(callId))
       throw new Error(
         "Protected requests require POST and a canonical UUID callId",
       );
-    let state = callContexts.get(ctx.fiber);
-    const active = () => {
-      if (ctx.fiber.uid === null || state?.disposed)
-        throw new Error("Protected request owner is inactive; outcome unknown");
-    };
-    active();
-    if (!state) {
-      state = {
-        context: invoke<CallContext>("plugin_host_call_context").catch(rethrow),
-        activation: crypto.randomUUID(),
-        disposed: false,
-      };
-      const lifetime = state;
-      ctx.effect(
-        () => () => {
-          lifetime.disposed = true;
-          if (callContexts.get(ctx.fiber) === lifetime)
-            callContexts.delete(ctx.fiber);
-        },
-        "protected host calls",
-      );
-      callContexts.set(ctx.fiber, state);
-    }
-    // Cache failures too: refreshing native authority must never be an implicit retry.
-    const context = await state.context;
-    active();
+    return protectedCall(this.ctx, callId, isEligible, (once) =>
+      invoke<HostResponse>("plugin_host_request", {
+        id: owner.id,
+        revision: owner.revision,
+        request: input,
+        once,
+      }),
+    );
+  }
+
+  async uploadBytesOnce(
+    bytes: Uint8Array,
+    input: HostByteUpload,
+    { callId, isEligible }: HostRequestOnceOptions,
+  ): Promise<HostResponse> {
+    const owner = this.ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("Protected requests require an installed desktop plugin");
     if (
-      !context ||
-      !UUID.test(context.boot) ||
-      !Number.isSafeInteger(context.page) ||
-      context.page < 0
+      !(bytes instanceof Uint8Array) ||
+      bytes.byteLength < 1 ||
+      bytes.byteLength > BYTE_LIMIT
     )
-      throw new Error(
-        "Compatible native protected-request context is unavailable",
-      );
-    if (isEligible !== undefined) {
-      try {
-        const eligible = isEligible();
-        if (eligible !== true) {
-          // Invalid async callbacks still fail closed; observe any rejection.
-          void Promise.resolve(eligible).catch(() => {});
-          throw new Error();
-        }
-      } catch {
-        throw new Error("Protected request caller eligibility refused");
-      }
-      active();
-    }
-    const result = await invoke<HostResponse>("plugin_host_request", {
+      throw new Error("Invalid upload bytes");
+    // Pin both the bytes and metadata before waiting for authority or eligibility.
+    const snapshot = new Uint8Array(bytes);
+    const metadata = asciiJson({
       id: owner.id,
       revision: owner.revision,
-      request: input,
-      once: { ...context, activation: state.activation, callId },
-    }).catch(rethrow);
-    active();
-    return result;
+      upload: input,
+    });
+    if (metadata.length > UPLOAD_METADATA_LIMIT - 512)
+      throw new Error("Upload metadata is too large");
+    return protectedCall(this.ctx, callId, isEligible, (once) =>
+      invoke<HostResponse>("plugin_host_upload_bytes_once", snapshot, {
+        headers: {
+          // Append authority to the already pinned JSON object without reserializing input.
+          "x-buzz-upload": `${metadata.slice(0, -1)},"once":${asciiJson(once)}}`,
+        },
+      }),
+    );
   }
 
   async requestBytes(input: HostByteRequest): Promise<HostByteResponse> {
@@ -610,6 +619,26 @@ export class HostService extends Service implements Host {
     }
   }
 
+  async deleteManagedFile(path: string): Promise<void> {
+    const ctx = this.ctx;
+    const owner = ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("Managed deletion requires an installed desktop plugin");
+    if (typeof path !== "string" || !path || path.includes("\0"))
+      throw new Error("Invalid managed file path");
+    const lifetime = byteLifetime(ctx);
+    try {
+      await invoke<void>("plugin_host_delete_managed_file", {
+        id: owner.id,
+        revision: owner.revision,
+        path,
+      }).catch(rethrow);
+      lifetime.active();
+    } finally {
+      lifetime.release();
+    }
+  }
+
   async upload(input: HostUpload): Promise<HostResponse> {
     const owner = this.ctx.pluginOwner;
     if (!owner || !isTauri())
@@ -620,6 +649,84 @@ export class HostService extends Service implements Host {
       upload: input,
     }).catch(rethrow);
   }
+}
+
+const UPLOAD_METADATA_LIMIT = 16 * 1024;
+// HTTP IPC headers are ASCII; JSON escapes preserve Unicode field values.
+function asciiJson(value: unknown): string {
+  return JSON.stringify(value).replace(
+    /[^\x20-\x7e]/g,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+async function protectedCall<T>(
+  ctx: Context,
+  callId: string,
+  isEligible: HostRequestOnceOptions["isEligible"],
+  dispatch: (
+    once: CallContext & { activation: string; callId: string },
+  ) => Promise<T>,
+): Promise<T> {
+  if (!ctx.pluginOwner || !isTauri())
+    throw new Error("Protected requests require an installed desktop plugin");
+  if (!UUID.test(callId))
+    throw new Error("Protected requests require a canonical UUID callId");
+  let state = callContexts.get(ctx.fiber);
+  const active = () => {
+    if (ctx.fiber.uid === null || state?.disposed)
+      throw new Error("Protected request owner is inactive; outcome unknown");
+  };
+  active();
+  if (!state) {
+    state = {
+      context: invoke<CallContext>("plugin_host_call_context").catch(rethrow),
+      activation: crypto.randomUUID(),
+      disposed: false,
+    };
+    const lifetime = state;
+    ctx.effect(
+      () => () => {
+        lifetime.disposed = true;
+        if (callContexts.get(ctx.fiber) === lifetime)
+          callContexts.delete(ctx.fiber);
+      },
+      "protected host calls",
+    );
+    callContexts.set(ctx.fiber, state);
+  }
+  // Cache failures too: refreshing native authority must never be an implicit retry.
+  const context = await state.context;
+  active();
+  if (
+    !context ||
+    !UUID.test(context.boot) ||
+    !Number.isSafeInteger(context.page) ||
+    context.page < 0
+  )
+    throw new Error(
+      "Compatible native protected-request context is unavailable",
+    );
+  if (isEligible !== undefined) {
+    try {
+      const eligible = isEligible();
+      if (eligible !== true) {
+        // Invalid async callbacks still fail closed; observe any rejection.
+        void Promise.resolve(eligible).catch(() => {});
+        throw new Error();
+      }
+    } catch {
+      throw new Error("Protected request caller eligibility refused");
+    }
+    active();
+  }
+  const result = await dispatch({
+    ...context,
+    activation: state.activation,
+    callId,
+  }).catch(rethrow);
+  active();
+  return result;
 }
 
 const BYTE_LIMIT = 16 * 1024 * 1024;

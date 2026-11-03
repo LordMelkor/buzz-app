@@ -11,6 +11,23 @@ function sameCommunity(left: string, right: string) {
   }
 }
 
+// A frozen candidate array, such as a channel's member list, cannot change, so
+// its normalized scope is kept instead of sorting and joining it per lookup.
+const normalized = new WeakMap<
+  readonly string[],
+  { selected: ReadonlySet<string>; selection: readonly string[]; id: string }
+>();
+function normalize(candidates: readonly string[]) {
+  let scope = normalized.get(candidates);
+  if (!scope) {
+    const selected = new Set(candidates.map((key) => key.toLowerCase()));
+    const selection = [...selected].sort();
+    scope = { selected, selection, id: selection.join(":") };
+    if (Object.isFrozen(candidates)) normalized.set(candidates, scope);
+  }
+  return scope;
+}
+
 /** Local agent names win only in their community. Names never grant control. */
 export function createNameProvider(
   policy: NamingPolicy,
@@ -157,10 +174,8 @@ export function createNameProvider(
       return source.agentLibrary.retain();
     },
     scope(source, candidates, displayFacts) {
-      const selected =
-        candidates && new Set(candidates.map((key) => key.toLowerCase()));
-      const selection = selected && [...selected].sort();
-      const id = selection?.join(":");
+      const { selected, selection, id } =
+        (candidates && normalize(candidates)) ?? {};
       // Include the requested identity even for historical non-member references.
       const outside = (selected: ReadonlySet<string>, key: string) => {
         const { outsiders } = current(source);

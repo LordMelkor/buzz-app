@@ -31,6 +31,8 @@ export const inlineFormats = [
     label: "Code",
     inputType: "formatInlineCode",
     binding: { key: "e", mod: true, shift: false },
+    // Slack's chord, for people moving over.
+    aliases: [{ key: "c", mod: true, shift: true }],
   },
 ] as const;
 export type InlineFormat = (typeof inlineFormats)[number]["mark"];
@@ -39,6 +41,7 @@ export const blockFormats = [
     mark: "code_block",
     label: "Code block",
     binding: { key: "c", mod: true, alt: true, shift: false },
+    aliases: [{ key: "c", mod: true, alt: true, shift: true }],
   },
   {
     mark: "bullet_list",
@@ -54,11 +57,29 @@ export const blockFormats = [
     mark: "blockquote",
     label: "Quote",
     binding: { key: "b", mod: true, shift: true },
+    aliases: [{ key: "9", mod: true, shift: true }],
   },
 ] as const;
 export type BlockFormat = (typeof blockFormats)[number]["mark"];
 export type ComposerFormat = InlineFormat | BlockFormat;
 export const composerFormats = [...inlineFormats, ...blockFormats];
+export type ComposerFormatBinding = Readonly<{
+  key: string;
+  mod: true;
+  shift: boolean;
+  alt?: boolean;
+}>;
+/** Every chord a format answers to; the first is the one hints show. */
+export function formatBindings(
+  format: (typeof composerFormats)[number],
+): readonly ComposerFormatBinding[] {
+  return [format.binding, ...("aliases" in format ? format.aliases : [])];
+}
+/** Add or edit a link around the selection: Buzz's ⌘K, then Slack's ⌘⇧U. */
+export const linkBindings: readonly ComposerFormatBinding[] = [
+  { key: "k", mod: true, shift: false },
+  { key: "u", mod: true, shift: true },
+];
 
 export type ComposerLinkEdit = {
   text: string;
