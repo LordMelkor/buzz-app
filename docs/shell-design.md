@@ -12,8 +12,9 @@ from page choices; a retained destination whose provider is unavailable displays
 an explicit failure with retry instead of silently selecting another page.
 A page or Settings section already on screen is not replaced when a later
 attempt on the same visit (a retry, a same-target open, a reopen after sign-in)
-times out: it stays, and may still update its address and answer late. A failure
-the page reports itself, lost access, a removed page and a rejected incoming link
+reaches the host's own deadline without an answer: it stays, and may still
+update its address and answer late. A failure the page reports itself (a timeout
+included), lost access, a removed page and a rejected incoming link
 still show the host's failure, as does that timeout when it passes while the
 host shows its loading state in place of the page. Loading that starts later over
 a kept page shows the loading state, not the failure.

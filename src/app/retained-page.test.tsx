@@ -92,6 +92,7 @@ afterEach(async () => {
   cleanup();
   await services?.dispose();
   services = undefined;
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   localStorage.clear();
   window.history.replaceState(null, "", "/");
@@ -116,6 +117,17 @@ function start(
   prepare?.(current);
   render(<App services={current} />);
   return current;
+}
+
+// The navigation controller's own 15 s deadline, passed on cue. Call it before
+// the open starts, since the open sets its timer. Only timeouts are faked, and
+// real time still moves them, so Testing Library's waits keep working.
+function controlDeadline() {
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout"],
+    shouldAdvanceTime: true,
+  });
+  return () => vi.advanceTimersByTime(15_000);
 }
 
 // Text of every node added to the page until the returned stop is called, so a
@@ -144,14 +156,9 @@ it("keeps a shown page on screen when a background reopen times out", async () =
   // Something reopens the same visit without the person acting; the page
   // does not answer before the deadline.
   page.answer = false;
+  const passDeadline = controlDeadline();
   act(() => void current.navigation.retry());
-  const attempt = current.navigation.snapshot().attempt;
-  act(() => {
-    current.navigationHost.complete(attempt, {
-      status: "failed",
-      reason: "timeout",
-    });
-  });
+  act(passDeadline);
   expect(current.navigation.snapshot()).toMatchObject({
     status: "failed",
     presented: true,
@@ -183,7 +190,7 @@ it("still replaces the page when it reports its own failure", async () => {
   expect(screen.queryByText("Held content")).toBeNull();
 });
 
-it("replaces a kept page when it reports its own failure after the deadline", async () => {
+it("replaces the page when it reports a timeout itself", async () => {
   const current = start();
   expect(await screen.findByText("Held content")).toBeVisible();
   await waitFor(() =>
@@ -192,17 +199,38 @@ it("replaces a kept page when it reports its own failure after the deadline", as
   page.answer = false;
   const previous = page.navigation;
   act(() => void current.navigation.retry());
-  const attempt = current.navigation.snapshot().attempt;
+  await waitFor(() => expect(page.navigation).not.toBe(previous));
+  const request = page.navigation;
+  if (!request) throw new Error("The page received no request");
+  // Only the host's own deadline keeps the page: a timeout the page reports
+  // before it is a failure of the page's own.
+  act(() => {
+    expect(request.complete({ status: "failed", reason: "timeout" })).toBe(
+      true,
+    );
+  });
+  expect(current.navigation.snapshot().presented).toBeUndefined();
+  expect(
+    await screen.findByRole("heading", { name: "This page isn’t available" }),
+  ).toBeVisible();
+  expect(screen.queryByText("Held content")).toBeNull();
+});
+
+it("replaces a kept page when it reports its own failure after the deadline", async () => {
+  const current = start();
+  expect(await screen.findByText("Held content")).toBeVisible();
+  await waitFor(() =>
+    expect(current.navigation.snapshot().status).toBe("opened"),
+  );
+  page.answer = false;
+  const previous = page.navigation;
+  const passDeadline = controlDeadline();
+  act(() => void current.navigation.retry());
   // The page receives the retry as a new request of its own.
   await waitFor(() => expect(page.navigation).not.toBe(previous));
   const request = page.navigation;
   if (!request) throw new Error("The page received no request");
-  act(() => {
-    current.navigationHost.complete(attempt, {
-      status: "failed",
-      reason: "timeout",
-    });
-  });
+  act(passDeadline);
   expect(screen.getByText("Held content")).toBeVisible();
   // The page's own lookup fails after the deadline, through its own request.
   let accepted = false;
@@ -224,18 +252,13 @@ it("rejects a kept page's late answer once another visit replaced it", async () 
   );
   page.answer = false;
   const previous = page.navigation;
+  const passDeadline = controlDeadline();
   act(() => void current.navigation.retry());
-  const attempt = current.navigation.snapshot().attempt;
   // The page receives the retry as a new request of its own.
   await waitFor(() => expect(page.navigation).not.toBe(previous));
   const stale = page.navigation;
   if (!stale) throw new Error("The page received no request");
-  act(() => {
-    current.navigationHost.complete(attempt, {
-      status: "failed",
-      reason: "timeout",
-    });
-  });
+  act(passDeadline);
   act(() => {
     void current.navigation.open({
       version: 1,
@@ -279,14 +302,13 @@ it("keeps a shown Settings section when a background reopen times out", async ()
   await waitFor(() =>
     expect(current.navigation.snapshot().status).toBe("opened"),
   );
-  // Settings answers each open at once, after its render.
+  // Settings answers each open after its render, so the deadline passes
+  // before it draws.
   const frames = recordFrames();
+  const passDeadline = controlDeadline();
   act(() => {
     void current.navigation.retry();
-    current.navigationHost.complete(current.navigation.snapshot().attempt, {
-      status: "failed",
-      reason: "timeout",
-    });
+    passDeadline();
   });
   expect(
     frames().some((text) => text.includes("This page isn’t available")),
@@ -310,17 +332,13 @@ it("shows the card when a kept timeout leaves only the loading state", async () 
   );
   // The section reopens while its authorization reloads: the host draws its
   // loading state instead of the editor, and the deadline passes.
+  const passDeadline = controlDeadline();
   act(() => {
     setGate("pending");
     void current.navigation.retry();
   });
   expect(screen.queryByText("Gated controls")).toBeNull();
-  act(() => {
-    current.navigationHost.complete(current.navigation.snapshot().attempt, {
-      status: "failed",
-      reason: "timeout",
-    });
-  });
+  act(passDeadline);
   // Nothing of the section was drawn, so the host reports its own failure.
   expect(current.navigation.snapshot()).toMatchObject({
     status: "failed",
@@ -370,16 +388,12 @@ it("keeps a loading state, not the card, when loading starts after a kept timeou
   // The deadline passes while the page is drawn, and it stays.
   page.answer = false;
   const previous = page.navigation;
+  const passDeadline = controlDeadline();
   act(() => void current.navigation.retry());
   await waitFor(() => expect(page.navigation).not.toBe(previous));
   const request = page.navigation;
   if (!request) throw new Error("The page received no request");
-  act(() => {
-    current.navigationHost.complete(current.navigation.snapshot().attempt, {
-      status: "failed",
-      reason: "timeout",
-    });
-  });
+  act(passDeadline);
   expect(screen.getByText("Held content")).toBeVisible();
   // Later the page updates its address, and in the same moment its plugin
   // restarts in the background: the host draws its loading state over the

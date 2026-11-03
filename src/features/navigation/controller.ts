@@ -161,29 +161,38 @@ export function createNavigationController(
     operation.timer = setTimeout(
       () =>
         transaction(() => {
-          finish(operation, { status: "failed", reason: "timeout" });
+          finish(
+            operation,
+            { status: "failed", reason: "timeout" },
+            "deadline",
+          );
         }),
       timeoutMs,
     );
   }
-  /** `late`: the page's own answer to a kept attempt, after its deadline. */
-  function finish(operation: Operation, outcome: OpenResult, late = false) {
+  /**
+   * `source`: "deadline" when this controller's own deadline passed; "answer"
+   * when the page or host answered, which a kept attempt may still do late;
+   * "host" when the host ends the attempt itself, which keeps no page.
+   */
+  function finish(
+    operation: Operation,
+    outcome: OpenResult,
+    source: "deadline" | "answer" | "host",
+  ) {
     if (
       operation !== active ||
-      !(operation.pending || (late && operation.late))
+      !(operation.pending || (source === "answer" && operation.late))
     )
       return;
-    const kept = operation.late;
     operation.late = false;
     // A page that stays silent past the deadline keeps showing what it showed.
-    // A page that reports its own failure (unavailable, denied), and a rejected
-    // incoming link, still replace it with the host's explanation and Retry.
-    // A timeout reported for a kept attempt means the host is not drawing its
-    // page after all, so the host's failure covers it.
+    // Any failure that is answered, a timeout included, still replaces it with
+    // the host's explanation and Retry, as does a rejected incoming link. That
+    // covers the host's own report that it was not drawing the kept page.
     const result: OpenResult =
+      source === "deadline" &&
       outcome.status === "failed" &&
-      outcome.reason === "timeout" &&
-      !kept &&
       !snapshot.ingress &&
       operation.attempt.entry.id === shown
         ? { ...outcome, presented: true }
@@ -268,7 +277,7 @@ export function createNavigationController(
       canGoForward: state.canGoForward,
     });
     if (state.invalidAddress) {
-      finish(operation, { status: "failed", reason: "invalid-target" });
+      finish(operation, { status: "failed", reason: "invalid-target" }, "host");
       return promise;
     }
     arm(operation);
@@ -581,7 +590,7 @@ export function createNavigationController(
         )
           return false;
         // A kept page may still answer after its deadline, either way.
-        finish(active, result, true);
+        finish(active, result, "answer");
         return true;
       });
     },
@@ -593,7 +602,7 @@ export function createNavigationController(
       transaction(() => {
         ingressRetry = undefined;
         const operation = active;
-        finish(operation, { status: "cancelled" });
+        finish(operation, { status: "cancelled" }, "host");
         effects.push(() => operation.controller.abort(NAVIGATION_ABORTED));
       });
     },
@@ -608,7 +617,7 @@ export function createNavigationController(
           ingress: true,
           retryable: !!retry,
         });
-        finish(active, { status: "failed", reason });
+        finish(active, { status: "failed", reason }, "host");
       });
     },
     dispose() {
@@ -621,7 +630,7 @@ export function createNavigationController(
         ingressRetry = undefined;
         active.reauthorizing?.();
         unsubscribe();
-        finish(active, { status: "cancelled" });
+        finish(active, { status: "cancelled" }, "host");
         const operation = active;
         effects.push(() => operation.controller.abort(NAVIGATION_ABORTED));
         listeners.clear();

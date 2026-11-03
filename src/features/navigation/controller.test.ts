@@ -287,8 +287,11 @@ describe("navigation attempts over one history driver", () => {
     void nav.open(page);
     await vi.advanceTimersByTimeAsync(15_000);
     expect(nav.snapshot()).toMatchObject({ status: "failed", presented: true });
-    // A failure the page reports itself still replaces it.
-    for (const reason of ["unavailable", "denied"] as const) {
+    // A failure the page reports itself still replaces it, a timeout included:
+    // only this controller's own deadline keeps the page.
+    for (const reason of ["unavailable", "denied", "timeout"] as const) {
+      void nav.retry();
+      host.complete(nav.snapshot().attempt, { status: "opened" });
       void nav.retry();
       host.complete(nav.snapshot().attempt, { status: "failed", reason });
       expect(nav.snapshot()).toMatchObject({ status: "failed", reason });
