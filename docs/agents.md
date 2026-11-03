@@ -929,6 +929,13 @@ direction. Agent-elided strings and payloads are labeled, not hidden. Turns whos
 `turn_started` frame is not loaded are marked as partial. Posted chat messages are
 not joined here; the transcript shows the agent's ACP output.
 
+The shared Claude, Goose, and Pi turn formatter encodes conversation history and
+the triggering event as JSON with escaped markup delimiters. Message text,
+display names, and tags therefore cannot create extra request sections. The
+transcript reads that JSON directly and retains support for older line-based
+`buzz-event` and `buzz-events` records; it never parses decoded message content
+as another prompt.
+
 The plugin's activation leases `session.agentActivity` for the live display;
 disabling the plugin clears its live evidence. While demanded, the shared live
 connection carries one dedicated owner (`#p=viewer`) route for kind 24200, with no

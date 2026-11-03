@@ -6,6 +6,10 @@ import type { BuzzClient } from "../../buzz-mcp/client";
 import { appClient } from "../../buzz-mcp/app-client";
 import { callTool } from "../../buzz-mcp/tools";
 import { createAgentMemories } from "../../features/agents/memory";
+import {
+  promptMessage,
+  promptSections,
+} from "../../features/agents/activity-transcript";
 import { pubkeyOf } from "../../features/agents/membership";
 import { ownerReads } from "../../features/agents/reads";
 import { localStore } from "../../features/agents/state";
@@ -39,6 +43,8 @@ afterEach(() => {
 const self = "c".repeat(64);
 const alice = "a".repeat(64);
 const channel = "chan-1";
+const promptContent = (text: string | undefined) =>
+  promptMessage(promptSections(text ?? "")).text;
 const message = (
   id: string,
   content: string,
@@ -346,10 +352,10 @@ it("hands a mention to its thread's session", async () => {
   const prompt = claude?.prompts[0] ?? "";
   expect(prompt).toContain(`Thread root: ${root.id}`);
   expect(prompt).toContain('<thread-context included="1" total="2"');
-  expect(prompt).toContain(
-    `Alice (${alice}) (1970-01-01T00:01:40.000Z): Build is red`,
-  );
-  expect(prompt).toContain("Content: @Claude can you look?");
+  expect(JSON.parse(promptSections(prompt)[1]?.body ?? "")).toMatchObject([
+    { pubkey: alice, author: "Alice", content: "Build is red" },
+  ]);
+  expect(promptContent(prompt)).toBe("@Claude can you look?");
   expect(prompt).not.toContain(RESUMED_PROMPT);
   // The process holds no key: it acts through the tools.
   expect(claude?.options).not.toHaveProperty("agent");
@@ -437,7 +443,7 @@ it("tells a turn a reload stopped to carry on where it left off", async () => {
   await flush(10);
   const prompt =
     claudes().find((process) => process.prompts.length)?.prompts[0] ?? "";
-  expect(prompt).toContain("Content: @Claude fix the build");
+  expect(promptContent(prompt)).toBe("@Claude fix the build");
   expect(prompt).toContain(RESUMED_PROMPT);
 });
 
@@ -855,8 +861,8 @@ it("starts each session from the host's core memory, reading only recent notes f
     });
   const asked = (id: string) =>
     systemPromptOf(
-      claudes().find((process) =>
-        process.prompts[0]?.includes(`Content: @Claude ${id}`),
+      claudes().find(
+        (process) => promptContent(process.prompts[0]) === `@Claude ${id}`,
       ),
     );
   core.mockResolvedValueOnce("I am Claude.");
@@ -1875,8 +1881,8 @@ it("always offers attention tools, on search, and says in each turn whether atte
       }),
     });
   const asked = (id: string) =>
-    claudes().find((process) =>
-      process.prompts[0]?.includes(`Content: @Claude ${id}`),
+    claudes().find(
+      (process) => promptContent(process.prompts[0]) === `@Claude ${id}`,
     );
   const tools = async (claude: FakeClaude | undefined, id: number) =>
     (
@@ -1952,8 +1958,8 @@ it("offers the tools plugins add, runs them as the agent, and replaces an idle s
     });
   const asked = (id: string) =>
     claudes().find((process) =>
-      process.prompts.some((prompt) =>
-        prompt.includes(`Content: @Claude ${id}`),
+      process.prompts.some(
+        (prompt) => promptContent(prompt) === `@Claude ${id}`,
       ),
     );
   const names = async (claude: FakeClaude | undefined, id: number) =>

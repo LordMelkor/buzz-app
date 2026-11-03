@@ -22,6 +22,13 @@ export const CONTEXT_LIMIT = 12;
 
 const section = (tag: string, body: string, attributes = "") =>
   `<${tag}${attributes}>\n${body.trim()}\n</${tag}>`;
+// JSON preserves message bytes while keeping participant-controlled text out of
+// the harness's section delimiters and line-oriented routing metadata.
+const quoted = (value: unknown) =>
+  JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026");
 
 export function systemPrompt(
   input: Readonly<{
@@ -97,16 +104,12 @@ export type TurnInput = Readonly<{
 }>;
 
 const time = (seconds: number) => new Date(seconds * 1000).toISOString();
-const actor = (pubkey: string, name: TurnInput["name"]) => {
-  const label = name(pubkey);
-  return label ? `${label} (${pubkey})` : pubkey;
-};
 
 /** One turn: routing context, unseen thread context, then the event. */
 export function turnPrompt(input: TurnInput) {
   const { event, channel, thread } = input;
   const channelLabel = channel.name
-    ? `${channel.name} (#${channel.id})`
+    ? `${quoted(channel.name).slice(1, -1)} (#${channel.id})`
     : channel.id;
   // A session shared by a channel's threads (or a DM's) cannot tell which
   // thread a reply is for, so it names the thread itself.
@@ -168,19 +171,26 @@ export function turnPrompt(input: TurnInput) {
         (channel.dm && !thread) || input.topLevel
           ? "conversation-context"
           : "thread-context",
-        context
-          .map(
-            (message, index) =>
-              `[${index + 1}] ${actor(message.pubkey, input.name)} (${time(message.created_at)}): ${message.content}`,
-          )
-          .join("\n"),
+        quoted(
+          context.map((message) => ({
+            id: message.id,
+            pubkey: message.pubkey,
+            author: input.name(message.pubkey) || message.pubkey,
+            time: time(message.created_at),
+            content: message.content,
+          })),
+        ),
         ` included="${context.length}" total="${input.total}" truncated="${context.length < input.context.length}"`,
       ),
     );
   parts.push(
     input.wake
       ? wakeSection(input.wake)
-      : section("buzz-event", eventBlock(input), ` type="${input.label}"`),
+      : section(
+          "buzz-event",
+          eventBlock(input),
+          ` type=${quoted(input.label)}`,
+        ),
   );
   return parts.join("\n\n");
 }
@@ -190,24 +200,20 @@ function eventBlock({ event, channel, thread, name }: TurnInput) {
   const label = name(event.pubkey);
   const mentions = event.tags
     .filter((tag) => tag[0] === "p" && tag[1])
-    .map((tag) => actor(tag[1] as string, name));
-  const parsed = [
-    ...(thread && thread.parentId !== thread.rootId
-      ? [`parent=${thread.parentId}`]
-      : []),
-    ...(thread ? [`root=${thread.rootId}`] : []),
-    ...(mentions.length ? [`mentions=[${mentions.join(", ")}]`] : []),
-  ];
-  return [
-    `Event ID: ${event.id}`,
-    `Channel: ${channel.name ? `${channel.name} (#${channel.id})` : channel.id}`,
-    `Kind: ${event.kind}`,
-    `From: ${label ? `${label} (npub: ${npub}, hex: ${event.pubkey})` : `${npub} (hex: ${event.pubkey})`}`,
-    `Time: ${time(event.created_at)}`,
-    `Content: ${event.content}`,
-    `Tags: ${JSON.stringify(event.tags)}`,
-    ...(parsed.length ? [`Parsed: ${parsed.join(", ")}`] : []),
-  ].join("\n");
+    .map((tag) => ({ pubkey: tag[1], name: name(tag[1] as string) }));
+  return quoted({
+    id: event.id,
+    channel,
+    kind: event.kind,
+    pubkey: event.pubkey,
+    npub,
+    author: label || npub,
+    time: time(event.created_at),
+    content: event.content,
+    tags: event.tags,
+    ...(thread ? { thread } : {}),
+    ...(mentions.length ? { mentions } : {}),
+  });
 }
 
 /** A turn for a session that is still working on an earlier one. */

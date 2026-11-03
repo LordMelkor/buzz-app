@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { BuzzClient, Memories } from "../../buzz-mcp/client";
 import { callTool, memoryVersion } from "../../buzz-mcp/tools";
 import { createAgentMemories } from "../../features/agents/memory";
+import {
+  promptMessage,
+  promptSections,
+} from "../../features/agents/activity-transcript";
 import { RESUMED_PROMPT, TOP_LEVEL_PROMPT } from "../../buzz-mcp/prompt";
 import type { Agent, Delivery } from "../../features/agents/service";
 import type { Host } from "../../features/host/service";
@@ -886,14 +890,16 @@ it("shows a turn a reload stopped what it already posted, and to carry on", asyn
   const resumed = g.goose()?.turns[0]?.text ?? "";
   expect(resumed).toContain("Counted to 10");
   expect(resumed).toContain("Looks good so far");
-  expect(resumed).toContain("Content: @Gander count to 60");
+  expect(promptMessage(promptSections(resumed)).text).toBe(
+    "@Gander count to 60",
+  );
   expect(resumed).toContain(RESUMED_PROMPT);
 
   // The session has been shown them, so the thread's next turn is not.
   await g.deliver(inThread("4", "@Gander faster", alice));
   await flush(100);
   const next = g.goose()?.turns[1]?.text ?? "";
-  expect(next).toContain("Content: @Gander faster");
+  expect(promptMessage(promptSections(next)).text).toBe("@Gander faster");
   expect(next).not.toContain("Looks good so far");
   expect(next).not.toContain(RESUMED_PROMPT);
 });
