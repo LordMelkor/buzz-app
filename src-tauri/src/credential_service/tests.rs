@@ -214,6 +214,8 @@ async fn a_spare_issued_before_sign_out_never_acts() {
     let fixture = fixture();
     let (issued, token) = issued(&fixture).await;
     fixture.identity.sign_out().await;
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
     assert!(fixture
         .service
         .bind(&issued, "p", fixture.agent.pubkey.clone(), RELAY.into())
@@ -279,6 +281,34 @@ async fn revocation_while_a_key_is_read_withholds_the_result() {
             assert_eq!(reply.1["result"], "", "{revocation:?} {method}");
         }
     }
+}
+
+/// Deleting the agent while its request reads the saved agent answers
+/// `revoked`, not the failed read's `unavailable`.
+#[tokio::test(flavor = "multi_thread")]
+async fn deletion_while_the_agent_is_read_answers_revoked() {
+    let fixture = fixture();
+    let (_issued, token) = bound(&fixture).await;
+    let key = digest(&token);
+    // The saved row is gone, so the read fails, and waits on the keys to
+    // forget this agent's.
+    std::fs::write(fixture._dir.path().join("identities.json"), "[]").unwrap();
+    let keys = fixture.host.hold_keys_for_test();
+    let (service, waiting) = (fixture.service.clone(), token.clone());
+    let request = tokio::spawn(async move {
+        let body = json!({ "id": "1", "method": "auth_tag", "params": [] }).to_string();
+        respond(&service, Some(&waiting), Some(1), body.as_bytes()).await
+    });
+    while fixture.service.callers()[&key].tokens >= BURST {
+        tokio::task::yield_now().await;
+    }
+    assert!(!request.is_finished());
+    fixture
+        .host
+        .forget_row_for_test(&fixture.agent.pubkey, RELAY);
+    drop(keys);
+    let reply = request.await.unwrap();
+    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
 }
 
 #[tokio::test]

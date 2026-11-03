@@ -230,6 +230,11 @@ impl CredentialService {
             .get_mut(&digest(token))
             .filter(|caller| !caller.revoked)
             .ok_or(Failure::revoked())?;
+        // A spare issued before its owner signed out is revoked, bound or not.
+        if self.0.agents.caller_retirements() != caller.retirements {
+            caller.revoked = true;
+            return Err(Failure::revoked());
+        }
         let Some(bound) = caller.agent.clone() else {
             return Err(Failure::new(
                 "unavailable",
@@ -546,11 +551,11 @@ async fn respond(
         let caller = service.admit(token)?;
         let result = service
             .call(&caller, &message.method, &message.params)
-            .await?;
+            .await;
         // Its process may have exited, or its agent or owner been retired,
-        // while the key was read: then nothing it made is returned.
+        // while the key was read: then it is revoked, whatever it made.
         service.acting(&mut service.callers(), token)?;
-        Ok(result)
+        result
     }
     .await;
     match result {
