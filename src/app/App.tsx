@@ -312,10 +312,11 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
     route.state.reason === "timeout"
       ? route.state.attempt
       : undefined;
-  const decidedTimeout = useRef<typeof keptTimeout>(undefined);
+  // By attempt id: a late address update replaces the attempt object, not it.
+  const decidedTimeout = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
-    if (!keptTimeout || decidedTimeout.current === keptTimeout) return;
-    decidedTimeout.current = keptTimeout;
+    if (!keptTimeout || decidedTimeout.current === keptTimeout.id) return;
+    decidedTimeout.current = keptTimeout.id;
     if (drawsLoading)
       services.navigationHost.complete(keptTimeout, {
         status: "failed",

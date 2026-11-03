@@ -59,6 +59,7 @@ vi.mock("../bundled", () => ({
             id: "held",
             title: "Held",
             handlesNavigation: true,
+            route: { version: 1, validate: () => true },
             component: Held,
           });
         },
@@ -368,7 +369,11 @@ it("keeps a loading state, not the card, when loading starts after a kept timeou
   const frames = recordFrames();
   // The deadline passes while the page is drawn, and it stays.
   page.answer = false;
+  const previous = page.navigation;
   act(() => void current.navigation.retry());
+  await waitFor(() => expect(page.navigation).not.toBe(previous));
+  const request = page.navigation;
+  if (!request) throw new Error("The page received no request");
   act(() => {
     current.navigationHost.complete(current.navigation.snapshot().attempt, {
       status: "failed",
@@ -376,8 +381,9 @@ it("keeps a loading state, not the card, when loading starts after a kept timeou
     });
   });
   expect(screen.getByText("Held content")).toBeVisible();
-  // Later its plugin restarts in the background: the host draws its loading
-  // state over the kept page, not the card.
+  // Later the page updates its address, and in the same moment its plugin
+  // restarts in the background: the host draws its loading state over the
+  // kept page, not the card.
   const snapshot = current.plugins.snapshot();
   const held = snapshot.activation["test.held"];
   if (!held) throw new Error("Missing held plugin");
@@ -388,7 +394,18 @@ it("keeps a loading state, not the card, when loading starts after a kept timeou
       "test.held": { ...held, status: "starting" },
     },
   };
-  act(() => announce());
+  act(() => {
+    expect(
+      request.resolve({
+        version: 1,
+        kind: "page",
+        pluginId: "test.held",
+        pageId: "held",
+        route: { version: 1, params: "a" },
+      }),
+    ).toBe(true);
+    announce();
+  });
   expect(screen.queryByText("Held content")).toBeNull();
   expect(current.navigation.snapshot()).toMatchObject({
     status: "failed",
