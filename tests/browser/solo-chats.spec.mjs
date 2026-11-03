@@ -821,6 +821,28 @@ test("View-only Solo conversion preserves access and restores focus after its ch
     ).toBeEnabled();
     const access = dialog.getByRole("combobox", { name: "General access" });
     await expect(access).toHaveText("View only");
+    await access.click();
+    await page.getByRole("option", { name: "Private", exact: true }).click();
+    const retainedWarning =
+      "People who joined while it was View only are members and keep reading until you remove them in People.";
+    await expect(dialog).toHaveAccessibleDescription(retainedWarning);
+    await access.scrollIntoViewIfNeeded();
+    await access.click({ trial: true });
+    await expect(
+      dialog.getByText(retainedWarning, { exact: true }),
+    ).toBeInViewport({ ratio: 1 });
+    await expect(
+      dialog.getByRole("button", { name: "Convert to channel", exact: true }),
+    ).toBeInViewport({ ratio: 1 });
+    if (testInfo.project.name === "chromium")
+      await dialog.screenshot({
+        path: testInfo.outputPath(
+          `SOLO_CONVERSION_PRIVATE_WARNING_${mode}_${width}.png`,
+        ),
+      });
+    await access.click();
+    await page.getByRole("option", { name: "View only", exact: true }).click();
+    await expect(dialog).not.toHaveAccessibleDescription(retainedWarning);
     const viewOnly = page.getByRole("option", {
       name: "View only",
       exact: true,

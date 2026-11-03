@@ -153,7 +153,9 @@ initially. Choosing View only or Public for a private chat discloses community
 reading of its full history and Canvas, including workspace folders and agent
 instructions. View only saves public visibility with Guest admission; Public saves
 Member admission; Private keeps reading restricted to members and retains the
-current admission default. A selected share channel is never granted by conversion.
+current admission default. Choosing Private for an open chat warns that joined
+people retain access until removed in People, using the same warning as General
+access. A selected share channel is never granted by conversion.
 Cancel writes nothing and returns focus to the retained initiating control.
 
 The sequence is explicit, not atomic:

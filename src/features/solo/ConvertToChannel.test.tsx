@@ -260,6 +260,13 @@ it.each(policies.flatMap((from) => policies.map((to) => ({ from, to }))))(
         disclosure?.textContent,
       );
     } else expect(disclosure).not.toBeInTheDocument();
+    if (from.visibility === "public" && to.visibility === "private") {
+      expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
+        from.joinRole === "guest"
+          ? "People who joined while it was View only are members and keep reading until you remove them in People."
+          : "People who already joined remain members and keep their access until you remove them in People.",
+      );
+    }
     expect(h.publish).not.toHaveBeenCalled();
     fireEvent.click(confirm());
     await waitFor(() => expect(h.close).toHaveBeenCalledOnce());

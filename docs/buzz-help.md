@@ -89,7 +89,8 @@ the interface unless an available tool actually supports that action.
   access search or a composer mention receive Bot access so they can reply,
   including with a Guest admission default. Conversion to a channel offers
   Private, View only and Public, starts from the chat's current access, and saves
-  the selected policy. Opening a private chat to the community warns that its full
+  the selected policy. Choosing Private during conversion also warns that people
+  who joined keep their access until removed in People. Opening a private chat to the community warns that its full
   history and Canvas, including workspace folders and agent instructions, become
   readable. View only retains Guest admission. Copying its link alone does not grant access. Check the intended people
   and destination before changing access.

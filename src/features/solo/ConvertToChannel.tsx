@@ -17,7 +17,12 @@ import {
   useChatConversions,
   type ChatConversion,
 } from "./conversion";
-import { SOLO_ACCESS_DISCLOSURE, SOLO_LABEL, soloLabels } from "./labels";
+import {
+  SOLO_ACCESS_DISCLOSURE,
+  SOLO_LABEL,
+  soloLabels,
+  soloRetainedAccessWarning,
+} from "./labels";
 import { applySharedChannelDetails } from "./share";
 import {
   generalAccessOptions,
@@ -263,7 +268,10 @@ export function ConvertToChannel({
       description={
         base?.visibility === "private" && selectedAccess !== "private"
           ? SOLO_ACCESS_DISCLOSURE
-          : "Move this conversation from Solo to Team. History, Canvas, members and lifetime stay the same."
+          : (base &&
+              selectedAccess === "private" &&
+              soloRetainedAccessWarning(base)) ||
+            "Move this conversation from Solo to Team. History, Canvas, members and lifetime stay the same."
       }
       onOpenChange={(open) => {
         if (!open) setOpen(false);
