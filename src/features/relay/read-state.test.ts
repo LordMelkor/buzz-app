@@ -1440,6 +1440,87 @@ describe("publication fences", () => {
     30000,
   );
 
+  it("recovers its own slots' newer values after a restored or cloned journal", async () => {
+    const f = fixture(T);
+    const first = f.make();
+    await first.ready;
+    await first.read("room-a", T - 500, () => true);
+    await first.flush();
+    const backup = f.journal();
+    await first.read("room-a", T - 100, () => true);
+    await first.flush();
+    first.dispose();
+    // The restored journal is behind what its own slot already carries.
+    f.setJournal(backup);
+    const restored = f.make();
+    await restored.ready;
+    await restored.read("room-b", T - 50, () => true);
+    await restored.flush();
+    expect(ownerStatus(restored)).toBe("reconciled");
+    expect(f.published()).toEqual({ "room-a": T - 100, "room-b": T - 50 });
+    expect(f.journal()?.own).toEqual({ "room-a": T - 100, "room-b": T - 50 });
+  });
+
+  it("sends nothing when the first blob would exceed the snapshot before a later one shrinks it", async () => {
+    const W = vectors.retentionSeconds;
+    const size = (event: RelayEvent) =>
+      new TextEncoder().encode(JSON.stringify(event)).byteLength;
+    const keys = (from: number, count: number, at: number) =>
+      Array.from({ length: count }, (_, n) => ({
+        key: thread(from + n),
+        timestamp: at,
+        channelId: "room",
+      }));
+    // Blob A expires and keeps one key; then A grows while B, which goes
+    // last because it drops expired keys, shrinks by more than A grows.
+    async function run(pad?: (a: number, b: number) => number) {
+      const f = fixture(T);
+      const first = f.make();
+      await first.ready;
+      await first.readMessages(
+        [...keys(0, 400, T - W + 60), ...keys(400, 199, T - W + 500)],
+        undefined,
+        () => true,
+      );
+      await first.read(thread(599), T, () => true);
+      await first.flush();
+      f.setNow(T + 90);
+      await first.read(thread(1000), T + 90, () => true);
+      await first.flush();
+      first.dispose();
+      const [a, b] = (await f.reader.read()).map(size) as [number, number];
+      f.setNow(T + 600);
+      const extra = pad?.(a, b);
+      const owner = snapshotted(
+        f,
+        extra === undefined
+          ? []
+          : [foreignAt(f.key.pubkey, 0, "x".repeat(extra))],
+      )();
+      await owner.ready;
+      await owner.readMessages(keys(2000, 150, T + 600), undefined, () => true);
+      await owner.read(thread(599), T + 600, () => true);
+      await owner.flush();
+      return { f, owner, a, b };
+    }
+    const free = await run();
+    const [grown, shrunk] = free.f.host.publish.mock.calls
+      .slice(-2)
+      .map(([event]) => size(event)) as [number, number];
+    const growth = grown - free.a;
+    expect(growth).toBeGreaterThan(0);
+    expect(free.b - shrunk).toBeGreaterThan(growth);
+    // The final map fits; the snapshot after A alone is one byte over.
+    const over = await run(
+      (a, b) =>
+        READ_SNAPSHOT_BYTES +
+        1 -
+        (2 + 2 + a + growth + b + size(foreignAt(free.f.key.pubkey, 0))),
+    );
+    expect(over.f.host.publish).not.toHaveBeenCalled();
+    expect(over.owner.snapshot().error).toContain("capacity reached");
+  }, 30000);
+
   it("counts coordinates observed live after the snapshot", async () => {
     const f = fixture(T);
     const owner = snapshotted(

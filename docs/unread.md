@@ -68,7 +68,8 @@ catch-up (including a message taller than the viewport):
 - The same channel catch-up also writes `msg:` marks for the retained top-level
   mentions and broadcast replies through the bottom row, as in Slack and Discord,
   so a mention taller than the viewport is still read. Messages marked unread
-  keep their intent. Mobile and older desktop clients honor these marks.
+  keep their intent. These marks stay on this device: frontier-only sync never
+  publishes `msg:` marks, though it still reads them from older clients.
 - `thread-activity:<root>` acknowledges replies through the newest reply only in
   that thread. A collapsed newest reply, or one outside the bottom viewport in a
   branch-ordered thread, cannot earn catch-up; visible rows still read individually.
@@ -403,9 +404,21 @@ requires readback. A failed transaction is not acknowledged as saved. Timestamps
 are uint32 seconds; replaceable publication clocks advance monotonically with a
 bounded lead rather than running indefinitely into the future.
 
+Each installation publishes only the frontiers it advanced (`own`), never a peer's
+value or a `msg:` mark, across as many slots as they need: the primary `slot`, then
+`spill` slots, each a blob of at most 40 KiB plaintext. A key stays in the slot that
+carries it; new slots are saved before anything is published to them; only a slot
+missing one of its own values is republished, and one that drops a key goes after
+the key's new home. Every prefix of that order must fit the last complete snapshot
+(4096 events / 8 MiB) before the first send. Values the relay already holds in this
+installation's own slots are recovered into `own` on every observation, so a
+restored or cloned journal never republishes an older frontier. Frontiers at or
+below `now - 30d` are not published, and unread evaluation treats every message at
+or before that floor as read.
+
 Ordinary frontiers are **bounded recent hints, not everlasting read receipts**.
-The sync journal has a 96 KiB serialized-blob budget and wire publication a 40 KiB
-plaintext budget. Under pressure, up to three quarters of each budget keeps channel
+The sync journal has a 96 KiB serialized-blob budget. Under pressure, up to three
+quarters of that budget keeps channel
 marks (`<channel>`) first, then thread marks (`thread:`), then catch-up marks
 (`activity:`, `thread-activity:`), then message marks: a channel or thread mark covers
 many messages, so losing it makes much more old history unread, and recent catch-up
@@ -416,7 +429,7 @@ ranks marks within each group, which prioritizes newly read old history as well 
 current traffic. After the budget chooses what to keep, each save drops marks that a
 kept broader mark already covers, and gives the freed space to the next marks in line.
 A cover that did not fit replaces nothing. A dropped mark gives its interaction order to
-its cover, so the smaller wire budget protects the cover as it would have protected the
+its cover, so a smaller budget protects the cover as it would have protected the
 dropped read. Coverage uses retained evidence: a message mark under its channel mark, a thread mark under its
 channel mark, a catch-up mark under its channel or thread mark, and the mark of an
 ordinary top-level message under its channel's `activity:` mark. That last rule needs

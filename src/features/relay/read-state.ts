@@ -388,6 +388,18 @@ export function createReadState({
           "Read-state observation cancelled",
           "AbortError",
         );
+      // Our own slots can hold values this journal lacks (a restored or
+      // cloned profile): recover them, or the next blob would drop them.
+      const owned = [current.slot, ...(current.spill ?? [])].map(
+        (slot) => `read-state:${slot}`,
+      );
+      let own = current.own;
+      for (const { event, parsed } of decoded)
+        if (
+          parsed.clientId === current.clientId &&
+          owned.includes(readCoordinate(event) ?? "")
+        )
+          own = advanceOwn(own, parsed.state.frontiers);
       return {
         ...current,
         ...retainMarks(
@@ -395,6 +407,7 @@ export function createReadState({
           [current.state, ...decoded.map(({ parsed }) => parsed.state)],
           current.recent ?? {},
         ),
+        ...(own && { own }),
       };
     });
     if (closed || generation !== epoch) return;
@@ -732,7 +745,10 @@ export function createReadState({
               throw new Error("Read-state signer changed the payload");
             signed.push(event);
           }
-          admit(signed);
+          // Every prefix must fit: a later blob's shrink is no credit until
+          // it reaches the relay.
+          for (let end = 1; end <= signed.length; end++)
+            admit(signed.slice(0, end));
           for (const [index, event] of signed.entries()) {
             // Only the last blob acknowledges the revision: a partial
             // publication never marks local intent as synchronized.
@@ -746,7 +762,8 @@ export function createReadState({
               },
             }));
             // Saving awaited storage: fence the send itself, not just the plan.
-            admit(signed.slice(index));
+            // Earlier blobs are observed by now, so the basis already holds them.
+            admit([event]);
             await publishPending(signal);
           }
         });
