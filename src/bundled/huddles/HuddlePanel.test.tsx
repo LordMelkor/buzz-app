@@ -45,6 +45,7 @@ it("releases unsent files on close while retaining the saved panel text draft", 
   };
   const list = { status: "ready" as const, channels: [channel] };
   const pending: readonly never[] = [];
+  const rows: readonly never[] = [];
   const session = {
     ...store.session,
     outbox: {
@@ -76,7 +77,7 @@ it("releases unsent files on close while retaining the saved panel text draft", 
       window: () => ({
         ...store.session.channels.window(room),
         status: "ready" as const,
-        rows: [],
+        rows,
         hasMore: false,
       }),
     },

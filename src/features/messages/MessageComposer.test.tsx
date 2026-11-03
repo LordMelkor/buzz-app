@@ -6816,6 +6816,7 @@ it.each([
   "disables nonmember channel/thread/media composers and follows membership changes: %j",
   (destination) => {
     const h = mount(destination);
+    const rows: readonly never[] = [];
     const listeners = new Set<() => void>();
     let list: ReturnType<RelaySession["channels"]["list"]> = {
       status: "ready",
@@ -6828,7 +6829,7 @@ it.each([
           window: () => ({
             channelId: "channel",
             status: "idle",
-            rows: [],
+            rows,
             hasMore: true,
             loadingOlder: false,
             error: undefined,
