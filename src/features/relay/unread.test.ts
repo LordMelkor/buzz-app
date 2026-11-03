@@ -9,7 +9,6 @@ import {
 } from "./read-state-storage";
 import { eventDto, type RelayEvent } from "./events";
 import type { ThreadActivitySnapshot } from "./unread";
-import type { ChannelStoreOptions } from "./store";
 import type { SavedHead } from "./persistence";
 import type { ReadStateSigning } from "./read-state-host";
 import { retainReadState } from "./read-state-retention";
@@ -38,7 +37,7 @@ afterEach(() => {
 const clock = (seconds: number) =>
   vi.spyOn(Date, "now").mockReturnValue(seconds * 1000);
 function setup(
-  options: ChannelStoreOptions = {},
+  options: Parameters<typeof createRelaySession>[1] = {},
   signer = true,
   preloaded?: (journal: ReadJournal) => ReadJournal,
   workflowAuthority = false,
@@ -224,6 +223,16 @@ it("production live evidence feeds stable snapshots; selection/prefetch do not r
   await flush();
   expect(h.journal()?.state.frontiers).toEqual({});
   expect(h.host.sign).not.toHaveBeenCalled();
+});
+
+it("messages at or before the retention floor count as read", () => {
+  const h = setup({ readStateFloor: () => 11 });
+  h.grant("room");
+  h.emit([
+    message(h.alice, "room", "expired", 11),
+    message(h.alice, "room", "fresh", 12),
+  ]);
+  expect(h.snapshot()).toMatchObject({ observedCount: 1 });
 });
 
 it("unread repair observes history without seeding the channel window or consuming its cursor", async () => {
