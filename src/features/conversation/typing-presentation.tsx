@@ -14,6 +14,7 @@ type Replacement = Readonly<{
   channelId: string;
   threadRootId: string | undefined;
   pubkey: string;
+  requestId?: string | undefined;
 }>;
 function createPresentation() {
   const entries = new Map<symbol, Replacement>();
@@ -110,16 +111,20 @@ function useReplacement(
 ) {
   const store = context?.store;
   const active = context?.active;
-  const { session, channelId, threadRootId, pubkey } = value ?? {};
+  const { session, channelId, threadRootId, pubkey, requestId } = value ?? {};
   const participantKeys = (participants ?? (pubkey ? [pubkey] : [])).join(":");
   useLayoutEffect(() => {
     if (!active || !enabled || !session || !channelId || !participantKeys)
       return;
-    const releases = participantKeys
-      .split(":")
-      .map((pubkey) =>
-        store?.register({ session, channelId, threadRootId, pubkey }),
-      );
+    const releases = participantKeys.split(":").map((pubkey) =>
+      store?.register({
+        session,
+        channelId,
+        threadRootId,
+        pubkey,
+        requestId,
+      }),
+    );
     return () => {
       for (const release of releases) release?.();
     };
@@ -131,6 +136,7 @@ function useReplacement(
     channelId,
     threadRootId,
     participantKeys,
+    requestId,
   ]);
 }
 export function useReplacedTypers(
@@ -156,6 +162,7 @@ export function useReplacedTypers(
         [...(context?.active ? entries : []), ...activityEntries]
           .filter(
             (entry) =>
+              !entry.requestId &&
               entry.session === session &&
               entry.channelId === channelId &&
               entry.threadRootId === threadRootId,
@@ -170,5 +177,30 @@ export function useReplacedTypers(
       channelId,
       threadRootId,
     ],
+  );
+}
+
+/** Recorded history owns request controls only while that history is mounted. */
+export function useRecordedActivityAgents(
+  session: object,
+  channelId: string,
+  requestId: string | undefined,
+) {
+  const store = useContext(ActivityPresentation);
+  const entries = useSyncExternalStore(
+    store?.subscribe ?? noopSubscribe,
+    store?.snapshot ?? emptySnapshot,
+    emptySnapshot,
+  );
+  return new Set(
+    entries
+      .filter(
+        (entry) =>
+          entry.session === session &&
+          entry.channelId === channelId &&
+          !!requestId &&
+          entry.requestId === requestId,
+      )
+      .map((entry) => entry.pubkey),
   );
 }

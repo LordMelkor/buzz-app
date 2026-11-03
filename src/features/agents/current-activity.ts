@@ -73,6 +73,8 @@ export function currentActivity(
   knownAgents: ReadonlySet<string>,
   channelId: string,
   threadRootId?: string,
+  includeThreads = true,
+  channelThreadRoots?: ReadonlySet<string>,
 ): ReadonlyMap<string, CurrentActivity> {
   const agents = new Map<string, CurrentActivity>();
   const add = (agent: string, root: string | null | undefined) => {
@@ -86,7 +88,8 @@ export function currentActivity(
     return activity;
   };
   const matches = (channel: string | null, root?: string) =>
-    channel === channelId && (!threadRootId || root === threadRootId);
+    channel === channelId &&
+    (threadRootId ? root === threadRootId : includeThreads || !root);
   const listening = snapshot?.status === "listening";
   const working = listening
     ? snapshot.turns.filter(
@@ -117,7 +120,9 @@ export function currentActivity(
       const turn = transcript.find((turn) => turn.turnId === evidence.turnId);
       if (
         turn?.endedAt ||
-        (threadRootId && turn?.threadRootId !== threadRootId)
+        (threadRootId
+          ? turn?.threadRootId !== threadRootId
+          : !includeThreads && !!turn?.threadRootId)
       )
         continue;
       const detail = add(agent, turn?.threadRootId);
@@ -141,13 +146,21 @@ export function currentActivity(
           : toolLabel(firstTool);
     }
   }
-  const local = localActivity(snapshot, channelId, threadRootId);
+  const localSnapshot =
+    !threadRootId && !includeThreads
+      ? {
+          local: (snapshot?.local ?? []).filter(
+            (row) => !row.thread && !channelThreadRoots?.has(row.threadRootId),
+          ),
+        }
+      : snapshot;
+  const local = localActivity(localSnapshot, channelId, threadRootId);
   for (const [agent, work] of local) {
     agents.delete(agent);
     if (work.state !== "working" && work.state !== "waiting") continue;
     const roots = [
       ...new Set(
-        (snapshot?.local ?? [])
+        (localSnapshot?.local ?? [])
           .filter(
             (row) =>
               row.agent === agent &&

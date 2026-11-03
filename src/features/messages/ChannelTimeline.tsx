@@ -295,6 +295,7 @@ function Timeline({
     queries,
     channelId,
     undefined,
+    false,
   );
   const targetId =
     inlineTarget?.messageId ??
@@ -1486,6 +1487,8 @@ function Timeline({
                     <ActivityGroupPreview
                       session={queries}
                       group={disclosure}
+                      openActivity={onOpenLink}
+                      canOpenActivity={canOpenLink}
                       renderHistory={(entry) => renderMessage(entry, true)}
                       profiles={profiles}
                       media={queries.media}

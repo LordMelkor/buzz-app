@@ -1598,6 +1598,8 @@ function ThreadMessages({
               <ActivityGroupPreview
                 session={session}
                 group={group}
+                openActivity={onOpenLink}
+                canOpenActivity={canOpenLink}
                 renderHistory={(entry) => (
                   <div
                     ref={entry.id === messageId ? selectedBranchRef : undefined}

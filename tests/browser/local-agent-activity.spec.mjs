@@ -370,18 +370,15 @@ test("Stop in a channel response activity stops its work", async ({
   await expect(
     page.getByText("Checking the request", { exact: true }),
   ).toBeVisible();
-  await expect(summary).toBeVisible();
-  await summary.hover();
-  const popup = page.getByRole("dialog", {
-    name: "Agent activity",
-    exact: true,
-  });
-  const stop = popup.getByRole("button", {
+  await expect(summary).toHaveCount(0);
+  const stop = page.getByRole("button", {
     name: "Stop Local tester",
     exact: true,
   });
   await expect(stop).toBeVisible();
-  await expect(popup).not.toHaveAttribute("data-starting-style", "");
+  await expect(
+    page.getByRole("button", { name: "View transcript", exact: true }),
+  ).toBeVisible();
   await stop.click();
   await expect
     .poll(() => page.evaluate(() => window.localAgentFixture.stopped()))
@@ -451,7 +448,7 @@ test("one thread summary retains reply navigation and work on another reply", as
     .poll(() => page.evaluate(() => window.localAgentFixture.pending().length))
     .toBe(2);
   await expect(summary).toBeVisible();
-  await expect(activity).toContainText("Reading notes.txt");
+  await expect(activity).toHaveCount(0);
   await page.evaluate(
     (id) => window.localAgentFixture.finish(id, true),
     request.id,

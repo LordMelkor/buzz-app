@@ -1,3 +1,4 @@
+import { ActivityGroupPreview } from "../../features/messages/ActivityGroupPreview";
 // @vitest-environment jsdom
 import { activityPresentation } from "../../features/messages/activity-presentation";
 import { createLocalAgentActivity } from "../../features/agents/local-activity";
@@ -70,8 +71,8 @@ function fixture(local?: ReturnType<typeof createLocalAgentActivity>) {
   };
   activity.state(live);
   const profiles = new Map([
-    [A, { name: "Blossom", isAgent: true }],
-    [B, { name: "Bubbles", isAgent: true }],
+    [A, { name: "Blossom", isAgent: true as const }],
+    [B, { name: "Bubbles", isAgent: true as const }],
   ]);
   const session = {
     viewer,
@@ -204,7 +205,7 @@ it("does not show sibling thread work and reports lost freshness without pretend
 });
 it("keeps namesakes as separate exact identities", () => {
   const f = fixture();
-  f.profiles.set(B, { name: "Blossom", isAgent: true });
+  f.profiles.set(B, { name: "Blossom", isAgent: true as const });
   const view = render(<ActivityAccessory {...f.props} />);
   try {
     f.send(A, "a", 1, "turn_started", { triggeringEventIds: [root] });
@@ -1350,6 +1351,108 @@ it("does not re-render the typing replacement for liveness that leaves its agent
     expect(onRender).toHaveBeenCalledTimes(renders);
     f.send(B, "there", 1, "turn_started", { triggeringEventIds: [root] });
     expect(onRender.mock.calls.length).toBeGreaterThan(renders);
+  } finally {
+    view.unmount();
+    f.dispose();
+  }
+});
+
+it.each([false, true])(
+  "keeps thread request activity in its thread (local=%s)",
+  (isLocal) => {
+    const local = createLocalAgentActivity();
+    const f = fixture(isLocal ? local : undefined);
+    if (isLocal)
+      local.begin({
+        scope: "test",
+        agent: A,
+        channelId: "c",
+        messageId: root,
+        threadRootId: root,
+        thread: true,
+      });
+    else
+      f.send(A, "turn", 1, "turn_started", {
+        triggeringEventIds: [root],
+        threadRootEventId: root,
+      });
+    const view = render(
+      <ActivityAccessory {...f.props} messageLayout="timeline" />,
+    );
+    try {
+      expect(
+        screen.queryByLabelText("Agent activity on this message"),
+      ).toBeNull();
+      view.rerender(<ActivityAccessory {...f.props} messageLayout="thread" />);
+      expect(
+        screen.getByLabelText("Agent activity on this message"),
+      ).toBeVisible();
+    } finally {
+      view.unmount();
+      f.dispose();
+    }
+  },
+);
+
+it("hands request controls to recorded history and keeps Stop and transcript there", async () => {
+  const local = createLocalAgentActivity();
+  const f = fixture(local);
+  const stop = vi.fn(async () => {});
+  const work = local.begin({
+    scope: "test",
+    agent: A,
+    channelId: "c",
+    messageId: root,
+    threadRootId: root,
+    thread: true,
+  });
+  work.interruptible(stop);
+  const row = {
+    ...f.props.message,
+    id: "step",
+    authorId: A,
+    threadRootId: root,
+    replyParentId: root,
+    audience: "agents" as const,
+    content: "Checking the files",
+  };
+  const group = activityPresentation(
+    [row],
+    f.props.session.agentActivity.snapshot(),
+    new Set([A]),
+    root,
+  ).groups[0];
+  if (!group) throw new Error("Missing group");
+  const view = render(
+    <ActivityIndicatorPresentation>
+      <ActivityAccessory {...f.props} messageLayout="thread" />
+      <ActivityGroupPreview
+        session={f.props.session}
+        group={group}
+        profiles={f.profiles}
+        media={() => undefined}
+        expanded
+        onToggle={() => {}}
+        openActivity={f.props.open}
+        canOpenActivity={f.props.canOpen}
+      />
+    </ActivityIndicatorPresentation>,
+  );
+  try {
+    expect(
+      screen.queryByLabelText("Agent activity on this message"),
+    ).toBeNull();
+    expect(
+      screen.getAllByRole("button", { name: "Stop Blossom" }),
+    ).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
+    expect(f.props.open).toHaveBeenCalledWith(
+      expect.stringContaining("open=transcript"),
+      { rootId: root },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Stop Blossom" }));
+    await settle();
+    expect(stop).toHaveBeenCalledOnce();
   } finally {
     view.unmount();
     f.dispose();

@@ -1,3 +1,6 @@
+import type { MessageLinkOrigin } from "./MessageRow";
+import { ActivityGroupActions } from "./ActivityGroupActions";
+import { useActivityTypingReplacement } from "../conversation/typing-presentation";
 import { useActivityFocusHandoff } from "./use-activity-focus-handoff";
 import { useRef, type ReactNode } from "react";
 import { CaretUpIcon } from "../../shared/design-system/icons";
@@ -22,7 +25,13 @@ export function ActivityGroupPreview({
   onToggle,
   layout = "timeline",
   renderHistory,
+  openActivity,
+  canOpenActivity,
 }: {
+  openActivity?:
+    | ((target: string, origin?: MessageLinkOrigin) => boolean)
+    | undefined;
+  canOpenActivity?: ((target: string) => boolean) | undefined;
   group: ActivityPresentation;
   session?: RelaySession | undefined;
   profiles: ReadonlyMap<string, Profile>;
@@ -41,6 +50,19 @@ export function ActivityGroupPreview({
     !hidden && (working || !group.followingMessage),
     participants,
     group.requestId,
+  );
+  useActivityTypingReplacement(
+    session
+      ? {
+          session,
+          channelId: row.channelId,
+          threadRootId: row.threadRootId,
+          pubkey: row.authorId,
+          requestId: group.requestId,
+        }
+      : undefined,
+    !hidden && !!group.requestId,
+    participants,
   );
   if (hidden && !group.retained) return null;
   const primary = history[0]?.authorId ?? row.authorId;
@@ -115,7 +137,23 @@ export function ActivityGroupPreview({
         className={styles.standaloneActivity}
         data-contained-history=""
       >
-        {content}
+        <div
+          className={styles.activityGroupHeader}
+          data-expanded={expanded || undefined}
+        >
+          {content}
+          {session && (
+            <div hidden={!expanded}>
+              <ActivityGroupActions
+                session={session}
+                group={group}
+                profiles={profiles}
+                open={openActivity}
+                canOpen={canOpenActivity}
+              />
+            </div>
+          )}
+        </div>
         {expanded && renderHistory && (
           <div className={styles.containedActivityHistory}>
             {history.map((entry) => (

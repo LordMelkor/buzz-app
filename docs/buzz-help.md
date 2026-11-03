@@ -181,8 +181,10 @@ the interface unless an available tool actually supports that action.
   opens that conversation. Working indicators describe current work,
   not a guarantee that an agent is available or that a message was delivered.
   Expand grouped work updates to read each message; the collapsed excerpt names
-  its speaker. When a running request offers **Stop**, its activity control stays
-  available alongside recorded updates. Stop availability depends on the agent type.
+  its speaker. Thread work appears inside its thread. Expand recorded work to
+  open its transcript or **Stop** the running request; before any work updates
+  arrive, those controls appear on the live indicator. Stop availability depends
+  on the agent type.
 - When a request to an agent running on this device fails, the activity under
   the message offers **Retry**, which asks the agent again, and **Dismiss**,
   which hides the failure.

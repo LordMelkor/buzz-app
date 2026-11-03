@@ -72,6 +72,7 @@ export function useConversationAgents(
   session: ComposerSession & Partial<Pick<RelaySession, "agentActivity">>,
   channelId: string,
   threadRootId: string | undefined,
+  includeThreads = true,
 ) {
   const replaced = useReplacedTypers(session, channelId, threadRootId);
   const entries = useSyncExternalStore(
@@ -85,6 +86,27 @@ export function useConversationAgents(
   const profiles = useSyncExternalStore(
     session.profiles.subscribe,
     session.profiles.snapshot,
+  );
+  const watchChannel = !threadRootId && !includeThreads;
+  const subscribeChannel = useCallback(
+    (listener: () => void) =>
+      watchChannel
+        ? (session.channels?.subscribeWindow?.(channelId, listener) ??
+          (() => {}))
+        : () => {},
+    [session, channelId, watchChannel],
+  );
+  const channelRows = useSyncExternalStore(subscribeChannel, () =>
+    watchChannel
+      ? (session.channels?.window?.(channelId).rows ?? noRows)
+      : noRows,
+  );
+  const channelThreadRoots = useMemo(
+    () =>
+      new Set(
+        channelRows.filter((row) => row.replyCount > 0).map((row) => row.id),
+      ),
+    [channelRows],
   );
   // Public identity classifies typing only; it grants no access to step details.
   const knownAgents = useMemo(() => {
@@ -102,6 +124,8 @@ export function useConversationAgents(
       knownAgents,
       channelId,
       threadRootId,
+      includeThreads,
+      channelThreadRoots,
     );
     if (!sameActivity(last.current, next)) last.current = next;
     return last.current;
@@ -151,7 +175,12 @@ export function TypingIndicator({
     replaced,
     agents: activeAgents,
     knownAgents,
-  } = useConversationAgents(session, channelId, threadRootId);
+  } = useConversationAgents(
+    session,
+    channelId,
+    threadRootId,
+    !inFlow && audience !== "humans",
+  );
   const lastLocal = useRef(activity?.local ?? noRows);
   const getLocal = () => {
     const next = session.agentActivity?.snapshot().local ?? noRows;

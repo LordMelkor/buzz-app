@@ -1,3 +1,5 @@
+import { activityTranscript } from "../../features/agents/activity-transcript";
+import { useRecordedActivityAgents } from "../../features/conversation/typing-presentation";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { useProfileGeneration } from "../../features/relay/react";
 import {
@@ -66,6 +68,7 @@ type ActivityProps = ComposerAccessoryProps & { agents?: ActivityAgents };
 export function ActivityAccessory(props: ActivityProps) {
   const { session, channelId, message, canOpen } = props;
   const messageId = message?.id;
+  const recorded = useRecordedActivityAgents(session, channelId, messageId);
   // Every row mounts this; only rows with work subscribe to each activity
   // step, profile and choice change. Others read once and wait for work.
   const hasWork = useSyncExternalStore(session.agentActivity.subscribe, () => {
@@ -123,8 +126,40 @@ export function ActivityAccessory(props: ActivityProps) {
       ? `${name} · ${suffixes.get(agent)}`
       : name;
   };
-  const visible = (entry: { agent: string }) =>
-    canOpen(profileActivityViewTarget(entry.agent) ?? "");
+  const visible = (entry: RequestWork) => {
+    if (!canOpen(profileActivityViewTarget(entry.agent) ?? "")) return false;
+    if (
+      recorded.has(entry.agent) &&
+      entry.state !== "error" &&
+      entry.state !== "stopped"
+    )
+      return false;
+    if (props.messageLayout !== "thread" && !message?.threadRootId) {
+      const local = (snapshot.local ?? []).filter(
+        (work) =>
+          work.agent === entry.agent &&
+          work.channelId === channelId &&
+          work.messageId === messageId,
+      );
+      if (local.length)
+        return local.some(
+          (work) =>
+            !work.thread &&
+            !(
+              message &&
+              message.replyCount > 0 &&
+              work.threadRootId === message.id
+            ),
+        );
+      const turns = activityTranscript(entry.selected.records, {
+        agent: entry.agent,
+        channelId,
+      }).turns;
+      if (turns.length && turns.every((turn) => !!turn.threadRootId))
+        return false;
+    }
+    return true;
+  };
   const shown: Entry[] = entries
     .filter(
       (entry) =>
@@ -191,9 +226,10 @@ export function ActivityAccessory(props: ActivityProps) {
     shown.length ? shown : (leaving ?? (ended ? retained.current : []))
   ).filter(
     (entry) =>
-      entry.stoppable ||
-      entry.state === "error" ||
-      !props.representedAgents?.includes(entry.agent),
+      (!recorded.has(entry.agent) || entry.state === "error") &&
+      (entry.stoppable ||
+        entry.state === "error" ||
+        !props.representedAgents?.includes(entry.agent)),
   );
   // Once its live bubble has left, a stopped request stays noted here.
   const noted = bubble.length ? [] : stopped.filter(visible);
