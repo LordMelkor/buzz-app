@@ -7,9 +7,7 @@ import {
   completionSourceKey,
   completionTarget,
   completionTitle,
-  completionToast,
   isViewingCompletedWork,
-  shouldShowForegroundCompletion,
 } from "./agent-completions";
 
 const scope = {
@@ -31,13 +29,11 @@ function setup(
 ) {
   const activity = createLocalAgentActivity();
   const desktop = vi.fn();
-  const foreground = vi.fn();
   const stop = bindAgentCompletionNotifications(activity.reader, {
     focused: () => focused,
     active: () => shown,
     target: (work) => completionTarget(work, scope),
     desktop,
-    foreground,
   });
   const work = activity.begin({
     scope: `https://buzz.example:${scope.viewer}`,
@@ -51,15 +47,14 @@ function setup(
       : {}),
   });
   work.started();
-  return { work, stop, desktop, foreground };
+  return { work, stop, desktop };
 }
 
 describe("agent completion notifications", () => {
-  it("shows in-app feedback when another Buzz conversation is focused", () => {
+  it("shows a native alert when another Buzz conversation is focused", () => {
     const h = setup(true);
     h.work.finish({ ok: true });
-    expect(h.foreground).toHaveBeenCalledOnce();
-    expect(h.desktop).not.toHaveBeenCalled();
+    expect(h.desktop).toHaveBeenCalledOnce();
     h.stop();
   });
 
@@ -67,7 +62,6 @@ describe("agent completion notifications", () => {
     const h = setup(false, active("chat", "thread"));
     h.work.finish({ ok: true });
     expect(h.desktop).toHaveBeenCalledOnce();
-    expect(h.foreground).not.toHaveBeenCalled();
     h.stop();
   });
 
@@ -78,13 +72,11 @@ describe("agent completion notifications", () => {
       decide = resolve;
     });
     const desktop = vi.fn();
-    const foreground = vi.fn();
     const stop = bindAgentCompletionNotifications(activity.reader, {
       focused: () => focus,
       active: () => active("chat"),
       target: (work) => completionTarget(work, scope),
       desktop,
-      foreground,
     });
     const work = activity.begin({
       scope: `https://buzz.example:${scope.viewer}`,
@@ -97,12 +89,10 @@ describe("agent completion notifications", () => {
     work.started();
     work.finish({ ok: true });
     expect(desktop).not.toHaveBeenCalled();
-    expect(foreground).not.toHaveBeenCalled();
     decide(false);
     await focus;
     await Promise.resolve();
     expect(desktop).toHaveBeenCalledOnce();
-    expect(foreground).not.toHaveBeenCalled();
     stop();
   });
 
@@ -118,7 +108,6 @@ describe("agent completion notifications", () => {
       active: () => active("other"),
       target: (work) => completionTarget(work, scope),
       desktop,
-      foreground: vi.fn(),
     });
     const first = activity.begin({
       scope: `https://buzz.example:${scope.viewer}`,
@@ -153,7 +142,6 @@ describe("agent completion notifications", () => {
       active: () => active("other"),
       target: (work) => completionTarget(work, scope),
       desktop,
-      foreground: vi.fn(),
     });
     const work = activity.begin({
       scope: `https://buzz.example:${scope.viewer}`,
@@ -176,7 +164,6 @@ describe("agent completion notifications", () => {
     const h = setup(false, active("other"), "dm");
     h.work.finish({ ok: true });
     expect(h.desktop).not.toHaveBeenCalled();
-    expect(h.foreground).not.toHaveBeenCalled();
     h.stop();
   });
 
@@ -184,7 +171,6 @@ describe("agent completion notifications", () => {
     const h = setup(true, active("chat", "thread"));
     h.work.finish({ ok: true });
     expect(h.desktop).not.toHaveBeenCalled();
-    expect(h.foreground).not.toHaveBeenCalled();
     h.stop();
   });
 
@@ -200,13 +186,11 @@ describe("agent completion notifications", () => {
     settled.started();
     settled.finish({ ok: true });
     const desktop = vi.fn();
-    const foreground = vi.fn();
     const stop = bindAgentCompletionNotifications(activity.reader, {
       focused: () => true,
       active: () => active("other"),
       target: (work) => completionTarget(work, scope),
       desktop,
-      foreground,
     });
     const stopped = activity.begin({
       scope: "partition",
@@ -218,7 +202,6 @@ describe("agent completion notifications", () => {
     stopped.started();
     stopped.finish({ ok: true, stopped: true });
     expect(desktop).not.toHaveBeenCalled();
-    expect(foreground).not.toHaveBeenCalled();
     stop();
   });
 });
@@ -234,14 +217,13 @@ it("gives each retry attempt its own completion source identity", () => {
   );
 });
 
-it("names the Solo chat in native and in-app completion copy", () => {
+it("names the Solo chat in native completion copy", () => {
   const done = {
     state: "done" as const,
     conversationName: "Launch planning",
   };
   expect(completionTitle("Echo", done)).toBe("Echo is done");
   expect(completionBody(done)).toBe("View in Launch planning");
-  expect(completionToast("Echo", done)).toBe("Echo is done in Launch planning");
   const failed = {
     state: "error" as const,
     error: "The run failed",
@@ -251,32 +233,6 @@ it("names the Solo chat in native and in-app completion copy", () => {
   expect(completionBody(failed)).toBe(
     "View in Launch planning · The run failed",
   );
-  expect(completionToast("Echo", failed)).toBe(
-    "Echo encountered an error in Launch planning",
-  );
-});
-
-it("suppresses foreground feedback when alerts are paused or disabled", () => {
-  const state = {
-    developmentPaused: false,
-    preferences: { enabled: true, categories: { agent: true } },
-  };
-  expect(shouldShowForegroundCompletion(state)).toBe(true);
-  expect(
-    shouldShowForegroundCompletion({ ...state, developmentPaused: true }),
-  ).toBe(false);
-  expect(
-    shouldShowForegroundCompletion({
-      ...state,
-      preferences: { ...state.preferences, enabled: false },
-    }),
-  ).toBe(false);
-  expect(
-    shouldShowForegroundCompletion({
-      ...state,
-      preferences: { ...state.preferences, categories: { agent: false } },
-    }),
-  ).toBe(false);
 });
 
 it("matches visibility by channel and thread", () => {

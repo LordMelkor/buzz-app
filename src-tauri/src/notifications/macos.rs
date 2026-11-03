@@ -123,8 +123,11 @@ define_class!(
             _notification: &objc2_user_notifications::UNNotification,
             completion: &Block<dyn Fn(UNNotificationPresentationOptions)>,
         ) {
-            // Notification Center list only, never a foreground banner.
-            completion.call((UNNotificationPresentationOptions::List,));
+            // Keep foreground completions native too: macOS otherwise suppresses
+            // the banner while Buzz is the active app.
+            completion
+                .call((UNNotificationPresentationOptions::Banner
+                    | UNNotificationPresentationOptions::List,));
         }
 
         #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]

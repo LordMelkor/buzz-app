@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppServices } from "../../app/services";
-import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { splitPartition } from "../relay/partition";
 import {
   bindAgentCompletionNotifications,
@@ -10,10 +9,7 @@ import {
   completionSourceKey,
   completionTarget,
   completionTitle,
-  completionToast,
-  shouldShowForegroundCompletion,
 } from "./agent-completions";
-import { playNotificationSound, resolveCategorySound } from "./sound";
 
 export function AgentCompletionNotifications({
   services,
@@ -23,7 +19,6 @@ export function AgentCompletionNotifications({
     "agentActivity" | "agents" | "navigation" | "notifications"
   >;
 }) {
-  const notify = useToastNotification();
   useEffect(
     () =>
       bindAgentCompletionNotifications(services.agentActivity, {
@@ -48,25 +43,8 @@ export function AgentCompletionNotifications({
             }),
           );
         },
-        foreground: (work, target) => {
-          const state = services.notifications.snapshot();
-          const { preferences } = state;
-          if (!shouldShowForegroundCompletion(state)) return;
-          if (preferences.sound)
-            playNotificationSound(
-              resolveCategorySound(preferences.sounds, "agent"),
-            );
-          notify(
-            completionToast(agentName(services, work.agent), work),
-            work.state === "error" ? "error" : "success",
-            {
-              label: "View",
-              onClick: () => void services.navigation.open(target),
-            },
-          );
-        },
       }),
-    [notify, services],
+    [services],
   );
   return null;
 }

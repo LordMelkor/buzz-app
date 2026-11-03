@@ -51,28 +51,6 @@ export function completionBody(
     : destination;
 }
 
-export function completionToast(
-  agentName: string,
-  work: Pick<LocalWork, "state" | "conversationName">,
-) {
-  const title = completionTitle(agentName, work);
-  return work.conversationName ? `${title} in ${work.conversationName}` : title;
-}
-
-export function shouldShowForegroundCompletion(state: {
-  developmentPaused: boolean;
-  preferences: {
-    enabled: boolean;
-    categories: Readonly<Record<string, boolean>>;
-  };
-}) {
-  return (
-    !state.developmentPaused &&
-    state.preferences.enabled &&
-    state.preferences.categories.agent !== false
-  );
-}
-
 export function isViewingCompletedWork(
   active: OpenTarget,
   completed: OpenTarget,
@@ -95,7 +73,6 @@ export function bindAgentCompletionNotifications(
     target(work: LocalWork): OpenTarget | undefined;
     active(): OpenTarget;
     desktop(work: LocalWork, target: OpenTarget): void;
-    foreground(work: LocalWork, target: OpenTarget): void;
   },
 ) {
   let previous = new Map(
@@ -128,9 +105,8 @@ export function bindAgentCompletionNotifications(
           );
         if (!current || current.state !== work.state || !current.soloChat)
           return;
-        if (!focused) options.desktop(current, target);
-        else if (!isViewingCompletedWork(options.active(), target))
-          options.foreground(current, target);
+        if (!focused || !isViewingCompletedWork(options.active(), target))
+          options.desktop(current, target);
       };
       const focused = options.focused();
       if (typeof focused === "boolean") present(focused);

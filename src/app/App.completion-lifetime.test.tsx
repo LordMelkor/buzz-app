@@ -58,6 +58,7 @@ it("observes live Solo completions through community restoration without replayi
 
   const current = createServices();
   services = current;
+  const admit = vi.spyOn(current.notifications, "admit");
   let snapshot = current.relay.snapshot();
   const listeners = new Set<() => void>();
   const relay = {
@@ -101,12 +102,16 @@ it("observes live Solo completions through community restoration without replayi
   ).toBeInTheDocument();
 
   act(() => live.finish({ ok: true }));
-  expect(await screen.findByText("Agent is done in Live chat")).toBeVisible();
+  expect(admit).toHaveBeenCalledOnce();
+  expect(admit.mock.calls[0]?.[5]?.()).toEqual({
+    title: "Agent is done",
+    body: "View in Live chat",
+  });
   expect(screen.queryByText(/Old chat/)).not.toBeInTheDocument();
 
   act(() => {
     snapshot = current.relay.snapshot();
     for (const listener of listeners) listener();
   });
-  expect(screen.getAllByText("Agent is done in Live chat")).toHaveLength(1);
+  expect(admit).toHaveBeenCalledOnce();
 });
