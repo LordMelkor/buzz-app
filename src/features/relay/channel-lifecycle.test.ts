@@ -97,7 +97,7 @@ function harness(role = "owner", type = "stream", owners = 1) {
   const sign = vi.fn(async (event: EventTemplate) =>
     finalizeEvent(structuredClone(event), key),
   );
-  const publish = vi.fn(async (event: RelayEvent) => {
+  const publish = vi.fn(async (event: RelayEvent, _signal?: AbortSignal) => {
     if (event.kind === 9002)
       events = [
         metadata(
@@ -732,6 +732,157 @@ it("does not infer deletion from a failed confirmation read; retry can recover",
   expect(h.removed).toHaveBeenCalledOnce();
   h.owner.dispose();
 });
+describe("Leave confirmation across access revocation", () => {
+  it.each(["scoped", "global"])(
+    "%s revocation preserves dispatched Leave and rereads retired confirmations",
+    async (scope) => {
+      const h = harness("member");
+      const publish = h.publish.getMockImplementation();
+      assert(publish);
+      h.publish.mockImplementationOnce(async (event) => {
+        await publish(event);
+        h.deny();
+        h.owner.cancel(scope === "scoped" ? [id] : undefined);
+        h.read
+          .mockRejectedValueOnce(cancelled())
+          .mockRejectedValueOnce(cancelled());
+      });
+      try {
+        await h.owner.capability.run("leave", id);
+        expect(h.publish).toHaveBeenCalledOnce();
+        expect(h.removed).toHaveBeenCalledExactlyOnceWith(id);
+        expect(h.read).toHaveBeenCalledTimes(5);
+        for (const [, options] of h.read.mock.calls)
+          expect(options?.signal?.aborted).toBe(false);
+      } finally {
+        h.owner.dispose();
+      }
+    },
+  );
+
+  it.each(
+    ["caller", "clear", "dispose", "deadline"].flatMap((stop) =>
+      ["ACK", "readback"].map((phase) => ({ stop, phase })),
+    ),
+  )(
+    "$stop still cancels Leave during $phase after revocation",
+    async ({ stop, phase }) => {
+      const h = harness("member");
+      const caller = new AbortController();
+      const deadline = new AbortController();
+      const timeout = vi
+        .spyOn(AbortSignal, "timeout")
+        .mockReturnValue(deadline.signal);
+      const started = deferred<void>();
+      const hold = (signal?: AbortSignal) => {
+        assert(signal);
+        signal.throwIfAborted();
+        started.resolve();
+        return new Promise<never>((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        );
+      };
+      h.publish.mockImplementationOnce(async (_event, signal) => {
+        h.owner.cancel([id]);
+        if (phase === "ACK") await hold(signal);
+        else
+          h.read.mockImplementationOnce((_filters, options) =>
+            hold(options?.signal),
+          );
+      });
+      try {
+        const rejected = expect(
+          h.owner.capability.run("leave", id, caller.signal),
+        ).rejects.toBeInstanceOf(ChannelLifecycleUnconfirmed);
+        await started.promise;
+        if (stop === "caller") caller.abort();
+        else if (stop === "deadline")
+          deadline.abort(new DOMException("Timed out", "TimeoutError"));
+        else if (stop === "clear") h.owner.clear();
+        else h.owner.dispose();
+        await rejected;
+        expect(timeout).toHaveBeenCalledExactlyOnceWith(20_000);
+        expect(h.publish).toHaveBeenCalledOnce();
+        expect(h.read).toHaveBeenCalledTimes(phase === "ACK" ? 2 : 3);
+        expect(h.removed).not.toHaveBeenCalled();
+      } finally {
+        timeout.mockRestore();
+        h.owner.dispose();
+      }
+    },
+  );
+
+  it.each([
+    { phase: "publication", error: new PublishRejected("Leave denied") },
+    { phase: "publication", error: cancelled() },
+    { phase: "readback", error: new ReadError("denied", "Read denied") },
+    { phase: "readback", error: new Error("Read unavailable") },
+  ])(
+    "never turns $phase failure into success or republishes: $error.name",
+    async ({ phase, error }) => {
+      const h = harness("member");
+      h.publish.mockImplementationOnce(async () => {
+        h.owner.cancel([id]);
+        if (phase === "publication") throw error;
+        h.read.mockRejectedValueOnce(cancelled()).mockRejectedValueOnce(error);
+      });
+      try {
+        await expect(
+          h.owner.capability.run("leave", id),
+        ).rejects.toBeInstanceOf(
+          error instanceof PublishRejected
+            ? PublishRejected
+            : ChannelLifecycleUnconfirmed,
+        );
+        expect(h.publish).toHaveBeenCalledOnce();
+        expect(h.removed).not.toHaveBeenCalled();
+      } finally {
+        h.owner.dispose();
+      }
+    },
+  );
+
+  it("an unchanged roster after a retired read stays unconfirmed within the existing poll budget", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const h = harness("member");
+    h.publish.mockImplementationOnce(async () => {
+      h.owner.cancel([id]);
+      h.read.mockRejectedValueOnce(cancelled());
+    });
+    try {
+      const rejected = expect(
+        h.owner.capability.run("leave", id),
+      ).rejects.toBeInstanceOf(ChannelLifecycleUnconfirmed);
+      await vi.advanceTimersByTimeAsync(2500);
+      await rejected;
+      expect(h.publish).toHaveBeenCalledOnce();
+      expect(h.read).toHaveBeenCalledTimes(7);
+      expect(h.removed).not.toHaveBeenCalled();
+    } finally {
+      h.owner.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("revocation before Leave publication still cancels without sending", async () => {
+    const h = harness("member");
+    h.sign.mockImplementationOnce(async (template) => {
+      h.owner.cancel([id]);
+      return finalizeEvent(template, key);
+    });
+    try {
+      await expect(h.owner.capability.run("leave", id)).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      expect(h.publish).not.toHaveBeenCalled();
+    } finally {
+      h.owner.dispose();
+    }
+  });
+});
+
 it("serializes destructive operations without automatic resubmission", async () => {
   const h = harness();
   const gate = deferred<void>();

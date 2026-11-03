@@ -61,6 +61,7 @@ export const test = base.extend({
   sortingSidebar: [false, { option: true }],
   initialSidebarSort: [{}, { option: true }],
   channelLifecycle: [false, { option: true }],
+  leaveRosterBeforeAck: [false, { option: true }],
   guestPermalinks: [false, { option: true }],
   lifecycleRole: ["owner", { option: true }],
   lifecycleOwnerAgent: [false, { option: true }],
@@ -134,6 +135,7 @@ export const test = base.extend({
       sortingSidebar,
       initialSidebarSort,
       channelLifecycle,
+      leaveRosterBeforeAck,
       guestPermalinks,
       lifecycleRole,
       lifecycleOwnerAgent,
@@ -1844,6 +1846,11 @@ export const test = base.extend({
         if (event.kind === 9008 || event.kind === 9022)
           rosterIds.splice(rosterIds.indexOf(id), 1);
         lifecycleTime++;
+        if (event.kind === 9022 && leaveRosterBeforeAck)
+          relay.publish(
+            community,
+            sign(39002, [["d", id]], "", relayKey, lifecycleTime),
+          );
         report.lifecyclePublications ??= [];
         report.lifecyclePublications.push(event);
         return;

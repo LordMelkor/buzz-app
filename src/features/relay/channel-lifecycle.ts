@@ -73,7 +73,7 @@ export function createChannelLifecycle({
   let busy = false;
   let epoch = 0;
   // Each in-flight operation and the channel it concerns; visibility reads have none.
-  const controllers = new Map<AbortController, string | undefined>();
+  const controllers = new Map<AbortController, Scope>();
   const listeners = new Set<() => void>();
   const removalListeners = new Set<(channelId: string) => void>();
   let snapshot: DmVisibility = Object.freeze({
@@ -95,14 +95,19 @@ export function createChannelLifecycle({
       throw new Error("Channel access unavailable; refresh membership");
   }
   /** The channel an operation concerns, if any, and the caller's own signal. */
-  type Scope = { id?: string | undefined; caller?: AbortSignal | undefined };
+  type Scope = {
+    id?: string | undefined;
+    caller?: AbortSignal | undefined;
+    publishedLeave?: boolean;
+  };
   async function owned<T>(
-    { id, caller }: Scope,
+    scope: Scope,
     work: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     if (closed) throw new DOMException("Relay session closed", "AbortError");
+    const { caller } = scope;
     const controller = new AbortController();
-    controllers.set(controller, id);
+    controllers.set(controller, scope);
     const signal = AbortSignal.any([
       controller.signal,
       AbortSignal.timeout(20_000),
@@ -364,8 +369,9 @@ export function createChannelLifecycle({
       const id = lifecycleChannelId(value);
       busy = true;
       let publicationStarted = false;
+      const scope: Scope = { id, caller };
       try {
-        await owned({ id, caller }, async (signal) => {
+        await owned(scope, async (signal) => {
           // Joining starts from a nonmember preview, so membership-based
           // settings cannot authorize it. Fresh signed metadata must still
           // say public; a current roster entry means there is nothing to send.
@@ -435,6 +441,7 @@ export function createChannelLifecycle({
           if (active?.() === false)
             throw new DOMException("Channel action cancelled", "AbortError");
           publicationStarted = true;
+          scope.publishedLeave = action === "leave";
           await writer.publish(signed, signal);
           // An accepted write may precede its relay-owned side effects. Do not
           // optimistically revoke membership or confuse a failed read with absence.
@@ -463,13 +470,29 @@ export function createChannelLifecycle({
               }
             } else {
               const kind = action === "leave" ? 39002 : 39000;
-              const events = await read(
-                [kind],
-                id,
-                signal,
-                action === "leave",
-                true,
-              );
+              let events: readonly RelayEvent[];
+              for (;;) {
+                try {
+                  events = await read(
+                    [kind],
+                    id,
+                    signal,
+                    action === "leave",
+                    true,
+                  );
+                  break;
+                } catch (error) {
+                  // Membership loss retires shared reads, even this Leave's
+                  // confirmation. Reread within its original deadline; an
+                  // aborted read is never evidence that membership is gone.
+                  if (
+                    action !== "leave" ||
+                    signal.aborted ||
+                    readErrorKind(error) !== "cancelled"
+                  )
+                    throw error;
+                }
+              }
               const record = lifecycleRecord(events, kind, id, relayAuthor);
               if (action === "archive" || action === "unarchive") {
                 const archived =
@@ -507,13 +530,19 @@ export function createChannelLifecycle({
   });
   return {
     capability,
-    /** Abort work on `ids` and id-less visibility reads; without `ids`, everything. */
+    /** Retire access-dependent work, preserving a Leave already dispatched. */
     cancel(ids?: readonly string[]) {
       // A channel-scoped invalidation retires a read, not the viewer's whole
       // refresh. Its cancellation can retry within the existing budget.
       if (!ids) refreshController?.abort();
-      for (const [controller, id] of controllers)
-        if (!ids || id === undefined || ids.includes(id)) controller.abort();
+      // Leave can revoke its own membership before its ACK/readback arrives.
+      // Caller, deadline, clear and disposal still stop the operation.
+      for (const [controller, scope] of controllers)
+        if (
+          !scope.publishedLeave &&
+          (!ids || scope.id === undefined || ids.includes(scope.id))
+        )
+          controller.abort();
     },
     clear() {
       epoch++;
