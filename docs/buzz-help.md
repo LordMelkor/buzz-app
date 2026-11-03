@@ -76,10 +76,10 @@ the interface unless an available tool actually supports that action.
   dots; muting does not mark messages or threads as read.
 - **Message link previews** appear when you hover or focus a Buzz message link.
   When the message can't be shown, the card says why: the channel is private,
-  gone or in another community; the message was deleted; or the preview
-  couldn't load. Links don't record their community, so one from another
-  community looks like a private or missing channel. The card still opens the
-  link.
+  gone or in another community; the message isn't available, and may have
+  been deleted; or the preview couldn't load. Links don't record their
+  community, so one from another community looks like a private or missing
+  channel. The card still opens the link.
 - **Manage members** shows **General** access first in the member list. **Public**
   lets people in the community read and new people participate; **View only**
   lets them read; **Private** limits access to people added to the channel.

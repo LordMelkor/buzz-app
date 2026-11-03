@@ -27,7 +27,7 @@ import { namedChannel, useChannelReference } from "./channel-reference";
 export const previewFailures = {
   withheld:
     "Private channel. You aren’t a member, it no longer exists, or the link is from another community.",
-  "not-found": "This message was deleted.",
+  "not-found": "This message isn’t available. It may have been deleted.",
   unavailable: "Couldn’t load this preview.",
 } as const;
 type FoundChannel = Extract<ChannelReference, { state: "found" }>;

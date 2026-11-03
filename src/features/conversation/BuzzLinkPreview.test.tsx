@@ -173,14 +173,17 @@ it("says why each stopped read fails instead of loading forever, and that the ca
   expect(text(setup(purged).tree)).toBe(previewFailures.unavailable);
   const exhausted = setup({ ...base, status: "ready", root: undefined });
   expect(text(exhausted.tree)).toBe(previewFailures["not-found"]);
-  // A readable channel without the message names the channel.
+  // A readable channel without the message names the channel. An empty exact
+  // read isn't evidence of a deletion, so the card doesn't claim one.
   const missing = setup(
     { ...base, status: "ready", targetStatus: "unavailable" },
     root.id,
     undefined,
     open,
   );
-  expect(text(missing.tree)).toBe(previewFailures["not-found"]);
+  expect(text(missing.tree)).toBe(
+    "This message isn’t available. It may have been deleted.",
+  );
   expect(missing.tree.querySelector("strong")?.textContent).toBe("open");
   expect(missing.tree.textContent).toContain("Public channel · Not joined");
   expect(missing.tree.textContent).toContain("Open link");
