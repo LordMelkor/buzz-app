@@ -63,7 +63,11 @@ export interface Outbox {
   ): string;
   /** Attach caller-owned recovery to an existing receipt before resuming it. */
   recover(id: string, recovery: OutboxRecovery): Promise<void>;
-  acknowledge(id: string): Promise<void>;
+  /** An expired no-role invitation may instead be resolved by fresh negative readback. */
+  acknowledge(
+    id: string,
+    verifyUnapplied?: (event: EventData) => Promise<void>,
+  ): Promise<void>;
   retry(id: string, active?: () => boolean): void;
   dismiss(id: string): Promise<void>;
   /** Durable explicit dismissal, with delivery evidence at removal. */
@@ -688,10 +692,54 @@ export function createOutbox(
       notify();
       await persist(id);
     },
-    async acknowledge(id: string) {
+    async acknowledge(
+      id: string,
+      verifyUnapplied?: (event: EventData) => Promise<void>,
+    ) {
       await outbox.ready();
       const item = visible.find((item) => item.event.id === id);
       if (!item?.recovery) return;
+      if (verifyUnapplied) {
+        const eligible = () => {
+          const current = find(id);
+          return (
+            !closed &&
+            !attempts.has(id) &&
+            current?.event.kind === 9000 &&
+            current.recovery?.key.startsWith("member-add:") &&
+            (current.delivery === "unknown" || current.delivery === "failed") &&
+            current.event.content === "" &&
+            current.event.tags.every(
+              (tag) =>
+                tag.length === 2 &&
+                ["h", "p", "client-id", "ms"].includes(tag[0] ?? ""),
+            ) &&
+            current.event.tags.filter(([tag]) => tag === "h").length === 1 &&
+            current.event.tags.filter(([tag]) => tag === "p").length === 1 &&
+            current.event.created_at < Math.floor(Date.now() / 1000) - 15 * 60
+          );
+        };
+        if (dismissing.has(id) || !eligible())
+          throw new Error(
+            "This saved invitation may still arrive. Retry after its 15-minute delivery window ends.",
+          );
+        // Fence every local replay until verification and retirement are durable.
+        const work = Promise.resolve().then(async () => {
+          await verifyUnapplied(item.event);
+          if (!eligible())
+            throw new Error(
+              "The invitation changed while checking it. Refresh members and try again.",
+            );
+          await persist(id, "acknowledge");
+        });
+        dismissing.set(id, work);
+        try {
+          await work;
+        } finally {
+          if (dismissing.get(id) === work) dismissing.delete(id);
+        }
+        return;
+      }
       // Member callers verify a fresh signed roster even when the receipt was lost.
       if (
         !(

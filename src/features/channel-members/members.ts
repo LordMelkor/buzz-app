@@ -99,7 +99,7 @@ export async function addChannelMember(
   allowSoloAgents = false,
   /** Runs synchronously just before a new or retried addition is dispatched. */
   beforeDispatch?: () => void,
-) {
+): Promise<void> {
   if (!keyPattern.test(pubkey))
     throw new Error("Choose a valid person or agent.");
   const channel = () =>
@@ -195,10 +195,26 @@ export async function addChannelMember(
     await outbox.recover(pending.event.id, recovery);
   check();
   if (soloParticipant && pending && noRole(pending.event)) {
-    if (!channel()?.members?.includes(pubkey))
-      throw new Error(
-        "This saved invitation does not explicitly grant participation. Check its status in Outbox before inviting again.",
+    if (!channel()?.members?.includes(pubkey)) {
+      await outbox.acknowledge(pending.event.id, async (event) => {
+        check();
+        await session.channelWrites.verifyUnappliedAddition(event, signal);
+        check();
+      });
+      intent.confirmed = true;
+      // Re-read membership after durable retirement; only absent targets get a new grant.
+      return addChannelMember(
+        session,
+        channelId,
+        pubkey,
+        signal,
+        intent,
+        receipts,
+        soloParticipant,
+        allowSoloAgents,
+        beforeDispatch,
       );
+    }
     await session.memberAdministration.refresh(channelId);
     check();
     const verified = session.memberAdministration.snapshot(channelId);

@@ -1040,8 +1040,10 @@ message/event writes use this identity. [Join recovery](communities.md#packaged-
 records public progress before remote changes. The existing durable outbox retains
 uncertain delivery across restart; retry uses the same signed event with fresh HTTP
 authentication. Events older than 15 minutes get a strong ID readback instead of
-being republished or silently re-dated. Missing/failed readback retains uncertainty;
-the user must inspect the conversation before explicitly sending a new message.
+being republished or silently re-dated. For ordinary messages, missing/failed
+readback retains uncertainty; inspect the conversation before explicitly sending
+another. Expired no-role Solo invitations have a narrower verified retirement
+path through [Outbox Retry](solo/sharing.md).
 
 Protected media and uploads are native, because the webview cannot attach Blossom
 (kind 24242) authentication itself: `<img>`, `<video>` and `<audio>` send no custom

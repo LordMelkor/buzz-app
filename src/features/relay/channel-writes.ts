@@ -6,6 +6,7 @@ import type { Outbox } from "./outbox";
 import { withdraw } from "./withdraw";
 import type { ChannelQueries, ChannelSummary } from "./contracts";
 import type { RelayReader } from "./reader";
+import type { EventData } from "./events";
 
 export const DEFAULT_TEMPORARY_CHANNEL_TTL_SECONDS = 7 * 24 * 60 * 60;
 
@@ -771,6 +772,28 @@ export function createChannelWrites(
           .some((item) => item.event.id === id && item.delivery === "failed") ??
         false
       );
+    },
+    /** Outbox fences local delivery and expiry; this read bypasses cached absence. */
+    async verifyUnappliedAddition(event: EventData, caller: AbortSignal) {
+      const active = AbortSignal.any([signal, caller]);
+      active.throwIfAborted();
+      const events = await reader.read(
+        [
+          {
+            kinds: [9000],
+            ids: [event.id],
+            authors: [event.pubkey],
+            limit: 1,
+            consistency: "strong",
+          },
+        ],
+        { signal: active, fresh: true, priority: "foreground" },
+      );
+      active.throwIfAborted();
+      if (events.length)
+        throw new Error(
+          "The earlier invitation is recorded on the relay. Refresh members to check its result before inviting again.",
+        );
     },
     async discardFailed(id: string) {
       const source = writer();

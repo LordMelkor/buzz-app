@@ -70,12 +70,17 @@ cached non-agent evidence for an additional human. Unknown profiles remain
 unclassified; absence of the indicator is **not** a privacy promise. Clicking the
 indicator opens the same dialog.
 
-An invitation saved by an older client without an explicit Member grant is not
-replayed as a participation invitation. Check its original status in Outbox;
-unknown outcomes remain protected against replacement. If signed roles confirm
-that it admitted a Guest, the error explains how to remove that person in People
-and invite them again. Recovery never silently promotes an existing Guest.
-A failed invitation can be replaced after explicitly dismissing it in Outbox.
+An invitation saved by an older client without an explicit Member grant is never
+replayed as a participation invitation. **Retry** keeps it protected during the
+relay's 15-minute intake window. After expiry, Retry fences local delivery and
+checks the original event ID with a fresh strong read. Only verified absence can
+retire it durably; a failed read, recorded event, active delivery or newly observed
+echo keeps recovery. Add then re-reads membership before issuing a new explicit
+Member invitation. This uses the existing Outbox/member/share actions, with no
+background retry or new control. If signed roles confirm that the earlier invite
+admitted a Guest, remove that person in People and invite them again. Recovery
+never silently promotes an existing Guest. A definitively failed invitation can
+also be replaced after explicitly dismissing it in Outbox.
 
 ### General access
 

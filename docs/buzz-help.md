@@ -113,7 +113,9 @@ the interface unless an available tool actually supports that action.
   readable. View only retains Guest admission. Copying its link alone does not grant access. Check the intended people
   and destination before changing access. If an older saved invitation granted
   view-only access, remove that person in People and invite them again for
-  participation; an unknown invitation result must be checked in Outbox first.
+  participation. For an older invitation that has not arrived, use **Retry** in
+  Outbox after its 15-minute delivery window. Buzz verifies its status before
+  allowing a fresh participation invitation; failed checks keep the original.
 - **Sidebar width**: drag the sidebar's right edge, or focus its resize handle
   and use the Left/Right arrow keys. Double-click the handle to reset the width.
   Messages and plugin pages share the saved width within the same community

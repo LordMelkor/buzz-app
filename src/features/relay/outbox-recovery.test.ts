@@ -13,6 +13,7 @@ const recovery = { key: "new-dm", value: '{"draft":"First message"}' };
 const owners: ReturnType<typeof createOutbox>[] = [];
 afterEach(() => {
   for (const owner of owners.splice(0)) owner.dispose();
+  vi.useRealTimers();
 });
 function setup(
   storage: OutboxStorage,
@@ -295,4 +296,124 @@ it("retires roster-confirmed member recovery without inventing a delivery receip
   });
   expect(h.publish).toHaveBeenCalledOnce();
   expect(restored.publish).not.toHaveBeenCalled();
+});
+
+function legacyAddition(age = 901) {
+  const event = signed(viewer, {
+    kind: 9000,
+    content: "",
+    tags: [
+      ["h", "channel"],
+      ["p", "person"],
+    ],
+    created_at: Math.floor(Date.now() / 1000) - age,
+  });
+  const recovery = { key: "member-add:channel:person", value: "1" };
+  let records: readonly OutgoingEvent[] = [
+    { event, signed: event, delivery: "unknown", recovery },
+  ];
+  const store = {
+    load: () => structuredClone(records),
+    save: (next: readonly OutgoingEvent[]) => {
+      records = structuredClone(next);
+    },
+  };
+  return { event, recovery, store };
+}
+it("fences replay and replacement until an expired legacy invitation is durably resolved", async () => {
+  const { event, recovery, store } = legacyAddition();
+  const h = setup(store);
+  await h.outbox.ready();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const verify = vi.fn(async () => {
+    await gate;
+  });
+  const retire = h.outbox.acknowledge(event.id, verify);
+  try {
+    await vi.waitFor(() => expect(verify).toHaveBeenCalledOnce());
+    h.outbox.retry(event.id);
+    expect(() =>
+      h.outbox.send(
+        {
+          kind: 9000,
+          content: "",
+          tags: [
+            ["h", "channel"],
+            ["p", "person"],
+            ["role", "member"],
+          ],
+        },
+        recovery,
+      ),
+    ).toThrow(/Recover the earlier/);
+    expect(store.load()[0]?.acknowledged).toBeUndefined();
+  } finally {
+    release();
+  }
+  await retire;
+  expect(h.publish).not.toHaveBeenCalled();
+  expect(store.load()[0]).toMatchObject({
+    acknowledged: true,
+    delivery: "unknown",
+  });
+  expect(h.outbox.snapshot()).toEqual([]);
+});
+it("cannot retire a still-active delivery after its intake window expires", async () => {
+  const { event, store } = legacyAddition(0);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const publish = vi.fn(async () => {
+    await gate;
+  });
+  const h = setup(store, publish);
+  await h.outbox.ready();
+  h.outbox.retry(event.id);
+  try {
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime((event.created_at + 901) * 1000);
+    const verify = vi.fn(async () => {});
+    await expect(h.outbox.acknowledge(event.id, verify)).rejects.toThrow(
+      /may still arrive/,
+    );
+    expect(verify).not.toHaveBeenCalled();
+    expect(store.load()[0]?.acknowledged).toBeUndefined();
+  } finally {
+    release();
+  }
+  await vi.waitFor(() =>
+    expect(h.outbox.snapshot()[0]?.delivery).toBe("accepted"),
+  );
+});
+it("retains a legacy receipt when an echo arrives during negative verification", async () => {
+  const { event, store } = legacyAddition();
+  const h = setup(store);
+  await h.outbox.ready();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const verify = vi.fn(async () => {
+    await gate;
+  });
+  const retire = h.outbox.acknowledge(event.id, verify);
+  const rejected = expect(retire).rejects.toThrow(/changed while checking/);
+  try {
+    await vi.waitFor(() => expect(verify).toHaveBeenCalledOnce());
+    h.observe([event]);
+  } finally {
+    release();
+  }
+  await rejected;
+  expect(h.outbox.snapshot()[0]).toMatchObject({
+    delivery: "seen",
+    recovery: { key: "member-add:channel:person" },
+  });
+  expect(store.load()[0]?.acknowledged).toBeUndefined();
+  expect(h.publish).not.toHaveBeenCalled();
 });
