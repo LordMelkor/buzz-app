@@ -11,6 +11,19 @@ export const SOLO_LABEL = "buzz.solo";
 export const SOLO_ACCESS_DISCLOSURE =
   "Everyone in this community will be able to read this chat’s full history and Canvas, including its workspace folders and agent instructions.";
 
+/** Switching an open Solo chat to Private never removes its members. */
+export function soloRetainedAccessWarning(
+  base: Pick<ChannelSummary, "visibility" | "joinRole">,
+  mayHaveGuestMembers = true,
+): string {
+  if (base.visibility !== "public") return "";
+  if (base.joinRole !== "guest")
+    return "People who already joined remain members and keep their access until you remove them in People.";
+  return mayHaveGuestMembers
+    ? "People who joined while it was View only are members and keep reading until you remove them in People."
+    : "";
+}
+
 export function soloLabels(labels: readonly string[] | undefined): boolean {
   return !!labels?.includes(SOLO_LABEL);
 }

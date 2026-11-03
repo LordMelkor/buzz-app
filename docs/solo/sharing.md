@@ -82,7 +82,8 @@ agent instructions stored in Canvas. Moving from Public (existing) also
 explains that people already in the chat keep their access. Moving from View only
 to Private warns that joined viewers remain members unless a verified role
 snapshot establishes that no Guests exist; loading or failed verification keeps
-the warning. One signed kind-9002 edit sets
+the warning. Public (existing) → Private also warns that joined members retain
+their access until removed in People. One signed kind-9002 edit sets
 `visibility=open` and `join_role=guest` together, through the existing
 `channelDetails` save, conflict checks and exact readback.
 

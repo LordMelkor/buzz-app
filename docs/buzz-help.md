@@ -82,7 +82,9 @@ the interface unless an available tool actually supports that action.
   **Public (existing)**. This is not protocol enforcement. View-only visitors
   cannot post; existing members keep their roles. Returning to Private warns
   about retained viewers unless verified roles show no Guests, including while
-  roles load or fail to load; remove them in People to end their access. Public (existing) → View only confirms that existing
+  roles load or fail to load; remove them in People to end their access. Public
+  (existing) → Private also warns that joined members retain their access.
+  Public (existing) → View only confirms that existing
   members keep their access. Agents the owner adds through
   access search or a composer mention receive Bot access so they can reply,
   including with a Guest admission default. Conversion to a channel offers

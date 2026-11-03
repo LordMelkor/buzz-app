@@ -277,6 +277,21 @@ test.describe("owner", () => {
       );
       await page.keyboard.press("Escape");
       await expect(audience).toBeFocused();
+      await audience.click();
+      await page.getByRole("option", { name: "Private", exact: true }).click();
+      await expect(confirm).toHaveAccessibleDescription(
+        "Only chat members will have access. People who already joined remain members and keep their access until you remove them in People.",
+      );
+      await expect(
+        confirm.getByRole("button", { name: "Change access", exact: true }),
+      ).toBeInViewport({ ratio: 1 });
+      await capture(
+        confirm,
+        info,
+        `SOLO_PUBLIC_PRIVATE_CONFIRMATION_${suffix}`,
+      );
+      await page.keyboard.press("Escape");
+      await expect(audience).toBeFocused();
       await page.keyboard.press("Escape");
     }
     expect(app.report.detailsPublications.map(({ kind }) => kind)).toEqual(

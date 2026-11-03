@@ -25,7 +25,11 @@ import {
 } from "../../shared/design-system/icons";
 import styles from "./ChannelMembersDialog.module.css";
 import { privacyConsequence } from "./ChannelPrivacyConfirmation";
-import { SOLO_ACCESS_DISCLOSURE, soloLabels } from "../../features/solo/labels";
+import {
+  SOLO_ACCESS_DISCLOSURE,
+  soloLabels,
+  soloRetainedAccessWarning,
+} from "../../features/solo/labels";
 import {
   generalAccessOptions,
   generalAccessPolicy,
@@ -324,11 +328,8 @@ function ChannelGeneralAccessEditor({
                     ? "Only chat members will have access."
                     : privacyConsequence(choice.visibility)
                   : "",
-              solo &&
-              access === "view-only" &&
-              choice.visibility === "private" &&
-              mayHaveGuestMembers
-                ? "People who joined while it was View only are members and keep reading until you remove them in People."
+              solo && choice.visibility === "private"
+                ? soloRetainedAccessWarning(base, mayHaveGuestMembers)
                 : "",
               solo &&
               access === "public" &&

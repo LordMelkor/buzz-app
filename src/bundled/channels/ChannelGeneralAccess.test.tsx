@@ -288,10 +288,11 @@ it.each([
     visibility: "public",
     joinRole: "member",
     option: "Private",
-    expected: "Only chat members will have access.",
+    expected:
+      "Only chat members will have access. People who already joined remain members and keep their access until you remove them in People.",
   },
 ] as const)(
-  "keeps $visibility/$joinRole → $option unchanged even with a Guest member",
+  "explains $visibility/$joinRole → $option with existing members",
   async ({ visibility, joinRole, option, expected }) => {
     const h = harness();
     h.load.mockResolvedValue({
@@ -488,3 +489,30 @@ it("retires an open confirmation and late reads when the destination changes", a
     expect(control).toBeDisabled();
   expect(h.save).not.toHaveBeenCalled();
 });
+
+it.each([true, false])(
+  "warns Public (existing) → Private retains Members regardless of Guests: %s",
+  async (mayHaveGuestMembers) => {
+    const h = harness();
+    h.load.mockResolvedValue({
+      ...base,
+      labels: ["buzz.solo"],
+      visibility: "public",
+      joinRole: "member",
+    });
+    render(
+      <ChannelGeneralAccess
+        capability={h.capability}
+        channelId="alpha"
+        mayHaveGuestMembers={mayHaveGuestMembers}
+      />,
+    );
+    const user = userEvent.setup();
+    await select(user, "General access", "Private");
+    expect(screen.getByRole("alertdialog")).toHaveAccessibleDescription(
+      "Only chat members will have access. People who already joined remain members and keep their access until you remove them in People.",
+    );
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(h.save).not.toHaveBeenCalled();
+  },
+);
