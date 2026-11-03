@@ -420,6 +420,12 @@ test.describe("visitor", () => {
     ]);
     await page.reload();
     await expect(article.locator("[data-message-id]").last()).toBeVisible();
+    await expect(
+      article.getByRole("region", { name: "Channel preview", exact: true }),
+    ).toBeVisible();
+    await expect(
+      article.getByRole("button", { name: "Join", exact: true }),
+    ).toHaveCount(0);
     await page
       .getByRole("button", { name: /^Share access/ })
       .last()
