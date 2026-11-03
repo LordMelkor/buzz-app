@@ -61,7 +61,8 @@ export function OutboxStatus({
                     try {
                       if (
                         item.event.kind === 9000 &&
-                        item.recovery?.key.startsWith("member-add:")
+                        (item.recovery?.key.startsWith("member-add:") ||
+                          !item.event.tags.some(([tag]) => tag === "role"))
                       ) {
                         const channelId = item.event.tags.find(
                           ([tag]) => tag === "h",

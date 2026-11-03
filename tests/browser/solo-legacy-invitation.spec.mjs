@@ -34,17 +34,16 @@ test("Outbox Retry replaces an expired unapplied Solo invitation without replayi
       ["p", person.pubkey],
     ],
   });
-  const recovery = { key: `member-add:${chat}:${person.pubkey}`, value: "1" };
   await page.addInitScript(
-    ({ scope, original, recovery }) => {
+    ({ scope, original }) => {
       localStorage.setItem(
         `buzz-outbox-v1:${scope}`,
         JSON.stringify([
-          { event: original, signed: original, delivery: "unknown", recovery },
+          { event: original, signed: original, delivery: "unknown" },
         ]),
       );
     },
-    { scope: `https://primary.example:${app.viewer}`, original, recovery },
+    { scope: `https://primary.example:${app.viewer}`, original },
   );
   const publications = [];
   let joined = false;
