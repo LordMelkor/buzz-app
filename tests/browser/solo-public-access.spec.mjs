@@ -82,6 +82,14 @@ test.describe("owner", () => {
       exact: true,
     });
     const audience = dialog.getByRole("combobox", { name: "General access" });
+    const openAccess = async () => {
+      // Cached startup renders Share access too. Its local dialog is replaced
+      // with the live session; Chat actions exists only on the live header.
+      await expect(
+        page.getByRole("button", { name: "Chat actions", exact: true }),
+      ).toBeVisible();
+      await access.click();
+    };
     const confirm = page.getByRole("alertdialog", {
       name: "Change general access?",
     });
@@ -90,7 +98,7 @@ test.describe("owner", () => {
       const suffix = `${presentation.mode}_${presentation.width}`;
       await present(page, presentation);
       if (presentation.width === 1440) await expect(row).toBeVisible();
-      await access.click();
+      await openAccess();
       await expect(audience).toBeEnabled();
       await expect(audience).toHaveText("Private");
       await expect(dialog.getByRole("alert")).toHaveCount(0);
@@ -165,7 +173,7 @@ test.describe("owner", () => {
       await capture(dialog, info, `SOLO_DROPDOWN_VIEW_ONLY_${suffix}`);
       await page.keyboard.press("Escape");
       await page.reload();
-      await access.click();
+      await openAccess();
       await expect(audience).toHaveText("View only");
       await expect(audience).toBeEnabled();
       await audience.click();
@@ -227,7 +235,7 @@ test.describe("owner", () => {
         ["join_role", "guest"],
       ]);
       await present(page, presentation);
-      await access.click();
+      await openAccess();
       await expect(audience).toBeEnabled();
       await expect(audience).toHaveText("View only");
       await expect(
@@ -257,7 +265,7 @@ test.describe("owner", () => {
         ["join_role", "member"],
       ]);
       await page.reload();
-      await access.click();
+      await openAccess();
       await expect(audience).toBeEnabled();
       await expect(audience).toHaveText("Public (existing)");
       await audience.click();
