@@ -267,7 +267,7 @@ async fn revocation_while_a_key_is_read_withholds_the_result() {
                 Revocation::Deletion => fixture
                     .host
                     .forget_row_for_test(&fixture.agent.pubkey, RELAY),
-                Revocation::SignOut => fixture.identity.sign_out().await,
+                Revocation::SignOut => drop(fixture.identity.sign_out().await),
             }
             drop(keys);
             let reply = request.await.unwrap();
