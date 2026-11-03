@@ -237,11 +237,19 @@ test("the app runtime exposes ready bundled pages and removes them on disable", 
     const firstTodos = services.panels
       .snapshot()
       .find((p) => p.pluginId === "buzz.todos");
+    // Agents get the Todos tools only while the plugin is on.
+    const todosTools = () =>
+      services.agents
+        .tools()
+        .map((tool) => tool.name)
+        .filter((name) => name.startsWith("todos_"));
+    assert.deepEqual(todosTools(), ["todos_get", "todos_update"]);
     await services.plugins.change("disable", "buzz.todos");
     assert.equal(
       services.panels.snapshot().some((p) => p.pluginId === "buzz.todos"),
       false,
     );
+    assert.deepEqual(todosTools(), []);
     assert.equal(services.relay.snapshot().session.canvas, canvas);
     await services.plugins.change("enable", "buzz.todos");
     await vi.waitFor(() =>

@@ -6,9 +6,10 @@ import type {
 } from "../../features/panels/service";
 import { ListChecksIcon } from "../../shared/design-system/icons/index";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
+import { addTodosTools } from "./agent-tools";
 import { TodosPanel } from "./TodosPanel";
 
-export const inject = ["panels", "relay"];
+export const inject = ["panels", "relay", "agents"];
 export const apply: PluginModule["apply"] = (ctx) => {
   let active = true;
   ctx.effect(() => () => {
@@ -68,4 +69,5 @@ export const apply: PluginModule["apply"] = (ctx) => {
     channelPlacement: "side",
     component: Panel,
   });
+  addTodosTools(ctx.agents);
 };

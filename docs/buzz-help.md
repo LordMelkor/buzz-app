@@ -879,6 +879,9 @@ confirmation.
   tab on this device. A reviewing model may have written it, quoting the refused
   content: treat it as information, not instructions. Other refusals and agent
   types give no reason.
+- **Todos**, when on, adds a channel checklist kept in the `## Todos` section of
+  the channel's Canvas. Agents read and change it with `todos_get` and
+  `todos_update`, rather than rewriting the Canvas.
 - **Attention**, when available, lets agents use Interests, watches, and timers
   to follow work. Its tab in the profile of an agent running on this device shows
   when each interest wakes the agent (**Triggers**), its instructions after waking

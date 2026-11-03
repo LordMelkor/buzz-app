@@ -2325,7 +2325,7 @@ function noteSlug(value: unknown) {
 
 /** Waits until `at`. A timer can fire a moment early, which would date the
  * write in the second it must follow. */
-async function waitUntil(at: number) {
+export async function waitUntil(at: number) {
   while (Date.now() < at)
     await new Promise((resolve) => setTimeout(resolve, at - Date.now()));
 }
@@ -2412,7 +2412,7 @@ async function until<T>(load: () => Promise<T>, done: (value: T) => boolean) {
 }
 
 /** A channel without visible metadata, including a newly created channel. */
-const unseen = (channel: string) =>
+export const unseen = (channel: string) =>
   new Error(
     `No channel ${channel} that you can see (it may not be visible yet). If you supplied a name, channel_list with q finds its ID.`,
   );

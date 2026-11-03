@@ -1102,6 +1102,19 @@ content.
 Duplicate Todos sections block editing until corrected in Canvas. Disabling removes
 the convenience UI, not the saved list: Channel actions → View canvas remains editable.
 
+While Todos is on, it adds two agent tools, so agents learn the list exists from
+their session hint rather than from pasted instructions. `todos_get` lists a
+channel's todos with status, assignee and parent todos. `todos_update` adds a todo
+or changes one's status or assignee, naming an existing todo by its exact text; it
+refuses a text that matches more than one todo. Both use this section's parser and
+source edits, so the rest of the Canvas keeps its bytes. A write reads the head
+from the writer, is dated after it, and carries `expected-revision` like the panel's
+saves; it then reads the head back and reports a conflict if another save won.
+When publishing or that read-back fails, the change is reported as unconfirmed
+rather than failed, so an agent checks `todos_get` instead of adding a todo twice.
+Assigning takes a channel member's pubkey or npub, as the panel's roster does, and
+the name from that profile; it still sends no notification.
+
 An optional terminal suffix records assignment as ordinary Markdown:
 ` · Assignee: [Display name](nostr:npub…)`, using a full valid npub, not the abbreviated
 placeholder shown here. Only that exact structural suffix is assignment metadata;
