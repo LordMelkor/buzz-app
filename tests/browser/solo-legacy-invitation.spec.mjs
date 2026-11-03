@@ -15,6 +15,34 @@ test.use({
   historyCounts: { [channel]: 2, [chat]: 2 },
 });
 
+async function savedInvitations(page, scope) {
+  return page.evaluate(async (scope) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("buzz-outbox-v2", 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction("events");
+        const request = tx
+          .objectStore("events")
+          .index("scope")
+          .getAll(IDBKeyRange.only(scope));
+        tx.oncomplete = () =>
+          resolve(
+            request.result
+              .map((entry) => entry.operation)
+              .filter((item) => item.event.kind === 9000),
+          );
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally {
+      db.close();
+    }
+  }, scope);
+}
+
 // Browser boundary: restored IndexedDB intent, the real Outbox Retry routing,
 // broker reads and signed roster readback must agree across a page reload.
 // Expiry/role/concurrency matrices stay in the colocated unit tests.
@@ -47,6 +75,12 @@ test("Outbox Retry reconciles a recorded then removed Solo invitation without re
   );
   const publications = [];
   let joined = false;
+  let checkingReplacement = false;
+  let membershipReads = 0;
+  let releaseRoster;
+  const heldRoster = new Promise((resolve) => {
+    releaseRoster = resolve;
+  });
   await page.route("**/api/relay/**/publish", async (route) => {
     const event = route.request().postDataJSON();
     if (event.kind !== 9000) return route.continue();
@@ -71,6 +105,20 @@ test("Outbox Retry reconciles a recorded then removed Solo invitation without re
       return route.fulfill({ json: [original] });
     if (!filters.some((filter) => filter.kinds?.includes(39002)))
       return route.continue();
+    if (
+      checkingReplacement &&
+      filters.some(
+        (filter) =>
+          filter.kinds?.includes(39002) && filter["#d"]?.includes(chat),
+      )
+    ) {
+      membershipReads++;
+      // Old ordering reaches this read after retirement but before publication.
+      // The handoff queues its replacement first, then confirms its signed roster.
+      if (membershipReads === 3) {
+        await heldRoster;
+      }
+    }
     const response = await route.fetch();
     const events = await response.json();
     await route.fulfill({
@@ -128,7 +176,36 @@ test("Outbox Retry reconciles a recorded then removed Solo invitation without re
       });
   }
   await page.clock.setFixedTime(new Date(now + 2000));
+  checkingReplacement = true;
   await outbox.getByRole("button", { name: "Retry", exact: true }).click();
+  try {
+    await expect.poll(() => membershipReads).toBe(3);
+    expect(publications).toHaveLength(1);
+    await expect(summary).toHaveText("Outbox · 1 items");
+    const saved = await savedInvitations(
+      page,
+      `https://primary.example:${app.viewer}`,
+    );
+    expect(
+      saved.find((item) => item.event.id === original.id)?.acknowledged,
+    ).toBe(true);
+    expect(
+      saved.find((item) => item.event.id === publications[0].id)?.recovery,
+    ).toBeDefined();
+  } finally {
+    releaseRoster();
+  }
+  // Publication is not completion: observe the actual acknowledgement commit.
+  await expect
+    .poll(async () => {
+      const saved = await savedInvitations(
+        page,
+        `https://primary.example:${app.viewer}`,
+      );
+      return saved.find((item) => item.event.id === publications[0].id)
+        ?.acknowledged;
+    })
+    .toBe(true);
   await expect(summary).toHaveText("Outbox · 0 items");
   await expect(outbox.getByRole("alert")).toHaveCount(0);
   expect(publications).toHaveLength(1);

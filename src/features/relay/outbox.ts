@@ -44,6 +44,14 @@ export type OutgoingEvent = Readonly<{
    * device, being asked to wait, or going unanswered. */
   refused?: true | undefined;
 }>;
+type OutboxInput = Pick<EventTemplate, "kind" | "content" | "tags"> & {
+  /** NIP-AP: created_at of the newest observed head this event replaces. */
+  supersedes?: number;
+};
+type Replacement = {
+  input(): OutboxInput | undefined;
+  queued(id: string): void;
+};
 export interface Outbox {
   /** Outstanding operations only. Confirmed events live in the session's retained data. */
   snapshot(): readonly OutgoingEvent[];
@@ -54,10 +62,7 @@ export interface Outbox {
   supports(kind: number): boolean;
   ready(): Promise<void>;
   send(
-    input: Pick<EventTemplate, "kind" | "content" | "tags"> & {
-      /** NIP-AP: created_at of the newest observed head this event replaces. */
-      supersedes?: number;
-    },
+    input: OutboxInput,
     recovery?: OutboxRecovery,
     active?: () => boolean,
   ): string;
@@ -67,6 +72,7 @@ export interface Outbox {
   acknowledge(
     id: string,
     verifyRetirement?: (event: EventData) => Promise<"recorded" | undefined>,
+    replacement?: Replacement,
   ): Promise<void>;
   retry(id: string, active?: () => boolean): void;
   dismiss(id: string): Promise<void>;
@@ -254,7 +260,11 @@ export function createOutbox(
     for (const listener of localListeners) notifyListener(listener);
     for (const listener of listeners) notifyListener(listener);
   };
-  const persist = (id: string, action?: "acknowledge" | "dismiss") => {
+  const persist = (
+    id: string,
+    action?: "acknowledge" | "dismiss",
+    addition?: OutgoingEvent,
+  ) => {
     const queued = profiling.start("outbox.queue", id);
     const work = durable
       .catch(() => {})
@@ -267,8 +277,8 @@ export function createOutbox(
         queued();
         // Hydration may have added restored intent while this commit waited.
         // Commit current state so no intermediate transaction erases that intent.
-        const records =
-          action === "dismiss"
+        const records = [
+          ...(action === "dismiss"
             ? visible.filter((item) => item.event.id !== id)
             : action === "acknowledge"
               ? visible.map((item) =>
@@ -280,15 +290,20 @@ export function createOutbox(
                       }
                     : item,
                 )
-              : visible;
+              : visible),
+          ...(addition ? [addition] : []),
+        ];
         const bytes =
           action === "dismiss"
             ? byteSize(snapshot.filter((item) => item.event.id !== id))
-            : pendingBytes;
+            : pendingBytes + (addition ? byteSize(addition) : 0);
         return profiling.measureAsync("outbox.persist", id, async () => {
           if (bytes > 2 * 1024 * 1024)
             throw new Error("Outbox storage is full");
           await storage.save(records);
+          // The replacement joins visible intent only with durable retirement.
+          // Other queued saves must never observe two unresolved recovery keys.
+          if (addition) snapshot = Object.freeze([...snapshot, addition]);
           if (action === "dismiss") {
             // Commit removal inside the serialized write, before a later save
             // can capture state. Failed storage never exposes a temporary absence.
@@ -642,6 +657,147 @@ export function createOutbox(
       set.delete(listener);
     };
   };
+  /** Persist replacement intent and retire its verified predecessor in one save. */
+  function enqueue(
+    { supersedes, ...input }: OutboxInput,
+    recovery?: OutboxRecovery,
+    active?: () => boolean,
+    replacing?: string,
+  ) {
+    if (active && !active())
+      throw new DOMException("Channel addition cancelled", "AbortError");
+    if (closed) throw abortError();
+    if (storageError) throw new Error(storageError);
+    const savedRecovery = recoveryValue(recovery);
+    if (
+      savedRecovery &&
+      (!hydrated ||
+        snapshot.some(
+          (item) =>
+            item.event.id !== replacing &&
+            item.recovery?.key === savedRecovery.key,
+        ))
+    )
+      throw new Error("Recover the earlier message before sending another");
+    if (
+      !Number.isInteger(input.kind) ||
+      input.kind < 0 ||
+      input.kind > 65535 ||
+      !outbox.supports(input.kind)
+    )
+      throw new Error("This relay connection cannot publish that event kind");
+    const catalog = isCatalogKind(input.kind);
+    if (
+      (input.kind === 9 && !input.content.trim()) ||
+      // NIP-AP admits larger public definitions than ordinary input.
+      (catalog
+        ? bytes(input.content) > MAX_CONTENT_BYTES ||
+          byteSize(input) > MAX_EVENT_BYTES
+        : byteSize(input) > OUTBOX_INPUT_MAX_BYTES)
+    )
+      throw new Error("Message is empty or too large");
+    if (snapshot.length >= MAX_PENDING)
+      throw new Error(
+        "Too many outstanding operations; resolve or dismiss a pending operation",
+      );
+    // Rendered messages carry send order within their second; the optimistic
+    // row and the signed event share this exact ms and created_at.
+    const channelId = channelRowKind(input.kind)
+      ? input.tags.find(([name]) => name === "h")?.[1]
+      : undefined;
+    const ms = channelId ? clock.next(channelId) : Date.now();
+    let createdAt = Math.floor(ms / 1000);
+    if (input.kind === 40003) {
+      if (!hydrated)
+        throw new Error("Message history is still loading. Try again.");
+      const target = input.tags.find(([name]) => name === "e")?.[1];
+      const channel = input.tags.find(([name]) => name === "h")?.[1];
+      // Edits use second precision on every client. Preserve retained local
+      // submission order without changing the protocol's event-ID tie-break.
+      for (const { event } of visible) {
+        if (
+          target &&
+          channel &&
+          event.kind === 40003 &&
+          event.pubkey === viewer &&
+          event.tags.some(([name, id]) => name === "e" && id === target) &&
+          event.tags.some(([name, id]) => name === "h" && id === channel)
+        )
+          createdAt = Math.max(createdAt, event.created_at + 1);
+      }
+      // Stay well inside the signer's 15-minute clock-skew allowance.
+      if (createdAt > Math.floor(ms / 1000) + 60)
+        throw new Error(
+          "Edits are arriving too quickly or your clock changed. Wait a moment and try again.",
+        );
+    }
+    if (catalog) {
+      // NIP-AP: max(now, head + 1) over the observed relay head and this
+      // device's retained writes, so a replacement can never lose or tie.
+      if (supersedes !== undefined)
+        createdAt = Math.max(createdAt, supersedes + 1);
+      const d = input.tags.find(([name]) => name === "d")?.[1];
+      for (const { event } of visible)
+        if (
+          event.kind === input.kind &&
+          event.pubkey === viewer &&
+          event.tags.some(([name, value]) => name === "d" && value === d)
+        )
+          createdAt = Math.max(createdAt, event.created_at + 1);
+      if (createdAt > Math.floor(ms / 1000) + 60)
+        throw new Error(
+          "Sharing is changing too quickly or your clock changed. Wait a moment and try again.",
+        );
+    }
+    const template = {
+      ...input,
+      pubkey: viewer,
+      created_at: createdAt,
+      tags: [
+        ...input.tags.map((tag) => [...tag]),
+        ["client-id", crypto.randomUUID()],
+        ...(channelId ? [["ms", String(ms % 1000)]] : []),
+      ],
+    };
+    const event = Object.freeze({
+      ...template,
+      tags: Object.freeze(
+        template.tags.map((tag) => Object.freeze(tag)),
+      ) as unknown as string[][],
+      id: getEventHash(template),
+    });
+    if (active) admissionGates.set(event.id, active);
+    captureSend(event);
+    const operation = Object.freeze({
+      event,
+      delivery: "sending" as const,
+      ...(savedRecovery ? { recovery: savedRecovery } : {}),
+      ...(active ? { guarded: true } : {}),
+    });
+    if (!replacing)
+      profiling.measure("send.local", event.id, () => {
+        snapshot = Object.freeze([...snapshot, operation]);
+        notify();
+      });
+    const intent = ready.then(() => {
+      if (storageError) throw new Error(storageError);
+      return persist(
+        replacing ?? event.id,
+        replacing ? "acknowledge" : undefined,
+        replacing ? operation : undefined,
+      );
+    });
+    void intent.catch(() => {
+      if (replacing) deliveryWork.delete(event.id);
+    });
+    if (replacing)
+      void intent.then(
+        () => schedule(event.id),
+        () => {},
+      );
+    else schedule(event.id, intent);
+    return { id: event.id, persisted: intent };
+  }
   const outbox: Outbox = Object.freeze({
     snapshot: () => finalSnapshot ?? snapshot,
     subscribe: (listener: () => void) => subscribe(listeners, listener),
@@ -695,6 +851,7 @@ export function createOutbox(
     async acknowledge(
       id: string,
       verifyRetirement?: (event: EventData) => Promise<"recorded" | undefined>,
+      replacement?: Replacement,
     ) {
       await outbox.ready();
       const item = visible.find((item) => item.event.id === id);
@@ -734,7 +891,12 @@ export function createOutbox(
             throw new Error(
               "The invitation changed while checking it. Refresh members and try again.",
             );
-          await persist(id, "acknowledge");
+          const input = replacement?.input();
+          if (input) {
+            const next = enqueue(input, item.recovery, undefined, id);
+            await next.persisted;
+            replacement?.queued(next.id);
+          } else await persist(id, "acknowledge");
         });
         dismissing.set(id, work);
         try {
@@ -756,136 +918,11 @@ export function createOutbox(
         throw new Error("Confirm delivery before completing this message");
       await persist(id, "acknowledge");
     },
-    send(
-      {
-        supersedes,
-        ...input
-      }: Pick<EventTemplate, "kind" | "content" | "tags"> & {
-        supersedes?: number;
-      },
+    send: (
+      input: OutboxInput,
       recovery?: OutboxRecovery,
       active?: () => boolean,
-    ) {
-      if (active && !active())
-        throw new DOMException("Channel addition cancelled", "AbortError");
-      if (closed) throw abortError();
-      if (storageError) throw new Error(storageError);
-      const savedRecovery = recoveryValue(recovery);
-      if (
-        savedRecovery &&
-        (!hydrated ||
-          snapshot.some((item) => item.recovery?.key === savedRecovery.key))
-      )
-        throw new Error("Recover the earlier message before sending another");
-      if (
-        !Number.isInteger(input.kind) ||
-        input.kind < 0 ||
-        input.kind > 65535 ||
-        !outbox.supports(input.kind)
-      )
-        throw new Error("This relay connection cannot publish that event kind");
-      const catalog = isCatalogKind(input.kind);
-      if (
-        (input.kind === 9 && !input.content.trim()) ||
-        // NIP-AP admits larger public definitions than ordinary input.
-        (catalog
-          ? bytes(input.content) > MAX_CONTENT_BYTES ||
-            byteSize(input) > MAX_EVENT_BYTES
-          : byteSize(input) > OUTBOX_INPUT_MAX_BYTES)
-      )
-        throw new Error("Message is empty or too large");
-      if (snapshot.length >= MAX_PENDING)
-        throw new Error(
-          "Too many outstanding operations; resolve or dismiss a pending operation",
-        );
-      // Rendered messages carry send order within their second; the optimistic
-      // row and the signed event share this exact ms and created_at.
-      const channelId = channelRowKind(input.kind)
-        ? input.tags.find(([name]) => name === "h")?.[1]
-        : undefined;
-      const ms = channelId ? clock.next(channelId) : Date.now();
-      let createdAt = Math.floor(ms / 1000);
-      if (input.kind === 40003) {
-        if (!hydrated)
-          throw new Error("Message history is still loading. Try again.");
-        const target = input.tags.find(([name]) => name === "e")?.[1];
-        const channel = input.tags.find(([name]) => name === "h")?.[1];
-        // Edits use second precision on every client. Preserve retained local
-        // submission order without changing the protocol's event-ID tie-break.
-        for (const { event } of visible) {
-          if (
-            target &&
-            channel &&
-            event.kind === 40003 &&
-            event.pubkey === viewer &&
-            event.tags.some(([name, id]) => name === "e" && id === target) &&
-            event.tags.some(([name, id]) => name === "h" && id === channel)
-          )
-            createdAt = Math.max(createdAt, event.created_at + 1);
-        }
-        // Stay well inside the signer's 15-minute clock-skew allowance.
-        if (createdAt > Math.floor(ms / 1000) + 60)
-          throw new Error(
-            "Edits are arriving too quickly or your clock changed. Wait a moment and try again.",
-          );
-      }
-      if (catalog) {
-        // NIP-AP: max(now, head + 1) over the observed relay head and this
-        // device's retained writes, so a replacement can never lose or tie.
-        if (supersedes !== undefined)
-          createdAt = Math.max(createdAt, supersedes + 1);
-        const d = input.tags.find(([name]) => name === "d")?.[1];
-        for (const { event } of visible)
-          if (
-            event.kind === input.kind &&
-            event.pubkey === viewer &&
-            event.tags.some(([name, value]) => name === "d" && value === d)
-          )
-            createdAt = Math.max(createdAt, event.created_at + 1);
-        if (createdAt > Math.floor(ms / 1000) + 60)
-          throw new Error(
-            "Sharing is changing too quickly or your clock changed. Wait a moment and try again.",
-          );
-      }
-      const template = {
-        ...input,
-        pubkey: viewer,
-        created_at: createdAt,
-        tags: [
-          ...input.tags.map((tag) => [...tag]),
-          ["client-id", crypto.randomUUID()],
-          ...(channelId ? [["ms", String(ms % 1000)]] : []),
-        ],
-      };
-      const event = Object.freeze({
-        ...template,
-        tags: Object.freeze(
-          template.tags.map((tag) => Object.freeze(tag)),
-        ) as unknown as string[][],
-        id: getEventHash(template),
-      });
-      if (active) admissionGates.set(event.id, active);
-      captureSend(event);
-      profiling.measure("send.local", event.id, () => {
-        snapshot = Object.freeze([
-          ...snapshot,
-          Object.freeze({
-            event,
-            delivery: "sending" as const,
-            ...(savedRecovery ? { recovery: savedRecovery } : {}),
-            ...(active ? { guarded: true } : {}),
-          }),
-        ]);
-        notify();
-      });
-      const intent = ready.then(() => {
-        if (storageError) throw new Error(storageError);
-        return persist(event.id);
-      });
-      void intent.catch(() => {}); // Delivery reports persistence errors; disposal still saves queued intent.
-      schedule(event.id, intent);
-      return event.id;
-    },
+    ) => enqueue(input, recovery, active).id,
     retry(id: string, active?: () => boolean) {
       const item = find(id);
       if (item?.guarded && (active ?? admissionGates.get(id))?.() !== true)

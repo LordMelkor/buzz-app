@@ -185,6 +185,22 @@ export async function addChannelMember(
       );
   };
   check();
+  const confirmAddition = async (id: string) => {
+    intent.id = id;
+    intent.dismissed = false;
+    intent.confirmed = false;
+    await waitForAddition(journal, id, signal);
+    check();
+    await session.channelWrites.refreshMembership(channelId);
+    check();
+    if (!channel()?.members?.includes(pubkey))
+      throw new Error(
+        "Addition is not confirmed in the member list yet. Retry to check again.",
+      );
+    await outbox.acknowledge(id);
+    check();
+    intent.confirmed = true;
+  };
   if (pending?.guarded && !channel()?.members?.includes(pubkey))
     throw new Error(
       "Retry this invitation from the agent’s profile so its eligibility can be checked.",
@@ -196,20 +212,35 @@ export async function addChannelMember(
   check();
   if (soloParticipant && pending && noRole(pending.event)) {
     if (!channel()?.members?.includes(pubkey)) {
-      await outbox.acknowledge(pending.event.id, async (event) => {
-        check();
-        const recorded = await session.channelWrites.additionRecorded(
-          event,
-          signal,
-        );
-        // A recorded command has already run. Its target may since have left;
-        // reconcile against signed membership read after that command evidence.
-        if (recorded) await session.channelWrites.refreshMembership(channelId);
-        check();
-        return recorded ? "recorded" : undefined;
-      });
+      let replacement: string | undefined;
+      await outbox.acknowledge(
+        pending.event.id,
+        async (event) => {
+          check();
+          const recorded = await session.channelWrites.additionRecorded(
+            event,
+            signal,
+          );
+          // Finish the fresh membership check while the original is recoverable.
+          await session.channelWrites.refreshMembership(channelId);
+          check();
+          return recorded ? "recorded" : undefined;
+        },
+        {
+          input: () => {
+            check();
+            if (channel()?.members?.includes(pubkey)) return undefined;
+            beforeDispatch?.();
+            return invitation();
+          },
+          queued: (id) => {
+            replacement = id;
+          },
+        },
+      );
+      if (replacement) return confirmAddition(replacement);
       intent.confirmed = true;
-      // Re-read membership after durable retirement; only absent targets get a new grant.
+      // A joined target still needs role reconciliation; never overwrite a Guest.
       return addChannelMember(
         session,
         channelId,
@@ -264,50 +295,37 @@ export async function addChannelMember(
     throw new Error(
       "This addition expired. Remove its Not sent item in Outbox, then try again.",
     );
-  const isAgent =
-    session.agentChoices
-      .snapshot()
-      .identities.some((agent) => agent.pubkey === pubkey) ||
-    session.profiles.snapshot().get(pubkey)?.isAgent;
-  const current = channel();
-  // Solo sharing and private-channel invitations grant participation explicitly,
-  // independently of the admission default for public visitors.
-  const role = isAgent
-    ? "bot"
-    : soloParticipant ||
-        (current?.visibility === "private" &&
-          (current.channelType === "stream" || current.channelType === "forum"))
-      ? "member"
-      : undefined;
   beforeDispatch?.();
-  const id =
-    pending?.event.id ??
-    outbox.send(
-      {
-        kind: 9000,
-        content: "",
-        tags: [
-          ["h", channelId],
-          ["p", pubkey],
-          ...(role ? [["role", role]] : []),
-        ],
-      },
-      recovery,
-    );
+  const id = pending?.event.id ?? outbox.send(invitation(), recovery);
   if (pending?.delivery === "failed" || pending?.delivery === "unknown")
     outbox.retry(id);
-  intent.id = id;
-  intent.dismissed = false;
-  intent.confirmed = false;
-  await waitForAddition(journal, id, signal);
-  check();
-  await session.channelWrites.refreshMembership(channelId);
-  check();
-  if (!channel()?.members?.includes(pubkey))
-    throw new Error(
-      "Addition is not confirmed in the member list yet. Retry to check again.",
-    );
-  await outbox.acknowledge(id);
-  check();
-  intent.confirmed = true;
+  return confirmAddition(id);
+
+  function invitation() {
+    const isAgent =
+      session.agentChoices
+        .snapshot()
+        .identities.some((agent) => agent.pubkey === pubkey) ||
+      session.profiles.snapshot().get(pubkey)?.isAgent;
+    const current = channel();
+    // Solo sharing and private-channel invitations grant participation explicitly,
+    // independently of the admission default for public visitors.
+    const role = isAgent
+      ? "bot"
+      : soloParticipant ||
+          (current?.visibility === "private" &&
+            (current.channelType === "stream" ||
+              current.channelType === "forum"))
+        ? "member"
+        : undefined;
+    return {
+      kind: 9000,
+      content: "",
+      tags: [
+        ["h", channelId],
+        ["p", pubkey],
+        ...(role ? [["role", role]] : []),
+      ],
+    };
+  }
 }

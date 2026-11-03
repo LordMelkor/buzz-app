@@ -419,3 +419,147 @@ it("retains a legacy receipt when an echo arrives during negative verification",
   expect(store.load()[0]?.acknowledged).toBeUndefined();
   expect(h.publish).not.toHaveBeenCalled();
 });
+
+it("atomically hands legacy recovery to a durable Member invitation before publication", async () => {
+  const { event, recovery, store } = legacyAddition();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const save = vi.fn(async (records: readonly OutgoingEvent[]) => {
+    await gate;
+    store.save(records);
+  });
+  const h = setup({ ...store, save });
+  await h.outbox.ready();
+  const queued = vi.fn();
+  const handoff = h.outbox.acknowledge(event.id, async () => undefined, {
+    input: () => ({
+      kind: 9000,
+      content: "",
+      tags: [
+        ["h", "channel"],
+        ["p", "person"],
+        ["role", "member"],
+      ],
+    }),
+    queued,
+  });
+  try {
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+    const transaction = save.mock.calls[0]?.[0];
+    expect(
+      transaction?.find((item) => item.event.id === event.id),
+    ).toMatchObject({ acknowledged: true, recovery: undefined });
+    expect(
+      transaction?.find((item) => item.event.id !== event.id),
+    ).toMatchObject({ recovery, delivery: "sending" });
+    expect(store.load()[0]?.acknowledged).toBeUndefined();
+    expect(h.outbox.snapshot().length).toBeGreaterThan(0);
+    expect(h.publish).not.toHaveBeenCalled();
+    expect(queued).not.toHaveBeenCalled();
+  } finally {
+    release();
+  }
+  await handoff;
+  expect(queued).toHaveBeenCalledOnce();
+  const replacement = queued.mock.calls[0]?.[0];
+  expect(
+    store.load().find((item) => item.event.id === replacement)?.recovery,
+  ).toEqual(recovery);
+  h.dispose();
+  const restored = setup(store);
+  await restored.outbox.ready();
+  expect(restored.outbox.snapshot()).toMatchObject([
+    { event: { id: replacement }, recovery },
+  ]);
+  expect(restored.publish).not.toHaveBeenCalled();
+  restored.outbox.retry(replacement);
+  await vi.waitFor(() => expect(restored.publish).toHaveBeenCalledOnce());
+  expect(restored.publish.mock.calls[0]?.[0].id).toBe(replacement);
+});
+
+it("keeps only the original recoverable intent when an atomic handoff cannot be saved", async () => {
+  const { event, store } = legacyAddition();
+  const h = setup({
+    ...store,
+    save: async () => {
+      throw new Error("Disk full");
+    },
+  });
+  await h.outbox.ready();
+  const queued = vi.fn();
+  await expect(
+    h.outbox.acknowledge(event.id, async () => undefined, {
+      input: () => ({
+        kind: 9000,
+        content: "",
+        tags: [
+          ["h", "channel"],
+          ["p", "person"],
+          ["role", "member"],
+        ],
+      }),
+      queued,
+    }),
+  ).rejects.toThrow("Disk full");
+  expect(h.outbox.snapshot()).toMatchObject([
+    { event: { id: event.id }, recovery: { key: "member-add:channel:person" } },
+  ]);
+  expect(h.outbox.snapshot()).toHaveLength(1);
+  expect(store.load()[0]?.acknowledged).toBeUndefined();
+  expect(queued).not.toHaveBeenCalled();
+  expect(h.publish).not.toHaveBeenCalled();
+});
+
+it("does not expose replacement intent to an earlier queued save", async () => {
+  const { event, recovery, store } = legacyAddition();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const transactions: (readonly OutgoingEvent[])[] = [];
+  const save = vi.fn(async (records: readonly OutgoingEvent[]) => {
+    await held;
+    transactions.push(structuredClone(records));
+    store.save(records);
+  });
+  const h = setup({ ...store, save });
+  await h.outbox.ready();
+  const first = h.outbox.recover(event.id, recovery);
+  await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+  const changed = vi.fn();
+  const stop = h.outbox.subscribe(changed);
+  const earlier = h.outbox.recover(event.id, recovery);
+  await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce());
+  const input = vi.fn(() => ({
+    kind: 9000,
+    content: "",
+    tags: [
+      ["h", "channel"],
+      ["p", "person"],
+      ["role", "member"],
+    ],
+  }));
+  const queued = vi.fn();
+  const handoff = h.outbox.acknowledge(event.id, async () => undefined, {
+    input,
+    queued,
+  });
+  try {
+    await vi.waitFor(() => expect(input).toHaveBeenCalledOnce());
+    expect(h.outbox.snapshot()).toHaveLength(1);
+  } finally {
+    release();
+    stop();
+  }
+  await Promise.all([first, earlier, handoff]);
+  const replacement = queued.mock.calls[0]?.[0];
+  expect(replacement).toBeDefined();
+  for (const records of transactions) {
+    if (records.some((item) => item.event.id === replacement))
+      expect(
+        records.find((item) => item.event.id === event.id)?.acknowledged,
+      ).toBe(true);
+  }
+});
