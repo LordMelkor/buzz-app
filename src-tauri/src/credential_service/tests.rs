@@ -212,17 +212,26 @@ async fn signing_out_revokes_every_token() {
 #[tokio::test]
 async fn a_spare_issued_before_sign_out_never_acts() {
     let fixture = fixture();
-    let (issued, token) = issued(&fixture).await;
+    // One asked before it is taken, one taken first: neither binds or acts.
+    let (asked, asked_token) = issued(&fixture).await;
+    let (taken, taken_token) = issued(&fixture).await;
     fixture.identity.sign_out().await;
-    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    let reply = ask(&fixture, &asked_token, "get_public_key", &[]).await;
     assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
     assert!(fixture
         .service
-        .bind(&issued, "p", fixture.agent.pubkey.clone(), RELAY.into())
+        .bind(&asked, "p", fixture.agent.pubkey.clone(), RELAY.into())
         .await
         .is_err());
-    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
-    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
+    assert!(fixture
+        .service
+        .bind(&taken, "p", fixture.agent.pubkey.clone(), RELAY.into())
+        .await
+        .is_err());
+    for token in [&asked_token, &taken_token] {
+        let reply = ask(&fixture, token, "get_public_key", &[]).await;
+        assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
+    }
     // A token issued after it acts.
     let (_issued, token) = bound(&fixture).await;
     let reply = ask(&fixture, &token, "get_public_key", &[]).await;
