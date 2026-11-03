@@ -22,6 +22,7 @@ import type {
   Agent,
   Agents,
   AgentConversation,
+  AgentViewProps,
   RegisteredAgentType,
   TranscriptRequest,
 } from "../../features/agents/service";
@@ -70,6 +71,7 @@ import { PackedAgentAvatar } from "./PackedAgentAvatar";
 import { ProfileBackdrop } from "../../features/profiles/ProfileBackdrop";
 import hero from "../../features/profiles/ProfileHero.module.css";
 import { writeClipboardText } from "../../shared/clipboard";
+import { SettingsSectionLink } from "../../features/navigation/SettingsSectionLink";
 
 export function AgentDetails({
   agents,
@@ -84,7 +86,9 @@ export function AgentDetails({
   initialActivity,
   initialTranscript,
   close,
+  openConversation,
   communities,
+  openSettings,
 }: {
   agents: Agents;
   agent: Agent;
@@ -99,7 +103,10 @@ export function AgentDetails({
   initialTranscript?: TranscriptRequest | undefined;
   /** Closes the panel showing the agent. */
   close?: () => void;
+  /** Opens a turn's conversation from its activity; see AgentViewProps. */
+  openConversation?: AgentViewProps["openConversation"];
   communities?: CommunityReader | undefined;
+  openSettings?: ((section: string) => void) | undefined;
 }) {
   const ProfileActions = type?.ProfileActions ?? Fragment;
   const { pack, src: backdrop } = useAgentPortraitSource(agent, agent.relay);
@@ -465,8 +472,11 @@ export function AgentDetails({
           >
             {!type && (
               <p className="m-0 mb-4 text-body-sm text-secondary">
-                Enable the plugin that provides this agent's type to change its
-                settings.
+                Enable the plugin that provides this agent's type in{" "}
+                <SettingsSectionLink section="plugins" open={openSettings}>
+                  Manage plugins
+                </SettingsSectionLink>{" "}
+                to change its settings.
               </p>
             )}
             <AgentTabs
@@ -478,6 +488,7 @@ export function AgentDetails({
               initialActivity={initialActivity}
               initialTranscript={initialTranscript}
               close={close}
+              openConversation={openConversation}
               settingsHost={settings.settingsHost}
               onDiscard={settings.discard}
               memories={memories}

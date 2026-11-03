@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import { useEffect, useSyncExternalStore } from "react";
 import type { RelaySession } from "../../features/relay/session";
 import { useIdentityNames } from "../../features/identity-names/react";
@@ -35,12 +36,14 @@ export function ChannelMemberAvatars({
     session.channels.get?.(channelId);
   const members = channel?.members ?? [];
   const memberKey = members.join(":");
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (memberKey)
       void session.profiles
         .ensure(memberKey.split(":"), "background")
         .catch(() => {});
-  }, [session, memberKey]);
+  }, [session, memberKey, profileGeneration]);
   const agents = new Set(choices.identities.map((agent) => agent.pubkey));
   const people = members
     .filter((id) => !agents.has(id) && !profiles.get(id)?.isAgent)

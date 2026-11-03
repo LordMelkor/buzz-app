@@ -8,7 +8,13 @@ import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import { Tabs } from "../../shared/design-system/ui/Tabs";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { PageIcon } from "./PageIcon";
-import { pagePresentation } from "./presentation";
+import { Avatar } from "../../shared/design-system/ui/Avatar";
+import {
+  BestieUnreadBadge,
+  BestieUnreadLabel,
+  usePagePresentation,
+} from "./BestieNavigation";
+import { BESTIE_PAGE } from "./bestie-context";
 
 export function PageNavigation({
   pages,
@@ -23,6 +29,7 @@ export function PageNavigation({
   onSelect(key: string, options?: Pick<NavigationOpenOptions, "focus">): void;
   placement?: "sidebar" | "topbar" | "toolbar";
 }) {
+  const presentation = usePagePresentation();
   if (placement === "topbar") {
     return (
       <Tabs
@@ -35,10 +42,10 @@ export function PageNavigation({
         }}
         items={pages.map((page) => {
           const Badge = page.badge;
-          const { icon, image } = pagePresentation(page);
+          const { icon, image } = presentation(page);
           return {
             value: page.key,
-            label: pagePresentation(page).label,
+            label: presentation(page).label,
             icon: (
               <PageIcon icon={icon} image={image} size={16} strokeWidth={2.5} />
             ),
@@ -54,7 +61,7 @@ export function PageNavigation({
     );
   }
   return pages.map((page) => {
-    const { label, icon, image } = pagePresentation(page);
+    const { label, icon, image, avatar } = presentation(page);
     const Badge = page.badge;
     const badge = Badge && (
       <ContributionBoundary key={contributionKey(page)} fallback={null}>
@@ -65,7 +72,16 @@ export function PageNavigation({
       onSelect(page.key);
       document.getElementById("main-content")?.focus({ preventScroll: true });
     };
-    const pageIcon = (
+    const pageIcon = avatar ? (
+      <Avatar
+        key={page.key}
+        src={avatar.src}
+        alt=""
+        fallback={label}
+        shape={avatar.shape}
+        size="compact"
+      />
+    ) : (
       <PageIcon
         key={page.key}
         icon={icon}
@@ -94,10 +110,21 @@ export function PageNavigation({
         aria-current={
           selected === page.key && currentPage !== selected ? true : undefined
         }
-        label={label}
+        label={
+          page.key === BESTIE_PAGE ? <BestieUnreadLabel label={label} /> : label
+        }
         title={label}
         variant="row"
-        trailing={badge}
+        trailing={
+          page.key === BESTIE_PAGE ? (
+            <>
+              {badge}
+              <BestieUnreadBadge pageKey={page.key} />
+            </>
+          ) : (
+            badge
+          )
+        }
         icon={
           placement === "sidebar" ? (
             <span className="shell-page-icon">{pageIcon}</span>

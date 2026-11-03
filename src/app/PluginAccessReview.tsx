@@ -143,6 +143,29 @@ function hostDeclarations(
           },
         ]
       : []),
+    ...(manifest.host?.managedFiles
+      ? [
+          {
+            key: "managedFiles",
+            signature:
+              "Managed files: temporary private saves · no file reading",
+            title: "Managed files:",
+            label: "Save temporary plugin files",
+            hint: "Save up to 16 MiB at a time in host-selected private storage, without file-reading access.",
+            icon: FolderOpenIcon,
+            details: (
+              <p className="m-0">
+                Shared storage is limited to 64 MiB and 16 files; any plugin can
+                fill it. Files normally remain for 24 hours, survive plugin
+                unload and app restart, and are removed on a later save after
+                expiry. Explicit app-data erase or user deletion can remove them
+                sooner. This does not grant file reading or arbitrary-path
+                writes.
+              </p>
+            ),
+          },
+        ]
+      : []),
     ...(manifest.host?.files
       ? [
           {

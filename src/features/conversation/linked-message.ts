@@ -2,6 +2,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { useChannelIdentityNames } from "../identity-names/react";
 import type { ChannelMessage } from "../relay/contracts";
 import { useListedChannel } from "../relay/listed-channel";
+import { useProfileGeneration } from "../relay/react";
 import type { RelaySession } from "../relay/session";
 import type { ThreadSnapshot, ThreadView } from "../relay/threads";
 
@@ -211,10 +212,12 @@ export function useLinkedMessageByline(
     id ? session : undefined,
     channelId,
   );
+  const profileGeneration = useProfileGeneration(session?.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (id && session)
       void session.profiles.ensure([id], "background").catch(() => {});
-  }, [session, id]);
+  }, [session, id, profileGeneration]);
   // An author with no name yet keeps the channel presentation, never a key:
   // the names view drops fallback (key-fragment) profile names itself.
   const name = author?.workflow ? "Workflow" : id ? resolveName(id, "") : "";

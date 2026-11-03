@@ -292,7 +292,7 @@ describe("device-local startup", () => {
   );
 
   it.each([false, true])(
-    "keeps saved names on unchanged confirmation but purges them on omission=%s",
+    "keeps saved names across discovery confirmation and omission=%s",
     async (omitted) => {
       const storage = disk();
       const records = await storage.read();
@@ -315,10 +315,11 @@ describe("device-local startup", () => {
       await vi.waitFor(() =>
         expect(channels.list().channels.some((c) => c.cached)).toBe(false),
       );
+      // A profile is a global relay event; losing a channel does not drop it.
       expect(owner.session.profiles.snapshot().get(viewer.pubkey)?.name).toBe(
-        omitted ? undefined : "Saved name",
+        "Saved name",
       );
-      if (!omitted) expect(names).not.toContain(undefined);
+      expect(names).not.toContain(undefined);
     },
   );
 

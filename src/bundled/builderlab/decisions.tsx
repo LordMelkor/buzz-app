@@ -12,7 +12,7 @@ import type {
 } from "../../features/decisions/service";
 import { Login } from "./login/Login";
 import type { Credential } from "./oauth/browser";
-import type { OAuthSession } from "./oauth/session";
+import type { BuilderlabSession } from "./session";
 
 /** Native `decide` on Builderlab, with the sign-in to send. */
 export type BuilderlabDecide = (
@@ -31,7 +31,7 @@ export const nativeBuilderlabDecide = (): BuilderlabDecide | undefined =>
  * unless the user chose another. Builds without native calls never offer it. */
 export function offerBuilderlabDecisions(
   ctx: Context,
-  session: OAuthSession,
+  session: BuilderlabSession,
   loginAvailable: boolean,
   native: BuilderlabDecide | undefined = nativeBuilderlabDecide(),
 ) {
@@ -58,7 +58,7 @@ export function offerBuilderlabDecisions(
 }
 
 export function builderlabProvider(
-  session: OAuthSession,
+  session: BuilderlabSession,
   loginAvailable: boolean,
   native: BuilderlabDecide | undefined = nativeBuilderlabDecide(),
 ): DecisionProvider {
@@ -91,7 +91,12 @@ export function builderlabProvider(
         return { outcome: "failed", reason: "unauthorized" };
       let reply: unknown;
       try {
-        reply = await native(request, credential.value);
+        reply = await native(
+          request,
+          "value" in credential && typeof credential.value === "string"
+            ? credential.value
+            : "",
+        );
       } catch (error) {
         // Tauri rejects arguments that do not deserialize before any call:
         // a malformed request. Any other rejection is the IPC itself failing.

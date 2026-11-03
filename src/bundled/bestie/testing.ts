@@ -69,7 +69,15 @@ type Reply = { status: number; body: unknown };
 /** Real Builderlab and Bestie plugins, Agents service, relay session and
  * Outbox. Only the native bridge (Beekeeper HTTP, login, owner signing) and the
  * relay wire are simulated. `invoke` is the test file's mocked Tauri invoke. */
-export async function bestieFixture(invoke: Mock) {
+export async function bestieFixture(
+  invoke: Mock,
+  options: {
+    mainAgent?: {
+      read(signal: AbortSignal): Promise<string | undefined>;
+      write(agent: string, signal: AbortSignal): Promise<void>;
+    };
+  } = {},
+) {
   const identity = keypair();
   const authority = keypair();
   const remote = keypair();
@@ -274,6 +282,12 @@ export async function bestieFixture(invoke: Mock) {
           publish,
         },
         workflows: { runs: async () => ({ runs: [], next: null }) },
+        ...(options.mainAgent
+          ? {
+              readMainAgent: options.mainAgent.read,
+              writeMainAgent: options.mainAgent.write,
+            }
+          : {}),
       },
       {
         outboxStorage: {
@@ -291,6 +305,7 @@ export async function bestieFixture(invoke: Mock) {
     );
   };
   let owner = start();
+  const temporarySessions: ReturnType<typeof createRelaySession>[] = [];
   let snapshot: RelaySnapshot = {
     status: "ready",
     generation: 1,
@@ -411,6 +426,7 @@ export async function bestieFixture(invoke: Mock) {
     await runtime.dispose();
     await root.fiber.dispose();
     owner.dispose();
+    for (const temporary of temporarySessions) temporary.dispose();
     await closed.promise;
     listeners.clear();
   });
@@ -449,6 +465,16 @@ export async function bestieFixture(invoke: Mock) {
       signInCanceled = true;
     },
     session: () => owner.session,
+    replaceWithConnectingSession() {
+      const temporary = createRelaySession(null);
+      temporarySessions.push(temporary);
+      snapshot = {
+        status: "connecting",
+        generation: snapshot.generation + 1,
+        session: temporary.session,
+      };
+      notify();
+    },
     ignoreCreateMembers() {
       createMembers = false;
     },

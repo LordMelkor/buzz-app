@@ -1,5 +1,5 @@
-import { afterEach, expect, it, vi } from "vitest";
-import { createRelaySession } from "./session";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createRelaySession, ROSTER_BACKSTOP_INTERVAL } from "./session";
 import { followUpQueue } from "../messages/follow-up-queue";
 import type { LiveCallbacks } from "./live";
 import { ReadError } from "./errors";
@@ -700,10 +700,12 @@ it.each([
       expect(h.owner.session.channels.get?.("a")).toBeUndefined();
       expect(h.owner.session.channels.list().status).toBe("ready");
       expect(h.owner.session.live.snapshot().roster.state).toBe("verified");
-      if (reset === "disconnect") {
-        h.connected();
-        h.live.established();
-      } else h.owner.session.channels.refreshList?.();
+      // A continuous reconnect replays no hint and skips the full read, but
+      // the retired confirmation still owes its strong read.
+      if (reset === "cache-clear")
+        h.live.state({ status: "retrying", routes: [] });
+      h.connected();
+      h.live.established(undefined, { route: "membership", continuous: true });
       await flush();
       await recoverRetiredHint(h);
     } finally {
@@ -1575,3 +1577,121 @@ it.each(["denied", "membership"])(
     }
   },
 );
+
+describe("recovery tick roster backstop", () => {
+  const start = Date.UTC(2026, 0, 1);
+  const at = (ms: number) => vi.setSystemTime(start + ms);
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    at(0);
+  });
+  afterEach(() => vi.useRealTimers());
+  /** Ticks once and returns the full roster read it started, if any. */
+  async function tick(h: ReturnType<typeof setup>) {
+    h.live.recover?.();
+    await flush();
+    const full = h.wire.pending.filter(
+      (entry) =>
+        entry.filters[0]?.kinds?.[0] === 39002 && !entry.filters[0]?.["#d"],
+    );
+    expect(full.length).toBe(h.wire.pending.length);
+    return full[0];
+  }
+  async function expectBackstopFrom(h: ReturnType<typeof setup>, read: number) {
+    at(read + ROSTER_BACKSTOP_INTERVAL - 1);
+    expect(await tick(h)).toBeUndefined();
+    at(read + ROSTER_BACKSTOP_INTERVAL);
+    const full = await tick(h);
+    expect(full).toBeDefined();
+    h.wire.next().respond([]);
+    await flush();
+    expect(h.owner.session.live.snapshot().roster.state).toBe("verified");
+  }
+
+  it("skips the full read until the window after the last one has passed", async () => {
+    const h = setup();
+    try {
+      await readyRoster(h);
+      await expectBackstopFrom(h, 0);
+      // The tick's own read restarts the window.
+      at(ROSTER_BACKSTOP_INTERVAL + 60_000);
+      expect(await tick(h)).toBeUndefined();
+    } finally {
+      h.owner.dispose();
+    }
+  });
+
+  it("a reconnect's full read restarts the window", async () => {
+    const h = setup();
+    try {
+      await readyRoster(h);
+      at(10 * 60_000);
+      h.live.state({ status: "retrying", routes: [] });
+      h.connected();
+      h.live.established();
+      await flush();
+      h.wire.next().respond([]);
+      await flush();
+      expect(h.wire.pending).toHaveLength(0);
+      await expectBackstopFrom(h, 10 * 60_000);
+    } finally {
+      h.owner.dispose();
+    }
+  });
+
+  it("a removal notice's full read restarts the window", async () => {
+    const h = setup();
+    try {
+      await readyRoster(h);
+      at(10 * 60_000);
+      h.live.receive([membershipHint(h, "b", 44101)]);
+      await flush();
+      const full = h.wire.next();
+      expect(full.filters[0]?.["#d"]).toBeUndefined();
+      full.respond([]);
+      await flush();
+      await expectBackstopFrom(h, 10 * 60_000);
+    } finally {
+      h.owner.dispose();
+    }
+  });
+
+  it("an exact join read does not restart the window", async () => {
+    const h = setup();
+    try {
+      await readyRoster(h);
+      at(10 * 60_000);
+      h.live.receive([membershipHint(h, "a")]);
+      await flush();
+      const exact = h.wire.next();
+      expect(exact.filters).toEqual(exactFilters(h, ["a"]));
+      exact.respond([
+        metadata(h.relay, "a", "Alpha"),
+        roster(h.relay, "a", [h.viewer.pubkey]),
+      ]);
+      await flush();
+      expect(h.owner.session.channels.get?.("a")).toBeDefined();
+      expect(h.wire.pending).toHaveLength(0);
+      await expectBackstopFrom(h, 0);
+    } finally {
+      h.owner.dispose();
+    }
+  });
+
+  it("retries a failed full read on the next tick", async () => {
+    const h = setup();
+    try {
+      await readyRoster(h);
+      at(10 * 60_000);
+      h.live.receive([membershipHint(h, "b", 44101)]);
+      await flush();
+      h.wire.next().fail(new ReadError("unavailable", "Relay unavailable"));
+      await flush();
+      expect(h.owner.session.live.snapshot().roster.state).toBe("error");
+      at(11 * 60_000);
+      expect(await tick(h)).toBeDefined();
+    } finally {
+      h.owner.dispose();
+    }
+  });
+});

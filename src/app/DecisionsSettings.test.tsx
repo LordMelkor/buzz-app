@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { Context } from "@deepseek-ai/cordis";
 import type { ReactNode } from "react";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -72,10 +72,25 @@ function fake(
   };
 }
 
-it("says to turn a provider on when none is", () => {
-  render(<DecisionsSettings decisions={fake([])} active={() => true} />);
+it("says to turn a provider on when none is, linking to Manage plugins", async () => {
+  const user = userEvent.setup();
+  const onSection = vi.fn();
+  render(
+    <DecisionsSettings
+      decisions={fake([])}
+      active={() => true}
+      onSection={onSection}
+    />,
+  );
   expect(screen.getByRole("heading", { name: "Decisions API" })).toBeVisible();
-  expect(screen.getByRole("status")).toHaveTextContent("Settings > Plugins");
+  const status = screen.getByRole("status");
+  expect(status).toHaveTextContent(
+    "No decision provider is turned on. Turn one on in Manage plugins.",
+  );
+  await user.click(
+    within(status).getByRole("button", { name: "Manage plugins" }),
+  );
+  expect(onSection).toHaveBeenCalledExactlyOnceWith("plugins");
 });
 
 it("shows a lone provider's settings, with no provider choice", () => {
@@ -173,6 +188,7 @@ it("keeps a provider's failing settings inside its own part, even while hidden",
     { key: "b", status: "ready" },
   ]);
   let selected = "plugins";
+  const onSection = vi.fn();
   // Settings mounts the Decisions section while another one is shown.
   const page = () => (
     <>
@@ -181,6 +197,7 @@ it("keeps a provider's failing settings inside its own part, even while hidden",
         <DecisionsSettings
           decisions={decisions}
           active={() => selected === "decisions"}
+          onSection={onSection}
         />
       </div>
     </>
@@ -189,9 +206,14 @@ it("keeps a provider's failing settings inside its own part, even while hidden",
   expect(screen.getByRole("button", { name: "Turn plugin off" })).toBeVisible();
   selected = "decisions";
   rerender(page());
-  expect(screen.getByRole("alert")).toHaveTextContent(
-    "Provider typesafe settings are unavailable. You can turn its plugin off in Settings > Plugins.",
+  const alert = screen.getByRole("alert");
+  expect(alert).toHaveTextContent(
+    "Provider typesafe settings are unavailable. You can turn its plugin off in Manage plugins.",
   );
+  await user.click(
+    within(alert).getByRole("button", { name: "Manage plugins" }),
+  );
+  expect(onSection).toHaveBeenCalledExactlyOnceWith("plugins");
   // The rest of the section still works.
   await user.click(screen.getByRole("radio", { name: /Provider b/ }));
   expect(decisions.chosen()).toBe("b");
@@ -337,6 +359,6 @@ it("hands focus to the section when the removed provider was the only one", asyn
   render(<DecisionsSettings decisions={decisions} active={() => true} />);
   screen.getByRole("button", { name: "Sign out" }).focus();
   await user.keyboard("{Enter}");
-  expect(screen.getByRole("status")).toHaveTextContent("Settings > Plugins");
+  expect(screen.getByRole("status")).toHaveTextContent("Manage plugins");
   expect(screen.getByRole("region", { name: "Decisions API" })).toHaveFocus();
 });

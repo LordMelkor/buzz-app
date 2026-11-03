@@ -1,5 +1,9 @@
 import { workflowOwner } from "../../features/relay/workflow-attribution";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  messageSearchable,
+  searchDebounce,
+} from "../../shared/search-debounce";
 import { objectBody } from "../../features/relay/body";
 import type { RelaySession } from "../../features/relay/session";
 import type { ReadFilter } from "../../features/relay/events";
@@ -161,7 +165,9 @@ export function useSearchMessages(
   const unfinishedAuthor = /(?:^|\s)from:(@?)([^\s]*)$/i.exec(query);
   const canSearch =
     !(unfinishedAuthor && !isHexPubkey(unfinishedAuthor[2] ?? "")) &&
-    (!!parsed.text || hasFilters);
+    // A filter alone reads history; typed text is always a relay search,
+    // which answers a short last word with no hits, filter or not.
+    (parsed.text ? messageSearchable(parsed.text) : hasFilters);
   const newest = sort === "newest" && session.searchSort;
   // Without text the relay reads its ordinary newest-first history.
   const newestFirst = newest || !parsed.text;
@@ -197,7 +203,7 @@ export function useSearchMessages(
     if (!canSearch || unresolvedChannel) return;
     const controller = new AbortController();
     // Typeahead waits for a brief typing pause; cancellation also owns the delay.
-    const timer = setTimeout(() => {
+    const cancel = searchDebounce(() => {
       void (async (): Promise<{
         messages: readonly SearchMessage[];
         next?: Result["next"];
@@ -308,9 +314,9 @@ export function useSearchMessages(
               error: `Message search couldn’t finish${error instanceof Error && error.message ? `: ${error.message.slice(0, 240)}` : "."}${scopedChannelId ? " Try again." : " Pages and conversations are still available."}`,
             });
         });
-    }, 180);
+    });
     return () => {
-      clearTimeout(timer);
+      cancel();
       controller.abort();
       more.current?.abort();
     };
@@ -361,6 +367,8 @@ export function useSearchMessages(
       ordinaryChannel(message.channelId),
     ),
     loading: canSearch && !unresolvedChannel && !current,
+    /** The last typed word is too short to search messages. */
+    tooShort: !!parsed.text && !messageSearchable(parsed.text),
     error: current?.error,
     ambiguousAuthor: current?.ambiguousAuthor,
     newestFirst,

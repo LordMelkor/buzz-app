@@ -56,7 +56,7 @@ test("keyboard removal of the final DM moves focus to a surviving section", asyn
 });
 
 for (const cold of [false, true]) {
-  test(`DM names recover after ${cold ? "hidden channel deletion aborts a cold fetch" : "channel deletion purges loaded profiles"}`, async ({
+  test(`DM names survive ${cold ? "hidden channel deletion during a cold fetch" : "channel deletion with loaded profiles"}`, async ({
     page,
     app,
   }) => {
@@ -112,12 +112,15 @@ for (const cold of [false, true]) {
       await expect(
         page.getByText("Roster · 3 channels", { exact: true }),
       ).toBeVisible();
-      await expect(fallback).toBeVisible();
-      await expect(dm).toHaveCount(0);
-      await expect.poll(() => labelReads().length).toBe(before + 1);
-      if (cold)
-        expect(app.report.profileHolds.some((held) => held.aborted)).toBe(true);
-      app.relay.releaseProfiles();
+      // Profiles do not depend on channels: the deletion purges Beta's content
+      // but keeps loaded names and lets a name read in flight finish.
+      if (cold) {
+        await expect(fallback).toBeVisible();
+        expect(app.report.profileHolds.some((held) => held.aborted)).toBe(
+          false,
+        );
+        app.relay.releaseProfiles();
+      }
       await expect(dm).toBeVisible();
       await expect(fallback).toHaveCount(0);
       await page
@@ -132,7 +135,7 @@ for (const cold of [false, true]) {
           .getByRole("article", { name: "Conversation" })
           .getByRole("tab", { name: "Alice Fixture", exact: true }),
       ).toHaveText("Alice Fixture");
-      expect(labelReads()).toHaveLength(before + 1);
+      expect(labelReads()).toHaveLength(before);
       await expect(dm.locator(".buzz-avatar")).toHaveText("A");
       await expect
         .poll(() =>

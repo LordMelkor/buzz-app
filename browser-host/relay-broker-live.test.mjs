@@ -1507,6 +1507,18 @@ test("joined batches survive the real HTTP boundary and retirement only rebuilds
         .filter(([ids]) => Array.isArray(ids))
         .map(([ids]) => ids.length),
     ).toEqual([...Array(25).fill(10), 6]);
+    // Globals carry their continuity across the host boundary. A first
+    // connection has no cursor, so neither proves it missed nothing.
+    expect(
+      established.mock.calls
+        .filter(([ids]) => ids === undefined)
+        .map(([, global]) => global),
+    ).toEqual(
+      expect.arrayContaining([
+        { route: "profiles", continuous: false },
+        { route: "membership", continuous: false },
+      ]),
+    );
     const old = batches[0];
     // Host rejects mismatched joined scope before changing any live routes.
     const malformed = await fetcher(`${h.base}/api/relay/stream-interests`, {

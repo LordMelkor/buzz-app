@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../features/relay/react";
 import { ProfileBackdrop } from "../features/profiles/ProfileBackdrop";
 import hero from "../features/profiles/ProfileHero.module.css";
 import { useAvatarPreview } from "../features/profiles/use-avatar-preview";
@@ -217,9 +218,11 @@ export function ProfileSettings({
     () =>
       viewer ? session?.profiles.snapshot().get(viewer)?.verified : undefined,
   );
+  const profileGeneration = useProfileGeneration(session?.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (viewer) void session?.profiles.ensure([viewer]).catch(() => {});
-  }, [session, viewer]);
+  }, [session, viewer, profileGeneration]);
   const verifiedName = verified
     ? {
         name: verified.displayName,

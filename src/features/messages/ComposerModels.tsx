@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../relay/react";
 import { Popover } from "@base-ui/react/popover";
 import { EffortSlider } from "./composer-models/EffortSlider";
 import { avatarMedia } from "../../shared/avatar-source";
@@ -101,10 +102,12 @@ export function ComposerModels({
     [profiles, profileKey],
   );
   // A mentioned agent need not be a member yet, so its profile may not be loaded.
+  const profileGeneration = useProfileGeneration(profiles);
   useEffect(() => {
+    void profileGeneration;
     if (profileKey)
       void profiles.ensure(profileKey.split(":"), "background").catch(() => {});
-  }, [profiles, profileKey]);
+  }, [profiles, profileKey, profileGeneration]);
   const portraits = useSyncExternalStore(
     selection.subscribe,
     selection.snapshot,

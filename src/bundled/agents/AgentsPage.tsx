@@ -55,23 +55,18 @@ import type {
   TeamPort,
 } from "../../features/agents/service";
 import { useRelayConnection } from "../../features/relay/react";
-import { useAgentChoices } from "../../features/agents/use-choices";
-import type { AgentChoicesSnapshot } from "../../features/agents/choices";
 import type { RelaySession } from "../../features/relay/session";
 import {
   readSnapshot,
   type SharedDefinition,
 } from "../../features/agents/agent-share";
-import {
-  chooseDefaultAgent,
-  restoreDefaultAgent,
-  useDefaultAgent,
-  useSavedAgent,
-} from "../../features/solo/default-agent";
+import { useDefaultAgent } from "../../features/solo/default-agent";
+import { useBestieChoice } from "./BestieChoice";
 import type { RelayData } from "../../features/relay/service";
 import type { Navigation } from "../../features/navigation/controller";
 import { targetKey } from "../../features/navigation/targets";
 import type { PageNavigation } from "../../features/navigation/service";
+import { SettingsSectionLink } from "../../features/navigation/SettingsSectionLink";
 import {
   BrainIcon,
   CheckIcon,
@@ -84,7 +79,6 @@ import {
   XIcon,
 } from "../../shared/design-system/icons";
 import { Button } from "../../shared/design-system/ui/Button";
-import { AlertDialog } from "../../shared/design-system/ui/AlertDialog";
 import { Avatar } from "../../shared/design-system/ui/Avatar";
 import { Checkbox } from "../../shared/design-system/ui/Checkbox";
 import { ChoiceRow } from "../../shared/design-system/ui/ChoiceRow";
@@ -113,7 +107,12 @@ import { Textarea } from "../../shared/design-system/ui/Textarea";
 import { Tooltip } from "../../shared/design-system/ui/Tooltip";
 import { publicKeyLabels } from "../../shared/identity/public-key";
 import { readView, writeView } from "../../shared/view-state";
-import { agentProviderRoute, agentProviderTarget, agentRoute } from "./routes";
+import {
+  agentProviderRoute,
+  agentProviderTarget,
+  agentRoute,
+  conversationOpener,
+} from "./routes";
 import { writeClipboardText } from "../../shared/clipboard";
 
 const message = (error: unknown) =>
@@ -483,6 +482,10 @@ export function AgentsPage({
     );
   })();
 
+  const openSettings =
+    navigator &&
+    ((section: string) =>
+      void navigator.open({ version: 1, kind: "settings", section }));
   const panel = selected ? (
     selected.unfinished || selected.place === "elsewhere" ? (
       <AgentPeek
@@ -492,6 +495,7 @@ export function AgentsPage({
         type={typeOf(selected)}
         channels={channels}
         onClose={() => browse()}
+        openSettings={openSettings}
       />
     ) : (
       <AgentDetails
@@ -517,6 +521,13 @@ export function AgentsPage({
             : undefined
         }
         onRemoved={() => browse()}
+        openSettings={openSettings}
+        openConversation={conversationOpener(
+          navigator,
+          connection.viewer && connection.origin
+            ? { viewer: connection.viewer, communityOrigin: connection.origin }
+            : undefined,
+        )}
       />
     )
   ) : undefined;
@@ -738,8 +749,6 @@ type InventoryProps = {
   onViewListing?: ((agent: SharedAgent) => void) | undefined;
 };
 
-type BestieAgent = AgentChoicesSnapshot["selectable"][number];
-
 /** Agents keeps Morgan's account-synced selection owner; this surface only
  * names an explicitly saved selection Bestie and asks before replacing it. */
 function DefaultAgentInventory({
@@ -750,122 +759,20 @@ function DefaultAgentInventory({
   // Keep Morgan's automatic fallback/adoption behavior active even though the
   // Bestie pill names only the explicit account-saved choice.
   useDefaultAgent(session, scope);
-  const saved = useSavedAgent(session, scope);
-  const choices = useAgentChoices(session, true, true);
-  const [error, setError] = useState("");
-  const [savingBestie, setSavingBestie] = useState(false);
-  const [replacement, setReplacement] = useState<{
-    current: BestieAgent;
-    replacing: BestieAgent;
-  }>();
-  // Only the latest choice reports its failure.
-  const latest = useRef(0);
-  const eligible = (pubkey: string) =>
-    session.agentChoices
-      .snapshot()
-      .selectable.find((agent) => agent.pubkey === pubkey);
-  const save = (pubkey: string) => {
-    if (!eligible(pubkey)) return;
-    const choice = ++latest.current;
-    setError("");
-    setSavingBestie(true);
-    chooseDefaultAgent(session, scope, pubkey)
-      .then(() => {
-        if (choice === latest.current) setReplacement(undefined);
-      })
-      .catch((failure: Error) => {
-        if (choice === latest.current) setError(failure.message);
-      })
-      .finally(() => {
-        if (choice === latest.current) setSavingBestie(false);
-      });
-  };
+  const bestie = useBestieChoice(session, scope);
   return (
     <>
       <Inventory
         {...props}
         session={session}
-        bestie={saved}
+        bestie={bestie.saved}
         defaultChoices={
-          new Set(choices.selectable.map((agent) => agent.pubkey))
+          new Set(bestie.choices.selectable.map((agent) => agent.pubkey))
         }
-        onMakeBestie={(pubkey) => {
-          const replacing = eligible(pubkey);
-          if (!replacing || pubkey === saved) return;
-          const previous = choices.identities.find(
-            (agent) => agent.pubkey === saved,
-          );
-          if (previous) setReplacement({ current: previous, replacing });
-          else save(pubkey);
-        }}
+        onMakeBestie={bestie.make}
       />
-      {replacement && (
-        <BestieReplacement
-          {...replacement}
-          pending={savingBestie}
-          error={error}
-          onClose={() => {
-            if (error) {
-              restoreDefaultAgent(
-                scope,
-                replacement.replacing.pubkey,
-                replacement.current.pubkey,
-              );
-              setError("");
-            }
-            setReplacement(undefined);
-          }}
-          onChoose={() => {
-            // A choice changed elsewhere while this dialog was open wins.
-            if (saved === replacement.current.pubkey)
-              save(replacement.replacing.pubkey);
-            else setReplacement(undefined);
-          }}
-        />
-      )}
-      {error && !replacement && <p role="alert">{error}</p>}
+      {bestie.view}
     </>
-  );
-}
-
-const bestieName = (agent: BestieAgent) =>
-  agent.managedName ?? agent.name ?? "Agent";
-
-function BestieReplacement({
-  current,
-  replacing,
-  pending,
-  error,
-  onChoose,
-  onClose,
-}: {
-  current: BestieAgent;
-  replacing: BestieAgent;
-  pending: boolean;
-  error: string;
-  onChoose(): void;
-  onClose(): void;
-}) {
-  const keep = useRef<HTMLButtonElement>(null);
-  return (
-    <AlertDialog
-      title={`Make ${bestieName(replacing)} your bestie?`}
-      description={`Your existing chats with ${bestieName(current)} will still be available in your DMs.`}
-      initialFocus={keep}
-      pending={pending}
-      onClose={onClose}
-      {...(error && { children: <p role="alert">{error}</p> })}
-      actions={
-        <>
-          <Button ref={keep} disabled={pending} onClick={onClose}>
-            Keep {bestieName(current)}
-          </Button>
-          <Button variant="prominent" loading={pending} onClick={onChoose}>
-            Switch to {bestieName(replacing)}
-          </Button>
-        </>
-      }
-    />
   );
 }
 
@@ -1250,12 +1157,14 @@ function AgentPeek({
   type,
   channels,
   onClose,
+  openSettings,
 }: {
   agents: Agents;
   agent: Agent;
   type: RegisteredAgentType | undefined;
   channels: readonly ChannelChoice[];
   onClose(): void;
+  openSettings: ((section: string) => void) | undefined;
 }) {
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState("");
@@ -1285,8 +1194,11 @@ function AgentPeek({
             </>
           ) : (
             <>
-              This agent’s harness is unavailable in this client. Check Settings
-              → Plugins or use a build with this harness configured.
+              This agent’s harness is unavailable in this client. Check{" "}
+              <SettingsSectionLink section="plugins" open={openSettings}>
+                Manage plugins
+              </SettingsSectionLink>{" "}
+              or use a build with this harness configured.
             </>
           )}
         </p>

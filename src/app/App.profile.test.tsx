@@ -438,7 +438,7 @@ it.each([
           screen.getByRole("dialog", { name: "Couldn’t mute Planning" }),
         ).toHaveTextContent("Relay request failed (503)");
       }
-      const returnToMessages = async () => {
+      const returnToMessages = async (muted = false) => {
         await act(async () => {
           await services?.navigation.open({
             version: 1,
@@ -450,7 +450,9 @@ it.each([
         const sidebar = await screen.findByRole("complementary", {
           name: "Sidebar",
         });
-        return within(sidebar).findByRole("button", { name: "Planning" });
+        return within(sidebar).findByRole("button", {
+          name: muted ? /^Planning\s*Muted$/ : "Planning",
+        });
       };
       const returnedRow =
         from === "Messages" ? await returnToMessages() : undefined;
@@ -488,7 +490,7 @@ it.each([
           screen.getByRole("complementary", { name: "Beacon sidebar" }),
         ).toBeVisible();
         expect(screen.getByText("Beacon page content")).toBeVisible();
-        await returnToMessages();
+        await returnToMessages(action === "Retry");
         expect(
           screen.queryByRole("dialog", { name: "Couldn’t mute Planning" }),
         ).toBeNull();

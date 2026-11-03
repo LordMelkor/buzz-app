@@ -273,6 +273,9 @@ export type AgentViewProps<Config = unknown> = {
   initialTranscript?: TranscriptRequest;
   /** Closes the panel showing the tab. */
   close?: () => void;
+  /** Opens a channel, or a thread by its root, in the agent's community;
+   * absent where the host can't open one. */
+  openConversation?: (channelId: string, threadRootId?: string) => void;
   /** Replaces the type's whole config. Spread `agent.config` to change one
    * field, or tabs that each save a part will erase each other's fields. A
    * hosted type's tabs save to its provider instead; for them this rejects. */
@@ -304,12 +307,16 @@ export type AgentTab<Config = unknown> = Readonly<{
   component: ComponentType<AgentViewProps<Config>>;
 }>;
 /** A tab a plugin adds to the settings of every agent running on this device,
- * whatever its type. It reads the agent and saves through the plugin's own
- * `agents`. */
+ * whatever its type, or only those `when` accepts. It reads the agent and
+ * saves through the plugin's own `agents`. */
 export type AgentAddedTab = Readonly<{
   id: string;
   title: string;
   component: ComponentType<{ agent: Agent }>;
+  /** Whether the tab shows for this agent; absent, it shows for each. */
+  when?: (agent: Agent) => boolean;
+  /** Calls `listener` when `when` may answer differently. */
+  subscribe?: (listener: () => void) => () => void;
 }>;
 export type RegisteredAgentAddedTab = Contribution<AgentAddedTab>;
 /** One of an agent's conversation sessions on this device. Without `root` it
@@ -1032,7 +1039,8 @@ export type Agents = {
   register<Config>(type: AgentType<Config>): void;
   types(): readonly RegisteredAgentType[];
   /** Adds a tab to the settings of every agent running on this device,
-   * whatever its type, after Activity. It shows while the plugin is on. */
+   * whatever its type, or of those its `when` accepts, after Activity. It
+   * shows while the plugin is on. */
   registerTab(tab: AgentAddedTab): void;
   /** The tabs active plugins add now. */
   addedTabs(): readonly RegisteredAgentAddedTab[];
@@ -1884,6 +1892,7 @@ export class AgentsService extends Service implements Agents {
         },
       },
       activity: localActivity,
+      channel: (agent, event) => this.channelOf(agent, event),
       soloChat: (agent, channel, signal) =>
         soloChat(() => this.relay(agent.key), agent.owner, channel, signal),
       remembered: (key, slug, body) => this.coreMemory.wrote(key, slug, body),
@@ -2056,10 +2065,21 @@ export class AgentsService extends Service implements Agents {
     if (
       !/^[a-z0-9][a-z0-9._-]*$/.test(tab.id ?? "") ||
       !tab.title ||
-      typeof tab.component !== "function"
+      typeof tab.component !== "function" ||
+      (tab.when !== undefined && typeof tab.when !== "function") ||
+      (tab.subscribe !== undefined && typeof tab.subscribe !== "function")
     )
       throw new Error("Agent tabs need an id, a title and a component");
     this.tabContributions.register(this.ctx, tab);
+    // A new state object, so views asking `when` render again.
+    const { subscribe } = tab;
+    if (subscribe)
+      this.ctx.effect(() =>
+        subscribe(() => {
+          this.state = Object.freeze({ ...this.state });
+          this.notify();
+        }),
+      );
   }
   addedTabs = () => this.tabContributions.snapshot();
   controlAttention() {

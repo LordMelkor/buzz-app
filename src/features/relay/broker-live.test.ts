@@ -415,6 +415,32 @@ it("atomically carries joined classification and fences h-less traffic while the
   }
 });
 
+it("passes a global route's continuity through, and reports none for a malformed one", async () => {
+  const f = fixture();
+  const established = vi.fn();
+  const t = await connectBrokerTransport();
+  const owner = required(t.subscribe)({ ...f.callbacks, established });
+  try {
+    f.accept(0);
+    await tick();
+    f.frame("established", {
+      global: { route: "profiles", continuous: true },
+      interestRevision: 0,
+    });
+    f.frame("established", {
+      global: { route: "membership", continuous: "yes" },
+      interestRevision: 0,
+    });
+    await tick();
+    expect(established.mock.calls).toEqual([
+      [undefined, { route: "profiles", continuous: true }],
+      [undefined, undefined],
+    ]);
+  } finally {
+    owner.dispose();
+  }
+});
+
 it("coalesced remove/re-add with the same final IDs still advances host interest revision", async () => {
   const f = fixture();
   const t = await connectBrokerTransport();

@@ -23,6 +23,66 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it.each(["add a folder", "turn worktree off"])(
+  "blocks publication without a required folder and recovers when you %s",
+  async (recovery) => {
+    const create = vi.fn(async () => {});
+    const save = vi.fn(async () => {});
+    const close = vi.fn();
+    render(
+      <NewWorkspace
+        create={create}
+        close={close}
+        onCreated={vi.fn()}
+        session={
+          {
+            scope: "https://relay.example.test:viewer",
+            channelKit: {
+              refresh: async () => {},
+              snapshot: () => ({ status: "ready", entries: [] }),
+              save,
+            },
+          } as unknown as RelaySession
+        }
+      />,
+    );
+    const name = screen.getByRole("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Work" } });
+    const toggle = screen.getByRole("switch", {
+      name: "Work in a new worktree",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Add at least one folder to use a new worktree.",
+    );
+    // Exercise the submit guard independently of native form validation.
+    fireEvent.submit(name.closest("form") as HTMLFormElement);
+    expect(
+      await screen.findByText(
+        "Choose a workspace folder, worktree location, and base branch.",
+      ),
+    ).toBeVisible();
+    expect(create).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+
+    if (recovery === "add a folder") {
+      fireEvent.change(screen.getByRole("textbox", { name: /^Folders/ }), {
+        target: { value: "~/repo" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    } else fireEvent.click(toggle);
+    expect(
+      screen.queryByText("Add at least one folder to use a new worktree."),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(create).toHaveBeenCalledOnce();
+    expect(save).toHaveBeenCalledTimes(recovery === "add a folder" ? 1 : 0);
+  },
+);
+
 // This is the dialog's orchestration boundary: a project write and a separate
 // defaults write can each fail. Protocol validation belongs to the real kit tests.
 it("keeps a partially saved project frozen and reconciles its saved defaults on retry", async () => {

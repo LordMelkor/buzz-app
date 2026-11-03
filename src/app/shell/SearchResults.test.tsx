@@ -1,3 +1,4 @@
+import { SEARCH_DEBOUNCE_MS } from "../../shared/search-debounce";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { createRef, useState } from "react";
@@ -31,7 +32,9 @@ import {
   signed,
 } from "../../features/relay/testing";
 import type { LiveCallbacks } from "../../features/relay/live";
+import type { AppServices } from "../services";
 import { SearchResults } from "./SearchResults";
+import { useSearchSettings } from "./SearchSettings";
 import {
   readSearchUsage,
   recordChoice,
@@ -438,7 +441,7 @@ it("shows the real read failure, retains conversation choices, and retries to an
       />,
     );
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
     });
     const request = wire.next();
     expect(request.filters).toEqual([
@@ -463,7 +466,7 @@ it("shows the real read failure, retains conversation choices, and retries to an
     fireEvent.click(screen.getByRole("button", { name: "Retry messages" }));
     expect(screen.queryByText(/Message search couldn’t finish/)).toBeNull();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
     });
     const hit = message(viewer, "crew", "wes-crew exact message", 1700000001);
     await act(async () => wire.next().respond([hit]));
@@ -521,7 +524,7 @@ it("scopes conversation search at the relay and discards out-of-scope hits", asy
         openConversation={() => {}}
       />,
     );
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     const request = wire.next();
     expect(request.filters).toEqual([
       {
@@ -591,7 +594,7 @@ it("offers more messages in overall search when the first page shows none", asyn
         openConversation={() => {}}
       />,
     );
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     // A full page of hits in conversations search does not show.
     const first = wire.next();
     await act(async () =>
@@ -601,7 +604,7 @@ it("offers more messages in overall search when the first page shows none", asyn
         ),
       ),
     );
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     expect(
       screen.queryByText("No matching messages in accessible conversations."),
     ).toBeNull();
@@ -833,7 +836,7 @@ it.each(["metadata", "denial"])(
         />,
       );
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(180);
+        await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
       });
       expect(
         screen.getByRole("option", { name: /crew public result/ }),
@@ -900,7 +903,7 @@ it("does not reveal a revoked public hit queued before React commits its result"
       />,
     );
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
     });
     await act(async () => {
       wire.next().respond([hit]);
@@ -1258,7 +1261,7 @@ it.each(["finish", "fail"])(
       };
       const mounted = render(<SearchResults {...props} query="crew" />);
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(180);
+        await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
       });
       expect(
         screen.getByRole("option", { name: /crew-lobby/ }),
@@ -1279,7 +1282,7 @@ it.each(["finish", "fail"])(
       );
       older(outcome === "fail");
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(180);
+        await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
       });
       expect(screen.queryByRole("status")).toBeNull();
       expect(screen.getByRole("option", { name: /crew-lobby/ })).toBeVisible();
@@ -1330,7 +1333,7 @@ it("keeps the open-channel search notice silent when the directory answers withi
       />,
     );
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
     });
     expect(screen.queryByRole("option", { name: /crew-lobby/ })).toBeNull();
     expect(screen.queryByText("Searching open channels…")).toBeNull();
@@ -1382,7 +1385,7 @@ it("opens the open channel that lands after an early Enter, without first saying
       />,
     );
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
     });
     expect(screen.queryByRole("option")).toBeNull();
     expect(
@@ -1441,7 +1444,7 @@ it("holds an early Enter for an open channel over a message that lands first, an
       openConversation,
     };
     const mounted = render(<SearchResults {...props} query="crew" />);
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     fireEvent.keyDown(screen.getByRole("combobox", { name: "Search Buzz" }), {
       key: "Enter",
     });
@@ -1459,7 +1462,7 @@ it("holds an early Enter for an open channel over a message that lands first, an
     fireEvent.keyDown(screen.getByRole("combobox", { name: "Search Buzz" }), {
       key: "Enter",
     });
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     expect(openConversation).toHaveBeenCalledOnce();
     const news = message(viewer, "general", "news", 1700000002);
     await act(async () => wire.next().respond([news]));
@@ -1516,7 +1519,7 @@ it("opens an open channel from the first directory page after an early Enter, wh
     fireEvent.keyDown(screen.getByRole("combobox", { name: "Search Buzz" }), {
       key: "Enter",
     });
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     // Neither the older directory page nor message search has answered.
     expect(openConversation).toHaveBeenCalledExactlyOnceWith("crew-lobby");
   } finally {
@@ -1573,7 +1576,7 @@ it("holds an early Enter on the scope action for an open channel, and scopes onc
       openConversation,
     };
     const mounted = render(<SearchResults {...props} query="crew" />);
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     expect(screen.getByRole("option")).toHaveTextContent("Search in general");
     enter();
     expect(changeScope).not.toHaveBeenCalled();
@@ -1583,7 +1586,7 @@ it("holds an early Enter on the scope action for an open channel, and scopes onc
     // While message search is still pending, an arrow key chooses the
     // scope action for Enter.
     mounted.rerender(<SearchResults {...props} query="nope" />);
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     enter("ArrowDown");
     enter();
     expect(changeScope).toHaveBeenCalledExactlyOnceWith("general");
@@ -1651,7 +1654,7 @@ it.each([
           openConversation={openConversation}
         />,
       );
-      await act(async () => vi.advanceTimersByTimeAsync(180));
+      await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
       // A full page of hits in conversations search does not show.
       await act(async () =>
         wire
@@ -1662,7 +1665,7 @@ it.each([
             ),
           ),
       );
-      await act(async () => vi.advanceTimersByTimeAsync(180));
+      await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
       expect(
         screen.getByRole("option", { name: "Show more messages" }),
       ).toBeVisible();
@@ -1732,7 +1735,7 @@ it.each(["a click that does not focus the row", "its shortcut"])(
           openConversation={openConversation}
         />,
       );
-      await act(async () => vi.advanceTimersByTimeAsync(180));
+      await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
       const field = screen.getByRole("combobox", { name: "Search Buzz" });
       const scope = screen.getByRole("option");
       expect(scope).toHaveTextContent("Search in general");
@@ -2068,7 +2071,7 @@ it("translates combined operators into a single server-ranked scoped read and op
         openConversation={open}
       />,
     );
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     const users = wire.next();
     expect(users.filters).toEqual([
       { kinds: [0], search: "alice", search_mode: "prefix", limit: 40 },
@@ -2133,6 +2136,231 @@ it("does not read messages for punctuation-only operands after normalization", a
       }),
     ]);
     expect(reads[0]?.[0]).not.toHaveProperty("search");
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+/** Message searches (not people or channel lookups) a session sends. */
+const isMessageSearch = (filters: readonly Filter[]) =>
+  filters.some(
+    (filter) => filter.search !== undefined && !!filter.kinds?.includes(9),
+  );
+
+it("reads no message search until the last word has three characters", async () => {
+  vi.useFakeTimers();
+  const relay = keypair(),
+    viewer = keypair();
+  const searches: Filter[][] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (isMessageSearch(filters as Filter[]))
+        searches.push(filters as Filter[]);
+      return Promise.resolve([]);
+    },
+  });
+  const props = {
+    session: owner.session,
+    onQueryChange: () => {},
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+  };
+  try {
+    const view = render(<SearchResults {...props} query="ab" />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(searches).toHaveLength(0);
+    expect(
+      screen.getByText("Type at least 3 characters to search messages."),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("No matching messages in accessible conversations."),
+    ).toBeNull();
+
+    // The relay prefix-matches the last word, so completed words before it
+    // do not make a short one searchable.
+    view.rerender(<SearchResults {...props} query="project pl" />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(searches).toHaveLength(0);
+    expect(
+      screen.getByText(
+        "Type at least 3 characters in the last word to search messages.",
+      ),
+    ).toBeVisible();
+
+    view.rerender(<SearchResults {...props} query="project pla" />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(searches).toEqual([
+      [expect.objectContaining({ search: "project pla" })],
+    ]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("an in: operator does not lower the message search minimum", async () => {
+  vi.useFakeTimers();
+  const relay = keypair(),
+    viewer = keypair();
+  const searches: Filter[][] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (isMessageSearch(filters as Filter[])) {
+        searches.push(filters as Filter[]);
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(
+        [
+          metadata(relay, "crew", "crew"),
+          roster(relay, "crew", [viewer.pubkey]),
+        ].filter((event) =>
+          filters.some((filter) => filter.kinds?.includes(event.kind)),
+        ),
+      );
+    },
+  });
+  const props = {
+    session: owner.session,
+    onQueryChange: () => {},
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+  };
+  try {
+    const view = render(<SearchResults {...props} query="in:#crew ab" />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(searches).toHaveLength(0);
+    expect(
+      screen.getByText("Type at least 3 characters to search messages."),
+    ).toBeVisible();
+
+    view.rerender(<SearchResults {...props} query="in:#crew abc" />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(searches).toEqual([
+      [
+        {
+          kinds: [40002, 40008, 9],
+          search: "abc",
+          search_mode: "prefix",
+          limit: 20,
+          "#h": ["crew"],
+        },
+      ],
+    ]);
+    expect(
+      screen.queryByText("Type at least 3 characters to search messages."),
+    ).toBeNull();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("looks up an author by name only from two characters", async () => {
+  vi.useFakeTimers();
+  const relay = keypair(),
+    viewer = keypair();
+  const owner = createRelaySession(
+    scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+  );
+  const searchProfiles = vi.fn(async () => []);
+  const props = {
+    session: { ...owner.session, searchProfiles } as typeof owner.session,
+    onQueryChange: () => {},
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+  };
+  try {
+    const view = render(<SearchResults {...props} query="from:@a" />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(searchProfiles).not.toHaveBeenCalled();
+    view.rerender(<SearchResults {...props} query="from:@al" />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(searchProfiles).toHaveBeenCalledExactlyOnceWith(
+      "al",
+      expect.objectContaining({ limit: 40 }),
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("searches the people directory only from two characters", async () => {
+  vi.useFakeTimers();
+  const relay = keypair(),
+    viewer = keypair();
+  const owner = createRelaySession(
+    scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+  );
+  const people = vi.fn(async () => ({ people: [], hasMore: false }));
+  const props = {
+    session: {
+      ...owner.session,
+      directMessages: { ...owner.session.directMessages, people },
+    } as typeof owner.session,
+    onQueryChange: () => {},
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+  };
+  try {
+    const view = render(<SearchResults {...props} query="a" />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(people).not.toHaveBeenCalled();
+    view.rerender(<SearchResults {...props} query="al" />);
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(people).toHaveBeenCalledExactlyOnceWith(
+      "al",
+      1,
+      expect.any(AbortSignal),
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("still looks up a one-character channel named by in:", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const discovery = [metadata(relay, "x", "x", 1700000000, [["public", ""]])];
+  const owner = createRelaySession({
+    ...wire.transport,
+    query: async (filters) =>
+      discovery.filter((event) =>
+        filters.some((filter) => matchFilter(filter as Filter, event)),
+      ),
+  });
+  const source = owner.session.channels.searchPublic;
+  assert.exists(source);
+  const searchPublic = vi.fn(source);
+  try {
+    render(
+      <SearchResults
+        session={{
+          ...owner.session,
+          channels: { ...owner.session.channels, searchPublic },
+        }}
+        query="in:#x"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    await waitFor(() =>
+      expect(searchPublic).toHaveBeenCalledWith(
+        "x",
+        expect.objectContaining({ exact: true }),
+      ),
+    );
   } finally {
     cleanup();
     owner.dispose();
@@ -2561,7 +2789,7 @@ it("prioritizes people, separates agents, shows profile avatars, and excludes ar
       if (filters.some((filter) => filter.kinds?.includes(0)))
         return Promise.resolve([
           profile(agent, {
-            display_name: "Agent",
+            display_name: "Algo Agent",
             is_agent: true,
             picture: "https://example.com/agent.png",
           }),
@@ -2588,7 +2816,7 @@ it("prioritizes people, separates agents, shows profile avatars, and excludes ar
     render(
       <SearchResults
         session={session}
-        query="from:@a"
+        query="from:@al"
         onQueryChange={vi.fn()}
         input={createRef()}
         pages={[]}
@@ -2926,7 +3154,7 @@ it("adds a late shared agent without another keystroke or prefix read", async ()
       />,
     );
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
     });
     expect(reads).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("group", { name: "Agents" })).toBeNull();
@@ -2949,7 +3177,7 @@ it("adds a late shared agent without another keystroke or prefix read", async ()
       ),
     ).toBeVisible();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
     });
     expect(reads).toHaveBeenCalledTimes(1);
   } finally {
@@ -3206,7 +3434,7 @@ it("keeps a person visible when agent candidates exceed the picker cap", async (
       if (filters.some((filter) => filter.kinds?.includes(0)))
         return Promise.resolve([
           ...agents.map((agent) =>
-            profile(agent, { display_name: "Agent", is_agent: true }),
+            profile(agent, { display_name: "Algo Agent", is_agent: true }),
           ),
           profile(human, { display_name: "Alice" }),
         ]);
@@ -3217,7 +3445,7 @@ it("keeps a person visible when agent candidates exceed the picker cap", async (
     render(
       <SearchResults
         session={owner.session}
-        query="from:a"
+        query="from:al"
         onQueryChange={vi.fn()}
         input={createRef()}
         pages={[]}
@@ -3352,7 +3580,7 @@ it("never widens a search when a name or channel operator is unresolved", async 
         openConversation={() => {}}
       />,
     );
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     const users = wire.next();
     expect(users.filters[0]?.kinds).toEqual([0]);
     await act(async () => users.respond([]));
@@ -3372,7 +3600,7 @@ it("never widens a search when a name or channel operator is unresolved", async 
         openConversation={() => {}}
       />,
     );
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     expect(
       wire.pending.filter((request) =>
         request.filters.some((filter) => filter.kinds?.includes(9)),
@@ -3440,7 +3668,7 @@ it.each(["private", "missing"])(
       current = privateMeta;
       revoked = true;
       mounted.rerender(<SearchResults {...props} query={`secret in:${id}`} />);
-      await act(async () => vi.advanceTimersByTimeAsync(180));
+      await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
       expect(exactReads).toBeGreaterThan(beforeRevalidation);
       expect(scopedReads).toHaveLength(0);
       expect(owner.session.channels.get?.(id)).toBeUndefined();
@@ -3860,7 +4088,7 @@ it.each([true, false])(
           openConversation={open}
         />,
       );
-      await act(async () => vi.advanceTimersByTimeAsync(180));
+      await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
       const request = wire.next();
       expect(request.filters[0]?.authors).toEqual([signer.pubkey]);
       const hit = eventDto(
@@ -3893,6 +4121,7 @@ function peopleSession(
     name: string;
     username?: string;
     isAgent?: true;
+    ownerPubkey?: string;
   }[] = [],
   agents: readonly {
     pubkey: string;
@@ -4300,7 +4529,7 @@ it("lists directory people and managed agents, not agents this community cannot 
       within(screen.getByRole("group", { name: "Agents" })).getByRole("option"),
     ).toHaveTextContent("Caretaker");
     expect(t.people).not.toHaveBeenCalled();
-    await act(async () => vi.advanceTimersByTimeAsync(180));
+    await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
     expect(t.people).toHaveBeenCalledExactlyOnceWith(
       "car",
       1,
@@ -4314,7 +4543,7 @@ it("lists directory people and managed agents, not agents this community cannot 
     // longer than the directory accepts reads nothing, so shows no error.
     for (const query of ["#car", "car in:general", `car ${"x".repeat(97)}`]) {
       mounted.rerender(<SearchResults {...props} query={query} />);
-      await act(async () => vi.advanceTimersByTimeAsync(180));
+      await act(async () => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
       expect(screen.queryByRole("group", { name: "People" })).toBeNull();
       expect(screen.queryByRole("group", { name: "Agents" })).toBeNull();
       expect(screen.queryByText(/search community people/)).toBeNull();
@@ -4378,6 +4607,85 @@ it("tells uncached directory namesakes apart before a DM opens", async () => {
           label?.includes(`Namesake · ${npubEncode(key).slice(-4)}`),
         ),
       ).toBe(true);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("uses readable owners before key suffixes for agent namesakes", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    first = keypair(),
+    second = keypair(),
+    secondOwner = keypair();
+  // The default naming policy, as the bundled plugin registers it.
+  const directory = createAgentDirectory();
+  const owner = createRelaySession(
+    {
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      async query(filters) {
+        return filters.some((filter) => filter.kinds?.includes(0))
+          ? [profile(secondOwner, { display_name: "Morgan" })]
+          : [];
+      },
+    },
+    {
+      identityNames: {
+        bind: (source) =>
+          bindNames(source, {
+            snapshot: () => [directory],
+            subscribe: () => () => {},
+          }),
+      } as IdentityNames,
+    },
+  );
+  const t = peopleSession(
+    owner.session,
+    [
+      {
+        pubkey: first.pubkey,
+        name: "Namesake",
+        isAgent: true,
+        ownerPubkey: viewer.pubkey,
+      },
+      {
+        pubkey: second.pubkey,
+        name: "Namesake",
+        isAgent: true,
+        ownerPubkey: secondOwner.pubkey,
+      },
+    ],
+    [
+      { pubkey: first.pubkey, name: "Namesake", managed: true },
+      { pubkey: second.pubkey, name: "Namesake", managed: true },
+    ],
+  );
+  try {
+    render(
+      <SearchResults
+        session={t.session}
+        query="namesake"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const group = await screen.findByRole("group", { name: "Agents" });
+    await waitFor(() =>
+      expect(within(group).getAllByRole("option")).toHaveLength(2),
+    );
+    expect(
+      await within(group).findByRole("option", {
+        name: /^Morgan’s Namesake/,
+      }),
+    ).toBeVisible();
+    expect(
+      within(group).getByRole("option", {
+        name: /^NamesakeStart a direct message$/,
+      }),
+    ).toBeVisible();
   } finally {
     cleanup();
     owner.dispose();
@@ -4828,6 +5136,227 @@ it("preserves remembered page ranking when inline settings match", async () => {
   }
 });
 
+it.each([
+  ["buzz", "Channels", "buzz-dev", ["IdentityBuzz"]],
+  ["buzz", "People", "Buzz Aldrin", ["IdentityBuzz"]],
+  [
+    "community",
+    "Channels",
+    "community-news",
+    ["ProfileCommunity", "MembershipCommunity admin"],
+  ],
+  [
+    "community",
+    "People",
+    "Community Lead",
+    ["ProfileCommunity", "MembershipCommunity admin"],
+  ],
+  ["labs", "Channels", "labs-crew", ["ExperimentsLabs"]],
+])(
+  "leads %s with %s starting with it, ahead of sections found by their Settings group",
+  async (query, group, name, sections) => {
+    const relay = keypair(),
+      viewer = keypair(),
+      person = keypair();
+    const discovery =
+      group === "Channels"
+        ? [
+            metadata(relay, name, name, 1700000000),
+            roster(relay, name, [viewer.pubkey]),
+          ]
+        : [profile(person, { display_name: name })];
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      query: (filters) =>
+        Promise.resolve(
+          discovery.filter((event) =>
+            filters.some((filter) => matchFilter(filter as Filter, event)),
+          ),
+        ),
+    });
+    const t = peopleSession(owner.session);
+    const cards = [
+      {
+        key: "buzz.moderation/membership",
+        title: "Membership",
+        section: "administration",
+      },
+      { key: "labs.tools/experiments", title: "Experiments", group: "Labs" },
+    ].map((card) => ({
+      ...card,
+      id: card.key.split("/")[1] ?? "",
+      pluginId: card.key.split("/")[0] ?? "",
+      revision: "one",
+      component: () => null,
+    }));
+    const settingsCards = {
+      subscribe: () => () => {},
+      snapshot: () => cards,
+      retainVisibility: () => () => {},
+    } as unknown as AppServices["settingsCards"];
+    const client = {
+      selected: "primary",
+      memberships: [{ id: "primary", name: "Primary" }],
+    };
+    const communities = {
+      subscribe: () => () => {},
+      snapshot: () => client,
+    } as unknown as AppServices["communities"];
+    const openSection = vi.fn();
+    const openConversation = vi.fn();
+    function Palette({ query }: { query: string }) {
+      const inlineSettings = useSearchSettings({
+        query,
+        settingsCards,
+        communities,
+        navigation: {} as AppServices["navigation"],
+        close: () => {},
+        openSection,
+      });
+      return (
+        <SearchResults
+          session={t.session}
+          query={query}
+          onQueryChange={() => {}}
+          input={createRef()}
+          pages={[]}
+          openConversation={openConversation}
+          inlineSettings={inlineSettings}
+        />
+      );
+    }
+    try {
+      const view = render(<Palette query="" />);
+      // The joined list and a profile seen elsewhere are known before the
+      // text is typed, so the name match is there when the Settings rows are.
+      await waitFor(() =>
+        expect(owner.session.channels.list().status).toBe("ready"),
+      );
+      await act(async () => owner.session.profiles.ensure([person.pubkey]));
+      view.rerender(<Palette query={query} />);
+      const [lead] = within(
+        screen.getByRole("group", { name: group }),
+      ).getAllByRole("option");
+      expect(lead).toHaveTextContent(name);
+      // The group label still finds its sections, after the name match.
+      expect(
+        within(screen.getByRole("group", { name: "Settings" }))
+          .getAllByRole("option")
+          .map((option) => option.textContent),
+      ).toEqual(expect.arrayContaining(sections));
+      const groups = screen
+        .getAllByRole("group")
+        .map((element) => element.getAttribute("aria-label"));
+      expect(groups.indexOf(group)).toBeLessThan(groups.indexOf("Settings"));
+      const input = screen.getByRole("combobox", { name: "Search Buzz" });
+      expect(input).toHaveAttribute("aria-activedescendant", lead?.id);
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() =>
+        expect(openConversation).toHaveBeenCalledExactlyOnceWith(
+          group === "Channels" ? name : "started-dm",
+        ),
+      );
+      if (group === "People")
+        expect(t.open).toHaveBeenCalledExactlyOnceWith(
+          [person.pubkey],
+          expect.any(AbortSignal),
+        );
+      expect(openSection).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it("holds an early Enter for a person still being found over a section holding the letters only in order", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query: () => Promise.resolve([]),
+  });
+  // Only the directory knows Champa Rao, so the People row lands when it
+  // answers.
+  const t = peopleSession(owner.session);
+  let answer!: () => void;
+  t.people.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        answer = () =>
+          resolve({
+            people: [{ pubkey: person.pubkey, name: "Champa Rao" }],
+            hasMore: false,
+          });
+      }),
+  );
+  const cards = [
+    {
+      key: "buzz.channels/templates",
+      id: "templates",
+      pluginId: "buzz.channels",
+      title: "Channel templates",
+      group: "App",
+      revision: "one",
+      component: () => null,
+    },
+  ];
+  const settingsCards = {
+    subscribe: () => () => {},
+    snapshot: () => cards,
+    retainVisibility: () => () => {},
+  } as unknown as AppServices["settingsCards"];
+  const openSection = vi.fn();
+  const openConversation = vi.fn();
+  // "wes" finds Software updates the same way, but in the shipped palette
+  // plugin rows still take its early Enter: plugin descriptions hold most
+  // names' letters in order. Of the bundled plugins, controls and a member's
+  // sections, "champ" matched only Channel templates, so this Enter turns on
+  // section matching alone.
+  function Palette() {
+    const inlineSettings = useSearchSettings({
+      query: "champ",
+      settingsCards,
+      navigation: {} as AppServices["navigation"],
+      close: () => {},
+      openSection,
+    });
+    return (
+      <SearchResults
+        session={t.session}
+        query="champ"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={openConversation}
+        inlineSettings={inlineSettings}
+      />
+    );
+  }
+  try {
+    render(<Palette />);
+    await waitFor(() => expect(t.people).toHaveBeenCalled());
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Search Buzz" }), {
+      key: "Enter",
+    });
+    expect(openSection).not.toHaveBeenCalled();
+    expect(openConversation).not.toHaveBeenCalled();
+    await act(async () => answer());
+    await waitFor(() =>
+      expect(openConversation).toHaveBeenCalledExactlyOnceWith("started-dm"),
+    );
+    expect(t.open).toHaveBeenCalledExactlyOnceWith(
+      [person.pubkey],
+      expect.any(AbortSignal),
+    );
+    expect(openSection).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("excludes proven Huddles but keeps ordinary hits after mutable metadata changes", async () => {
   vi.useFakeTimers();
   const relay = keypair(),
@@ -4892,7 +5421,7 @@ it("excludes proven Huddles but keeps ordinary hits after mutable metadata chang
       />,
     );
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
     });
     expect(screen.queryByRole("option", { name: /hidden match/ })).toBeNull();
     expect(screen.getByRole("option", { name: /later match/ })).toBeVisible();
@@ -4953,7 +5482,7 @@ it("withholds unknown metadata, then reveals unproven legacy rooms as ordinary d
       />,
     );
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
     });
     expect(owner.session.channels.get?.("room")?.metadataPending).toBe(true);
     expect(

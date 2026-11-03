@@ -81,6 +81,14 @@ export function useChannelWindow(queries: ChannelQueries, channelId: string) {
   );
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
+const noSubscribe = () => () => {};
+/** The directory's purge generation. Read it in an effect that ensures the
+ * profiles a view shows, so the view ensures them again after an access purge. */
+export function useProfileGeneration(queries: ProfileQueries | undefined) {
+  const read = () => queries?.generation?.() ?? 0;
+  return useSyncExternalStore(queries?.subscribe ?? noSubscribe, read, read);
+}
+
 export function useRowProfiles(
   queries: ProfileQueries,
   rows: readonly ChannelMessage[],

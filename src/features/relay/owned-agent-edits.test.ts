@@ -20,6 +20,7 @@ import {
   keypair,
   message,
   metadata,
+  profile,
   roster,
   scriptedTransport,
   signed,
@@ -396,6 +397,55 @@ it.each(["head", "tail"])(
     }
   },
 );
+
+it("refreshes an unopened channel's tail preview after its head changes", async () => {
+  const author = keypair(),
+    relay = keypair();
+  const wire = scriptedTransport(author.pubkey, relay.pubkey);
+  let live!: LiveCallbacks;
+  const connection = createRelaySession(
+    {
+      ...wire.transport,
+      subscribe(callbacks) {
+        live = callbacks;
+        return { update() {}, retry() {}, dispose() {} };
+      },
+    },
+    { prepared: true },
+  );
+  const original = message(author, "c", "Original", 11);
+  const edit = signed(author, {
+    kind: 40003,
+    created_at: 12,
+    content: "Edited",
+    tags: [
+      ["h", "c"],
+      ["e", original.id],
+    ],
+  });
+  const channels = connection.session.channels;
+  const preview = () =>
+    channels.list().channels.find((channel) => channel.id === "c")?.preview;
+  try {
+    live.receive([roster(relay, "c", [author.pubkey], 1), original]);
+    live.receive([eventDto(profile(keypair(), { name: "First" }))]);
+    await flush();
+    expect(preview()).toBe("Original");
+    channels.prepare?.("c");
+    wire
+      .next()
+      .respond([
+        original,
+        edit,
+        bounds(relay, "c", "head", { has_more: false, next_cursor: null }),
+      ]);
+    await flush();
+    live.receive([eventDto(profile(keypair(), { name: "Second" }))]);
+    await vi.waitFor(() => expect(preview()).toBe("Edited"));
+  } finally {
+    connection.dispose();
+  }
+});
 
 it.each(["actor", "p"])(
   "fetches a cold %s-attributed agent profile for owner-edited unread previews",

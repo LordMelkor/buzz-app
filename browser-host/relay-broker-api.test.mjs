@@ -168,6 +168,7 @@ test.each([
           });
         if (path.endsWith("/v1/auth/me"))
           return Response.json({
+            subject: "auth0|owner",
             email: "fixture@example.com",
             expires_at: "2030",
           });
@@ -185,9 +186,15 @@ test.each([
         body: "{}",
       });
       const opened = new URL(await loginOpened);
-      const callback = opened.searchParams.get("returnTo");
+      const callback = opened.searchParams.get("redirect_uri");
       expect(callback).toBeTruthy();
-      expect((await fetch(`${callback}?code=fixture`)).status).toBe(200);
+      expect(
+        (
+          await fetch(
+            `${callback}?state=${opened.searchParams.get("state")}&code=fixture`,
+          )
+        ).status,
+      ).toBe(200);
       expect((await login).status).toBe(200);
       const response = await fetch(`${h.base}/api/builderlab/delete`, {
         method: "POST",
@@ -3907,6 +3914,206 @@ test("inventory rejects foreign pages, ignores invalid heads and follows exact-k
     });
     expect(h.publications).toHaveLength(0);
   } finally {
+    await h.close();
+  }
+});
+
+test("Builderlab HTTP accepts full agent instructions and isolates the fixed native routes", async () => {
+  let openLogin;
+  const opened = new Promise((resolve) => {
+    openLogin = resolve;
+  });
+  const instructions = "\\".repeat(20_000);
+  let received;
+  const nativeCalls = [];
+  const h = await harness(() => Response.json([]), {}, fixtureRelayUrl, {
+    open: async (url) => openLogin(new URL(url)),
+    fetch: async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/v1/auth/login/exchange"))
+        return Response.json({
+          session_credential: "fixture-only",
+          expires_at: "2030",
+        });
+      if (path.endsWith("/v1/auth/me"))
+        return Response.json({
+          subject: "fixture-account",
+          expires_at: "2030",
+          capabilities: { can_use_remote_agents: true },
+        });
+      if (path.endsWith("/nostr-identities/challenge"))
+        return Response.json({
+          error: { code: "missing_mapping", setup_needed: true },
+        });
+      if (path.endsWith("/v3/beekeeper/update-agent")) {
+        received = JSON.parse(init.body);
+        return Response.json({ status: 1 });
+      }
+      if (
+        path.endsWith("/v3/builderlab/decisions") ||
+        path.endsWith("/v1/auth/hosted-site/native-session")
+      ) {
+        nativeCalls.push({
+          path,
+          body: JSON.parse(init.body),
+          headers: init.headers,
+        });
+        return Response.json({ fixture: "native reply" });
+      }
+      throw new Error(`Unexpected Builderlab request ${path}`);
+    },
+  });
+  try {
+    const login = fetch(`${h.base}/api/builderlab/login`, {
+      method: "POST",
+      body: "{}",
+    });
+    const authorization = await opened;
+    await fetch(
+      `${authorization.searchParams.get("redirect_uri")}?code=fixture&state=${authorization.searchParams.get("state")}`,
+    );
+    expect((await login).status).toBe(200);
+    const stream = await fetch(`${h.base}/api/builderlab/events`);
+    const reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    let event = "";
+    try {
+      while (!event.includes("\n\n")) {
+        const part = await reader.read();
+        if (part.done) throw new Error("Missing development session metadata");
+        event += decoder.decode(part.value, { stream: true });
+      }
+    } finally {
+      await reader.cancel();
+    }
+    const { revision } = JSON.parse(
+      event.slice("data: ".length).split("\n\n")[0],
+    );
+    const body = JSON.stringify({
+      agent_pubkey: "a".repeat(64),
+      agent_instructions: instructions,
+    });
+    const envelope = JSON.stringify({
+      revision,
+      path: "/v3/beekeeper/update-agent",
+      method: "POST",
+      body,
+    });
+    expect(envelope.length).toBeGreaterThan(64 * 1024);
+    const response = await fetch(`${h.base}/api/builderlab/request`, {
+      method: "POST",
+      body: envelope,
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).status).toBe(200);
+    expect(received.agent_instructions).toBe(instructions);
+    for (const [action, path, header] of [
+      ["decisions", "/v3/builderlab/decisions", "X-BB-Session-Credential"],
+      [
+        "viewer",
+        "/v1/auth/hosted-site/native-session",
+        "X-Buzz-Builderlab-Revision",
+      ],
+    ]) {
+      const refused = await fetch(`${h.base}/api/builderlab/request`, {
+        method: "POST",
+        body: JSON.stringify({ revision, path, method: "POST", body: "{}" }),
+      });
+      expect(await refused.json()).toEqual({
+        error: "Unsupported Builderlab request",
+      });
+      const forwarded = await fetch(`${h.base}/api/builderlab/${action}`, {
+        method: "POST",
+        headers: { [header]: revision, "X-Buzz-Community": "buzz.example" },
+        body: JSON.stringify({ fixture: action }),
+      });
+      expect(forwarded.status).toBe(200);
+      expect(await forwarded.json()).toEqual({ fixture: "native reply" });
+      expect(nativeCalls.at(-1)).toMatchObject({
+        path: `/api/goose${path}`,
+        body: { fixture: action },
+        headers: { "X-BB-Session-Credential": "fixture-only" },
+      });
+    }
+    expect(nativeCalls).toHaveLength(2);
+    expect(nativeCalls[0].headers["X-Buzz-Community"]).toBe("buzz.example");
+  } finally {
+    await h.close();
+  }
+});
+
+test("Builderlab pending sign-in survives its initiating page disconnecting", async () => {
+  let openLogin;
+  const opened = new Promise((resolve) => {
+    openLogin = resolve;
+  });
+  const h = await harness(() => Response.json([]), {}, fixtureRelayUrl, {
+    open: async (url) => openLogin(new URL(url)),
+    fetch: async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/v1/auth/login/exchange"))
+        return Response.json({
+          session_credential: "fixture-only",
+          expires_at: "2030",
+        });
+      if (path.endsWith("/v1/auth/me"))
+        return Response.json({
+          subject: "fixture-account",
+          expires_at: "2030",
+        });
+      if (path.endsWith("/nostr-identities/challenge"))
+        return Response.json({
+          error: { code: "missing_mapping", setup_needed: true },
+        });
+      throw new Error(`Unexpected Builderlab request ${path}`);
+    },
+  });
+  const disconnected = new Promise((resolve) => {
+    h.server.on("request", (req, res) => {
+      if (req.url === "/api/builderlab/login") res.once("close", resolve);
+    });
+  });
+  const abort = new AbortController();
+  let reader;
+  try {
+    const login = fetch(`${h.base}/api/builderlab/login`, {
+      method: "POST",
+      body: "{}",
+      signal: abort.signal,
+    }).catch((error) => error);
+    const authorization = await opened;
+    abort.abort();
+    await login;
+    await disconnected;
+    const stream = await fetch(`${h.base}/api/builderlab/events`);
+    reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    const next = async () => {
+      while (!buffered.includes("\n\n")) {
+        const part = await reader.read();
+        if (part.done) throw new Error("Development session stream ended");
+        buffered += decoder.decode(part.value, { stream: true });
+      }
+      const end = buffered.indexOf("\n\n");
+      const event = JSON.parse(buffered.slice("data: ".length, end));
+      buffered = buffered.slice(end + 2);
+      return event;
+    };
+    expect(await next()).toMatchObject({ pending: true, auth: null });
+    await fetch(
+      `${authorization.searchParams.get("redirect_uri")}?code=fixture&state=${authorization.searchParams.get("state")}`,
+    );
+    let signedIn;
+    do {
+      signedIn = await next();
+    } while (signedIn.pending);
+    expect(signedIn.auth).toMatchObject({ subject: "fixture-account" });
+    const auth = await (await fetch(`${h.base}/api/builderlab/auth`)).json();
+    expect(auth.auth).toMatchObject({ subject: "fixture-account" });
+  } finally {
+    abort.abort();
+    await reader?.cancel();
     await h.close();
   }
 });

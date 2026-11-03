@@ -141,6 +141,7 @@ export function createHuddleComposerOwner(
         ],
       },
       profiles,
+      profileGeneration: session.profiles.generation?.() ?? 0,
       emoji: session.emoji.snapshot(),
       agents: session.agentChoices.snapshot(),
       library: session.agentLibrary.snapshot(),

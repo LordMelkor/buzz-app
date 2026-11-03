@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import type { RelaySession } from "../../features/relay/session";
 import { PEOPLE_SEARCH_MAX_LENGTH } from "../../features/relay/direct-messages";
+import { searchDebounce, searchable } from "../../shared/search-debounce";
 
 type Person = Awaited<
   ReturnType<RelaySession["directMessages"]["people"]>
 >["people"][number];
 const none: readonly Person[] = [];
-
-/** Typing pause before a Command-K people search reaches the relay. */
-export const PERSON_DIRECTORY_DELAY_MS = 180;
 
 /**
  * The first page of the community directory for typed text. Command-K shows a
@@ -31,11 +29,11 @@ export function usePersonDirectory(
     error?: true;
   }>();
   const active =
-    enabled && !!query.trim() && query.length <= PEOPLE_SEARCH_MAX_LENGTH;
+    enabled && searchable(query) && query.length <= PEOPLE_SEARCH_MAX_LENGTH;
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
-    const timer = setTimeout(() => {
+    const cancel = searchDebounce(() => {
       session.directMessages.people(query, 1, controller.signal).then(
         ({ people }) => {
           if (!controller.signal.aborted) setState({ query, attempt, people });
@@ -50,9 +48,9 @@ export function usePersonDirectory(
             }));
         },
       );
-    }, PERSON_DIRECTORY_DELAY_MS);
+    });
     return () => {
-      clearTimeout(timer);
+      cancel();
       controller.abort();
     };
   }, [session, query, active, attempt]);

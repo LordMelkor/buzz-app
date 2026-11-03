@@ -910,6 +910,7 @@ export function relayBrokerPlugin({
         ...builderlabOptions,
       });
       server.httpServer?.once("close", () => {
+        builderlab.signOut();
         for (const { close } of streams.values()) close();
         archive?.close();
         key.fill(0);
@@ -959,9 +960,21 @@ export function relayBrokerPlugin({
         if (res.destroyed) release();
         try {
           if (url.pathname.startsWith("/api/builderlab/")) {
-            // Hosted communities plugin only; the session credential never leaves Node.
+            // One development sign-in for hosting, agents and apps; its credential stays in Node.
             const action = url.pathname.slice("/api/builderlab/".length);
             try {
+              if (action === "events" && req.method === "GET") {
+                res.writeHead(200, {
+                  "Content-Type": "text/event-stream",
+                  "Cache-Control": "no-store",
+                });
+                const send = (state) =>
+                  res.write(`data: ${JSON.stringify(state)}\n\n`);
+                const stop = builderlab.subscribe(send);
+                res.once("close", stop);
+                send(builderlab.snapshot());
+                return;
+              }
               if (action === "auth" && req.method === "GET")
                 return json(res, 200, { auth: await builderlab.auth() });
               if (req.method !== "POST")
@@ -970,12 +983,64 @@ export function relayBrokerPlugin({
               req.setEncoding("utf8");
               for await (const part of req) {
                 raw += part;
-                if (raw.length > 4096)
+                if (
+                  raw.length >
+                  (action === "decisions"
+                    ? 128 * 1024
+                    : action === "request"
+                      ? 1024 * 1024
+                      : 4096)
+                )
                   return json(res, 413, { error: "Request too large" });
               }
+              const input = raw ? JSON.parse(raw) : {};
+              const nativeRoute = {
+                // Native Decisions puts the public revision in its existing credential header.
+                decisions: [
+                  "/v3/builderlab/decisions",
+                  "x-bb-session-credential",
+                ],
+                viewer: [
+                  "/v1/auth/hosted-site/native-session",
+                  "x-buzz-builderlab-revision",
+                ],
+              }[action];
+              if (nativeRoute) {
+                const [path, header] = nativeRoute;
+                const reply = await builderlab.request(
+                  {
+                    revision: req.headers[header],
+                    path,
+                    method: "POST",
+                    body: raw,
+                    community: req.headers["x-buzz-community"],
+                  },
+                  cancel.signal,
+                  true,
+                );
+                res
+                  .writeHead(reply.status, {
+                    "Content-Type": "application/json",
+                    "Cache-Control": "no-store",
+                  })
+                  .end(reply.body);
+                return;
+              }
+              if (action === "request")
+                return json(
+                  res,
+                  200,
+                  await builderlab.request(input, cancel.signal),
+                );
+              // Scoped callers cannot submit an operation for a replacement account.
+              if (
+                input.revision !== undefined &&
+                input.revision !== builderlab.snapshot().revision
+              )
+                return json(res, 409, { error: "Builderlab session changed" });
               if (action === "login")
                 return json(res, 200, {
-                  auth: await builderlab.login(cancel.signal),
+                  auth: await builderlab.login(),
                 });
               if (action === "sign-out") {
                 builderlab.signOut();
@@ -983,10 +1048,7 @@ export function relayBrokerPlugin({
               }
               if (action === "bind")
                 return json(res, 200, await builderlab.bind());
-              const result = await builderlab.call(
-                action,
-                raw ? JSON.parse(raw) : {},
-              );
+              const result = await builderlab.call(action, input);
               return result
                 ? json(res, builderlabResponseStatus(result), result)
                 : json(res, 404, { error: "Unknown Builderlab route" });
@@ -1873,11 +1935,12 @@ export function relayBrokerPlugin({
                     ...state,
                     interestRevision: stream.interestRevision,
                   }),
-                established: (channelId) =>
+                established: (channelId, global) =>
                   write("established", {
                     ...(Array.isArray(channelId)
                       ? { channels: channelId }
                       : { channelId }),
+                    ...(global ? { global } : {}),
                     interestRevision: stream.interestRevision,
                   }),
                 recover: () => write("recover", {}),

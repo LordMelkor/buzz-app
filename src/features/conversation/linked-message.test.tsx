@@ -112,10 +112,12 @@ function fixture({
   let list = { status: "ready", channels };
   let live = { status: "connected" };
   const ensure = vi.fn(async () => {});
+  let generation = 0;
   const profileQueries = {
     snapshot: () => profiles,
     subscribe: subscriber(profileListeners),
     ensure,
+    generation: () => generation,
   };
   const library = { status: "ready", definitions: [], identities: agents };
   const names = bindNames(
@@ -154,6 +156,12 @@ function fixture({
     open: () => views.filter((view) => !view.disposed),
     async setProfiles(next: Map<string, Profile>) {
       profiles = next;
+      await changed(profileListeners)();
+    },
+    /** An access purge: the directory empties and its generation moves. */
+    async purge() {
+      profiles = new Map();
+      generation++;
       await changed(profileListeners)();
     },
     async setChannels(next: Channel[]) {
@@ -215,6 +223,21 @@ it("names the linked message's author and channel once its exact reader settles"
   // The lookup gives its reader back as soon as it has the author.
   expect(app.open()).toHaveLength(0);
   expect(app.ensure).toHaveBeenCalledWith([alice], "background");
+});
+
+it("rereads a mounted link's author after an access purge", async () => {
+  const app = fixture();
+  render(link(app.session, href(id(1))));
+  await started();
+  await app.views[0]?.publish(ready(message(id(1))));
+  expect(screen.getByRole("link", { name: "Alice in #design" })).toBeTruthy();
+  expect(app.ensure).toHaveBeenCalledTimes(1);
+  await app.purge();
+  // The author is still known; only its name is gone until the reread lands.
+  expect(app.ensure).toHaveBeenCalledTimes(2);
+  expect(app.ensure).toHaveBeenLastCalledWith([alice], "background");
+  await app.setProfiles(new Map([[alice, { name: "Alice" }]]));
+  expect(screen.getByRole("link", { name: "Alice in #design" })).toBeTruthy();
 });
 
 it("names a reply's author with the thread icon and a workflow as its row header does", async () => {

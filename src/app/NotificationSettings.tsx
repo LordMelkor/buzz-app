@@ -23,6 +23,7 @@ const SOUND_ROWS: readonly NotificationCategory[] = [
   "direct",
   "mention",
   "thread",
+  "agent",
 ];
 
 function AlertSoundRow({

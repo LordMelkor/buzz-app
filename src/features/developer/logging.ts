@@ -40,7 +40,9 @@ export function getLogger(tag: string) {
       defaults: { tag },
       level: LOG_LEVELS[level],
       // Debug is a firehose, including repeated frames. Never coalesce traffic.
-      throttle: 0,
+      // Consola coalesces when the gap since the last log is below `throttle`,
+      // so 0 still coalesces after the clock steps back.
+      throttle: Number.NEGATIVE_INFINITY,
     });
     loggers.set(tag, logger);
   }

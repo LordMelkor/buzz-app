@@ -59,6 +59,8 @@ export type PluginManifest = Readonly<{
     /** The plugin may read files with `host.readFile` and resolve directories
      * with `host.resolveDirectory`, with the user's own access. */
     files?: boolean;
+    /** Pathless temporary saves in host-selected private storage; no read access. */
+    managedFiles?: boolean;
   }>;
 }>;
 // Module evaluation must be pure. apply owns resources through ctx.effect.

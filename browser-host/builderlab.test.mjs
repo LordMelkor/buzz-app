@@ -1,5 +1,9 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { generateSecretKey, getPublicKey, verifyEvent } from "nostr-tools";
+import { controlPlane } from "../src/bundled/builderlab/apps/environment";
 import {
   BUILDERLAB_ORIGIN,
   bindingEvent,
@@ -54,9 +58,13 @@ it.each([
 function account(responses = {}) {
   const requests = [];
   let opened;
+  let didOpen;
+  const openedReady = new Promise((resolve) => {
+    didOpen = resolve;
+  });
   const fetch = async (url, init = {}) => {
     const path = new URL(url).pathname.replace("/api/goose", "");
-    requests.push({ path, init });
+    requests.push({ path, url: new URL(url), init });
     const reply = responses[path];
     if (reply) return reply(init);
     if (path === "/v1/auth/login/exchange")
@@ -66,6 +74,7 @@ function account(responses = {}) {
       });
     if (path === "/v1/auth/me")
       return Response.json({
+        subject: "auth0|owner",
         email: "a@example.com",
         name: "A",
         expires_at: "2030",
@@ -80,8 +89,10 @@ function account(responses = {}) {
       return key;
     },
     fetch,
+    appsBase: controlPlane(BUILDERLAB_ORIGIN),
     open: async (url) => {
       opened = new URL(url);
+      didOpen(opened);
     },
   });
   return {
@@ -89,31 +100,50 @@ function account(responses = {}) {
     requests,
     key,
     opened: () => opened,
+    openedReady,
     signs: () => signs,
   };
 }
 async function signIn(h) {
-  const pending = h.builderlab.login(new AbortController().signal);
+  // Observe rejection before the callback's network round trip; still propagate it to the caller.
+  const pending = h.builderlab.login(new AbortController().signal).then(
+    (auth) => ({ auth }),
+    (error) => ({ error }),
+  );
   while (!h.opened()) await new Promise((resolve) => setTimeout(resolve, 5));
-  const returnTo = h.opened().searchParams.get("returnTo");
+  const returnTo = h.opened().searchParams.get("redirect_uri");
   expect(new URL(returnTo).hostname).toBe("127.0.0.1");
-  await globalThis.fetch(`${returnTo}?code=one-time`);
-  return pending;
+  await globalThis.fetch(
+    `${returnTo}?state=${h.opened().searchParams.get("state")}&code=one-time`,
+  );
+  const result = await pending;
+  if ("error" in result) throw result.error;
+  return result.auth;
 }
 
 it("completes browser sign-in through a loopback callback without exposing the credential", async () => {
   const h = account();
   const auth = await signIn(h);
   expect(auth).toEqual({
+    subject: "auth0|owner",
     email: "a@example.com",
     name: "A",
     expiresAt: "2030",
-    capabilities: { can_delete_buzz_communities: false },
+    capabilities: {
+      can_delete_buzz_communities: false,
+      can_use_remote_agents: false,
+      can_use_builderlab_decisions: false,
+    },
   });
   expect(JSON.stringify(auth)).not.toContain("secret");
   expect(h.opened().pathname).toBe("/api/goose/v1/auth/login");
-  expect(h.opened().searchParams.get("product")).toBe("buzz");
-  expect(JSON.parse(h.requests[0].init.body)).toEqual({ code: "one-time" });
+  expect(h.opened().searchParams.get("product")).toBe("builderlab");
+  const exchange = JSON.parse(h.requests[0].init.body);
+  expect(exchange.code).toBe("one-time");
+  const { createHash } = await import("node:crypto");
+  expect(
+    createHash("sha256").update(exchange.code_verifier).digest("base64url"),
+  ).toBe(h.opened().searchParams.get("code_challenge"));
   await h.builderlab.call("list", {});
   expect(h.requests.at(-1).init.headers).toMatchObject({
     "X-BB-Session-Credential": "secret",
@@ -207,6 +237,7 @@ it.each([
   const h = account({
     "/v1/auth/me": () =>
       Response.json({
+        subject: "auth0|owner",
         email: "a@example.com",
         expires_at: "2030",
         capabilities: { can_delete_buzz_communities: value },
@@ -214,6 +245,8 @@ it.each([
   });
   expect((await signIn(h)).capabilities).toEqual({
     can_delete_buzz_communities: expected,
+    can_use_remote_agents: false,
+    can_use_builderlab_decisions: false,
   });
 });
 
@@ -267,6 +300,61 @@ const deferred = () => {
   return { promise, resolve };
 };
 
+it.each(["held", "rejected"])(
+  "logs out a replaced credential without blocking login on a %s upstream logout",
+  async (outcome) => {
+    const release = deferred();
+    const finished = deferred();
+    const h = account({
+      "/v1/auth/logout": async () => {
+        try {
+          await release.promise;
+          if (outcome === "rejected") throw new Error("Logout unavailable");
+          return Response.json({});
+        } finally {
+          finished.resolve();
+        }
+      },
+    });
+    await signIn(h);
+    const before = h.opened();
+    const states = [];
+    const stop = h.builderlab.subscribe((state) => states.push(state));
+    const abort = new AbortController();
+    const login = h.builderlab.login(abort.signal).catch((error) => error);
+    try {
+      expect(
+        h.requests.filter(({ path }) => path === "/v1/auth/logout"),
+      ).toMatchObject([
+        {
+          init: {
+            method: "POST",
+            headers: { "X-BB-Session-Credential": "secret" },
+            redirect: "error",
+          },
+        },
+      ]);
+      expect(states).toHaveLength(1);
+      expect(states[0]).toMatchObject({ pending: true, auth: null });
+      // Opening the replacement browser does not wait for upstream revocation.
+      await vi.waitFor(() => expect(h.opened()).not.toBe(before));
+      release.resolve();
+      await finished.promise;
+      expect(h.builderlab.snapshot()).toMatchObject({
+        pending: true,
+        auth: null,
+      });
+      expect(h.builderlab.snapshot()).not.toHaveProperty("error");
+    } finally {
+      release.resolve();
+      abort.abort();
+      await login;
+      stop();
+      h.builderlab.signOut();
+    }
+  },
+);
+
 it.each(["cancel", "sign-out"])(
   "a %s during a held code exchange never restores the session",
   async (mode) => {
@@ -285,12 +373,15 @@ it.each(["cancel", "sign-out"])(
     const abort = new AbortController();
     const pending = h.builderlab.login(abort.signal).catch((error) => error);
     while (!h.opened()) await new Promise((resolve) => setTimeout(resolve, 5));
-    await globalThis.fetch(`${h.opened().searchParams.get("returnTo")}?code=x`);
+    await globalThis.fetch(
+      `${h.opened().searchParams.get("redirect_uri")}?state=${h.opened().searchParams.get("state")}&code=x`,
+    );
     await started.promise;
     if (mode === "cancel") abort.abort();
     else h.builderlab.signOut();
     release.resolve();
     expect(await pending).toBeInstanceOf(Error);
+    expect(h.builderlab.snapshot()).not.toHaveProperty("error");
     expect(await h.builderlab.auth()).toBeNull();
     await expect(h.builderlab.call("list", {})).rejects.toThrow(
       "Sign in to Builderlab first",
@@ -317,7 +408,11 @@ it.each(["error", "success"])(
           await release.promise;
           if (outcome === "error") return Response.json({}, { status: 401 });
         }
-        return Response.json({ email: session, expires_at: "2030" });
+        return Response.json({
+          subject: session,
+          email: session,
+          expires_at: "2030",
+        });
       },
     });
     const signInAs = async (code) => {
@@ -326,7 +421,7 @@ it.each(["error", "success"])(
       while (h.opened() === before)
         await new Promise((resolve) => setTimeout(resolve, 5));
       await globalThis.fetch(
-        `${h.opened().searchParams.get("returnTo")}?code=${code}`,
+        `${h.opened().searchParams.get("redirect_uri")}?state=${h.opened().searchParams.get("state")}&code=${code}`,
       );
       return pending;
     };
@@ -378,7 +473,7 @@ it("rejects malformed and wrong callbacks without ending the listener", async ()
   const h = account();
   const pending = h.builderlab.login(new AbortController().signal);
   while (!h.opened()) await new Promise((resolve) => setTimeout(resolve, 5));
-  const returnTo = new URL(h.opened().searchParams.get("returnTo"));
+  const returnTo = new URL(h.opened().searchParams.get("redirect_uri"));
   const { request } = await import("node:http");
   const raw = (path) =>
     new Promise((resolve, reject) =>
@@ -391,6 +486,433 @@ it("rejects malformed and wrong callbacks without ending the listener", async ()
     );
   expect(await raw("//[")).toBe(400);
   expect(await raw("/callback/wrong?code=x")).toBe(404);
-  await globalThis.fetch(`${returnTo}?code=one-time`);
+  await globalThis.fetch(
+    `${returnTo}?state=${h.opened().searchParams.get("state")}&code=one-time`,
+  );
   expect(await pending).toMatchObject({ email: "a@example.com" });
+});
+
+it("keeps one public server revision for agents, Apps and reloaded clients, and never forwards caller credentials", async () => {
+  const h = account({
+    "/v3/beekeeper/list-agents": () => Response.json({ status: 1, agents: [] }),
+    "/v1/agent/apps": () => Response.json({ apps: [] }),
+  });
+  const states = [];
+  const stop = h.builderlab.subscribe((state) => states.push(state));
+  await signIn(h);
+  const signedIn = h.builderlab.snapshot();
+  expect(signedIn).toMatchObject({
+    pending: false,
+    auth: { subject: "auth0|owner" },
+  });
+  expect(JSON.stringify(states)).not.toContain("secret");
+  const revision = signedIn.revision;
+  await h.builderlab.request(
+    {
+      revision,
+      path: "/v3/beekeeper/list-agents",
+      method: "POST",
+      body: "{}",
+      headers: { "X-BB-Session-Credential": "untrusted" },
+    },
+    new AbortController().signal,
+  );
+  expect(h.requests.at(-1).init.headers["X-BB-Session-Credential"]).toBe(
+    "secret",
+  );
+  await h.builderlab.request(
+    { revision, target: "apps", path: "/v1/agent/apps?scope=owned" },
+    new AbortController().signal,
+  );
+  expect(h.requests.at(-1).init.headers.Authorization).toBe(
+    "BBIdentity secret",
+  );
+  await expect(h.builderlab.auth()).resolves.toMatchObject({
+    subject: "auth0|owner",
+  });
+  expect(h.builderlab.snapshot().revision).toBe(revision);
+  h.builderlab.signOut();
+  await expect(
+    h.builderlab.request(
+      { revision, path: "/v3/beekeeper/list-agents" },
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("session changed");
+  expect(states.at(-1).auth).toBeNull();
+  stop();
+});
+
+it("expires every consumer together on 401, while a transient account check preserves the server login", async () => {
+  let unavailable = false;
+  const h = account({
+    "/v1/auth/me": () =>
+      unavailable
+        ? Promise.reject(new Error("offline"))
+        : Response.json({ subject: "owner", expires_at: "2030" }),
+    "/v3/beekeeper/list-agents": () => Response.json({}, { status: 401 }),
+  });
+  await signIn(h);
+  const revision = h.builderlab.snapshot().revision;
+  unavailable = true;
+  await expect(h.builderlab.auth()).rejects.toThrow("offline");
+  expect(h.builderlab.snapshot().revision).toBe(revision);
+  const reply = await h.builderlab.request(
+    { revision, path: "/v3/beekeeper/list-agents", method: "POST", body: "{}" },
+    new AbortController().signal,
+  );
+  expect(reply.status).toBe(401);
+  expect(h.builderlab.snapshot()).toMatchObject({ auth: null, pending: false });
+});
+
+it("keeps the shared login and agent requests working after an Apps 401", async () => {
+  const h = account({
+    "/v1/agent/apps": () => Response.json({}, { status: 401 }),
+    "/v3/beekeeper/list-agents": () => Response.json({ agents: [] }),
+  });
+  await signIn(h);
+  const before = h.builderlab.snapshot();
+  const signal = new AbortController().signal;
+  expect(
+    await h.builderlab.request(
+      { revision: before.revision, target: "apps", path: "/v1/agent/apps" },
+      signal,
+    ),
+  ).toMatchObject({ status: 401 });
+  expect(h.builderlab.snapshot()).toEqual(before);
+  expect(
+    await h.builderlab.request(
+      {
+        revision: before.revision,
+        path: "/v3/beekeeper/list-agents",
+        method: "POST",
+        body: "{}",
+      },
+      signal,
+    ),
+  ).toMatchObject({ status: 200 });
+  h.builderlab.signOut();
+});
+
+it("preserves encoded Apps IDs and query values after resolving the allowed URL", async () => {
+  const h = account();
+  await signIn(h);
+  const path =
+    "/v1/agent/apps/app/communities/" +
+    encodeURIComponent("community:id") +
+    "?" +
+    new URLSearchParams({ version_id: "version/id with spaces" });
+  await h.builderlab.request(
+    { revision: h.builderlab.snapshot().revision, target: "apps", path },
+    new AbortController().signal,
+  );
+  expect(h.requests.at(-1).url.href).toBe(
+    `${controlPlane(BUILDERLAB_ORIGIN)}${path}`,
+  );
+  h.builderlab.signOut();
+});
+
+it.each([
+  "/v1/auth/login/exchange",
+  "/v1/auth/me",
+  "/v1/buzz/communities/list",
+  "/v1/buzz/nostr-identities/current",
+  "//evil.example/",
+  "/v3/beekeeper/../auth/me",
+  "/v3/beekeeper/%2e%2e/auth/me",
+  "/v1/auth/hosted-site/native-session",
+  "/v3/builderlab/decisions",
+  "/v3/beekeeper/../../../../v1/auth/me",
+])("refuses proxy path %s before dispatch", async (path) => {
+  const h = account();
+  await signIn(h);
+  const count = h.requests.length;
+  await expect(
+    h.builderlab.request(
+      { revision: h.builderlab.snapshot().revision, path },
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("Unsupported");
+  expect(h.requests).toHaveLength(count);
+  h.builderlab.signOut();
+});
+
+it("ends the shared session at its advertised expiry", async () => {
+  const expires = new Date(Date.now() + 60_000).toISOString();
+  const h = account({
+    "/v1/auth/login/exchange": () =>
+      Response.json({ session_credential: "secret", expires_at: expires }),
+    "/v1/auth/me": () =>
+      Response.json({ subject: "owner", expires_at: expires }),
+  });
+  const login = h.builderlab.login(new AbortController().signal);
+  while (!h.opened()) await new Promise((resolve) => setTimeout(resolve, 5));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    await globalThis.fetch(
+      `${h.opened().searchParams.get("redirect_uri")}?state=${h.opened().searchParams.get("state")}&code=expiry`,
+    );
+    await login;
+    expect(h.builderlab.snapshot().auth).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.builderlab.snapshot()).toMatchObject({
+      auth: null,
+      pending: false,
+    });
+    expect(await h.builderlab.auth()).toBeNull();
+  } finally {
+    vi.useRealTimers();
+    h.builderlab.signOut();
+  }
+});
+
+it("forwards native-validated Decisions through the same server session and community", async () => {
+  const h = account();
+  await signIn(h);
+  await h.builderlab.request(
+    {
+      revision: h.builderlab.snapshot().revision,
+      path: "/v3/builderlab/decisions",
+      method: "POST",
+      community: "buzz.example.com",
+      body: "{}",
+    },
+    new AbortController().signal,
+    true,
+  );
+  expect(h.requests.at(-1).init.headers).toMatchObject({
+    "X-BB-Session-Credential": "secret",
+    "X-Buzz-Community": "buzz.example.com",
+  });
+  await expect(
+    h.builderlab.request(
+      {
+        revision: h.builderlab.snapshot().revision,
+        path: "/v3/builderlab/decisions",
+        method: "POST",
+        community: "x\r\nforged",
+        body: "{}",
+      },
+      new AbortController().signal,
+      true,
+    ),
+  ).rejects.toThrow("Invalid decision community");
+  h.builderlab.signOut();
+});
+
+it("requires the agents OAuth state and reuses their branded callback page", async () => {
+  const h = account();
+  const login = h.builderlab.login(new AbortController().signal);
+  const opened = await h.openedReady;
+  const callback = opened.searchParams.get("redirect_uri");
+  expect(
+    (await globalThis.fetch(`${callback}?state=wrong&code=x`)).status,
+  ).toBe(400);
+  const response = await globalThis.fetch(
+    `${callback}?state=${opened.searchParams.get("state")}&code=x`,
+  );
+  expect(response.status).toBe(200);
+  expect(await response.text()).toContain("Signing you in…");
+  expect(response.headers.get("content-security-policy")).toContain(
+    "script-src 'sha256-",
+  );
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  await login;
+  h.builderlab.signOut();
+});
+
+it.each(["secret\ncredential", "secret credential"])(
+  "refuses unsafe credential bytes before any authenticated request",
+  async (session_credential) => {
+    const h = account({
+      "/v1/auth/login/exchange": () =>
+        Response.json({ session_credential, expires_at: "2030" }),
+    });
+    await expect(signIn(h)).rejects.toThrow("empty credential");
+    expect(h.requests.map((entry) => entry.path)).not.toContain("/v1/auth/me");
+    expect(h.builderlab.snapshot().auth).toBeNull();
+  },
+);
+
+it("settles the sign-in identity binding before dispatching remote-agent operations", async () => {
+  const started = deferred();
+  const release = deferred();
+  let released = false;
+  const h = account({
+    "/v1/buzz/nostr-identities/challenge": async () => {
+      started.resolve();
+      await release.promise;
+      return Response.json({
+        ...challenge,
+        expires_at: "2099-01-01T00:00:00Z",
+      });
+    },
+    "/v3/beekeeper/list-agents": () => {
+      expect(released).toBe(true);
+      return Response.json({ status: 1, agents: [] });
+    },
+  });
+  await signIn(h);
+  await started.promise;
+  const request = h.builderlab.request(
+    {
+      revision: h.builderlab.snapshot().revision,
+      path: "/v3/beekeeper/list-agents",
+      method: "POST",
+      body: "{}",
+    },
+    new AbortController().signal,
+  );
+  released = true;
+  release.resolve();
+  await expect(request).resolves.toMatchObject({ status: 200 });
+  h.builderlab.signOut();
+});
+
+it("announces a new sign-in atomically as pending, without canceling observers", async () => {
+  const h = account();
+  const states = [];
+  const stop = h.builderlab.subscribe((state) => states.push(state));
+  const login = h.builderlab.login(new AbortController().signal);
+  const authorization = await h.openedReady;
+  expect(states).toHaveLength(1);
+  expect(states[0]).toMatchObject({ pending: true, auth: null });
+  await globalThis.fetch(
+    `${authorization.searchParams.get("redirect_uri")}?code=fixture&state=${authorization.searchParams.get("state")}`,
+  );
+  await login;
+  expect(states.at(-1)).toMatchObject({
+    pending: false,
+    auth: { subject: "auth0|owner" },
+  });
+  stop();
+  h.builderlab.signOut();
+});
+
+it.each(["sign-out", "account-switch", "disconnect"])(
+  "preserves a dispatched Apps upload across %s while retaining disconnect cancellation",
+  async (mode) => {
+    const directory = await mkdtemp(
+      join(await realpath(homedir()), ".buzz-upload-test-"),
+    );
+    const file = join(directory, "artifact.tar.gz");
+    await writeFile(file, "fixture archive");
+    const accepted = deferred();
+    const release = deferred();
+    const receipt = { version_id: "version-A", deployment_id: "deployment-A" };
+    const h = account({
+      "/v1/agent/apps/demo/deploy": (init) => {
+        accepted.resolve(init);
+        return {
+          status: 201,
+          async text() {
+            await release.promise;
+            init.signal.throwIfAborted();
+            return JSON.stringify(receipt);
+          },
+        };
+      },
+    });
+    const caller = new AbortController();
+    try {
+      await signIn(h);
+      const pending = h.builderlab
+        .request(
+          {
+            revision: h.builderlab.snapshot().revision,
+            target: "apps",
+            path: "/v1/agent/apps/demo/deploy",
+            method: "POST",
+            file,
+          },
+          caller.signal,
+        )
+        .then(
+          (result) => ({ result }),
+          (error) => ({ error }),
+        );
+      const upstream = await accepted.promise;
+      expect(upstream.headers.Authorization).toBe("BBIdentity secret");
+      if (mode === "disconnect") caller.abort();
+      else {
+        h.builderlab.signOut();
+        if (mode === "account-switch") {
+          const before = h.opened();
+          const login = h.builderlab.login(new AbortController().signal);
+          await vi.waitFor(() => expect(h.opened()).not.toBe(before));
+          await globalThis.fetch(
+            `${h.opened().searchParams.get("redirect_uri")}?state=${h.opened().searchParams.get("state")}&code=replacement`,
+          );
+          await login;
+        }
+      }
+      expect(upstream.signal.aborted).toBe(mode === "disconnect");
+      release.resolve();
+      const outcome = await pending;
+      if (mode === "disconnect") expect(outcome.error?.name).toBe("AbortError");
+      else {
+        expect(outcome.result?.status).toBe(201);
+        expect(JSON.parse(outcome.result.body)).toEqual(receipt);
+      }
+    } finally {
+      release.resolve();
+      h.builderlab.signOut();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it("publishes login failures in the shared revision and clears them on a new attempt or sign-out", async () => {
+  const h = account({
+    "/v1/auth/login/exchange": () => Response.json({}, { status: 503 }),
+  });
+  const states = [];
+  const stop = h.builderlab.subscribe((state) => states.push(state));
+  try {
+    await expect(signIn(h)).rejects.toThrow(
+      "code exchange failed with HTTP 503",
+    );
+    expect(states).toHaveLength(2);
+    expect(states[0]).toMatchObject({ pending: true, auth: null });
+    expect(states[1]).toMatchObject({
+      pending: false,
+      auth: null,
+      error: "Builderlab code exchange failed with HTTP 503",
+    });
+    expect(states[1].revision).not.toBe(states[0].revision);
+    const before = h.opened();
+    const replacement = h.builderlab
+      .login(new AbortController().signal)
+      .catch((error) => error);
+    await vi.waitFor(() => expect(h.opened()).not.toBe(before));
+    expect(h.builderlab.snapshot()).toMatchObject({
+      pending: true,
+      auth: null,
+    });
+    expect(h.builderlab.snapshot()).not.toHaveProperty("error");
+    h.builderlab.signOut();
+    await replacement;
+    expect(h.builderlab.snapshot()).toMatchObject({
+      pending: false,
+      auth: null,
+    });
+    expect(h.builderlab.snapshot()).not.toHaveProperty("error");
+  } finally {
+    stop();
+    h.builderlab.signOut();
+  }
+});
+
+it("redacts the login credential before publishing a shared failure or returning it to HTTP", async () => {
+  const h = account({
+    "/v1/auth/me": () => {
+      throw new Error("Could not check secret");
+    },
+  });
+  try {
+    await expect(signIn(h)).rejects.toThrow("Could not check [redacted]");
+    expect(h.builderlab.snapshot().error).toBe("Could not check [redacted]");
+    expect(JSON.stringify(h.builderlab.snapshot())).not.toContain("secret");
+  } finally {
+    h.builderlab.signOut();
+  }
 });

@@ -1,15 +1,19 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { Context } from "@deepseek-ai/cordis";
 import { createPortal } from "react-dom";
 import { createRef } from "react";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { SettingsCardsService } from "../../features/settings/service";
 import type { AppServices } from "../services";
 import { SearchChoices, type SearchGroup } from "./SearchChoices";
 import { useSearchSettings } from "./SearchSettings";
@@ -51,6 +55,7 @@ function fixture() {
       notifications,
       navigation,
       close,
+      openSection: vi.fn(),
     });
     return (
       <SearchChoices
@@ -62,7 +67,7 @@ function fixture() {
       />
     );
   }
-  return { Palette, open, close, updatePreferences };
+  return { Palette, open, close, updatePreferences, notifications };
 }
 
 it("changes the trailing switch inline but opens and highlights the setting from its row", async () => {
@@ -211,6 +216,7 @@ it.each(["Enter", "shortcut", "title"])(
         plugins,
         navigation: {} as AppServices["navigation"],
         close: vi.fn(),
+        openSection: vi.fn(),
       });
       return (
         <SearchChoices
@@ -312,6 +318,7 @@ it.each(["buzz.moderation", "buzz.relay-staff"])(
         adminAccess,
         navigation: {} as AppServices["navigation"],
         close: vi.fn(),
+        openSection: vi.fn(),
       });
       return (
         <SearchChoices
@@ -382,4 +389,221 @@ it("ignores portaled control clicks while retaining row navigation", () => {
   expect(run).not.toHaveBeenCalled();
   fireEvent.click(screen.getByText("Color mode"));
   expect(run).toHaveBeenCalledOnce();
+});
+
+const noCards: ReturnType<AppServices["settingsCards"]["snapshot"]> = [];
+
+function sections({
+  selected = "primary",
+  cards = {
+    subscribe: () => () => {},
+    snapshot: () => noCards,
+    retainVisibility: () => () => {},
+  } as unknown as AppServices["settingsCards"],
+  plugins,
+  notifications,
+}: {
+  selected?: string | null;
+  cards?: AppServices["settingsCards"];
+  plugins?: AppServices["plugins"];
+  notifications?: AppServices["notifications"];
+} = {}) {
+  const client = {
+    selected,
+    memberships: [{ id: "primary", name: "Primary" }],
+  };
+  const communities = {
+    subscribe: () => () => {},
+    snapshot: () => client,
+  } as unknown as AppServices["communities"];
+  const openSection = vi.fn();
+  function Palette({ query }: { query: string }) {
+    const inlineSettings = useSearchSettings({
+      query,
+      settingsCards: cards,
+      communities,
+      plugins,
+      notifications,
+      navigation: {} as AppServices["navigation"],
+      close: vi.fn(),
+      openSection,
+    });
+    return (
+      <SearchChoices
+        query={query}
+        onQueryChange={() => {}}
+        input={createRef()}
+        groups={[]}
+        inlineSettings={inlineSettings}
+      />
+    );
+  }
+  return { Palette, openSection };
+}
+
+it.each([
+  ["shortcuts", "Shortcuts", "Buzz", "shortcuts"],
+  ["identity", "Identity", "Buzz", "identity"],
+  ["profile", "Profile", "Community", "profile"],
+  ["agent setup", "Agent setup", "Buzz", "agents"],
+  ["software updates", "Software updates", "Buzz", "updates"],
+])(
+  "lists the %s section under Settings and opens it on Enter or click",
+  (query, label, group, id) => {
+    const { Palette, openSection } = sections();
+    render(<Palette query={query} />);
+    const row = within(
+      screen.getByRole("group", { name: "Settings" }),
+    ).getByRole("option");
+    expect(row.textContent).toBe(label + group);
+    const input = screen.getByRole("combobox", { name: "Search Buzz" });
+    expect(input).toHaveAttribute("aria-activedescendant", row.id);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(openSection).toHaveBeenCalledExactlyOnceWith(id);
+    fireEvent.click(row);
+    expect(openSection).toHaveBeenCalledTimes(2);
+    expect(openSection).toHaveBeenLastCalledWith(id);
+  },
+);
+
+it("leads plugin switches with Manage plugins and notification switches with their section", () => {
+  const change = vi.fn();
+  const state = {
+    configuration: {
+      status: "ready",
+      catalog: {
+        plugins: [
+          {
+            manifest: {
+              id: "buzz.profiles",
+              name: "Profiles",
+              description: "Profile cards",
+            },
+            enabled: true,
+          },
+        ],
+      },
+    },
+    activation: {},
+    busy: false,
+  };
+  const plugins = {
+    subscribe: () => () => {},
+    snapshot: () => state,
+    change,
+  } as unknown as AppServices["plugins"];
+  const { notifications } = fixture();
+  const { Palette, openSection } = sections({ plugins, notifications });
+  const rows = (group: string) =>
+    within(screen.getByRole("rowgroup", { name: group }))
+      .getAllByRole("row")
+      .map((row) => row.getAttribute("aria-label"));
+  const view = render(<Palette query="plugins" />);
+  expect(
+    screen
+      .getAllByRole("rowgroup")
+      .map((group) => group.getAttribute("aria-label")),
+  ).toEqual(["Settings", "Plugins"]);
+  expect(rows("Settings")).toEqual(["Manage plugins — Plugins"]);
+  expect(rows("Plugins")[0]).toBe("Other — Profiles");
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "Search Buzz" }), {
+    key: "Enter",
+  });
+  expect(openSection).toHaveBeenCalledExactlyOnceWith("plugins");
+  expect(change).not.toHaveBeenCalled();
+  view.rerender(<Palette query="notifications" />);
+  expect(rows("Settings")).toEqual([
+    "Notifications — Buzz",
+    "Notifications — Sound",
+    "Notifications — Notify while viewing",
+  ]);
+});
+
+it("lists only Personal space and app sections without a selected community", () => {
+  const cards = [
+    { key: "buzz.emoji/custom-emoji", title: "Custom emoji" },
+    { key: "buzz.pairing/mobile", title: "Pair mobile", personal: true },
+  ].map((card) => ({
+    ...card,
+    id: card.key.split("/")[1] ?? "",
+    pluginId: card.key.split("/")[0] ?? "",
+    revision: "one",
+    component: () => null,
+  }));
+  const settingsCards = {
+    subscribe: () => () => {},
+    snapshot: () => cards,
+    retainVisibility: () => () => {},
+  } as unknown as AppServices["settingsCards"];
+  // Plain rows read as the section label followed by its group.
+  const rows = ({ Palette }: ReturnType<typeof sections>, query: string) => {
+    const view = render(<Palette query={query} />);
+    const names = screen
+      .queryAllByRole("option")
+      .map((option) => option.textContent);
+    view.unmount();
+    return names;
+  };
+  const community = sections({ cards: settingsCards });
+  expect(rows(community, "local settings")).toEqual([
+    "Local settingsCommunity",
+  ]);
+  expect(rows(community, "custom emoji")).toEqual(["Custom emojiCommunity"]);
+  expect(rows(community, "leave")).toEqual(["Leave or removeCommunity"]);
+  const personal = sections({ selected: null, cards: settingsCards });
+  expect(rows(personal, "profile")).toEqual(["ProfilePersonal space"]);
+  expect(rows(personal, "pair mobile")).toEqual(["Pair mobilePersonal space"]);
+  expect(rows(personal, "shortcuts")).toEqual(["ShortcutsBuzz"]);
+  for (const query of ["local settings", "custom emoji", "leave"])
+    expect(rows(personal, query)).toEqual([]);
+});
+
+it("lists a gated admin card only once visible, retaining visibility while open", async () => {
+  const root = new Context();
+  root.provide("pluginStatus", {
+    isActive: () => true,
+    subscribe: () => () => {},
+  });
+  const cards = new SettingsCardsService(root);
+  let visible = false;
+  const listeners = new Set<() => void>();
+  const release = vi.fn();
+  const ensure = vi.fn(() => release);
+  const fiber = root
+    .extend({ pluginOwner: { id: "moderation", revision: "one" } })
+    .plugin((ctx) => {
+      ctx.settingsCards.register({
+        id: "membership",
+        title: "Membership",
+        section: "administration",
+        visibility: {
+          snapshot: () => visible,
+          subscribe(listener) {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          ensure,
+        },
+        component: () => null,
+      });
+    });
+  await fiber.await();
+  try {
+    const { Palette } = sections({ cards });
+    const view = render(<Palette query="membership" />);
+    expect(ensure).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("option")).toBeNull();
+    visible = true;
+    act(() => {
+      for (const listener of listeners) listener();
+    });
+    expect(screen.getByRole("option").textContent).toBe(
+      "MembershipCommunity admin",
+    );
+    view.unmount();
+    expect(release).toHaveBeenCalledOnce();
+  } finally {
+    await fiber.dispose();
+    await root.fiber.dispose();
+  }
 });

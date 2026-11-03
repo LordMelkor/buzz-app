@@ -228,9 +228,20 @@ impl DecisionsHost {
                         .as_ref()
                         .filter(|s| !s.trim().is_empty())
                         .ok_or(Failure::MissingCredentials)?;
-                    client
-                        .post(endpoint)
-                        .header("x-bb-session-credential", session.as_str())
+                    let post = client.post(endpoint);
+                    #[cfg(debug_assertions)]
+                    let post = if endpoint.starts_with("http://") {
+                        post.header(
+                            "Origin",
+                            reqwest::Url::parse(endpoint)
+                                .map_err(|_| Failure::ServiceError)?
+                                .origin()
+                                .ascii_serialization(),
+                        )
+                    } else {
+                        post
+                    };
+                    post.header("x-bb-session-credential", session.as_str())
                         .header("x-buzz-community", community.as_deref().unwrap_or_default())
                 }
             };
@@ -540,6 +551,25 @@ fn client() -> Option<&'static reqwest::Client> {
         .as_ref()
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DevelopmentSession {
+    origin: String,
+    revision: String,
+}
+#[cfg(debug_assertions)]
+fn development_endpoint(origin: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(origin).map_err(|_| "Invalid development origin")?;
+    if url.scheme() != "http"
+        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+        || url.port().is_none()
+        || url.origin().ascii_serialization() != origin
+    {
+        return Err("Invalid development origin".into());
+    }
+    Ok(format!("{origin}/api/builderlab/decisions"))
+}
+
 #[tauri::command]
 pub(crate) async fn decide(
     keys: tauri::State<'_, JevHost>,
@@ -547,7 +577,37 @@ pub(crate) async fn decide(
     backend: Backend,
     request: Request,
     session: Option<String>,
+    broker: Option<DevelopmentSession>,
 ) -> Result<Decided, String> {
+    if let Some(broker) = broker {
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (broker.origin, broker.revision);
+            return Err("Development sign-in unavailable".into());
+        }
+        #[cfg(debug_assertions)]
+        {
+            if backend != Backend::Builderlab || session.is_some() || broker.revision.is_empty() {
+                return Err("Invalid development session".into());
+            }
+            let scoped = DecisionsHost {
+                endpoints: Endpoints {
+                    typesafe: host.endpoints.typesafe.clone(),
+                    builderlab: Some(development_endpoint(&broker.origin)?),
+                },
+                slots: host.slots.clone(),
+                timeout: host.timeout,
+            };
+            return Ok(scoped
+                .decide(
+                    &keys,
+                    backend,
+                    Some(Zeroizing::new(broker.revision)),
+                    request,
+                )
+                .await);
+        }
+    }
     let session = session.map(Zeroizing::new);
     Ok(host.decide(&keys, backend, session, request).await)
 }

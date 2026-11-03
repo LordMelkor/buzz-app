@@ -243,5 +243,5 @@ export function useHiddenDms(
     return () => controller.abort();
   }, [hiddenKey, session, dmRosterKey, show, update]);
 
-  return { hiddenIds: new Set(hidden.map((entry) => entry.id)), hide };
+  return { hiddenIds: new Set(hidden.map((entry) => entry.id)), hide, show };
 }

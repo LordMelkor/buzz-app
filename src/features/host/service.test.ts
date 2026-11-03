@@ -617,3 +617,720 @@ it("closes a plugin's MCP servers when the plugin unloads", async () => {
     handle: 6,
   });
 });
+
+const onceContext = { boot: "12345678-1234-4234-8234-123456789abc", page: 1 };
+const onceInput = {
+  url: "https://example.test/submit",
+  method: "POST" as const,
+  body: "{}",
+};
+const callId = "abcdefab-1234-4234-8234-123456789abc";
+const onceReply = { status: 200, headers: {}, body: "accepted" };
+
+async function oncePlugin() {
+  const root = new Context();
+  new HostService(root);
+  let host!: Host;
+  const fiber = root
+    .extend({ pluginOwner: { id: "example.plugin", revision: "abc" } })
+    .plugin({
+      inject: ["host"],
+      apply: (ctx: Context) => {
+        host = ctx.host;
+      },
+    });
+  await fiber;
+  return { root, host, fiber };
+}
+
+it("passes recorded POST identity unchanged, shares context only within its calling fiber and never retries", async () => {
+  const first = await oncePlugin();
+  const second = await oncePlugin();
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "plugin_host_call_context" ? onceContext : onceReply,
+  );
+  try {
+    await expect(
+      first.host.requestOnce?.(onceInput, { callId }),
+    ).resolves.toEqual(onceReply);
+    await first.host.requestOnce?.(onceInput, { callId });
+    await second.host.requestOnce?.(onceInput, { callId });
+    const contexts = vi
+      .mocked(invoke)
+      .mock.calls.filter(([name]) => name === "plugin_host_call_context");
+    const requests = vi
+      .mocked(invoke)
+      .mock.calls.filter(([name]) => name === "plugin_host_request");
+    expect(contexts).toHaveLength(2);
+    const payloads = requests.map(
+      ([, body]) =>
+        body as {
+          request: unknown;
+          once: { activation: string; callId: string };
+        },
+    );
+    expect(payloads[0]?.request).toBe(onceInput);
+    expect(payloads[0]?.once).toEqual({
+      ...onceContext,
+      activation: expect.any(String),
+      callId,
+    });
+    expect(payloads[1]?.once).toEqual(payloads[0]?.once);
+    expect(payloads[2]?.once.activation).not.toBe(payloads[0]?.once.activation);
+    vi.mocked(invoke).mockRejectedValueOnce(
+      "Host call already consumed; outcome unknown",
+    );
+    await expect(
+      first.host.requestOnce?.(onceInput, { callId }),
+    ).rejects.toThrow("already consumed");
+    expect(invoke).toHaveBeenCalledTimes(6);
+  } finally {
+    await first.fiber.dispose();
+    await second.fiber.dispose();
+  }
+});
+
+it.each(["restart", "config update"] as const)(
+  "starts fresh protected authority after a real Cordis %s on the same fiber",
+  async (change) => {
+    const { host, fiber } = await oncePlugin();
+    const uid = fiber.uid;
+    vi.mocked(invoke).mockImplementation(async (command) =>
+      command === "plugin_host_call_context" ? onceContext : onceReply,
+    );
+    try {
+      await expect(host.requestOnce?.(onceInput, { callId })).resolves.toEqual(
+        onceReply,
+      );
+      if (change === "restart") await fiber.restart();
+      else await fiber.update({ revision: "next" });
+      expect(fiber.uid).toBe(uid);
+      const nextId = "abcdefab-1234-4234-8234-123456789abd";
+      await expect(
+        host.requestOnce?.(onceInput, { callId: nextId }),
+      ).resolves.toEqual(onceReply);
+      const requests = protectedInvokes().map(
+        ([, body]) =>
+          body as {
+            once: { activation: string; callId: string };
+          },
+      );
+      expect(requests).toHaveLength(2);
+      expect(requests[1]?.once.callId).toBe(nextId);
+      expect(requests[1]?.once.activation).not.toBe(
+        requests[0]?.once.activation,
+      );
+      expect(
+        vi
+          .mocked(invoke)
+          .mock.calls.filter(([name]) => name === "plugin_host_call_context"),
+      ).toHaveLength(2);
+    } finally {
+      await fiber.dispose();
+    }
+  },
+);
+
+it.each(["context", "reply"] as const)(
+  "does not revive a captured protected lifetime waiting for %s after Cordis restart",
+  async (phase) => {
+    const { host, fiber } = await oncePlugin();
+    let release!: (value: typeof onceContext | typeof onceReply) => void;
+    const held = new Promise<typeof onceContext | typeof onceReply>(
+      (resolve) => {
+        release = resolve;
+      },
+    );
+    let started!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let holding = true;
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "plugin_host_call_context")
+        return holding && phase === "context"
+          ? held
+          : Promise.resolve(onceContext);
+      if (holding && phase === "reply") {
+        started();
+        return held;
+      }
+      return Promise.resolve(onceReply);
+    });
+    const stale = host.requestOnce?.(onceInput, { callId });
+    const refused = expect(stale).rejects.toThrow("inactive");
+    try {
+      if (phase === "reply") await dispatched;
+      await fiber.restart();
+      holding = false;
+      const nextId = "abcdefab-1234-4234-8234-123456789abd";
+      await expect(
+        host.requestOnce?.(onceInput, { callId: nextId }),
+      ).resolves.toEqual(onceReply);
+      release(phase === "context" ? onceContext : onceReply);
+      await refused;
+      // Finishing the old call cannot discard or rebind the new activation.
+      await expect(
+        host.requestOnce?.(onceInput, {
+          callId: "abcdefab-1234-4234-8234-123456789abe",
+        }),
+      ).resolves.toEqual(onceReply);
+      const requests = protectedInvokes().map(
+        ([, body]) =>
+          body as {
+            once: { activation: string; callId: string };
+          },
+      );
+      expect(requests).toHaveLength(phase === "context" ? 2 : 3);
+      const fresh = requests.filter(({ once }) => once.callId !== callId);
+      expect(fresh[1]?.once.activation).toBe(fresh[0]?.once.activation);
+      if (phase === "reply")
+        expect(fresh[0]?.once.activation).not.toBe(
+          requests[0]?.once.activation,
+        );
+      expect(
+        vi
+          .mocked(invoke)
+          .mock.calls.filter(([name]) => name === "plugin_host_call_context"),
+      ).toHaveLength(2);
+    } finally {
+      release(phase === "context" ? onceContext : onceReply);
+      await refused;
+      await fiber.dispose();
+    }
+  },
+);
+
+it.each([
+  undefined,
+  { boot: "not-a-uuid", page: 1 },
+  { ...onceContext, page: -1 },
+  { ...onceContext, page: 1.5 },
+])(
+  "refuses invalid native context %j without dispatching POST",
+  async (context) => {
+    const { host, fiber } = await oncePlugin();
+    vi.mocked(invoke).mockResolvedValue(context);
+    try {
+      await expect(host.requestOnce?.(onceInput, { callId })).rejects.toThrow(
+        "context is unavailable",
+      );
+      expect(invoke).toHaveBeenCalledExactlyOnceWith(
+        "plugin_host_call_context",
+      );
+    } finally {
+      await fiber.dispose();
+    }
+  },
+);
+
+it("fails closed and caches old-native context errors without fallback or authority refresh", async () => {
+  const { host, fiber } = await oncePlugin();
+  vi.mocked(invoke).mockRejectedValue(
+    "Command plugin_host_call_context not found",
+  );
+  try {
+    for (let i = 0; i < 2; i++)
+      await expect(host.requestOnce?.(onceInput, { callId })).rejects.toThrow(
+        "not found",
+      );
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("plugin_host_call_context");
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("does not retry when newer frontend meets a native request command rejecting once", async () => {
+  const { host, fiber } = await oncePlugin();
+  vi.mocked(invoke)
+    .mockResolvedValueOnce(onceContext)
+    .mockRejectedValueOnce("Protected request unsupported");
+  try {
+    await expect(host.requestOnce?.(onceInput, { callId })).rejects.toThrow(
+      "unsupported",
+    );
+    expect(invoke).toHaveBeenCalledTimes(2);
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("refuses non-POST and noncanonical call identities before asking native for authority", async () => {
+  const { host, fiber } = await oncePlugin();
+  try {
+    for (const request of [
+      { ...onceInput, method: "GET" as const },
+      { url: onceInput.url },
+    ])
+      await expect(host.requestOnce?.(request, { callId })).rejects.toThrow(
+        "require POST",
+      );
+    for (const id of [callId.toUpperCase(), callId.replaceAll("-", ""), ""])
+      await expect(
+        host.requestOnce?.(onceInput, { callId: id }),
+      ).rejects.toThrow("canonical UUID");
+    vi.mocked(isTauri).mockReturnValue(false);
+    await expect(host.requestOnce?.(onceInput, { callId })).rejects.toThrow(
+      "desktop plugin",
+    );
+    expect(invoke).not.toHaveBeenCalled();
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("blocks a captured protected call immediately when real Cordis disposal begins", async () => {
+  const { host, fiber } = await oncePlugin();
+  const disposing = fiber.dispose();
+  await expect(host.requestOnce?.(onceInput, { callId })).rejects.toThrow(
+    "inactive",
+  );
+  await disposing;
+  expect(invoke).not.toHaveBeenCalled();
+});
+
+it("does not dispatch after context resolves during Cordis disposal", async () => {
+  const { host, fiber } = await oncePlugin();
+  let release!: (value: typeof onceContext) => void;
+  vi.mocked(invoke).mockReturnValue(
+    new Promise((resolve) => {
+      release = resolve;
+    }),
+  );
+  const request = host.requestOnce?.(onceInput, { callId });
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("plugin_host_call_context");
+  const disposed = fiber.dispose();
+  release(onceContext);
+  await expect(request).rejects.toThrow("inactive");
+  await disposed;
+  expect(invoke).toHaveBeenCalledTimes(1);
+});
+
+it("suppresses a queued successful response when Cordis disposes before its continuation", async () => {
+  const { host, fiber } = await oncePlugin();
+  let release!: (value: typeof onceReply) => void;
+  let started!: () => void;
+  const dispatch = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  vi.mocked(invoke).mockImplementation((command) =>
+    command === "plugin_host_call_context"
+      ? Promise.resolve(onceContext)
+      : new Promise((resolve) => {
+          release = resolve;
+          started();
+        }),
+  );
+  const request = host.requestOnce?.(onceInput, { callId });
+  await dispatch;
+  release(onceReply);
+  const disposed = fiber.dispose();
+  await expect(request).rejects.toThrow("inactive");
+  await disposed;
+  expect(invoke).toHaveBeenCalledTimes(2);
+});
+
+function byteFrame(
+  body = new Uint8Array([0, 159, 255]),
+  metadata: unknown = { status: 418, headers: { "x-test": "bytes" } },
+) {
+  const meta = new TextEncoder().encode(JSON.stringify(metadata));
+  const frame = new ArrayBuffer(4 + meta.length + body.length);
+  new DataView(frame).setUint32(0, meta.length, false);
+  new Uint8Array(frame, 4, meta.length).set(meta);
+  new Uint8Array(frame, 4 + meta.length).set(body);
+  return frame;
+}
+const byteInput = { url: "https://example.test/bytes", maxBytes: 3 };
+const byteHash = "a".repeat(64);
+const byteSaved = {
+  path: "/private/plugin-artifacts/file",
+  size: 3,
+  sha256: byteHash,
+  expiresAt: 2_000_000_000_000,
+};
+
+it("returns a non-text body view without a clone, accepts empty bodies and never obtains POST context", async () => {
+  const { fiber, host } = await oncePlugin();
+  const frame = byteFrame();
+  vi.mocked(invoke)
+    .mockResolvedValueOnce(frame)
+    .mockResolvedValueOnce(byteFrame(new Uint8Array()));
+  try {
+    const result = await host.requestBytes?.(byteInput);
+    expect(result).toMatchObject({
+      status: 418,
+      headers: { "x-test": "bytes" },
+    });
+    expect(result?.body).toEqual(new Uint8Array([0, 159, 255]));
+    expect(result?.body.buffer).toBe(frame);
+    expect((await host.requestBytes?.(byteInput))?.body.length).toBe(0);
+    expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toEqual([
+      "plugin_host_request_bytes",
+      "plugin_host_request_bytes",
+    ]);
+    expect(vi.mocked(invoke).mock.calls[0]?.[1]).toEqual({
+      id: "example.plugin",
+      revision: "abc",
+      request: byteInput,
+    });
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("refuses fallback arrays and corrupted frames before returning any bytes", async () => {
+  const { fiber, host } = await oncePlugin();
+  const wrongLength = byteFrame();
+  new DataView(wrongLength).setUint32(0, wrongLength.byteLength, false);
+  const invalidUtf8 = new Uint8Array([0, 0, 0, 1, 255]).buffer;
+  const inputs = [
+    [0, 0, 0, 1, 0],
+    new Uint8Array([1]),
+    new ArrayBuffer(3),
+    wrongLength,
+    invalidUtf8,
+    byteFrame(new Uint8Array(4)),
+    byteFrame(new Uint8Array(), null),
+    byteFrame(new Uint8Array(), { status: 99, headers: {} }),
+    byteFrame(new Uint8Array(), { status: 600, headers: {} }),
+    byteFrame(new Uint8Array(), { status: 200.5, headers: {} }),
+    byteFrame(new Uint8Array(), { status: 200, headers: [] }),
+    byteFrame(new Uint8Array(), { status: 200, headers: { x: 1 } }),
+    byteFrame(new Uint8Array(), {
+      status: 200,
+      headers: { "set-cookie": "a=b" },
+    }),
+    byteFrame(new Uint8Array(), { status: 200, headers: { x: "a\r\nb" } }),
+    byteFrame(new Uint8Array(), { status: 200, headers: { "bad name": "x" } }),
+    byteFrame(new Uint8Array(), {
+      status: 200,
+      headers: Object.fromEntries(
+        Array.from({ length: 65 }, (_, i) => [`h${i}`, "x"]),
+      ),
+    }),
+    byteFrame(new Uint8Array(), {
+      status: 200,
+      headers: { x: "é".repeat(8192) },
+    }),
+    byteFrame(new Uint8Array(), {
+      status: 200,
+      headers: { x: "x".repeat(21 * 1024) },
+    }),
+  ];
+  try {
+    for (const input of inputs) {
+      vi.mocked(invoke).mockResolvedValueOnce(input);
+      await expect(host.requestBytes?.(byteInput)).rejects.toThrow();
+    }
+    expect(invoke).toHaveBeenCalledTimes(inputs.length);
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("validates byte limits before IPC and uses only raw top-level save bytes with bounded metadata", async () => {
+  const { fiber, host } = await oncePlugin();
+  const bytes = new Uint8Array([0, 159, 255]);
+  try {
+    for (const maxBytes of [0, -1, 1.5, Number.NaN, 16 * 1024 * 1024 + 1])
+      await expect(
+        host.requestBytes?.({ ...byteInput, maxBytes }),
+      ).rejects.toThrow("limits");
+    for (const timeoutMs of [0, 1.5, 30001])
+      await expect(
+        host.requestBytes?.({ ...byteInput, timeoutMs }),
+      ).rejects.toThrow("limits");
+    for (const data of [new Uint8Array(), new Uint8Array(16 * 1024 * 1024 + 1)])
+      await expect(
+        host.saveBytes?.(data, { sha256: byteHash }),
+      ).rejects.toThrow("Invalid");
+    for (const sha256 of ["A".repeat(64), "a".repeat(63), "g".repeat(64)])
+      await expect(host.saveBytes?.(bytes, { sha256 })).rejects.toThrow(
+        "Invalid",
+      );
+    expect(invoke).not.toHaveBeenCalled();
+    vi.mocked(invoke).mockResolvedValueOnce(byteSaved);
+    await expect(
+      host.saveBytes?.(bytes, { sha256: byteHash }),
+    ).resolves.toEqual(byteSaved);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(
+      "plugin_host_save_bytes",
+      bytes,
+      {
+        headers: {
+          "x-buzz-plugin-id": "example.plugin",
+          "x-buzz-plugin-revision": "abc",
+          "x-buzz-sha256": byteHash,
+        },
+      },
+    );
+    expect(vi.mocked(invoke).mock.calls[0]?.[1]).toBe(bytes);
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("rejects malformed save results and never retries unknown saves", async () => {
+  const { fiber, host } = await oncePlugin();
+  try {
+    for (const result of [
+      null,
+      { ...byteSaved, path: "" },
+      { ...byteSaved, size: 2 },
+      { ...byteSaved, sha256: "b".repeat(64) },
+      { ...byteSaved, expiresAt: 1.5 },
+    ]) {
+      vi.mocked(invoke).mockResolvedValueOnce(result);
+      await expect(
+        host.saveBytes?.(new Uint8Array(3), { sha256: byteHash }),
+      ).rejects.toThrow("outcome unknown");
+    }
+    vi.mocked(invoke).mockRejectedValueOnce("reply lost");
+    await expect(
+      host.saveBytes?.(new Uint8Array(3), { sha256: byteHash }),
+    ).rejects.toThrow("reply lost");
+    expect(invoke).toHaveBeenCalledTimes(6);
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it.each(["get", "save"] as const)(
+  "suppresses queued %s success and refuses captured calls during synchronous Cordis disposal",
+  async (kind) => {
+    const { host, fiber } = await oncePlugin();
+    let finish!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const run = () =>
+      kind === "get"
+        ? host.requestBytes?.(byteInput)
+        : host.saveBytes?.(new Uint8Array(3), { sha256: byteHash });
+    const pending = run();
+    finish(kind === "get" ? byteFrame() : byteSaved);
+    const disposing = fiber.dispose();
+    await expect(pending).rejects.toThrow("inactive");
+    await expect(run()).rejects.toThrow("inactive");
+    expect(invoke).toHaveBeenCalledTimes(1);
+    await disposing;
+    await fiber.dispose();
+  },
+);
+
+function deferredOnceContext() {
+  let resolve!: (value: typeof onceContext) => void;
+  let reject!: (reason: Error) => void;
+  const context = new Promise<typeof onceContext>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  vi.mocked(invoke).mockImplementation((command) =>
+    command === "plugin_host_call_context"
+      ? context
+      : Promise.resolve(onceReply),
+  );
+  return { resolve, reject };
+}
+const protectedInvokes = () =>
+  vi
+    .mocked(invoke)
+    .mock.calls.filter(([name]) => name === "plugin_host_request");
+
+it("final eligibility checks once after deferred context before one exact POST", async () => {
+  const { host, fiber } = await oncePlugin();
+  const held = deferredOnceContext();
+  const isEligible = vi.fn(() => true);
+  try {
+    const options = { callId, isEligible };
+    const request = host.requestOnce?.(onceInput, options);
+    expect(isEligible).not.toHaveBeenCalled();
+    expect(protectedInvokes()).toHaveLength(0);
+    held.resolve(onceContext);
+    await expect(request).resolves.toEqual(onceReply);
+    expect(isEligible).toHaveBeenCalledExactlyOnceWith();
+    expect(protectedInvokes()).toEqual([
+      [
+        "plugin_host_request",
+        {
+          id: "example.plugin",
+          revision: "abc",
+          request: onceInput,
+          once: { ...onceContext, activation: expect.any(String), callId },
+        },
+      ],
+    ]);
+  } finally {
+    held.resolve(onceContext);
+    await fiber.dispose();
+  }
+});
+
+it("final eligibility sees true becoming false while native context is pending", async () => {
+  const { host, fiber } = await oncePlugin();
+  const held = deferredOnceContext();
+  let eligible = true;
+  const isEligible = vi.fn(() => eligible);
+  const options = { callId, isEligible };
+  const request = host.requestOnce?.(onceInput, options);
+  const refused = expect(request).rejects.toThrow("eligibility");
+  try {
+    expect(isEligible).not.toHaveBeenCalled();
+    eligible = false;
+    held.resolve(onceContext);
+    await refused;
+    expect(isEligible).toHaveBeenCalledTimes(1);
+    expect(protectedInvokes()).toHaveLength(0);
+  } finally {
+    held.resolve(onceContext);
+    await fiber.dispose();
+  }
+});
+
+it("final eligibility rejects elapsed monotonic deadline before its timer task executes", async () => {
+  const { host, fiber } = await oncePlugin();
+  const held = deferredOnceContext();
+  vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+  let timerRan = false;
+  const deadline = performance.now() + 300_000;
+  const timer = setTimeout(() => {
+    timerRan = true;
+  }, 300_000);
+  const options = { callId, isEligible: () => performance.now() < deadline };
+  const request = host.requestOnce?.(onceInput, options);
+  const refused = expect(request).rejects.toThrow("eligibility");
+  try {
+    // Move the clock, not the task queue: expiry must not depend on the timer.
+    vi.spyOn(performance, "now").mockReturnValue(deadline + 1);
+    held.resolve(onceContext);
+    await refused;
+    expect(timerRan).toBe(false);
+    expect(protectedInvokes()).toHaveLength(0);
+  } finally {
+    held.resolve(onceContext);
+    clearTimeout(timer);
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    await fiber.dispose();
+  }
+});
+
+it.each([
+  "false",
+  "undefined",
+  "number",
+  "string",
+  "object",
+  "throw",
+  "promise",
+  "rejected promise",
+  "thenable",
+])(
+  "final eligibility rejects %s without dispatch or unhandled async rejection",
+  async (kind) => {
+    const { host, fiber } = await oncePlugin();
+    const held = deferredOnceContext();
+    const isEligible = vi.fn(() => {
+      switch (kind) {
+        case "false":
+          return false;
+        case "number":
+          return 1;
+        case "string":
+          return "true";
+        case "object":
+          return {};
+        case "throw":
+          throw new Error("caller failure");
+        case "promise":
+          return Promise.resolve(true);
+        case "rejected promise":
+          return Promise.reject(new Error("async caller failure"));
+        case "thenable":
+          // biome-ignore lint/suspicious/noThenProperty: Deliberately invalid async callback result must fail closed.
+          return { then: (resolve: (value: boolean) => void) => resolve(true) };
+        default:
+          return undefined;
+      }
+    });
+    const options = { callId, isEligible: isEligible as () => boolean };
+    const request = host.requestOnce?.(onceInput, options);
+    const refused = expect(request).rejects.toThrow("eligibility");
+    try {
+      held.resolve(onceContext);
+      await refused;
+      expect(isEligible).toHaveBeenCalledTimes(1);
+      expect(protectedInvokes()).toHaveLength(0);
+    } finally {
+      held.resolve(onceContext);
+      await fiber.dispose();
+    }
+  },
+);
+
+it("final eligibility cannot dispose the calling Cordis fiber and still dispatch", async () => {
+  const { host, fiber } = await oncePlugin();
+  const held = deferredOnceContext();
+  let disposing: Promise<void> | undefined;
+  const options = {
+    callId,
+    isEligible: () => {
+      disposing = fiber.dispose();
+      return true;
+    },
+  };
+  const request = host.requestOnce?.(onceInput, options);
+  const refused = expect(request).rejects.toThrow("inactive");
+  try {
+    held.resolve(onceContext);
+    await refused;
+    expect(protectedInvokes()).toHaveLength(0);
+  } finally {
+    held.resolve(onceContext);
+    await disposing;
+    await fiber.dispose();
+  }
+});
+
+it.each(["reject", "invalid"])(
+  "final eligibility never runs after %s context",
+  async (kind) => {
+    const { host, fiber } = await oncePlugin();
+    const held = deferredOnceContext();
+    const isEligible = vi.fn(() => true);
+    const options = { callId, isEligible };
+    const request = host.requestOnce?.(onceInput, options);
+    const refused = expect(request).rejects.toThrow(
+      kind === "reject" ? "context rejected" : "context is unavailable",
+    );
+    try {
+      if (kind === "reject") held.reject(new Error("context rejected"));
+      else held.resolve({ ...onceContext, page: -1 });
+      await refused;
+      expect(isEligible).not.toHaveBeenCalled();
+      expect(protectedInvokes()).toHaveLength(0);
+    } finally {
+      held.resolve(onceContext);
+      await fiber.dispose();
+    }
+  },
+);
+
+it("final eligibility omission preserves deferred protected dispatch without serializing a predicate", async () => {
+  const { host, fiber } = await oncePlugin();
+  const held = deferredOnceContext();
+  try {
+    const request = host.requestOnce?.(onceInput, { callId });
+    held.resolve(onceContext);
+    await expect(request).resolves.toEqual(onceReply);
+    expect(protectedInvokes()).toHaveLength(1);
+    expect(protectedInvokes()[0]?.[1]).not.toHaveProperty("isEligible");
+  } finally {
+    held.resolve(onceContext);
+    await fiber.dispose();
+  }
+});

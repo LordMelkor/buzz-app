@@ -2539,8 +2539,13 @@ export function createUnread({
     },
     accept,
     purge,
-    reconnect() {
-      if (requested) void reads.refresh().then(() => repair("background"));
+    /** `covered`: the membership route's replay was continuous, so read state
+     * resumes from it instead of reading its snapshot again. */
+    reconnect(covered = false) {
+      if (requested)
+        void (covered ? reads.resume() : reads.refresh()).then(() =>
+          repair("background"),
+        );
     },
     stale() {
       epoch++;

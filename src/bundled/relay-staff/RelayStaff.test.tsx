@@ -30,7 +30,8 @@ import { foldProfiles } from "../../features/relay/profiles";
 import { StrictMode, useState, useSyncExternalStore } from "react";
 import { createSession, SessionProvider, useRead, useWrite } from "./session";
 import { createStaff, type Staff, type StaffTarget } from "./staff";
-import { SEARCH_DEBOUNCE_MS, useRetry } from "./ui";
+import { useRetry } from "./ui";
+import { SEARCH_DEBOUNCE_MS } from "../../shared/search-debounce";
 
 const signer = "a".repeat(64);
 const member = "b".repeat(64);
@@ -947,6 +948,32 @@ it("directory search waits for typing to pause before sending", async () => {
     expect(sent("listCommunities").slice(before)).toEqual([
       { route: "listCommunities", q: "tea" },
     ]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("directory search sends nothing for one character and lists every community", async () => {
+  mount();
+  fireEvent.click(await screen.findByRole("tab", { name: "Communities" }));
+  await screen.findByRole("button", { name: /team\.example\.com/ });
+  const search = screen.getByLabelText("Search communities");
+  vi.useFakeTimers();
+  try {
+    const before = sent("listCommunities").length;
+    fireEvent.change(search, { target: { value: "t" } });
+    await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(sent("listCommunities")).toHaveLength(before);
+    fireEvent.change(search, { target: { value: "te" } });
+    await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(sent("listCommunities").slice(before)).toEqual([
+      { route: "listCommunities", q: "te" },
+    ]);
+    fireEvent.change(search, { target: { value: "t" } });
+    await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    expect(sent("listCommunities").at(-1)).toEqual({
+      route: "listCommunities",
+    });
   } finally {
     vi.useRealTimers();
   }
@@ -2324,7 +2351,7 @@ it("member search fetches every unknown result profile in one batch", async () =
   );
   fireEvent.click(screen.getByRole("tab", { name: "Actions" }));
   fireEvent.change(screen.getByLabelText("Member"), {
-    target: { value: "x" },
+    target: { value: "xy" },
   });
   await screen.findByRole("listbox");
   await waitFor(() =>
@@ -2789,6 +2816,30 @@ it("member search waits for typing to pause before sending one request", async (
   ]);
 });
 
+it("member search sends nothing for one character", async () => {
+  mount();
+  await reopenActions();
+  const input = await screen.findByLabelText("Member");
+  vi.useFakeTimers();
+  try {
+    fireEvent.change(input, { target: { value: "B" } });
+    await act(async () => {
+      vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+    });
+    expect(sent("searchMembers")).toHaveLength(0);
+    fireEvent.change(input, { target: { value: "Bo" } });
+    await act(async () => {
+      vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+  await screen.findByRole("option", { name: /Bob/ });
+  expect(sent("searchMembers")).toEqual([
+    { route: "searchMembers", communityHost: "team.example.com", q: "Bo" },
+  ]);
+});
+
 it("Load more appends the next restrictions page, and a late page after a restart is dropped", async () => {
   let late: ((outcome: StaffOutcome<unknown>) => void) | null = null;
   routes.listRestrictions = (request) =>
@@ -2846,7 +2897,7 @@ it("Load more appends the next directory page, and a late page after a new searc
       return new Promise((resolve) => {
         late = resolve;
       });
-    if (q === "x")
+    if (q === "xe")
       return ok({ items: [community("x.example.com")], nextCursor: null });
     return ok({ items: [community("one.example.com")], nextCursor: "p2" });
   };
@@ -2872,7 +2923,7 @@ it("Load more appends the next directory page, and a late page after a new searc
   fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
   await waitFor(() => expect(late).toBeTypeOf("function"));
   fireEvent.change(screen.getByLabelText("Search communities"), {
-    target: { value: "x" },
+    target: { value: "xe" },
   });
   await screen.findByRole("button", { name: "x.example.com" });
   await act(async () =>

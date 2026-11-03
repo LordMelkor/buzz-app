@@ -254,7 +254,12 @@ avatar. Search, sidebar and history controls use unfilled ghost icon buttons wit
 Their hover fills remain translucent over the colored backdrop.
 Pressed fills are slightly stronger; icons keep full opacity. Plugin launchers
 use the shared glass style.
-Bestie is available in the Messages sidebar when its plugin is enabled.
+Bestie is available in the Messages sidebar when its plugin is enabled. An
+account-saved Bestie decorates that row with the agent's identity and promotes
+its exact one-to-one DM there. Search Buzz shows the same agent identity with
+**Bestie** as supporting text and matches either name. See
+[`solo/README.md`](solo/README.md) and the bundled Bestie README for selection,
+DM promotion and hosted-setup fallback ownership.
 `ProfileButton.tsx` uses the selected community's profile when connected and
 local defaults in Personal space. Its anchored account menu groups profile and
 status controls above Appearance, Plugins and Settings. The avatar inside the

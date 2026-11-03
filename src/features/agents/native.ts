@@ -76,6 +76,13 @@ export type PortableAgents = Readonly<{
   /** A store that could not be read; the others are still listed. */
   warnings: readonly string[];
 }>;
+const UNCONFIRMED_EVENT =
+  /^Agent event ([0-9a-f]{64}) unconfirmed; it may or may not have been accepted$/;
+export function unconfirmedAgentEvent(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return UNCONFIRMED_EVENT.exec(message)?.[1];
+}
+
 export type AgentEventTemplate = Readonly<{
   kind: number;
   content: string;

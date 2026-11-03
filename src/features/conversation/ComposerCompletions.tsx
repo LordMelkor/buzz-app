@@ -32,8 +32,47 @@ import { ContributionBoundary, contributionKey } from "./ContributionBoundary";
 import { completionResult, matchCompletion } from "./completion";
 import type { CompletionEditor } from "./useCompletionEditor";
 import styles from "./Completions.module.css";
+import { Tooltip } from "../../shared/design-system/ui/Tooltip";
 
 const RETRY = Symbol("retry-completion");
+
+/** The editor retains focus, so keyboard selection must open its own hint. */
+function EmojiCompletionName({
+  label,
+  selected,
+  keyboardSelected,
+}: {
+  label: string;
+  selected: boolean;
+  keyboardSelected: boolean;
+}) {
+  const name = useRef<HTMLSpanElement>(null);
+  const [truncated, setTruncated] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Text can change overflow without resizing the label's box.
+  useLayoutEffect(() => {
+    const element = name.current;
+    if (!element) return;
+    const measure = () =>
+      setTruncated(element.scrollWidth > element.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [label]);
+  return (
+    <Tooltip
+      content={label}
+      open={truncated && selected && (keyboardSelected || hovered)}
+      onOpenChange={setHovered}
+      follow={keyboardSelected ? "trigger" : "pointer"}
+    >
+      <span ref={name} className={styles.name}>
+        {label}
+      </span>
+    </Tooltip>
+  );
+}
 
 /** What the popup shows, owned by the host across the per-query remount of
  * `OwnedCompletion`. A keystroke that continues an open query (same provider,
@@ -139,6 +178,22 @@ export function ComposerCompletions({
     registry.snapshot,
   );
   const [display] = useState(createDisplay);
+  // Query owners remount on typing. Keep the last physical position with the
+  // host, recording after row handlers have compared the previous position.
+  const pointerPosition =
+    useRef<Pick<PointerEvent, "clientX" | "clientY">>(undefined);
+  useEffect(() => {
+    const document = input.current?.ownerDocument;
+    if (!document) return;
+    const record = (event: PointerEvent) => {
+      pointerPosition.current = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+      };
+    };
+    document.addEventListener("pointermove", record);
+    return () => document.removeEventListener("pointermove", record);
+  }, [input]);
   const observation = editor.observation;
   // Stale chip ranges cannot classify this caret.
   const match =
@@ -190,6 +245,7 @@ export function ComposerCompletions({
         editor={editor}
         input={input}
         replace={replace}
+        pointerPosition={pointerPosition}
       />
     </ContributionBoundary>
   );
@@ -203,6 +259,7 @@ function OwnedCompletion({
   editor,
   input,
   replace,
+  pointerPosition,
   ...context
 }: CompletionContext & {
   provider: Contribution<ComposerCompletion>;
@@ -212,6 +269,9 @@ function OwnedCompletion({
   observation: ComposerObservation;
   editor: CompletionEditor;
   input: RefObject<ComposerInputElement | null>;
+  pointerPosition: RefObject<
+    Pick<PointerEvent, "clientX" | "clientY"> | undefined
+  >;
   replace(
     edit: CompletionEdit,
     query: CompletionQuery,
@@ -245,6 +305,29 @@ function OwnedCompletion({
   const latest = useRef<CompletionResult | undefined>(undefined);
   // Only user navigation pins an ID; automatic selection follows the first result.
   const [selected, setSelected] = useState<string | typeof RETRY>();
+  const [keyboardSelection, setKeyboardSelection] = useState<string>();
+  const pointerMoved = useCallback(
+    (event: Pick<PointerEvent, "clientX" | "clientY">) => {
+      const previous = pointerPosition.current;
+      return (
+        !previous ||
+        previous.clientX !== event.clientX ||
+        previous.clientY !== event.clientY
+      );
+    },
+    [pointerPosition],
+  );
+  useEffect(() => {
+    const document = input.current?.ownerDocument;
+    if (!compact || !document) return;
+    const pointer = (event: PointerEvent) => {
+      if (!pointerMoved(event)) return;
+      setKeyboardSelection(undefined);
+    };
+    // Capture before the host's bubbling listener records this event.
+    document.addEventListener("pointermove", pointer, true);
+    return () => document.removeEventListener("pointermove", pointer, true);
+  }, [compact, input, pointerMoved]);
   const revealSelection = useRef(false);
   const live = useRef(false);
   const current = useRef({ editor, replace });
@@ -413,6 +496,7 @@ function OwnedCompletion({
         const next =
           (selectedIndex + (event.key === "ArrowDown" ? 1 : count - 1)) % count;
         revealSelection.current = true;
+        if (compact) setKeyboardSelection(items[next]?.id);
         setSelected(next === items.length ? RETRY : items[next]?.id);
         return true;
       }
@@ -488,8 +572,12 @@ function OwnedCompletion({
                   }}
                   onPointerMove={
                     compact || named
-                      ? () => {
+                      ? (event) => {
+                          // WebKit can report a pointermove when keyboard
+                          // scrolling moves another row under a resting pointer.
+                          if (compact && !pointerMoved(event)) return;
                           revealSelection.current = false;
+                          setKeyboardSelection(undefined);
                           setSelected(item.id);
                         }
                       : undefined
@@ -503,7 +591,13 @@ function OwnedCompletion({
                     </span>
                   )}
                   <span className={styles.label} data-completion-label>
-                    {named ? (
+                    {compact ? (
+                      <EmojiCompletionName
+                        label={item.label}
+                        selected={i === selectedIndex}
+                        keyboardSelected={keyboardSelection === item.id}
+                      />
+                    ) : named ? (
                       <span className={styles.name}>{item.label}</span>
                     ) : (
                       item.label
@@ -541,7 +635,8 @@ function OwnedCompletion({
                   }}
                   onPointerMove={
                     compact || named
-                      ? () => {
+                      ? (event) => {
+                          if (compact && !pointerMoved(event)) return;
                           revealSelection.current = false;
                           setSelected(RETRY);
                         }

@@ -84,10 +84,10 @@ use relay::{
     relay_agent_log_proof, relay_agent_memories_read, relay_agent_observer, relay_agent_resolve,
     relay_channel_publish, relay_channel_sign, relay_decode_read_state, relay_decode_reminders,
     relay_decode_sidebar, relay_direct_message, relay_git_authorization, relay_http,
-    relay_kit_decode, relay_kit_prepare, relay_kit_sign, relay_project_git,
+    relay_http_cancel, relay_kit_decode, relay_kit_prepare, relay_kit_sign, relay_project_git,
     relay_project_git_cancel, relay_publish_read_state, relay_sign, relay_sign_read_state,
     relay_sign_reminder, relay_sign_sidebar, relay_upload, relay_upload_begin, relay_upload_cancel,
-    relay_upload_chunk, relay_workflow_runs,
+    relay_upload_chunk, relay_verify_signatures, relay_workflow_runs,
 };
 use relay::{huddle_close, huddle_open, huddle_pcm, huddle_touch, Huddles};
 mod terminal;
@@ -103,14 +103,17 @@ use buzzodz_plugins::{
 use deep_links::{deep_link_take, deep_link_watch, DeepLinks};
 use dock::{dock_permission, unread_indicator_set};
 use host_command::plugin_host_run_command;
-use host_files::{plugin_host_read_file, plugin_host_resolve_directory};
+use host_files::{plugin_host_read_file, plugin_host_resolve_directory, plugin_host_save_bytes};
 use host_mcp::{
     plugin_host_mcp_close, plugin_host_mcp_reply, plugin_host_mcp_serve, HostMcpServers,
 };
 use host_process::{
     plugin_host_process_kill, plugin_host_process_spawn, plugin_host_process_write, HostProcesses,
 };
-use host_request::{plugin_host_request, plugin_host_upload};
+use host_request::{
+    plugin_host_call_context, plugin_host_request, plugin_host_request_bytes, plugin_host_upload,
+    HostCalls,
+};
 use notifications::{notification_show, Notifications};
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
@@ -652,6 +655,8 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         relay_sign_read_state,
         relay_publish_read_state,
         relay_http,
+        relay_http_cancel,
+        relay_verify_signatures,
         relay_workflow_runs,
         relay_admin::relay_admin_discover,
         relay_admin::relay_admin_request,
@@ -701,7 +706,10 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         plugin_module,
         plugin_recover,
         plugin_host_run_command,
+        plugin_host_call_context,
         plugin_host_request,
+        plugin_host_request_bytes,
+        plugin_host_save_bytes,
         plugin_host_upload,
         plugin_host_process_spawn,
         plugin_host_process_write,
@@ -1019,6 +1027,7 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("buzz-media", relay::media_protocol)
         .manage(Imports::default())
         .manage(Terminals::default())
+        .manage(HostCalls::default())
         .manage(HostProcesses::default())
         .manage(HostMcpServers::default())
         .manage(OAuthCallbackHost::default())
@@ -1057,6 +1066,7 @@ pub fn run() {
                 eprintln!("OAuth callback cleanup failed: {error}");
             }
             if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                webview.state::<HostCalls>().page_load();
                 webview.state::<pairing::Pairing>().cancel_all();
                 webview.state::<NsecBackupHost>().document_load();
                 webview.state::<relay::Spools>().cancel_all(&webview.state::<relay::Uploads>());

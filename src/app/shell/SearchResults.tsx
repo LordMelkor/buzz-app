@@ -14,7 +14,10 @@ import {
 import type { ChannelSummary, Profile } from "../../features/relay/contracts";
 import type { EventData } from "../../features/relay/events";
 import type { RelaySession } from "../../features/relay/session";
-import { useChannelList } from "../../features/relay/react";
+import {
+  useChannelList,
+  useProfileGeneration,
+} from "../../features/relay/react";
 import { useSavedHiddenDmIds } from "../../bundled/channels/useHiddenDms";
 import { useAgentChoices } from "../../features/agents/use-choices";
 import { canMessageAgent } from "../../features/agents/choices";
@@ -51,6 +54,11 @@ import {
 } from "../../features/search/usage";
 import { usePublicChannelSearch } from "../../features/channels/usePublicChannelSearch";
 import { type SearchSort, useSearchMessages } from "./useSearchMessages";
+import {
+  MESSAGE_SEARCH_MIN_CHARS,
+  searchDebounce,
+  searchable,
+} from "../../shared/search-debounce";
 import { matchPerson } from "../../features/search/person-match";
 import {
   personKey,
@@ -352,7 +360,7 @@ export function SearchResults({
   useEffect(() => {
     if (!showAuthorPicker) return;
     const controller = new AbortController();
-    const timer = setTimeout(() => {
+    const cancel = searchDebounce(() => {
       void (async () => {
         const members = effectiveChannelId
           ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
@@ -367,7 +375,7 @@ export function SearchResults({
         }
         let remote: readonly EventData[] = [];
         let lookupFailed = false;
-        if (authorNeedle) {
+        if (searchable(authorNeedle)) {
           try {
             remote = await session.searchProfiles(authorNeedle, {
               limit: 40,
@@ -384,9 +392,9 @@ export function SearchResults({
         if (!controller.signal.aborted)
           setAuthorSuggestions({ query, remote: [], lookupFailed: true });
       });
-    }, 180);
+    });
     return () => {
-      clearTimeout(timer);
+      cancel();
       controller.abort();
     };
   }, [session, effectiveChannelId, query, authorNeedle, showAuthorPicker]);
@@ -512,17 +520,22 @@ export function SearchResults({
         message.authorId,
         ...(message.workflowOwnerId ? [message.workflowOwnerId] : []),
       ]),
+      ...personDirectory.people.flatMap((person) =>
+        person.ownerPubkey ? [person.ownerPubkey] : [],
+      ),
     ]),
   ]
     .sort()
     .slice(0, 1024)
     .join(":");
+  const profileGeneration = useProfileGeneration(session.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (profileKey)
       void session.profiles
         .ensure(profileKey.split(":"), "background")
         .catch(() => {});
-  }, [session, profileKey]);
+  }, [session, profileKey, profileGeneration]);
   const needle = parsed.text.toLowerCase().replace(/^#/, "");
   // Read once per opening, so usage recorded while it is open cannot reorder it.
   const usage = useMemo(
@@ -604,6 +617,7 @@ export function SearchResults({
         pubkey: person.pubkey,
         name: person.name,
         ...(person.isAgent ? { isAgent: true } : {}),
+        ...(person.ownerPubkey ? { ownerPubkey: person.ownerPubkey } : {}),
       }));
     const named = session.names?.scope(candidates, displayFacts);
     for (const { pubkey, source, agent } of eligible) {
@@ -1028,7 +1042,11 @@ export function SearchResults({
         : query.trim()
           ? directoryPending
             ? undefined
-            : "No matching messages in accessible conversations."
+            : search.tooShort
+              ? // Only the last word is matched as a prefix, so name it
+                // once earlier words make the whole query long enough.
+                `Type at least ${MESSAGE_SEARCH_MIN_CHARS} characters${/\s/.test(parsed.text.trim()) ? " in the last word" : ""} to search messages.`
+              : "No matching messages in accessible conversations."
           : scopedChannelId
             ? "Type to search messages in this conversation."
             : "Type to search messages in this community.";

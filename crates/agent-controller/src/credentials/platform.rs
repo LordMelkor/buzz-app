@@ -23,6 +23,12 @@ mod macos {
             })
         }
         fn saved(&self, service: &str, account: &str) -> Result<Zeroizing<Vec<u8>>, Failure> {
+            #[cfg(debug_assertions)]
+            if let Some(result) =
+                buzz_credential_store::dev_agent_store("read", service, account, &[])
+            {
+                return result.map_err(super::store_error);
+            }
             // Read the same default Keychain that add writes, never a search-list match.
             observe("read", account, || {
                 SecKeychain::default()
@@ -41,6 +47,12 @@ mod macos {
             })
         }
         fn replace(&self, service: &str, account: &str, value: &[u8]) -> Result<(), Failure> {
+            #[cfg(debug_assertions)]
+            if let Some(result) =
+                buzz_credential_store::dev_agent_store("replace", service, account, value)
+            {
+                return result.map(|_| ()).map_err(super::store_error);
+            }
             // Updates the existing item in place; preserves its access controls.
             let keychain = SecKeychain::default().map_err(error)?;
             match observe("replace-read", account, || {
@@ -63,6 +75,12 @@ mod macos {
             super::super::bundle_lock::acquire().map(|lock| Box::new(lock) as _)
         }
         fn delete(&self, service: &str, account: &str) -> Result<(), Failure> {
+            #[cfg(debug_assertions)]
+            if let Some(result) =
+                buzz_credential_store::dev_agent_store("delete", service, account, &[])
+            {
+                return result.map(|_| ()).map_err(super::store_error);
+            }
             let keychain = SecKeychain::default().map_err(error)?;
             ItemSearchOptions::new()
                 .class(ItemClass::generic_password())
@@ -156,18 +174,9 @@ fn macos_status_codes_are_sanitized() {
 
 #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
 mod keyring_platform {
+    use super::store_error as error;
     use super::*;
-    use buzz_credential_store::{self as credentials, Error};
-    fn error(error: Error) -> Failure {
-        match error {
-            Error::Absent => Failure::Absent,
-            Error::Occupied => Failure::Occupied,
-            Error::Denied => Failure::Denied,
-            Error::Corrupt => Failure::Corrupt,
-            Error::Unavailable | Error::Changed => Failure::Unavailable,
-            Error::Busy => Failure::Busy,
-        }
-    }
+    use buzz_credential_store as credentials;
     impl Keychain for OsKeychain {
         fn legacy(&self, service: &str, account: &str) -> Result<Zeroizing<Vec<u8>>, Failure> {
             // Exact selected legacy blob, read-only; keyring decodes Windows UTF-16.
@@ -213,5 +222,25 @@ fn diagnostics_classify_without_exposing_accounts_and_preserve_results() {
         assert!(
             matches!(observe::<PrivateValue>("read", "PRIVATE_SENTINEL", || Err(failure)), Err(actual) if actual == failure)
         );
+    }
+}
+
+#[cfg(all(
+    not(test),
+    any(
+        target_os = "windows",
+        target_os = "linux",
+        all(target_os = "macos", debug_assertions)
+    )
+))]
+fn store_error(error: buzz_credential_store::Error) -> Failure {
+    use buzz_credential_store::Error;
+    match error {
+        Error::Absent => Failure::Absent,
+        Error::Occupied => Failure::Occupied,
+        Error::Denied => Failure::Denied,
+        Error::Corrupt => Failure::Corrupt,
+        Error::Unavailable | Error::Changed => Failure::Unavailable,
+        Error::Busy => Failure::Busy,
     }
 }

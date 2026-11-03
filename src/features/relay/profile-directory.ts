@@ -27,6 +27,12 @@ export interface ProfileQueries {
   unnamed?(): ReadonlySet<string>;
   /** Cryptographically verified owner of the retained signed profile head. */
   owner?(pubkey: string): string | undefined;
+  /** Moves each time a full cache clear or dispose drops every loaded profile.
+   * A channel access change keeps profiles, so it does not move this. A view
+   * that ensured the identities it shows must ensure them again: the clear
+   * notifies after it removes content, so only names still on screen are
+   * reread. */
+  generation?(): number;
 }
 
 /** Authors per profile read, the reader's largest page. A page that fills it
@@ -68,6 +74,7 @@ export function createProfileDirectory(
   let loaded: ReadonlySet<string> = new Set();
   let controller = new AbortController();
   let closed = false;
+  let generation = 0;
   const verified =
     verification &&
     createVerifiedProfileDirectory(
@@ -131,15 +138,25 @@ export function createProfileDirectory(
     }
     // Qualify all namesakes in the shared directory, including self-declared
     // names that imitate a verified name. This carries through string consumers.
-    const assertions = [...next].filter(([, profile]) => profile.verified);
+    // Counted once per publish: a pairwise scan is quadratic in a large roster.
+    const verifiedNames = new Map<string, number>();
+    const verifiedUsernames = new Map<string | undefined, number>();
+    for (const [, { verified, username }] of next)
+      if (verified) {
+        const name = verified.displayName;
+        verifiedNames.set(name, (verifiedNames.get(name) ?? 0) + 1);
+        verifiedUsernames.set(
+          username,
+          (verifiedUsernames.get(username) ?? 0) + 1,
+        );
+      }
     for (const [id, profile] of next) {
-      const duplicate = assertions.some(
-        ([other, value]) =>
-          other !== id &&
-          ((profile.verified?.displayName ?? profile.name) ===
-            value.verified?.displayName ||
-            (!!profile.verified && profile.username === value.username)),
-      );
+      const own = profile.verified ? 1 : 0;
+      const duplicate =
+        (verifiedNames.get(profile.verified?.displayName ?? profile.name) ??
+          0) > own ||
+        (!!profile.verified &&
+          (verifiedUsernames.get(profile.username) ?? 0) > own);
       if (duplicate)
         next.set(
           id,
@@ -188,9 +205,9 @@ export function createProfileDirectory(
   ) {
     if (closed) throw new DOMException("Session closed", "AbortError");
     const unique = [...new Set(ids)];
-    verified?.ensure(unique);
     if (!refresh && unique.length > 1024)
       throw new Error("Profile request exceeds the directory budget");
+    verified?.ensure(unique);
     const signal = controller.signal;
     const waiting = new Set<Promise<void>>();
     const missing = unique.filter((id) => {
@@ -260,9 +277,10 @@ export function createProfileDirectory(
     pending.clear();
     events.clear();
     verified?.clear();
-    const forgot = unnamed.size > 0;
     unnamed = new Set();
-    publish(forgot);
+    generation++;
+    // Notify even when nothing was loaded: an aborted read still needs a retry.
+    publish(true);
   }
   const queries: ProfileQueries = Object.freeze({
     snapshot: () => snapshot,
@@ -275,6 +293,7 @@ export function createProfileDirectory(
     ensure,
     event: (pubkey: string) => events.peek(pubkey),
     unnamed: () => unnamed,
+    generation: () => generation,
     owner: (pubkey: string) => {
       const event = events.peek(pubkey);
       return event ? owners.get(event) : undefined;

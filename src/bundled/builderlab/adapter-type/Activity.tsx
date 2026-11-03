@@ -11,6 +11,7 @@ import type { RelaySession } from "../../../features/relay/session";
 import { activityTranscript } from "../../../features/agents/activity-transcript";
 import { ActivityTranscript } from "../../../features/agents/ActivityTranscript";
 import type { Agent, AgentViewProps } from "../../../features/agents/service";
+import { SettingsSectionLink } from "../../../features/navigation/SettingsSectionLink";
 
 export type AgentActivity = RelaySession["agentActivity"];
 
@@ -18,17 +19,20 @@ const UNAVAILABLE = "Activity isn't available here.";
 
 export function createActivityTab(
   relay: RelayData,
+  openSettings?: (section: string) => void,
 ): ComponentType<AgentViewProps> {
-  return function PublishedActivity({ agent }) {
+  return function PublishedActivity({ agent, openConversation }) {
     const connection = useRelayConnection(relay);
     return (
       <ActivityPanel
         agent={agent}
+        openConversation={openConversation}
         activity={
           connection.status === "ready"
             ? connection.session.agentActivity
             : undefined
         }
+        openSettings={openSettings}
       />
     );
   };
@@ -37,13 +41,24 @@ export function createActivityTab(
 export function ActivityPanel({
   agent,
   activity,
+  openSettings,
+  openConversation,
 }: {
   agent: Agent;
   /** Absent while the owner's session connects. */
   activity: AgentActivity | undefined;
+  openSettings?: ((section: string) => void) | undefined;
+  openConversation?: AgentViewProps["openConversation"];
 }) {
   if (!activity) return <Note>Activity shows once Buzz is connected.</Note>;
-  return <ActivityFeed agent={agent} activity={activity} />;
+  return (
+    <ActivityFeed
+      agent={agent}
+      activity={activity}
+      openSettings={openSettings}
+      openConversation={openConversation}
+    />
+  );
 }
 
 // Hosted frames don't always name their thread, so turns aren't scoped to the
@@ -51,9 +66,13 @@ export function ActivityPanel({
 function ActivityFeed({
   agent,
   activity,
+  openSettings,
+  openConversation,
 }: {
   agent: Agent;
   activity: AgentActivity;
+  openSettings: ((section: string) => void) | undefined;
+  openConversation: AgentViewProps["openConversation"];
 }) {
   // The Agent Activity plugin owns the feed's lease; this only reads it.
   const snapshot = useSyncExternalStore(
@@ -72,7 +91,13 @@ function ActivityFeed({
   if (snapshot.status === "unavailable") return <Note>{UNAVAILABLE}</Note>;
   if (snapshot.status === "disabled")
     return (
-      <Note>Turn on Agent Activity in Settings → Plugins to see activity.</Note>
+      <Note>
+        Turn on Agent Activity in{" "}
+        <SettingsSectionLink section="plugins" open={openSettings}>
+          Manage plugins
+        </SettingsSectionLink>{" "}
+        to see activity.
+      </Note>
     );
   if (!transcript.turns.length && snapshot.status === "connecting")
     return <Note>Connecting to the live feed…</Note>;
@@ -87,6 +112,7 @@ function ActivityFeed({
       agentName={agent.name}
       state={(turnId) => state.get(turnId)}
       follow={false}
+      openConversation={openConversation}
       before={
         <>
           <Note>

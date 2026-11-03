@@ -43,6 +43,13 @@ import {
 } from "./ChannelNavigationState";
 import { readView, writeView } from "../../shared/view-state";
 import styles from "../../app/shell/PrimarySidebar.module.css";
+import { BestieNavigationProvider } from "../../app/shell/BestieNavigation";
+import { PageNavigation } from "../../app/shell/PageNavigation";
+import { createAgentChoices } from "../agents/choices";
+import { createAgentLibrary } from "../agents/library";
+import { localAgentsFixture } from "../agents/local-testing";
+import { forgetDefaultAgent, setDefaultAgent } from "../solo/default-agent";
+import type { RegisteredPage } from "../pages/service";
 
 const { rowRender, menuRender } = vi.hoisted(() => ({
   rowRender: vi.fn(),
@@ -1872,4 +1879,151 @@ it("opening a shared chat lists it once, with the viewer's chats", async () => {
   const rows = await screen.findAllByRole("button", { name: "beta" });
   expect(rows).toHaveLength(1);
   expect(rows[0]?.closest("nav")).toHaveAccessibleName("Solo conversations");
+});
+it("promotes exactly the Bestie DM, restores prior local removal, and releases it on replacement, deletion and plugin disable", async () => {
+  const viewer = "a".repeat(64),
+    pollen = "b".repeat(64),
+    fizz = "c".repeat(64);
+  const h = fixture(undefined, "ready", [
+    {
+      id: "pollen-dm",
+      name: "Pollen DM",
+      channelType: "dm",
+      members: [viewer, pollen],
+    },
+    {
+      id: "fizz-dm",
+      name: "Fizz DM",
+      channelType: "dm",
+      members: [viewer, fizz],
+    },
+    {
+      id: "group-dm",
+      name: "Group DM",
+      channelType: "dm",
+      members: [viewer, pollen, fizz],
+    },
+    {
+      id: "namesake",
+      name: "Pollen namesake",
+      channelType: "dm",
+      members: [viewer, "d".repeat(64)],
+    },
+  ]);
+  const library = createAgentLibrary(async () => ({
+    definitions: [],
+    identities: [],
+  }));
+  const native = localAgentsFixture([
+    {
+      pubkey: pollen,
+      name: "Pollen",
+      owner: viewer,
+      relayUrl: "wss://relay.test",
+    },
+    { pubkey: fizz, name: "Fizz", owner: viewer, relayUrl: "wss://relay.test" },
+  ]);
+  const lifetime = new AbortController();
+  const choices = createAgentChoices({
+    scope: h.session.scope,
+    library: library.queries,
+    native,
+    signal: lifetime.signal,
+  });
+  await choices.refresh();
+  h.session.agentChoices = choices;
+  const page: RegisteredPage = {
+    id: "bestie",
+    key: "buzz.bestie/bestie",
+    pluginId: "buzz.bestie",
+    revision: "bundled",
+    title: "Bestie",
+    primary: true,
+    component: () => null,
+  };
+  const relay: RelayData = {
+    snapshot: () => h.snapshot,
+    subscribe: () => () => {},
+    retry() {},
+    disconnect() {},
+    async clearCache() {},
+  };
+  const tree = (enabled = true) => (
+    <BestieNavigationProvider pages={enabled ? [page] : []} relay={relay}>
+      {h.view(
+        "other-page",
+        <PageNavigation
+          pages={enabled ? [page] : []}
+          selected={page.key}
+          onSelect={() => {}}
+        />,
+      )}
+    </BestieNavigationProvider>
+  );
+  const row = (id: string) =>
+    document.querySelector(`[data-channel-id="${id}"]`);
+  const scope = h.session.scope;
+  // Previously removed locally, not a relay Hide or an authorization change.
+  writeView(scope, "hidden-dms", [
+    { id: "pollen-dm", baseline: null, knownIds: [] },
+  ]);
+  setDefaultAgent(scope, pollen);
+  try {
+    const view = render(tree(), { reactStrictMode: true });
+    await screen.findByRole("button", { name: "Pollen" });
+    await waitFor(() => expect(row("fizz-dm")).not.toBeNull());
+    expect(row("pollen-dm")).toBeNull();
+    expect(row("group-dm")).not.toBeNull();
+    expect(row("namesake")).not.toBeNull();
+    await waitFor(() => expect(readView(scope, "hidden-dms", [])).toEqual([]));
+
+    act(() => {
+      setDefaultAgent(scope, fizz);
+    });
+    await screen.findByRole("button", { name: "Fizz" });
+    expect(row("pollen-dm")).not.toBeNull();
+    expect(row("fizz-dm")).toBeNull();
+    act(() => {
+      forgetDefaultAgent(fizz);
+    });
+    expect(screen.getByRole("button", { name: "Bestie" })).toBeInTheDocument();
+    expect(row("fizz-dm")).not.toBeNull();
+
+    act(() => {
+      setDefaultAgent(scope, pollen);
+    });
+    expect(row("pollen-dm")).toBeNull();
+    view.unmount();
+    const reopened = render(tree(), { reactStrictMode: true });
+    await waitFor(() => expect(row("fizz-dm")).not.toBeNull());
+    expect(row("pollen-dm")).toBeNull();
+    reopened.rerender(tree(false));
+    expect(row("pollen-dm")).not.toBeNull();
+    reopened.rerender(tree());
+    expect(row("pollen-dm")).toBeNull();
+    // A retained name is not enough to suppress a conversation whose exact
+    // membership or chosen-agent eligibility is no longer established.
+    h.publish("pollen-dm", { members: [viewer, pollen, fizz] });
+    expect(row("pollen-dm")).not.toBeNull();
+    h.publish("pollen-dm", { members: [viewer, pollen] });
+    expect(row("pollen-dm")).toBeNull();
+    // Source failure removes its candidates but does not release an explicit
+    // account choice whose exact verified DM still exists.
+    act(() => {
+      native.set({ status: "error", agents: [], error: "Agents unavailable" });
+    });
+    expect(row("pollen-dm")).toBeNull();
+    expect(screen.getByRole("button", { name: "Bestie" })).toBeInTheDocument();
+    // A settled successful inventory proving the saved agent is gone releases it.
+    act(() => {
+      native.set({ status: "ready", agents: [] });
+    });
+    expect(row("pollen-dm")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Bestie" })).toBeInTheDocument();
+    expect(h.session.channels.list().channels).toHaveLength(4);
+    expect(readView(scope, "hidden-dms", [])).toEqual([]);
+  } finally {
+    lifetime.abort();
+    library.dispose();
+  }
 });

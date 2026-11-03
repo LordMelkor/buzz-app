@@ -67,13 +67,16 @@ export function createDirectMessages(
       return {
         people: [...foldProfiles(events)]
           .filter(([pubkey]) => pubkey !== transport?.viewer)
-          .map(([pubkey, { name, username, picture, isAgent }]) => ({
-            pubkey,
-            name,
-            ...(username ? { username } : {}),
-            ...(picture ? { picture } : {}),
-            ...(isAgent ? { isAgent } : {}),
-          })),
+          .map(
+            ([pubkey, { name, username, picture, isAgent, ownerPubkey }]) => ({
+              pubkey,
+              name,
+              ...(username ? { username } : {}),
+              ...(picture ? { picture } : {}),
+              ...(isAgent ? { isAgent } : {}),
+              ...(ownerPubkey ? { ownerPubkey } : {}),
+            }),
+          ),
         hasMore: events.length >= limit,
       };
     },

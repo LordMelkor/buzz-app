@@ -1,3 +1,5 @@
+import { schnorr } from "@noble/curves/secp256k1.js";
+import { hexToBytes } from "nostr-tools/utils";
 import {
   finalizeEvent,
   generateSecretKey,
@@ -20,6 +22,13 @@ export function signed(
 ): RelayEvent {
   return finalizeEvent({ created_at: 1_700_000_000, ...template }, key.secret);
 }
+/** The native `relay_verify_signatures` command, with real BIP-340 checks. */
+export const nativeSignatureChecks = (args: unknown) =>
+  (
+    args as { claims: { id: string; pubkey: string; sig: string }[] }
+  ).claims.map(({ id, pubkey, sig }) =>
+    schnorr.verify(hexToBytes(sig), hexToBytes(id), hexToBytes(pubkey)),
+  );
 /** Production-shaped host signer: the host authenticates and sends the exact
  * bytes, as the native adapter does. The default host forwards to the test's
  * stubbed `fetch`; credentials never reach JavaScript. */

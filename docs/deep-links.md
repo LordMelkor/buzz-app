@@ -168,8 +168,7 @@ For warm delivery, the bundle selected by Launch Services must itself be running
 forwarding an OS URL from that bundle to a different running copy is not supported:
 
 ```sh
-just desktop-bundle
-open "target/debug/bundle/macos/Buzz.app"
+just desktop-bundle --launch
 open "buzz://channel/general"
 ```
 

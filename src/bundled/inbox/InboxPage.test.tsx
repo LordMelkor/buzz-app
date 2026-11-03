@@ -1591,12 +1591,11 @@ function fixture(
     late = keypair(),
     unknown = keypair(),
     relayKey = keypair();
-  let releaseProfiles = () => {};
-  const profilesGate = options.holdProfiles
-    ? new Promise<void>((resolve) => {
-        releaseProfiles = resolve;
-      })
-    : undefined;
+  // Held profiles are unpublished until release, then arrive live. Holding a
+  // read open instead would occupy the one background read slot for good.
+  let profilesHeld = options.holdProfiles ?? false;
+  const unheld = (found: RelayEvent[]) =>
+    profilesHeld ? found.filter((event) => event.kind !== 0) : found;
   let rosterFailure = options.failRoster ?? false;
   let rosterGate: Promise<void> | undefined;
   let rosterStarted = false;
@@ -1781,8 +1780,6 @@ function fixture(
           await auxGate;
           if (failAux) throw new Error("auxiliary history unavailable");
         }
-        if (profilesGate && filters.some((filter) => filter.kinds?.includes(0)))
-          await profilesGate;
         if (filters.some((filter) => filter.kinds?.includes(39002))) {
           rosterStarted = true;
           if (rosterGate) await rosterGate;
@@ -1804,7 +1801,7 @@ function fixture(
               throw new Error("history offline");
           }
         }
-        return filters.flatMap(answer);
+        return unheld(filters.flatMap(answer));
       },
       // The real sizing rewrite behind a pass-through proxy, so rows resolve
       // relay-hosted pictures to the variant they actually requested.
@@ -1895,7 +1892,7 @@ function fixture(
     },
   );
   owners.push(owner);
-  if (!options.failRoster) emit(events);
+  if (!options.failRoster) emit(unheld(events));
   const scope = {
     viewer: viewer.pubkey,
     communityOrigin: "https://relay.test",
@@ -2063,7 +2060,11 @@ function fixture(
       };
     },
     rosterStarted: () => rosterStarted,
-    releaseProfiles,
+    releaseProfiles() {
+      if (!profilesHeld) return;
+      profilesHeld = false;
+      emit(events.filter((event) => event.kind === 0));
+    },
     agent,
     unknown,
     late,

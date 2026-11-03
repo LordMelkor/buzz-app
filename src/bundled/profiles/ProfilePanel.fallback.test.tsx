@@ -284,3 +284,72 @@ it("preserves the configured name of a stopped local agent without a relay profi
     f.dispose();
   }
 });
+
+it("keeps a focused Retry through a purge reread and hands focus to the region on success", async () => {
+  const f = fixture();
+  try {
+    f.query.mockImplementation(async (filters) => {
+      if (filters.some((filter) => filter.kinds?.includes(0)))
+        throw new Error("Profile unavailable");
+      return [];
+    });
+    // The session's own purge generation, moved by hand: a real purge also
+    // empties the directory, which has nothing for this person anyway.
+    let purges = 0;
+    const listeners = new Set<() => void>();
+    const base = f.session.profiles;
+    const profiles = {
+      ...base,
+      generation: () => purges,
+      subscribe(listener: () => void) {
+        listeners.add(listener);
+        const stop = base.subscribe(listener);
+        return () => {
+          listeners.delete(listener);
+          stop();
+        };
+      },
+    };
+    const session = { ...f.session, profiles };
+    const snapshot = { ...f.relay.snapshot(), session };
+    const relay: RelayData = { ...f.relay, snapshot: () => snapshot };
+    render(
+      <ProfilePanel
+        relay={relay}
+        target={profileTarget(f.person.pubkey) ?? ""}
+        close={() => {}}
+      />,
+    );
+    await screen.findByText("Could not load this profile.");
+    const retryButton = screen.getByRole("button", { name: "Retry profile" });
+    act(() => retryButton.focus());
+
+    const reads = f.query.mock.calls.length;
+    let answer: (() => void) | undefined;
+    f.query.mockImplementation((filters) =>
+      filters.some((filter) => filter.kinds?.includes(0))
+        ? new Promise((resolve) => {
+            answer = () => resolve([profile(f.person, { name: "Alice" })]);
+          })
+        : Promise.resolve([]),
+    );
+    act(() => {
+      purges++;
+      for (const listener of listeners) listener();
+    });
+    await vi.waitFor(() =>
+      expect(f.query.mock.calls.length).toBeGreaterThan(reads),
+    );
+    expect(retryButton).toHaveFocus();
+    expect(retryButton).toHaveAttribute("aria-busy", "true");
+
+    await act(async () => answer?.());
+    expect(await screen.findByRole("heading", { name: "Alice" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry profile" })).toBeNull();
+    expect(
+      screen.getByRole("region", { name: "Profile details" }),
+    ).toHaveFocus();
+  } finally {
+    f.dispose();
+  }
+});

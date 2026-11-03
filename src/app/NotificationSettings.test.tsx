@@ -463,6 +463,7 @@ it("selects and restores Silent for every category, stops previews, and can rest
     direct: "silent",
     mention: "silent",
     thread: "silent",
+    agent: "flutter",
   });
   expect(play).toHaveBeenCalledOnce();
   expect(screen.getByRole("switch", { name: "Desktop alerts" })).toBeChecked();

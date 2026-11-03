@@ -16,7 +16,7 @@ import {
   nativeRelaySigner,
   nativeWriteKinds,
 } from "./native";
-import { keypair, message, signed } from "./testing";
+import { keypair, message, nativeSignatureChecks, signed } from "./testing";
 import { createOutbox, type OutgoingEvent, PublishRejected } from "./outbox";
 import { createMessages } from "./messages";
 import { createRelaySession } from "./session";
@@ -89,6 +89,8 @@ beforeEach(() => {
     if (command === "relay_socket_connect") return "public";
     if (command === "relay_socket_close") return;
     if (command === "identity_restore") return viewer.pubkey;
+    if (command === "relay_verify_signatures")
+      return nativeSignatureChecks(args);
     if (command === "relay_sign") {
       expect(
         Object.keys((args as { event: EventTemplate }).event).sort(),
@@ -1033,6 +1035,8 @@ it("routes lifecycle sign/publish separately from the message writer and preserv
   const event = signed(viewer, template);
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "identity_restore") return viewer.pubkey;
+    if (command === "relay_verify_signatures")
+      return nativeSignatureChecks(args);
     if (command === "relay_http")
       return {
         status: 200,

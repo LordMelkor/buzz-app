@@ -4,6 +4,130 @@ use std::time::Duration;
 use buzzodz_plugins::HostGrants;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::sync::Mutex;
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CallContext {
+    boot: String,
+    page: u64,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Once {
+    boot: String,
+    page: u64,
+    activation: String,
+    call_id: String,
+}
+struct Claims {
+    page: Option<u64>,
+    consumed: std::collections::HashMap<[u8; 32], [u8; 32]>,
+}
+pub(crate) struct HostCalls {
+    boot: String,
+    claims: Mutex<Claims>,
+}
+impl Default for HostCalls {
+    fn default() -> Self {
+        Self {
+            boot: uuid::Uuid::new_v4().to_string(),
+            claims: Mutex::new(Claims {
+                page: Some(0),
+                consumed: Default::default(),
+            }),
+        }
+    }
+}
+/// Length framing keeps boundaries (including absent versus empty fields) distinct.
+fn fingerprint<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    for part in parts {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part);
+    }
+    hash.finalize().into()
+}
+impl HostCalls {
+    pub(crate) fn page_load(&self) {
+        // Poisoned admission remains permanently unavailable.
+        if let Ok(mut state) = self.claims.lock() {
+            state.page = state
+                .page
+                .and_then(|p| p.checked_add(1))
+                .filter(|p| *p <= 9_007_199_254_740_991)
+        }
+    }
+    fn context(&self, label: &str) -> Result<CallContext, String> {
+        if label != "main" {
+            return Err("Protected host calls require the main view".into());
+        }
+        let state = self
+            .claims
+            .lock()
+            .map_err(|_| "Host admission is unavailable")?;
+        Ok(CallContext {
+            boot: self.boot.clone(),
+            page: state.page.ok_or("Host page generation exhausted")?,
+        })
+    }
+    fn consume(
+        &self,
+        label: &str,
+        kind: &str,
+        id: &str,
+        revision: &str,
+        once: &Once,
+        payload: [u8; 32],
+    ) -> Result<(), String> {
+        if label != "main"
+            || [&once.boot, &once.activation, &once.call_id]
+                .iter()
+                .any(|tag| {
+                    uuid::Uuid::parse_str(tag).map_or(true, |uuid| uuid.to_string() != **tag)
+                })
+        {
+            return Err("Invalid protected host authority".into());
+        }
+        let mut state = self
+            .claims
+            .lock()
+            .map_err(|_| "Host admission is unavailable")?;
+        if once.boot != self.boot || Some(once.page) != state.page {
+            return Err("Stale protected host authority".into());
+        }
+        let page = once.page.to_be_bytes();
+        let key = fingerprint([
+            kind.as_bytes(),
+            id.as_bytes(),
+            revision.as_bytes(),
+            &page,
+            once.activation.as_bytes(),
+            once.call_id.as_bytes(),
+        ]);
+        if let Some(previous) = state.consumed.get(&key) {
+            return Err(if previous == &payload {
+                "Host call already consumed; outcome unknown"
+            } else {
+                "Host call payload conflict; outcome unknown"
+            }
+            .into());
+        }
+        if state.consumed.len() >= 1024 {
+            return Err("Host call capacity exhausted".into());
+        }
+        state.consumed.insert(key, payload);
+        Ok(())
+    }
+}
+#[tauri::command]
+pub(crate) fn plugin_host_call_context<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
+    calls: tauri::State<'_, HostCalls>,
+) -> Result<CallContext, String> {
+    calls.context(webview.label())
+}
 
 use crate::{with_manager, PluginManager};
 
@@ -30,6 +154,31 @@ pub(crate) struct HostRequest {
     headers: BTreeMap<String, String>,
     body: Option<String>,
     timeout_ms: Option<u64>,
+}
+
+impl HostRequest {
+    fn fingerprint(&self) -> [u8; 32] {
+        let timeout = self.timeout_ms.map(|n| n.to_string()).unwrap_or_default();
+        fingerprint(
+            [
+                self.url.as_bytes(),
+                self.method.as_bytes(),
+                if self.body.is_some() {
+                    b"some"
+                } else {
+                    b"none"
+                },
+                self.body.as_deref().unwrap_or_default().as_bytes(),
+                timeout.as_bytes(),
+            ]
+            .into_iter()
+            .chain(
+                self.headers
+                    .iter()
+                    .flat_map(|(name, value)| [name.as_bytes(), value.as_bytes()]),
+            ),
+        )
+    }
 }
 
 fn request_deadline(timeout_ms: Option<u64>) -> Result<Duration, String> {
@@ -76,26 +225,128 @@ pub(crate) struct HostResponse {
 }
 
 #[tauri::command]
-pub(crate) async fn plugin_host_request(
+pub(crate) async fn plugin_host_request<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
+    calls: tauri::State<'_, HostCalls>,
     manager: tauri::State<'_, PluginManager>,
     id: String,
     revision: String,
     request: HostRequest,
+    once: Option<Once>,
 ) -> Result<HostResponse, String> {
     let deadline = request_deadline(request.timeout_ms)?;
     let (url, method, headers) = validate_request(&request)?;
     let operation = async {
-        let grants = with_manager(manager, move |manager| manager.host_grants(&id, &revision))
-            .await
-            .map_err(|_| "Host request is unavailable")?;
+        let (plugin_id, artifact) = (id.clone(), revision.clone());
+        let grants = with_manager(manager, move |manager| {
+            manager.host_grants(&plugin_id, &artifact)
+        })
+        .await
+        .map_err(|_| "Host request is unavailable")?;
         if !allows_origin(&grants, &url) {
             return Err("Host request origin is not declared".into());
         }
-        send_request(url, method, headers, request.body, deadline).await
+        if let Some(once) = &once {
+            if request.method != "POST" {
+                return Err("Protected requests require POST".into());
+            }
+            calls.consume(
+                webview.label(),
+                "post",
+                &id,
+                &revision,
+                once,
+                request.fingerprint(),
+            )?;
+        }
+        send_request_with_policy(url, method, headers, request.body, deadline, once.is_some()).await
     };
     tokio::time::timeout(deadline, operation)
         .await
         .map_err(|_| "Host request timed out")?
+}
+
+/// A GET with no caller headers or body; byte limits apply to actual chunks.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ByteRequest {
+    url: String,
+    max_bytes: usize,
+    timeout_ms: Option<u64>,
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_host_request_bytes(
+    manager: tauri::State<'_, PluginManager>,
+    id: String,
+    revision: String,
+    request: ByteRequest,
+) -> Result<tauri::ipc::Response, String> {
+    let _place = crate::host_files::BYTE_WORK
+        .try_acquire()
+        .map_err(|_| "A byte operation is already under way")?;
+    let timeout = request.timeout_ms.unwrap_or(30_000);
+    if request.max_bytes == 0
+        || request.max_bytes > MAX_RESPONSE_BYTES
+        || !(1..=30_000).contains(&timeout)
+    {
+        return Err("Invalid byte request limits".into());
+    }
+    let (url, _, _) = validate_request(&HostRequest {
+        url: request.url,
+        method: "GET".into(),
+        headers: BTreeMap::new(),
+        body: None,
+        timeout_ms: Some(timeout),
+    })?;
+    let operation = async {
+        byte_origin(manager.clone(), &id, &revision, &url).await?;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_millis(timeout))
+            .build()
+            .map_err(|_| "Host request client is unavailable")?;
+        let (status, headers, bytes) =
+            read_bytes(client.get(url.clone()), request.max_bytes).await?;
+        byte_origin(manager, &id, &revision, &url).await?;
+        byte_frame(status, headers, bytes).map(tauri::ipc::Response::new)
+    };
+    tokio::time::timeout(Duration::from_millis(timeout), operation)
+        .await
+        .map_err(|_| "Host byte request timed out")?
+}
+
+async fn byte_origin(
+    manager: tauri::State<'_, PluginManager>,
+    id: &str,
+    revision: &str,
+    url: &reqwest::Url,
+) -> Result<(), String> {
+    let (id, revision) = (id.to_owned(), revision.to_owned());
+    let grants = with_manager(manager, move |m| m.host_grants(&id, &revision))
+        .await
+        .map_err(|_| "Host byte request is unavailable")?;
+    if !allows_origin(&grants, url) {
+        return Err("Host request origin is not declared".into());
+    }
+    Ok(())
+}
+
+fn byte_frame(
+    status: u16,
+    headers: BTreeMap<String, String>,
+    bytes: Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    let metadata = serde_json::to_vec(&serde_json::json!({"status":status,"headers":headers}))
+        .map_err(|_| "Could not encode byte response")?;
+    if metadata.len() > 20 * 1024 {
+        return Err("Host byte response metadata is too large".into());
+    }
+    let mut frame = Vec::with_capacity(4 + metadata.len() + bytes.len());
+    frame.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&metadata);
+    frame.extend_from_slice(&bytes);
+    Ok(frame)
 }
 
 /// Uploads one file to an origin the plugin declares, as `plugin_host_request`
@@ -300,9 +551,26 @@ pub(crate) async fn send_request(
     body: Option<String>,
     deadline: Duration,
 ) -> Result<HostResponse, String> {
+    send_request_with_policy(url, method, headers, body, deadline, false).await
+}
+
+async fn send_request_with_policy(
+    url: reqwest::Url,
+    method: reqwest::Method,
+    headers: HeaderMap,
+    body: Option<String>,
+    deadline: Duration,
+    protected: bool,
+) -> Result<HostResponse, String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(deadline)
+        .timeout(deadline);
+    let client = if protected {
+        client.retry(reqwest::retry::never())
+    } else {
+        client
+    };
+    let client = client
         .build()
         .map_err(|_| "Host request client is unavailable")?;
     let mut request = client.request(method, url).headers(headers);
@@ -314,6 +582,19 @@ pub(crate) async fn send_request(
 
 /// Sends `request` and reads its bounded response, without its cookies.
 async fn read_response(request: reqwest::RequestBuilder) -> Result<HostResponse, String> {
+    let (status, headers, bytes) = read_bytes(request, MAX_RESPONSE_BYTES).await?;
+    let body = String::from_utf8(bytes).map_err(|_| "Host response is not UTF-8")?;
+    Ok(HostResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+async fn read_bytes(
+    request: reqwest::RequestBuilder,
+    max_bytes: usize,
+) -> Result<(u16, BTreeMap<String, String>, Vec<u8>), String> {
     let mut response = request.send().await.map_err(|_| "Host request failed")?;
     let status = response.status().as_u16();
     let mut headers = BTreeMap::new();
@@ -335,17 +616,12 @@ async fn read_response(request: reqwest::RequestBuilder) -> Result<HostResponse,
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| "Host response failed")? {
-        if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
+        if bytes.len() + chunk.len() > max_bytes {
             return Err("Host response is too large".into());
         }
         bytes.extend_from_slice(&chunk);
     }
-    let body = String::from_utf8(bytes).map_err(|_| "Host response is not UTF-8")?;
-    Ok(HostResponse {
-        status,
-        headers,
-        body,
-    })
+    Ok((status, headers, bytes))
 }
 
 #[cfg(test)]
@@ -585,12 +861,13 @@ mod tests {
         let (url, server) = local_response(
             b"HTTP/1.1 302 Found\r\nLocation: https://outside.example/\r\nSet-Cookie: secret=value\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_vec(),
         );
-        let response = send_request(
+        let response = send_request_with_policy(
             url,
             reqwest::Method::POST,
             HeaderMap::new(),
             Some("{}".into()),
             DEADLINE,
+            false,
         )
         .await
         .unwrap();
@@ -614,8 +891,15 @@ mod tests {
         .into_bytes();
         response.extend(body);
         let (url, server) = local_response(response);
-        let result =
-            send_request(url, reqwest::Method::POST, HeaderMap::new(), None, DEADLINE).await;
+        let result = send_request_with_policy(
+            url,
+            reqwest::Method::POST,
+            HeaderMap::new(),
+            None,
+            DEADLINE,
+            false,
+        )
+        .await;
         server.join().unwrap();
         assert_eq!(result.err().as_deref(), Some("Host response is too large"));
     }
@@ -628,8 +912,15 @@ mod tests {
         }
         response.extend(b"\r\n");
         let (url, server) = local_response(response);
-        let result =
-            send_request(url, reqwest::Method::POST, HeaderMap::new(), None, DEADLINE).await;
+        let result = send_request_with_policy(
+            url,
+            reqwest::Method::POST,
+            HeaderMap::new(),
+            None,
+            DEADLINE,
+            false,
+        )
+        .await;
         server.join().unwrap();
         assert_eq!(
             result.err().as_deref(),
@@ -637,3 +928,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod replay_tests;
+
+#[cfg(test)]
+#[path = "host_request/byte_tests.rs"]
+mod byte_tests;

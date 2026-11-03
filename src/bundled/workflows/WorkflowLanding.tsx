@@ -1,3 +1,4 @@
+import { useProfileGeneration } from "../../features/relay/react";
 import {
   AnimatePresence,
   motion,
@@ -1505,7 +1506,9 @@ export function WorkflowLanding({
   );
   // Fallback keys share one suffix length so visible owners stay distinguishable.
   const ownerKeyLabels = useMemo(() => publicKeyLabels(ownerIds), [ownerIds]);
+  const profileGeneration = useProfileGeneration(session?.profiles);
   useEffect(() => {
+    void profileGeneration;
     if (!session) return;
     // Match the profile directory's query batch size and stay within its
     // per-call budget even when discovery spans many channels and owners.
@@ -1514,7 +1517,7 @@ export function WorkflowLanding({
         .ensure(ownerIds.slice(offset, offset + 500), "background")
         .catch(() => {});
     }
-  }, [session, ownerIds]);
+  }, [session, ownerIds, profileGeneration]);
   return (
     <>
       <fieldset

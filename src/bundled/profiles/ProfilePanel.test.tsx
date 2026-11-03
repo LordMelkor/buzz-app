@@ -15,6 +15,7 @@ import {
   profileActivityViewTarget,
 } from "../../features/profiles/target";
 import { ProfilePanel } from "./ProfilePanel";
+import type { Navigation } from "../../features/navigation/controller";
 import type {
   Agent,
   Agents,
@@ -26,7 +27,9 @@ import { agentDirectory } from "../../features/identity-names/testing";
 import type { LiveCallbacks } from "../../features/relay/live";
 import { keypair, profile, signed } from "../../features/relay/testing";
 
-const key = "a".repeat(64);
+const key = "a".repeat(64),
+  viewer = "b".repeat(64),
+  threadRoot = "c".repeat(64);
 afterEach(cleanup);
 
 function deferred() {
@@ -363,12 +366,14 @@ function renderAgentActivity(
   tabs: { title: string; role?: string }[],
   rootId?: string,
   transcript: "opened" | "shown again" | false = false,
+  navigation?: Navigation,
 ) {
   const owner = createRelaySession(null);
   const snapshot = {
     status: "ready" as const,
     generation: 1,
     session: owner.session,
+    ...(navigation && { scope: `https://relay.test:${viewer}`, viewer }),
   };
   const relay: RelayData = {
     snapshot: () => snapshot,
@@ -387,9 +392,11 @@ function renderAgentActivity(
       component: function Echo({
         conversation,
         initialTranscript,
+        openConversation,
       }: {
         conversation?: { channelId: string; rootId?: string };
         initialTranscript?: TranscriptRequest;
+        openConversation?: (channelId: string, threadRootId?: string) => void;
       }) {
         // Like a type's Activity tab: it acts on the request as it shows.
         const [first] = useState(!!initialTranscript);
@@ -407,6 +414,19 @@ function renderAgentActivity(
                 Opened from {conversation.channelId}/
                 {conversation.rootId ?? "channel"}
               </p>
+            )}
+            {openConversation && (
+              <>
+                <button type="button" onClick={() => openConversation("c")}>
+                  Open channel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openConversation("c", threadRoot)}
+                >
+                  Open thread
+                </button>
+              </>
             )}
           </>
         );
@@ -452,6 +472,7 @@ function renderAgentActivity(
         open: vi.fn(() => true),
       }}
       close={() => {}}
+      {...(navigation && { navigation })}
     />
   );
   let mounts = 0;
@@ -494,6 +515,43 @@ it("opens an agent's activity on its type's Activity tab, the profile's only one
     expect(screen.getByText("Echo activity")).toBeVisible();
   } finally {
     dispose();
+  }
+});
+
+it("lets the Activity tab open a turn's channel or thread in this community, only with navigation", () => {
+  const navigate = vi.fn(async () => ({ status: "opened" as const }));
+  const tabs = [{ title: "Activity", role: "activity" }];
+  const dispose = renderAgentActivity(tabs, undefined, false, {
+    open: navigate,
+  } as unknown as Navigation);
+  const scope = { viewer, communityOrigin: "https://relay.test" };
+  try {
+    act(() => screen.getByRole("button", { name: "Open thread" }).click());
+    // A thread opens at its root message, which names the thread.
+    expect(navigate).toHaveBeenLastCalledWith({
+      version: 1,
+      kind: "conversation",
+      scope,
+      channelId: "c",
+      messageId: threadRoot,
+      threadRootId: threadRoot,
+    });
+    act(() => screen.getByRole("button", { name: "Open channel" }).click());
+    expect(navigate).toHaveBeenLastCalledWith({
+      version: 1,
+      kind: "conversation",
+      scope,
+      channelId: "c",
+    });
+  } finally {
+    dispose();
+  }
+  const without = renderAgentActivity(tabs);
+  try {
+    expect(screen.getByText("Echo activity")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Open thread" })).toBeNull();
+  } finally {
+    without();
   }
 });
 
@@ -589,6 +647,63 @@ it("opens an agent's activity on its type's first tab when the type has no Activ
     expect(screen.queryByRole("tab", { name: "Activity" })).toBeNull();
   } finally {
     dispose();
+  }
+});
+
+it("links an owned agent whose type's plugin is off to Manage plugins", async () => {
+  const owner = createRelaySession(null);
+  const snapshot = {
+    status: "ready" as const,
+    generation: 1,
+    session: owner.session,
+  };
+  const relay = {
+    snapshot: () => snapshot,
+    subscribe: () => () => {},
+  } as unknown as RelayData;
+  const agent = {
+    key,
+    pubkey: key,
+    name: "Lou",
+    type: "test/off",
+    place: "here",
+    config: {},
+    attention: {},
+  } as unknown as Agent;
+  const types: RegisteredAgentType[] = [];
+  const agentsSnapshot = { agents: [agent], teams: [] };
+  const agents = {
+    subscribe: () => () => {},
+    snapshot: () => agentsSnapshot,
+    types: () => types,
+    find: (pubkey: string) => (pubkey === key ? agent : undefined),
+    memberships: () => [],
+    configHistory: () => undefined,
+    addedTabs: () => [],
+  } as unknown as Agents;
+  const navigation = {
+    open: vi.fn(async () => ({ status: "opened" as const })),
+  } as unknown as Navigation;
+  try {
+    render(
+      <ProfilePanel
+        relay={relay}
+        agents={agents}
+        navigation={navigation}
+        target={profileTarget(key) ?? ""}
+        close={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Manage plugins" }));
+    expect(navigation.open).toHaveBeenCalledExactlyOnceWith({
+      version: 1,
+      kind: "settings",
+      section: "plugins",
+    });
+  } finally {
+    cleanup();
+    owner.dispose();
   }
 });
 

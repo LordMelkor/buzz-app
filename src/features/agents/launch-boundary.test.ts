@@ -305,16 +305,27 @@ const postRunCoreRefresh = (request: Request) =>
   request.memory?.agent === agentKey.pubkey &&
   request.memory.slug === "core";
 
-/** Apart from the post-run core refresh, the recorded requests are exactly
- * one conversation read for each of `conversations`, in order: an extra, a
- * wider or a different read fails. */
+/** A Claude Code start's read of one of the agent's recent notes, by slug
+ * (`recentNotesSection`). */
+const recentNotesRead = (request: Request) =>
+  request.memory?.agent === agentKey.pubkey &&
+  /^mem\/notes\/\d{4}-\d{2}-\d{2}$/.test(request.memory.slug ?? "");
+
+/** Apart from the post-run core refresh, and with `notes` a start's recent
+ * notes reads, the recorded requests are exactly one conversation read for
+ * each of `conversations`, in order: an extra, a wider or a different read
+ * fails. */
 function expectOnlyAllowed(
   f: Fixture,
   conversations: readonly RelayEvent[] = [],
+  notes = false,
 ) {
   expect(
     f.requests
-      .filter((request) => !postRunCoreRefresh(request))
+      .filter(
+        (request) =>
+          !postRunCoreRefresh(request) && !(notes && recentNotesRead(request)),
+      )
       .map((request) => request.filters),
   ).toEqual(conversations.map(conversationRead));
 }
@@ -355,7 +366,7 @@ async function expectCounterSeesSync(f: Fixture) {
   });
 }
 
-it("starts Claude sessions from the synced copies, with no relay request online or offline", async () => {
+it("starts Claude sessions from the synced copies, with no relay request but recent notes online or offline", async () => {
   const claude = fakeClaude();
   const host = { spawn: claude.spawn, request: vi.fn() } as unknown as Host;
   const { revisions, seeded } = heads("buzz/claude-code", {
@@ -389,7 +400,7 @@ it("starts Claude sessions from the synced copies, with no relay request online 
   expect(first?.options.cwd).toBe("/this/device");
   expect(JSON.stringify(first?.received)).not.toContain("LOCAL INSTRUCTIONS");
   expect(f.deliveries[0]?.revisions).toEqual(revisions);
-  expectOnlyAllowed(f);
+  expectOnlyAllowed(f, [], true);
 
   // The relay goes away; the next conversation starts from the same copies.
   f.transport.offline = true;
@@ -400,7 +411,7 @@ it("starts Claude sessions from the synced copies, with no relay request online 
     "LOCAL INSTRUCTIONS",
   );
   expect(f.deliveries[1]?.revisions).toEqual(revisions);
-  expectOnlyAllowed(f);
+  expectOnlyAllowed(f, [], true);
   await expectCounterSeesSync(f);
 });
 

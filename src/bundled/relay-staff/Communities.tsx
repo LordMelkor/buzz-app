@@ -18,13 +18,12 @@ import {
   listButton,
   Loading,
   NotConnected,
-  SEARCH_DEBOUNCE_MS,
   SECRET_KEY_WARNING,
   UNSUPPORTED_BROWSING,
-  useDebounced,
   useRetry,
   type CommunityRef,
 } from "./ui";
+import { searchable, useDebounced } from "../../shared/search-debounce";
 
 /**
  * The relay's community directory, searched by host prefix, with the
@@ -39,7 +38,9 @@ export function Communities({
 }) {
   const { context } = useSession();
   const [query, setQuery] = useState("");
-  const q = useDebounced(query.trim().toLowerCase(), SEARCH_DEBOUNCE_MS);
+  const settled = useDebounced(query.trim().toLowerCase());
+  // Text too short to search lists every community.
+  const q = searchable(settled) ? settled : "";
   // A pasted secret key never leaves the device, in a search or a cursor.
   const secret = containsSecretKey(query) || containsSecretKey(q);
   const pages = usePages(

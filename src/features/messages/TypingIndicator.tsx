@@ -17,7 +17,10 @@ import {
   openProfileTranscript,
   profileActivityViewTarget,
 } from "../profiles/target";
-import { currentActivity } from "../agents/current-activity";
+import {
+  currentActivity,
+  type CurrentActivity,
+} from "../agents/current-activity";
 import { localWorkLabel, type LocalWork } from "../agents/local-activity";
 import { AgentResponsePreview } from "./AgentResponsePreview";
 import { ActivityStepPreview, activityStepLabel } from "./ActivityStepPreview";
@@ -49,6 +52,20 @@ import { avatarMedia } from "../../shared/avatar-source";
 const noSubscribe = () => () => {};
 const noActivity = () => undefined;
 const noRows: readonly never[] = [];
+const sameActivity = (
+  a: ReadonlyMap<string, CurrentActivity>,
+  b: ReadonlyMap<string, CurrentActivity>,
+) =>
+  a.size === b.size &&
+  [...a].every(([agent, value]) => {
+    const other = b.get(agent);
+    return (
+      other?.label === value.label &&
+      other.detailAvailability === value.detailAvailability &&
+      other.roots.length === value.roots.length &&
+      other.roots.every((root, i) => root === value.roots[i])
+    );
+  });
 
 /** Agents working in one conversation, over existing stores; no reads or capture. */
 export function useConversationAgents(
@@ -60,10 +77,6 @@ export function useConversationAgents(
   const entries = useSyncExternalStore(
     session.typing.subscribe,
     session.typing.snapshot,
-  );
-  const activity = useSyncExternalStore(
-    session.agentActivity?.subscribe ?? noSubscribe,
-    session.agentActivity?.snapshot ?? noActivity,
   );
   const choices = useSyncExternalStore(
     session.agentChoices.subscribe,
@@ -80,14 +93,27 @@ export function useConversationAgents(
       if (profiles.get(entry.pubkey)?.isAgent) known.add(entry.pubkey);
     return known;
   }, [choices, entries, profiles]);
-  const details = useMemo(
-    () =>
-      currentActivity(activity, entries, knownAgents, channelId, threadRootId),
-    [activity, entries, knownAgents, channelId, threadRootId],
+  // Subscribe to what this indicator shows, not every observer frame.
+  const last = useRef<ReadonlyMap<string, CurrentActivity>>(new Map());
+  const getDetails = () => {
+    const next = currentActivity(
+      (session.agentActivity?.snapshot ?? noActivity)(),
+      entries,
+      knownAgents,
+      channelId,
+      threadRootId,
+    );
+    if (!sameActivity(last.current, next)) last.current = next;
+    return last.current;
+  };
+  const details = useSyncExternalStore(
+    session.agentActivity?.subscribe ?? noSubscribe,
+    getDetails,
+    getDetails,
   );
   const agents = [...details.keys()].filter((key) => !replaced.has(key)).sort();
   return {
-    activity,
+    activity: (session.agentActivity?.snapshot ?? noActivity)(),
     details,
     entries,
     replaced,
@@ -126,6 +152,21 @@ export function TypingIndicator({
     agents: activeAgents,
     knownAgents,
   } = useConversationAgents(session, channelId, threadRootId);
+  const lastLocal = useRef(activity?.local ?? noRows);
+  const getLocal = () => {
+    const next = session.agentActivity?.snapshot().local ?? noRows;
+    if (
+      next.length !== lastLocal.current.length ||
+      next.some((work, index) => work !== lastLocal.current[index])
+    )
+      lastLocal.current = next;
+    return lastLocal.current;
+  };
+  useSyncExternalStore(
+    session.agentActivity?.subscribe ?? noSubscribe,
+    getLocal,
+    getLocal,
+  );
   const agents = audience === "humans" ? [] : activeAgents;
   const hostedAgents = useContext(AgentsContext);
   useAgentsSnapshot(hostedAgents);

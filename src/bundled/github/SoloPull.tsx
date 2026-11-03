@@ -1,5 +1,6 @@
 import { useCallback, useState, useSyncExternalStore } from "react";
-import { MenuItem } from "../../shared/design-system/ui/Menu";
+import { MenuItem, MenuIcon } from "../../shared/design-system/ui/Menu";
+import { LinkBreakIcon } from "../../shared/design-system/icons";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { Button } from "../../shared/design-system/ui/Button";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
@@ -223,6 +224,9 @@ export function SoloPullMenu({
         }
       }}
     >
+      <MenuIcon>
+        <LinkBreakIcon size={16} />
+      </MenuIcon>
       {busy ? "Unlinking pull request…" : "Unlink pull request"}
     </MenuItem>
   );

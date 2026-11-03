@@ -398,10 +398,7 @@ export function provideRelay(
     const visible = () => {
       if (document.visibilityState !== "visible") return;
       if (snapshot.cached) service.retry();
-      else {
-        store.session.channels.refreshList?.();
-        store.session.recovery?.retryNow();
-      }
+      else store.session.recovery?.retryNow();
     };
     // Timers stop while the machine sleeps. A large gap between ticks means
     // it woke up, which a desktop window does not always report as focus.
