@@ -239,6 +239,8 @@ enum Revocation {
 /// A request admitted before its token is revoked, that then waits for the
 /// agent's key, returns no signature and no plaintext.
 #[tokio::test(flavor = "multi_thread")]
+// The held key lock is the gate that pauses the request.
+#[allow(clippy::await_holding_lock)]
 async fn revocation_while_a_key_is_read_withholds_the_result() {
     for revocation in [Revocation::Exit, Revocation::Deletion, Revocation::SignOut] {
         for method in ["sign_event", "nip44_decrypt"] {
@@ -286,6 +288,8 @@ async fn revocation_while_a_key_is_read_withholds_the_result() {
 /// Deleting the agent while its request reads the saved agent answers
 /// `revoked`, not the failed read's `unavailable`.
 #[tokio::test(flavor = "multi_thread")]
+// The held key lock is the gate that pauses the request.
+#[allow(clippy::await_holding_lock)]
 async fn deletion_while_the_agent_is_read_answers_revoked() {
     let fixture = fixture();
     let (_issued, token) = bound(&fixture).await;
