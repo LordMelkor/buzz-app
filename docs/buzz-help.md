@@ -109,9 +109,10 @@ the interface unless an available tool actually supports that action.
 - **Sharing a Solo chat** grants access to its conversation history, not only
   the next message. Copying its link alone does not grant access. Check the
   intended people and destination before changing access.
-- **Open links in your browser**: on desktop, ⌘-click an HTTP(S) link in a
-  message to open it in your default browser instead of a side panel. You can
-  also right-click the link and choose **Open in browser**.
+- **Open links in your browser**: on desktop, ⌘-click (Ctrl-click on Windows
+  and Linux) an HTTP(S) link in a message to open it in your default browser
+  instead of a side panel. You can also right-click the link and choose
+  **Open in browser**.
 - **Sidebar width**: drag the sidebar's right edge, or focus its resize handle
   and use the Left/Right arrow keys. Double-click the handle to reset the width.
   Messages and plugin pages share the saved width within the same community
