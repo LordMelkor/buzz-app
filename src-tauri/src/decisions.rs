@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 pub(crate) const JEV_MODEL: &str = crate::jev::MODEL;
@@ -593,13 +594,18 @@ fn development_endpoint(origin: &str) -> Result<String, String> {
     Ok(format!("{origin}/api/builderlab/decisions"))
 }
 
-/// The FI session `revision`, if it is still the current one, and the
-/// decisions route under the identity origin's API, where the build's other
-/// Builderlab calls go.
-fn federated_sign_in(fi: &FederatedIdentity, revision: &str) -> Option<(Option<String>, SignIn)> {
+/// The FI session `revision`, if it is still the current one, the work it
+/// owns, and the decisions route under the identity origin's API, where the
+/// build's other Builderlab calls go.
+fn federated_sign_in(
+    fi: &FederatedIdentity,
+    revision: &str,
+) -> Option<(CancellationToken, Option<String>, SignIn)> {
+    let cancel = fi.cancellation_for(revision).ok()?;
     fi.with_session(|token, current, config| {
         (current == revision).then(|| {
             (
+                cancel,
                 builderlab_endpoint(&config.identity_origin, &config.api_base_path),
                 SignIn::Bearer(token.clone()),
             )
@@ -609,8 +615,10 @@ fn federated_sign_in(fi: &FederatedIdentity, revision: &str) -> Option<(Option<S
 }
 
 /// Builderlab with an FI build's native session. Only the session the caller
-/// started under may answer. A 401 refuses this call only: the adapter, asked
-/// once, decides whether the session ended, as for other granted calls.
+/// started under may answer: a sign-out or account switch during the call
+/// drops its answer. A 401 refuses this call only: the adapter, asked once in
+/// the background, decides whether the session ended, as for other granted
+/// calls.
 async fn decide_federated(
     host: &DecisionsHost,
     keys: &JevHost,
@@ -619,11 +627,12 @@ async fn decide_federated(
     request: Request,
 ) -> Decided {
     let backend = Backend::Builderlab;
-    let Some((builderlab, session)) = federated_sign_in(fi, revision) else {
-        return Decided::Failed {
-            backend,
-            reason: Failure::MissingCredentials,
-        };
+    let ended = Decided::Failed {
+        backend,
+        reason: Failure::MissingCredentials,
+    };
+    let Some((cancel, builderlab, session)) = federated_sign_in(fi, revision) else {
+        return ended;
     };
     let scoped = DecisionsHost {
         endpoints: Endpoints {
@@ -633,12 +642,21 @@ async fn decide_federated(
         slots: host.slots.clone(),
         timeout: host.timeout,
     };
-    match scoped.decide(keys, backend, Some(session), request).await {
+    let decided = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return ended,
+        decided = scoped.decide(keys, backend, Some(session), request) => decided,
+    };
+    if cancel.is_cancelled() {
+        return ended;
+    }
+    match decided {
         Decided::Failed {
             reason: Failure::SessionExpired,
             ..
         } => {
-            fi.recheck(revision).await;
+            let (fi, revision) = (fi.clone(), revision.to_owned());
+            tokio::spawn(async move { fi.recheck(&revision).await });
             Decided::Failed {
                 backend,
                 reason: Failure::Unauthorized,
@@ -646,6 +664,14 @@ async fn decide_federated(
         }
         decided => decided,
     }
+}
+
+/// An FI session asks Builderlab only, and never with another sign-in.
+fn federated_alone(backend: Backend, session: bool, broker: bool) -> Result<(), String> {
+    if backend != Backend::Builderlab || session || broker {
+        return Err("Invalid federated session".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -662,9 +688,7 @@ pub(crate) async fn decide(
 ) -> Result<Decided, String> {
     // An FI build names its native session by revision; the token stays here.
     if let Some(revision) = federated {
-        if backend != Backend::Builderlab || session.is_some() || broker.is_some() {
-            return Err("Invalid federated session".into());
-        }
+        federated_alone(backend, session.is_some(), broker.is_some())?;
         return Ok(decide_federated(&host, &keys, &fi, &revision, request).await);
     }
     if let Some(broker) = broker {

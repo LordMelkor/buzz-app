@@ -119,6 +119,22 @@ it("signs out only the sign-in Builderlab refused", async () => {
   expect(provider.status()).toBe("needs-setup");
 });
 
+it("never ends an FI session for a decisions 401", async () => {
+  vi.stubEnv("VITE_BUZZ_FEDERATED_IDENTITY", "1");
+  const session = createOAuthSession(async () => credential("first"));
+  await session.signIn();
+  const provider = builderlabProvider(session, true, async () => ({
+    outcome: "failed",
+    backend: "builderlab",
+    reason: "session_expired",
+  }));
+  await expect(provider.decide(request, { signal })).resolves.toEqual({
+    outcome: "failed",
+    reason: "unauthorized",
+  });
+  expect(session.snapshot().status).toBe("signed-in");
+});
+
 it("keeps the shared sign-in when only decisions are refused", async () => {
   const session = createOAuthSession(async () => credential("first"));
   await session.signIn();

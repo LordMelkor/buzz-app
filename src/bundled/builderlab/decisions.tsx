@@ -134,12 +134,13 @@ export function builderlabProvider(
         unknown
       >;
       // Native reports `session_expired` only for a legacy sign-in's
-      // Builderlab 401; for an FI session it asks the adapter itself. Then
-      // only the refused sign-in ends; a newer one stays. A refusal of
-      // decisions alone (`unauthorized`) keeps the sign-in that other
-      // Builderlab features share.
+      // Builderlab 401. Then only the refused sign-in ends; a newer one
+      // stays. An FI build never ends its session here: signing out would
+      // end the whole FI session, and native asks the adapter instead. A
+      // refusal of decisions alone (`unauthorized`) keeps the sign-in that
+      // other Builderlab features share.
       if (reason === "session_expired") {
-        if (signedIn() === credential) session.signOut();
+        if (!nativeBuilderlab() && signedIn() === credential) session.signOut();
         return { outcome: "failed", reason: "unauthorized" };
       }
       // The host checks the reply's shape and answers.
