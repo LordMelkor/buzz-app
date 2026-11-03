@@ -122,7 +122,7 @@ function setup(
           }
           if (
             failRoster &&
-            published.length &&
+            (published.length || recordedInvitation) &&
             filters.some((filter) => filter.kinds?.includes(39002))
           )
             throw new Error("Roster unavailable");
@@ -1010,7 +1010,71 @@ function afterInvitationWindow(t: ReturnType<typeof setup>, seconds = 901) {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime((created + seconds) * 1000);
 }
-it.each(["read failure", "recorded event", "storage failure"])(
+it.each([false, true])(
+  "reconciles a recorded then removed invitation after restart=%s",
+  async (restart) => {
+    const t = setup("solo", "public", "guest");
+    await t.ready();
+    const original = await savedNoRoleInvitation(t);
+    t.confirmPerson("guest");
+    t.removePerson();
+    t.recordOriginal();
+    afterInvitationWindow(t);
+    if (restart) {
+      await t.session.read([{ kinds: [9000], ids: [original], limit: 1 }], {
+        fresh: true,
+      });
+      t.restart();
+      await t.ready();
+    }
+    await t.managedAdd();
+    expect(t.publish).toHaveBeenCalledTimes(2);
+    expect(t.publish.mock.calls[1]?.[0].id).not.toBe(original);
+    expect(t.publish.mock.calls[1]?.[0].tags).toContainEqual([
+      "role",
+      "member",
+    ]);
+    expect(
+      t.records().find((item) => item.event.id === original),
+    ).toMatchObject({ acknowledged: true, delivery: "seen" });
+    t.restart();
+    await t.ready();
+    await t.managedAdd();
+    expect(t.publish).toHaveBeenCalledTimes(2);
+  },
+);
+it.each(["read", "roster", "storage"])(
+  "retains recorded recovery after %s failure and recovers on a later Add",
+  async (failure) => {
+    const t = setup("solo", "public", "guest");
+    await t.ready();
+    const original = await savedNoRoleInvitation(t);
+    t.recordOriginal();
+    afterInvitationWindow(t);
+    await t.session.read([{ kinds: [9000], ids: [original], limit: 1 }], {
+      fresh: true,
+    });
+    if (failure === "read") t.setInvitationReadFailure(true);
+    else if (failure === "roster")
+      t.onInvitationRead(() => t.setRosterFailure(true));
+    else t.setAcknowledgementFailure(true);
+    await expect(t.managedAdd()).rejects.toThrow();
+    expect(t.records()[0]?.acknowledged).toBeUndefined();
+    expect(t.publish).toHaveBeenCalledOnce();
+    t.onInvitationRead(() => {});
+    t.setRosterFailure(false);
+    t.setInvitationReadFailure(false);
+    t.setAcknowledgementFailure(false);
+    t.restart();
+    await t.ready();
+    await t.managedAdd();
+    expect(
+      t.records().find((item) => item.event.id === original)?.acknowledged,
+    ).toBe(true);
+    expect(t.publish).toHaveBeenCalledTimes(2);
+  },
+);
+it.each(["read failure", "storage failure"])(
   "preserves expired legacy recovery after %s",
   async (failure) => {
     const t = setup("solo", "public", "guest");
@@ -1018,13 +1082,12 @@ it.each(["read failure", "recorded event", "storage failure"])(
     const original = await savedNoRoleInvitation(t);
     afterInvitationWindow(t);
     if (failure === "read failure") t.setInvitationReadFailure(true);
-    if (failure === "recorded event") t.recordOriginal();
     if (failure === "storage failure") t.setAcknowledgementFailure(true);
     await expect(t.managedAdd()).rejects.toThrow();
     expect(t.publish).toHaveBeenCalledOnce();
     expect(t.records()[0]).toMatchObject({
       event: { id: original },
-      delivery: failure === "recorded event" ? "seen" : "unknown",
+      delivery: "unknown",
     });
     expect(t.records()[0]?.acknowledged).toBeUndefined();
     t.restart();
@@ -1055,13 +1118,17 @@ it("does not replace at the inclusive expiry boundary and confirms strong ID abs
   ]);
   expect(t.publish).toHaveBeenCalledTimes(2);
 });
-it("rechecks membership after retiring an expired invitation instead of overwriting a joined Guest", async () => {
-  const t = setup("solo", "public", "guest");
-  await t.ready();
-  await savedNoRoleInvitation(t);
-  afterInvitationWindow(t);
-  t.onInvitationRead(() => t.confirmPerson("guest"));
-  await expect(t.managedAdd()).rejects.toThrow(/remove them in People/);
-  expect(t.publish).toHaveBeenCalledOnce();
-  expect(t.records()[0]?.acknowledged).toBe(true);
-});
+it.each([false, true])(
+  "rechecks membership instead of overwriting a joined Guest when recorded=%s",
+  async (recorded) => {
+    const t = setup("solo", "public", "guest");
+    await t.ready();
+    await savedNoRoleInvitation(t);
+    afterInvitationWindow(t);
+    if (recorded) t.recordOriginal();
+    t.onInvitationRead(() => t.confirmPerson("guest"));
+    await expect(t.managedAdd()).rejects.toThrow(/remove them in People/);
+    expect(t.publish).toHaveBeenCalledOnce();
+    expect(t.records()[0]?.acknowledged).toBe(true);
+  },
+);

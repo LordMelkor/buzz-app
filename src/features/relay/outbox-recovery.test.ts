@@ -330,6 +330,7 @@ it("fences replay and replacement until an expired legacy invitation is durably 
   });
   const verify = vi.fn(async () => {
     await gate;
+    return undefined;
   });
   const retire = h.outbox.acknowledge(event.id, verify);
   try {
@@ -377,7 +378,7 @@ it("cannot retire a still-active delivery after its intake window expires", asyn
     await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime((event.created_at + 901) * 1000);
-    const verify = vi.fn(async () => {});
+    const verify = vi.fn(async () => undefined);
     await expect(h.outbox.acknowledge(event.id, verify)).rejects.toThrow(
       /may still arrive/,
     );
@@ -400,6 +401,7 @@ it("retains a legacy receipt when an echo arrives during negative verification",
   });
   const verify = vi.fn(async () => {
     await gate;
+    return undefined;
   });
   const retire = h.outbox.acknowledge(event.id, verify);
   const rejected = expect(retire).rejects.toThrow(/changed while checking/);

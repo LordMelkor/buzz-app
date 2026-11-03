@@ -774,7 +774,7 @@ export function createChannelWrites(
       );
     },
     /** Outbox fences local delivery and expiry; this read bypasses cached absence. */
-    async verifyUnappliedAddition(event: EventData, caller: AbortSignal) {
+    async additionRecorded(event: EventData, caller: AbortSignal) {
       const active = AbortSignal.any([signal, caller]);
       active.throwIfAborted();
       const events = await reader.read(
@@ -790,10 +790,7 @@ export function createChannelWrites(
         { signal: active, fresh: true, priority: "foreground" },
       );
       active.throwIfAborted();
-      if (events.length)
-        throw new Error(
-          "The earlier invitation is recorded on the relay. Refresh members to check its result before inviting again.",
-        );
+      return events.some((recorded) => recorded.id === event.id);
     },
     async discardFailed(id: string) {
       const source = writer();

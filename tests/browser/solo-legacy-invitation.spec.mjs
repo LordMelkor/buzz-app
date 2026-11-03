@@ -18,7 +18,7 @@ test.use({
 // Browser boundary: restored IndexedDB intent, the real Outbox Retry routing,
 // broker reads and signed roster readback must agree across a page reload.
 // Expiry/role/concurrency matrices stay in the colocated unit tests.
-test("Outbox Retry replaces an expired unapplied Solo invitation without replaying it", async ({
+test("Outbox Retry reconciles a recorded then removed Solo invitation without replaying it", async ({
   page,
   app,
 }, info) => {
@@ -60,7 +60,16 @@ test("Outbox Retry replaces an expired unapplied Solo invitation without replayi
   });
   await page.route("**/api/relay/**/query", async (route) => {
     const filters = route.request().postDataJSON();
-    if (!joined || !filters.some((filter) => filter.kinds?.includes(39002)))
+    // The legacy command was applied, then the target was removed. Recording
+    // that ID changes the receipt to Seen during the real Retry operation.
+    if (
+      filters.some(
+        (filter) =>
+          filter.kinds?.includes(9000) && filter.ids?.includes(original.id),
+      )
+    )
+      return route.fulfill({ json: [original] });
+    if (!filters.some((filter) => filter.kinds?.includes(39002)))
       return route.continue();
     const response = await route.fetch();
     const events = await response.json();
@@ -70,8 +79,11 @@ test("Outbox Retry replaces an expired unapplied Solo invitation without replayi
         event.tags.some(([key, value]) => key === "d" && value === chat)
           ? app.signRelay({
               ...event,
-              created_at: event.created_at + 1,
-              tags: [...event.tags, ["p", person.pubkey, "", "member"]],
+              created_at: Math.floor(now / 1000) + (joined ? 1 : 0),
+              tags: [
+                ...event.tags,
+                ...(joined ? [["p", person.pubkey, "", "member"]] : []),
+              ],
             })
           : event,
       ),

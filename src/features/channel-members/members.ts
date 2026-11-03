@@ -198,8 +198,15 @@ export async function addChannelMember(
     if (!channel()?.members?.includes(pubkey)) {
       await outbox.acknowledge(pending.event.id, async (event) => {
         check();
-        await session.channelWrites.verifyUnappliedAddition(event, signal);
+        const recorded = await session.channelWrites.additionRecorded(
+          event,
+          signal,
+        );
+        // A recorded command has already run. Its target may since have left;
+        // reconcile against signed membership read after that command evidence.
+        if (recorded) await session.channelWrites.refreshMembership(channelId);
         check();
+        return recorded ? "recorded" : undefined;
       });
       intent.confirmed = true;
       // Re-read membership after durable retirement; only absent targets get a new grant.

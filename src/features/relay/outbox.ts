@@ -63,10 +63,10 @@ export interface Outbox {
   ): string;
   /** Attach caller-owned recovery to an existing receipt before resuming it. */
   recover(id: string, recovery: OutboxRecovery): Promise<void>;
-  /** An expired no-role invitation may instead be resolved by fresh negative readback. */
+  /** An expired no-role invitation may be resolved by fresh command/roster readback. */
   acknowledge(
     id: string,
-    verifyUnapplied?: (event: EventData) => Promise<void>,
+    verifyRetirement?: (event: EventData) => Promise<"recorded" | undefined>,
   ): Promise<void>;
   retry(id: string, active?: () => boolean): void;
   dismiss(id: string): Promise<void>;
@@ -694,20 +694,22 @@ export function createOutbox(
     },
     async acknowledge(
       id: string,
-      verifyUnapplied?: (event: EventData) => Promise<void>,
+      verifyRetirement?: (event: EventData) => Promise<"recorded" | undefined>,
     ) {
       await outbox.ready();
       const item = visible.find((item) => item.event.id === id);
       if (!item?.recovery) return;
-      if (verifyUnapplied) {
-        const eligible = () => {
+      if (verifyRetirement) {
+        const eligible = (recorded = false) => {
           const current = find(id);
           return (
             !closed &&
             !attempts.has(id) &&
             current?.event.kind === 9000 &&
             current.recovery?.key.startsWith("member-add:") &&
-            (current.delivery === "unknown" || current.delivery === "failed") &&
+            (current.delivery === "unknown" ||
+              current.delivery === "failed" ||
+              (recorded && current.delivery === "seen")) &&
             current.event.content === "" &&
             current.event.tags.every(
               (tag) =>
@@ -719,14 +721,16 @@ export function createOutbox(
             current.event.created_at < Math.floor(Date.now() / 1000) - 15 * 60
           );
         };
-        if (dismissing.has(id) || !eligible())
+        // Seen may enter verification, but only fresh recorded-command evidence
+        // with caller-verified membership can retire it below.
+        if (dismissing.has(id) || !eligible(true))
           throw new Error(
             "This saved invitation may still arrive. Retry after its 15-minute delivery window ends.",
           );
         // Fence every local replay until verification and retirement are durable.
         const work = Promise.resolve().then(async () => {
-          await verifyUnapplied(item.event);
-          if (!eligible())
+          const result = await verifyRetirement(item.event);
+          if (!eligible(result === "recorded"))
             throw new Error(
               "The invitation changed while checking it. Refresh members and try again.",
             );
