@@ -177,6 +177,47 @@ impl AppAgentHost {
         valid_for: Duration,
     ) -> Result<(AppAgent, Arc<Secret>, Admission), String> {
         let incarnation = self.tokens.stamp(&pubkey, &relay)?;
+        self.signer_at(pubkey, relay, incarnation, valid_for).await
+    }
+    /// The agent, its current incarnation and the owner's retirements, for a
+    /// local caller's token that acts as it from now on.
+    pub(crate) async fn caller_stamp(
+        &self,
+        pubkey: String,
+        relay: String,
+    ) -> Result<(AppAgent, Stamp, u64), String> {
+        let incarnation = self.tokens.stamp(&pubkey, &relay)?;
+        let retirements = self.tokens.retirements();
+        Ok((self.agent(pubkey, relay).await?, incarnation, retirements))
+    }
+    /// Whether a token stamped by [`Self::caller_stamp`] still acts: the agent
+    /// was not deleted and the owner did not sign out or change account since.
+    pub(crate) fn caller_live(
+        &self,
+        pubkey: &str,
+        relay: &str,
+        incarnation: Stamp,
+        retirements: u64,
+    ) -> bool {
+        self.tokens.retirements() == retirements && self.tokens.admits(pubkey, relay, incarnation)
+    }
+    /// The agent and its key, for a local caller's operation that sends nothing.
+    pub(crate) async fn caller_key(
+        &self,
+        pubkey: String,
+        relay: String,
+    ) -> Result<(AppAgent, Arc<Secret>), String> {
+        self.key(self.agent(pubkey, relay).await?).await
+    }
+    /// As [`Self::signer_for`], for work stamped earlier with `incarnation`:
+    /// deleting the agent since then refuses it.
+    pub(crate) async fn signer_at(
+        &self,
+        pubkey: String,
+        relay: String,
+        incarnation: Stamp,
+        valid_for: Duration,
+    ) -> Result<(AppAgent, Arc<Secret>, Admission), String> {
         let (agent, key) = self.key(self.agent(pubkey, relay).await?).await?;
         let evidence = self
             .tokens
@@ -317,6 +358,28 @@ impl AppAgentHost {
             agent
         })
         .await
+    }
+}
+
+#[cfg(test)]
+impl AppAgentHost {
+    /// A host whose only agent is `agent`, saved at `path`, its key already read.
+    pub(crate) fn holding(
+        path: PathBuf,
+        agent: &AppAgent,
+        key: Secret,
+        tokens: AgentTokens,
+    ) -> Self {
+        std::fs::write(&path, serde_json::to_vec(&[agent]).unwrap()).unwrap();
+        let host = Self::new(Ok(path), Err("unused".into()), true, tokens);
+        host.keys().insert(agent.pubkey.clone(), Arc::new(key));
+        host
+    }
+    pub(crate) fn forget_row_for_test(&self, pubkey: &str, relay: &str) {
+        self.tokens.forget_row(pubkey, relay).unwrap();
+    }
+    pub(crate) fn reopen_row_for_test(&self, pubkey: &str, relay: &str) {
+        self.tokens.reopen_row(pubkey, relay).unwrap();
     }
 }
 

@@ -405,6 +405,8 @@ export type AgentHandle = Readonly<{
   key: AgentKey;
   protection?: AgentProtection | undefined;
   pubkey: string;
+  /** Its community, as the `wss://` origin its native row names. */
+  relay: string;
   name: string;
   owner: string;
   /** Installed local types and owner-reviewed creation requests. */

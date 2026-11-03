@@ -58,7 +58,14 @@ async fn streams_stdin_to_stdout_until_input_closes() {
     let processes = HostProcesses::default();
     let (channel, mut events) = channel();
     let handle = processes
-        .start(0, "a.plugin".into(), "cat", command("cat", &[]), channel)
+        .start(
+            0,
+            "a.plugin".into(),
+            "cat",
+            command("cat", &[]),
+            None,
+            channel,
+        )
         .unwrap();
     processes
         .write("a.plugin", handle, "one\n".into(), false)
@@ -82,6 +89,47 @@ async fn streams_stdin_to_stdout_until_input_closes() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn its_buzz_credential_is_revoked_once_it_exits() {
+    use crate::credential_service::tests::{ask, error, fixture, issued, RELAY};
+    use hyper::StatusCode;
+    let fixture = fixture();
+    let (credential, token) = issued(&fixture).await;
+    let processes = HostProcesses::default();
+    let (channel, mut events) = channel();
+    let handle = processes
+        .start(
+            0,
+            "p".into(),
+            "cat",
+            command("cat", &[]),
+            Some(credential),
+            channel,
+        )
+        .unwrap();
+    let held = processes
+        .owned("p", handle, |entry| entry.credential.clone())
+        .unwrap()
+        .unwrap();
+    fixture
+        .service
+        .bind(&held, "p", fixture.agent.pubkey.clone(), RELAY.into())
+        .await
+        .unwrap();
+    drop(held);
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(reply.0, StatusCode::OK);
+
+    processes
+        .write("p", handle, String::new(), true)
+        .await
+        .unwrap();
+    until_exit(&mut events).await;
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn reports_stderr_and_exit_code() {
     let processes = HostProcesses::default();
     let (channel, mut events) = channel();
@@ -91,6 +139,7 @@ async fn reports_stderr_and_exit_code() {
             "a.plugin".into(),
             "sh",
             command("sh", &["-c", "echo oops >&2; exit 3"]),
+            None,
             channel,
         )
         .unwrap();
@@ -105,7 +154,14 @@ async fn only_the_owning_plugin_can_write_or_kill() {
     let processes = HostProcesses::default();
     let (channel, mut events) = channel();
     let handle = processes
-        .start(0, "a.plugin".into(), "cat", command("cat", &[]), channel)
+        .start(
+            0,
+            "a.plugin".into(),
+            "cat",
+            command("cat", &[]),
+            None,
+            channel,
+        )
         .unwrap();
     assert!(processes
         .write("b.plugin", handle, "x".into(), false)
@@ -129,6 +185,7 @@ async fn kill_ends_the_process_and_its_descendants() {
             "a.plugin".into(),
             "sh",
             command("sh", &["-c", "trap '' TERM; sleep 30 & echo $!; wait"]),
+            None,
             channel,
         )
         .unwrap();
@@ -151,10 +208,24 @@ async fn stop_all_ends_every_process() {
     let (first, mut first_events) = channel();
     let (second, mut second_events) = channel();
     processes
-        .start(0, "a.plugin".into(), "cat", command("cat", &[]), first)
+        .start(
+            0,
+            "a.plugin".into(),
+            "cat",
+            command("cat", &[]),
+            None,
+            first,
+        )
         .unwrap();
     processes
-        .start(0, "b.plugin".into(), "cat", command("cat", &[]), second)
+        .start(
+            0,
+            "b.plugin".into(),
+            "cat",
+            command("cat", &[]),
+            None,
+            second,
+        )
         .unwrap();
     processes.stop_all();
     // The page that reloaded hears no exit: each channel closes without one.
@@ -180,6 +251,7 @@ async fn a_page_that_stops_listening_stops_the_process() {
             "a.plugin".into(),
             "sh",
             command("sh", &["-c", "echo hi; sleep 30"]),
+            None,
             channel,
         )
         .unwrap();
@@ -199,7 +271,14 @@ async fn a_spawn_from_before_a_reload_is_refused() {
     let page = processes.page();
     processes.stop_all();
     let (channel, _events) = channel();
-    let refused = processes.start(page, "a.plugin".into(), "cat", command("cat", &[]), channel);
+    let refused = processes.start(
+        page,
+        "a.plugin".into(),
+        "cat",
+        command("cat", &[]),
+        None,
+        channel,
+    );
     assert_eq!(refused.err().as_deref(), Some("The page reloaded"));
     assert!(processes.registry().entries.is_empty());
 }
@@ -215,6 +294,7 @@ async fn a_process_may_close_its_output_and_carry_on() {
             "a.plugin".into(),
             "sh",
             command("sh", &["-c", "exec >&- 2>&-; sleep 1; exit 4"]),
+            None,
             channel,
         )
         .unwrap();
@@ -233,6 +313,7 @@ async fn shutdown_kills_every_group_without_waiting() {
             "a.plugin".into(),
             "sh",
             command("sh", &["-c", "trap '' TERM; sleep 30 & echo $!; wait"]),
+            None,
             channel,
         )
         .unwrap();

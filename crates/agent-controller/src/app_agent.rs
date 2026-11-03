@@ -24,6 +24,18 @@ const KINDS: [u16; 17] = [
     45010,
 ];
 
+fn bounded(content: &str, tags: &[Vec<String>]) -> Result<()> {
+    if content.len() > 64 * 1024
+        || tags.len() > 256
+        || tags
+            .iter()
+            .any(|tag| tag.is_empty() || tag.iter().map(String::len).sum::<usize>() > 4096)
+    {
+        return Err("Agent event is too large".into());
+    }
+    Ok(())
+}
+
 /// One saved identity. The key itself stays in the OS credential store.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -176,16 +188,26 @@ impl AppAgent {
                     .into(),
             );
         }
-        if content.len() > 64 * 1024
-            || tags.len() > 256
-            || tags
-                .iter()
-                .any(|tag| tag.is_empty() || tag.iter().map(String::len).sum::<usize>() > 4096)
-        {
-            return Err("Agent event is too large".into());
-        }
+        bounded(&content, &tags)?;
         let tags = self.attested(key, tags)?;
         key.signed(kind, content, tags)
+    }
+    /// Signs an event a local caller built, unchanged, as this agent. The
+    /// caller's credential service has already classified its kind; this keeps
+    /// the size bounds every agent event has.
+    pub fn sign_built(
+        &self,
+        key: &Secret,
+        kind: u16,
+        content: String,
+        tags: Vec<Vec<String>>,
+        created_at: u64,
+    ) -> Result<serde_json::Value> {
+        if key.pubkey() != self.pubkey {
+            return Err("Agent identity changed".into());
+        }
+        bounded(&content, &tags)?;
+        key.sign_event_at(kind, content, tags, created_at)
     }
     /// Whether the community accepted this row's current public metadata.
     pub fn profile_is_current(&self) -> bool {

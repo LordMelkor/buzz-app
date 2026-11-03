@@ -30,6 +30,8 @@ export type FakeClaude = {
   interruptError?: string;
   /** When false, a kill is only a request; the test calls `exit()`. */
   exitOnKill: boolean;
+  /** The agents its Buzz credential was asked to act as, in order. */
+  actedAs: Readonly<{ pubkey: string; relay: string }>[];
   emit(message: Record<string, unknown>): void;
   finish(result?: Readonly<{ error?: string }>): void;
   exit(code: number | null, stderr?: string): void;
@@ -86,6 +88,7 @@ export function fakeSpawn(known = new Set<string>()) {
       hold: false,
       killed: false,
       exitOnKill: true,
+      actedAs: [],
       emit(message) {
         if (alive) options.onStdout?.(`${JSON.stringify(message)}\n`);
       },
@@ -207,6 +210,11 @@ export function fakeSpawn(known = new Set<string>()) {
         fake.killed = true;
         if (fake.exitOnKill) fake.exit(null);
       },
+      ...(options.agentCredential && {
+        actAs: async (agent: Readonly<{ pubkey: string; relay: string }>) => {
+          fake.actedAs.push(agent);
+        },
+      }),
       exited,
     };
     // Output that arrives before spawn returns is buffered by the caller.

@@ -42,6 +42,8 @@ export type ClaudeLaunch = Readonly<{
   /** The in-process MCP server's tools. */
   tools?: ToolServer;
   hook?: ClaudeHook;
+  /** The agent it works for: the `buzz` it runs acts as that agent. */
+  agent?: Readonly<{ pubkey: string; relay: string }>;
 }>;
 
 /** Answers the in-process server's JSON-RPC for the conversation a process
@@ -232,6 +234,8 @@ export class ClaudeProcess {
       ],
       cwd: launch.cwd,
       env: ENV,
+      // A spare is started before the agent it serves is known.
+      agentCredential: !launch.discovery,
       onStdout: (data) => (claude ? claude.read(data) : early.push(data)),
       onStderr: (data) =>
         claude ? claude.readError(data) : earlyErrors.push(data),
@@ -251,8 +255,15 @@ export class ClaudeProcess {
   /** Gives a started process its prompt, and its tools to whoever it now
    * works for. Loads settings and tools now rather than on the first message. */
   async initialize(
-    launch: Pick<ClaudeLaunch, "systemPrompt" | "tools" | "hook">,
+    launch: Pick<ClaudeLaunch, "systemPrompt" | "tools" | "hook" | "agent">,
   ) {
+    if (launch.agent)
+      // Without it, `buzz` here falls through to its next credential.
+      await this.process
+        .actAs?.(launch.agent)
+        .catch((error: unknown) =>
+          console.warn("Claude's buzz CLI could not act as its agent", error),
+        );
     if (launch.tools) this.tools = launch.tools;
     this.hook = launch.hook;
     const { written, answer } = this.request({

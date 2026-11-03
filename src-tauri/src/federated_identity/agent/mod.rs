@@ -218,6 +218,11 @@ impl AgentTokens {
             Arc::new(grant::tests::MemoryGrants::default()),
         )
     }
+    /// Grants kept in memory, for `identity`'s owner.
+    #[cfg(test)]
+    pub(crate) fn in_memory(identity: FederatedIdentity) -> Self {
+        Self::with_store(identity, Arc::new(grant::tests::MemoryGrants::default()))
+    }
     fn with_store(identity: FederatedIdentity, store: Arc<dyn GrantStore>) -> Self {
         let tokens = Self(Arc::new(Inner {
             identity: identity.clone(),
@@ -345,6 +350,27 @@ impl AgentTokens {
         at.generation
     }
 
+    /// Whether work stamped `incarnation` for this agent row may still run:
+    /// neither the agent nor its community row was deleted since.
+    pub(crate) fn admits(&self, agent: &str, relay: &str, incarnation: Stamp) -> bool {
+        let Ok(row) = row_key(agent, relay) else {
+            return false;
+        };
+        let at = lock(&self.0.incarnations);
+        let (key, row) = (
+            at.get(agent).copied().unwrap_or_default(),
+            at.get(&row).copied().unwrap_or_default(),
+        );
+        !key.closed
+            && key.generation == incarnation.key
+            && !row.closed
+            && row.generation == incarnation.row
+    }
+    /// The owner's retirements so far: sign-out, another account, or a
+    /// retired grant each add one.
+    pub(crate) fn retirements(&self) -> u64 {
+        self.0.identity.retirements()
+    }
     pub(crate) fn stamp(&self, agent: &str, relay: &str) -> Result<Stamp, String> {
         let row = row_key(agent, relay)?;
         let at = lock(&self.0.incarnations);

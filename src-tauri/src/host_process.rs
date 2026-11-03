@@ -9,6 +9,7 @@ mod protection;
 use artifact::verify_artifact;
 use protection::ProcessProtection;
 
+use crate::credential_service::{CredentialService, Issued};
 use crate::host_command::{effective_path, load_login_shell_path, resolve_program};
 use crate::{with_manager, PluginManager};
 use buzzodz_plugins::HostProcess;
@@ -70,6 +71,8 @@ struct Entry {
     group: Option<u32>,
     stdin: Option<Arc<tokio::sync::Mutex<ChildStdin>>>,
     stop: Option<oneshot::Sender<()>>,
+    /// Its Buzz credential, revoked once it exits and this entry goes.
+    credential: Option<Arc<Issued>>,
 }
 
 #[derive(Clone, Default)]
@@ -114,6 +117,7 @@ impl HostProcesses {
         plugin: String,
         program: &str,
         mut command: Command,
+        credential: Option<Issued>,
         on_event: Channel<ProcessEvent>,
     ) -> Result<u64, String> {
         let state = self.clone();
@@ -149,6 +153,7 @@ impl HostProcesses {
                     .take()
                     .map(|stdin| Arc::new(tokio::sync::Mutex::new(stdin))),
                 stop: Some(stop),
+                credential: credential.map(Arc::new),
             },
         );
         drop(registry);
@@ -308,6 +313,7 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
     on_event: Channel<ProcessEvent>,
     mcp: Option<ProcessMcpConnection>,
     protection: Option<ProcessProtection>,
+    agent_credential: Option<bool>,
 ) -> Result<u64, String> {
     let page = processes.page();
     let plugin = id.clone();
@@ -441,6 +447,17 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
             serde_json::to_string(&mcp).map_err(|error| error.to_string())?,
         );
     }
+    // Acts for nobody until `plugin_host_process_bind_agent` names its agent.
+    let credential = match agent_credential {
+        Some(true) => app.state::<CredentialService>().issue().await?,
+        _ => None,
+    };
+    // Only native code names one; never one this app was itself started with.
+    command.env_remove(crate::credential_service::ENV);
+    let credential = credential.map(|(issued, env)| {
+        command.env(crate::credential_service::ENV, &*env);
+        issued
+    });
     if let Some(cwd) = cwd {
         let directory = expand_home(&cwd)?;
         std::fs::create_dir_all(&directory)
@@ -450,7 +467,14 @@ pub(crate) async fn plugin_host_process_spawn<R: tauri::Runtime>(
     #[cfg(unix)]
     command.as_std_mut().process_group(0);
 
-    processes.start(page, plugin, &declared.program, command, on_event)
+    processes.start(
+        page,
+        plugin,
+        &declared.program,
+        command,
+        credential,
+        on_event,
+    )
 }
 
 /// The verified target stays inside the MCP prefix and the same containment.
@@ -492,6 +516,24 @@ pub(crate) async fn plugin_host_process_write(
     close: bool,
 ) -> Result<(), String> {
     processes.write(&id, handle, data, close).await
+}
+
+/// Lets a process spawned with an agent credential act as that agent, once:
+/// a spare harness process is bound when an agent takes it.
+#[tauri::command]
+pub(crate) async fn plugin_host_process_bind_agent(
+    processes: tauri::State<'_, HostProcesses>,
+    credentials: tauri::State<'_, CredentialService>,
+    id: String,
+    handle: u64,
+    pubkey: String,
+    relay: String,
+) -> Result<(), String> {
+    // None was issued where there is no transport (Windows): nothing to bind.
+    match processes.owned(&id, handle, |entry| entry.credential.clone())? {
+        Some(issued) => credentials.bind(&issued, &id, pubkey, relay).await,
+        None => Ok(()),
+    }
 }
 
 /// Asks the process to stop, then kills it and its descendants. Its `exit`

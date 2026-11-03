@@ -477,7 +477,7 @@ impl Drop for Claim<'_> {
     }
 }
 
-fn header(request: &Request<Incoming>, name: HeaderName) -> Option<&str> {
+pub(crate) fn header(request: &Request<Incoming>, name: HeaderName) -> Option<&str> {
     request.headers().get(name)?.to_str().ok()
 }
 

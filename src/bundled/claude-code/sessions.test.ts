@@ -43,6 +43,7 @@ function sessions(
     /** The shared spare its new conversations look for. */
     spare: Spare;
     tools: ToolServer;
+    agent: Readonly<{ pubkey: string; relay: string }>;
   }> = {},
 ) {
   const fake = fakeSpawn(options.known);
@@ -76,6 +77,7 @@ function sessions(
         systemPrompt: "prompt",
         model: current,
         ...(options.tools ? { tools: options.tools } : {}),
+        ...(options.agent ? { agent: options.agent } : {}),
       };
     },
     fingerprint: () => model,
@@ -176,6 +178,19 @@ it("hands the spare's tools to the agent that takes it", async () => {
   expect(answered(process, "later")).toMatchObject({
     response: { mcp_response: { from: "agent" } },
   });
+});
+
+it("lets the spare's Buzz credential act as the agent that takes it", async () => {
+  const agent = { pubkey: "ab".repeat(32), relay: "wss://relay.example" };
+  const { pool, spare, claudes } = withSpare({ agent });
+  spare.warm({ cwd: "/work", model: "opus" });
+  await flush();
+  const [process] = claudes();
+  expect(process?.options.agentCredential).toBe(true);
+  // Started before any agent asked: it acts for no one yet.
+  expect(process?.actedAs).toEqual([]);
+  await pool.deliver("c/root", "hi", 1);
+  expect(process?.actedAs).toEqual([agent]);
 });
 
 it("hands over no spare that has run a turn without its prompt", async () => {

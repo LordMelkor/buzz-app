@@ -2531,6 +2531,7 @@ export class AgentRunners {
         },
         key: agent.key,
         pubkey: agent.pubkey,
+        relay: agent.relay,
         name: agent.name,
         owner: agent.owner,
         // What acts as the agent stops with it: a turn still working once it

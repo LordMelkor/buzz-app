@@ -6,6 +6,7 @@ use archive::relay_archive;
 mod browser;
 #[cfg(target_os = "macos")]
 mod close_menu;
+mod credential_service;
 mod oauth_callback;
 use oauth_callback::{
     oauth_callback_begin, oauth_callback_cancel, oauth_callback_complete, oauth_callback_wait,
@@ -108,7 +109,8 @@ use host_mcp::{
     plugin_host_mcp_close, plugin_host_mcp_reply, plugin_host_mcp_serve, HostMcpServers,
 };
 use host_process::{
-    plugin_host_process_kill, plugin_host_process_spawn, plugin_host_process_write, HostProcesses,
+    plugin_host_process_bind_agent, plugin_host_process_kill, plugin_host_process_spawn,
+    plugin_host_process_write, HostProcesses,
 };
 use host_request::{
     plugin_host_call_context, plugin_host_request, plugin_host_request_bytes, plugin_host_upload,
@@ -712,6 +714,7 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         plugin_host_save_bytes,
         plugin_host_upload,
         plugin_host_process_spawn,
+        plugin_host_process_bind_agent,
         plugin_host_process_write,
         plugin_host_process_kill,
         plugin_host_mcp_serve,
@@ -963,7 +966,7 @@ pub fn run() {
                     .clone(),
             );
             app.manage(tokens.clone());
-            app.manage(app_agents::AppAgentHost::new(
+            let agents = app_agents::AppAgentHost::new(
                 paths
                     .as_ref()
                     .map(|(_, agents, _)| agents.join("identities.json"))
@@ -979,7 +982,12 @@ pub fn run() {
                 // installed app.
                 !tauri::is_dev() && app.config().identifier == sign_out::legacy_identifier::CURRENT,
                 tokens,
+            );
+            app.manage(credential_service::CredentialService::new(
+                agents.clone(),
+                app.config().identifier.clone(),
             ));
+            app.manage(agents);
             Ok(())
         });
     #[cfg(not(target_os = "macos"))]

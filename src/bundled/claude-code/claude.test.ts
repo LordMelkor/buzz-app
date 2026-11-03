@@ -56,6 +56,43 @@ it("starts Claude as the SDK does and initializes it with the system prompt", as
   expect(claude.started).toBe(false);
 });
 
+it("lets its Buzz credential act as its agent before it initializes", async () => {
+  const { spawn, processes } = fakeSpawn();
+  const agent = { pubkey: "ab".repeat(32), relay: "wss://relay.example" };
+  await ClaudeProcess.start(spawn, { ...launch, agent });
+  const [fake] = processes;
+  expect(fake?.options.agentCredential).toBe(true);
+  expect(fake?.actedAs).toEqual([agent]);
+  expect(fake?.received[0]).toMatchObject({
+    request: { subtype: "initialize" },
+  });
+});
+
+it("initializes when its credential cannot act as its agent", async () => {
+  const { spawn, processes } = fakeSpawn();
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await ClaudeProcess.start(
+    async (id, options) => ({
+      ...(await spawn(id, options)),
+      actAs: async () => {
+        throw new Error("revoked");
+      },
+    }),
+    { ...launch, agent: { pubkey: "ab".repeat(32), relay: "wss://r" } },
+  );
+  expect(processes[0]?.received[0]).toMatchObject({
+    request: { subtype: "initialize" },
+  });
+  expect(warn).toHaveBeenCalled();
+  warn.mockRestore();
+});
+
+it("asks no credential for a discovery probe", async () => {
+  const { spawn, processes } = fakeSpawn();
+  await ClaudeProcess.start(spawn, { ...launch, discovery: true });
+  expect(processes[0]?.options.agentCredential).toBe(false);
+});
+
 it("resolves a message once the session is idle, and keeps the process for the next", async () => {
   const { spawn, processes } = fakeSpawn();
   const claude = await ClaudeProcess.start(spawn, {

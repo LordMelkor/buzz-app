@@ -1,0 +1,591 @@
+use super::policy::{classify, Verdict};
+use super::*;
+use crate::federated_identity::{agent::AgentTokens, FederatedIdentity};
+use buzz_agent_controller::{AppAgent, Secret};
+
+pub(crate) const RELAY: &str = "wss://relay.example";
+const NOW: u64 = 1_800_000_000;
+
+pub(crate) struct Fixture {
+    pub(crate) service: CredentialService,
+    host: AppAgentHost,
+    identity: FederatedIdentity,
+    pub(crate) agent: AppAgent,
+    key: Secret,
+    _dir: tempfile::TempDir,
+}
+
+pub(crate) fn fixture() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let key = Secret::generate().unwrap();
+    let agent = AppAgent {
+        pubkey: key.pubkey().into(),
+        relay: RELAY.into(),
+        owner: Secret::generate().unwrap().pubkey().into(),
+        auth: r#"["auth","owner","","sig"]"#.into(),
+        agent_type: "p/t".into(),
+        name: "Ada".into(),
+        picture: None,
+        profile: None,
+        about: None,
+        deleted: false,
+        deleting: false,
+        home: None,
+        joining: false,
+        protection: None,
+        protection_revision: 0,
+    };
+    let identity = FederatedIdentity::unconfigured();
+    let host = AppAgentHost::holding(
+        dir.path().join("identities.json"),
+        &agent,
+        Secret::parse(&key.hex(), key.pubkey()).unwrap(),
+        AgentTokens::in_memory(identity.clone()),
+    );
+    Fixture {
+        service: CredentialService::new(host.clone(), "xyz.block.buzz.test".into()),
+        host,
+        identity,
+        agent,
+        key,
+        _dir: dir,
+    }
+}
+
+fn token(env: &str) -> String {
+    let value: Value = serde_json::from_str(env).unwrap();
+    value["token"].as_str().unwrap().to_owned()
+}
+
+pub(crate) async fn issued(fixture: &Fixture) -> (Issued, String) {
+    let (issued, env) = fixture.service.issue().await.unwrap().unwrap();
+    (issued, token(&env))
+}
+
+async fn bound(fixture: &Fixture) -> (Issued, String) {
+    let (issued, token) = issued(fixture).await;
+    fixture
+        .service
+        .bind(&issued, "p", fixture.agent.pubkey.clone(), RELAY.into())
+        .await
+        .unwrap();
+    (issued, token)
+}
+
+pub(crate) async fn ask(
+    fixture: &Fixture,
+    token: &str,
+    method: &str,
+    params: &[&str],
+) -> (StatusCode, Value) {
+    let body = json!({ "id": "1", "method": method, "params": params }).to_string();
+    respond(&fixture.service, Some(token), Some(1), body.as_bytes()).await
+}
+
+pub(crate) fn error(reply: &(StatusCode, Value)) -> (StatusCode, &str) {
+    (reply.0, reply.1["error"].as_str().unwrap_or_default())
+}
+
+fn unsigned(kind: u16, tags: Value, created_at: u64) -> String {
+    json!({ "kind": kind, "tags": tags, "content": "hi", "created_at": created_at }).to_string()
+}
+
+fn now() -> u64 {
+    unix_now().unwrap()
+}
+
+#[tokio::test]
+async fn the_environment_names_a_loopback_endpoint_and_a_fresh_token() {
+    let fixture = fixture();
+    let (_first, env) = fixture.service.issue().await.unwrap().unwrap();
+    let (_second, other) = fixture.service.issue().await.unwrap().unwrap();
+    let value: Value = serde_json::from_str(&env).unwrap();
+    let url = value["url"].as_str().unwrap();
+    assert!(url.starts_with("http://127.0.0.1:") && url.ends_with("/v1"));
+    assert_eq!(token(&env).len(), 43, "256 bits, base64url");
+    assert_ne!(token(&env), token(&other));
+}
+
+#[tokio::test]
+async fn an_unbound_token_acts_for_nobody() {
+    let fixture = fixture();
+    let (_issued, token) = issued(&fixture).await;
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(
+        error(&reply),
+        (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+    );
+}
+
+#[tokio::test]
+async fn a_bound_token_is_its_agent_and_never_another() {
+    let fixture = fixture();
+    let (issued, token) = bound(&fixture).await;
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(reply.1["result"], fixture.agent.pubkey.as_str());
+    // Binding again to the same agent is harmless; to another is refused.
+    fixture
+        .service
+        .bind(&issued, "p", fixture.agent.pubkey.clone(), RELAY.into())
+        .await
+        .unwrap();
+    let other = Secret::generate().unwrap();
+    assert!(fixture
+        .service
+        .bind(&issued, "p", other.pubkey().into(), RELAY.into())
+        .await
+        .is_err());
+    let described: Value = serde_json::from_str(
+        ask(&fixture, &token, "describe", &[]).await.1["result"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(described["role"], "agent");
+    assert_eq!(described["owner_pubkey"], fixture.agent.owner.as_str());
+    assert_eq!(described["relays"], json!([RELAY]));
+    assert_eq!(described["instance"], "xyz.block.buzz.test");
+    assert!(!described["methods"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("pair")));
+}
+
+#[tokio::test]
+async fn a_plugin_binds_only_agents_of_its_own_type() {
+    let fixture = fixture();
+    let (issued, token) = issued(&fixture).await;
+    for plugin in ["other", "", "p/t"] {
+        assert!(fixture
+            .service
+            .bind(&issued, plugin, fixture.agent.pubkey.clone(), RELAY.into())
+            .await
+            .is_err());
+    }
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(
+        error(&reply),
+        (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+    );
+}
+
+#[tokio::test]
+async fn a_token_stops_with_its_process() {
+    let fixture = fixture();
+    let (issued, token) = bound(&fixture).await;
+    drop(issued);
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
+}
+
+#[tokio::test]
+async fn deleting_the_agent_revokes_its_tokens_for_good() {
+    let fixture = fixture();
+    let (issued, token) = bound(&fixture).await;
+    fixture
+        .host
+        .forget_row_for_test(&fixture.agent.pubkey, RELAY);
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
+    // Not even an import of the same key brings this token back.
+    fixture
+        .host
+        .reopen_row_for_test(&fixture.agent.pubkey, RELAY);
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
+    assert!(fixture
+        .service
+        .bind(&issued, "p", fixture.agent.pubkey.clone(), RELAY.into())
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn signing_out_revokes_every_token() {
+    let fixture = fixture();
+    let (_issued, token) = bound(&fixture).await;
+    fixture.identity.sign_out().await;
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
+}
+
+#[tokio::test]
+async fn an_unknown_token_is_revoked_and_a_missing_one_too() {
+    let fixture = fixture();
+    let reply = ask(&fixture, "not-a-token", "get_public_key", &[]).await;
+    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
+    let body = json!({ "id": "1", "method": "describe", "params": [] }).to_string();
+    let reply = respond(&fixture.service, None, Some(1), body.as_bytes()).await;
+    assert_eq!(error(&reply), (StatusCode::UNAUTHORIZED, "revoked"));
+}
+
+#[tokio::test]
+async fn versions_and_envelopes_are_checked_first() {
+    let fixture = fixture();
+    let (_issued, token) = bound(&fixture).await;
+    let body = json!({ "id": "7", "method": "describe", "params": [] }).to_string();
+    let reply = respond(&fixture.service, Some(&token), Some(2), body.as_bytes()).await;
+    assert_eq!(
+        error(&reply),
+        (StatusCode::BAD_REQUEST, "unsupported_version")
+    );
+    assert_eq!(reply.1["versions"], json!([1]));
+    assert_eq!(reply.1["id"], "7");
+    let reply = respond(&fixture.service, Some(&token), None, body.as_bytes()).await;
+    assert_eq!(
+        error(&reply),
+        (StatusCode::BAD_REQUEST, "unsupported_version")
+    );
+    let reply = respond(&fixture.service, Some(&token), Some(1), b"{}").await;
+    assert_eq!(error(&reply), (StatusCode::BAD_REQUEST, "invalid_request"));
+    let reply = ask(&fixture, &token, "sign_event", &[]).await;
+    assert_eq!(error(&reply), (StatusCode::BAD_REQUEST, "invalid_request"));
+    let reply = ask(&fixture, &token, "connect", &[]).await;
+    assert_eq!(error(&reply), (StatusCode::BAD_REQUEST, "unknown_method"));
+    // Pairing is not offered yet, with or without a token.
+    let reply = ask(&fixture, "", "pair", &["buzz", RELAY]).await;
+    assert_eq!(error(&reply), (StatusCode::BAD_REQUEST, "unknown_method"));
+    // Unknown fields are ignored.
+    let body =
+        json!({ "id": "8", "method": "get_public_key", "params": [], "extra": 1 }).to_string();
+    let reply = respond(&fixture.service, Some(&token), Some(1), body.as_bytes()).await;
+    assert_eq!(reply.1["result"], fixture.agent.pubkey.as_str());
+}
+
+#[tokio::test]
+async fn ordinary_events_are_signed_as_built() {
+    let fixture = fixture();
+    let (_issued, token) = bound(&fixture).await;
+    let event = unsigned(9, json!([["h", "channel"]]), 1_700_000_000);
+    let reply = ask(&fixture, &token, "sign_event", &[&event]).await;
+    let signed: Value = serde_json::from_str(reply.1["result"].as_str().unwrap()).unwrap();
+    assert_eq!(signed["pubkey"], fixture.agent.pubkey.as_str());
+    assert_eq!(signed["created_at"], 1_700_000_000);
+    assert_eq!(signed["tags"], json!([["h", "channel"]]));
+    let event: nostr::event::Event = serde_json::from_value(signed).unwrap();
+    event.verify().unwrap();
+}
+
+#[tokio::test]
+async fn sensitive_and_unknown_kinds_are_not_signed() {
+    let fixture = fixture();
+    let (_issued, token) = bound(&fixture).await;
+    for kind in [0, 3, 5, 9000, 9021, 30177, 30617, 46030] {
+        let reply = ask(
+            &fixture,
+            &token,
+            "sign_event",
+            &[&unsigned(kind, json!([]), NOW)],
+        )
+        .await;
+        assert_eq!(
+            error(&reply),
+            (StatusCode::FORBIDDEN, "approval_required"),
+            "{kind}"
+        );
+    }
+    let reply = ask(
+        &fixture,
+        &token,
+        "sign_event",
+        &[&unsigned(4, json!([]), NOW)],
+    )
+    .await;
+    assert_eq!(error(&reply), (StatusCode::FORBIDDEN, "denied"));
+    assert!(reply.1["message"].as_str().unwrap().contains("Kind 4"));
+}
+
+#[tokio::test]
+async fn an_event_naming_another_identity_is_denied() {
+    let fixture = fixture();
+    let (_issued, token) = bound(&fixture).await;
+    let event = json!({
+        "kind": 9, "tags": [], "content": "", "created_at": NOW,
+        "pubkey": Secret::generate().unwrap().pubkey(),
+    })
+    .to_string();
+    let reply = ask(&fixture, &token, "sign_event", &[&event]).await;
+    assert_eq!(error(&reply), (StatusCode::FORBIDDEN, "denied"));
+}
+
+#[tokio::test]
+async fn auth_proofs_are_signed_only_for_its_community_and_now() {
+    let fixture = fixture();
+    let (_issued, token) = bound(&fixture).await;
+    let at = now();
+    let http = unsigned(
+        27235,
+        json!([["u", "https://relay.example/query"], ["method", "POST"]]),
+        at,
+    );
+    assert_eq!(
+        ask(&fixture, &token, "sign_event", &[&http]).await.0,
+        StatusCode::OK
+    );
+    let elsewhere = unsigned(
+        27235,
+        json!([
+            ["u", "https://adapter.example/v1/identity/assertions"],
+            ["method", "POST"]
+        ]),
+        at,
+    );
+    let reply = ask(&fixture, &token, "sign_event", &[&elsewhere]).await;
+    assert_eq!(error(&reply), (StatusCode::FORBIDDEN, "denied"));
+    let stale = unsigned(
+        27235,
+        json!([["u", "https://relay.example/query"], ["method", "POST"]]),
+        at - 120,
+    );
+    let reply = ask(&fixture, &token, "sign_event", &[&stale]).await;
+    assert_eq!(error(&reply), (StatusCode::FORBIDDEN, "denied"));
+}
+
+#[test]
+fn the_policy_binds_each_proof_to_the_community() {
+    let tags = |value: Value| serde_json::from_value::<Vec<Vec<String>>>(value).unwrap();
+    let verdict = |kind, value, at| classify(kind, &tags(value), at, NOW, RELAY);
+    // NIP-42: its relay, one challenge.
+    assert_eq!(
+        verdict(
+            22242,
+            json!([["relay", "wss://Relay.Example/"], ["challenge", "c"]]),
+            NOW
+        ),
+        Verdict::Sign
+    );
+    assert!(matches!(
+        verdict(
+            22242,
+            json!([["relay", "wss://other.example"], ["challenge", "c"]]),
+            NOW
+        ),
+        Verdict::Deny(_)
+    ));
+    assert!(matches!(
+        verdict(22242, json!([["relay", RELAY]]), NOW),
+        Verdict::Deny(_)
+    ));
+    assert!(matches!(
+        verdict(
+            22242,
+            json!([["relay", RELAY], ["relay", RELAY], ["challenge", "c"]]),
+            NOW
+        ),
+        Verdict::Deny(_)
+    ));
+    // NIP-98: its origin, any path; one method; no other origin or port.
+    assert_eq!(
+        verdict(
+            27235,
+            json!([
+                ["u", "https://relay.example:443/media/abc"],
+                ["method", "GET"]
+            ]),
+            NOW + 60
+        ),
+        Verdict::Sign
+    );
+    assert!(matches!(
+        verdict(
+            27235,
+            json!([["u", "https://relay.example:8443/"], ["method", "GET"]]),
+            NOW
+        ),
+        Verdict::Deny(_)
+    ));
+    assert!(matches!(
+        verdict(
+            27235,
+            json!([["u", "https://user@relay.example/"], ["method", "GET"]]),
+            NOW
+        ),
+        Verdict::Deny(_)
+    ));
+    assert!(matches!(
+        verdict(
+            27235,
+            json!([["u", "http://relay.example/"], ["method", "GET"]]),
+            NOW
+        ),
+        Verdict::Deny(_)
+    ));
+    assert!(matches!(
+        verdict(27235, json!([["u", "https://relay.example/"]]), NOW),
+        Verdict::Deny(_)
+    ));
+    assert!(matches!(
+        verdict(
+            27235,
+            json!([["u", "https://relay.example/"], ["method", "GET"]]),
+            NOW - 61
+        ),
+        Verdict::Deny(_)
+    ));
+    // Blossom: its server, upload or get, expiring within a minute.
+    let blossom = |t: &str, server: &str, expiration: u64| {
+        verdict(
+            24242,
+            json!([
+                ["t", t],
+                ["server", server],
+                ["expiration", expiration.to_string()]
+            ]),
+            NOW,
+        )
+    };
+    assert_eq!(blossom("upload", "relay.example", NOW + 60), Verdict::Sign);
+    assert_eq!(blossom("get", "RELAY.example", NOW), Verdict::Sign);
+    assert!(matches!(
+        blossom("delete", "relay.example", NOW + 60),
+        Verdict::Deny(_)
+    ));
+    assert!(matches!(
+        blossom("get", "cdn.example", NOW + 60),
+        Verdict::Deny(_)
+    ));
+    assert!(matches!(
+        blossom("get", "relay.example", NOW + 61),
+        Verdict::Deny(_)
+    ));
+    // A local community over plain WebSockets keeps its port and scheme.
+    let local = "ws://localhost:3000";
+    let tags_for = tags(json!([
+        ["u", "http://localhost:3000/events"],
+        ["method", "POST"]
+    ]));
+    assert_eq!(classify(27235, &tags_for, NOW, NOW, local), Verdict::Sign);
+    let tags_for = tags(json!([
+        ["u", "http://localhost:3001/events"],
+        ["method", "POST"]
+    ]));
+    assert!(matches!(
+        classify(27235, &tags_for, NOW, NOW, local),
+        Verdict::Deny(_)
+    ));
+}
+
+#[test]
+fn every_kind_has_one_class() {
+    let classes = |kind| classify(kind, &[], NOW, NOW, RELAY);
+    for kind in [7, 9, 30174, 20001, 24200, 40002, 41010, 45010, 46020, 1621] {
+        assert_eq!(classes(kind), Verdict::Sign, "{kind}");
+    }
+    for kind in [
+        0, 3, 5, 9005, 9044, 10002, 10100, 28936, 30621, 41011, 45011,
+    ] {
+        assert_eq!(classes(kind), Verdict::Approval, "{kind}");
+    }
+    for kind in [1, 4, 1059, 24243, 24245, 30350, 39000] {
+        assert!(matches!(classes(kind), Verdict::Deny(_)), "{kind}");
+    }
+}
+
+#[tokio::test]
+async fn encryption_and_memory_addresses_act_as_the_agent() {
+    let fixture = fixture();
+    let (_issued, token) = bound(&fixture).await;
+    let owner = fixture.agent.owner.clone();
+    let reply = ask(&fixture, &token, "nip44_encrypt", &[&owner, "secret"]).await;
+    let payload = reply.1["result"].as_str().unwrap().to_owned();
+    assert_eq!(
+        &*fixture.key.nip44_decrypt(&owner, &payload).unwrap(),
+        "secret"
+    );
+    let reply = ask(&fixture, &token, "nip44_decrypt", &[&owner, &payload]).await;
+    assert_eq!(reply.1["result"], "secret");
+    let reply = ask(&fixture, &token, "nip44_decrypt", &[&owner, "garbage"]).await;
+    assert_eq!(error(&reply), (StatusCode::BAD_REQUEST, "invalid_request"));
+    // The d tag the app's own memory writes use.
+    let written = fixture
+        .key
+        .memory_event(&owner, "mem/notes", Some("x"), NOW)
+        .unwrap();
+    let reply = ask(&fixture, &token, "engram_d_tag", &[&owner, "mem/notes"]).await;
+    assert_eq!(reply.1["result"], written["tags"][0][1]);
+    let reply = ask(&fixture, &token, "engram_d_tag", &[&owner, "Not A Slug"]).await;
+    assert_eq!(error(&reply), (StatusCode::BAD_REQUEST, "invalid_request"));
+}
+
+#[tokio::test]
+async fn evidence_and_auth_tag_come_from_the_agent() {
+    let fixture = fixture();
+    let (_issued, token) = bound(&fixture).await;
+    let reply = ask(&fixture, &token, "auth_tag", &[]).await;
+    assert_eq!(reply.1["result"], fixture.agent.auth.as_str());
+    // No enterprise sign-in for this relay: no evidence to send.
+    let reply = ask(&fixture, &token, "federated_identity", &[RELAY]).await;
+    assert_eq!(reply, (StatusCode::OK, json!({ "id": "1", "result": "" })));
+    let reply = ask(
+        &fixture,
+        &token,
+        "federated_identity",
+        &["wss://other.example"],
+    )
+    .await;
+    assert_eq!(error(&reply), (StatusCode::FORBIDDEN, "denied"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_token_is_rate_limited_and_recovers() {
+    let fixture = fixture();
+    let (_issued, token) = bound(&fixture).await;
+    for _ in 0..BURST as usize {
+        assert_eq!(
+            ask(&fixture, &token, "get_public_key", &[]).await.0,
+            StatusCode::OK
+        );
+    }
+    let reply = ask(&fixture, &token, "get_public_key", &[]).await;
+    assert_eq!(
+        error(&reply),
+        (StatusCode::TOO_MANY_REQUESTS, "rate_limited")
+    );
+    assert_eq!(reply.1["retry_after"], 1);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(
+        ask(&fixture, &token, "get_public_key", &[]).await.0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn the_listener_answers_only_its_callers() {
+    let fixture = fixture();
+    let (_issued, env) = fixture.service.issue().await.unwrap().unwrap();
+    let value: Value = serde_json::from_str(&env).unwrap();
+    let (url, token) = (
+        value["url"].as_str().unwrap(),
+        value["token"].as_str().unwrap(),
+    );
+    let client = reqwest::Client::new();
+    let body = json!({ "id": "1", "method": "describe", "params": [] }).to_string();
+    let post = |url: &str| {
+        client
+            .post(url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Buzz-Credential-Provider", "1")
+            .header("Content-Type", "application/json")
+            .body(body.clone())
+    };
+    // An unbound token, but a caller: answered in the envelope.
+    let reply = post(url).send().await.unwrap();
+    assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE.as_u16());
+    assert_eq!(reply.headers()["cache-control"], "no-store");
+    let reply: Value = serde_json::from_slice(&reply.bytes().await.unwrap()).unwrap();
+    assert_eq!(reply["error"], "unavailable");
+    // A web page, another host name, or another path hears nothing.
+    let page = post(url)
+        .header("Origin", "https://evil.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status(), 404);
+    assert!(page.bytes().await.unwrap().is_empty());
+    let host = post(url).header("Host", "localhost").send().await.unwrap();
+    assert_eq!(host.status(), 404);
+    let path = post(&url.replace("/v1", "/v2")).send().await.unwrap();
+    assert_eq!(path.status(), 404);
+    let get = client.get(url).send().await.unwrap();
+    assert_eq!(get.status(), 405);
+}

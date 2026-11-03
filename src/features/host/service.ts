@@ -79,6 +79,9 @@ export type HostProcessOptions = Readonly<{
   mcp?: Pick<HostMcpServer, "url" | "headers">;
   /** Native macOS containment for a protected worker and its descendants. */
   protection?: ProcessProtection;
+  /** Hand it a Buzz credential (`BUZZ_CREDENTIAL_PROVIDER`) that acts for no
+   * one until `actAs` names one of the plugin's agents. Not on Windows. */
+  agentCredential?: boolean;
   onStdout?(data: string): void;
   onStderr?(data: string): void;
 }>;
@@ -88,6 +91,9 @@ export type HostProcess = Readonly<{
   end(data?: string): Promise<void>;
   /** Asks it to stop, then kills it and its descendants. */
   kill(): Promise<void>;
+  /** Only with `agentCredential`: lets its credential act as this agent of
+   * the plugin's type from now on. A process acts as one agent only. */
+  actAs?(agent: Readonly<{ pubkey: string; relay: string }>): Promise<void>;
   /** The exit code once it exits; null when a signal ended it. */
   exited: Promise<number | null>;
 }>;
@@ -300,6 +306,7 @@ export class HostService extends Service implements Host {
       env: options.env ?? null,
       mcp: options.mcp ?? null,
       protection: options.protection ?? null,
+      agentCredential: options.agentCredential ?? false,
       onEvent,
     });
     // The host takes at most 1 MiB a write, so a longer one goes in pieces,
@@ -344,6 +351,18 @@ export class HostService extends Service implements Host {
       write: (data: string) => write(data, false),
       end: (data = "") => write(data, true),
       kill,
+      ...(options.agentCredential && {
+        actAs: ({
+          pubkey,
+          relay,
+        }: Readonly<{ pubkey: string; relay: string }>) =>
+          invoke<void>("plugin_host_process_bind_agent", {
+            id: owner.id,
+            handle,
+            pubkey,
+            relay,
+          }),
+      }),
       exited,
     });
   }
