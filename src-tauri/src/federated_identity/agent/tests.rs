@@ -295,6 +295,52 @@ async fn an_agent_assertion_is_minted_with_the_grant_validated_and_reused() {
     );
 }
 
+#[tokio::test]
+async fn evidence_needed_for_longer_replaces_a_cached_assertion_expiring_sooner() {
+    let key = Secret::generate().unwrap();
+    let mut probe = fixture("http://unused".into()).agent;
+    probe.pubkey = key.pubkey().into();
+    let now = super::now().unwrap() as u64;
+    let short = issued(&probe, serde_json::json!({ "exp": now + 60 }));
+    let long = issued(&probe, serde_json::json!({}));
+    let (base, served) = issuer(vec![
+        (200, enrolled(&"b".repeat(64))),
+        (200, short),
+        (200, long),
+    ])
+    .await;
+    let mut f = fixture(base);
+    f.agent.pubkey = key.pubkey().into();
+    f.key = key;
+    let header = |admission: Admission| admission.header().unwrap().to_owned();
+
+    let first = header(
+        f.tokens
+            .authorize(&f.agent, &f.key, Stamp::default())
+            .await
+            .unwrap(),
+    );
+    // A minute left is enough for one request now, so it is reused for that.
+    let again = header(
+        f.tokens
+            .authorize(&f.agent, &f.key, Stamp::default())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(first, again);
+    let lasting = header(
+        f.tokens
+            .authorize_for(&f.agent, &f.key, Stamp::default(), Duration::from_secs(70))
+            .await
+            .unwrap(),
+    );
+    assert_ne!(
+        first, lasting,
+        "a header that must outlast it is minted anew"
+    );
+    assert_eq!(settled(served).await.len(), 3);
+}
+
 #[test]
 fn agent_assertions_must_name_this_agent_owner_issuer_and_community() {
     let f = fixture("http://unused".into());
