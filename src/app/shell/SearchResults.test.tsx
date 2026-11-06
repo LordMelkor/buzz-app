@@ -3566,6 +3566,67 @@ it.each(["from:we"])(
   },
 );
 
+it.each([
+  ["a verified full name", "from:@riv"],
+  ["a verified username", "from:@jriv"],
+])(
+  "offers a person the relay found by %s that their profile name does not match",
+  async (_case, query) => {
+    const relay = keypair(),
+      viewer = keypair(),
+      person = keypair();
+    const head = signed(relay, {
+      kind: 30382,
+      created_at: 1_000_000,
+      content: "",
+      tags: [
+        ["d", person.pubkey],
+        ["p", person.pubkey],
+        ["active", "true"],
+        ["display_name", "Jordan"],
+        ["username", "jrivera"],
+        ["issuer_label", "Example"],
+        ["verified_at", "1000000"],
+        ["full_name", "Jordan Rivera"],
+      ],
+    });
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      verifiedProfiles: {
+        pubkey: relay.pubkey,
+        multipleIssuers: false,
+        searchable: true,
+      },
+      searchProfiles: async () =>
+        [profile(person, { name: "jr-old" }), head].map((event) =>
+          eventDto(event),
+        ),
+    });
+    const change = vi.fn();
+    try {
+      render(
+        <SearchResults
+          session={owner.session}
+          query={query}
+          onQueryChange={change}
+          input={createRef()}
+          pages={[]}
+          openConversation={() => {}}
+        />,
+      );
+      const people = within(screen.getByRole("group", { name: "People" }));
+      // Shown by the verified name, not the profile name it was found by.
+      const choice = await people.findByRole("option", { name: /Jordan/ });
+      expect(people.queryByRole("option", { name: /jr-old/ })).toBeNull();
+      fireEvent.click(choice);
+      expect(change).toHaveBeenCalledWith(`from:${person.pubkey} `);
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
 it("distinguishes an unavailable global author lookup from no matching people", async () => {
   const relay = keypair(),
     viewer = keypair();

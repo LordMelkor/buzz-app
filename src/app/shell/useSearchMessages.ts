@@ -7,7 +7,11 @@ import {
 import { objectBody } from "../../features/relay/body";
 import type { RelaySession } from "../../features/relay/session";
 import type { ReadFilter } from "../../features/relay/events";
-import { foldProfiles } from "../../features/relay/profiles";
+import { searchedProfiles } from "../../features/relay/profile-search";
+import {
+  type VerifiedProfile,
+  verifiedAliases,
+} from "../../features/relay/verified-profile";
 import { normalizeName } from "../../features/search/person-match";
 import {
   isHexPubkey,
@@ -243,18 +247,28 @@ export function useSearchMessages(
               await session.profiles.ensure(knownMembers, "foreground");
               controller.signal.throwIfAborted();
             }
-            // A key matches by its profile name or, for a selectable agent,
-            // by the agent's own name.
-            const named = (pubkey: string, profileName = "") =>
-              normalizeName(profileName) === handle ||
-              normalizeName(agents.get(pubkey) ?? "") === handle;
+            // A key matches by its profile name, its verified names (display
+            // name, username, full name) or, for a selectable agent, by the
+            // agent's own name.
+            const named = (
+              pubkey: string,
+              profileName = "",
+              verified?: VerifiedProfile,
+            ) =>
+              [
+                profileName,
+                agents.get(pubkey) ?? "",
+                ...verifiedAliases(verified),
+              ].some((alias) => normalizeName(alias) === handle);
+            const shared = (pubkey: string) =>
+              session.profiles.snapshot().get(pubkey);
             // Selectable agents are offered wherever the picker runs, so they
             // are always candidates, alongside members or relay matches.
             const agentMatches = [...agents.keys()].filter((pubkey) =>
-              named(pubkey, session.profiles.snapshot().get(pubkey)?.name),
+              named(pubkey, shared(pubkey)?.name, shared(pubkey)?.verified),
             );
             const scoped = knownMembers.filter((pubkey) =>
-              named(pubkey, session.profiles.snapshot().get(pubkey)?.name),
+              named(pubkey, shared(pubkey)?.name, shared(pubkey)?.verified),
             );
             const resolve = (keys: readonly string[]) => {
               const unique = [...new Set(keys)];
@@ -275,10 +289,33 @@ export function useSearchMessages(
                 typed.toLowerCase(),
                 { limit, signal: controller.signal },
               );
-              const matches = [...foldProfiles(candidates)]
+              // A person the relay found by a verified name alone has no
+              // profile; their verified names come from the search's own
+              // heads, or the shared profiles when those hold them.
+              const people = searchedProfiles(
+                candidates,
+                session.profiles.verifiedAuthority?.(),
+              );
+              const unverified = [...people.keys()].filter(
+                (pubkey) =>
+                  !shared(pubkey)?.verified &&
+                  !session.profiles.verifiedHeld?.(pubkey),
+              );
+              const read = unverified.length
+                ? await session.directMessages.verified?.(
+                    unverified,
+                    controller.signal,
+                  )
+                : undefined;
+              controller.signal.throwIfAborted();
+              const matches = [...people]
                 .filter(
                   ([pubkey, profile]) =>
-                    named(pubkey, profile.name) || pubkey === handle,
+                    named(
+                      pubkey,
+                      profile.name,
+                      shared(pubkey)?.verified ?? read?.profiles.get(pubkey),
+                    ) || pubkey === handle,
                 )
                 .map(([pubkey]) => pubkey);
               const found = resolve([...matches, ...agentMatches]);

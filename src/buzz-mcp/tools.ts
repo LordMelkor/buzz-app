@@ -34,6 +34,7 @@ import {
   type VerifiedProfile,
   verifiedProfile,
   verifiedProfileFilter,
+  verifiedAliases,
   verifiedProfileSubject,
 } from "../features/relay/verified-profile";
 import { imageType } from "../features/relay/attachment-limits";
@@ -978,35 +979,50 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
     if (!ids.length && !q) throw new Error("Give ids or q.");
     if (ids.length && q) throw new Error("Give ids or q, not both.");
     if (ids.length > 100) throw new Error("Give at most 100 ids.");
-    // Name search matches only name and display_name, best match first;
-    // NIP-50 search matches the whole profile, so text in avatars or `about`
-    // can fill its results and hide the person asked for. Name search refuses
-    // a query longer than its limit, so a longer name uses NIP-50 search.
-    const named =
-      !ids.length && q && [...q].length <= PROFILE_SEARCH_QUERY_MAX
-        ? await client.searchProfiles?.(q, PROFILE_SEARCH_MAX)
-        : undefined;
+    // Name search matches names, best match first (see searchPeople); NIP-50
+    // search matches the whole profile, so text in avatars or `about` can
+    // fill its results and hide the person asked for.
+    const people = ids.length ? undefined : await tools.searchPeople(q ?? "");
     const profiles =
-      named?.filter((event) => event.kind === 0) ??
-      (await client.query([
-        ids.length
-          ? { kinds: [0], authors: ids, limit: ids.length }
-          : { kinds: [0], search: q, limit: 100 },
-      ]));
-    const rows = newest(profiles)
-      .map((event) => {
+      people?.profiles ??
+      (await client.query([{ kinds: [0], authors: ids, limit: ids.length }]));
+    // Verified names, as the community's name search also matches them: a
+    // person's verified full name need not be the name on their profile.
+    const verified = people?.verified ?? new Map<string, VerifiedProfile>();
+    const shown = (pubkey: string, name: string) => {
+      const found = verified.get(pubkey);
+      const label = found && (found.fullName ?? found.displayName);
+      return label && label !== name ? ` (verified: ${label})` : "";
+    };
+    const rows = [
+      ...newest(profiles).map((event) => {
         const profile = parse(event.content);
         const name = profileName(profile) ?? "";
         const about =
           typeof profile.about === "string" && profile.about.trim()
             ? ` — ${profile.about.trim().slice(0, 120)}`
             : "";
-        return { name, row: `${event.pubkey} ${name}${about}` };
-      })
-      .filter(
-        ({ name }) =>
-          !q || ids.length || named || name.toLowerCase().includes(q),
-      );
+        return {
+          name,
+          aliases: verifiedAliases(verified.get(event.pubkey)),
+          row: `${event.pubkey} ${name}${shown(event.pubkey, name)}${about}`,
+        };
+      }),
+      // Found by a verified name alone, with no profile of their own.
+      ...[...verified.keys()]
+        .filter((key) => !profiles.some((event) => event.pubkey === key))
+        .map((key) => ({
+          name: "",
+          aliases: verifiedAliases(verified.get(key)),
+          row: `${key}${shown(key, "")}`,
+        })),
+    ].filter(
+      ({ name, aliases }) =>
+        !q ||
+        ids.length ||
+        people?.searched ||
+        [name, ...aliases].some((alias) => alias.toLowerCase().includes(q)),
+    );
     return rows.map(({ row }) => row).join("\n") || "No users.";
   },
 
@@ -1968,6 +1984,42 @@ class Tools {
     };
   }
 
+  /** People the community's name search finds for `q`: their newest
+   * profiles, and the verified names (display name, username, full name) of
+   * everyone it found, read as the app reads them. The community's search
+   * matches verified names too and returns a person with no profile as their
+   * verified head alone. NIP-50 search, the fallback, matches profiles only.
+   * Without the connection's relay key no verified names are read. */
+  async searchPeople(q: string) {
+    // Name search refuses a query longer than its limit, so a longer name uses
+    // NIP-50 search.
+    const named =
+      [...q].length <= PROFILE_SEARCH_QUERY_MAX
+        ? await this.client.searchProfiles?.(q, PROFILE_SEARCH_MAX)
+        : undefined;
+    const profiles = newest(
+      named?.filter((event) => event.kind === 0) ??
+        (await this.client.query([{ kinds: [0], search: q, limit: 100 }])),
+    );
+    const relay = this.client.relayAuthor;
+    const authority =
+      relay && HEX_KEY.test(relay)
+        ? { pubkey: relay, multipleIssuers: false }
+        : undefined;
+    const headed = authority
+      ? (named ?? []).flatMap(
+          (event) =>
+            verifiedProfileSubject(event as unknown as RelayEvent, authority) ??
+            [],
+        )
+      : [];
+    const verified = await this.verifiedNames([
+      ...profiles.map((event) => event.pubkey),
+      ...headed,
+    ]);
+    return { searched: !!named, profiles, verified };
+  }
+
   /** The author `value` names: me, a pubkey or npub, or one display name. */
   async author(value: string) {
     if (value === "me") return this.client.pubkey;
@@ -1975,24 +2027,28 @@ class Tools {
       return pubkey(value);
     } catch {}
     const q = value.toLowerCase();
-    const named =
-      [...q].length <= PROFILE_SEARCH_QUERY_MAX
-        ? await this.client.searchProfiles?.(q, PROFILE_SEARCH_MAX)
-        : undefined;
-    const profiles =
-      named?.filter((event) => event.kind === 0) ??
-      (await this.client.query([{ kinds: [0], search: q, limit: 100 }]));
-    const found = newest(profiles).filter(
-      (event) => profileName(parse(event.content))?.toLowerCase() === q,
+    const { profiles, verified } = await this.searchPeople(q);
+    // A person answers to their profile name or any verified name.
+    const names = new Map(
+      profiles.map((event) => [
+        event.pubkey,
+        profileName(parse(event.content)),
+      ]),
+    );
+    const found = [...new Set([...names.keys(), ...verified.keys()])].filter(
+      (key) =>
+        [names.get(key), ...verifiedAliases(verified.get(key))].some(
+          (name) => name?.toLowerCase() === q,
+        ),
     );
     if (found.length > 1)
       throw new Error(
         `${found.length} people are named ${value}; give their npub.\n${found
-          .map((event) => npubEncode(event.pubkey))
+          .map((key) => npubEncode(key))
           .join("\n")}`,
       );
     if (!found[0]) throw new Error(`No one is named ${value}.`);
-    return found[0].pubkey;
+    return found[0];
   }
 
   /** Display names of `pubkeys` that have a profile. */

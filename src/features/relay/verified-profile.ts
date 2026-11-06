@@ -147,6 +147,19 @@ export function verifiedProfile(
   });
 }
 
+/** Every name a verified person goes by: what a search for them may type. */
+export function verifiedAliases(
+  verified:
+    | Pick<VerifiedProfile, "displayName" | "username" | "fullName">
+    | undefined,
+): string[] {
+  return verified
+    ? [verified.displayName, verified.username, verified.fullName].filter(
+        (name): name is string => !!name,
+      )
+    : [];
+}
+
 export type VerifiedProfileFilter = Readonly<{
   kinds: readonly [30382];
   authors: readonly [string];

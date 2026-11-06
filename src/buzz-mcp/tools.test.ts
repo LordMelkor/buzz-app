@@ -3275,6 +3275,74 @@ it("finds users through the community's name search, in its order", async () => 
   expect(client.query).not.toHaveBeenCalled();
 });
 
+/** A community whose name search also matches verified names: Alice's profile
+ * name differs from her verified full name, and Carol has a verified name but
+ * no profile. Heads are signed and admitted, as a connection returns them. */
+function verifiedPeople(more: readonly BuzzEvent[] = []) {
+  const relay = keypair();
+  const carol = "c".repeat(64);
+  const head = (subject: string, display: string, full: string) =>
+    eventDto(
+      signed(relay, {
+        kind: 30382,
+        content: "",
+        created_at: 100,
+        tags: [
+          ["d", subject],
+          ["p", subject],
+          ["active", "true"],
+          ["issuer_label", "Example"],
+          ["verified_at", "100"],
+          ["display_name", display],
+          ["username", display.toLowerCase()],
+          ["full_name", full],
+        ],
+      }),
+    );
+  const heads = [
+    head(alice, "Ally", "Jordan Rivera"),
+    head(carol, "Cee", "Casey Quinn"),
+  ];
+  const { client: base } = fake([...community, ...heads, ...more]);
+  const client = {
+    ...base,
+    relayAuthor: relay.pubkey,
+    searchProfiles: vi.fn(async () => [
+      profile(alice, "Alice Smith"),
+      ...heads,
+    ]),
+  };
+  return { client, carol };
+}
+
+it("finds a user by a verified full name that differs from their profile name", async () => {
+  const { client, carol } = verifiedPeople();
+  const found = await callTool(client, {}, "users", { q: "Jordan Rivera" });
+  expect(client.searchProfiles).toHaveBeenCalledWith("jordan rivera", 100);
+  expect(found).toBe(
+    [
+      `${alice} Alice Smith (verified: Jordan Rivera)`,
+      // Found by a verified name alone: no profile to print.
+      `${carol} (verified: Casey Quinn)`,
+    ].join("\n"),
+  );
+});
+
+it("names an author by a verified full name, a username or the profile name", async () => {
+  const carol = "c".repeat(64);
+  const { client } = verifiedPeople([
+    note(alice, "recipe", 200),
+    note(carol, "recipe", 300),
+  ]);
+  const read = (author: string) =>
+    callTool(client, {}, "notes_get", { name: "recipe", author });
+  for (const author of ["Jordan Rivera", "ally", "alice smith"])
+    await expect(read(author)).resolves.toMatch(/\nrecipe by a$/);
+  // A person with a verified name and no profile is named by it too.
+  await expect(read("Casey Quinn")).resolves.toMatch(/\nrecipe by c$/);
+  await expect(read("Nobody")).rejects.toThrow("No one is named Nobody.");
+});
+
 it("finds users with NIP-50 search where the community has no name search", async () => {
   const { client } = fake(community);
   client.searchProfiles = vi.fn(async () => undefined);

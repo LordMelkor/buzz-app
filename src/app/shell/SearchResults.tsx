@@ -12,7 +12,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { ChannelSummary, Profile } from "../../features/relay/contracts";
-import type { EventData } from "../../features/relay/events";
+import type { RelayEvent } from "../../features/relay/events";
 import type { RelaySession } from "../../features/relay/session";
 import {
   useChannelList,
@@ -27,7 +27,11 @@ import { useAgentChoices } from "../../features/agents/use-choices";
 import { canMessageAgent } from "../../features/agents/choices";
 import { useMentionArchives } from "../../features/messages/use-mention-archives";
 import { archiveHides } from "../../features/relay/identity-archives";
-import { foldProfiles } from "../../features/relay/profiles";
+import { searchedProfiles } from "../../features/relay/profile-search";
+import {
+  type VerifiedProfile,
+  verifiedAliases,
+} from "../../features/relay/verified-profile";
 import {
   ArrowsDownUpIcon,
   CalendarIcon,
@@ -326,7 +330,9 @@ export function SearchResults({
   const [authorSuggestions, setAuthorSuggestions] = useState<{
     query: string;
     lookupFailed?: boolean;
-    remote: readonly EventData[];
+    remote: readonly RelayEvent[];
+    /** Verified names of the people `remote` found, read before it shows. */
+    verified?: ReadonlyMap<string, VerifiedProfile> | undefined;
   }>();
   // Completing either from:name or from:@name selects an exact signed key.
   const datePrompt = operatorMatches(
@@ -629,7 +635,7 @@ export function SearchResults({
             // A partial directory still contains verified member profiles.
           }
         }
-        let remote: readonly EventData[] = [];
+        let remote: readonly RelayEvent[] = [];
         let lookupFailed = false;
         if (searchable(authorNeedle)) {
           try {
@@ -643,7 +649,29 @@ export function SearchResults({
           }
         }
         controller.signal.throwIfAborted();
-        setAuthorSuggestions({ query, lookupFailed, remote });
+        // A person is also found by a verified name (full name, username)
+        // that their profile name differs from, so name the page before it
+        // shows. A failed read leaves the profile names, as in New message.
+        const shared = session.profiles.snapshot();
+        const unverified = [
+          ...searchedProfiles(
+            remote,
+            session.profiles.verifiedAuthority?.(),
+          ).keys(),
+        ].filter(
+          (pubkey) =>
+            !shared.get(pubkey)?.verified &&
+            !session.profiles.verifiedHeld?.(pubkey),
+        );
+        const verified = unverified.length
+          ? (
+              await session.directMessages
+                .verified?.(unverified, controller.signal)
+                .catch(() => undefined)
+            )?.profiles
+          : undefined;
+        controller.signal.throwIfAborted();
+        setAuthorSuggestions({ query, lookupFailed, remote, verified });
       })().catch(() => {
         if (!controller.signal.aborted)
           setAuthorSuggestions({ query, remote: [], lookupFailed: true });
@@ -674,14 +702,24 @@ export function SearchResults({
           },
         ] as const,
     ),
-    ...foldProfiles(
+    ...searchedProfiles(
       authorSuggestions?.query === query ? authorSuggestions.remote : [],
+      session.profiles.verifiedAuthority?.(),
     ),
   ]);
-  // A selectable agent also matches by its own name, as in @ mentions.
+  // The shared profiles' verified names, else the ones this search's page
+  // was named with.
+  const authorVerified = (pubkey: string) =>
+    profiles.get(pubkey)?.verified ?? authorSuggestions?.verified?.get(pubkey);
+  // A selectable agent also matches by its own name, as in @ mentions, and a
+  // verified person by any of their verified names.
   const authorTier = (pubkey: string, name: string) =>
     Math.min(
-      ...[name, selectableAgents.get(pubkey)?.name].map((alias) =>
+      ...[
+        name,
+        selectableAgents.get(pubkey)?.name,
+        ...verifiedAliases(authorVerified(pubkey)),
+      ].map((alias) =>
         alias === undefined
           ? Infinity
           : (matchPerson(alias, authorNeedle)?.tier ?? Infinity),
@@ -692,7 +730,9 @@ export function SearchResults({
       ? [...candidates]
           .filter(([pubkey, profile]) => authorTier(pubkey, profile.name) < 4)
           .filter(
-            ([pubkey]) =>
+            ([pubkey, profile]) =>
+              // Found by a verified name alone, a person waits to be named.
+              (!profile.nameIsFallback || !!authorVerified(pubkey)) &&
               !archiveHides(session.archives, pubkey, session.viewer) &&
               (!knownAgents.has(pubkey) || selectableAgents.has(pubkey)),
           )
@@ -707,8 +747,17 @@ export function SearchResults({
           )
           .slice(0, 12)
           .map(([pubkey, profile]) => ({ pubkey, profile }))
-          .map(({ pubkey, profile }) => {
+          .map(({ pubkey, profile: found }) => {
             const agent = selectableAgents.get(pubkey);
+            // The relay found a person by any of their names; a person the
+            // shared profiles have not verified is shown by the name this
+            // search's page was verified with.
+            const page = profiles.get(pubkey)?.verified
+              ? undefined
+              : authorSuggestions?.verified?.get(pubkey);
+            const profile = page
+              ? { ...found, name: verifiedLabel(page) }
+              : found;
             const isAgent = !!agent || !!profile.isAgent;
             return {
               key: `author:${pubkey}`,

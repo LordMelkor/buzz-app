@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { expect, it } from "vitest";
+import type { ReadFilter } from "../../features/relay/events";
+import { eventDto } from "../../features/relay/events";
 import { createRelaySession } from "../../features/relay/session";
 import {
   keypair,
   message,
   metadata,
+  profile,
   roster,
   scriptedTransport,
   signed,
@@ -116,6 +119,66 @@ it.each([
       expect(result.current.moreError).toBeUndefined();
       act(() => result.current.loadMore());
       expect(wire.pending).toHaveLength(0);
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it.each([
+  ["a verified full name", "rivera"],
+  ["a verified username", "jrivera"],
+])(
+  "resolves from: by %s that differs from the person's profile name",
+  async (_case, typed) => {
+    const viewer = keypair();
+    const relay = keypair();
+    const person = keypair();
+    const reads: ReadFilter[][] = [];
+    const head = signed(relay, {
+      kind: 30382,
+      created_at: 1_000_000,
+      content: "",
+      tags: [
+        ["d", person.pubkey],
+        ["p", person.pubkey],
+        ["active", "true"],
+        ["display_name", "Jordan"],
+        ["username", "jrivera"],
+        ["issuer_label", "Example"],
+        ["verified_at", "1000000"],
+        ["full_name", "Rivera"],
+      ],
+    });
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      verifiedProfiles: {
+        pubkey: relay.pubkey,
+        multipleIssuers: false,
+        searchable: true,
+      },
+      // The relay matches verified names and sends the head with the profile.
+      searchProfiles: async () =>
+        [profile(person, { name: "jr-old" }), head].map((event) =>
+          eventDto(event),
+        ),
+      query(filters) {
+        if (filters.some((filter) => filter.kinds?.includes(9)))
+          reads.push(filters as ReadFilter[]);
+        return Promise.resolve([]);
+      },
+    });
+    try {
+      const { result } = renderHook(() =>
+        useSearchMessages(owner.session, `from:${typed} deploy`),
+      );
+      await waitFor(() =>
+        expect(reads.at(-1)).toEqual([
+          expect.objectContaining({ authors: [person.pubkey] }),
+        ]),
+      );
+      expect(result.current.ambiguousAuthor).toBeFalsy();
     } finally {
       cleanup();
       owner.dispose();
