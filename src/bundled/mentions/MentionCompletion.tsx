@@ -284,7 +284,7 @@ export function MentionCompletion({
         ),
         edit: team.disabled
           ? { text: `@${team.name}` }
-          : { mentions: team.recipients },
+          : { group: { name: team.name, mentions: team.recipients } },
       })),
     ];
     const key = JSON.stringify([

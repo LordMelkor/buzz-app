@@ -105,8 +105,8 @@ function OwnedTool({
         active() ? current.current.insertText(text) : false,
       insertMention: (recipient) =>
         active() ? current.current.insertMention(recipient) : false,
-      insertMentions: (recipients) =>
-        active() ? current.current.insertMentions(recipients) : false,
+      insertMentions: (recipients, group) =>
+        active() ? current.current.insertMentions(recipients, group) : false,
       replaceRecipients: (recipients) =>
         active() ? current.current.replaceRecipients(recipients) : false,
       replaceRecipientsIfEmpty: (recipients) =>

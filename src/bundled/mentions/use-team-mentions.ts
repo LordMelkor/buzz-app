@@ -52,6 +52,22 @@ export function teamBlocksSpace(
 const subscribeNone = () => () => {};
 const snapshotNone = () => empty;
 
+/** "1 person, 2 agents": what a team row says it mentions. */
+function teamCount(
+  recipients: readonly { pubkey: string }[],
+  eligible: ReadonlyMap<string, { agent: boolean }>,
+) {
+  const agents = recipients.filter(
+    (person) => eligible.get(person.pubkey)?.agent,
+  ).length;
+  const people = recipients.length - agents;
+  return [
+    people ? `${people} ${people === 1 ? "person" : "people"}` : "",
+    agents ? `${agents} ${agents === 1 ? "agent" : "agents"}` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
 /** Saved teams are shortcuts to exact individual recipients, never new identities. */
 export function useTeamMentions(
   session: ComposerSession,
@@ -306,7 +322,7 @@ export function useTeamMentions(
           disabled,
           detail:
             disabled ??
-            [`Saved team · ${recipients.length} members`, consequence]
+            [`Saved team · ${teamCount(recipients, eligible)}`, consequence]
               .filter(Boolean)
               .join(" · "),
           canSelect: () => {

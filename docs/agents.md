@@ -1141,15 +1141,17 @@ in both mention choosers under the same community visibility rules. Legacy
 channel-kit teams (see [Channels](channels.md)) remain available independently;
 a legacy catalog failure does not block current teams. A team is a shortcut, not
 a group identity: explicit selection
-inserts its saved agent keys as individual mentions in one undoable edit through
-`insertMentions`. Names never resolve membership. Typing a team name or Space
+inserts one `@team` chip in one undoable edit, which notifies each saved key as an
+individual mention (a `group` completion edit). Its row counts people and agents.
+Removing a member keeps the chip for the rest; typing into its name, code, opening
+it as text or copying it leaves plain `@team`. Names never resolve membership. Typing a team name or Space
 alone does not select it. Team names also prevent Space from accidentally selecting
 a person with the same name or a prefix. Each query shows at most 20 matching teams,
 with up to four cached avatar thumbnails and a remainder count. Empty, oversized
 (more than 32 agents), changed or partially unavailable teams stay disabled; there
 is no partial expansion. Reopen or change the query to refresh changed team
 choices. The resulting draft must fit the existing 32-mention and message-length
-limits. Selection never adds members: ordinary channels retain invite-on-send
+limits; a person mentioned by several chips counts once. Selection never adds members: ordinary channels retain invite-on-send
 consent, DMs retain reference-only outsiders, and Solo chat admission remains
 unchanged.
 
