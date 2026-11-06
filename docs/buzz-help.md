@@ -307,6 +307,16 @@ revokes all of them, and a pairing unused for 30 days expires.
   dots, and do not contribute to the sidebar’s floating **N unread** buttons or
   their avatar previews. Muted activity does not light the macOS Dock unread dot.
   Muting does not mark messages or threads as read.
+- **All activity**: by default a channel notifies you about mentions and your
+  own conversations. Choose **Notify for all activity** from its menu, beside
+  **Mute**, to be notified about every post and reply by someone else in it;
+  **Stop notifying for all activity** goes back to the default. **Settings →
+  Notifications → Channels with all activity** lists these channels with
+  **Turn off**, and the **Channel activity** switch under **Notify me about**
+  turns these alerts off without clearing the list. Mute wins, and so does
+  **Unfollow thread** for its replies. A post that mentions you alerts once, as a
+  mention. Nothing alerts while you're viewing the conversation or once it's
+  read. The choice is saved on this device, per community and account.
 - **Hidden DMs**: **Close conversation** and **Hide conversation** take a DM out
   of the sidebar without leaving it. To find one again, start a **New message**
   to exactly the same people. Its earlier messages appear before you send,

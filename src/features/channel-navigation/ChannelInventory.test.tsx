@@ -54,6 +54,7 @@ import {
   useChannelNavigation,
 } from "./ChannelNavigationState";
 import { readView, writeView } from "../../shared/view-state";
+import { activityChannels } from "../notifications/channel-activity";
 import styles from "../../app/shell/PrimarySidebar.module.css";
 import { BestieNavigationProvider } from "../../app/shell/BestieNavigation";
 import { PageNavigation } from "../../app/shell/PageNavigation";
@@ -840,6 +841,33 @@ it("copies a channel link that opens the same channel", async () => {
   expect(
     await screen.findByText("Couldn’t copy the link."),
   ).toBeInTheDocument();
+});
+
+it("turns all-activity notifications on and off beside Mute, and reports a failed save", async () => {
+  const h = fixture();
+  render(h.view("alpha"));
+  const choose = async (name: string) => {
+    fireEvent.keyDown(await screen.findByRole("button", { name: "beta" }), {
+      key: "ContextMenu",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name }));
+  };
+  await choose("Notify for all activity");
+  expect(activityChannels(h.session.scope)).toEqual(["beta"]);
+  await choose("Stop notifying for all activity");
+  expect(activityChannels(h.session.scope)).toEqual([]);
+  const full = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("full");
+  });
+  try {
+    await choose("Notify for all activity");
+    expect(
+      await screen.findByText("Couldn’t save notifications for beta"),
+    ).toBeInTheDocument();
+    expect(activityChannels(h.session.scope)).toEqual([]);
+  } finally {
+    full.mockRestore();
+  }
 });
 
 it("offers DMs a Move conversation menu and relocates them into a saved group", async () => {

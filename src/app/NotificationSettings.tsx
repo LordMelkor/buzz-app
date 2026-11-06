@@ -5,6 +5,8 @@ import { SwitchPreferenceRow } from "../shared/design-system/ui/SwitchPreference
 import { Button } from "../shared/design-system/ui/Button";
 import { PreferenceRow } from "../shared/design-system/ui/PreferenceRow";
 import { Select } from "../shared/design-system/ui/Select";
+import { NotificationChannels } from "./NotificationChannels";
+import type { ChannelQueries } from "../features/relay/contracts";
 import { UnreadIndicatorSettings } from "./UnreadIndicatorSettings";
 import { usePermissionCheck } from "./usePermissionCheck";
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
@@ -24,6 +26,7 @@ const SOUND_ROWS: readonly NotificationCategory[] = [
   "mention",
   "thread",
   "agent",
+  "channel",
 ];
 
 function AlertSoundRow({
@@ -78,9 +81,12 @@ function AlertSoundRow({
 
 export function NotificationSettings({
   notifications,
+  community,
   active = true,
 }: {
   notifications: NotificationsService;
+  /** The selected community, whose channels may notify on all activity. */
+  community?: { scope: string; channels: ChannelQueries } | undefined;
   active?: boolean;
 }) {
   const state = useSyncExternalStore(
@@ -190,6 +196,12 @@ export function NotificationSettings({
             ))}
           </SettingsGroup>
         </section>
+        {community && (
+          <NotificationChannels
+            scope={community.scope}
+            channels={community.channels}
+          />
+        )}
         <section id="setting-delivery" aria-label="Desktop delivery">
           <InlineHeader title="Delivery" />
           <SettingsGroup>

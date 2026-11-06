@@ -15,6 +15,11 @@ import { provideNavigation } from "../features/navigation/service";
 import { NotificationsService } from "../features/notifications/service";
 import { NotificationSettings } from "./NotificationSettings";
 import { PluginRuntime } from "../plugins/runtime";
+import {
+  activityChannels,
+  setChannelActivity,
+} from "../features/notifications/channel-activity";
+import type { ChannelList, ChannelQueries } from "../features/relay/contracts";
 
 const contexts: Context[] = [];
 afterEach(async () => {
@@ -464,6 +469,7 @@ it("selects and restores Silent for every category, stops previews, and can rest
     mention: "silent",
     thread: "silent",
     agent: "flutter",
+    channel: "flutter",
   });
   expect(play).toHaveBeenCalledOnce();
   expect(screen.getByRole("switch", { name: "Desktop alerts" })).toBeChecked();
@@ -472,4 +478,54 @@ it("selects and restores Silent for every category, stops previews, and can rest
   await user.click(await screen.findByRole("option", { name: "flutter" }));
   expect(play).toHaveBeenCalledTimes(2);
   expect(service.snapshot().preferences.sounds.direct).toBe("flutter");
+});
+
+it("lists the channels set to all activity by name and turns one off", async () => {
+  const ctx = new Context();
+  contexts.push(ctx);
+  const runtime = new PluginRuntime(ctx, async () => ({ apply() {} }));
+  ctx.effect(() => () => runtime.dispose());
+  const service = new NotificationsService(
+    ctx,
+    provideNavigation(ctx).navigation,
+    {
+      label: "Browser",
+      permission: async () => "granted",
+      requestPermission: async () => "granted",
+      show: async () => {},
+      dispose() {},
+    },
+  );
+  const scope = `https://relay.test:${"a".repeat(64)}`;
+  const list: ChannelList = {
+    status: "ready",
+    channels: [{ id: "alpha", name: "alpha", channelType: "stream" }],
+  };
+  const channels = {
+    list: () => list,
+    subscribeList: () => () => {},
+    ensureList() {},
+  } as unknown as ChannelQueries;
+  render(
+    <NotificationSettings
+      notifications={service}
+      community={{ scope, channels }}
+    />,
+    { wrapper: ToastProvider },
+  );
+  expect(
+    screen.getByText("No channels set to all activity"),
+  ).toBeInTheDocument();
+  act(() => {
+    setChannelActivity(scope, "alpha", true);
+    setChannelActivity(scope, "gone", true);
+  });
+  expect(screen.getByText("#alpha")).toBeInTheDocument();
+  await userEvent
+    .setup()
+    .click(
+      screen.getByRole("button", { name: "Turn off all activity for #alpha" }),
+    );
+  expect(activityChannels(scope)).toEqual(["gone"]);
+  expect(screen.queryByText("#alpha")).not.toBeInTheDocument();
 });

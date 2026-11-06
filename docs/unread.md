@@ -347,6 +347,12 @@ pending and retries with backoff (1 s doubling to 60 s), so the same parent is
 never asked twice at once. A session reset or access change during a lookup
 discards its answer; parents the reset kept are asked again.
 
+Attention also carries `activityUnread` for a channel's
+[all-activity notifications](notifications.md#running-app-behavior): it is set
+when the message is `unread`, or when no read mark covers it yet and it is a
+reply outside the viewer's conversations, except in a thread the viewer
+unfollowed. It changes no count, badge or Inbox item.
+
 Lookup results are kept apart from counted evidence, in a store bounded to
 4,096 decided parents and 1,024 fetched events. Fetched parents and roots are
 structure only: they give a reply its root for grouping and navigation, but
