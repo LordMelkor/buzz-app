@@ -77,6 +77,7 @@ import { SyncedTeams } from "./team-config";
 import { STANDALONE_DEADLINE_MS } from "../agent-harness/standalone";
 import { readTeams, writeTeams, type AgentRecord } from "./store";
 import { createPluginRequests } from "../../plugins/requests";
+import { createToolApprovals, type ToolApprovals } from "./tool-approval";
 import {
   createDeviceSettings,
   type DeviceSettings,
@@ -196,6 +197,8 @@ async function setup({
   starting = false,
   /** The Buzz settings agents' runs can change. */
   deviceSettings = undefined as DeviceSettings | undefined,
+  /** Where plugin tools' calls wait for the owner. */
+  toolApprovals = undefined as ToolApprovals | undefined,
   /** The echo type's plugin revision: "bundled" for a bundled harness. */
   revision = "one",
 } = {}) {
@@ -240,6 +243,7 @@ async function setup({
     decisions,
     binding,
     deviceSettings,
+    toolApprovals,
   );
   const plugin = ctx.extend({
     pluginOwner: Object.freeze({ id: "example", revision }),
@@ -14549,7 +14553,10 @@ describe("full external agent access", () => {
     scopes: readonly import("./external-connection").ExternalScope[] = [
       "agent",
     ],
-    options: Pick<NonNullable<Parameters<typeof setup>[0]>, "readFile"> = {},
+    options: Pick<
+      NonNullable<Parameters<typeof setup>[0]>,
+      "readFile" | "toolApprovals"
+    > = {},
   ) {
     vi.stubEnv(
       "VITE_BUZZ_EXTERNAL_MCP_COMMUNITIES",
@@ -14667,6 +14674,65 @@ describe("full external agent access", () => {
         "result.isError",
         true,
       );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("holds a plugin tool's call until the owner allows it, and remembers Always allow", async () => {
+    const toolApprovals = createToolApprovals(memoryStorage());
+    const f = await fixture(["agent"], { toolApprovals });
+    try {
+      const tasks = f.ctx.extend({
+        pluginOwner: Object.freeze({ id: "buzz.tasks", revision: "one" }),
+      });
+      await tasks
+        .plugin({
+          inject: ["agents"],
+          apply: (plugin: Context) =>
+            plugin.agents.addTool({
+              name: "tasks_delete",
+              description: "Delete a task.",
+              inputSchema: { type: "object" },
+              call: async (client) => {
+                if (!client.approve) throw new Error("No owner to ask");
+                await client.approve({
+                  title: "Delete a task",
+                  detail: "Task 7",
+                });
+                return "deleted";
+              },
+            }),
+        })
+        .await();
+      const answered = async (answer: "once" | "always" | "deny") => {
+        const reply = f.call("tasks_delete", {});
+        await vi.waitFor(() => expect(toolApprovals.pending()).toHaveLength(1));
+        expect(toolApprovals.pending()[0]).toMatchObject({
+          agent: "Echo",
+          plugin: "buzz.tasks",
+          tool: "tasks_delete",
+          title: "Delete a task",
+          detail: "Task 7",
+        });
+        toolApprovals.answer(toolApprovals.pending()[0]?.id ?? "", answer);
+        return (await reply).result;
+      };
+      expect(await answered("deny")).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining("denied tasks_delete") }],
+      });
+      expect(await answered("once")).toMatchObject({
+        content: [{ text: "deleted" }],
+      });
+      expect(await answered("always")).toMatchObject({
+        content: [{ text: "deleted" }],
+      });
+      // Remembered: the next call goes straight through.
+      expect(await f.call("tasks_delete", {})).toMatchObject({
+        result: { content: [{ text: "deleted" }] },
+      });
+      expect(toolApprovals.pending()).toEqual([]);
     } finally {
       await f.cleanup();
     }

@@ -31,6 +31,7 @@ import { CreationReview } from "../bundled/agents/CreationReview";
 import { UpdateReview } from "../bundled/agents/UpdateReview";
 import { TeamUpdateReview } from "../bundled/agents/TeamUpdateReview";
 import { InterruptedNotice } from "../features/agents/InterruptedNotice";
+import { ToolApprovalNotices } from "../features/agents/ToolApprovalNotices";
 import {
   useEffect,
   useLayoutEffect,
@@ -686,6 +687,7 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
             relay={services.relay}
           />
           <InterruptedNotice agents={services.agents} />
+          <ToolApprovalNotices approvals={services.toolApprovals} />
           <MediaMenuDownloadNotice />
           <CreationReview agents={services.agents} />
           <UpdateReview agents={services.agents} />

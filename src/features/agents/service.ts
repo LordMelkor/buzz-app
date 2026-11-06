@@ -190,6 +190,11 @@ import {
   type Checkpoints,
 } from "./catch-up";
 import { readInterrupted, writeInterrupted } from "./interrupted";
+import {
+  createToolApprovals,
+  type ToolApprovalAsk,
+  type ToolApprovals,
+} from "./tool-approval";
 import { AttentionSources, type AttentionProducer } from "./attention-sources";
 import { type AddedTool, BUZZ_SESSION } from "../../buzz-mcp/session-tools";
 import type { OwnerAccess } from "../../buzz-mcp/client";
@@ -485,6 +490,12 @@ export type AgentHandle = Readonly<{
   ): Promise<Readonly<{ requestId: string; saved: false }>>;
   /** This device's plugins, as the agent may read and change them. */
   plugins?: AgentPlugins | undefined;
+  /** On a run's handle only: asks the owner to allow a plugin tool's call;
+   * see `BuzzClient.approveTool`. `signal` ends the ask with the turn. */
+  approveTool?(
+    ask: ToolApprovalAsk,
+    signal?: AbortSignal,
+  ): Promise<"once" | "always">;
   /** On a run's handle only: wakes this agent in another of its
    * conversations, as `Agents.wake` would, telling it the wake is its own. */
   handoff?(handoff: AgentHandoff): void;
@@ -1997,6 +2008,8 @@ export class AgentsService extends Service implements Agents {
     private readonly bindingFor?: (agent: Agent) => ConfigBinding,
     /** The Buzz settings on this device that agents' runs can change. */
     private readonly deviceSettings?: DeviceSettings,
+    /** Where plugin tools' calls wait for the owner to allow them. */
+    private readonly toolApprovals: ToolApprovals = createToolApprovals(),
   ) {
     super(ctx, "agents");
     this.executions = createAgentExecutions(ctx, executionStorage(storage));
@@ -2399,6 +2412,8 @@ export class AgentsService extends Service implements Agents {
           name: agent.name,
           live: () => !!this.liveMember(agent.key),
         }),
+      approveTool: (agent, ask, signal) =>
+        this.toolApprovals.ask(agent.name, ask, signal),
       handoff: (agent, { from, ...wake }) =>
         this.wakeIn(agent.key, wake, { from }),
       templates: (agent) => {
@@ -2702,7 +2717,26 @@ export class AgentsService extends Service implements Agents {
     // are not active yet, and the second to take a name must fail.
     if (this.toolNames.has(tool.name))
       throw new Error(`Another plugin adds agent tool ${tool.name}`);
-    this.addedTools.register(this.ctx, { ...tool, id: tool.name });
+    // A tool may ask only as itself: the plugin and tool names come from here.
+    const plugin = this.ctx.pluginOwner?.id ?? "app";
+    this.addedTools.register(this.ctx, {
+      ...tool,
+      id: tool.name,
+      call: (client, context, args) => {
+        const { approveTool, ...rest } = client;
+        return tool.call(
+          {
+            ...rest,
+            ...(approveTool && {
+              approve: (ask) =>
+                approveTool({ ...ask, plugin, tool: tool.name }),
+            }),
+          },
+          context,
+          args,
+        );
+      },
+    });
     this.ctx.effect(() => {
       this.toolNames.add(tool.name);
       return () => this.toolNames.delete(tool.name);

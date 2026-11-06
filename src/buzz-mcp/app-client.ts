@@ -47,7 +47,7 @@ export function appClient(
   };
   const handoff = agent.handoff;
   const plugins = agent.plugins;
-  const { settings, ownerAccess } = agent;
+  const { settings, ownerAccess, approveTool } = agent;
   /** An owner read, only while the turn still holds before and after it. */
   const owned = async <T>(read: (signal?: AbortSignal) => Promise<T>) => {
     check();
@@ -100,6 +100,14 @@ export function appClient(
           check();
           ownerAccess.held(execution);
         },
+      },
+    }),
+    ...(approveTool && {
+      approveTool: async (ask) => {
+        check();
+        const answer = await approveTool(ask, options.signal);
+        check();
+        return answer;
       },
     }),
     relayAuthor: options.relayAuthor,
