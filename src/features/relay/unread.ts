@@ -47,6 +47,10 @@ export type MessageAttention = Readonly<{
   category?: "mention" | "direct" | "thread";
   /** The event mentions the viewer, excluding trusted workflow-owner attribution. */
   mentioned?: boolean;
+  /** The viewer's rules count this message (a top-level post, or a reply in
+   * their own conversations), whatever its category. A reply the viewer opted
+   * out of, or outside their conversations, is not. */
+  relevant?: true;
   rootId?: string;
   /** The reply's conversation is still being looked up; it may become thread
    * attention when the lookup finishes. */
@@ -826,6 +830,7 @@ export function createUnread({
       ...(kind ? { category: kind } : {}),
       ...(pending ? { pending: true } : {}),
       ...(entry.mentioned ? { mentioned: true } : {}),
+      ...(relevant(entry, dm) ? { relevant: true as const } : {}),
       ...(entry.rootId ? { rootId: entry.rootId } : {}),
       unread: isUnread(entry, reads.state(), dm),
       forced: forcedMessages.get(channelId)?.has(messageId) ?? false,

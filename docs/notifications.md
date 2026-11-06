@@ -85,7 +85,11 @@ checks, not that an OS banner was displayed or read.
   switch turns the alerts off and keeps the list. The unread engine's category
   wins: a listed person who also mentions or DMs the viewer alerts once, as
   `mention` or `direct`, and a reply in one of the viewer's conversations stays
-  `thread`. Only otherwise-uncategorized posts become `person`. A reply outside
+  `thread`; a reply waiting on its conversation lookup stays a `thread` candidate.
+  Only otherwise-uncategorized posts the viewer's own rules count (top-level
+  posts, or replies in their conversations) become `person`, so it never
+  overrides a thread opt-out or channel mute. The list is read again at
+  delivery, so removing someone cancels a waiting alert. A reply outside
   the viewer's own conversations is never unread by the engine's rule, so it does
   not alert; top-level posts and in-conversation replies do. A workflow post is
   matched on its owner. Plugins cannot read or change the list: the profile

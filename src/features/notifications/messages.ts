@@ -93,6 +93,8 @@ export function bindMessageNotifications(
   localActivity?: LocalAgentSource,
 ) {
   let closed = false;
+  const listed = (author: string) =>
+    notifications.snapshot().preferences.people.includes(author);
   let session: RelaySession | undefined;
   let identity = "";
   let generation = 0;
@@ -144,19 +146,18 @@ export function bindMessageNotifications(
           message.channelId,
           message.messageId,
         );
-        // A post by someone on the viewer's list notifies under the same
-        // gates, but only when no stronger category applies: a listed person
-        // who mentions or messages the viewer alerts once, as that category.
-        const listed = notifications
-          .snapshot()
-          .preferences.people.includes(
-            message.workflowOwnerId ?? message.authorId,
-          );
+        const author = message.workflowOwnerId ?? message.authorId;
         // A reply whose conversation lookup is pending may become thread
-        // attention; admission waits until the lookup decides it.
+        // attention; admission waits until the lookup decides it. A post by
+        // someone on the viewer's list adds an alert only where nothing else
+        // matches, so it never changes how another category is decided.
         const category =
           attention.category ??
-          (listed ? "person" : attention.pending ? "thread" : undefined);
+          (attention.pending
+            ? "thread"
+            : listed(author)
+              ? "person"
+              : undefined);
         const soloReply =
           category === "mention"
             ? localSoloAgentReply(
@@ -165,11 +166,11 @@ export function bindMessageNotifications(
                 relayPartition(origin, viewer),
               )
             : undefined;
-        // An ordinary post earns no engine category; its channel access and
-        // unread state are what decide it. Unknown means no access yet.
+        // An ordinary post earns no engine category, so it is admitted unless
+        // the channel is unknown (no access yet).
         const admissible =
           category === "person"
-            ? attention.status !== "unknown" || attention.pending
+            ? attention.status !== "unknown"
             : attention.status === "eligible" || attention.pending;
         if (!category || !admissible || soloReply === "reply") continue;
         void notifications.admit(
@@ -220,17 +221,18 @@ export function bindMessageNotifications(
             }
             const whileViewing =
               notifications.snapshot().preferences.notifyWhileViewing;
-            // A listed person's post has no engine category to match, and an
-            // own or quiet message is never unread, so it stays quiet below.
-            const ordinary = category === "person";
+            // A person alert only adds to the rules a post already has: it
+            // needs the list now, no other category, and the viewer's own
+            // rules counting the post (so an opted-out thread stays quiet).
+            const person = category === "person";
             if (
-              (!ordinary && attention.status === "ineligible") ||
-              (!ordinary &&
-                !attention.pending &&
-                attention.category !== category) ||
-              (!whileViewing && attention.viewing)
+              person
+                ? !listed(author) || attention.category || !attention.relevant
+                : attention.status === "ineligible" ||
+                  (!attention.pending && attention.category !== category)
             )
               return false;
+            if (!whileViewing && attention.viewing) return false;
             if (
               sync.status === "loading" ||
               sync.status === "error" ||
