@@ -537,6 +537,73 @@ it.each([false, true])(
   },
 );
 
+/** A team of the fixture's agent and one person, who is outside the channel. */
+function teamWithPerson(h: ReturnType<typeof fixture>) {
+  const person = h.people[1];
+  if (!person) throw new Error("Fixture needs a person");
+  h.update({ members: [h.agent.pubkey] });
+  h.catalog({
+    status: "ready",
+    entries: [
+      {
+        eventId: "head",
+        createdAt: 1,
+        record: {
+          version: 1,
+          community: "fixture",
+          deleted: false,
+          value: {
+            type: "team",
+            id: "team",
+            name: "Team",
+            agents: [h.agent.pubkey, person.pubkey],
+          },
+        },
+      },
+    ],
+  });
+  return person;
+}
+
+it("a team mentions a person outside the channel, as the individual chooser would", async () => {
+  const h = fixture({ count: 2, team: 1 });
+  const person = teamWithPerson(h);
+  const menu = inline(h.session);
+  try {
+    await waitFor(() => expect(menu.team()?.canSelect?.("Enter")).toBe(true));
+    expect(menu.team()?.edit.mentions).toEqual([h.agent, person]);
+    expect(menu.team()?.detail).toBe(
+      "Saved team · 2 members · 1 not in channel",
+    );
+  } finally {
+    menu.view.unmount();
+    h.library.dispose();
+  }
+});
+
+it("a team person without a known name stays unavailable while their profile is requested", async () => {
+  const h = fixture({ count: 2, team: 1 });
+  const person = teamWithPerson(h);
+  const profiles = h.session.profiles as unknown as {
+    snapshot: () => Map<string, { name?: string }>;
+    ensure: (ids: readonly string[]) => Promise<void>;
+  };
+  profiles.snapshot().delete(person.pubkey);
+  const ensure = vi.spyOn(profiles, "ensure");
+  const menu = inline(h.session);
+  try {
+    await waitFor(() =>
+      expect(ensure).toHaveBeenCalledWith(
+        [h.agent.pubkey, person.pubkey].sort(),
+      ),
+    );
+    expect(menu.team()?.disabled).toContain("unavailable");
+  } finally {
+    menu.view.unmount();
+    h.library.dispose();
+  }
+});
+
 it("more members than the shown rows rank only the first rows", async () => {
   const h = fixture({ count: MENTION_ROWS + 1, team: 0 });
   const view = renderHook(() =>
