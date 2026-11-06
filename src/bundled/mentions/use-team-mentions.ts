@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -152,6 +153,23 @@ export function useTeamMentions(
       ? installed.teams
       : undefined;
   if (installed && !rows) install(undefined);
+  // A team holds people as well as agents. Ask for the names of the people in
+  // shown rows: an unnamed key is never offered, as with a pasted link.
+  const memberKeys = [
+    ...new Set(rows?.flatMap((team) => team.value.agents) ?? []),
+  ]
+    .sort()
+    .join();
+  useEffect(() => {
+    if (open && memberKeys)
+      void session.profiles.ensure(memberKeys.split(",")).catch(() => {});
+  }, [session, open, memberKeys]);
+  // mentionCandidates keeps rows per directory array, so reuse one array until
+  // its sources change.
+  const directory = useRef<{
+    sources: readonly unknown[];
+    people: readonly { pubkey: string; name: string }[];
+  }>(undefined);
   if (open && !model.pending) {
     const members = new Set(
       roster?.map((person) => person.pubkey) ?? model.channel?.members ?? [],
@@ -192,6 +210,44 @@ export function useTeamMentions(
   }
   return useMemo(() => {
     void model; // Source revisions invalidate eligibility, not the installed row order.
+    // The agents the chooser offers, and the team's people by profile name. A
+    // key is a person only once agent choices are complete and it is no known
+    // agent here or in the owner's other communities; agents keep their path.
+    const teamDirectory = () => {
+      const choices = session.agentChoices.snapshot();
+      const profiles = session.profiles.snapshot();
+      const elsewhere = owner?.joinable() ?? [];
+      const sources = [
+        choices,
+        profiles,
+        memberKeys,
+        elsewhere.map((agent) => agent.pubkey).join(),
+      ];
+      if (
+        !directory.current?.sources.every((source, i) => source === sources[i])
+      ) {
+        const agents = new Set([
+          ...choices.identities.map((agent) => agent.pubkey),
+          ...elsewhere.map((agent) => agent.pubkey),
+        ]);
+        const people =
+          choices.complete && memberKeys
+            ? memberKeys.split(",").flatMap((pubkey) => {
+                const profile = profiles.get(pubkey);
+                return profile?.name && !profile.isAgent && !agents.has(pubkey)
+                  ? [{ pubkey, name: profile.name }]
+                  : [];
+              })
+            : [];
+        directory.current = {
+          sources,
+          people: people.length
+            ? [...choices.identities, ...people]
+            : choices.identities,
+        };
+      }
+      return directory.current.people;
+    };
     // Parent chooser subscribes to roster, profiles, agent choices and archives.
     // Read those same owners again at acceptance; saved keys grant no eligibility.
     const candidates = () =>
@@ -200,7 +256,7 @@ export function useTeamMentions(
         channelId,
         inviteAgents,
         roster,
-        session.agentChoices.snapshot().identities,
+        teamDirectory(),
         owner?.joinable(),
       );
     // Only shown team rows read eligibility; a closed chooser builds none.
@@ -217,9 +273,9 @@ export function useTeamMentions(
           : members.some((key) => !eligible.get(key)?.member)
             ? "Channel membership changed. Reopen to review adding this team."
             : !value.agents.length
-              ? "This team has no agents."
+              ? "This team has no members."
               : value.agents.length > 32
-                ? "Teams can mention at most 32 agents."
+                ? "Teams can mention at most 32 members."
                 : recipients.length !== value.agents.length
                   ? "A team member is unavailable. Edit the team or refresh choices."
                   : undefined;
@@ -243,7 +299,7 @@ export function useTeamMentions(
           disabled,
           detail:
             disabled ??
-            [`Saved team · ${recipients.length} agents`, consequence]
+            [`Saved team · ${recipients.length} members`, consequence]
               .filter(Boolean)
               .join(" · "),
           canSelect: () => {
@@ -297,5 +353,6 @@ export function useTeamMentions(
     hasTeams,
     readSaved,
     owner,
+    memberKeys,
   ]);
 }

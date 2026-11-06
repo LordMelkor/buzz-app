@@ -795,7 +795,8 @@ available rather than silently discarding it.
 
 Saved teams from **Your teams** appear in the inline `@` suggestions and the
 mention picker. Select a team to insert its members as individual mentions.
-Typing its name alone does not notify it. Empty teams, teams with more than 32
+A saved team can hold people as well as agents; a person outside the
+conversation is offered the way the `@` picker offers them. Typing its name alone does not notify it. Empty teams, teams with more than 32
 members, and teams with unavailable members cannot be selected; edit the team or
 refresh the choices. Adding people to a channel still requires the normal send
 confirmation.
