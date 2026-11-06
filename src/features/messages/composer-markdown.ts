@@ -251,7 +251,7 @@ function authoredLiteralRanges(doc: EditorNode) {
           ? "\n"
           : node.attrs.source;
       context.source +=
-        node.marks.length || node.attrs.recipient
+        node.marks.length || node.attrs.recipient || node.attrs.group
           ? value.replace(/\S/g, "a")
           : value;
     });
@@ -317,6 +317,10 @@ function paragraphMarkdown(
         : node.attrs.source;
     if (composerSchema.marks.literal.isInSet(node.marks))
       literals.push({ start, end: text.length });
+    // Readers see a group chip as text, so its label after the @ is sent as
+    // typed rather than read as Markdown.
+    else if (node.attrs.group)
+      literals.push({ start: start + 1, end: text.length });
     if (
       node.attrs.recipient ||
       composerSchema.marks.recipient.isInSet(node.marks)
