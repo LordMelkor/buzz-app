@@ -4953,6 +4953,7 @@ describe("group chip", () => {
     act(() => expect(h.input.insertText("", crew)).toBe(true));
     expect(h.input).toHaveValue("@crew ");
     expect(h.draft().recipients).toEqual([]);
+    expect(h.formats()).toContain("code");
   });
 
   it("counts distinct people against the 32-recipient cap", () => {
