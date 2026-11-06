@@ -125,6 +125,7 @@ export function appClient(
                 (item) => item !== undefined,
               ),
             ),
+            check,
           );
           check();
           return answer;

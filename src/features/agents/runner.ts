@@ -522,6 +522,7 @@ export type RunnerHost = {
     agent: Agent,
     ask: ToolApprovalAsk,
     signal: AbortSignal,
+    live?: () => void,
   ): Promise<"once" | "always">;
   /** Wakes the agent in another of its conversations, as its own handoff. */
   handoff(agent: Agent, handoff: AgentHandoff): void;
@@ -2963,12 +2964,17 @@ export class AgentRunners {
         // plugin's call would read as the agent's own.
         ...(run && {
           plugins: this.host.plugins?.(agent),
-          approveTool: async (ask: ToolApprovalAsk, signal?: AbortSignal) => {
+          approveTool: async (
+            ask: ToolApprovalAsk,
+            signal?: AbortSignal,
+            live?: () => void,
+          ) => {
             lifetime.throwIfAborted();
             return this.host.approveTool(
               agent,
               ask,
               signal ? AbortSignal.any([lifetime, signal]) : lifetime,
+              live,
             );
           },
           handoff: (handoff: AgentHandoff) => {

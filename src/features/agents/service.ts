@@ -495,6 +495,8 @@ export type AgentHandle = Readonly<{
   approveTool?(
     ask: ToolApprovalAsk,
     signal?: AbortSignal,
+    /** Throws once the turn has ended; no answer is taken after. */
+    live?: () => void,
   ): Promise<"once" | "always">;
   /** On a run's handle only: wakes this agent in another of its
    * conversations, as `Agents.wake` would, telling it the wake is its own. */
@@ -2412,8 +2414,8 @@ export class AgentsService extends Service implements Agents {
           name: agent.name,
           live: () => !!this.liveMember(agent.key),
         }),
-      approveTool: (agent, ask, signal) =>
-        this.toolApprovals.ask(agent.name, ask, signal),
+      approveTool: (agent, ask, signal, live) =>
+        this.toolApprovals.ask(agent.name, ask, signal, live),
       handoff: (agent, { from, ...wake }) =>
         this.wakeIn(agent.key, wake, { from }),
       templates: (agent) => {

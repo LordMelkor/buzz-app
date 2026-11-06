@@ -28,6 +28,7 @@ export function createToolApprovals(storage: AgentStore = localStore()) {
     Readonly<{
       settle(answer: Exclude<ToolApprovalAnswer, "deny">): void;
       deny(error: Error): void;
+      live?: (() => void) | undefined;
     }>
   >();
   const listeners = new Set<() => void>();
@@ -48,11 +49,14 @@ export function createToolApprovals(storage: AgentStore = localStore()) {
       return () => void listeners.delete(listener);
     },
     /** Resolves once the owner allows the call (`always` when it is already
-     * remembered); rejects when they deny it or `signal` aborts. */
+     * remembered); rejects when they deny it or `signal` aborts. `live`
+     * throws once the call's turn has ended, which a signal may not show
+     * yet: an answer is never taken for a call that has stopped. */
     async ask(
       agent: string,
       ask: ToolApprovalAsk,
       signal?: AbortSignal,
+      live?: () => void,
     ): Promise<"once" | "always"> {
       signal?.throwIfAborted();
       if (storage.get(allowedKey(ask)) === "1") return "always";
@@ -68,6 +72,7 @@ export function createToolApprovals(storage: AgentStore = localStore()) {
         };
         signal?.addEventListener("abort", abort, { once: true });
         waiting.set(id, {
+          live,
           settle: (answer) => {
             signal?.removeEventListener("abort", abort);
             resolve(answer);
@@ -94,27 +99,38 @@ export function createToolApprovals(storage: AgentStore = localStore()) {
         );
         return;
       }
+      // A stopped call takes no answer, and an Always allow for it saves nothing.
+      const release = (item: ToolApprovalRequest, given: "once" | "always") => {
+        const { settle, deny, live } = waiting.get(item.id) ?? {};
+        remove(item.id);
+        try {
+          live?.();
+        } catch (error) {
+          deny?.(error instanceof Error ? error : new Error(String(error)));
+          return false;
+        }
+        settle?.(given);
+        return true;
+      };
       if (answer === "always") {
         // A save that fails still allows this call; the next one asks again.
-        void storage
-          .set(allowedKey(request), "1")
-          .catch((error) =>
-            console.warn("Could not remember a plugin tool approval", error),
-          );
-        // Calls waiting on the same tool have been answered too.
-        for (const other of pending.filter(
+        const others = pending.filter(
           (item) =>
-            item.plugin === request.plugin && item.tool === request.tool,
-        )) {
-          const { settle } = waiting.get(other.id) ?? {};
-          remove(other.id);
-          settle?.("always");
-        }
+            item.id !== id &&
+            item.plugin === request.plugin &&
+            item.tool === request.tool,
+        );
+        if (release(request, "always"))
+          void storage
+            .set(allowedKey(request), "1")
+            .catch((error) =>
+              console.warn("Could not remember a plugin tool approval", error),
+            );
+        // Calls waiting on the same tool have been answered too.
+        for (const other of others) release(other, "always");
         return;
       }
-      const { settle } = waiting.get(id) ?? {};
-      remove(id);
-      settle?.("once");
+      release(request, "once");
     },
   };
 }
