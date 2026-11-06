@@ -47,6 +47,10 @@ import {
   composerResource,
   brokenResources,
   resourceBlockingMarks,
+  composerGroup,
+  groupMembers,
+  tokenRecipients,
+  type ComposerGroup,
 } from "./composer-document";
 import { scanMarkdown } from "../relay/message-content";
 import type {
@@ -94,6 +98,8 @@ import {
   pastedFiles,
 } from "./composer-clipboard";
 import {
+  distinctRecipients,
+  MAX_RECIPIENTS,
   mentionBoundary,
   mentionDraft,
   type MentionDraft,
@@ -708,12 +714,11 @@ export function EditableInput({
               {
                 source: safe.text.slice(item.start, item.end),
                 editAsText: !!item.editAsText,
-                recipient:
-                  safe.recipients.find(
-                    (recipient) =>
-                      recipient.start === item.start &&
-                      recipient.end === item.end,
-                  ) ?? null,
+                ...tokenRecipients(
+                  safe.recipients,
+                  safe.text.slice(item.start, item.end),
+                  item,
+                ),
               },
               null,
               state.doc.resolve(from).marks(),
@@ -725,8 +730,26 @@ export function EditableInput({
         // is editable again. Mention-boundary edits also remove invalidated
         // recipient provenance, and return a pending mention to its typed query.
         for (const token of next.tokens) {
+          // A group chip keeps the members the draft still mentions on its
+          // span, and returns to prose once none are left.
+          const group = composerGroup(
+            token.node.attrs.group,
+            token.node.attrs.source,
+          );
+          const members = group
+            ? groupMembers(group, safe.recipients, token.start, token.end)
+            : [];
+          if (group && members.length) {
+            if (members.length < group.members.length)
+              tr.setNodeMarkup(tr.mapping.map(token.from), undefined, {
+                ...token.node.attrs,
+                group: { label: group.label, members },
+              });
+            continue;
+          }
           if (
-            token.node.attrs.recipient
+            !group &&
+            (token.node.attrs.recipient
               ? safe.recipients.some(
                   (item) =>
                     item.start === token.start && item.end === token.end,
@@ -738,7 +761,7 @@ export function EditableInput({
                 decorations.some(
                   // A larger decoration has already adopted any tokens inside it.
                   (item) => item.start <= token.start && item.end >= token.end,
-                )
+                ))
           )
             continue;
           const from = tr.mapping.map(token.from),
@@ -851,7 +874,10 @@ export function EditableInput({
     };
     const insert = (
       text: string,
-      recipient?: MentionRecipient | readonly MentionRecipient[],
+      recipient?:
+        | MentionRecipient
+        | readonly MentionRecipient[]
+        | ComposerGroup,
       range?: { start: number; end: number },
       terminator?: string,
       focus = true,
@@ -899,7 +925,25 @@ export function EditableInput({
         .filter((mark) => mark.type !== composerSchema.marks.recipient);
       text = text.replace(/\r\n?/g, "\n");
       const tr = closeHistory(editor.state.tr);
-      if (recipient) {
+      if (recipient && "members" in recipient) {
+        const group = composerGroup(recipient, `@${recipient.label}`);
+        if (!group) return false;
+        // In code a group is only its name: code never carries recipients.
+        tr.replaceWith(
+          from,
+          to,
+          Fragment.fromArray([
+            $from.parent.type.spec.code
+              ? composerSchema.text(`@${group.label}`)
+              : composerSchema.nodes.token.create(
+                  { source: `@${group.label}`, group, editAsText: false },
+                  null,
+                  marks,
+                ),
+            composerSchema.text(" ", marks),
+          ]),
+        );
+      } else if (recipient) {
         const recipients: readonly MentionRecipient[] = Array.isArray(recipient)
           ? recipient
           : [recipient as MentionRecipient];
@@ -934,8 +978,9 @@ export function EditableInput({
           : editor.state.selection.map(tr.doc, tr.mapping),
       );
       if (
-        Array.isArray(recipient) &&
-        projectComposerDocument(tr.doc).draft.recipients.length > 32
+        recipient &&
+        distinctRecipients(projectComposerDocument(tr.doc).draft.recipients) >
+          MAX_RECIPIENTS
       )
         return false;
       if (
@@ -1096,11 +1141,31 @@ export function EditableInput({
         return true;
       const added = recipients.filter((person) => !existing.has(person.pubkey));
       const tr = closeHistory(editor.state.tr);
-      for (const person of [...source.draft.recipients].reverse()) {
-        if (requested.has(person.pubkey)) continue;
-        const end =
-          person.end + (source.draft.text[person.end] === " " ? 1 : 0);
-        tr.delete(source.position(person.start), source.position(end, -1));
+      // A group's members share one span: it goes only with its last member.
+      const spans = new Map<number, typeof source.draft.recipients>();
+      for (const person of source.draft.recipients)
+        spans.set(person.start, [...(spans.get(person.start) ?? []), person]);
+      for (const [start, people] of [...spans].reverse()) {
+        const span = people[0];
+        if (!span) continue;
+        const kept = people.filter((person) => requested.has(person.pubkey));
+        if (kept.length === people.length) continue;
+        const token = source.tokens.find((item) => item.start === start);
+        const group =
+          token &&
+          composerGroup(token.node.attrs.group, token.node.attrs.source);
+        if (token && group && kept.length) {
+          tr.setNodeMarkup(token.from, undefined, {
+            ...token.node.attrs,
+            group: {
+              label: group.label,
+              members: group.members.filter((m) => requested.has(m.pubkey)),
+            },
+          });
+          continue;
+        }
+        const end = span.end + (source.draft.text[span.end] === " " ? 1 : 0);
+        tr.delete(source.position(start), source.position(end, -1));
       }
       if (added.length) {
         const at = Selection.atStart(tr.doc).from;
@@ -1125,7 +1190,7 @@ export function EditableInput({
       }
       const next = projectComposerDocument(tr.doc).draft;
       if (
-        next.recipients.length > 32 ||
+        distinctRecipients(next.recipients) > MAX_RECIPIENTS ||
         composerMarkdown(next).length > current.current.maxLength
       )
         return false;
@@ -1681,7 +1746,7 @@ export function EditableInput({
       if (!accept) return;
       const { tokens, draft } = projection();
       const tr = editor.state.tr;
-      let count = draft.recipients.length;
+      const counted = new Set(draft.recipients.map((item) => item.pubkey));
       // Later tokens first: earlier positions stay valid, and each boundary
       // check sees the text that now follows the token.
       for (const token of [...tokens].reverse()) {
@@ -1695,7 +1760,7 @@ export function EditableInput({
         const identity = identityLink(token.node.attrs.source);
         if (
           !identity ||
-          count >= 32 ||
+          (!counted.has(identity.pubkey) && counted.size >= MAX_RECIPIENTS) ||
           !mentionBoundary(
             projectComposerDocument(tr.doc).draft.text,
             token.end,
@@ -1713,7 +1778,7 @@ export function EditableInput({
             token.node.marks,
           ),
         );
-        count++;
+        counted.add(recipient.pubkey);
       }
       if (tr.docChanged) editor.dispatch(tr);
     };
@@ -2580,6 +2645,18 @@ export function EditableInput({
                 ...node.attrs,
                 recipient: null,
               });
+            // A group drops the member, and returns to prose with the last.
+            const group =
+              node.type.name === "token"
+                ? composerGroup(node.attrs.group, node.attrs.source)
+                : null;
+            if (group?.members.some((m) => m.pubkey === pubkey)) {
+              const members = group.members.filter((m) => m.pubkey !== pubkey);
+              tr.setNodeMarkup(pos, undefined, {
+                ...node.attrs,
+                group: members.length ? { label: group.label, members } : null,
+              });
+            }
             const mark = composerSchema.marks.recipient.isInSet(node.marks);
             if (mark?.attrs.pubkey === pubkey)
               tr.removeMark(pos, pos + node.nodeSize, mark);

@@ -55,9 +55,11 @@ export type ComposerToolProps = Readonly<{
    * Prose never resolves to identities. Membership is checked by session delivery.
    * Like insertText, this command is revoked with the tool/destination lifetime. */
   insertMention(recipient: Readonly<{ pubkey: string; name: string }>): boolean;
-  /** All-or-nothing insertion of a saved selection as individual mentions. */
+  /** All-or-nothing insertion of a saved selection as individual mentions,
+   * or with `group` as one `@group` chip that notifies each of them. */
   insertMentions(
     recipients: readonly Readonly<{ pubkey: string; name: string }>[],
+    group?: string,
   ): boolean;
   /** Replace all selected mentions in one undoable edit, preserving prose and focus.
    * An empty selection clears mentions. Rejected while editing a sent message. */
@@ -382,18 +384,33 @@ export type CompletionEdit =
       text: string;
       mention?: never;
       mentions?: never;
+      group?: never;
       pending?: never;
     }>
   | Readonly<{
       mention: Readonly<{ pubkey: string; name: string }>;
       text?: never;
       mentions?: never;
+      group?: never;
       pending?: never;
     }>
   | Readonly<{
       mentions: readonly Readonly<{ pubkey: string; name: string }>[];
       text?: never;
       mention?: never;
+      group?: never;
+      pending?: never;
+    }>
+  /** One `@name` chip that notifies every one of `mentions` (1 to 32). In a
+   * message edit it inserts only the name, as edits never add recipients. */
+  | Readonly<{
+      group: Readonly<{
+        name: string;
+        mentions: readonly Readonly<{ pubkey: string; name: string }>[];
+      }>;
+      text?: never;
+      mention?: never;
+      mentions?: never;
       pending?: never;
     }>
   /** Host-only: the terminator typed over an undecided name. Never a suggestion's edit. */
@@ -402,6 +419,7 @@ export type CompletionEdit =
       text?: never;
       mention?: never;
       mentions?: never;
+      group?: never;
     }>;
 export type CompletionSuggestion = Readonly<{
   id: string;

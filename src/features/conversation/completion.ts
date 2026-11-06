@@ -89,6 +89,28 @@ function validQuery(
     typeof query.query === "string"
   );
 }
+/** 1 to 32 well-formed people, as a team or group edit names them. */
+function validPeople(people: unknown): people is readonly MentionRecipient[] {
+  return (
+    Array.isArray(people) &&
+    !!people.length &&
+    people.length <= 32 &&
+    people.every(
+      (person: MentionRecipient) =>
+        !!person &&
+        typeof person.pubkey === "string" &&
+        /^[0-9a-f]{64}$/.test(person.pubkey) &&
+        typeof person.name === "string" &&
+        !!person.name.trim(),
+    )
+  );
+}
+const frozenPeople = (people: readonly MentionRecipient[]) =>
+  Object.freeze(
+    people.map((person) =>
+      Object.freeze({ pubkey: person.pubkey, name: person.name }),
+    ),
+  );
 /** Copy edit primitives so later provider mutation cannot retarget a displayed choice. */
 export function completionResult(
   result: HostCompletionResult,
@@ -121,21 +143,16 @@ export function completionResult(
       // Host-made and frozen: kept as is.
     } else if ("token" in edit) {
       if (!token) continue;
-    } else if ("mentions" in edit) {
+    } else if ("group" in edit) {
       if (
-        !Array.isArray(edit.mentions) ||
-        !edit.mentions.length ||
-        edit.mentions.length > 32 ||
-        edit.mentions.some(
-          (person: MentionRecipient) =>
-            !person ||
-            typeof person.pubkey !== "string" ||
-            !/^[0-9a-f]{64}$/.test(person.pubkey) ||
-            typeof person.name !== "string" ||
-            !person.name.trim(),
-        )
+        !edit.group ||
+        typeof edit.group.name !== "string" ||
+        !edit.group.name.trim() ||
+        !validPeople(edit.group.mentions)
       )
         continue;
+    } else if ("mentions" in edit) {
+      if (!validPeople(edit.mentions)) continue;
     } else if ("mention" in edit) {
       if (
         !edit.mention ||
@@ -171,20 +188,18 @@ export function completionResult(
           : Object.freeze(
               token
                 ? { token }
-                : "mentions" in edit && edit.mentions
+                : "group" in edit && edit.group
                   ? {
-                      mentions: Object.freeze(
-                        edit.mentions.map((person: MentionRecipient) =>
-                          Object.freeze({
-                            pubkey: person.pubkey,
-                            name: person.name,
-                          }),
-                        ),
-                      ),
+                      group: Object.freeze({
+                        name: edit.group.name,
+                        mentions: frozenPeople(edit.group.mentions),
+                      }),
                     }
-                  : "mention" in edit
-                    ? { mention: Object.freeze({ ...edit.mention }) }
-                    : { text: edit.text },
+                  : "mentions" in edit && edit.mentions
+                    ? { mentions: frozenPeople(edit.mentions) }
+                    : "mention" in edit
+                      ? { mention: Object.freeze({ ...edit.mention }) }
+                      : { text: edit.text },
             ),
       }),
     );

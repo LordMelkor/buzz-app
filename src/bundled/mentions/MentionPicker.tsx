@@ -144,7 +144,7 @@ export function MentionPicker({
       setOpen(false);
       return;
     }
-    if (team.canSelect() && selectTeam?.(team.recipients)) {
+    if (team.canSelect() && selectTeam?.(team.recipients, team.name)) {
       accepted.current = true;
       setOpen(false);
     }

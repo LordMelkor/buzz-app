@@ -9,6 +9,7 @@ import { composerLinkUrl } from "./composer-link";
 import { scanMarkdown } from "../relay/message-content";
 import type {
   MentionDraft,
+  MentionRecipient,
   DraftRecipient,
   PendingMention,
 } from "./mention-draft";
@@ -102,6 +103,10 @@ export const composerSchema = new Schema<
       attrs: {
         source: {},
         recipient: { default: null },
+        /** `{ label, members }` for one chip that mentions several people:
+         * `source` is `@label` and `recipient` stays null, so paths that read
+         * only `recipient` (code, clipboard, blocks) see plain `@label`. */
+        group: { default: null },
         /** Host-owned `{ uri, label }`; valid only while `source` is its link. */
         resource: { default: null },
         /** A `ComposerToken` whose label is `source`; never a recipient. */
@@ -212,6 +217,92 @@ export function markdownRanges(text: string) {
   return { literal };
 }
 
+export type ComposerGroup = Readonly<{
+  label: string;
+  members: readonly MentionRecipient[];
+}>;
+/** A group chip's attribute as the editor may trust it: a label its `source`
+ * shows, and 1 to 32 distinct, well-formed members. Anything else is prose. */
+export function composerGroup(
+  value: unknown,
+  source: unknown,
+): ComposerGroup | null {
+  if (!value || typeof value !== "object") return null;
+  const { label, members } = value as Record<string, unknown>;
+  if (
+    typeof label !== "string" ||
+    !label.trim() ||
+    source !== `@${label}` ||
+    !Array.isArray(members) ||
+    !members.length ||
+    members.length > 32
+  )
+    return null;
+  const keys = new Set<string>();
+  for (const member of members) {
+    if (
+      !member ||
+      typeof member.pubkey !== "string" ||
+      !/^[0-9a-f]{64}$/.test(member.pubkey) ||
+      typeof member.name !== "string" ||
+      !member.name.trim() ||
+      keys.has(member.pubkey)
+    )
+      return null;
+    keys.add(member.pubkey);
+  }
+  return value as ComposerGroup;
+}
+/** The members of a group chip that the draft still mentions on its range. */
+export function groupMembers(
+  group: ComposerGroup,
+  recipients: readonly DraftRecipient[],
+  start: number,
+  end: number,
+): MentionRecipient[] {
+  return group.members.flatMap((member) =>
+    recipients.some(
+      (item) =>
+        item.pubkey === member.pubkey &&
+        item.name === member.name &&
+        item.label === group.label &&
+        item.start === start &&
+        item.end === end,
+    )
+      ? [{ pubkey: member.pubkey, name: member.name }]
+      : [],
+  );
+}
+/** A source token's recipient attributes from the draft's recipients on its
+ * range: every labelled one as a group, else the one recipient. */
+export function tokenRecipients(
+  recipients: readonly DraftRecipient[],
+  source: string,
+  range: { start: number; end: number },
+): { recipient: MentionRecipient | null; group: ComposerGroup | null } {
+  const on = recipients.filter(
+    (item) => item.start === range.start && item.end === range.end,
+  );
+  const label = on.find((item) => item.label !== undefined)?.label;
+  if (label !== undefined) {
+    const members = on
+      .filter((item) => item.label === label)
+      .map(({ pubkey, name }) => ({ pubkey, name }));
+    const group = composerGroup(
+      {
+        label,
+        members: [...new Map(members.map((m) => [m.pubkey, m])).values()],
+      },
+      source,
+    );
+    return { recipient: null, group };
+  }
+  const one = on[0];
+  return {
+    recipient: one ? { pubkey: one.pubkey, name: one.name } : null,
+    group: null,
+  };
+}
 /** Draft text stays the editing/completion coordinate space. Formatting metadata
  * is local authoring state; message publication serializes it separately. */
 export function readComposerDocument(
@@ -246,6 +337,10 @@ export function readComposerDocument(
           return composerSchema.text(node.attrs.source, marks);
         const resource = composerResource(node.attrs.resource);
         const semantic = composerToken(node.attrs.semantic);
+        const group = composerGroup(node.attrs.group, node.attrs.source);
+        const members = group
+          ? groupMembers(group, draft.recipients, start, end)
+          : [];
         return node.type.create(
           {
             ...node.attrs,
@@ -254,9 +349,11 @@ export function readComposerDocument(
                 ? semantic
                 : null,
             recipient:
-              node.attrs.recipient && valid(node.attrs.recipient)
+              !group && node.attrs.recipient && valid(node.attrs.recipient)
                 ? node.attrs.recipient
                 : null,
+            group:
+              group && members.length ? { label: group.label, members } : null,
             resource:
               resource &&
               resource.source === node.attrs.source &&
@@ -287,14 +384,12 @@ export function readComposerDocument(
   while (offset < draft.text.length) {
     const token = tokens.find((token) => token.start === offset);
     if (token) {
+      const source = draft.text.slice(token.start, token.end);
       nodes.push(
         composerSchema.nodes.token.create({
-          source: draft.text.slice(token.start, token.end),
+          source,
           editAsText: !!token.editAsText,
-          recipient:
-            draft.recipients.find(
-              (item) => item.start === token.start && item.end === token.end,
-            ) ?? null,
+          ...tokenRecipients(draft.recipients, source, token),
         }),
       );
       offset = token.end;
@@ -483,7 +578,17 @@ function project(doc: EditorNode) {
         node,
         editAsText: node.attrs.editAsText,
       });
-      if (node.attrs.recipient)
+      const group = composerGroup(node.attrs.group, node.attrs.source);
+      if (group)
+        for (const { pubkey, name } of group.members)
+          recipients.push({
+            pubkey,
+            name,
+            label: group.label,
+            start,
+            end: text.length,
+          });
+      else if (node.attrs.recipient)
         recipients.push({ ...node.attrs.recipient, start, end: text.length });
       if (node.attrs.pending)
         pending.push({ ...node.attrs.pending, start, end: text.length });
