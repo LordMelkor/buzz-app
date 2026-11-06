@@ -261,6 +261,13 @@ function fixture(
     deny() {
       channel = { ...channel, members: [viewer] };
     },
+    team(...members: string[]) {
+      channel = {
+        ...channel,
+        channelType: "stream",
+        members: [...channel.members, ...members],
+      };
+    },
     enqueue(value = message) {
       queue.submit({
         ...value,
@@ -523,6 +530,80 @@ it("serializes competing releases from two windows", async () => {
     expect(second.queue.snapshot()).toEqual([]);
   });
   expect(h.send.mock.calls.length + second.send.mock.calls.length).toBe(1);
+});
+
+it("counts another window's queued channel row as busy for the same agent", () => {
+  const second = fixture();
+  second.team();
+  second.finish();
+  const h = fixture();
+  h.team();
+  h.enqueue({ ...message, channel: true });
+  // This window never saw the row arrive: it isn't subscribed to storage.
+  expect(second.queue.busy("chat", [agent])).toBe(true);
+});
+
+it("holds messages behind another window's sent, unfinished channel row", async () => {
+  const h = fixture();
+  h.team();
+  h.enqueue({ ...message, channel: true });
+  h.finish();
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledOnce());
+  await followUpStorage(scope).lockChat("chat", async () => {});
+  expect(h.queue.snapshot()).toEqual([]);
+  const second = fixture();
+  second.team();
+  second.finish();
+  // Only the handoff remains: the row left storage when it was sent.
+  expect(second.queue.busy("chat", [agent])).toBe(true);
+  expect(second.queue.busy("chat", ["b".repeat(64)])).toBe(false);
+  // A message the composer validated just now still waits behind it.
+  const next = { ...message, text: "Next", channel: true as const };
+  second.queue.submit(
+    { ...next, message: next, ...followUpMessage(second.session, next) },
+    true,
+  );
+  expect(second.send).not.toHaveBeenCalled();
+  expect(second.queue.snapshot()).toMatchObject([{ text: "Next" }]);
+});
+
+it("keeps another window's unconfirmed channel delivery ahead past its start gap", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const first = fixture();
+    first.team();
+    // Open before the first window sends, so its Outbox never loads that send.
+    const second = fixture();
+    second.team();
+    second.finish();
+    await Promise.all([first.owner.ready, second.owner.ready]);
+    // The first window's delivery never confirms; only its Outbox knows.
+    first.holdSigning(new Promise<void>(() => {}));
+    first.enqueue({ ...message, channel: true });
+    first.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.send).toHaveBeenCalledOnce();
+    expect(second.session.outbox?.snapshot()).toEqual([]);
+    // Its first follow-up pauses behind the live handoff; after the start
+    // gap the person removes it and sends a replacement.
+    const paused = second.enqueue({ ...message, text: "Newer", channel: true });
+    await vi.advanceTimersByTimeAsync(0);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(second.queue.snapshot()[0]?.restored).toBe(true);
+    await vi.advanceTimersByTimeAsync(31_000);
+    second.queue.remove(paused);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    second.enqueue({ ...message, text: "Replacement", channel: true });
+    await vi.advanceTimersByTimeAsync(0);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(second.send).not.toHaveBeenCalled();
+    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).not.toBe(
+      true,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("keeps unreadable storage intact and reports it instead of overwriting", () => {
@@ -1389,6 +1470,239 @@ it("resumes the saved successor after restart during a handed-off turn", async (
   expect(restarted.send.mock.calls[0]?.[1]).toBe("Second");
 });
 
+it("completes a channel handoff for an agent this device never sees work", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const h = fixture();
+    h.team();
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    // No local row or turn ever names the sent message.
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).not.toBe(
+      true,
+    );
+    await vi.advanceTimersByTimeAsync(30_002);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).toBe(
+      true,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("keeps a channel handoff open past its start gap while its agent is seen working", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const h = fixture();
+    h.team();
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    // The agent works, but no row or turn names the sent message.
+    h.work("other-task", "working");
+    const complete = async () => {
+      await followUpStorage(scope).lockChat("chat", async () => {});
+      return followUpStorage(scope).handoff(`chat:${agent}`)?.complete;
+    };
+    await vi.advanceTimersByTimeAsync(30_002);
+    expect(await complete()).not.toBe(true);
+    h.work("other-task", "done");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await complete()).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("keeps a channel handoff open when its agent starts while the chat lock is held", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const h = fixture();
+    h.team();
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    // Another release holds the chat lock while the start gap ends, and the
+    // agent starts before the completion gets the lock.
+    let unlock = () => {};
+    const held = followUpStorage(scope).lockChat(
+      "chat",
+      () => new Promise<void>((resolve) => (unlock = resolve)),
+    );
+    await vi.advanceTimersByTimeAsync(30_002);
+    h.work("other-task", "working");
+    unlock();
+    await held;
+    const complete = async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await followUpStorage(scope).lockChat("chat", async () => {});
+      return followUpStorage(scope).handoff(`chat:${agent}`)?.complete;
+    };
+    expect(await complete()).not.toBe(true);
+    // Once the agent is done, the deferred completion runs.
+    h.work("other-task", "done");
+    expect(await complete()).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("completes a deferred channel handoff when its agent finishes while the completion settles", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const h = fixture();
+    h.team();
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    let unlock = () => {};
+    const held = followUpStorage(scope).lockChat(
+      "chat",
+      () => new Promise<void>((resolve) => (unlock = resolve)),
+    );
+    await vi.advanceTimersByTimeAsync(30_002);
+    h.work("other-task", "working");
+    // The agent finishes right after the locked recheck sees it working,
+    // before that completion attempt has settled.
+    const activity = h.session.agentActivity as { snapshot: () => unknown };
+    const snapshot = activity.snapshot;
+    let armed = true;
+    activity.snapshot = () => {
+      if (armed) {
+        armed = false;
+        queueMicrotask(() => h.work("other-task", "done"));
+      }
+      return snapshot();
+    };
+    unlock();
+    await held;
+    await vi.advanceTimersByTimeAsync(0);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(armed).toBe(false);
+    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).toBe(
+      true,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("reports a channel handoff completion that cannot be saved without retrying it", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  const write = vi.spyOn(Storage.prototype, "setItem");
+  try {
+    const h = fixture();
+    h.team();
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    write.mockClear();
+    write.mockImplementation(() => {
+      throw new Error("Quota exceeded");
+    });
+    await vi.advanceTimersByTimeAsync(30_002);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.queue.storageError()).toContain("Could not save");
+    // Nothing tries the failed write again until something changes.
+    const tries = write.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(write.mock.calls.length).toBe(tries);
+  } finally {
+    write.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
+it("releases a saved channel row for one agent while another agent's saved row waits", async () => {
+  const other = "b".repeat(64);
+  const h = fixture();
+  h.team(other);
+  h.choices(true, [agent, other]);
+  h.work("b-task", "working", other);
+  h.enqueue({ ...message, text: "For A", channel: true });
+  h.enqueue({
+    ...message,
+    text: "For B",
+    recipients: [other],
+    picks: {},
+    channel: true,
+  });
+  h.work("b-task", "done", other);
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledOnce());
+  expect(h.send.mock.calls[0]?.[1]).toBe("For B");
+  await vi.waitFor(() =>
+    expect(h.queue.snapshot()).toMatchObject([{ text: "For A" }]),
+  );
+  expect(h.queue.snapshot()[0]?.error).toBeUndefined();
+  expect(h.queue.snapshot()[0]?.restored).toBeFalsy();
+});
+
+it("releases another agent's saved channel row while one agent's row is being edited", async () => {
+  const other = "b".repeat(64);
+  const h = fixture();
+  h.team(other);
+  h.choices(true, [agent, other]);
+  h.work("b-task", "working", other);
+  const id = h.enqueue({ ...message, text: "For A", channel: true });
+  h.enqueue({
+    ...message,
+    text: "For B",
+    recipients: [other],
+    picks: {},
+    channel: true,
+  });
+  const edit = h.queue.edit(id);
+  h.finish();
+  h.work("b-task", "done", other);
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledOnce());
+  expect(h.send.mock.calls[0]?.[1]).toBe("For B");
+  edit.cancel();
+});
+
+it("keeps a channel handoff open for a fresh start gap after a delayed delivery", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const h = fixture();
+    h.team();
+    let sign = () => {};
+    h.holdSigning(
+      new Promise<void>((resolve) => {
+        sign = resolve;
+      }),
+    );
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    const event = h.send.mock.results[0]?.value as string;
+    const complete = async () => {
+      await followUpStorage(scope).lockChat("chat", async () => {});
+      return followUpStorage(scope).handoff(`chat:${agent}`)?.complete;
+    };
+    // The first attempt times out; a retry is accepted at 45 s.
+    await vi.advanceTimersByTimeAsync(45_000);
+    sign();
+    h.session.outbox?.retry(event);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(h.publish).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(28_000);
+    expect(await complete()).not.toBe(true);
+    await vi.advanceTimersByTimeAsync(2_002);
+    expect(await complete()).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("keeps completed handoffs from blocking a fresh queue after restart", async () => {
   const first = fixture();
   first.enqueue();
@@ -1428,6 +1742,40 @@ it("does not publish when the shared handoff claim cannot be saved", async () =>
   h.queue.sendNow(id);
   await vi.waitFor(() => expect(h.queue.snapshot()).toEqual([]));
   expect(h.send).toHaveBeenCalledOnce();
+});
+
+it("settles a two-agent row's saved claims when a later claim fails", async () => {
+  const other = "b".repeat(64);
+  const h = fixture();
+  h.team(other);
+  h.choices(true, [agent, other]);
+  const both = h.enqueue({
+    ...message,
+    text: "For both",
+    recipients: [agent, other],
+    picks: {},
+    channel: true,
+  });
+  h.enqueue({ ...message, text: "For A", channel: true });
+  const set = Storage.prototype.setItem;
+  const failing = vi
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(function (this: Storage, key, value) {
+      // The first agent's claim saves; the second agent's fails.
+      if (key.includes(`follow-up-handoff:chat:${other}`))
+        throw new Error("Disk full");
+      set.call(this, key, value);
+    });
+  h.finish();
+  await vi.waitFor(() =>
+    expect(h.queue.snapshot()[0]?.error).toContain(
+      "Could not save queued message ordering",
+    ),
+  );
+  failing.mockRestore();
+  h.queue.remove(both);
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledOnce());
+  expect(h.send.mock.calls[0]?.[1]).toBe("For A");
 });
 
 it("repairs a failed event claim before recovering the receipt and restarting", async () => {

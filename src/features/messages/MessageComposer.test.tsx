@@ -14170,6 +14170,255 @@ it.each([
   },
 );
 
+describe("queued follow-ups in a team channel", () => {
+  function teamChannel(
+    working: string | undefined,
+    members = [first.pubkey, second.pubkey, "viewer"],
+    additions?: (startWork: () => void) => object,
+    refreshMembership = async () => ({
+      id: "channel",
+      members: [first.pubkey, second.pubkey, "viewer"],
+    }),
+  ) {
+    localStorage.setItem("buzz-follow-up-behavior.v1", "queue");
+    const h = mount();
+    h.setLibrary([{ pubkey: first.pubkey, name: "Honey" }]);
+    const listeners = new Set<() => void>();
+    let busy = working;
+    let state = "working";
+    const snapshot = () => ({
+      status: "unavailable",
+      records: [],
+      turns: [],
+      typing: [],
+      local: busy
+        ? [
+            {
+              agent: busy,
+              channelId: "channel",
+              messageId: "previous",
+              state,
+              scope: "scope",
+              threadRootId: "",
+              startedAt: 1,
+            },
+          ]
+        : [],
+    });
+    let activity = snapshot();
+    const startWork = () => {
+      busy = first.pubkey;
+      state = "working";
+      activity = snapshot();
+      act(() => {
+        for (const listener of listeners) listener();
+      });
+    };
+    const channelList = {
+      status: "ready",
+      channels: [
+        {
+          id: "channel",
+          channelType: "stream",
+          members,
+        },
+      ],
+    };
+    h.retarget({
+      session: {
+        ...h.session,
+        ...(additions ? { memberAdditions: additions(startWork) } : {}),
+        viewer: "viewer",
+        channels: { ...h.session.channels, list: () => channelList },
+        channelWrites: {
+          refreshMembership,
+          addAgents: vi.fn(),
+        },
+        agentActivity: {
+          activate: () => () => {},
+          snapshot: () => activity,
+          subscribe: (listener: () => void) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+        },
+      } as unknown as RelaySession,
+    });
+    act(() => {
+      h.commands().insertMention(first);
+      h.commands().insertText("Then do this");
+    });
+    return {
+      h,
+      finish() {
+        act(() => {
+          state = "done";
+          activity = snapshot();
+          for (const listener of listeners) listener();
+        });
+      },
+    };
+  }
+
+  it("holds a message to a working agent until its turn ends", async () => {
+    const { h, finish } = teamChannel(first.pubkey);
+    await choicesLoaded();
+    h.submit();
+    await screen.findByRole("region", { name: "Queued follow-ups" });
+    expect(h.messages.send).not.toHaveBeenCalled();
+    finish();
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(h.messages.send).toHaveBeenCalledWith(
+      "channel",
+      "@Honey Then do this",
+      [first.pubkey],
+      [],
+      expect.objectContaining({ key: expect.stringMatching(/^follow-up:/) }),
+      [],
+      {},
+    );
+  });
+
+  it("queues a message behind a row that is still being released", async () => {
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { h, finish } = teamChannel(
+      first.pubkey,
+      undefined,
+      undefined,
+      async () => {
+        await released;
+        return {
+          id: "channel",
+          members: [first.pubkey, second.pubkey, "viewer"],
+        };
+      },
+    );
+    await choicesLoaded();
+    h.submit();
+    await screen.findByRole("region", { name: "Queued follow-ups" });
+    finish();
+    act(() => {
+      h.commands().insertMention(first);
+      h.commands().insertText("And this");
+    });
+    h.submit();
+    await waitFor(() =>
+      expect(screen.getAllByText(/And this/).length).toBeGreaterThan(0),
+    );
+    expect(h.messages.send).not.toHaveBeenCalled();
+    await act(async () => release());
+    // The first goes; the second waits for the agent to take it up.
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(h.messages.send.mock.calls[0]?.[1]).toBe("@Honey Then do this");
+    expect(
+      screen.getByRole("region", { name: "Queued follow-ups" }),
+    ).toHaveTextContent("And this");
+  });
+
+  it("sends at once when the session cannot read the channel's roster", async () => {
+    const { h } = teamChannel(first.pubkey);
+    // Messaging only: no channel management, so no roster check to release by.
+    const outbox = h.session.outbox as unknown as {
+      supports: (kind: number) => boolean;
+    };
+    outbox.supports = (kind) => kind !== 9007 && kind !== 9000;
+    await choicesLoaded();
+    h.submit();
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(
+      screen.queryByRole("region", { name: "Queued follow-ups" }),
+    ).toBeNull();
+  });
+
+  it("sends at once when a tagged recipient is not known to be an agent", async () => {
+    const { h } = teamChannel(first.pubkey);
+    act(() => h.commands().insertMention(second));
+    await choicesLoaded();
+    h.submit();
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(
+      screen.queryByRole("region", { name: "Queued follow-ups" }),
+    ).toBeNull();
+  });
+
+  it("holds a message whose outside person was sent as a reference", async () => {
+    const members = [first.pubkey, "viewer"];
+    const { h, finish } = teamChannel(
+      first.pubkey,
+      members,
+      undefined,
+      async () => ({ id: "channel", members }),
+    );
+    act(() => h.commands().insertMention(second));
+    await choicesLoaded();
+    h.submit();
+    fireEvent.click(await screen.findByRole("button", { name: "Do nothing" }));
+    await screen.findByRole("region", { name: "Queued follow-ups" });
+    expect(h.messages.send).not.toHaveBeenCalled();
+    finish();
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(h.messages.send.mock.calls[0]?.[2]).toEqual([first.pubkey]);
+    expect(h.messages.send.mock.calls[0]?.[5]).toEqual([second.pubkey]);
+  });
+
+  it("holds a message whose recipient became known as an agent while a prompt was open", async () => {
+    const members = [first.pubkey, second.pubkey, "viewer"];
+    const outsider = { pubkey: "c".repeat(64), name: "Bee" };
+    const { h } = teamChannel(second.pubkey, members, undefined, async () => ({
+      id: "channel",
+      members,
+    }));
+    act(() => {
+      h.commands().insertMention(second);
+      h.commands().insertMention(outsider);
+    });
+    await choicesLoaded();
+    h.submit();
+    const later = await screen.findByRole("button", { name: "Do nothing" });
+    act(() =>
+      h.setLibrary([
+        { pubkey: first.pubkey, name: "Honey" },
+        { pubkey: second.pubkey, name: "Honey" },
+      ]),
+    );
+    await act(async () => {});
+    fireEvent.click(later);
+    await screen.findByRole("region", { name: "Queued follow-ups" });
+    expect(h.messages.send).not.toHaveBeenCalled();
+  });
+
+  it("holds a message whose agent became busy while a prompt was open", async () => {
+    const members = ["viewer"];
+    const { h } = teamChannel(undefined, members, (startWork) => ({
+      add: vi.fn(async (_channel: string, pubkey: string) => {
+        members.push(pubkey);
+        startWork();
+      }),
+    }));
+    await choicesLoaded();
+    h.submit();
+    fireEvent.click(await screen.findByRole("button", { name: "Invite" }));
+    await screen.findByRole("region", { name: "Queued follow-ups" });
+    expect(h.messages.send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no agent is working", undefined],
+    ["only another agent is working", second.pubkey],
+  ])("sends at once when %s", async (_name, working) => {
+    const { h } = teamChannel(working);
+    await choicesLoaded();
+    h.submit();
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(
+      screen.queryByRole("region", { name: "Queued follow-ups" }),
+    ).toBeNull();
+  });
+});
+
 it("withholds recording tools while a message edit cannot take attachments", async () => {
   const empty: readonly never[] = [];
   const tools: readonly Contribution<ComposerTool>[] = [

@@ -2744,18 +2744,37 @@ function Composer({
       profileSnapshot,
       session.agentChoices.snapshot(),
     );
-    const queueFollowUp =
+    // In a channel, only a message to an agent this device sees working is
+    // held; anything else (people, idle agents, threads) goes out now.
+    const addressedKeys = capturedRecipients.map(({ pubkey }) => pubkey);
+    const followUpEligible =
       !!host &&
-      ownSoloConversation &&
       !threadRootId &&
       followUpBehaviorPreference() === "queue" &&
       capturedRecipients.length > 0 &&
-      !soloHasPeople(
-        capturedRecipients.map(({ pubkey }) => pubkey),
-        session.viewer,
-        profileSnapshot,
-        agentKeys,
+      !soloHasPeople(addressedKeys, session.viewer, profileSnapshot, agentKeys);
+    const queueFollowUp = followUpEligible && ownSoloConversation;
+    // Decided when the message goes, on the recipients that are sent (after
+    // people become references) and the agents known by then. A recipient
+    // not yet known to be an agent might be a person.
+    const channelFollowUp = (sent: readonly string[]) => {
+      const agentsNow = knownAgentPubkeys(
+        session.profiles.snapshot(),
+        session.agentChoices.snapshot(),
       );
+      // A queued row checks the channel's roster before it is sent, which
+      // a session that cannot manage channels cannot read; it sends now.
+      return (
+        !!host &&
+        (!!host.outbox?.supports(9007) || !!host.outbox?.supports(9000)) &&
+        !threadRootId &&
+        !ownSoloConversation &&
+        !soloConversation &&
+        followUpBehaviorPreference() === "queue" &&
+        sent.length > 0 &&
+        sent.every((key) => agentsNow.has(key))
+      );
+    };
     try {
       const tokens = draftTokens(captured);
       messageTokenTags(tokens);
@@ -3033,7 +3052,13 @@ function Composer({
       ) => {
         if (compactingNow(recipients))
           throw new Error("Wait for compaction to finish, or interrupt it.");
-        if (!queueFollowUp || !host) return publishNow(uploaded, session);
+        // Prompts and uploads take time: a channel agent may have become busy.
+        const hold =
+          queueFollowUp ||
+          (channelFollowUp(recipients) &&
+            !!host &&
+            followUpQueue(host).busy(channelId, recipients));
+        if (!hold || !host) return publishNow(uploaded, session);
         const message = {
           channelId,
           text: content,
@@ -3042,6 +3067,7 @@ function Composer({
           references,
           picks: sentPicks,
           ...(tokens.length ? { tokens } : {}),
+          ...(ownSoloConversation ? {} : { channel: true as const }),
         };
         const send = followUpMessage(host, message);
         return followUpQueue(host).submit(

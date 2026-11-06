@@ -846,7 +846,17 @@ for 30 days expires.
   the Activity list and a conversation) works the same way. Each page remembers
   its own width within the same community and identity; double-click to reset.
 
-## Saved Solo follow-ups
+## Saved follow-ups
+
+In **Settings > Appearance**, set **Follow-up behavior** to **Queue** to hold a
+message to a working agent until that agent finishes its response, instead of
+sending it at once. This applies in Solo and in team channels. In a channel, a
+top-level message is held only when it tags agents alone and at least one of
+them is working where this device can see it. Messages that tag people, tag
+only idle agents or agents Buzz cannot see working, or reply in a thread, send
+immediately. A held channel message stays on this device: teammates cannot see
+it until it is sent. Without Queue, a mention reaches a working agent at once
+and the agent folds it into its current work.
 
 Messages queued behind a working agent are saved on this device for the current
 account and community. Saved text, recipients, uploaded attachments, references,

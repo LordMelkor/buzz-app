@@ -8,6 +8,7 @@ import { finalizeEvent, getPublicKey } from "nostr-tools";
 import { createOutbox } from "../relay/outbox";
 import { createAgentActivity } from "../agents/activity";
 import { followUpQueue } from "./follow-up-queue";
+import { followUpMessage } from "./follow-up-message";
 
 type ActivityTyping = ReturnType<
   RelaySession["agentActivity"]["snapshot"]
@@ -20,6 +21,16 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+// Solo holds on any unobservable activity; a channel holds only for its agents.
+const solo = {
+  viewer: "me",
+  channels: {
+    list: () => ({
+      channels: [{ id: "chat", channelType: "solo", creator: "me" }],
+    }),
+  },
+} as unknown as Partial<RelaySession>;
 
 function fixture(extra: Partial<RelaySession> = {}) {
   const listeners = new Set<() => void>();
@@ -45,14 +56,19 @@ function fixture(extra: Partial<RelaySession> = {}) {
     queue,
     session,
     deactivate,
-    work(messageId: string, state: LocalWork["state"], channelId = "chat") {
+    work(
+      messageId: string,
+      state: LocalWork["state"],
+      channelId = "chat",
+      agent = "agent",
+    ) {
       local = [
         ...local.filter((row) => row.messageId !== messageId),
         {
           messageId,
           state,
           channelId,
-          agent: "agent",
+          agent,
           scope: "scope",
           threadRootId: "",
           startedAt: 1,
@@ -259,7 +275,7 @@ it("activates the real observer before deciding and waits for its live snapshot"
   const observe = vi.fn();
   const activity = createAgentActivity(true, observe, () => true);
   const session = {
-    ...fixture().session,
+    ...fixture(solo).session,
     agentActivity: activity.queries,
   } as RelaySession;
   const queue = followUpQueue(session);
@@ -341,6 +357,177 @@ it("only releases a failed Outbox wait after durable dismissal", async () => {
   }
 });
 
+it.each([
+  ["past the start gap", 30_002],
+  ["when its retry succeeds within the start gap", 20_000],
+])(
+  "keeps a failed channel delivery holding its successors %s",
+  async (_name, retryAt) => {
+    vi.useFakeTimers();
+    const key = new Uint8Array(32).fill(7);
+    let signs = 0;
+    const owner = createOutbox(
+      getPublicKey(key),
+      {
+        sign: async (event) => {
+          signs += 1;
+          if (signs === 1) throw new Error("Signing failed");
+          return finalizeEvent(structuredClone(event), key);
+        },
+        publish: async () => {},
+      },
+      { load: () => [], save: async () => {} },
+    );
+    const h = fixture({ outbox: owner.outbox });
+    try {
+      await owner.ready;
+      const id =
+        h.queue.submit({
+          ...h.entry("first"),
+          publish: () =>
+            owner.outbox.send({
+              kind: 9,
+              content: "first",
+              tags: [["h", "chat"]],
+            }),
+        }) ?? "missing";
+      await vi.waitFor(() =>
+        expect(owner.outbox.snapshot()[0]?.delivery).toBe("failed"),
+      );
+      const next = h.entry("next");
+      h.queue.submit(next);
+      await vi.advanceTimersByTimeAsync(retryAt);
+      expect(next.publish).not.toHaveBeenCalled();
+      owner.outbox.retry(id);
+      await vi.waitFor(() =>
+        expect(owner.outbox.snapshot()[0]?.delivery).toBe("accepted"),
+      );
+      // Delivered at last, the message gets its start gap from now.
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(next.publish).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_002);
+      expect(next.publish).toHaveBeenCalledOnce();
+    } finally {
+      owner.dispose();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("keeps a typing agent's wait open while another agent's row is checked", () => {
+  vi.useFakeTimers();
+  try {
+    const h = fixture();
+    h.typing([
+      {
+        agent: "agent",
+        channelId: "chat",
+        startedAt: 1,
+        threadRootId: undefined,
+        working: true,
+      },
+    ]);
+    h.work("b-task", "working", "chat", "other-agent");
+    const forA = h.entry("for a");
+    const forB = { ...h.entry("for b"), recipients: ["other-agent"] };
+    h.queue.submit(forA);
+    h.queue.submit(forB);
+    h.work("b-task", "done", "chat", "other-agent");
+    expect(forB.publish).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(4_900);
+    // A posts a reply mid-task, so its typing clears for a moment.
+    h.typing([]);
+    vi.advanceTimersByTime(200);
+    expect(forA.publish).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(5_000);
+    expect(forA.publish).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("holds a channel row for a typing-only agent through a typing gap", () => {
+  vi.useFakeTimers();
+  try {
+    const h = fixture();
+    const typing = {
+      agent: "agent",
+      channelId: "chat",
+      startedAt: 1,
+      threadRootId: undefined,
+      working: true,
+    };
+    h.typing([typing]);
+    const entry = h.entry("next");
+    h.queue.submit(entry);
+    // A progress reply clears typing for a moment.
+    h.typing([]);
+    expect(entry.publish).not.toHaveBeenCalled();
+    h.typing([typing]);
+    h.typing([]);
+    vi.advanceTimersByTime(5_002);
+    expect(entry.publish).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it.each([
+  ["typing that lasted long before it cleared", false],
+  ["an agent whose earlier work is finished", true],
+])("starts the typing gap when typing clears, for %s", (_name, history) => {
+  vi.useFakeTimers();
+  try {
+    const h = fixture();
+    if (history) h.work("earlier", "done");
+    h.typing([
+      {
+        agent: "agent",
+        channelId: "chat",
+        startedAt: 1,
+        threadRootId: undefined,
+        working: true,
+      },
+    ]);
+    const entry = h.entry("next");
+    h.queue.submit(entry);
+    vi.advanceTimersByTime(10_000);
+    h.typing([]);
+    vi.advanceTimersByTime(4_000);
+    expect(entry.publish).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1_002);
+    expect(entry.publish).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("lets a turn seen after typing end the hold when it ends", () => {
+  vi.useFakeTimers();
+  try {
+    const h = fixture();
+    h.typing([
+      {
+        agent: "agent",
+        channelId: "chat",
+        startedAt: 1,
+        threadRootId: undefined,
+        working: true,
+      },
+    ]);
+    const entry = h.entry("next");
+    h.queue.submit(entry);
+    // The agent's work becomes visible, then ends well inside the gap.
+    h.work("task", "working");
+    h.typing([]);
+    vi.advanceTimersByTime(2_000);
+    h.work("task", "done");
+    expect(entry.publish).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it.each(["unknown", "accepted"] as const)(
   "retains waits after dismissing %s delivery",
   async (delivery) => {
@@ -384,7 +571,7 @@ it.each(["unknown", "accepted"] as const)(
 );
 
 it("holds channel typing until it clears, without treating thread or other-channel typing as work", () => {
-  const h = fixture();
+  const h = fixture(solo);
   const typing = {
     agent: "agent",
     channelId: "chat",
@@ -403,6 +590,147 @@ it("holds channel typing until it clears, without treating thread or other-chann
     { ...typing, channelId: "other" },
   ]);
   expect(entry.publish).toHaveBeenCalledOnce();
+});
+
+it("holds a channel message only for the agents it addresses, but any work holds Solo", () => {
+  for (const [extra, holds] of [
+    [{}, false],
+    [solo, true],
+  ] as const) {
+    const h = fixture(extra);
+    h.remote("working");
+    // The working agent is "agent"; this message addresses someone else.
+    expect(h.queue.busy("chat", ["other-agent"])).toBe(holds);
+    expect(h.queue.busy("chat", ["agent"])).toBe(true);
+    const entry = { ...h.entry("next"), recipients: ["other-agent"] };
+    h.queue.submit(entry);
+    expect(entry.publish).toHaveBeenCalledTimes(holds ? 0 : 1);
+    h.remote("ended");
+    expect(entry.publish).toHaveBeenCalledOnce();
+  }
+});
+
+it("asks whether agents are busy without leaving a wait behind", () => {
+  const h = fixture();
+  h.work("busy", "working");
+  // The composer probes for another agent, which is idle, and sends now.
+  expect(h.queue.busy("chat", ["other-agent"])).toBe(false);
+  h.loseEvidence();
+  const entry = h.entry("next");
+  h.queue.submit(entry);
+  expect(entry.publish).toHaveBeenCalledOnce();
+});
+
+it("releases one agent's queued row while another agent's row still waits", () => {
+  const h = fixture();
+  h.work("a-task", "working", "chat", "agent");
+  h.work("b-task", "working", "chat", "other-agent");
+  const forA = h.entry("for a");
+  const forB = { ...h.entry("for b"), recipients: ["other-agent"] };
+  h.queue.submit(forA);
+  h.queue.submit(forB);
+  h.work("b-task", "done", "chat", "other-agent");
+  expect(forB.publish).toHaveBeenCalledOnce();
+  expect(forA.publish).not.toHaveBeenCalled();
+});
+
+it("does not hold a message to an idle agent behind another agent's queued row", () => {
+  const h = fixture();
+  h.work("busy", "working");
+  const held = h.entry("held");
+  h.queue.submit(held);
+  expect(h.queue.snapshot()).toHaveLength(1);
+  expect(h.queue.busy("chat", ["other-agent"])).toBe(false);
+});
+
+it("publishes a channel row to a member agent that is not the owner's own, and never a Solo row there", () => {
+  const send = vi.fn(() => "sent");
+  const session = {
+    viewer: "me",
+    channels: {
+      list: () => ({ channels: [{ id: "chat", channelType: "stream" }] }),
+    },
+    agentChoices: { snapshot: () => ({ selectable: [], complete: true }) },
+    messages: { send },
+  } as unknown as RelaySession;
+  const row = {
+    channelId: "chat",
+    text: "after you finish",
+    recipients: ["someone-elses-agent"],
+    attachments: [],
+    references: [],
+    picks: {},
+  };
+  expect(followUpMessage(session, { ...row, channel: true }).publish()).toBe(
+    "sent",
+  );
+  expect(() => followUpMessage(session, row).publish()).toThrow(
+    "This Solo chat or its recipients are no longer available.",
+  );
+});
+
+it.each([
+  ["", 0],
+  [" even when the system clock moves back", 60_000],
+])(
+  "stops waiting for a teammate's agent whose turn never shows up%s",
+  (_name, back) => {
+    vi.useFakeTimers();
+    try {
+      const h = fixture();
+      const first = h.entry("first"),
+        second = h.entry("second");
+      h.work("busy", "working");
+      h.queue.submit(first);
+      h.queue.submit(second);
+      h.work("busy", "done");
+      expect(first.publish).toHaveBeenCalledOnce();
+      // No local row or turn ever references "first".
+      expect(second.publish).not.toHaveBeenCalled();
+      vi.setSystemTime(Date.now() - back);
+      vi.advanceTimersByTime(30_002);
+      expect(second.publish).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("holds a channel row behind a resumed request of another agent", () => {
+  const h = fixture();
+  h.work("busy", "working", "chat", "other");
+  const row = { ...h.entry("next"), recipients: ["other"] };
+  h.queue.submit(row);
+  h.queue.resumeAfter("agent", { original: "chat" });
+  // A message left with no agent (all made references) has no row to wait in.
+  expect(h.queue.busy("chat", [])).toBe(false);
+  h.work("busy", "done", "chat", "other");
+  expect(row.publish).not.toHaveBeenCalled();
+  h.work("original", "done");
+  expect(row.publish).toHaveBeenCalledOnce();
+});
+
+it("counts a teammate's agent as busy from its public profile", () => {
+  const profiles = new Map([["mate", { isAgent: true }]]);
+  const h = fixture({
+    profiles: { snapshot: () => profiles },
+    typing: { snapshot: () => [{ channelId: "chat", pubkey: "mate" }] },
+  } as never);
+  expect(h.queue.busy("chat", ["mate"])).toBe(true);
+});
+
+it("counts a thread of the channel as busy for the addressed agent", () => {
+  const h = fixture();
+  h.typing([
+    {
+      agent: "agent",
+      channelId: "chat",
+      startedAt: 1,
+      threadRootId: "thread",
+      working: true,
+    },
+  ]);
+  expect(h.queue.busy("chat", ["agent"])).toBe(true);
 });
 
 it("rejects a late upload submission after its destination disappeared without allocating a slot or activity lease", () => {
@@ -442,6 +770,7 @@ it("observes independent owned-agent typing and releases on its updates", () => 
   const listeners = new Set<() => void>();
   const unsubscribe = vi.fn();
   const h = fixture({
+    ...solo,
     typing: {
       async send() {},
       snapshot: () => typing,
@@ -563,9 +892,10 @@ it("retires stopped local waits after independent work clears and ignores late c
     work.finish({ ok: true });
     expect(owner.reader.work()[0]?.state).toBe("stopped");
     expect(next.publish).not.toHaveBeenCalled();
-    h.remote("ended");
-    expect(next.publish).not.toHaveBeenCalled();
+    // Typing clears while the turn is still seen, so no typing gap follows.
     h.typing([]);
+    expect(next.publish).not.toHaveBeenCalled();
+    h.remote("ended");
     expect(next.publish).toHaveBeenCalledOnce();
     h.work("next", "done");
     await vi.waitFor(() => expect(h.deactivate).toHaveBeenCalledOnce());

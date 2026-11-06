@@ -8006,7 +8006,10 @@ describe("a turn closing or reloading the app stopped", () => {
         }),
       },
     });
-    Object.assign(app.session.agentChoices, { subscribe: () => () => {} });
+    Object.assign(app.session.agentChoices, {
+      subscribe: () => () => {},
+      snapshot: () => ({ identities: [] }),
+    });
     const publish = vi.fn(() => "fresh-event");
     queue.submit({
       channelId: channel,
