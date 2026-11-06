@@ -581,23 +581,36 @@ it("a team mentions a person outside the channel, as the individual chooser woul
   }
 });
 
-it("a team person without a known name stays unavailable while their profile is requested", async () => {
+it("a team person without a known name stays unavailable until their profile loads", async () => {
   const h = fixture({ count: 2, team: 1 });
   const person = teamWithPerson(h);
-  const profiles = h.session.profiles as unknown as {
-    snapshot: () => Map<string, { name?: string }>;
-    ensure: (ids: readonly string[]) => Promise<void>;
-  };
-  profiles.snapshot().delete(person.pubkey);
-  const ensure = vi.spyOn(profiles, "ensure");
+  let names = new Map(h.session.profiles.snapshot());
+  names.delete(person.pubkey);
+  const listeners = new Set<() => void>();
+  const ensure = vi.fn(async () => {});
+  Object.assign(h.session.profiles, {
+    snapshot: () => names,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    ensure,
+  });
   const menu = inline(h.session);
   try {
     await waitFor(() =>
       expect(ensure).toHaveBeenCalledWith(
         [h.agent.pubkey, person.pubkey].sort(),
+        "background",
       ),
     );
     expect(menu.team()?.disabled).toContain("unavailable");
+    act(() => {
+      names = new Map(names).set(person.pubkey, { name: person.name });
+      for (const listener of listeners) listener();
+    });
+    await waitFor(() => expect(menu.team()?.canSelect?.("Enter")).toBe(true));
+    expect(menu.team()?.edit.mentions).toEqual([h.agent, person]);
   } finally {
     menu.view.unmount();
     h.library.dispose();
