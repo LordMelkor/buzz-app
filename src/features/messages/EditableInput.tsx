@@ -929,12 +929,15 @@ export function EditableInput({
         const group = composerGroup(recipient, `@${recipient.label}`);
         if (!group) return false;
         // In code a group is only its name: code never carries recipients.
+        const code =
+          $from.parent.type.spec.code ||
+          marks.some((mark) => mark.type === composerSchema.marks.code);
         tr.replaceWith(
           from,
           to,
           Fragment.fromArray([
-            $from.parent.type.spec.code
-              ? composerSchema.text(`@${group.label}`)
+            code
+              ? composerSchema.text(`@${group.label}`, marks)
               : composerSchema.nodes.token.create(
                   { source: `@${group.label}`, group, editAsText: false },
                   null,

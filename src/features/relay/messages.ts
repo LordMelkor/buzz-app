@@ -104,12 +104,10 @@ export function createMessages(
     ];
   };
   const referenceTags = (pubkeys: readonly string[]) => {
-    if (
-      pubkeys.length > 32 ||
-      pubkeys.some((key) => !/^[0-9a-f]{64}$/.test(key))
-    )
+    const unique = [...new Set(pubkeys)];
+    if (unique.length > 32 || unique.some((key) => !/^[0-9a-f]{64}$/.test(key)))
       throw new Error("Choose at most 32 valid mention references");
-    return [...new Set(pubkeys)].map((key) => ["mention", key]);
+    return unique.map((key) => ["mention", key]);
   };
   const pickTags = (
     channelId: string,

@@ -5029,6 +5029,14 @@ describe("group chip", () => {
     expect(h.input).toHaveValue("@Ann ");
   });
 
+  it("is only its name in inline code", () => {
+    const h = mount();
+    act(() => h.input.toggleFormat("code"));
+    act(() => expect(h.input.insertText("", crew)).toBe(true));
+    expect(h.input).toHaveValue("@crew ");
+    expect(h.draft().recipients).toEqual([]);
+  });
+
   it("counts distinct people against the 32-recipient cap", () => {
     const people = Array.from({ length: 32 }, (_, i) => ({
       pubkey: i.toString(16).padStart(64, "0"),
