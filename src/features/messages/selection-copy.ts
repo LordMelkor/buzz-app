@@ -198,9 +198,11 @@ function serialize(
   return `<${block}>${inner}</${block}>`;
 }
 
-/** Engines omit computed `user-select: none` chrome from copies; so do we. */
+/** Engines omit computed `user-select: none` chrome from copies; so do we.
+ * The macOS system WebKit computes only the prefixed property. */
 export function unselectable(element: Element): boolean {
-  return getComputedStyle(element).userSelect === "none";
+  const style = getComputedStyle(element);
+  return (style.userSelect || style.webkitUserSelect) === "none";
 }
 
 function anchor(node: Element, inner: string, format: CopyFormat): string {

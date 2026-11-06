@@ -680,6 +680,32 @@ describe("serializeNode", () => {
     }
   });
 
+  it("omits chrome the engine marks unselectable only by the prefixed property", () => {
+    // The macOS system WebKit computes `-webkit-user-select` and leaves the
+    // unprefixed `userSelect` undefined.
+    const paragraph = query(
+      "p",
+      mount(row("<p>sum <span data-chrome>drawing</span>source</p>")),
+    );
+    const real = window.getComputedStyle.bind(window);
+    const styles = vi
+      .spyOn(window, "getComputedStyle")
+      .mockImplementation((element, pseudo) =>
+        element.hasAttribute("data-chrome")
+          ? ({ webkitUserSelect: "none" } as CSSStyleDeclaration)
+          : real(element, pseudo),
+      );
+    try {
+      expect(each(paragraph)).toEqual({
+        text: "sum source",
+        markdown: "sum source",
+        html: "<p>sum source</p>",
+      });
+    } finally {
+      styles.mockRestore();
+    }
+  });
+
   it("degrades unknown elements to text and escapes HTML", () => {
     const paragraph = query(
       "p",
