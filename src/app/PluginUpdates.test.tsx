@@ -395,6 +395,19 @@ it.each([true, false])(
   },
 );
 
+it("lists origins the user approved among what the plugin can do", async () => {
+  const f = fixture();
+  f.plugin.approvedOrigins = ["https://mcp.example:8443"];
+  render(<PluginMenu plugin={f.plugin} plugins={f.manager} busy={false} />);
+  fireEvent.click(screen.getByRole("button", { name: "More plugin actions" }));
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Review access" }),
+  );
+  expect(
+    await screen.findByText("Connect to https://mcp.example:8443"),
+  ).toBeInTheDocument();
+});
+
 it.each(["checks disabled", "signature repaired"] as const)(
   "retires a pending preview when the installed plugin changes: %s",
   async (change) => {

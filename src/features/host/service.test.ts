@@ -1,6 +1,7 @@
 import { Context } from "@deepseek-ai/cordis";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { originConsent } from "./origin-consent";
 import { HostService, type Host } from "./service";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -1745,5 +1746,288 @@ it("stops a process after a failed streamed frame and rejects queued writes", as
   expect(invoke).toHaveBeenCalledWith(
     "plugin_host_process_kill",
     expect.objectContaining({ handle: 7 }),
+  );
+});
+
+const catalog = (
+  plugin: Record<string, unknown> = {},
+  id = "example.plugin",
+  revision = "abc",
+) => ({
+  status: "ready",
+  catalog: {
+    plugins: [
+      {
+        manifest: {
+          id,
+          name: "Example",
+          host: { networkOrigins: ["https://declared.example"] },
+        },
+        enabled: true,
+        revision,
+        ...plugin,
+      },
+    ],
+  },
+});
+const answer = async (approved: boolean) => {
+  await vi.waitFor(() => expect(originConsent.current()).toBeDefined());
+  const asked = originConsent.current();
+  originConsent.answer(approved);
+  return asked;
+};
+
+it("saves an origin only after the person allows it, naming plugin and origin", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "plugin_catalog" ? catalog() : undefined,
+  );
+  const result = plugin.host.requestOrigin?.("https://mcp.example:8443");
+  const asked = await answer(true);
+  expect(asked).toMatchObject({
+    plugin: { id: "example.plugin", name: "Example" },
+    origin: "https://mcp.example:8443",
+  });
+  expect(await result).toBe(true);
+  expect(invoke).toHaveBeenCalledWith("plugin_change", {
+    action: "allow-origin abc https://mcp.example:8443",
+    id: "example.plugin",
+  });
+});
+
+it("keeps an origin refused when the person denies it", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke).mockResolvedValue(catalog());
+  const result = plugin.host.requestOrigin?.("https://mcp.example");
+  await answer(false);
+  expect(await result).toBe(false);
+  expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
+});
+
+it("does not ask again for an origin the plugin can already reach", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke).mockResolvedValue(
+    catalog({ approvedOrigins: ["https://approved.example"] }),
+  );
+  expect(await plugin.host.requestOrigin?.("https://declared.example")).toBe(
+    true,
+  );
+  expect(await plugin.host.requestOrigin?.("https://approved.example")).toBe(
+    true,
+  );
+  expect(originConsent.current()).toBeUndefined();
+  expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
+});
+
+it("shares one prompt between repeated asks for one origin", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "plugin_catalog" ? catalog() : undefined,
+  );
+  const first = plugin.host.requestOrigin?.("https://mcp.example");
+  const second = plugin.host.requestOrigin?.("https://mcp.example");
+  await answer(true);
+  expect(await Promise.all([first, second])).toEqual([true, true]);
+  expect(originConsent.current()).toBeUndefined();
+});
+
+it("lets a caller that starts while an Allow is saved join it, not look or ask again", async () => {
+  const { plugin } = pluginContext();
+  let release!: () => void;
+  const saving = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "plugin_change") await saving;
+    return command === "plugin_catalog" ? catalog() : undefined;
+  });
+  const calls = (name: string) =>
+    vi.mocked(invoke).mock.calls.filter(([command]) => command === name);
+  const first = plugin.host.requestOrigin?.("https://mcp.example");
+  await answer(true);
+  await vi.waitFor(() => expect(calls("plugin_change")).toHaveLength(1));
+  // A catalog read now could finish after the save and still be stale.
+  const second = plugin.host.requestOrigin?.("https://mcp.example");
+  release();
+  expect(await Promise.all([first, second])).toEqual([true, true]);
+  expect(calls("plugin_catalog")).toHaveLength(1);
+  expect(calls("plugin_change")).toHaveLength(1);
+  expect(originConsent.current()).toBeUndefined();
+});
+
+it.each([
+  "http://mcp.example",
+  "https://mcp.example/mcp",
+  "https://mcp.example/",
+  "https://user@mcp.example",
+  "https://*.example",
+  "https://mcp.example:443",
+  "mcp.example",
+  "",
+])("rejects %j without asking the person", async (origin) => {
+  const { plugin } = pluginContext();
+  await expect(plugin.host.requestOrigin?.(origin)).rejects.toThrow(
+    /HTTPS origin/,
+  );
+  expect(invoke).not.toHaveBeenCalled();
+  expect(originConsent.current()).toBeUndefined();
+});
+
+it("closes the prompt and rejects when the requesting plugin unloads", async () => {
+  const { host, fiber } = await oncePlugin();
+  vi.mocked(invoke).mockResolvedValue(catalog());
+  const result = host.requestOrigin?.("https://mcp.example");
+  const rejected = expect(result).rejects.toThrow(/stopped/);
+  await vi.waitFor(() => expect(originConsent.current()).toBeDefined());
+  await fiber.dispose();
+  await rejected;
+  expect(originConsent.current()).toBeUndefined();
+  expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
+});
+
+it("withdraws a prompt as soon as its plugin is disposed, even mid-startup", async () => {
+  const root = new Context();
+  new HostService(root);
+  let asked!: Promise<boolean>;
+  let startup!: Promise<unknown>;
+  const fiber = root
+    .extend({ pluginOwner: { id: "example.plugin", revision: "abc" } })
+    .plugin({
+      inject: ["host"],
+      // Startup waits on the prompt, so Cordis cannot run cleanups until it ends.
+      apply: async (ctx: Context) => {
+        asked = ctx.host.requestOrigin?.(
+          "https://mcp.example",
+        ) as Promise<boolean>;
+        startup = asked.catch(() => undefined);
+        await startup;
+      },
+    });
+  vi.mocked(invoke).mockResolvedValue(catalog());
+  await vi.waitFor(() => expect(originConsent.current()).toBeDefined());
+  const disposing = fiber.dispose();
+  await vi.waitFor(() => expect(originConsent.current()).toBeUndefined());
+  await expect(asked).rejects.toThrow(/stopped/);
+  await disposing;
+  expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
+});
+
+it("asks again after a Cordis restart on the same fiber", async () => {
+  const { host, fiber } = await oncePlugin();
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "plugin_catalog" ? catalog() : undefined,
+  );
+  try {
+    const before = host.requestOrigin?.("https://mcp.example");
+    await answer(false);
+    expect(await before).toBe(false);
+    await fiber.restart();
+    const after = host.requestOrigin?.("https://mcp.example");
+    await answer(true);
+    expect(await after).toBe(true);
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("rejects without asking when the plugin restarts during the catalog lookup", async () => {
+  const { host, fiber } = await oncePlugin();
+  let release!: () => void;
+  const lookup = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "plugin_catalog") await lookup;
+    return command === "plugin_catalog" ? catalog() : undefined;
+  });
+  try {
+    const stale = host.requestOrigin?.("https://mcp.example");
+    const declared = host.requestOrigin?.("https://declared.example");
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    await fiber.restart();
+    release();
+    await expect(stale).rejects.toThrow(/stopped/);
+    await expect(declared).rejects.toThrow(/stopped/);
+    expect(originConsent.current()).toBeUndefined();
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("rejects at once when the plugin stops while native work is stalled", async () => {
+  const { host, fiber } = await oncePlugin();
+  // The catalog lookup never answers, as under registry-lock contention.
+  vi.mocked(invoke).mockImplementation(() => new Promise(() => {}));
+  try {
+    const stalled = host.requestOrigin?.("https://mcp.example");
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+    await fiber.restart();
+    await expect(stalled).rejects.toThrow(/stopped/);
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("rejects an allowed origin when the plugin restarts while it is saved", async () => {
+  const { host, fiber } = await oncePlugin();
+  let release!: () => void;
+  const saving = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "plugin_change") await saving;
+    return command === "plugin_catalog" ? catalog() : undefined;
+  });
+  try {
+    const result = host.requestOrigin?.("https://mcp.example");
+    const rejected = expect(result).rejects.toThrow(/stopped/);
+    await answer(true);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("plugin_change", expect.anything()),
+    );
+    await fiber.restart();
+    release();
+    await rejected;
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("never lets a new activation share a prompt or answer from an earlier one", async () => {
+  const first = await oncePlugin();
+  const second = await oncePlugin();
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "plugin_catalog" ? catalog() : undefined,
+  );
+  const asks = [first, second].map(({ host }) =>
+    host.requestOrigin?.("https://mcp.example"),
+  );
+  await answer(true);
+  await expect(asks[0]).resolves.toBe(true);
+  // The second activation is asked itself, not saved on the first's answer.
+  expect(originConsent.current()).toMatchObject({
+    origin: "https://mcp.example",
+  });
+  expect(invoke).toHaveBeenCalledTimes(3);
+  await answer(false);
+  expect(await Promise.all(asks)).toEqual([true, false]);
+  await first.fiber.dispose();
+  await second.fiber.dispose();
+});
+
+it("is for installed desktop plugins only", async () => {
+  const { root, plugin } = pluginContext();
+  const bundled = root.extend({
+    pluginOwner: { id: "buzz.channels", revision: "bundled" },
+  });
+  await expect(
+    bundled.host.requestOrigin?.("https://a.example"),
+  ).rejects.toThrow(/installed desktop plugin/);
+  vi.mocked(isTauri).mockReturnValue(false);
+  await expect(
+    plugin.host.requestOrigin?.("https://a.example"),
+  ).rejects.toThrow(/installed desktop plugin/);
+  await expect(root.host.requestOrigin?.("https://a.example")).rejects.toThrow(
+    /installed desktop plugin/,
   );
 });

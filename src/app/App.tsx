@@ -21,6 +21,7 @@ import { ModalWindowDragProvider } from "../shared/design-system/ui/ModalWindowD
 import { modalWindowDragHandlers } from "./shell/title-bar";
 import { isTauri } from "@tauri-apps/api/core";
 import { PairingPrompt } from "../features/credential-pairing/PairingPrompt";
+import { OriginConsentPrompt } from "../features/host/OriginConsentPrompt";
 import { Dialog } from "../shared/design-system/ui/Dialog";
 import { UpdateNotice } from "../features/updates/UpdateNotice";
 import { PluginUpdates } from "./PluginUpdates";
@@ -90,6 +91,8 @@ export function App({ services }: { services: AppServices }) {
         value={isTauri() ? modalWindowDragHandlers : undefined}
       >
         <LaunchWindowControls />
+        {/* Plugins run during onboarding too, so this outlives the Welcome gate. */}
+        {isTauri() && <OriginConsentPrompt />}
         {services.identity ? (
           <Welcome
             identity={services.identity}

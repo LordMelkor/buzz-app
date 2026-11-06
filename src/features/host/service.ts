@@ -4,6 +4,8 @@ import type {} from "../../plugins/api";
 import { nativeIdentityEnabled } from "../identity/service";
 import type { SoloRegionBinding } from "../channel-navigation/solo-navigation-contract";
 import { repositoryFolders } from "../communities/repositories";
+import type { PluginInfo, StorageResult } from "../../plugins/types";
+import { askOriginConsent } from "./origin-consent";
 
 export type HostRequest = Readonly<{
   url: string;
@@ -236,6 +238,13 @@ export interface Host {
     signal: AbortSignal,
   ) => Promise<readonly HostRepositoryFolder[]>;
   request(input: HostRequest): Promise<HostResponse>;
+  /** Asks the person using Buzz to let this plugin reach one more HTTPS
+   * origin, such as a server URL they typed: `https://host[:port]` with no
+   * path or wildcard. Resolves true once `request` may use it, at once when
+   * it already can; false when they decline. It persists for this plugin
+   * until it is removed, across restarts and updates. Installed desktop
+   * plugins only. */
+  requestOrigin?: (origin: string) => Promise<boolean>;
   /** POST-only, desktop and compatible native host required. A repeated call
    * authority rejects with unknown outcome, never resubmits or caches success.
    * Blocks IPC-fallback resends only, not fresh calls or upstream retries.
@@ -679,6 +688,59 @@ export class HostService extends Service implements Host {
     }).catch(rethrow);
   }
 
+  async requestOrigin(origin: string): Promise<boolean> {
+    const owner = this.ctx.pluginOwner;
+    if (!owner || !isTauri() || owner.revision === "bundled")
+      throw new Error("Origin approval requires an installed desktop plugin");
+    if (!bareHttpsOrigin(origin))
+      throw new Error("Use an HTTPS origin: https://host[:port], no path");
+    // One prompt per activation: a reloaded or updated plugin never shares
+    // the question, or the answer, of the one before it. Captured before any
+    // wait, so a restart meanwhile can't hand this call the next activation.
+    const { stopped, asking } = originRequests(this.ctx);
+    // Callers asking at once share the whole ask, from the catalog lookup
+    // through the save, so none reads a catalog older than another's Allow.
+    let approval = asking.get(origin);
+    if (!approval) {
+      approval = (async () => {
+        const plugin = await installedPlugin(owner);
+        if (
+          plugin.manifest.host?.networkOrigins?.includes(origin) ||
+          plugin.approvedOrigins?.includes(origin)
+        )
+          return true;
+        const allowed = await askOriginConsent(
+          { plugin: { id: owner.id, name: plugin.manifest.name }, origin },
+          stopped.signal,
+        );
+        if (!allowed) return false;
+        stopped.signal.throwIfAborted();
+        // Native code checks again that the plugin is installed, enabled and
+        // still this revision, in the same step that saves the approval.
+        await invoke("plugin_change", {
+          action: `allow-origin ${owner.revision} ${origin}`,
+          id: owner.id,
+        }).catch(rethrow);
+        return true;
+      })().finally(() => asking.delete(origin));
+      asking.set(origin, approval);
+    }
+    // A stopping plugin's caller stops waiting at once, even while native
+    // work is still running: Cordis waits for a startup awaiting this. The
+    // shared ask settles on its own.
+    const shared = approval;
+    const allowed = await new Promise<boolean>((resolve, reject) => {
+      const abort = () => reject(stopped.signal.reason);
+      if (stopped.signal.aborted) return abort();
+      stopped.signal.addEventListener("abort", abort, { once: true });
+      shared
+        .then(resolve, reject)
+        .finally(() => stopped.signal.removeEventListener("abort", abort));
+    });
+    stopped.signal.throwIfAborted();
+    return allowed;
+  }
+
   async requestOnce(
     input: HostRequest,
     { callId, isEligible }: HostRequestOnceOptions,
@@ -1029,6 +1091,84 @@ function decodeByteFrame(frame: unknown, maxBytes: number): HostByteResponse {
 }
 
 /** A native command's failure, which arrives as its message, as an Error. */
+const activations = new WeakMap<
+  Context["fiber"],
+  { stopped: AbortController; asking: Map<string, Promise<boolean>> }
+>();
+/** Cordis fiber state while a plugin unloads. */
+const UNLOADING = 5;
+
+/** What an activation's origin requests share. Its prompts close and its
+ * pending calls reject when the plugin stops. */
+function originRequests(ctx: Context) {
+  let state = activations.get(ctx.fiber);
+  if (!state) {
+    const stopped = new AbortController();
+    const current = { stopped, asking: new Map<string, Promise<boolean>>() };
+    const stop = () => {
+      stopped.abort(new Error("Plugin stopped before approval"));
+      // A Cordis restart keeps the fiber: the next activation starts fresh.
+      if (activations.get(ctx.fiber) === current) activations.delete(ctx.fiber);
+    };
+    // Cordis runs effect cleanups only once a stopping plugin's startup has
+    // settled, and startup may be waiting on this very prompt. Its disposal
+    // (uid cleared) and unloading are announced first, so stop on those.
+    const stopping = (fiber: Context["fiber"]) => {
+      if (
+        fiber === ctx.fiber &&
+        (fiber.uid === null || fiber.state === UNLOADING)
+      )
+        stop();
+    };
+    ctx.effect(() => {
+      const listening = [
+        ctx.root.on("internal/plugin", stopping),
+        ctx.root.on("internal/status", stopping),
+      ];
+      return () => {
+        for (const stopListening of listening) stopListening();
+        stop();
+      };
+    }, "origin consent");
+    state = current;
+    activations.set(ctx.fiber, state);
+  }
+  return state;
+}
+
+/** The same bare origin native code accepts in a manifest. Native checks too. */
+function bareHttpsOrigin(origin: unknown): origin is string {
+  if (typeof origin !== "string" || origin.includes("*")) return false;
+  try {
+    const url = new URL(origin);
+    return (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      url.origin === origin
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The caller's plugin as installed now, fresh from native storage. */
+async function installedPlugin(
+  owner: NonNullable<Context["pluginOwner"]>,
+): Promise<PluginInfo> {
+  const result = await invoke<StorageResult>("plugin_catalog").catch(rethrow);
+  const plugin =
+    result.status === "ready"
+      ? result.catalog.plugins.find(
+          (item) =>
+            item.manifest.id === owner.id && item.revision === owner.revision,
+        )
+      : undefined;
+  if (!plugin?.enabled)
+    throw new Error("Plugin was disabled or updated; try again");
+  return plugin;
+}
+
 function rethrow(error: unknown): never {
   throw typeof error === "string" ? new Error(error) : error;
 }
