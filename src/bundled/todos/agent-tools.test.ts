@@ -7,17 +7,19 @@ import { addTodosTools } from "./agent-tools";
 const CHANNEL = "c1";
 const HEAD = "e".repeat(64);
 const ALICE = "a".repeat(64);
+const OWNER = "0".repeat(63) + "1";
 const CANVAS =
   "# Plan\n\nKeep this.\n\n## Todos\n\n- [ ] Review\n  - [/] Draft · Assignee: [Bob](nostr:" +
   npubEncode("b".repeat(64)) +
   ")\n- [x] Ship\n\n## Notes\n\n- [ ] Not a todo\n";
 
-/** The tools over a channel whose canvas is `canvas` (none when null),
- * written `age` seconds ago, that exists only when `visible` and has Alice as
- * a member. A publish becomes the canvas unless `lose` is set. */
+/** The tools, run by an agent of OWNER, over a channel whose canvas is
+ * `canvas` (none when null), written by `author` `age` seconds ago, that
+ * exists only when `visible` and has Alice as a member. A publish becomes the
+ * canvas unless `lose` is set. */
 function setup(
   canvas: string | null = CANVAS,
-  { visible = true, age = 60, lose = false } = {},
+  { visible = true, age = 60, lose = false, author = OWNER } = {},
 ) {
   const tools = new Map<string, AddedTool>();
   addTodosTools({ addTool: (tool) => tools.set(tool.name, tool) });
@@ -28,6 +30,7 @@ function setup(
           {
             id: HEAD,
             kind: 40100,
+            pubkey: author,
             content: canvas,
             created_at: Math.floor(Date.now() / 1000) - age,
             tags: [["h", CHANNEL]],
@@ -49,7 +52,7 @@ function setup(
     if (!lose) head = [saved];
     return saved;
   });
-  const client = { query, publish } as unknown as BuzzClient;
+  const client = { query, publish, owner: OWNER } as unknown as BuzzClient;
   const call = (name: string, args: Record<string, unknown>) =>
     tools.get(name)?.call(client, { channel: CHANNEL }, args);
   const published = () =>
@@ -110,7 +113,7 @@ describe("todos_update", () => {
       ["expected-revision", HEAD],
     ]);
   });
-  it("starts the Todos section in an empty channel", async () => {
+  it("starts the Todos section in an empty channel, as unapproved instructions", async () => {
     const { call, published } = setup(null);
     await call("todos_update", { add: "First" });
     expect(published()).toEqual({
@@ -119,8 +122,25 @@ describe("todos_update", () => {
       tags: [
         ["h", CHANNEL],
         ["expected-revision", "none"],
+        ["canvas-instructions", "unapproved"],
       ],
     });
+  });
+  it("keeps a canvas its owner's side did not approve unapproved", async () => {
+    // A todo change must not turn someone else's text into the owner's
+    // standing instructions; only a full-canvas save approves it.
+    const other = setup(CANVAS, { author: ALICE });
+    await other.call("todos_update", { todo: "Review", status: "done" });
+    expect(other.published().tags).toContainEqual([
+      "canvas-instructions",
+      "unapproved",
+    ]);
+    const owned = setup(CANVAS, { author: OWNER });
+    await owned.call("todos_update", { todo: "Review", status: "done" });
+    expect(owned.published().tags).not.toContainEqual([
+      "canvas-instructions",
+      "unapproved",
+    ]);
   });
   it("changes an existing todo's status and assignee by its text", async () => {
     const { call, published } = setup();

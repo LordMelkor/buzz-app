@@ -4,7 +4,11 @@
 import type { BuzzClient, Context } from "../../buzz-mcp/client";
 import type { AddedTool } from "../../buzz-mcp/session-tools";
 import { unseen, waitUntil } from "../../buzz-mcp/tools";
-import { CANVAS_BYTES } from "../../features/channel-templates/model";
+import {
+  approvedCanvas,
+  CANVAS_INSTRUCTIONS,
+} from "../../features/channel-templates/canvas-approval";
+import { LIVE_CANVAS_BYTES } from "../../features/channel-templates/model";
 import { profileKey } from "../../features/profiles/target";
 import {
   addTodo,
@@ -98,14 +102,24 @@ export function addTodosTools(agents: { addTool(tool: AddedTool): void }) {
           pubkey ? { pubkey, name } : undefined,
         );
       if (content === before) return "No change.";
-      if (new TextEncoder().encode(content).length > CANVAS_BYTES)
+      if (new TextEncoder().encode(content).length > LIVE_CANVAS_BYTES)
         throw new Error(
-          `That would take the canvas over its limit of ${CANVAS_BYTES} bytes.`,
+          `That would take the canvas over its limit of ${LIVE_CANVAS_BYTES} bytes.`,
         );
       // The newest canvas wins, so a write must be dated after the current one.
       const after = head ? (head.created_at + 1) * 1000 : 0;
       if (after - Date.now() > 5000)
         throw new Error("The canvas was just changed; try again.");
+      // As in the panel, a partial edit keeps an unapproved canvas unapproved,
+      // so a todo change never turns someone else's text into the owner's
+      // standing instructions.
+      const unapproved =
+        !head ||
+        !client.owner ||
+        !(await approvedCanvas(
+          { ...head, tags: head.tags.map((tag) => [...tag]) },
+          client.owner,
+        ));
       await waitUntil(after);
       // From here the write is unknown until the read-back proves it, so a
       // failure must not invite a blind retry: an add would land twice.
@@ -118,6 +132,7 @@ export function addTodosTools(agents: { addTool(tool: AddedTool): void }) {
           tags: [
             ["h", id],
             ["expected-revision", head?.id ?? "none"],
+            ...(unapproved ? [[CANVAS_INSTRUCTIONS, "unapproved"]] : []),
           ],
         });
         // A relay without revision checks takes it; confirm it is the canvas.
