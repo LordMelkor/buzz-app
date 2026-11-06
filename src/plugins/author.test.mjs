@@ -75,6 +75,8 @@ export function apply(ctx: Context) {
   const host: Host = ctx.host;
   const upload: HostByteUpload = { url: "https://api.example.com/upload", field: "image", name: "image.png", contentType: "image/png" };
   void host.uploadBytesOnce?.(new Uint8Array([1]), upload, { callId: crypto.randomUUID() });
+  const copied: Promise<void> | undefined = host.writeClipboardText?.("copied");
+  void copied;
   const tool: AddedTool = { name: "example_image", description: "Read an image", inputSchema: {},
     async call(client: BuzzClient, context: AddedToolContext): Promise<AddedToolReply> {
       void [context.channel, context.root, context.topLevel, context.wholeChannel];

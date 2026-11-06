@@ -1523,6 +1523,13 @@ interpreter loads. Unsandboxed processes running as the same user, including cod
 planted for later execution, are outside this boundary; broader isolation belongs
 to Sandpit. Ordinary launches retain their existing PATH and access behavior.
 
+`ctx.host.writeClipboardText(text)` copies plain text the way Buzz itself
+does, through the native clipboard on macOS, where WebKit rejects a
+`navigator.clipboard` write once host traffic has cleared the click's user
+activation. It needs no manifest grant: a plugin can already call
+`navigator.clipboard` with the same authority. It is optional on `Host`, so
+plugins that also run on older versions check for it.
+
 A plugin that declares `"files": true` under `host` reads files and resolves
 directories natively, the same on every platform, rather than starting a
 program such as `base64` or `pwd` that Windows lacks.
