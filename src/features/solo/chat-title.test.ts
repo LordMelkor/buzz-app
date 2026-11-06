@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { startingChatTitle } from "./chat-title";
+import { isStartingChatTitle, startingChatTitle } from "./chat-title";
 import { mentionDraft } from "../messages/mention-draft";
 import { typedDraft } from "../messages/composer-testing";
 
@@ -75,7 +75,8 @@ it("drops leading namesake tags with their full-key qualifiers", () => {
   expect(startingChatTitle(draft)).toBe("fix the build");
 });
 
-it("strips a leading group chip, whose members share its span", () => {
+it("keeps a leading group chip, as renaming reads the sent message", () => {
+  // A member whose name starts the label must not strip part of it.
   const member = (pubkey: string, name: string) => ({
     pubkey,
     name,
@@ -83,14 +84,13 @@ it("strips a leading group chip, whose members share its span", () => {
     start: 0,
     end: 5,
   });
-  expect(
-    startingChatTitle({
-      text: "@crew @Ann plan the launch",
-      recipients: [
-        member("1".repeat(64), "Ann"),
-        member("2".repeat(64), "Bo"),
-        { pubkey: "1".repeat(64), name: "Ann", start: 6, end: 10 },
-      ],
-    }),
-  ).toBe("plan the launch");
+  const ann = { pubkey: "1".repeat(64), name: "Ann", start: 6, end: 10 };
+  const text = "@crew @Ann plan the launch";
+  const title = startingChatTitle({
+    text,
+    recipients: [member("2".repeat(64), "cr"), member(ann.pubkey, "Ann"), ann],
+  });
+  expect(title).toBe("@crew @Ann plan the launch");
+  // What the rename check derives from the sent text and its mentions.
+  expect(isStartingChatTitle(title, { text, recipients: [ann] })).toBe(true);
 });
