@@ -18,7 +18,7 @@ export function OriginConsentPrompt() {
   return (
     <AlertDialog
       // A new question remounts, so focus returns to Deny each time.
-      key={`${plugin.id}\n${origin}`}
+      key={question.id}
       title={
         <>
           Let <strong>{plugin.name}</strong> connect to this address?

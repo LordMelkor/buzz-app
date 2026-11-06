@@ -6,11 +6,16 @@ export type OriginQuestion = Readonly<{
   /** An exact HTTPS origin. */
   origin: string;
 }>;
-type Pending = OriginQuestion & { answer(approved: boolean): void };
+type Pending = OriginQuestion & {
+  /** Unique per question, so a repeat of one is still a new prompt. */
+  id: number;
+  answer(approved: boolean): void;
+};
 
 /** A plugin cannot grow the queue without bound by asking in a loop. */
 const QUEUE_MAX = 16;
 let queue: readonly Pending[] = [];
+let nextId = 0;
 const listeners = new Set<() => void>();
 const publish = () => {
   for (const listener of listeners) listener();
@@ -34,6 +39,7 @@ export function askOriginConsent(
     };
     const pending: Pending = {
       ...question,
+      id: nextId++,
       answer(approved) {
         signal.removeEventListener("abort", withdraw);
         resolve(approved);

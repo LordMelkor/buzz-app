@@ -1731,6 +1731,33 @@ it("closes the prompt and rejects when the requesting plugin unloads", async () 
   expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
 });
 
+it("withdraws a prompt as soon as its plugin is disposed, even mid-startup", async () => {
+  const root = new Context();
+  new HostService(root);
+  let asked!: Promise<boolean>;
+  let startup!: Promise<unknown>;
+  const fiber = root
+    .extend({ pluginOwner: { id: "example.plugin", revision: "abc" } })
+    .plugin({
+      inject: ["host"],
+      // Startup waits on the prompt, so Cordis cannot run cleanups until it ends.
+      apply: async (ctx: Context) => {
+        asked = ctx.host.requestOrigin?.(
+          "https://mcp.example",
+        ) as Promise<boolean>;
+        startup = asked.catch(() => undefined);
+        await startup;
+      },
+    });
+  vi.mocked(invoke).mockResolvedValue(catalog());
+  await vi.waitFor(() => expect(originConsent.current()).toBeDefined());
+  const disposing = fiber.dispose();
+  await vi.waitFor(() => expect(originConsent.current()).toBeUndefined());
+  await expect(asked).rejects.toThrow(/stopped/);
+  await disposing;
+  expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
+});
+
 it("asks again after a Cordis restart on the same fiber", async () => {
   const { host, fiber } = await oncePlugin();
   vi.mocked(invoke).mockImplementation(async (command) =>

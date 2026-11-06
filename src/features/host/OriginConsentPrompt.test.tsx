@@ -53,3 +53,14 @@ it("declines what is waiting when the page goes away", async () => {
   view.unmount();
   expect(await answer).toBe(false);
 });
+
+it("puts focus back on Deny for a repeat of the same question", async () => {
+  render(<OriginConsentPrompt />);
+  void ask();
+  void ask();
+  const deny = () => screen.getByRole("button", { name: "Deny" });
+  await expect.poll(deny).toHaveFocus();
+  screen.getByRole("button", { name: "Allow" }).focus();
+  act(() => originConsent.answer(false));
+  await expect.poll(deny).toHaveFocus();
+});

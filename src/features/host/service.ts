@@ -963,6 +963,9 @@ const activations = new WeakMap<
   Context["fiber"],
   { stopped: AbortController; asking: Map<string, Promise<boolean>> }
 >();
+/** Cordis fiber state while a plugin unloads. */
+const UNLOADING = 5;
+
 /** What an activation's origin requests share. Its prompts close and its
  * pending calls reject when the plugin stops. */
 function originRequests(ctx: Context) {
@@ -970,15 +973,31 @@ function originRequests(ctx: Context) {
   if (!state) {
     const stopped = new AbortController();
     const current = { stopped, asking: new Map<string, Promise<boolean>>() };
-    ctx.effect(
-      () => () => {
-        stopped.abort(new Error("Plugin stopped before approval"));
-        // A Cordis restart keeps the fiber: the next activation starts fresh.
-        if (activations.get(ctx.fiber) === current)
-          activations.delete(ctx.fiber);
-      },
-      "origin consent",
-    );
+    const stop = () => {
+      stopped.abort(new Error("Plugin stopped before approval"));
+      // A Cordis restart keeps the fiber: the next activation starts fresh.
+      if (activations.get(ctx.fiber) === current) activations.delete(ctx.fiber);
+    };
+    // Cordis runs effect cleanups only once a stopping plugin's startup has
+    // settled, and startup may be waiting on this very prompt. Its disposal
+    // (uid cleared) and unloading are announced first, so stop on those.
+    const stopping = (fiber: Context["fiber"]) => {
+      if (
+        fiber === ctx.fiber &&
+        (fiber.uid === null || fiber.state === UNLOADING)
+      )
+        stop();
+    };
+    ctx.effect(() => {
+      const listening = [
+        ctx.root.on("internal/plugin", stopping),
+        ctx.root.on("internal/status", stopping),
+      ];
+      return () => {
+        for (const stopListening of listening) stopListening();
+        stop();
+      };
+    }, "origin consent");
     state = current;
     activations.set(ctx.fiber, state);
   }
