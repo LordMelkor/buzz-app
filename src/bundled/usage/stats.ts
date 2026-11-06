@@ -114,6 +114,11 @@ export const since = (now: number) => dayStart(now, READ_DAYS - 1);
 /** Whether the `days` before a period of `days` were read too. */
 export const comparable = (days: number) => 2 * days <= READ_DAYS;
 
+/** Whether a session's usage may be incomplete: its read missed some, or its
+ * harness never reports some. */
+export const incomplete = (session: SessionUsage) =>
+  session.gaps.length > 0 || (session.limits?.length ?? 0) > 0;
+
 /** A new read's snapshots over those kept from earlier, as `SessionUsage`
  * says: a complete snapshot replaces the session's earlier one; an incomplete
  * one leaves it, with the new read's gaps; sessions the read missed stay. */
@@ -176,7 +181,7 @@ export function stats(
     let agentSessions = 0;
     for (const session of list) {
       const active = session.lastAt >= start;
-      const gap = session.gaps.length > 0;
+      const gap = incomplete(session);
       const sessionCost = new Sum();
       let count = 0;
       for (const observation of session.observations) {

@@ -417,8 +417,8 @@ export type UsageObservation = Readonly<{
  * child session again. `channelId` and `root` say where in Buzz it started,
  * when the session records it.
  *
- * A snapshot without `gaps` is complete: it replaces whatever a consumer kept
- * for the session. An incomplete one should leave the consumer's previous
+ * A snapshot without `gaps` saw all the harness records (`limits` name what it
+ * never records): it replaces whatever a consumer kept for the session. An incomplete one should leave the consumer's previous
  * snapshot in place and report the gap. A session missing from a later read
  * is not deleted: its source may be gone, not its usage.
  */
@@ -430,6 +430,10 @@ export type SessionUsage = Readonly<{
   revision: string;
   /** What the read could not see, e.g. a subagent's vanished file. */
   gaps: readonly string[];
+  /** What the harness never reports for the session, e.g. a per-request
+   * split. Every read has them, so the snapshot still replaces the earlier
+   * one, but its usage is incomplete all the same. */
+  limits?: readonly string[];
   channelId?: string;
   root?: string;
   title?: string;
