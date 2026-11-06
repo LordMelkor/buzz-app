@@ -907,6 +907,20 @@ describe("inline renderer source positions", () => {
     const seen = segments(shared);
     expect(seen.map(({ text }) => text)).toEqual(["a*b ", " a*b"]);
     expect(seen.map(({ source }) => source)).toEqual([undefined, undefined]);
+    // Beside a mention or literal, the node's span would take them in.
+    for (const beside of ["a\\*b @Mic", "a\\*b &#58;", "@Mic a\\*b"]) {
+      const [segment] = segments(beside);
+      expect(segment?.text, beside).toMatch(/a\*b/);
+      expect(segment?.source, beside).toBeUndefined();
+    }
+  });
+
+  it("places the last of many lines", () => {
+    const lines = Array.from({ length: 2000 }, (_, index) => `${index}$x$`);
+    const content = lines.join("\n");
+    const seen = segments(content);
+    expect(seen).toHaveLength(2000);
+    expect(slices(content, seen)).toEqual(lines);
   });
 
   it("never gives a range that is not the segment", () => {

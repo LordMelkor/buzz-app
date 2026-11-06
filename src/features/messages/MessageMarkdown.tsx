@@ -33,7 +33,6 @@ import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { profileKey } from "../profiles/target";
 import referenceStyles from "../../shared/InlineReference.module.css";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
-import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { remarkSpoilers } from "./remark-spoilers";
 import type {
@@ -414,37 +413,41 @@ function remarkBareLinkEnd(content: string) {
 const hasSourcePositions = (content: string) =>
   content.charCodeAt(0) !== 0xfeff;
 
-/** Chat line breaks, like `remarkBreaks`, but a text node that is its source
- * unchanged keeps each line's source position. `remarkBreaks` splits text into
- * nodes that have none, and then no line of a multi-line message could be
- * placed. Text Markdown rewrote is left for `remarkBreaks`. */
+/** Chat line breaks, in one pass: `remarkBreaks` looks each text node up among
+ * its siblings, which is quadratic once a message has a node per line. A text
+ * node that is its source unchanged keeps each line's source position, which
+ * `remarkBreaks` drops. */
 function remarkSourcedBreaks(content: string) {
+  const positioned = hasSourcePositions(content);
   return function visit(parent: MarkdownNode) {
-    if (!parent.children || !hasSourcePositions(content)) return;
+    if (!parent.children) return;
     parent.children = parent.children.flatMap((child) => {
       const value = child.value ?? "";
-      const start = child.position?.start.offset;
-      const end = child.position?.end.offset;
-      if (
-        child.type !== "text" ||
-        start === undefined ||
-        end === undefined ||
-        !/[\r\n]/.test(value) ||
-        content.slice(start, end) !== value
-      ) {
+      if (child.type !== "text" || !/[\r\n]/.test(value)) {
         visit(child);
         return [child];
       }
+      const start = child.position?.start.offset;
+      const end = child.position?.end.offset;
+      const exact =
+        positioned &&
+        start !== undefined &&
+        end !== undefined &&
+        content.slice(start, end) === value;
       const lines: MarkdownNode[] = [];
       const line = (from: number, to: number) => {
         if (from < to)
           lines.push({
             type: "text",
             value: value.slice(from, to),
-            position: {
-              start: { offset: start + from },
-              end: { offset: start + to },
-            },
+            ...(exact
+              ? {
+                  position: {
+                    start: { offset: (start ?? 0) + from },
+                    end: { offset: (start ?? 0) + to },
+                  },
+                }
+              : {}),
           });
       };
       let from = 0;
@@ -533,15 +536,19 @@ function remarkInlineContent(protectedContent: ProtectedContent) {
         plain += child.value.slice(end);
         flush(child.value.length);
         // Rewritten text (escapes, entities, indent) has no exact span. Its node
-        // is the span of a lone segment; of several it would not tell them apart.
-        const plainParts = parts.filter(
-          (part) => !part.target && !part.literal,
-        );
-        if (!verbatim && nodeStart !== undefined && nodeEnd !== undefined) {
-          const [only] = plainParts;
-          if (plainParts.length === 1 && only)
-            only.source = `${nodeStart},${nodeEnd},node`;
-        }
+        // is the span of a lone segment; beside a mention or literal it would
+        // take them in, and beside another segment it could not tell them apart.
+        const [only] = parts;
+        if (
+          parts.length === 1 &&
+          only &&
+          !only.target &&
+          !only.literal &&
+          !verbatim &&
+          nodeStart !== undefined &&
+          nodeEnd !== undefined
+        )
+          only.source = `${nodeStart},${nodeEnd},node`;
         return parts.map((part) => ({
           type: "buzzInlineContent",
           data: {
@@ -1059,7 +1066,6 @@ const MarkdownBody = memo(function MarkdownBody({
           remarkGfm,
           [remarkBareLinkEnd, protectedContent.content],
           [remarkSourcedBreaks, protectedContent.content],
-          remarkBreaks,
           [remarkSpoilers, `<${protectedContent.prefix}spoiler\uE002>`],
           [remarkInlineContent, protectedContent],
           remarkLiteralHtml,
