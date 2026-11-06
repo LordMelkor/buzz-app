@@ -986,8 +986,9 @@ export function EditableInput({
           MAX_RECIPIENTS
       )
         return false;
+      // Typing on in inline code stays in code, after text or a group's name.
       if (
-        text &&
+        (text || (recipient && "members" in recipient)) &&
         composerSchema.marks.code.isInSet(editor.state.storedMarks ?? [])
       )
         tr.setStoredMarks(marks);

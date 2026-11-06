@@ -2254,21 +2254,20 @@ function Composer({
       valueRef.current.text !== observation.text
     )
       return false;
-    // A typed terminator (Space, closing punctuation after a name, the closing
-    // emoji colon) stays literal in code. Tab, Enter and a click are not typed.
-    const typed = key?.length === 1 ? key : undefined;
-    if (typed) {
+    const inCode = () => {
       const doc = readComposerSnapshot(valueRef.current.document);
       const context = doc
         ? composerMarkdownContext(doc)
         : { text: observation.text, protected: [] };
-      if (
-        [...context.protected, ...markdownRanges(context.text).literal].some(
-          (r) => query.start < r.end && query.end > r.start,
-        )
-      )
-        return false;
-    }
+      return [
+        ...context.protected,
+        ...markdownRanges(context.text).literal,
+      ].some((r) => query.start < r.end && query.end > r.start);
+    };
+    // A typed terminator (Space, closing punctuation after a name, the closing
+    // emoji colon) stays literal in code. Tab, Enter and a click are not typed.
+    const typed = key?.length === 1 ? key : undefined;
+    if (typed && inCode()) return false;
     const chosen = chosenWorkspace(edit);
     if (chosen !== undefined) {
       // The chat's workspace leaves no text behind; the control shows it.
@@ -2289,7 +2288,11 @@ function Composer({
       setError(undefined);
       return true;
     }
-    if ("group" in edit && edit.group) return insertGroup(edit.group, query);
+    // In code a group is only its name: code never carries recipients.
+    if ("group" in edit && edit.group)
+      return inCode()
+        ? insert(`@${edit.group.name} `, undefined, query)
+        : insertGroup(edit.group, query);
     if ("mentions" in edit && edit.mentions)
       return insertMentions(edit.mentions, query);
     if ("mention" in edit && edit.mention)

@@ -12601,6 +12601,24 @@ it("a group edit inserts one chip and sends each member once", async () => {
     new Set([first.pubkey, second.pubkey]),
   );
 });
+it("a group picked inside Markdown code is only its name", async () => {
+  const h = mount();
+  h.fill("!`Crew`");
+  act(() => {
+    h.completionRequests.at(-1)?.({
+      items: [
+        {
+          id: "team",
+          label: "Crew",
+          edit: { group: { name: "Crew", mentions: [first, second] } },
+        },
+      ],
+    });
+  });
+  await h.user.keyboard("{Enter}");
+  expect(h.input()).toHaveValue("@Crew ");
+  expect(h.commands().recipients).toEqual([]);
+});
 it("a group edit with an unavailable member adds nothing", async () => {
   const h = mount({ inviteAgents: true });
   const unavailable = { pubkey: "c".repeat(64), name: "Missing" };
