@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 import type { NotificationPeople } from "../../features/notifications/service";
 import { Button } from "../../shared/design-system/ui/Button";
 
@@ -12,7 +12,12 @@ export function ProfileNotify({
   pubkey: string;
   variant: "glass" | "subtle";
 }) {
-  const listed = useSyncExternalStore(notifications.subscribe, () =>
+  // The list checks who calls it, so keep its methods bound to it.
+  const subscribe = useCallback(
+    (listener: () => void) => notifications.subscribe(listener),
+    [notifications],
+  );
+  const listed = useSyncExternalStore(subscribe, () =>
     notifications.snapshot().preferences.people.includes(pubkey),
   );
   const [failed, setFailed] = useState(false);

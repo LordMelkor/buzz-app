@@ -58,6 +58,36 @@ declare module "@deepseek-ai/cordis" {
     notificationPeople: NotificationPeople;
   }
 }
+/** The built-in feature that edits the list, as `pluginOwner.id` names it. */
+export const PEOPLE_LIST_OWNER = "buzz.profiles";
+// Only the profile card and the host itself may read or change the list, so
+// no other plugin learns whom the owner follows or adds people to it.
+function providePeopleList(ctx: Context, service: NotificationPeople) {
+  const owner = (caller: Context) => {
+    const id = caller.pluginOwner?.id;
+    if (id !== undefined && id !== PEOPLE_LIST_OWNER)
+      throw new Error("Only the profile card may use the notify list");
+  };
+  // Methods, not arrow properties: Cordis gives them the caller's context.
+  class People extends Service implements NotificationPeople {
+    constructor() {
+      super(ctx, "notificationPeople");
+    }
+    snapshot() {
+      owner(this.ctx);
+      return service.snapshot();
+    }
+    subscribe(listener: () => void) {
+      owner(this.ctx);
+      return service.subscribe(listener);
+    }
+    setPerson(pubkey: string, listed: boolean) {
+      owner(this.ctx);
+      return service.setPerson(pubkey, listed);
+    }
+  }
+  new People();
+}
 export type NotificationEligibility = boolean | "wait";
 type Candidate = {
   category: string;
@@ -123,15 +153,7 @@ export class NotificationsService extends Service implements Notifications {
       void playNotificationSound(name),
   ) {
     super(ctx, "notifications");
-    ctx.provide(
-      "notificationPeople",
-      Object.freeze({
-        snapshot: this.snapshot,
-        subscribe: this.subscribe,
-        setPerson: (pubkey: string, listed: boolean) =>
-          this.setPerson(pubkey, listed),
-      }),
-    );
+    providePeopleList(ctx, this);
     this.contributions =
       createContributions<NotificationCategoryDescriptor>(ctx);
     this.gates = createContributions<NotificationGate>(ctx);
