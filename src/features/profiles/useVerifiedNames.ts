@@ -59,7 +59,7 @@ function foundFor(
 }
 /** Whether a shared head outranks a search's answer from `revision`: one is
  * held now, or a later one arrived, even if the shared cache evicted it. */
-function superseded(
+export function superseded(
   profiles: ProfileQueries,
   pubkey: string,
   revision: number,

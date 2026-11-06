@@ -7,6 +7,7 @@ import {
 import { objectBody } from "../../features/relay/body";
 import type { RelaySession } from "../../features/relay/session";
 import type { ReadFilter } from "../../features/relay/events";
+import { superseded } from "../../features/profiles/useVerifiedNames";
 import { searchedProfiles } from "../../features/relay/profile-search";
 import {
   type VerifiedProfile,
@@ -302,19 +303,25 @@ export function useSearchMessages(
                   !session.profiles.verifiedHeld?.(pubkey),
               );
               // A failed read leaves profile names, which resolve as before.
+              const asked = session.profiles.verifiedRevision?.() ?? 0;
               const read = unverified.length
                 ? await session.directMessages
                     .verified?.(unverified, controller.signal)
                     .catch(() => undefined)
                 : undefined;
               controller.signal.throwIfAborted();
-              // A shared head that arrived during the read, even a
-              // withdrawal, outranks the read's answer.
+              // As in useVerifiedNames, names belong to the authority that
+              // checked them, and a shared head that arrived since the read
+              // began (even a withdrawal, even one since evicted) outranks them.
+              const checked =
+                read?.authority === session.profiles.verifiedAuthority?.()
+                  ? read?.profiles
+                  : undefined;
               const verifiedOf = (pubkey: string) =>
                 shared(pubkey)?.verified ??
-                (session.profiles.verifiedHeld?.(pubkey)
+                (superseded(session.profiles, pubkey, asked)
                   ? undefined
-                  : read?.profiles.get(pubkey));
+                  : checked?.get(pubkey));
               const matches = [...people]
                 .filter(
                   ([pubkey, profile]) =>

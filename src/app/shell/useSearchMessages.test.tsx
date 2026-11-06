@@ -281,3 +281,69 @@ it("does not resolve from: by a verified name the shared profiles withdrew durin
     owner.dispose();
   }
 });
+
+it("does not resolve from: by verified names checked by an authority that changed during the read", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const person = keypair();
+  const reads: ReadFilter[][] = [];
+  const head = signed(relay, {
+    kind: 30382,
+    created_at: 1_000_000,
+    content: "",
+    tags: [
+      ["d", person.pubkey],
+      ["p", person.pubkey],
+      ["active", "true"],
+      ["display_name", "Jordan"],
+      ["username", "jrivera"],
+      ["issuer_label", "Example"],
+      ["verified_at", "1000000"],
+      ["full_name", "Rivera"],
+    ],
+  });
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async () =>
+      [profile(person, { name: "jr-old" }), head].map((event) =>
+        eventDto(event),
+      ),
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9)))
+        reads.push(filters as ReadFilter[]);
+      return Promise.resolve([]);
+    },
+  });
+  // The community withdraws its verified names while they are being read.
+  const authority = owner.session.profiles.verifiedAuthority?.();
+  let current = authority;
+  const verify = owner.session.directMessages.verified;
+  const session = {
+    ...owner.session,
+    profiles: { ...owner.session.profiles, verifiedAuthority: () => current },
+    directMessages: {
+      ...owner.session.directMessages,
+      verified: async (...args: Parameters<typeof verify>) => {
+        const answer = await verify(...args);
+        current = undefined;
+        return answer;
+      },
+    },
+  } as typeof owner.session;
+  try {
+    const { result } = renderHook(() =>
+      useSearchMessages(session, "from:rivera deploy"),
+    );
+    await waitFor(() => expect(current).toBeUndefined());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(reads).toHaveLength(0);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});

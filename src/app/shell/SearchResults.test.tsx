@@ -3627,6 +3627,63 @@ it.each([
   },
 );
 
+it("does not offer a person by verified names a newer shared head has since answered for", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const head = signed(relay, {
+    kind: 30382,
+    created_at: 1_000_000,
+    content: "",
+    tags: [
+      ["d", person.pubkey],
+      ["p", person.pubkey],
+      ["active", "true"],
+      ["display_name", "Jordan"],
+      ["username", "jrivera"],
+      ["issuer_label", "Example"],
+      ["verified_at", "1000000"],
+      ["full_name", "Jordan Rivera"],
+    ],
+  });
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async () =>
+      [profile(person, { name: "jr-old" }), head].map((event) =>
+        eventDto(event),
+      ),
+  });
+  // A newer inactive head was accepted after the page's read began and has
+  // since left the shared cache: nothing is held, but the page's names are old.
+  const session = {
+    ...owner.session,
+    profiles: { ...owner.session.profiles, verifiedSince: () => true },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@riv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByText("No matching people. Try a different name."),
+    ).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("still offers a selectable agent whose public profile has no name", async () => {
   const relay = keypair(),
     viewer = keypair(),

@@ -30,6 +30,7 @@ import { archiveHides } from "../../features/relay/identity-archives";
 import { searchedProfiles } from "../../features/relay/profile-search";
 import {
   type VerifiedProfile,
+  type VerifiedProfileAuthority,
   verifiedAliases,
 } from "../../features/relay/verified-profile";
 import {
@@ -95,7 +96,10 @@ import {
   parseSearchOperators,
 } from "./parseSearchOperators";
 import { avatarMedia } from "../../shared/avatar-source";
-import { useVerifiedNames } from "../../features/profiles/useVerifiedNames";
+import {
+  superseded,
+  useVerifiedNames,
+} from "../../features/profiles/useVerifiedNames";
 import { verifiedLabel } from "../../features/profiles/name-preference";
 import { sortParticipantNames } from "../../features/identity-names/participant-order";
 
@@ -331,8 +335,16 @@ export function SearchResults({
     query: string;
     lookupFailed?: boolean;
     remote: readonly RelayEvent[];
-    /** Verified names of the people `remote` found, read before it shows. */
-    verified?: ReadonlyMap<string, VerifiedProfile> | undefined;
+    /** Verified names of the people `remote` found, read before it shows,
+     * with the authority that checked them and the shared heads' revision
+     * the read began at. */
+    verified?:
+      | {
+          authority: VerifiedProfileAuthority;
+          asked: number;
+          profiles: ReadonlyMap<string, VerifiedProfile>;
+        }
+      | undefined;
   }>();
   // Completing either from:name or from:@name selects an exact signed key.
   const datePrompt = operatorMatches(
@@ -663,15 +675,19 @@ export function SearchResults({
             !shared.get(pubkey)?.verified &&
             !session.profiles.verifiedHeld?.(pubkey),
         );
-        const verified = unverified.length
-          ? (
-              await session.directMessages
-                .verified?.(unverified, controller.signal)
-                .catch(() => undefined)
-            )?.profiles
+        const asked = session.profiles.verifiedRevision?.() ?? 0;
+        const read = unverified.length
+          ? await session.directMessages
+              .verified?.(unverified, controller.signal)
+              .catch(() => undefined)
           : undefined;
         controller.signal.throwIfAborted();
-        setAuthorSuggestions({ query, lookupFailed, remote, verified });
+        setAuthorSuggestions({
+          query,
+          lookupFailed,
+          remote,
+          verified: read && { ...read, asked },
+        });
       })().catch(() => {
         if (!controller.signal.aborted)
           setAuthorSuggestions({ query, remote: [], lookupFailed: true });
@@ -707,12 +723,20 @@ export function SearchResults({
       session.profiles.verifiedAuthority?.(),
     ),
   ]);
-  // The names this search's page was verified with, unless the shared
-  // profiles have answered since: a head they hold, even a withdrawal, wins.
-  const pageVerified = (pubkey: string) =>
-    profiles.get(pubkey)?.verified || session.profiles.verifiedHeld?.(pubkey)
-      ? undefined
-      : authorSuggestions?.verified?.get(pubkey);
+  // The names this search's page was verified with, as useVerifiedNames
+  // keeps them: only for the authority still in force, and not once a shared
+  // head answers for the person (held now, or arrived since the read began,
+  // even a withdrawal since evicted). useVerifiedNames above renders this
+  // component on those changes.
+  const pageVerified = (pubkey: string) => {
+    const page = authorSuggestions?.verified;
+    return page &&
+      page.authority === session.profiles.verifiedAuthority?.() &&
+      !profiles.get(pubkey)?.verified &&
+      !superseded(session.profiles, pubkey, page.asked)
+      ? page.profiles.get(pubkey)
+      : undefined;
+  };
   const authorVerified = (pubkey: string) =>
     profiles.get(pubkey)?.verified ?? pageVerified(pubkey);
   // A selectable agent also matches by its own name, as in @ mentions, and a
