@@ -33,6 +33,7 @@ export const DEFAULT_CATEGORY_SOUNDS: CategorySounds = Object.freeze({
   direct: DEFAULT_SOUND,
   thread: DEFAULT_SOUND,
   agent: DEFAULT_SOUND,
+  person: DEFAULT_SOUND,
 });
 
 /** Row copy and recommendations reuse the reference client's event rows. */
@@ -41,6 +42,7 @@ export const CATEGORY_SOUND_LABELS: Record<NotificationCategory, string> = {
   mention: "@Mentions",
   thread: "Thread replies",
   agent: "Solo chat completions",
+  person: "People on your list",
 };
 export const RECOMMENDED_SOUND_BY_CATEGORY: Record<
   NotificationCategory,
@@ -50,6 +52,7 @@ export const RECOMMENDED_SOUND_BY_CATEGORY: Record<
   mention: "ping",
   thread: "doop",
   agent: "doodone",
+  person: "soft",
 };
 
 /** Plugin categories have no per-category choice; they use the default sound. */

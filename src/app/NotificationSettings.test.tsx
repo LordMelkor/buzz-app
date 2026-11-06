@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
+import type { IdentityNameView } from "../features/identity-names/service";
 import { provideNavigation } from "../features/navigation/service";
 import { NotificationsService } from "../features/notifications/service";
 import { DEFAULT_SOUND } from "../features/notifications/sound";
@@ -465,6 +466,7 @@ it("selects and restores Silent for every category, stops previews, and can rest
     mention: "silent",
     thread: "silent",
     agent: "flutter",
+    person: "flutter",
   });
   expect(play).toHaveBeenCalledOnce();
   expect(screen.getByRole("switch", { name: "Desktop alerts" })).toBeChecked();
@@ -519,4 +521,96 @@ it("restores a saved sound name this build lacks with alerts on and the default 
   expect(
     screen.getByRole("combobox", { name: "Direct messages" }),
   ).toHaveTextContent(DEFAULT_SOUND);
+});
+
+function peopleService() {
+  const ctx = new Context();
+  contexts.push(ctx);
+  const runtime = new PluginRuntime(ctx, async () => ({ apply() {} }));
+  ctx.effect(() => () => runtime.dispose());
+  const service = new NotificationsService(
+    ctx,
+    provideNavigation(ctx).navigation,
+    {
+      label: "Browser",
+      permission: vi.fn(async () => "granted" as const),
+      requestPermission: vi.fn(async () => "granted" as const),
+      show: vi.fn(async () => {}),
+      dispose() {},
+    },
+  );
+  service.selectViewer("a".repeat(64));
+  return service;
+}
+
+it("lists the people on the notify list, removes one, and clears the rest", async () => {
+  const service = peopleService();
+  const ada = "1".repeat(64);
+  const bo = "2".repeat(64);
+  render(<NotificationSettings notifications={service} />, {
+    wrapper: ToastProvider,
+  });
+  expect(screen.getByText("No one on your list")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Clear list" }),
+  ).not.toBeInTheDocument();
+  act(() => {
+    service.setPerson(ada, true);
+    service.setPerson(bo, true);
+  });
+  const user = userEvent.setup();
+  expect(screen.getAllByRole("button", { name: /^Remove / })).toHaveLength(2);
+  const [first] = screen.getAllByRole("button", { name: /^Remove / });
+  if (!first) throw new Error("No people listed");
+  await user.click(first);
+  expect(service.snapshot().preferences.people).toEqual([bo]);
+  await user.click(screen.getByRole("button", { name: "Clear list" }));
+  expect(service.snapshot().preferences.people).toEqual([]);
+  expect(screen.getByText("No one on your list")).toBeInTheDocument();
+});
+
+it("gives two unnamed people whose keys end alike different labels", () => {
+  const service = peopleService();
+  // Their npubs share the last three characters.
+  const one = (2245).toString(16).padStart(64, "0");
+  const two = (16384).toString(16).padStart(64, "0");
+  render(<NotificationSettings notifications={service} />, {
+    wrapper: ToastProvider,
+  });
+  act(() => {
+    service.setPerson(one, true);
+    service.setPerson(two, true);
+  });
+  const labels = screen
+    .getAllByRole("button", { name: /^Remove / })
+    .map((button) => button.getAttribute("aria-label"));
+  expect(new Set(labels).size).toBe(2);
+});
+
+it("tells two people with the same display name apart by key", () => {
+  const service = peopleService();
+  const one = "1".repeat(64);
+  const two = "2".repeat(64);
+  const solo = "3".repeat(64);
+  const names = {
+    resolve: (pubkey: string) => (pubkey === solo ? "Ada" : "Sam"),
+    snapshot: () => 0,
+    subscribe: () => () => {},
+  } as unknown as IdentityNameView;
+  render(<NotificationSettings notifications={service} names={names} />, {
+    wrapper: ToastProvider,
+  });
+  act(() => {
+    service.setPerson(one, true);
+    service.setPerson(two, true);
+    service.setPerson(solo, true);
+  });
+  const removes = screen
+    .getAllByRole("button", { name: /^Remove / })
+    .map((button) => button.getAttribute("aria-label"));
+  expect(new Set(removes).size).toBe(3);
+  expect(removes[0]).toMatch(/^Remove Sam \(npub…\w+\)$/);
+  expect(removes[2]).toBe("Remove Ada");
+  // The key is visible on the colliding rows only.
+  expect(screen.getAllByText(/^npub…\w+$/)).toHaveLength(2);
 });

@@ -99,6 +99,7 @@ export async function setup(
     {
       viewer: viewer.pubkey,
       relayAuthor: relay.pubkey,
+      archiveAuthority: relay.pubkey,
       query,
       ...(remote
         ? {

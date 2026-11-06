@@ -11,6 +11,7 @@ export const NOTIFICATION_CATEGORIES = [
   "direct",
   "thread",
   "agent",
+  "person",
 ] as const;
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 export type NotificationPreferences = Readonly<{
@@ -19,7 +20,10 @@ export type NotificationPreferences = Readonly<{
   sound: boolean;
   sounds: CategorySounds;
   categories: Readonly<Record<string, boolean>>;
+  /** Pubkeys whose posts notify, in channels the viewer is in. */
+  people: readonly string[];
 }>;
+export const MAX_NOTIFICATION_PEOPLE = 200;
 export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences =
   Object.freeze({
     enabled: true,
@@ -31,7 +35,9 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences =
       direct: true,
       thread: true,
       agent: true,
+      person: true,
     }),
+    people: Object.freeze([]),
   });
 const KEY = "buzz-notification-preferences.v1";
 // Values saved before per-category sounds existed omit `sounds`; they get the
@@ -50,6 +56,17 @@ function parseSounds(raw: unknown): CategorySounds {
     if (isSoundName(picked)) sounds[category] = picked;
   }
   return Object.freeze(sounds);
+}
+// Values saved before the people list existed omit `people`; they get none.
+function parsePeople(raw: unknown): readonly string[] {
+  if (raw === undefined) return DEFAULT_NOTIFICATION_PREFERENCES.people;
+  if (
+    !Array.isArray(raw) ||
+    raw.length > MAX_NOTIFICATION_PEOPLE ||
+    raw.some((item) => typeof item !== "string" || !/^[a-f0-9]{64}$/.test(item))
+  )
+    throw new Error("Invalid notification people");
+  return Object.freeze([...new Set<string>(raw)]);
 }
 export function parsePreferences(raw: unknown): NotificationPreferences {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -80,6 +97,7 @@ export function parsePreferences(raw: unknown): NotificationPreferences {
     sound: value.sound as boolean,
     sounds: parseSounds(value.sounds),
     categories: Object.freeze(Object.fromEntries(categories)),
+    people: parsePeople(value.people),
   });
 }
 export function createNotificationPreferences(

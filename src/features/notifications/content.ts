@@ -120,6 +120,8 @@ export function messageNotificationText(
       ? `${sender} mentioned you in ${destination}`
       : category === "direct"
         ? `${sender} sent you a direct message`
-        : `${sender} replied in ${destination}`;
+        : category === "person"
+          ? `${sender} posted in ${destination}`
+          : `${sender} replied in ${destination}`;
   return Object.freeze({ title, body: messagePreview(message.previewContent) });
 }

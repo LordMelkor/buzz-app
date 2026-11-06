@@ -4,6 +4,7 @@ import { createContributions } from "../../plugins/contributions";
 import { parseOpenTarget, type OpenTarget } from "../navigation/targets";
 import type { Navigation } from "../navigation/controller";
 import {
+  MAX_NOTIFICATION_PEOPLE,
   createNotificationPreferences,
   type NotificationPreferences,
 } from "./preferences";
@@ -45,10 +46,47 @@ export interface Notifications {
    * remover; disabling the plugin removes it too. */
   gate(gate: NotificationGate): () => void;
 }
+/** Host-only: the people whose posts notify the viewer. Not part of the
+ * plugin-facing `Notifications`, so a plugin cannot widen what alerts. */
+export type NotificationPeople = Pick<
+  NotificationsService,
+  "snapshot" | "subscribe" | "setPerson"
+>;
 declare module "@deepseek-ai/cordis" {
   interface Context {
     notifications: Notifications;
+    notificationPeople: NotificationPeople;
   }
+}
+/** The built-in feature that edits the list, as `pluginOwner.id` names it. */
+export const PEOPLE_LIST_OWNER = "buzz.profiles";
+// Calls through another plugin's context are rejected. Plugins are trusted,
+// unsandboxed code, so this keeps the API honest; it is not isolation.
+function providePeopleList(ctx: Context, service: NotificationPeople) {
+  const owner = (caller: Context) => {
+    const id = caller.pluginOwner?.id;
+    if (id !== undefined && id !== PEOPLE_LIST_OWNER)
+      throw new Error("Only the profile card may use the notify list");
+  };
+  // Methods, not arrow properties: Cordis gives them the caller's context.
+  class People extends Service implements NotificationPeople {
+    constructor() {
+      super(ctx, "notificationPeople");
+    }
+    snapshot() {
+      owner(this.ctx);
+      return service.snapshot();
+    }
+    subscribe(listener: () => void) {
+      owner(this.ctx);
+      return service.subscribe(listener);
+    }
+    setPerson(pubkey: string, listed: boolean) {
+      owner(this.ctx);
+      return service.setPerson(pubkey, listed);
+    }
+  }
+  new People();
 }
 export type NotificationEligibility = boolean | "wait";
 type Candidate = {
@@ -67,6 +105,7 @@ const categories = Object.freeze([
   { key: "direct", label: "Direct messages" },
   { key: "thread", label: "Thread replies" },
   { key: "agent", label: "Solo chat completions" },
+  { key: "person", label: "People on your list" },
 ]);
 const FRESH_MS = 120_000;
 export type NotificationSnapshot = Readonly<{
@@ -114,6 +153,7 @@ export class NotificationsService extends Service implements Notifications {
       void playNotificationSound(name),
   ) {
     super(ctx, "notifications");
+    providePeopleList(ctx, this);
     this.contributions =
       createContributions<NotificationCategoryDescriptor>(ctx);
     this.gates = createContributions<NotificationGate>(ctx);
@@ -201,6 +241,17 @@ export class NotificationsService extends Service implements Notifications {
   }
   updatePreferences(patch: Partial<NotificationPreferences>) {
     return this.preferences.update(patch);
+  }
+  /** Adds or removes one person from the list whose posts notify. False when
+   * the list is full or the choice could not be saved on this device. */
+  setPerson(pubkey: string, listed: boolean) {
+    const { people } = this.state.preferences;
+    const next = people.filter((item) => item !== pubkey);
+    if (listed) {
+      if (next.length >= MAX_NOTIFICATION_PEOPLE) return false;
+      next.push(pubkey);
+    }
+    return this.preferences.update({ people: next });
   }
   reloadPreferences() {
     this.preferences.reload();

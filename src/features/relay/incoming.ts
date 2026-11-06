@@ -5,6 +5,9 @@ export type IncomingMessage = Readonly<{
   messageId: string;
   createdAt: number;
   authorId: string;
+  /** The displayed author: `authorId` unless the community's relay signed on
+   * someone's behalf (`actor` or a leading `p`). */
+  displayAuthorId?: string | undefined;
   workflowOwnerId?: string | undefined;
   /** At most 4,096 source characters for a preview, not the complete message. */
   previewContent: string;

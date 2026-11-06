@@ -3731,6 +3731,7 @@ export function createRelaySession(
               messageId: event.id,
               createdAt: event.created_at,
               authorId: event.pubkey,
+              displayAuthorId: messageAuthor(event, transport.archiveAuthority),
               workflowOwnerId: workflowOwner(event, transport.archiveAuthority),
               previewContent: content.slice(0, 4096),
               ...(agentAudience(event) ? { audience: "agents" as const } : {}),

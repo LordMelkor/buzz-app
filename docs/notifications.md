@@ -81,6 +81,29 @@ checks, not that an OS banner was displayed or read.
   complete snapshot); local-only hosts wait only for local storage. Failed or
   cancelled observation does not release alerts. Visibility is checked after UI
   presentation, without publishing read intent.
+- A person on the viewer's **People on your list** (the `person` category) alerts
+  for their post in a channel the viewer is in, under the same viewing, unread,
+  mute and sync gates as the categories above. The list is the `people` array in
+  the account-local notification preferences (pubkeys, at most 200; saved values
+  without it restore as empty), edited from **Notify me when they post** on a
+  profile and reviewed or cleared in Settings → Notifications; the category
+  switch turns the alerts off and keeps the list. The unread engine's category
+  wins: a listed person who also mentions or DMs the viewer alerts once, as
+  `mention` or `direct`, and a reply in one of the viewer's conversations stays
+  `thread`; a reply waiting on its conversation lookup stays a `thread` candidate.
+  Only otherwise-uncategorized posts the viewer's own rules count (top-level
+  posts, or replies in their conversations) become `person`, so it never
+  overrides a thread opt-out or channel mute. The list is read again at
+  delivery, so removing someone cancels a waiting alert. A reply outside
+  the viewer's own conversations is never unread by the engine's rule, so it does
+  not alert; top-level posts and in-conversation replies do. A workflow post is
+  matched on its owner. The `notificationPeople` service's methods
+  reject calls made through any plugin's context except the bundled Profiles
+  plugin's (`buzz.profiles`), and the typed `ctx.notifications` contract has no people
+  methods. This is not isolation: plugins are trusted, unsandboxed code (see
+  plugin-architecture.md), so one that digs into host objects, rewrites
+  its own context or keeps another plugin's rendered panel can still reach the list, as it can every other
+  notification preference.
 - Channel Mute/Unmute uses the session's confirmed, encrypted `channel-mutes`
   preference, independently of whether Channels is mounted. Muted channels suppress
   DM and participating-thread alerts; explicit mentions still pass the channel-mute

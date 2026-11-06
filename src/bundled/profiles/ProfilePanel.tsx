@@ -30,6 +30,8 @@ import { ProfilePublicMetadata } from "./ProfilePublicMetadata";
 import { relayOrigin } from "../../features/communities/destination";
 import type { Navigation } from "../../features/navigation/controller";
 import { ProfileChannels } from "./ProfileChannels";
+import { ProfileNotify } from "./ProfileNotify";
+import type { NotificationPeople } from "../../features/notifications/service";
 import { useChannelIdentityNames } from "../../features/identity-names/react";
 import { usePresenceStatus } from "../../features/presence/react";
 import {
@@ -134,6 +136,7 @@ export function ProfilePanel({
   agents,
   communities,
   linkRenderers,
+  notifications,
   close,
   renderPersonInfo,
 }: PanelProps &
@@ -144,6 +147,8 @@ export function ProfilePanel({
     agents?: Agents;
     communities?: CommunityReader | undefined;
     linkRenderers?: ConversationExtensions["links"] | undefined;
+    /** Lets the viewer choose to be notified when this person posts. */
+    notifications?: NotificationPeople | undefined;
   }) {
   const connection = useRelayConnection(relay);
   const activityKey = profileActivityViewKey(target);
@@ -225,6 +230,7 @@ export function ProfilePanel({
       navigation={navigation}
       agents={agents}
       communities={communities}
+      notifications={notifications}
       scope={connection.scope}
       viewer={connection.viewer}
       openConversation={openConversation}
@@ -368,6 +374,7 @@ function ProfileDetails({
   navigation,
   agents,
   communities,
+  notifications,
   scope,
   viewer,
   openConversation,
@@ -377,6 +384,7 @@ function ProfileDetails({
   agents: Agents | undefined;
   linkRenderers: ConversationExtensions["links"] | undefined;
   communities: CommunityReader | undefined;
+  notifications: NotificationPeople | undefined;
   initialTab: "info" | "activity";
   initialTranscript: TranscriptRequest | undefined;
   agentHint: boolean;
@@ -567,6 +575,7 @@ function ProfileDetails({
     },
   });
   const canEdit = !!scoped && viewer === pubkey;
+  const canNotify = !!notifications && !!viewer && viewer !== pubkey;
   // Settings edits the selected community's profile, so bind it to this one.
   const editProfile = () =>
     void scoped?.navigation.open({
@@ -641,7 +650,7 @@ function ProfileDetails({
             )}
             <StatusDisplay session={session} status={userStatus} />
           </div>
-          {(canSetStatus || canMessage || canEdit) && (
+          {(canSetStatus || canMessage || canEdit || canNotify) && (
             <div className={`${hero.actions} ${styles.ownActions}`}>
               {canSetStatus && (
                 <Button
@@ -663,6 +672,13 @@ function ProfileDetails({
                 >
                   Message
                 </Button>
+              )}
+              {canNotify && (
+                <ProfileNotify
+                  notifications={notifications}
+                  pubkey={pubkey}
+                  variant={picture ? "glass" : "subtle"}
+                />
               )}
               {canEdit && (
                 <Button

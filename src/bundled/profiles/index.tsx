@@ -13,6 +13,7 @@ export const inject = [
   "agents",
   "communityReader",
   "conversation",
+  "notificationPeople",
 ];
 export const apply: PluginModule["apply"] = (ctx) => {
   ctx.panels.register({
@@ -29,6 +30,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
           agents={ctx.agents}
           communities={ctx.communityReader}
           linkRenderers={ctx.conversation.links}
+          notifications={ctx.notificationPeople}
         />
       ),
       { supportsPersonInfoContent: true },

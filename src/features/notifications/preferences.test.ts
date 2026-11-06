@@ -20,12 +20,19 @@ it("values saved before per-category sounds restore with the defaults", () => {
 });
 
 it.each([
-  { mention: "ping", direct: "unison", thread: "doop", agent: "doodone" },
+  {
+    mention: "ping",
+    direct: "unison",
+    thread: "doop",
+    agent: "doodone",
+    person: "soft",
+  },
   {
     mention: "silent",
     direct: "silent",
     thread: "silent",
     agent: "silent",
+    person: "silent",
   },
 ])("saved sound choices round-trip: %j", (sounds) => {
   expect(
@@ -54,6 +61,7 @@ it("a sound name this build lacks falls back to the default for its category onl
     direct: DEFAULT_SOUND,
     thread: DEFAULT_SOUND,
     agent: "doodone",
+    person: DEFAULT_SOUND,
   });
   expect(Object.isFrozen(sounds)).toBe(true);
 });
@@ -82,7 +90,11 @@ it("restore keeps alerts on for an unknown sound name and leaves storage untouch
   const service = createNotificationPreferences(host);
   service.selectViewer(viewer);
   expect(service.snapshot()).toEqual({
-    preferences: { ...stored, sounds: DEFAULT_NOTIFICATION_PREFERENCES.sounds },
+    preferences: {
+      ...stored,
+      people: [],
+      sounds: DEFAULT_NOTIFICATION_PREFERENCES.sounds,
+    },
     error: null,
   });
   expect(setItem).not.toHaveBeenCalled();
@@ -90,7 +102,25 @@ it("restore keeps alerts on for an unknown sound name and leaves storage untouch
   expect(service.update({})).toBe(true);
   expect(JSON.parse(store.get(key) ?? "")).toEqual({
     ...stored,
+    people: [],
     sounds: DEFAULT_NOTIFICATION_PREFERENCES.sounds,
   });
   service.dispose();
+});
+
+it("values saved before the people list restore with no one on it", () => {
+  expect(parsePreferences(stored).people).toEqual([]);
+});
+
+it("the people list round-trips once per person and rejects anything but pubkeys", () => {
+  const a = "a".repeat(64);
+  expect(
+    parsePreferences(
+      JSON.parse(JSON.stringify({ ...stored, people: [a, a, "b".repeat(64)] })),
+    ).people,
+  ).toEqual([a, "b".repeat(64)]);
+  for (const people of ["a", ["npub1x"], [a.toUpperCase()], Array(201).fill(a)])
+    expect(() => parsePreferences({ ...stored, people })).toThrow(
+      "Invalid notification people",
+    );
 });
