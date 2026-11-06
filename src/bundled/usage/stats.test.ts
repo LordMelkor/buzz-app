@@ -215,7 +215,13 @@ it("keeps unknown usage unknown, and counts sessions without any", () => {
   expect(empty.cacheHit).toBeUndefined();
 });
 
-it("marks the totals of a session it could not fully read as partial", () => {
+it.each([
+  ["it could not fully read", { gaps: ["A subagent’s transcript is gone"] }],
+  [
+    "whose harness never reports some usage",
+    { limits: ["No subagent totals"] },
+  ],
+])("marks the totals of a session %s as partial", (_, missing) => {
   const result = stats(
     [
       {
@@ -224,7 +230,7 @@ it("marks the totals of a session it could not fully read as partial", () => {
         sessions: [
           session("whole", [seen(today, full(1e6))]),
           session("gapped", [seen(today, full(1e6))], {
-            gaps: ["A subagent’s transcript is gone"],
+            ...missing,
             startedAt: dayStart(now, 2) + HOUR,
           }),
         ],
@@ -300,17 +306,21 @@ it("marks every day of a harness whose read failed as partial", () => {
   );
 });
 
-it("replaces a session's snapshot only with a complete one, and keeps sessions a read missed", () => {
+it("replaces a session's snapshot only with one without gaps, and keeps sessions a read missed", () => {
+  const limits = ["No subagent totals"];
   const kept = [
     session("a", [seen(today, full(1))]),
     session("b", [seen(today, full(2))]),
     session("c", [seen(today, full(3))]),
+    session("e", [seen(today, full(5))], { limits }),
   ];
   const gap = ["A subagent’s transcript is gone"];
   const merged = merge(kept, [
     session("a", [seen(today, full(10))], { revision: "a2" }),
     session("b", [seen(today, full(20))], { revision: "b2", gaps: gap }),
     session("d", [seen(today, full(4))], { gaps: gap }),
+    // Limits are in every read: the newer snapshot replaces the earlier one.
+    session("e", [seen(today, full(50))], { revision: "e2", limits }),
   ]);
   expect(
     merged.map((entry) => [
@@ -324,6 +334,7 @@ it("replaces a session's snapshot only with a complete one, and keeps sessions a
     // The earlier snapshot stands, with the gap reported.
     ["b", "b", 2, gap],
     ["c", "c", 3, []],
+    ["e", "e2", 50, []],
     ["d", "d", 4, gap],
   ]);
 });
