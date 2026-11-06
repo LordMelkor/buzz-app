@@ -589,6 +589,20 @@ describe("composer Markdown boundary", () => {
       { text: "*b*\\*" },
     ]);
   });
+  it("sends a group's label as typed, not as Markdown", () => {
+    const member = { pubkey: "a".repeat(64), name: "Honey" };
+    const group = (label: string) =>
+      schema.nodes.token.create({
+        source: `@${label}`,
+        group: { label, members: [member] },
+      });
+    expect(serialize(group("core"), schema.text(" hi"))).toBe("@core hi");
+    const output = serialize(group("*core*"), schema.text(" hi"));
+    expect(fromMarkdown(output).children[0]).toMatchObject({
+      type: "paragraph",
+      children: [{ type: "text", value: "@*core* hi" }],
+    });
+  });
   it("keeps generated strong delimiters distinct from literal asterisks", () => {
     const italic = (text: string) =>
       schema.text(text, [schema.marks.italic.create()]);

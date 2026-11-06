@@ -2131,6 +2131,17 @@ function Composer({
     setError(undefined);
     return true;
   }
+  /** Whether `range` overlaps code: a code block, inline code, or Markdown
+   * code the draft's text spells with backticks. */
+  function inMarkdownCode(range: Readonly<{ start: number; end: number }>) {
+    const doc = readComposerSnapshot(valueRef.current.document);
+    const context = doc
+      ? composerMarkdownContext(doc)
+      : { text: valueRef.current.text, protected: [] };
+    return [...context.protected, ...markdownRanges(context.text).literal].some(
+      (r) => range.start < r.end && range.end > r.start,
+    );
+  }
   /** One chip for the whole group, at `range` or, from a tool, the caret. */
   function insertGroup(
     group: Readonly<{ name: string; mentions: readonly MentionRecipient[] }>,
@@ -2152,8 +2163,14 @@ function Composer({
       )
     )
       return false;
-    // Message edits only add references, never new notification intent.
-    if (editing.target) return insert(`@${group.name} `, undefined, range);
+    // Message edits only add references, never new notification intent, and
+    // in code a group is only its name: code never carries recipients.
+    const at = range ?? {
+      start: input.current?.selectionStart ?? valueRef.current.text.length,
+      end: input.current?.selectionEnd ?? valueRef.current.text.length,
+    };
+    if (editing.target || (!(solo && !range) && inMarkdownCode(at)))
+      return insert(`@${group.name} `, undefined, range);
     if (
       !permitted.current ||
       editingDisabled ||
@@ -2254,20 +2271,10 @@ function Composer({
       valueRef.current.text !== observation.text
     )
       return false;
-    const inCode = () => {
-      const doc = readComposerSnapshot(valueRef.current.document);
-      const context = doc
-        ? composerMarkdownContext(doc)
-        : { text: observation.text, protected: [] };
-      return [
-        ...context.protected,
-        ...markdownRanges(context.text).literal,
-      ].some((r) => query.start < r.end && query.end > r.start);
-    };
     // A typed terminator (Space, closing punctuation after a name, the closing
     // emoji colon) stays literal in code. Tab, Enter and a click are not typed.
     const typed = key?.length === 1 ? key : undefined;
-    if (typed && inCode()) return false;
+    if (typed && inMarkdownCode(query)) return false;
     const chosen = chosenWorkspace(edit);
     if (chosen !== undefined) {
       // The chat's workspace leaves no text behind; the control shows it.
@@ -2288,11 +2295,7 @@ function Composer({
       setError(undefined);
       return true;
     }
-    // In code a group is only its name: code never carries recipients.
-    if ("group" in edit && edit.group)
-      return inCode()
-        ? insert(`@${edit.group.name} `, undefined, query)
-        : insertGroup(edit.group, query);
+    if ("group" in edit && edit.group) return insertGroup(edit.group, query);
     if ("mentions" in edit && edit.mentions)
       return insertMentions(edit.mentions, query);
     if ("mention" in edit && edit.mention)
@@ -2811,6 +2814,12 @@ function Composer({
     sendAttempt.current = attempt;
     const captured = valueRef.current;
     const capturedRecipients = routing ? recipientsNow : captured.recipients;
+    // A group and a member named alone are one person to notify or ask about.
+    const people = [
+      ...new Map(
+        captured.recipients.map((person) => [person.pubkey, person]),
+      ).values(),
+    ];
     const capturedAttachments = attachments.store.snapshot();
     // Mention resolution can update recipients before their picker commits.
     // Capture only a snapshot validated for the saved choices being sent.
@@ -2918,7 +2927,9 @@ function Composer({
         return;
       }
       let references: readonly string[] = [];
-      let recipients = capturedRecipients.map((item) => item.pubkey);
+      let recipients = [
+        ...new Set(capturedRecipients.map((item) => item.pubkey)),
+      ];
       let declinedImports: readonly string[] = [];
       if (soloConversation || ownSoloConversation) {
         admission.current = true;
@@ -2929,7 +2940,7 @@ function Composer({
         );
       } else if (recipients.length) {
         // An agent only an earlier Buzz runs would not answer; offer it here first.
-        const lookup = oldAgents.find(captured.recipients);
+        const lookup = oldAgents.find(people);
         const old = lookup instanceof Promise ? await lookup : lookup;
         if (old.length) {
           setSending(true);
@@ -2964,7 +2975,7 @@ function Composer({
           const elsewhere = new Map(
             (agents?.joinable() ?? []).map((agent) => [agent.pubkey, agent]),
           );
-          const bring = captured.recipients.flatMap((person) => {
+          const bring = people.flatMap((person) => {
             const agent = elsewhere.get(person.pubkey);
             return agent && !channel.members?.includes(person.pubkey)
               ? [agent]
@@ -2981,7 +2992,7 @@ function Composer({
             if (brought === null) return;
             added = brought;
           }
-          const missing = captured.recipients.filter(
+          const missing = people.filter(
             (person) =>
               !channel.members?.includes(person.pubkey) &&
               !added.includes(person.pubkey),
