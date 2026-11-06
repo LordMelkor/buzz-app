@@ -35,15 +35,16 @@ function chatTitle(
   for (const recipient of [...draft.recipients].sort(
     (a, b) => a.start - b.start,
   )) {
-    // A group's members share its span; it was stripped with the first.
-    if (recipient.end === draftStart) continue;
+    // A group chip is text in the sent message, so it stays in the title:
+    // renaming derives the starting title from that message.
     if (
+      recipient.label !== undefined ||
       recipient.start < draftStart ||
       draft.text.slice(draftStart, recipient.start).trim()
     )
       break;
     const leading = text.slice(start).match(/^\s*/)?.[0].length ?? 0;
-    const tag = `@${recipient.label ?? recipient.name}`;
+    const tag = `@${recipient.name}`;
     if (!text.startsWith(tag, start + leading)) break;
     start += leading + tag.length;
     draftStart = recipient.end;
