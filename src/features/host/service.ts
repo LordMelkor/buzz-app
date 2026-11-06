@@ -1,6 +1,7 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type {} from "../../plugins/api";
+import { writeClipboardText } from "../../shared/clipboard";
 import { nativeIdentityEnabled } from "../identity/service";
 import type { SoloRegionBinding } from "../channel-navigation/solo-navigation-contract";
 import { repositoryFolders } from "../communities/repositories";
@@ -279,6 +280,9 @@ export interface Host {
     agentPubkey: string,
     signal?: AbortSignal,
   ) => Promise<NipOaAuthorization>;
+  /** Copies plain text as Buzz itself does: natively on macOS, where WebKit
+   * often rejects `navigator.clipboard` writes. Needs no manifest grant. */
+  writeClipboardText?: (text: string) => Promise<void>;
 }
 
 declare module "@deepseek-ai/cordis" {
@@ -367,6 +371,10 @@ export class HostService extends Service implements Host {
 
   prepareRemoteAgentAuthorization(agentPubkey: string, signal?: AbortSignal) {
     return prepareRemoteAgentAuthorization(agentPubkey, signal);
+  }
+
+  writeClipboardText(text: string) {
+    return writeClipboardText(text);
   }
 
   async runCommand(id: string, input?: string): Promise<string | null> {
