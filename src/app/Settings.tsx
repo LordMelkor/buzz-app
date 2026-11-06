@@ -1408,6 +1408,11 @@ export function Settings({
         <div hidden={selected !== "notifications"}>
           <NotificationSettings
             notifications={notifications}
+            community={
+              relay.status === "ready" && relay.scope
+                ? { scope: relay.scope, channels: relay.session.channels }
+                : undefined
+            }
             active={selected === "notifications"}
           />
         </div>

@@ -5,16 +5,21 @@ import {
 import type { Communities } from "../communities/service";
 import { communityDestination } from "../communities/destination";
 import type { OpenTarget } from "../navigation/targets";
-import type { IncomingListener } from "../relay/incoming";
+import type { IncomingListener, IncomingMessage } from "../relay/incoming";
 import { relayPartition } from "../relay/partition";
 import type { RelaySession } from "../relay/session";
 import type { NotificationsService } from "./service";
 import { messageNotificationText } from "./content";
+import {
+  activityChannels,
+  subscribeActivityChannels,
+} from "./channel-activity";
 
 const labels = {
   mention: "Mentions",
   direct: "Direct messages",
   thread: "Thread replies",
+  channel: "Channel activity",
 };
 /** A local Solo run owns its completion feedback; its reply is not a mention alert. */
 export function localSoloAgentReply(
@@ -100,6 +105,7 @@ export function bindMessageNotifications(
   let stopSync = () => {};
   let stopPreferences = () => {};
   let stopActivity = () => {};
+  let stopChannels = () => {};
   const update = () => {
     const client = communities.snapshot();
     void notifications.selectViewer(client.viewer);
@@ -115,6 +121,7 @@ export function bindMessageNotifications(
     stopSync();
     stopPreferences();
     stopActivity();
+    stopChannels();
     notifications.revalidate();
     session = relay.session;
     identity = next;
@@ -127,12 +134,15 @@ export function bindMessageNotifications(
     )
       return;
     const viewer = client.viewer;
+    const scope = relayPartition(origin, viewer);
     const owned = relay.session;
     const current = generation;
     const valid = () =>
       !closed &&
       generation === current &&
       communities.relay.snapshot().session === owned;
+    const watched = (channelId: string) =>
+      activityChannels(scope).includes(channelId);
     const receive: IncomingListener = (messages) => {
       for (const message of messages) {
         if (!valid()) return;
@@ -149,107 +159,135 @@ export function bindMessageNotifications(
           attention.category ?? (attention.pending ? "thread" : undefined);
         const soloReply =
           category === "mention"
-            ? localSoloAgentReply(
-                localActivity,
-                message,
-                relayPartition(origin, viewer),
-              )
+            ? localSoloAgentReply(localActivity, message, scope)
             : undefined;
         if (
-          !category ||
-          (attention.status !== "eligible" && !attention.pending) ||
-          soloReply === "reply"
+          category &&
+          (attention.status === "eligible" || attention.pending) &&
+          soloReply !== "reply"
         )
-          continue;
-        void notifications.admit(
-          category,
-          labels[category],
-          {
-            sourceKey: message.messageId,
-            target: {
-              version: 1,
-              kind: "conversation",
-              scope: { viewer, communityOrigin: origin },
-              channelId: message.channelId,
-              messageId: message.messageId,
-              ...(attention.rootId ? { threadRootId: attention.rootId } : {}),
-            },
-          },
-          valid,
-          () => {
-            if (!valid() || Date.now() - message.createdAt * 1000 > 120000)
-              return false;
-            if (category === "mention") {
-              const current = localSoloAgentReply(
-                localActivity,
-                message,
-                relayPartition(origin, viewer),
-              );
-              if (current === "reply") return false;
-              if (current === "pending") return "wait";
-            }
-            const attention = owned.unread.attention(
-              message.channelId,
-              message.messageId,
-            );
-            const sync = owned.unread.sync();
-            // Explicit mentions bypass channel mute, as in the legacy policy —
-            // including p-tagged messages in DM channels, whose category is
-            // "direct". Unknown preferences must not briefly release ordinary
-            // alerts at startup.
-            if (!attention.mentioned) {
-              const preferences = owned.sidebarPreferences.snapshot();
-              if (preferences.data?.muted.includes(message.channelId))
-                return false;
-              if (
-                preferences.status !== "ready" &&
-                preferences.status !== "unsupported"
-              )
-                return "wait";
-            }
-            const whileViewing =
-              notifications.snapshot().preferences.notifyWhileViewing;
-            if (
-              attention.status === "ineligible" ||
-              (!attention.pending && attention.category !== category) ||
-              (!whileViewing && attention.viewing)
-            )
-              return false;
-            if (
-              sync.status === "loading" ||
-              sync.status === "error" ||
-              (sync.capability !== "unsupported" &&
-                sync.completeness === "unknown") ||
-              attention.status === "unknown"
-            )
-              return "wait";
-            // The open view's reading dwell can mark the row read before
-            // presentation settles. With Notify while viewing, that read must
-            // not cancel the alert; a read row no longer in view stays quiet.
-            return attention.unread || (whileViewing && attention.viewing);
-          },
-          () =>
-            messageNotificationText(
-              message,
-              category,
-              owned.channels
-                .list()
-                .channels.find((item) => item.id === message.channelId),
-              owned.profiles
-                .snapshot()
-                .get(message.workflowOwnerId ?? message.authorId),
-              owned.names.resolve(
-                message.workflowOwnerId ?? message.authorId,
-                undefined,
-                owned.channels
-                  .list()
-                  .channels.find((item) => item.id === message.channelId)
-                  ?.members ?? [],
-              ),
-            ),
-        );
+          admit(message, attention.rootId, category, message.messageId);
+        // All activity in a chosen channel alerts only what no category
+        // takes. A pending reply is admitted both ways under two keys; its
+        // lookup decides which one may deliver, so it still alerts once.
+        // Read state is not asked here: an open reader may already have
+        // caught up, and Notify while viewing still alerts. Delivery decides.
+        if (!attention.category && watched(message.channelId))
+          admit(
+            message,
+            attention.rootId,
+            "channel",
+            attention.pending
+              ? `${message.messageId}:channel`
+              : message.messageId,
+          );
       }
     };
+    const admit = (
+      message: IncomingMessage,
+      rootId: string | undefined,
+      category: keyof typeof labels,
+      sourceKey: string,
+    ) =>
+      void notifications.admit(
+        category,
+        labels[category],
+        {
+          sourceKey,
+          target: {
+            version: 1,
+            kind: "conversation",
+            scope: { viewer, communityOrigin: origin },
+            channelId: message.channelId,
+            messageId: message.messageId,
+            ...(rootId ? { threadRootId: rootId } : {}),
+          },
+        },
+        valid,
+        () => {
+          if (!valid() || Date.now() - message.createdAt * 1000 > 120000)
+            return false;
+          const attention = owned.unread.attention(
+            message.channelId,
+            message.messageId,
+          );
+          const sync = owned.unread.sync();
+          const ordinary = category === "channel";
+          // Turning the channel off cancels what is still waiting.
+          if (ordinary && !watched(message.channelId)) return false;
+          // Explicit mentions bypass channel mute, as in the legacy policy —
+          // including p-tagged messages in DM channels, whose category is
+          // "direct". Unknown preferences must not briefly release ordinary
+          // alerts at startup. All activity is never a mention, so mute
+          // always silences it.
+          if (!attention.mentioned) {
+            const preferences = owned.sidebarPreferences.snapshot();
+            if (preferences.data?.muted.includes(message.channelId))
+              return false;
+            if (
+              preferences.status !== "ready" &&
+              preferences.status !== "unsupported"
+            )
+              return "wait";
+          }
+          // A local Solo run's own completion feedback covers its reply. Turn-off
+          // and mute come first, so they cancel even while this waits.
+          if (category === "mention" || category === "channel") {
+            const current = localSoloAgentReply(localActivity, message, scope);
+            if (current === "reply") return false;
+            if (current === "pending") return "wait";
+          }
+          const whileViewing =
+            notifications.snapshot().preferences.notifyWhileViewing;
+          // Ordinary activity has no category, so its status is ineligible.
+          // It yields to any category, and to unfollowing its thread even
+          // while viewed; a pending lookup is unknown and waits.
+          if (
+            (ordinary
+              ? !!attention.category || !!attention.unfollowed
+              : attention.status === "ineligible" ||
+                (!attention.pending && attention.category !== category)) ||
+            (!whileViewing && attention.viewing)
+          )
+            return false;
+          if (
+            sync.status === "loading" ||
+            sync.status === "error" ||
+            (sync.capability !== "unsupported" &&
+              sync.completeness === "unknown") ||
+            // All activity needs no conversation decision, only a running
+            // lookup's; a finished lookup that found no root still alerts.
+            (ordinary ? !!attention.pending : attention.status === "unknown")
+          )
+            return "wait";
+          // The open view's reading dwell can mark the row read before
+          // presentation settles. With Notify while viewing, that read must
+          // not cancel the alert; a read row no longer in view stays quiet.
+          return (
+            (ordinary ? !!attention.activityUnread : attention.unread) ||
+            (whileViewing && attention.viewing)
+          );
+        },
+        () =>
+          messageNotificationText(
+            message,
+            category,
+            owned.channels
+              .list()
+              .channels.find((item) => item.id === message.channelId),
+            owned.profiles
+              .snapshot()
+              .get(message.workflowOwnerId ?? message.authorId),
+            owned.names.resolve(
+              message.workflowOwnerId ?? message.authorId,
+              undefined,
+              owned.channels
+                .list()
+                .channels.find((item) => item.id === message.channelId)
+                ?.members ?? [],
+            ),
+          ),
+      );
     stopIncoming = owned.subscribeIncoming(receive);
     // Only reconsider retained live candidates; readiness is not an event source.
     stopSync = owned.unread.subscribeSync(() => notifications.revalidate());
@@ -262,6 +300,9 @@ export function bindMessageNotifications(
         void owned.sidebarPreferences.ensure();
     };
     stopPreferences = owned.sidebarPreferences.subscribe(preferencesChanged);
+    stopChannels = subscribeActivityChannels(scope, () =>
+      notifications.revalidate(),
+    );
     preferencesChanged();
     // App-global ownership: Channels may not be mounted. Start its shared
     // observation only after discovery, so an empty startup roster cannot
@@ -290,5 +331,6 @@ export function bindMessageNotifications(
     stopSync();
     stopPreferences();
     stopActivity();
+    stopChannels();
   };
 }

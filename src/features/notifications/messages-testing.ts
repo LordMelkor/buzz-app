@@ -30,12 +30,13 @@ import { createNotificationPreferences } from "./preferences";
 import { provideNavigation } from "../navigation/service";
 import { bindMessageNotifications, notificationAuthorized } from "./messages";
 
+type ReadFrontiers = Record<string, number>;
 export const cleanups: (() => unknown)[] = [];
 /** A real relay session with message notifications bound to it. */
 export async function setup(
   /** Holds each read-state write; a function is asked once per write. */
   readBarrier: Promise<void> | (() => Promise<void>) = Promise.resolve(),
-  readFrontier?: number,
+  readFrontier?: number | ((peer: ReturnType<typeof keypair>) => ReadFrontiers),
   remote?: {
     observation: "bounded" | "snapshot";
     barrier: Promise<void>;
@@ -58,7 +59,13 @@ export async function setup(
       ? undefined
       : {
           ...newReadJournal(),
-          state: { frontiers: { room: readFrontier }, overrides: {} },
+          state: {
+            frontiers:
+              typeof readFrontier === "function"
+                ? readFrontier(peer)
+                : { room: readFrontier },
+            overrides: {},
+          },
         };
   const markerQuery = vi.fn(async () => {
     await remote?.barrier;

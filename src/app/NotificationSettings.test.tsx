@@ -16,6 +16,11 @@ import { NotificationsService } from "../features/notifications/service";
 import { DEFAULT_SOUND } from "../features/notifications/sound";
 import { NotificationSettings } from "./NotificationSettings";
 import { PluginRuntime } from "../plugins/runtime";
+import {
+  activityChannels,
+  setChannelActivity,
+} from "../features/notifications/channel-activity";
+import type { ChannelList, ChannelQueries } from "../features/relay/contracts";
 
 const contexts: Context[] = [];
 afterEach(async () => {
@@ -465,6 +470,7 @@ it("selects and restores Silent for every category, stops previews, and can rest
     mention: "silent",
     thread: "silent",
     agent: "flutter",
+    channel: "flutter",
   });
   expect(play).toHaveBeenCalledOnce();
   expect(screen.getByRole("switch", { name: "Desktop alerts" })).toBeChecked();
@@ -519,4 +525,70 @@ it("restores a saved sound name this build lacks with alerts on and the default 
   expect(
     screen.getByRole("combobox", { name: "Direct messages" }),
   ).toHaveTextContent(DEFAULT_SOUND);
+});
+
+it("lists the channels set to all activity by name and turns one off", async () => {
+  const ctx = new Context();
+  contexts.push(ctx);
+  const runtime = new PluginRuntime(ctx, async () => ({ apply() {} }));
+  ctx.effect(() => () => runtime.dispose());
+  const service = new NotificationsService(
+    ctx,
+    provideNavigation(ctx).navigation,
+    {
+      label: "Browser",
+      permission: async () => "granted",
+      requestPermission: async () => "granted",
+      show: async () => {},
+      dispose() {},
+    },
+  );
+  const scope = `https://relay.test:${"a".repeat(64)}`;
+  const list: ChannelList = {
+    status: "ready",
+    channels: [{ id: "alpha", name: "alpha", channelType: "stream" }],
+  };
+  const channels = {
+    list: () => list,
+    subscribeList: () => () => {},
+    ensureList() {},
+  } as unknown as ChannelQueries;
+  render(
+    <NotificationSettings
+      notifications={service}
+      community={{ scope, channels }}
+    />,
+    { wrapper: ToastProvider },
+  );
+  expect(
+    screen.getByText("No channels set to all activity"),
+  ).toBeInTheDocument();
+  act(() => {
+    setChannelActivity(scope, "alpha", true);
+    setChannelActivity(scope, "gone", true);
+  });
+  expect(screen.getByText("#alpha")).toBeInTheDocument();
+  await userEvent
+    .setup()
+    .click(
+      screen.getByRole("button", { name: "Turn off all activity for #alpha" }),
+    );
+  expect(activityChannels(scope)).toEqual(["gone"]);
+  expect(screen.queryByText("#alpha")).not.toBeInTheDocument();
+  // A save that fails keeps the channel and says so.
+  act(() => {
+    setChannelActivity(scope, "alpha", true);
+  });
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("quota");
+  });
+  await userEvent
+    .setup()
+    .click(
+      screen.getByRole("button", { name: "Turn off all activity for #alpha" }),
+    );
+  expect(
+    screen.getByText("Couldn’t turn off all activity for #alpha"),
+  ).toBeInTheDocument();
+  expect(screen.getByText("#alpha")).toBeInTheDocument();
 });

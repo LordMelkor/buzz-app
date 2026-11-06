@@ -98,6 +98,22 @@ checks, not that an OS banner was displayed or read.
   does not replay cancelled alerts. Existing shown OS banners are not withdrawn.
   Hosts without preference decoding retain existing notification behavior; this
   slice adds no native preference adapter or automatic cross-device synchronization.
+- A channel set to **all activity** (the `channel` category) alerts for any post
+  or reply by someone else in it, under the same viewing, read, mute and sync
+  gates as the categories above; other channels keep the default of mentions,
+  DMs and the viewer's conversations. The set is device-local view state
+  (`notify-channels` under the `origin:viewer` partition), toggled from the
+  channel menu beside Mute and reviewed in Settings → Notifications; the
+  category switch turns the alerts off and keeps the set. It applies only when
+  no other category does: a mention, DM or conversation reply keeps its own
+  category and alerts once, and a local Solo run's reply leaves its completion
+  alert as the only one. A reply whose conversation lookup is pending is held
+  both as `thread` and as `channel` under distinct source keys; the lookup
+  decides which one delivers. The unread engine's `activityUnread` attention
+  decides read state: like `unread`, but a reply outside the viewer's
+  conversations counts, except in a thread the viewer unfollowed. Mute always
+  silences it, and the set is read again at delivery, so turning a channel off
+  cancels waiting candidates. Badges, Inbox and unread counts do not change.
 - Permission is requested explicitly from Settings where a browser needs a user
   gesture. A fresh pending candidate is reconsidered after Allow; a newer off
   choice still wins. Observable API errors are reported, never auto-retried.
