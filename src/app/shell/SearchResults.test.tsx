@@ -42,6 +42,7 @@ import {
   readJournal,
   type ReadJournal,
 } from "../../features/relay/read-state-storage";
+import { lookUpVerified } from "../../features/profiles/useVerifiedNames";
 import type { AppServices } from "../services";
 import type { SearchGroup } from "./SearchChoices";
 import { setUnreadFirstPreference } from "../../features/search/unread-first-preference";
@@ -3646,6 +3647,1465 @@ it.each(["from:we"])(
     }
   },
 );
+
+it.each([
+  ["a verified full name", "from:@riv"],
+  ["a verified username", "from:@jriv"],
+])(
+  "offers a person the relay found by %s that their profile name does not match",
+  async (_case, query) => {
+    const relay = keypair(),
+      viewer = keypair(),
+      person = keypair();
+    const head = signed(relay, {
+      kind: 30382,
+      created_at: 1_000_000,
+      content: "",
+      tags: [
+        ["d", person.pubkey],
+        ["p", person.pubkey],
+        ["active", "true"],
+        ["display_name", "Jordan"],
+        ["username", "jrivera"],
+        ["issuer_label", "Example"],
+        ["verified_at", "1000000"],
+        ["full_name", "Jordan Rivera"],
+      ],
+    });
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      verifiedProfiles: {
+        pubkey: relay.pubkey,
+        multipleIssuers: false,
+        searchable: true,
+      },
+      searchProfiles: async () =>
+        [profile(person, { name: "jr-old" }), head].map((event) =>
+          eventDto(event),
+        ),
+    });
+    const change = vi.fn();
+    try {
+      render(
+        <SearchResults
+          session={owner.session}
+          query={query}
+          onQueryChange={change}
+          input={createRef()}
+          pages={[]}
+          openConversation={() => {}}
+        />,
+      );
+      const people = within(screen.getByRole("group", { name: "People" }));
+      // Shown by the verified name, not the profile name it was found by.
+      const choice = await people.findByRole("option", { name: /Jordan/ });
+      expect(people.queryByRole("option", { name: /jr-old/ })).toBeNull();
+      fireEvent.click(choice);
+      expect(change).toHaveBeenCalledWith(`from:${person.pubkey} `);
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+type Keys = ReturnType<typeof keypair>;
+const jordanHead = (relay: Keys, person: Keys) =>
+  signed(relay, {
+    kind: 30382,
+    created_at: 1_000_000,
+    content: "",
+    tags: [
+      ["d", person.pubkey],
+      ["p", person.pubkey],
+      ["active", "true"],
+      ["display_name", "Jordan"],
+      ["username", "jrivera"],
+      ["issuer_label", "Example"],
+      ["verified_at", "1000000"],
+      ["full_name", "Jordan Rivera"],
+    ],
+  });
+const verifiedSearch = (
+  viewer: Keys,
+  relay: Keys,
+  found: readonly RelayEvent[],
+) =>
+  createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async () => found.map((event) => eventDto(event)),
+  });
+
+it("offers people who match by name while their verified names are still read", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "Jordan" }),
+  ]);
+  // The verified read for this person never answers.
+  const read = vi.fn(() => new Promise<never>(() => {}));
+  const session = {
+    ...owner.session,
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jor"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(screen.getByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("keeps searching while a person found by other text may still match by verified name", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  // The relay found them by their about text; their name doesn't match yet.
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "jr-old", about: "rivera" }),
+  ]);
+  const read = vi.fn(() => new Promise<never>(() => {}));
+  const session = {
+    ...owner.session,
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@rivera"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    await waitFor(() => expect(read).toHaveBeenCalled());
+    const people = screen.getByRole("group", { name: "People" });
+    expect(people).toHaveTextContent("Searching people…");
+    expect(people).not.toHaveTextContent("No matching people");
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("labels a person by the name their page verified over a cached profile name", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "jr-old" }),
+    jordanHead(relay, person),
+  ]);
+  // The names service answers from a cached public profile, as it does
+  // without a naming policy.
+  const names = owner.session.names as NonNullable<typeof owner.session.names>;
+  const session = {
+    ...owner.session,
+    names: {
+      ...names,
+      lookup: (...args: Parameters<typeof names.lookup>) =>
+        args[0] === person.pubkey
+          ? { name: "jr-old", source: "public-profile" as const }
+          : names.lookup(...args),
+      resolve: (...args: Parameters<typeof names.resolve>) =>
+        args[0] === person.pubkey ? "jr-old" : names.resolve(...args),
+    },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@riv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(screen.getByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+    expect(people.queryByRole("option", { name: /jr-old/ })).toBeNull();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("labels a page-verified person by that name under the bundled naming policy", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const directory = createAgentDirectory();
+  const cachedName = profile(person, { name: "jr-old" });
+  const owner = createRelaySession(
+    {
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      verifiedProfiles: {
+        pubkey: relay.pubkey,
+        multipleIssuers: false,
+        searchable: true,
+      },
+      async query(filters) {
+        return [cachedName].filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        );
+      },
+      searchProfiles: async () =>
+        [cachedName, jordanHead(relay, person)].map((event) => eventDto(event)),
+    },
+    {
+      identityNames: {
+        bind: (source) =>
+          bindNames(source, {
+            snapshot: () => [directory],
+            subscribe: () => () => {},
+          }),
+      } as IdentityNames,
+    },
+  );
+  try {
+    // The person's public profile is cached, as after seeing them elsewhere.
+    await act(async () => owner.session.profiles.ensure([person.pubkey]));
+    expect(owner.session.profiles.snapshot().get(person.pubkey)?.name).toBe(
+      "jr-old",
+    );
+    render(
+      <SearchResults
+        session={owner.session}
+        query="from:@riv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(screen.getByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+    expect(people.queryByRole("option", { name: /jr-old/ })).toBeNull();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("chips a verified person with no profile by their shared verified name and qualifier", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = verifiedSearch(viewer, relay, [jordanHead(relay, person)]);
+  // The shared directory holds this person's head and no kind-0 profile.
+  const shared = new Map(owner.session.profiles.snapshot());
+  // A namesake elsewhere gave the shared name its qualifier.
+  shared.set(person.pubkey, {
+    name: "Jordan · 1234",
+    verified: {
+      displayName: "Jordan",
+      username: "jrivera",
+      fullName: "Jordan Rivera",
+      issuerLabel: "Example",
+      verifiedAt: 1_000_000,
+      status: "checked",
+      multipleIssuers: false,
+    },
+  });
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      snapshot: () => shared,
+      verifiedHeld: (key: string) => key === person.pubkey,
+    },
+  } as typeof owner.session;
+  function Search() {
+    const [query, setQuery] = useState("from:@riv");
+    return (
+      <SearchResults
+        session={session}
+        query={query}
+        onQueryChange={setQuery}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />
+    );
+  }
+  try {
+    render(<Search />);
+    fireEvent.click(
+      await within(screen.getByRole("group", { name: "People" })).findByRole(
+        "option",
+        { name: /Jordan/ },
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Remove author Jordan · 1234" }),
+    ).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("offers a member by their own profile name after a verified label replaced it", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  // The community's search finds no one, so only local members can match.
+  const owner = verifiedSearch(viewer, relay, []);
+  const own = profile(person, { name: "zed" });
+  const shared = new Map(owner.session.profiles.snapshot());
+  shared.set(person.pubkey, {
+    name: "Jordan",
+    verified: {
+      displayName: "Jordan",
+      username: "jrivera",
+      fullName: "Jordan Rivera",
+      issuerLabel: "Example",
+      verifiedAt: 1_000_000,
+      status: "checked",
+      multipleIssuers: false,
+    },
+  });
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      get: () => ({
+        id: "crew",
+        name: "Crew",
+        channelType: "stream" as const,
+        members: [viewer.pubkey, person.pubkey],
+      }),
+      resolve: async () => {},
+    },
+    profiles: {
+      ...owner.session.profiles,
+      snapshot: () => shared,
+      ensure: async () => {},
+      event: (key: string) => (key === person.pubkey ? own : undefined),
+    },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@zed"
+        scopedChannelId="crew"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("offers a member by a verified username no cached head holds", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  // The community's search finds no one, so only local members can match.
+  const owner = verifiedSearch(viewer, relay, []);
+  const shared = new Map(owner.session.profiles.snapshot());
+  shared.set(person.pubkey, { name: "zed" });
+  const read = vi.fn(async (keys: readonly string[]) => ({
+    authority: owner.session.profiles.verifiedAuthority?.(),
+    profiles: new Map(
+      keys.includes(person.pubkey)
+        ? [
+            [
+              person.pubkey,
+              {
+                displayName: "Jordan",
+                username: "jrivera",
+                issuerLabel: "Example",
+                verifiedAt: 1_000_000,
+                status: "checked",
+                multipleIssuers: false,
+              },
+            ],
+          ]
+        : [],
+    ),
+  }));
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      get: () => ({
+        id: "crew",
+        name: "Crew",
+        channelType: "stream" as const,
+        members: [viewer.pubkey, person.pubkey],
+      }),
+      resolve: async () => {},
+    },
+    profiles: {
+      ...owner.session.profiles,
+      snapshot: () => shared,
+      ensure: async () => {},
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jrivera"
+        scopedChannelId="crew"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("offers a member known only by a verified name no cached head holds", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  // No search result, no public profile and no shared head: only the read.
+  const owner = verifiedSearch(viewer, relay, []);
+  const read = vi.fn(async (keys: readonly string[]) => ({
+    authority: owner.session.profiles.verifiedAuthority?.(),
+    profiles: new Map(
+      keys.includes(person.pubkey)
+        ? [
+            [
+              person.pubkey,
+              {
+                displayName: "Jordan",
+                username: "jrivera",
+                issuerLabel: "Example",
+                verifiedAt: 1_000_000,
+                status: "checked",
+                multipleIssuers: false,
+              },
+            ],
+          ]
+        : [],
+    ),
+  }));
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      get: () => ({
+        id: "crew",
+        name: "Crew",
+        channelType: "stream" as const,
+        members: [viewer.pubkey, person.pubkey],
+      }),
+      resolve: async () => {},
+    },
+    profiles: { ...owner.session.profiles, ensure: async () => {} },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jrivera"
+        scopedChannelId="crew"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("keeps a person the search found by a verified name when a member's read fails", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair(),
+    member = keypair();
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "jr-old" }),
+    jordanHead(relay, person),
+  ]);
+  const verify = owner.session.directMessages.verified;
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      get: () => ({
+        id: "crew",
+        name: "Crew",
+        channelType: "stream" as const,
+        members: [viewer.pubkey, member.pubkey],
+      }),
+      resolve: async () => {},
+    },
+    profiles: { ...owner.session.profiles, ensure: async () => {} },
+    directMessages: {
+      ...owner.session.directMessages,
+      verified: (...args: Parameters<typeof verify>) =>
+        args[0].includes(member.pubkey)
+          ? Promise.reject(new Error("Relay read timed out"))
+          : verify(...args),
+    },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@riv"
+        scopedChannelId="crew"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("drops a person a later member read answers as not verified", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "jr-old" }),
+  ]);
+  const authority = owner.session.profiles.verifiedAuthority?.();
+  // The page's read verifies Jordan; the member read after it, asked again
+  // because a search answered for them since, finds the name withdrawn.
+  const read = vi.fn(async (keys: readonly string[]) => ({
+    authority,
+    profiles: new Map(
+      keys.includes(person.pubkey) && read.mock.calls.length === 1
+        ? [
+            [
+              person.pubkey,
+              {
+                displayName: "Jordan",
+                username: "jrivera",
+                issuerLabel: "Example",
+                verifiedAt: 1_000_000,
+                status: "checked" as const,
+                multipleIssuers: false,
+              },
+            ],
+          ]
+        : [],
+    ),
+  }));
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      get: () => ({
+        id: "crew",
+        name: "Crew",
+        channelType: "stream" as const,
+        members: [viewer.pubkey, person.pubkey],
+      }),
+      resolve: async () => {},
+    },
+    profiles: { ...owner.session.profiles, ensure: async () => {} },
+    directMessages: {
+      ...owner.session.directMessages,
+      verified: read,
+      searched: (pubkey: string) => pubkey === person.pubkey,
+    },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jrivera"
+        scopedChannelId="crew"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        read.mock.calls.filter(([keys]) => keys.includes(person.pubkey)),
+      ).toHaveLength(2),
+    );
+    await act(async () => {});
+    expect(screen.queryByRole("option", { name: /Jordan/ })).toBeNull();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("searches again when the verification authority changes while the picker is open", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "jr-old" }),
+  ]);
+  let authority = { pubkey: relay.pubkey, multipleIssuers: false };
+  const listeners = new Set<() => void>();
+  const verified = {
+    displayName: "Jordan",
+    username: "jrivera",
+    fullName: "Jordan Rivera",
+    issuerLabel: "Example",
+    verifiedAt: 1_000_000,
+    status: "checked" as const,
+    multipleIssuers: false,
+  };
+  const read = vi.fn(async () => ({
+    authority,
+    profiles: new Map([[person.pubkey, verified]]),
+  }));
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      verifiedAuthority: () => authority,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        const off = owner.session.profiles.subscribe(listener);
+        return () => {
+          listeners.delete(listener);
+          off();
+        };
+      },
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@riv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(screen.getByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+    // The community re-advertises its authority.
+    authority = { ...authority };
+    act(() => {
+      for (const listener of listeners) listener();
+    });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("does not offer a person by verified names a newer shared head has since answered for", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const head = signed(relay, {
+    kind: 30382,
+    created_at: 1_000_000,
+    content: "",
+    tags: [
+      ["d", person.pubkey],
+      ["p", person.pubkey],
+      ["active", "true"],
+      ["display_name", "Jordan"],
+      ["username", "jrivera"],
+      ["issuer_label", "Example"],
+      ["verified_at", "1000000"],
+      ["full_name", "Jordan Rivera"],
+    ],
+  });
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async () =>
+      [profile(person, { name: "jr-old" }), head].map((event) =>
+        eventDto(event),
+      ),
+  });
+  // A newer inactive head was accepted after the page's read began and has
+  // since left the shared cache: nothing is held, but the page's names are old.
+  const session = {
+    ...owner.session,
+    profiles: { ...owner.session.profiles, verifiedSince: () => true },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@riv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByText("No matching people. Try a different name."),
+    ).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("still offers a selectable agent whose public profile has no name", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    searchProfiles: async () => [eventDto(profile(agent, {}))],
+  });
+  const source = owner.session.agentChoices;
+  const choices = {
+    ...source.snapshot(),
+    identities: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+    selectable: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+  };
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@sco"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const agents = within(await screen.findByRole("group", { name: "Agents" }));
+    expect(await agents.findAllByRole("option")).toHaveLength(1);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("offers a selectable agent by a verified name no cached head holds", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  // The search finds no one, and only the read knows the agent's verified name.
+  const owner = verifiedSearch(viewer, relay, []);
+  const source = owner.session.agentChoices;
+  const choices = {
+    ...source.snapshot(),
+    identities: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+    selectable: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+  };
+  const read = vi.fn(async (keys: readonly string[]) => ({
+    authority: owner.session.profiles.verifiedAuthority?.(),
+    profiles: new Map(
+      keys.includes(agent.pubkey)
+        ? [
+            [
+              agent.pubkey,
+              {
+                displayName: "Scout",
+                username: "jrivera",
+                issuerLabel: "Example",
+                verifiedAt: 1_000_000,
+                status: "checked" as const,
+                multipleIssuers: false,
+              },
+            ],
+          ]
+        : [],
+    ),
+  }));
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jriv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const agents = within(await screen.findByRole("group", { name: "Agents" }));
+    expect(await agents.findByRole("option", { name: /Scout/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("drops an agent a later agent read answers as not verified, even once the lookups evict that answer", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const head = (active: boolean, at: number) =>
+    eventDto(
+      signed(relay, {
+        kind: 30382,
+        created_at: at,
+        content: "",
+        tags: [
+          ["d", agent.pubkey],
+          ["p", agent.pubkey],
+          ["active", String(active)],
+          ...(active
+            ? [
+                ["display_name", "Scout"],
+                ["username", "jrivera"],
+                ["issuer_label", "Example"],
+                ["verified_at", String(at)],
+              ]
+            : []),
+        ],
+      }),
+    );
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    // The author search finds the agent's verified head; another search
+    // later finds its withdrawal, which no shared head publishes.
+    searchProfiles: async (query) => [
+      eventDto(profile(agent, { name: "scout-old" })),
+      query === "withdrawal" ? head(false, 1_000_001) : head(true, 1_000_000),
+    ],
+    query: async () => [],
+  });
+  const source = owner.session.agentChoices;
+  const choice = { pubkey: agent.pubkey, name: "Scout", managed: true };
+  let choices = {
+    ...source.snapshot(),
+    identities: [] as (typeof choice)[],
+    selectable: [] as (typeof choice)[],
+  };
+  const listeners = new Set<() => void>();
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      retain: () => () => {},
+      ensure: () => {},
+    },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jrivera"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Scout/ })).toBeVisible();
+    await owner.session.searchProfiles("withdrawal", {
+      limit: 40,
+      signal: new AbortController().signal,
+    });
+    // The agent arrives later, and its own read answers "not verified".
+    act(() => {
+      choices = { ...choices, identities: [choice], selectable: [choice] };
+      for (const listener of listeners) listener();
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("option", { name: /Scout/ }),
+      ).not.toBeInTheDocument(),
+    );
+    // Another list's reads evict that answer from the shared lookups, and
+    // the agent's choice changes; the earlier page answer stays retired.
+    const crowd = Array.from({ length: 1024 }, (_, index) =>
+      (index + 1).toString(16).padStart(64, "0"),
+    );
+    await lookUpVerified(session, crowd, new AbortController().signal, {
+      batch: 128,
+    });
+    act(() => {
+      const renamed = { ...choice, name: "Scout updated" };
+      choices = { ...choices, identities: [renamed], selectable: [renamed] };
+      for (const listener of listeners) listener();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole("option", { name: /Scout/ })).toBeNull();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("reads a selectable agent's verified name again as the query changes after a failed read", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const owner = verifiedSearch(viewer, relay, []);
+  const source = owner.session.agentChoices;
+  const choices = {
+    ...source.snapshot(),
+    identities: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+    selectable: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+  };
+  let failing = true;
+  const read = vi.fn(async (keys: readonly string[]) => {
+    if (failing && keys.includes(agent.pubkey)) throw new Error("offline");
+    return {
+      authority: owner.session.profiles.verifiedAuthority?.(),
+      profiles: new Map(
+        keys.includes(agent.pubkey)
+          ? [
+              [
+                agent.pubkey,
+                {
+                  displayName: "Scout",
+                  username: "jrivera",
+                  issuerLabel: "Example",
+                  verifiedAt: 1_000_000,
+                  status: "checked" as const,
+                  multipleIssuers: false,
+                },
+              ],
+            ]
+          : [],
+      ),
+    };
+  });
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  const props = {
+    session,
+    onQueryChange: vi.fn(),
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+  };
+  try {
+    const view = render(<SearchResults {...props} query="from:@jri" />);
+    await waitFor(() =>
+      expect(read).toHaveBeenCalledWith(
+        expect.arrayContaining([agent.pubkey]),
+        expect.anything(),
+      ),
+    );
+    expect(screen.queryByRole("option", { name: /Scout/ })).toBeNull();
+    failing = false;
+    view.rerender(<SearchResults {...props} query="from:@jriv" />);
+    const agents = within(await screen.findByRole("group", { name: "Agents" }));
+    expect(await agents.findByRole("option", { name: /Scout/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("keeps a later page read's \"not verified\" when the next query's reads fail", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const active = eventDto(
+    signed(relay, {
+      kind: 30382,
+      created_at: 1_000_000,
+      content: "",
+      tags: [
+        ["d", agent.pubkey],
+        ["p", agent.pubkey],
+        ["active", "true"],
+        ["display_name", "Scout"],
+        ["username", "jrivera"],
+        ["issuer_label", "Example"],
+        ["verified_at", "1000000"],
+      ],
+    }),
+  );
+  const withdrawal = eventDto(
+    signed(relay, {
+      kind: 30382,
+      created_at: 1_000_001,
+      content: "",
+      tags: [
+        ["d", agent.pubkey],
+        ["p", agent.pubkey],
+        ["active", "false"],
+      ],
+    }),
+  );
+  let offline = false,
+    releasePage = () => {};
+  const pageGate = new Promise<void>((resolve) => {
+    releasePage = resolve;
+  });
+  const searched: string[] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async (query) => {
+      searched.push(query);
+      if (offline) throw new Error("offline");
+      await pageGate;
+      return [eventDto(profile(agent, { name: "scout-old" })), withdrawal];
+    },
+    query: async (filters) => {
+      if (
+        filters.some(
+          (filter) =>
+            filter.kinds?.includes(30382) &&
+            filter["#d"]?.includes(agent.pubkey),
+        )
+      ) {
+        if (offline) throw new Error("offline");
+        return [active];
+      }
+      return [];
+    },
+  });
+  const source = owner.session.agentChoices;
+  const choice = { pubkey: agent.pubkey, name: "Scout", managed: true };
+  const choices = {
+    ...source.snapshot(),
+    identities: [choice],
+    selectable: [choice],
+  };
+  const authority = { pubkey: relay.pubkey, multipleIssuers: false };
+  const shared = new Map();
+  const answers: boolean[] = [];
+  let failed = 0;
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      snapshot: () => shared,
+      verifiedAuthority: () => authority,
+      verifiedHeld: () => false,
+      verifiedRevision: () => 0,
+      verifiedSince: () => false,
+    },
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: {
+      ...owner.session.directMessages,
+      searched: () => true,
+      verified: async () => {
+        if (offline) {
+          failed++;
+          throw new Error("offline");
+        }
+        const positive = answers.length === 0;
+        answers.push(positive);
+        return {
+          authority,
+          profiles: new Map(
+            positive
+              ? [
+                  [
+                    agent.pubkey,
+                    {
+                      displayName: "Scout",
+                      username: "jrivera",
+                      issuerLabel: "Example",
+                      verifiedAt: 1_000_000,
+                      status: "checked" as const,
+                      multipleIssuers: false,
+                    },
+                  ],
+                ]
+              : [],
+          ),
+        };
+      },
+    },
+  } as unknown as typeof owner.session;
+  try {
+    // A controlled verified-reader boundary makes the independent hook
+    // answer positive first; the completed page answers negative later.
+    const props = {
+      session,
+      onQueryChange: vi.fn(),
+      input: createRef<HTMLInputElement>(),
+      pages: [],
+      openConversation: () => {},
+    };
+    const view = render(<SearchResults {...props} query="from:@jri" />);
+    await waitFor(() => expect(answers).toEqual([true]));
+    await act(async () => {});
+    await act(async () => releasePage());
+    await waitFor(() => expect(answers.at(-1)).toBe(false));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("option", { name: /Scout/ }),
+      ).not.toBeInTheDocument(),
+    );
+    vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+    offline = true;
+    view.rerender(<SearchResults {...props} query="from:@jriv" />);
+    await waitFor(() => expect(failed).toBeGreaterThan(0));
+    await waitFor(() => expect(searched).toContain("jriv"));
+    await act(async () => {});
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("option", { name: /Scout/ }),
+      ).not.toBeInTheDocument(),
+    );
+  } finally {
+    releasePage();
+    cleanup();
+    owner.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("keeps searching while a selectable agent's verified name is read", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  let searched = 0;
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    // The relay finds nobody; only the agent can match.
+    searchProfiles: async () => {
+      searched++;
+      return [];
+    },
+  });
+  const source = owner.session.agentChoices;
+  const choice = { pubkey: agent.pubkey, name: "Scout", managed: true };
+  const choices = {
+    ...source.snapshot(),
+    identities: [choice],
+    selectable: [choice],
+  };
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const read = vi.fn(async (keys: readonly string[]) => {
+    if (keys.includes(agent.pubkey)) await held;
+    return {
+      authority: owner.session.profiles.verifiedAuthority?.(),
+      profiles: new Map(
+        keys.includes(agent.pubkey)
+          ? [
+              [
+                agent.pubkey,
+                {
+                  displayName: "Scout",
+                  username: "jrivera",
+                  issuerLabel: "Example",
+                  verifiedAt: 1_000_000,
+                  status: "checked" as const,
+                  multipleIssuers: false,
+                },
+              ],
+            ]
+          : [],
+      ),
+    };
+  });
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jriv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    await waitFor(() =>
+      expect(read).toHaveBeenCalledWith(
+        expect.arrayContaining([agent.pubkey]),
+        expect.anything(),
+      ),
+    );
+    await waitFor(() => expect(searched).toBe(1));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(screen.queryByText(/No matching people/)).toBeNull();
+    expect(screen.getByText("Searching people…")).toBeVisible();
+    await act(async () => release());
+    expect(await screen.findByRole("option", { name: /Scout/ })).toBeVisible();
+  } finally {
+    release();
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("keeps a new authority's page answers when the agents' answers are by the earlier one", async () => {
+  const relay = keypair(),
+    nextRelay = keypair(),
+    viewer = keypair(),
+    agent = keypair(),
+    person = keypair();
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    searchProfiles: async () => [
+      eventDto(profile(person, { name: "legacy-person" })),
+    ],
+    query: async () => [],
+  });
+  let authority = { pubkey: relay.pubkey, multipleIssuers: false };
+  const source = owner.session.agentChoices,
+    choice = { pubkey: agent.pubkey, name: "Helper", managed: true };
+  let choices = {
+    ...source.snapshot(),
+    identities: [choice],
+    selectable: [choice],
+  };
+  const profileListeners = new Set<() => void>(),
+    choiceListeners = new Set<() => void>();
+  const checked: Array<{ authority: unknown; keys: readonly string[] }> = [];
+  const shared = new Map();
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      snapshot: () => shared,
+      ensure: async () => {},
+      event: () => undefined,
+      verifiedAuthority: () => authority,
+      verifiedHeld: () => false,
+      verifiedRevision: () => 0,
+      verifiedSince: () => false,
+      subscribe: (listener: () => void) => {
+        profileListeners.add(listener);
+        return () => profileListeners.delete(listener);
+      },
+    },
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: (listener: () => void) => {
+        choiceListeners.add(listener);
+        return () => choiceListeners.delete(listener);
+      },
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: {
+      ...owner.session.directMessages,
+      searched: () => true,
+      verified: async (keys: readonly string[]) => {
+        const current = authority;
+        checked.push({ authority: current, keys });
+        return {
+          authority: current,
+          profiles: new Map(
+            keys.map((pubkey) => [
+              pubkey,
+              {
+                displayName: pubkey === person.pubkey ? "Jordan" : "Helper",
+                username: pubkey === person.pubkey ? "jrivera" : "helper",
+                issuerLabel: "Example",
+                verifiedAt: 1,
+                status: "checked" as const,
+                multipleIssuers: false,
+              },
+            ]),
+          ),
+        };
+      },
+    },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jrivera"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(await screen.findByRole("option", { name: /Jordan/ })).toBeVisible();
+    expect(checked.some((row) => row.keys.includes(agent.pubkey))).toBe(true);
+    act(() => {
+      authority = { pubkey: nextRelay.pubkey, multipleIssuers: false };
+      choices = { ...choices, identities: [], selectable: [] };
+      for (const listener of profileListeners) listener();
+      for (const listener of choiceListeners) listener();
+    });
+    await waitFor(() =>
+      expect(
+        checked.some(
+          (row) =>
+            row.authority === authority && row.keys.includes(person.pubkey),
+        ),
+      ).toBe(true),
+    );
+    expect(choices.selectable).toHaveLength(0);
+    expect(await screen.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("reads selectable agents' verified names once while the author query is typed", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const owner = verifiedSearch(viewer, relay, []);
+  const source = owner.session.agentChoices;
+  const choice = { pubkey: agent.pubkey, name: "Scout", managed: true };
+  const choices = {
+    ...source.snapshot(),
+    identities: [choice],
+    selectable: [choice],
+  };
+  // The agent's read stays out while the query is typed.
+  const read = vi.fn((keys: readonly string[]) =>
+    keys.includes(agent.pubkey)
+      ? new Promise<never>(() => {})
+      : Promise.resolve({
+          authority: owner.session.profiles.verifiedAuthority?.(),
+          profiles: new Map(),
+        }),
+  );
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  const props = {
+    session,
+    onQueryChange: vi.fn(),
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+  };
+  const agentReads = () =>
+    read.mock.calls.filter(([keys]) => keys.includes(agent.pubkey)).length;
+  try {
+    const view = render(<SearchResults {...props} query="from:@j" />);
+    await waitFor(() => expect(agentReads()).toBe(1));
+    view.rerender(<SearchResults {...props} query="from:@jr" />);
+    view.rerender(<SearchResults {...props} query="from:@jri" />);
+    view.rerender(<SearchResults {...props} query="from:@jriv" />);
+    await act(async () => {});
+    expect(agentReads()).toBe(1);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
 
 it("distinguishes an unavailable global author lookup from no matching people", async () => {
   const relay = keypair(),

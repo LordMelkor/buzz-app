@@ -1,5 +1,12 @@
 import { workflowOwner } from "../../features/relay/workflow-attribution";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   messageSearchable,
   searchDebounce,
@@ -7,7 +14,18 @@ import {
 import { objectBody } from "../../features/relay/body";
 import type { RelaySession } from "../../features/relay/session";
 import type { ReadFilter } from "../../features/relay/events";
+import {
+  latestName,
+  lookUpVerified,
+  type VerifiedAnswers,
+} from "../../features/profiles/useVerifiedNames";
+import { searchedProfiles } from "../../features/relay/profile-search";
 import { foldProfiles } from "../../features/relay/profiles";
+import {
+  VERIFIED_PROFILE_BATCH,
+  type VerifiedProfile,
+  verifiedAliases,
+} from "../../features/relay/verified-profile";
 import { normalizeName } from "../../features/search/person-match";
 import {
   isHexPubkey,
@@ -187,9 +205,22 @@ export function useSearchMessages(
   const newest = sort === "newest" && session.searchSort;
   // Without text the relay reads its ordinary newest-first history.
   const newestFirst = newest || !parsed.text;
+  // Verified names belong to the authority that checked them: a new one
+  // resolves the author again.
+  const authority = useSyncExternalStore(session.profiles.subscribe, () =>
+    session.profiles.verifiedAuthority?.(),
+  );
   const owner = useMemo(
-    () => ({ session, query, channelId, unresolvedChannel, attempt, newest }),
-    [session, query, channelId, unresolvedChannel, attempt, newest],
+    () => ({
+      session,
+      query,
+      channelId,
+      unresolvedChannel,
+      attempt,
+      newest,
+      authority,
+    }),
+    [session, query, channelId, unresolvedChannel, attempt, newest, authority],
   );
   // The copied result changes synchronously even if React has not committed it yet.
   const copied = useRef<Result | undefined>(undefined);
@@ -239,22 +270,74 @@ export function useSearchMessages(
             const knownMembers = channelId
               ? (session.channels.get?.(channelId)?.members ?? [])
               : [];
+            // Before any read: a shared head that arrives during it (even a
+            // withdrawal since evicted) outranks the names it returns.
+            const asked = session.profiles.verifiedRevision?.() ?? 0;
             if (knownMembers.length) {
               await session.profiles.ensure(knownMembers, "foreground");
               controller.signal.throwIfAborted();
             }
-            // A key matches by its profile name or, for a selectable agent,
-            // by the agent's own name.
-            const named = (pubkey: string, profileName = "") =>
-              normalizeName(profileName) === handle ||
-              normalizeName(agents.get(pubkey) ?? "") === handle;
+            // A key matches by its profile name, its verified names (display
+            // name, username, full name) or, for a selectable agent, by the
+            // agent's own name.
+            const named = (
+              pubkey: string,
+              profileName = "",
+              verified?: VerifiedProfile,
+            ) =>
+              [
+                profileName,
+                agents.get(pubkey) ?? "",
+                ...verifiedAliases(verified),
+              ].some((alias) => normalizeName(alias) === handle);
+            const shared = (pubkey: string) =>
+              session.profiles.snapshot().get(pubkey);
+            // The shared name of a verified person is their verified label,
+            // so their own profile name is read from their profile event.
+            const publicName = (pubkey: string) => {
+              const event = session.profiles.event?.(pubkey);
+              return event ? foldProfiles([event]).get(pubkey)?.name : "";
+            };
+            const known = (pubkey: string) =>
+              named(pubkey, shared(pubkey)?.name, shared(pubkey)?.verified) ||
+              named(pubkey, publicName(pubkey));
+            // Verified names the shared profiles don't hold yet are read, or
+            // reused from an earlier search. A failed read leaves profile
+            // names, which resolve as before. As in useVerifiedNames, names
+            // belong to the authority that checked them, a shared head that
+            // arrived since (even a withdrawal since evicted) outranks them,
+            // and the latest answer any read gave speaks for the person.
+            const reads: (VerifiedAnswers | undefined)[] = [];
+            const readVerified = async (pubkeys: readonly string[]) => {
+              reads.push(
+                await lookUpVerified(session, pubkeys, controller.signal, {
+                  batch: VERIFIED_PROFILE_BATCH,
+                  asked,
+                }),
+              );
+              return (pubkey: string) =>
+                shared(pubkey)?.verified ??
+                latestName(session.profiles, reads, pubkey);
+            };
             // Selectable agents are offered wherever the picker runs, so they
-            // are always candidates, alongside members or relay matches.
-            const agentMatches = [...agents.keys()].filter((pubkey) =>
-              named(pubkey, session.profiles.snapshot().get(pubkey)?.name),
-            );
-            const scoped = knownMembers.filter((pubkey) =>
-              named(pubkey, session.profiles.snapshot().get(pubkey)?.name),
+            // are always candidates, alongside members or relay matches. Their
+            // verified names are read on their own, so a failed agent read
+            // leaves the others' answers. They are matched after each wait, so
+            // a name withdrawn meanwhile isn't.
+            const agentMatches = (
+              verified: (pubkey: string) => VerifiedProfile | undefined,
+            ) =>
+              [...agents.keys()].filter(
+                (pubkey) =>
+                  known(pubkey) || named(pubkey, "", verified(pubkey)),
+              );
+            // A member's verified head may not be cached yet, so it is read:
+            // otherwise another member's profile name would resolve alone.
+            const memberVerified = await readVerified(knownMembers);
+            const agentVerified = await readVerified([...agents.keys()]);
+            const scoped = knownMembers.filter(
+              (pubkey) =>
+                known(pubkey) || named(pubkey, "", memberVerified(pubkey)),
             );
             const resolve = (keys: readonly string[]) => {
               const unique = [...new Set(keys)];
@@ -262,7 +345,10 @@ export function useSearchMessages(
               return { author: unique[0] };
             };
             if (scoped.length) {
-              const found = resolve([...scoped, ...agentMatches]);
+              const found = resolve([
+                ...scoped,
+                ...agentMatches(agentVerified),
+              ]);
               if (found.ambiguous)
                 return { messages: [], ambiguousAuthor: true };
               author = found.author;
@@ -275,13 +361,25 @@ export function useSearchMessages(
                 typed.toLowerCase(),
                 { limit, signal: controller.signal },
               );
-              const matches = [...foldProfiles(candidates)]
+              // A person the relay found by a verified name alone has no
+              // profile; their verified names come from the search's own
+              // heads, or the shared profiles when those hold them.
+              const people = searchedProfiles(
+                candidates,
+                session.profiles.verifiedAuthority?.(),
+              );
+              const verifiedOf = await readVerified([...people.keys()]);
+              const matches = [...people]
                 .filter(
                   ([pubkey, profile]) =>
-                    named(pubkey, profile.name) || pubkey === handle,
+                    named(pubkey, profile.name, verifiedOf(pubkey)) ||
+                    pubkey === handle,
                 )
                 .map(([pubkey]) => pubkey);
-              const found = resolve([...matches, ...agentMatches]);
+              const found = resolve([
+                ...matches,
+                ...agentMatches(agentVerified),
+              ]);
               if (found.ambiguous || candidates.length >= limit)
                 return { messages: [], ambiguousAuthor: true };
               author = found.author;

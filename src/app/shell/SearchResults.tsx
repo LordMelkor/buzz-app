@@ -13,7 +13,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { ChannelSummary, Profile } from "../../features/relay/contracts";
-import type { EventData } from "../../features/relay/events";
+import type { RelayEvent } from "../../features/relay/events";
 import type { RelaySession } from "../../features/relay/session";
 import {
   useChannelList,
@@ -28,7 +28,12 @@ import { useAgentChoices } from "../../features/agents/use-choices";
 import { canMessageAgent } from "../../features/agents/choices";
 import { useMentionArchives } from "../../features/messages/use-mention-archives";
 import { archiveHides } from "../../features/relay/identity-archives";
+import { searchedProfiles } from "../../features/relay/profile-search";
 import { foldProfiles } from "../../features/relay/profiles";
+import {
+  VERIFIED_PROFILE_BATCH,
+  verifiedAliases,
+} from "../../features/relay/verified-profile";
 import {
   ArrowsDownUpIcon,
   CalendarIcon,
@@ -92,7 +97,14 @@ import {
   parseSearchOperators,
 } from "./parseSearchOperators";
 import { avatarMedia } from "../../shared/avatar-source";
-import { useVerifiedNames } from "../../features/profiles/useVerifiedNames";
+import {
+  answeredName,
+  keepLatest,
+  lookUpVerified,
+  useVerifiedAnswers,
+  useVerifiedNames,
+  type VerifiedAnswers,
+} from "../../features/profiles/useVerifiedNames";
 import { verifiedLabel } from "../../features/profiles/name-preference";
 import { sortParticipantNames } from "../../features/identity-names/participant-order";
 
@@ -335,7 +347,12 @@ export function SearchResults({
     query: string;
     savedOnly: boolean;
     lookupFailed?: boolean;
-    remote: readonly EventData[];
+    /** Verified names are still being read: more people may match. */
+    verifying?: true;
+    remote: readonly RelayEvent[];
+    /** Verified names of the people `remote` found, then of the channel's
+     * members, read before they show. */
+    verified?: readonly (VerifiedAnswers | undefined)[];
   }>();
   // Completing either from:name or from:@name selects an exact signed key.
   const datePrompt = operatorMatches(
@@ -580,6 +597,14 @@ export function SearchResults({
     .toLowerCase();
   const showAuthorPicker = pickerPrompt || showAmbiguousPicker;
   const agents = useAgentChoices(session, showAuthorPicker && !offline);
+  // Selectable agents are candidates too; their verified names are read on
+  // their own, so a late agent does not search again, and read again after a
+  // failed read as each settled (debounced) query searches.
+  const agentAnswers = useVerifiedAnswers(
+    session,
+    agents.selectable.map(({ pubkey }) => pubkey),
+    { key: authorSuggestions?.query ?? "", settled: showAuthorPicker },
+  );
   // People and agents are destinations for plain typed text outside a
   // conversation scope; an operator asks for messages. `@` asks for a person
   // and `#` for a channel.
@@ -627,7 +652,10 @@ export function SearchResults({
   // The notice is a new element each render; the lookup below reruns only
   // when search goes offline or back.
   const savedOnly = !!offline;
+  // A new verification authority makes the page's names stale: search again.
+  const authority = session.profiles.verifiedAuthority?.();
   useEffect(() => {
+    void authority;
     if (!showAuthorPicker) return;
     const controller = new AbortController();
     const cancel = searchDebounce(() => {
@@ -645,8 +673,11 @@ export function SearchResults({
             // A partial directory still contains verified member profiles.
           }
         }
-        let remote: readonly EventData[] = [];
+        let remote: readonly RelayEvent[] = [];
         let lookupFailed = false;
+        // Before the search: a shared head that arrives during it (even a
+        // withdrawal since evicted) outranks the names it returns.
+        const asked = session.profiles.verifiedRevision?.() ?? 0;
         if (!savedOnly && searchable(authorNeedle)) {
           try {
             remote = await session.searchProfiles(authorNeedle, {
@@ -659,7 +690,58 @@ export function SearchResults({
           }
         }
         controller.signal.throwIfAborted();
-        setAuthorSuggestions({ query, savedOnly, lookupFailed, remote });
+        // Saved data reads nothing more: its names are the profile names.
+        if (savedOnly) {
+          setAuthorSuggestions({ query, savedOnly, lookupFailed, remote });
+          return;
+        }
+        // A person is also found by a verified name (full name, username)
+        // that their profile name differs from, so name the page, and the
+        // channel's members, before they show: from: resolves members by
+        // verified names too. A failed read leaves the profile names, as in
+        // New message. Show who already matches by name now; verified names
+        // follow.
+        const pass = (
+          pubkeys: readonly string[],
+          earlier: readonly (VerifiedAnswers | undefined)[],
+        ) =>
+          lookUpVerified(session, pubkeys, controller.signal, {
+            batch: VERIFIED_PROFILE_BATCH,
+            asked,
+            onStart: () =>
+              setAuthorSuggestions({
+                query,
+                savedOnly,
+                lookupFailed,
+                remote,
+                verified: earlier,
+                verifying: true,
+              }),
+          });
+        // The page first, on its own, so a failed member read cannot drop
+        // the names the search itself answered with.
+        const page = await pass(
+          [
+            ...searchedProfiles(
+              remote,
+              session.profiles.verifiedAuthority?.(),
+            ).keys(),
+          ],
+          [],
+        );
+        const roster = await pass(
+          effectiveChannelId
+            ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
+            : [],
+          [page],
+        );
+        setAuthorSuggestions({
+          query,
+          savedOnly,
+          lookupFailed,
+          remote,
+          verified: [page, roster],
+        });
       })().catch(() => {
         if (!controller.signal.aborted)
           setAuthorSuggestions({
@@ -681,6 +763,7 @@ export function SearchResults({
     authorNeedle,
     showAuthorPicker,
     savedOnly,
+    authority,
   ]);
   // The lookup answers this text in this connection state: once the session
   // is live, saved data's answer no longer stands.
@@ -696,8 +779,36 @@ export function SearchResults({
   const selectableAgents = new Map(
     agents.selectable.map((agent) => [agent.pubkey, agent]),
   );
+  // The names this search's page and agents were verified with: only for the
+  // authority still in force, and not once a shared head answers for the
+  // person (held now, or arrived since the read began, even a withdrawal since
+  // evicted). useVerifiedNames above renders this component on those changes.
+  // Of this picker's own reads (the page, the channel's members, selectable
+  // agents), for every query it has shown, the latest that answered for the
+  // person speaks for them, "not verified" included. A failed read keeps the
+  // answers it would have replaced. Only the authority in force answers, so
+  // a pass by an earlier one cannot displace them.
+  const answers = useRef<VerifiedAnswers>(undefined);
+  for (const pass of [
+    ...(authorSuggestions?.verified ?? []),
+    agentAnswers.answers,
+  ])
+    if (pass?.authority === authority)
+      answers.current = keepLatest(answers.current, pass);
+  const pageVerified = (pubkey: string) =>
+    profiles.get(pubkey)?.verified
+      ? undefined
+      : answeredName(session.profiles, answers.current, pubkey);
   const candidates = new Map([
     ...[...profiles].filter(([pubkey]) => members.includes(pubkey)),
+    // A member known only by a verified name, as from: resolves them.
+    ...members.flatMap((pubkey) => {
+      const verified = profiles.has(pubkey) ? undefined : pageVerified(pubkey);
+      const named: Profile | undefined = verified && {
+        name: verifiedLabel(verified),
+      };
+      return named ? [[pubkey, named] as const] : [];
+    }),
     ...agents.selectable.map(
       (agent) =>
         [
@@ -709,17 +820,43 @@ export function SearchResults({
           },
         ] as const,
     ),
-    ...foldProfiles(authorAnswer?.remote ?? []),
+    ...searchedProfiles(
+      authorAnswer?.remote ?? [],
+      session.profiles.verifiedAuthority?.(),
+    ),
   ]);
-  // A selectable agent also matches by its own name, as in @ mentions.
+  const authorVerified = (pubkey: string) =>
+    profiles.get(pubkey)?.verified ?? pageVerified(pubkey);
+  // A verified person's shared name is their verified label, so their own
+  // profile name is read from their profile event, as `from:` resolves it.
+  const publicName = (pubkey: string) => {
+    const event = session.profiles.event?.(pubkey);
+    return event ? foldProfiles([event]).get(pubkey)?.name : undefined;
+  };
+  // A selectable agent also matches by its own name, as in @ mentions, and a
+  // verified person by their own profile name and any verified name.
   const authorTier = (pubkey: string, name: string) =>
     Math.min(
-      ...[name, selectableAgents.get(pubkey)?.name].map((alias) =>
+      ...[
+        name,
+        publicName(pubkey),
+        selectableAgents.get(pubkey)?.name,
+        ...verifiedAliases(authorVerified(pubkey)),
+      ].map((alias) =>
         alias === undefined
           ? Infinity
           : (matchPerson(alias, authorNeedle)?.tier ?? Infinity),
       ),
     );
+  const memberScope = effectiveChannelId
+    ? session.channels.get?.(effectiveChannelId)?.members
+    : undefined;
+  // The names this page verified, given to the naming scope as people search
+  // gives its own, so a cached profile name does not outrank them.
+  const authorFacts = [...candidates.keys()].flatMap((pubkey) => {
+    const page = pageVerified(pubkey);
+    return page ? [{ pubkey, name: verifiedLabel(page) }] : [];
+  });
   const authorChoices =
     authorToken && showAuthorPicker && authorAnswer
       ? [...candidates]
@@ -740,18 +877,36 @@ export function SearchResults({
           )
           .slice(0, 12)
           .map(([pubkey, profile]) => ({ pubkey, profile }))
-          .map(({ pubkey, profile }) => {
+          .map(({ pubkey, profile: found }) => {
             const agent = selectableAgents.get(pubkey);
+            // The relay found a person by any of their names, so a verified
+            // person is shown, and chipped, by their verified name: the
+            // page's, or the shared one with its namesake qualifier.
+            const page = pageVerified(pubkey);
+            const shared = profiles.get(pubkey);
+            const profile = page
+              ? { ...found, name: verifiedLabel(page) }
+              : shared?.verified
+                ? { ...found, name: shared.name }
+                : found;
+            const resolved = resolveName(
+              pubkey,
+              profile.name,
+              memberScope,
+              authorFacts,
+            );
             const isAgent = !!agent || !!profile.isAgent;
             return {
               key: `author:${pubkey}`,
-              label: resolveName(
-                pubkey,
-                profile.name,
-                effectiveChannelId
-                  ? session.channels.get?.(effectiveChannelId)?.members
-                  : undefined,
-              ),
+              // As in people search: without a naming policy the names fall
+              // back to the public profile, which must not outrank a name
+              // verified for this page.
+              label:
+                pageVerified(pubkey) &&
+                session.names?.lookup(pubkey, memberScope, authorFacts)
+                  ?.source === "public-profile"
+                  ? profile.name
+                  : resolved,
               detail: pubkey.slice(0, 12),
               icon: ChatCircleIcon,
               avatar: {
@@ -1512,7 +1667,7 @@ export function SearchResults({
             destinations: authorChoices.filter((choice) => !choice.isAgent),
             empty: authorChoices.length
               ? undefined
-              : !authorAnswer
+              : !authorAnswer || authorAnswer.verifying || agentAnswers.asking
                 ? "Searching people…"
                 : authorAnswer.savedOnly
                   ? "Connect to this community to search people."

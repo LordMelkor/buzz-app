@@ -252,6 +252,9 @@ mention anyone. Explicit agent watches on that room can still receive them.
   name beside it. Search finds people by their profile names; once found, a
   verified full name also matches as you refine. Search and new direct messages
   also find people already verified by a matching verified name or username.
+  A message search's `from:` name and its author picker, and an agent's `users`
+  lookup, match a person by their verified name, username or full name as well
+  as their profile name.
   Adding channel members also finds a verified person by their verified name,
   or by their public key, even if they never set up a profile.
 - Profile names omit surrounding whitespace. Names with layout or directional

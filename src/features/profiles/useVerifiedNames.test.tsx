@@ -7,7 +7,9 @@ import { keypair, signed } from "../relay/testing";
 import type { VerifiedProfile } from "../relay/verified-profile";
 import { setNamePreference } from "./name-preference";
 import {
+  lookUpVerified,
   useVerifiedNames,
+  verifiedName,
   withVerifiedNames,
   type VerifiedNamesSession,
 } from "./useVerifiedNames";
@@ -235,6 +237,87 @@ it("asks each person of a list larger than the cache once, and stops", async () 
   expect(t.reads).toHaveLength(35);
   expect(new Set(asked).size).toBe(asked.length);
   expect(asked).toHaveLength(1024);
+});
+
+it("keeps a later read's answer when an earlier read lands after it", async () => {
+  const { session } = fake();
+  const person = key(1);
+  const authority = session.profiles.verifiedAuthority?.();
+  let land = (_: unknown) => {};
+  const verified = vi
+    .fn()
+    .mockImplementationOnce(() => new Promise((resolve) => (land = resolve)))
+    .mockImplementationOnce(async () => ({ authority, profiles: new Map() }));
+  const own = {
+    ...session,
+    directMessages: { verified },
+  } as unknown as VerifiedNamesSession;
+  const earlier = lookUpVerified(own, [person], new AbortController().signal);
+  // A later read answers "not verified" first; the earlier one then lands
+  // with the name it was asked for.
+  await lookUpVerified(own, [person], new AbortController().signal);
+  land({ authority, profiles: new Map([[person, name("old")]]) });
+  // The earlier read's caller gets the later answer too.
+  expect((await earlier)?.answers.get(person)?.profile).toBeUndefined();
+  expect(verified).toHaveBeenCalledTimes(2);
+  expect(verifiedName(own.profiles, person)).toBeUndefined();
+});
+
+it("keeps an earlier read landing late out of the lookups once a later read's answer is evicted", async () => {
+  const { session } = fake();
+  const person = key(1);
+  const authority = session.profiles.verifiedAuthority?.();
+  let land = (_: unknown) => {};
+  const verified = vi
+    .fn()
+    .mockImplementationOnce(() => new Promise((resolve) => (land = resolve)))
+    .mockImplementation(async (subjects: readonly string[]) => ({
+      authority,
+      profiles: new Map(
+        subjects.flatMap((subject) =>
+          subject === person ? [] : [[subject, name("other")]],
+        ),
+      ),
+    }));
+  const own = {
+    ...session,
+    directMessages: { verified },
+  } as unknown as VerifiedNamesSession;
+  const earlier = lookUpVerified(own, [person], new AbortController().signal);
+  await lookUpVerified(own, [person], new AbortController().signal);
+  // Other people's answers evict the later read's "not verified".
+  const crowd = Array.from({ length: 1024 }, (_, index) => key(index + 2));
+  await lookUpVerified(own, crowd, new AbortController().signal, {
+    batch: 128,
+  });
+  land({ authority, profiles: new Map([[person, name("old")]]) });
+  // Its caller gets no answer either, as from a failed read.
+  expect((await earlier)?.answers.has(person)).toBe(false);
+  expect(verifiedName(own.profiles, person)).toBeUndefined();
+});
+
+it("lets a community's read land after another community's lookups evict a later read", async () => {
+  const person = key(1);
+  const one = fake();
+  const other = fake();
+  const authority = one.session.profiles.verifiedAuthority?.();
+  let land = (_: unknown) => {};
+  const verified = vi.fn(() => new Promise((resolve) => (land = resolve)));
+  const own = {
+    ...one.session,
+    directMessages: { verified },
+  } as unknown as VerifiedNamesSession;
+  const pending = lookUpVerified(own, [person], new AbortController().signal);
+  // The other community reads more people than its lookups hold.
+  const crowd = Array.from({ length: 1025 }, (_, index) => key(index + 2));
+  await lookUpVerified(other.session, crowd, new AbortController().signal, {
+    batch: 128,
+  });
+  land({ authority, profiles: new Map([[person, name("Jordan")]]) });
+  expect((await pending)?.answers.get(person)?.profile?.displayName).toBe(
+    "Jordan",
+  );
+  expect(verifiedName(own.profiles, person)?.displayName).toBe("Jordan");
 });
 
 it("yields to a head the shared directory holds, so a later revocation is not undone", async () => {

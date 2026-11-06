@@ -34,6 +34,7 @@ import {
   type VerifiedProfile,
   verifiedProfile,
   verifiedProfileFilter,
+  verifiedAliases,
   verifiedProfileSubject,
 } from "../features/relay/verified-profile";
 import { imageType } from "../features/relay/attachment-limits";
@@ -331,7 +332,11 @@ export const TOOLS: readonly Tool[] = [
     { channel: str, pubkeys: strs },
     ["pubkeys"],
   ),
-  tool("users", "Profiles by pubkey or name.", { ids: strs, q: str }),
+  tool(
+    "users",
+    "Profiles by pubkey or name: each row's quoted profile name, then (verified: …) when the relay verified a different name, then the quoted about text.",
+    { ids: strs, q: str },
+  ),
   tool("dm", "Open a DM; returns its channel.", { to: strs }, ["to"]),
   tool(
     "mem_get",
@@ -1000,34 +1005,67 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
     if (!ids.length && !q) throw new Error("Give ids or q.");
     if (ids.length && q) throw new Error("Give ids or q, not both.");
     if (ids.length > 100) throw new Error("Give at most 100 ids.");
-    // Name search matches only name and display_name, best match first;
-    // NIP-50 search matches the whole profile, so text in avatars or `about`
-    // can fill its results and hide the person asked for. Name search refuses
-    // a query longer than its limit, so a longer name uses NIP-50 search.
-    const named =
-      !ids.length && q && [...q].length <= PROFILE_SEARCH_QUERY_MAX
-        ? await client.searchProfiles?.(q, PROFILE_SEARCH_MAX)
-        : undefined;
+    // Name search matches names, best match first (see searchPeople); NIP-50
+    // search matches the whole profile, so text in avatars or `about` can
+    // fill its results and hide the person asked for.
+    const people = ids.length ? undefined : await tools.searchPeople(q ?? "");
     const profiles =
-      named?.filter((event) => event.kind === 0) ??
-      (await client.query([
-        ids.length
-          ? { kinds: [0], authors: ids, limit: ids.length }
-          : { kinds: [0], search: q, limit: 100 },
-      ]));
-    const rows = newest(profiles)
-      .map((event) => {
+      people?.profiles ??
+      (await client.query([{ kinds: [0], authors: ids, limit: ids.length }]));
+    // Verified names, as the community's name search also matches them: a
+    // person's verified full name need not be the name on their profile.
+    const verified = people?.verified ?? new Map<string, VerifiedProfile>();
+    const shown = (pubkey: string, name: string) => {
+      const found = verified.get(pubkey);
+      const label = found && (found.fullName ?? found.displayName);
+      return label && label !== name ? ` (verified: ${label})` : "";
+    };
+    const byKey = new Map<
+      string,
+      { name: string; aliases: string[]; row: string }
+    >([
+      ...newest(profiles).map((event) => {
         const profile = parse(event.content);
         const name = profileName(profile) ?? "";
         const about =
           typeof profile.about === "string" && profile.about.trim()
-            ? ` — ${profile.about.trim().slice(0, 120)}`
+            ? ` — ${JSON.stringify(profile.about.trim().slice(0, 120))}`
             : "";
-        return { name, row: `${event.pubkey} ${name}${about}` };
-      })
+        return [
+          event.pubkey,
+          {
+            name,
+            aliases: verifiedAliases(verified.get(event.pubkey)),
+            // The profile's own text (name, about) is quoted, so it can't
+            // pass for a verified label or start a row of its own.
+            row: `${event.pubkey} ${JSON.stringify(name)}${shown(event.pubkey, name)}${about}`,
+          },
+        ] as const;
+      }),
+      // Found by a verified name alone, with no profile of their own.
+      ...[...verified]
+        .filter(([key]) => !profiles.some((event) => event.pubkey === key))
+        .map(
+          ([key, found]) =>
+            [
+              key,
+              {
+                name: "",
+                aliases: verifiedAliases(found),
+                row: `${key}${shown(key, "")}`,
+              },
+            ] as const,
+        ),
+    ]);
+    // In the community's order, a profile-less person where it ranked them.
+    const rows = (people?.order ?? [...byKey.keys()])
+      .flatMap((key) => byKey.get(key) ?? [])
       .filter(
-        ({ name }) =>
-          !q || ids.length || named || name.toLowerCase().includes(q),
+        ({ name, aliases }) =>
+          !q ||
+          ids.length ||
+          people?.searched ||
+          [name, ...aliases].some((alias) => alias.toLowerCase().includes(q)),
       );
     return rows.map(({ row }) => row).join("\n") || "No users.";
   },
@@ -1999,6 +2037,50 @@ class Tools {
     };
   }
 
+  /** People the community's name search finds for `q`: their newest
+   * profiles, and the verified names (display name, username, full name) of
+   * everyone it found, read as the app reads them. The community's search
+   * matches verified names too and returns a person with no profile as their
+   * verified head alone. NIP-50 search, the fallback, matches profiles only.
+   * Without the connection's relay key no verified names are read. */
+  async searchPeople(q: string) {
+    // Name search refuses a query longer than its limit, so a longer name uses
+    // NIP-50 search.
+    const named =
+      [...q].length <= PROFILE_SEARCH_QUERY_MAX
+        ? await this.client.searchProfiles?.(q, PROFILE_SEARCH_MAX)
+        : undefined;
+    const profiles = newest(
+      named?.filter((event) => event.kind === 0) ??
+        (await this.client.query([{ kinds: [0], search: q, limit: 100 }])),
+    );
+    const relay = await this.relayKey();
+    const authority =
+      relay && HEX_KEY.test(relay)
+        ? { pubkey: relay, multipleIssuers: false }
+        : undefined;
+    // The community's order; a person it found by a head alone has no profile.
+    const order = [
+      ...new Set(
+        (named ?? profiles).flatMap((event) =>
+          event.kind === 0
+            ? [event.pubkey]
+            : (authority &&
+                verifiedProfileSubject(
+                  event as unknown as RelayEvent,
+                  authority,
+                )) ||
+              [],
+        ),
+      ),
+    ];
+    // The search's own heads count too, so a failed read keeps who it found.
+    const heads = named?.filter((event) => event.kind !== 0) ?? [];
+    // One key for the whole search, so its heads and names agree.
+    const verified = await this.verifiedNamesBy(relay, order, heads);
+    return { searched: !!named, profiles, verified, order };
+  }
+
   /** The author `value` names: me, a pubkey or npub, or one display name. */
   async author(value: string) {
     if (value === "me") return this.client.pubkey;
@@ -2006,24 +2088,28 @@ class Tools {
       return pubkey(value);
     } catch {}
     const q = value.toLowerCase();
-    const named =
-      [...q].length <= PROFILE_SEARCH_QUERY_MAX
-        ? await this.client.searchProfiles?.(q, PROFILE_SEARCH_MAX)
-        : undefined;
-    const profiles =
-      named?.filter((event) => event.kind === 0) ??
-      (await this.client.query([{ kinds: [0], search: q, limit: 100 }]));
-    const found = newest(profiles).filter(
-      (event) => profileName(parse(event.content))?.toLowerCase() === q,
+    const { profiles, verified } = await this.searchPeople(q);
+    // A person answers to their profile name or any verified name.
+    const names = new Map(
+      profiles.map((event) => [
+        event.pubkey,
+        profileName(parse(event.content)),
+      ]),
+    );
+    const found = [...new Set([...names.keys(), ...verified.keys()])].filter(
+      (key) =>
+        [names.get(key), ...verifiedAliases(verified.get(key))].some(
+          (name) => name?.toLowerCase() === q,
+        ),
     );
     if (found.length > 1)
       throw new Error(
         `${found.length} people are named ${value}; give their npub.\n${found
-          .map((event) => npubEncode(event.pubkey))
+          .map((key) => npubEncode(key))
           .join("\n")}`,
       );
     if (!found[0]) throw new Error(`No one is named ${value}.`);
-    return found[0].pubkey;
+    return found[0];
   }
 
   /** Display names of `pubkeys` that have a profile. */
@@ -2072,32 +2158,48 @@ class Tools {
     return aliases;
   }
 
+  /** The connection's relay key, which verified names are checked against. */
+  private async relayKey() {
+    return this.client.relayAuthor ?? (await this.client.relayAuthority?.());
+  }
+
   /** The relay's verified names (kind 30382) for `pubkeys`, read as the app
    * reads them, so `send` and the app agree on who is verified. None without
    * the connection's relay key. */
   async verifiedNames(pubkeys: readonly string[]) {
+    return this.verifiedNamesBy(await this.relayKey(), pubkeys);
+  }
+
+  private async verifiedNamesBy(
+    relay: string | undefined,
+    pubkeys: readonly string[],
+    known: readonly unknown[] = [],
+  ) {
     const names = new Map<string, VerifiedProfile>();
-    const relay = this.client.relayAuthor;
     if (!relay || !HEX_KEY.test(relay)) return names;
     const authority = { pubkey: relay, multipleIssuers: false };
     const subjects = [...new Set(pubkeys)].filter((key) => HEX_KEY.test(key));
     const batches: string[][] = [];
     for (let at = 0; at < subjects.length; at += VERIFIED_PROFILE_BATCH)
       batches.push(subjects.slice(at, at + VERIFIED_PROFILE_BATCH));
-    const found = (
-      await Promise.all(
-        batches.map((batch) =>
-          this.client
-            .query([verifiedProfileFilter(relay, batch)])
-            .catch(() => []),
-        ),
-      )
-    ).flat();
+    const found = [
+      ...known,
+      ...(
+        await Promise.all(
+          batches.map((batch) =>
+            this.client
+              .query([verifiedProfileFilter(relay, batch)])
+              .catch(() => []),
+          ),
+        )
+      ).flat(),
+    ];
     // The newest event at each address decides; a newer malformed or
     // retracted one leaves the person unverified, as in the app.
     const latest = new Map<string, RelayEvent>();
     for (const item of found) {
-      // Queries admit the events whose signatures they checked; the app's
+      // Queries and the name search admit the events whose signatures they
+      // checked; the app's
       // projection takes only those.
       const event = item as unknown as RelayEvent;
       const subject = verifiedProfileSubject(event, authority);
