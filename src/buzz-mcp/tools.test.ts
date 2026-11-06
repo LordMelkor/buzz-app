@@ -3328,6 +3328,21 @@ it("finds a user by a verified full name that differs from their profile name", 
   );
 });
 
+it("keeps the community's order for a person it found with no profile", async () => {
+  const { client, carol } = verifiedPeople();
+  // The community ranks Carol, found by a head alone, above Alice.
+  const heads = (await client.searchProfiles()).filter((e) => e.kind === 30382);
+  client.searchProfiles = vi.fn(async () => [
+    heads[1] as BuzzEvent,
+    profile(alice, "Alice Smith"),
+    heads[0] as BuzzEvent,
+  ]);
+  const found = await callTool(client, {}, "users", { q: "q" });
+  expect(found).toBe(
+    `${carol} (verified: Casey Quinn)\n${alice} Alice Smith (verified: Jordan Rivera)`,
+  );
+});
+
 it("names an author by a verified full name, a username or the profile name", async () => {
   const carol = "c".repeat(64);
   const { client } = verifiedPeople([

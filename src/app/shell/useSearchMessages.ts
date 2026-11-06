@@ -301,21 +301,25 @@ export function useSearchMessages(
                   !shared(pubkey)?.verified &&
                   !session.profiles.verifiedHeld?.(pubkey),
               );
+              // A failed read leaves profile names, which resolve as before.
               const read = unverified.length
-                ? await session.directMessages.verified?.(
-                    unverified,
-                    controller.signal,
-                  )
+                ? await session.directMessages
+                    .verified?.(unverified, controller.signal)
+                    .catch(() => undefined)
                 : undefined;
               controller.signal.throwIfAborted();
+              // A shared head that arrived during the read, even a
+              // withdrawal, outranks the read's answer.
+              const verifiedOf = (pubkey: string) =>
+                shared(pubkey)?.verified ??
+                (session.profiles.verifiedHeld?.(pubkey)
+                  ? undefined
+                  : read?.profiles.get(pubkey));
               const matches = [...people]
                 .filter(
                   ([pubkey, profile]) =>
-                    named(
-                      pubkey,
-                      profile.name,
-                      shared(pubkey)?.verified ?? read?.profiles.get(pubkey),
-                    ) || pubkey === handle,
+                    named(pubkey, profile.name, verifiedOf(pubkey)) ||
+                    pubkey === handle,
                 )
                 .map(([pubkey]) => pubkey);
               const found = resolve([...matches, ...agentMatches]);

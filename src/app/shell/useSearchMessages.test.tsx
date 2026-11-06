@@ -185,3 +185,99 @@ it.each([
     }
   },
 );
+
+it("still resolves from: by a profile name when the verified names cannot be read", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const person = keypair();
+  const reads: ReadFilter[][] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: { pubkey: relay.pubkey, multipleIssuers: false },
+    searchProfiles: async () => [eventDto(profile(person, { name: "jordan" }))],
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(30382)))
+        return Promise.reject(new Error("verified names unavailable"));
+      if (filters.some((filter) => filter.kinds?.includes(9)))
+        reads.push(filters as ReadFilter[]);
+      return Promise.resolve([]);
+    },
+  });
+  try {
+    renderHook(() => useSearchMessages(owner.session, "from:jordan deploy"));
+    await waitFor(() =>
+      expect(reads.at(-1)).toEqual([
+        expect.objectContaining({ authors: [person.pubkey] }),
+      ]),
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("does not resolve from: by a verified name the shared profiles withdrew during the read", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const person = keypair();
+  const reads: ReadFilter[][] = [];
+  const head = signed(relay, {
+    kind: 30382,
+    created_at: 1_000_000,
+    content: "",
+    tags: [
+      ["d", person.pubkey],
+      ["p", person.pubkey],
+      ["active", "true"],
+      ["display_name", "Jordan"],
+      ["username", "jrivera"],
+      ["issuer_label", "Example"],
+      ["verified_at", "1000000"],
+      ["full_name", "Rivera"],
+    ],
+  });
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async () =>
+      [profile(person, { name: "jr-old" }), head].map((event) =>
+        eventDto(event),
+      ),
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9)))
+        reads.push(filters as ReadFilter[]);
+      return Promise.resolve([]);
+    },
+  });
+  // A withdrawal reaches the shared profiles while the names are being read:
+  // it holds a head that gives the person no verified name.
+  let withdrawn = false;
+  const verify = owner.session.directMessages.verified;
+  const session = {
+    ...owner.session,
+    profiles: { ...owner.session.profiles, verifiedHeld: () => withdrawn },
+    directMessages: {
+      ...owner.session.directMessages,
+      verified: async (...args: Parameters<typeof verify>) => {
+        const answer = await verify(...args);
+        withdrawn = true;
+        return answer;
+      },
+    },
+  } as typeof owner.session;
+  try {
+    const { result } = renderHook(() =>
+      useSearchMessages(session, "from:rivera deploy"),
+    );
+    await waitFor(() => expect(withdrawn).toBe(true));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(reads).toHaveLength(0);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});

@@ -3627,6 +3627,49 @@ it.each([
   },
 );
 
+it("still offers a selectable agent whose public profile has no name", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    searchProfiles: async () => [eventDto(profile(agent, {}))],
+  });
+  const source = owner.session.agentChoices;
+  const choices = {
+    ...source.snapshot(),
+    identities: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+    selectable: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+  };
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@sco"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const agents = within(await screen.findByRole("group", { name: "Agents" }));
+    expect(await agents.findAllByRole("option")).toHaveLength(1);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("distinguishes an unavailable global author lookup from no matching people", async () => {
   const relay = keypair(),
     viewer = keypair();

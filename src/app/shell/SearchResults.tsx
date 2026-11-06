@@ -707,10 +707,14 @@ export function SearchResults({
       session.profiles.verifiedAuthority?.(),
     ),
   ]);
-  // The shared profiles' verified names, else the ones this search's page
-  // was named with.
+  // The names this search's page was verified with, unless the shared
+  // profiles have answered since: a head they hold, even a withdrawal, wins.
+  const pageVerified = (pubkey: string) =>
+    profiles.get(pubkey)?.verified || session.profiles.verifiedHeld?.(pubkey)
+      ? undefined
+      : authorSuggestions?.verified?.get(pubkey);
   const authorVerified = (pubkey: string) =>
-    profiles.get(pubkey)?.verified ?? authorSuggestions?.verified?.get(pubkey);
+    profiles.get(pubkey)?.verified ?? pageVerified(pubkey);
   // A selectable agent also matches by its own name, as in @ mentions, and a
   // verified person by any of their verified names.
   const authorTier = (pubkey: string, name: string) =>
@@ -730,9 +734,7 @@ export function SearchResults({
       ? [...candidates]
           .filter(([pubkey, profile]) => authorTier(pubkey, profile.name) < 4)
           .filter(
-            ([pubkey, profile]) =>
-              // Found by a verified name alone, a person waits to be named.
-              (!profile.nameIsFallback || !!authorVerified(pubkey)) &&
+            ([pubkey]) =>
               !archiveHides(session.archives, pubkey, session.viewer) &&
               (!knownAgents.has(pubkey) || selectableAgents.has(pubkey)),
           )
@@ -752,9 +754,7 @@ export function SearchResults({
             // The relay found a person by any of their names; a person the
             // shared profiles have not verified is shown by the name this
             // search's page was verified with.
-            const page = profiles.get(pubkey)?.verified
-              ? undefined
-              : authorSuggestions?.verified?.get(pubkey);
+            const page = pageVerified(pubkey);
             const profile = page
               ? { ...found, name: verifiedLabel(page) }
               : found;

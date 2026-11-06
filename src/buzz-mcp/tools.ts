@@ -994,7 +994,10 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
       const label = found && (found.fullName ?? found.displayName);
       return label && label !== name ? ` (verified: ${label})` : "";
     };
-    const rows = [
+    const byKey = new Map<
+      string,
+      { name: string; aliases: string[]; row: string }
+    >([
       ...newest(profiles).map((event) => {
         const profile = parse(event.content);
         const name = profileName(profile) ?? "";
@@ -1002,27 +1005,40 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
           typeof profile.about === "string" && profile.about.trim()
             ? ` — ${profile.about.trim().slice(0, 120)}`
             : "";
-        return {
-          name,
-          aliases: verifiedAliases(verified.get(event.pubkey)),
-          row: `${event.pubkey} ${name}${shown(event.pubkey, name)}${about}`,
-        };
+        return [
+          event.pubkey,
+          {
+            name,
+            aliases: verifiedAliases(verified.get(event.pubkey)),
+            row: `${event.pubkey} ${name}${shown(event.pubkey, name)}${about}`,
+          },
+        ] as const;
       }),
       // Found by a verified name alone, with no profile of their own.
-      ...[...verified.keys()]
-        .filter((key) => !profiles.some((event) => event.pubkey === key))
-        .map((key) => ({
-          name: "",
-          aliases: verifiedAliases(verified.get(key)),
-          row: `${key}${shown(key, "")}`,
-        })),
-    ].filter(
-      ({ name, aliases }) =>
-        !q ||
-        ids.length ||
-        people?.searched ||
-        [name, ...aliases].some((alias) => alias.toLowerCase().includes(q)),
-    );
+      ...[...verified]
+        .filter(([key]) => !profiles.some((event) => event.pubkey === key))
+        .map(
+          ([key, found]) =>
+            [
+              key,
+              {
+                name: "",
+                aliases: verifiedAliases(found),
+                row: `${key}${shown(key, "")}`,
+              },
+            ] as const,
+        ),
+    ]);
+    // In the community's order, a profile-less person where it ranked them.
+    const rows = (people?.order ?? [...byKey.keys()])
+      .flatMap((key) => byKey.get(key) ?? [])
+      .filter(
+        ({ name, aliases }) =>
+          !q ||
+          ids.length ||
+          people?.searched ||
+          [name, ...aliases].some((alias) => alias.toLowerCase().includes(q)),
+      );
     return rows.map(({ row }) => row).join("\n") || "No users.";
   },
 
@@ -2006,18 +2022,23 @@ class Tools {
       relay && HEX_KEY.test(relay)
         ? { pubkey: relay, multipleIssuers: false }
         : undefined;
-    const headed = authority
-      ? (named ?? []).flatMap(
-          (event) =>
-            verifiedProfileSubject(event as unknown as RelayEvent, authority) ??
-            [],
-        )
-      : [];
-    const verified = await this.verifiedNames([
-      ...profiles.map((event) => event.pubkey),
-      ...headed,
-    ]);
-    return { searched: !!named, profiles, verified };
+    // The community's order; a person it found by a head alone has no profile.
+    const order = [
+      ...new Set(
+        (named ?? profiles).flatMap((event) =>
+          event.kind === 0
+            ? [event.pubkey]
+            : (authority &&
+                verifiedProfileSubject(
+                  event as unknown as RelayEvent,
+                  authority,
+                )) ||
+              [],
+        ),
+      ),
+    ];
+    const verified = await this.verifiedNames(order);
+    return { searched: !!named, profiles, verified, order };
   }
 
   /** The author `value` names: me, a pubkey or npub, or one display name. */
