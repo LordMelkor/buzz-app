@@ -2719,6 +2719,9 @@ export class AgentsService extends Service implements Agents {
       throw new Error(`Another plugin adds agent tool ${tool.name}`);
     // A tool may ask only as itself: the plugin and tool names come from here.
     const plugin = this.ctx.pluginOwner?.id ?? "app";
+    // Its asks end with the plugin: a notice for a tool that is gone cannot
+    // be answered for anything.
+    const unloaded = new AbortController();
     this.addedTools.register(this.ctx, {
       ...tool,
       id: tool.name,
@@ -2729,7 +2732,10 @@ export class AgentsService extends Service implements Agents {
             ...rest,
             ...(approveTool && {
               approve: (ask) =>
-                approveTool({ ...ask, plugin, tool: tool.name }),
+                approveTool(
+                  { ...ask, plugin, tool: tool.name },
+                  unloaded.signal,
+                ),
             }),
           },
           context,
@@ -2739,7 +2745,10 @@ export class AgentsService extends Service implements Agents {
     });
     this.ctx.effect(() => {
       this.toolNames.add(tool.name);
-      return () => this.toolNames.delete(tool.name);
+      return () => {
+        this.toolNames.delete(tool.name);
+        unloaded.abort(new Error(`${tool.name}'s plugin was unloaded`));
+      };
     });
   }
   addAttentionSource(source: import("./attention-sources").AttentionSource) {

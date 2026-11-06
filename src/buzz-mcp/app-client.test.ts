@@ -430,3 +430,31 @@ it("offers the handle's owner reads with the turn's signal, withholding answers 
   expect(() => client.ownerAccess?.held(execution)).toThrow("ended");
   expect(ownerAccess.held).toHaveBeenCalledOnce();
 });
+
+it("ends a waiting owner approval when a turn that only offers `check` ends", async () => {
+  vi.useFakeTimers();
+  try {
+    let over = false;
+    const approveTool = vi.fn(
+      (_ask: unknown, signal?: AbortSignal) =>
+        new Promise<"once">((_, reject) =>
+          signal?.addEventListener("abort", () => reject(signal.reason)),
+        ),
+    );
+    const client = appClient({ approveTool } as unknown as AgentHandle, {
+      read: vi.fn(),
+      memories: async () => ({ entries: [], partial: false }),
+      check: () => {
+        if (over) throw new Error("The turn has ended");
+      },
+    });
+    const ask = { plugin: "p", tool: "t", title: "T", detail: "D" };
+    const waiting = client.approveTool?.(ask);
+    const outcome = expect(waiting).rejects.toThrow("The turn has ended");
+    over = true;
+    await vi.advanceTimersByTimeAsync(1000);
+    await outcome;
+  } finally {
+    vi.useRealTimers();
+  }
+});

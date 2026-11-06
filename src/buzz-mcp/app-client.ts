@@ -15,6 +15,8 @@ type Spawn = (id: string, options?: HostProcessOptions) => Promise<HostProcess>;
 /** The largest file a tool reads: the community's upload limit. */
 export const READ_LIMIT = 50 * 1024 * 1024;
 const READ_TIMEOUT_MS = 60_000;
+/** How soon a waiting owner approval notices its turn ended. */
+const TURN_POLL_MS = 1000;
 
 export function appClient(
   agent: AgentHandle,
@@ -103,11 +105,32 @@ export function appClient(
       },
     }),
     ...(approveTool && {
-      approveTool: async (ask) => {
+      approveTool: async (ask, signal) => {
         check();
-        const answer = await approveTool(ask, options.signal);
-        check();
-        return answer;
+        // `check` only throws when asked, and most harnesses end a turn with
+        // no event, so poll it: an ask never outlives its turn by long.
+        const ended = new AbortController();
+        const watch = setInterval(() => {
+          try {
+            check();
+          } catch (error) {
+            ended.abort(error);
+          }
+        }, TURN_POLL_MS);
+        try {
+          const answer = await approveTool(
+            ask,
+            AbortSignal.any(
+              [ended.signal, options.signal, signal].filter(
+                (item) => item !== undefined,
+              ),
+            ),
+          );
+          check();
+          return answer;
+        } finally {
+          clearInterval(watch);
+        }
       },
     }),
     relayAuthor: options.relayAuthor,

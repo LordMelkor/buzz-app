@@ -14738,6 +14738,40 @@ describe("full external agent access", () => {
     }
   });
 
+  it("drops a plugin tool's waiting approval when its plugin unloads", async () => {
+    const toolApprovals = createToolApprovals(memoryStorage());
+    const f = await fixture(["agent"], { toolApprovals });
+    try {
+      const tasks = f.ctx.extend({
+        pluginOwner: Object.freeze({ id: "buzz.tasks", revision: "one" }),
+      });
+      const added = tasks.plugin({
+        inject: ["agents"],
+        apply: (plugin: Context) =>
+          plugin.agents.addTool({
+            name: "tasks_delete",
+            description: "Delete a task.",
+            inputSchema: { type: "object" },
+            call: async (client) => {
+              await client.approve?.({ title: "Delete", detail: "Task 7" });
+              return "deleted";
+            },
+          }),
+      });
+      await added;
+      const reply = f.call("tasks_delete", {});
+      await vi.waitFor(() => expect(toolApprovals.pending()).toHaveLength(1));
+      await added.dispose();
+      expect((await reply).result).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining("unloaded") }],
+      });
+      expect(toolApprovals.pending()).toEqual([]);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("reads the agent's memory, and files only where its type reads them", async () => {
     const f = await fixture();
     try {

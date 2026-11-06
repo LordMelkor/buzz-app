@@ -200,7 +200,12 @@ export interface BuzzClient {
   /** Asks the owner to allow a call of one plugin tool, in the app. Resolves
    * when they allow it; throws when they deny it. The app binds it to the
    * tool as `approve`, and never hands it to a plugin. */
-  approveTool?(ask: ToolApprovalAsk): Promise<"once" | "always">;
+  approveTool?(
+    ask: ToolApprovalAsk,
+    /** Ends the ask early, as when the tool's plugin unloads. The turn
+     * ending always does. */
+    signal?: AbortSignal,
+  ): Promise<"once" | "always">;
   /** A plugin tool's own: pauses its call until the owner answers `title`
    * and `detail` with Allow once, Always allow or Deny. Resolves with what
    * allowed it (`always` once they chose that, which later calls skip); a deny
