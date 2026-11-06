@@ -205,6 +205,8 @@ export function bindMessageNotifications(
               message.messageId,
             );
             const sync = owned.unread.sync();
+            // Removing a person cancels their alert at once, before any wait.
+            if (category === "person" && !listed(author)) return false;
             // Explicit mentions bypass channel mute, as in the legacy policy —
             // including p-tagged messages in DM channels, whose category is
             // "direct". Unknown preferences must not briefly release ordinary

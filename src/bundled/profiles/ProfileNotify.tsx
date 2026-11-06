@@ -21,18 +21,20 @@ export function ProfileNotify({
     notifications.snapshot().preferences.people.includes(pubkey),
   );
   const [failed, setFailed] = useState(false);
+  // A failed save still applies the choice, so a retry saves it as it is.
+  const save = (next: boolean) =>
+    setFailed(!notifications.setPerson(pubkey, next));
   return (
     <>
-      <Button
-        size="sm"
-        variant={variant}
-        onClick={() => setFailed(!notifications.setPerson(pubkey, !listed))}
-      >
+      <Button size="sm" variant={variant} onClick={() => save(!listed)}>
         {listed ? "Stop notifying" : "Notify me when they post"}
       </Button>
       {failed && (
         <p role="alert" className="text-body-sm text-danger">
-          Couldn’t save this choice on this device. Try again.
+          Couldn’t save this choice on this device.{" "}
+          <Button size="sm" variant="subtle" onClick={() => save(listed)}>
+            Retry saving
+          </Button>
         </p>
       )}
     </>

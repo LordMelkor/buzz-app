@@ -214,3 +214,30 @@ it("removing a person while their alert waits on permission cancels it", async (
   await flush();
   expect(h.show.mock.calls.map(([alert]) => alert.body)).toEqual(["mention"]);
 });
+
+it("removing a person while their alert waits on channel preferences cancels it", async () => {
+  let load!: () => void;
+  const loaded = new Promise<void>((resolve) => {
+    load = resolve;
+  });
+  const h = await setup(Promise.resolve(), undefined, undefined, {
+    decode: async () => {
+      await loaded;
+      return { sections: [], assignments: {}, starred: [], muted: [] };
+    },
+    write: async () => [],
+  });
+  const ready = h.owner.session.sidebarPreferences.ensure();
+  h.notifications.setPerson(h.peer.pubkey, true);
+  h.emit([post(h, h.peer, "removed while loading")], "live");
+  await flush();
+  h.notifications.setPerson(h.peer.pubkey, false);
+  await flush();
+  h.notifications.setPerson(h.peer.pubkey, true);
+  load();
+  await ready;
+  h.emit([h.make("mention", 0, keypair())], "live");
+  await vi.waitFor(() => expect(h.show).toHaveBeenCalledOnce());
+  await flush();
+  expect(h.show.mock.calls.map(([alert]) => alert.body)).toEqual(["mention"]);
+});

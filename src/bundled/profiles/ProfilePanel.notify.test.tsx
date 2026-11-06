@@ -114,3 +114,29 @@ it("keeps the notify list from every plugin but the profile card", async () => {
   profiles.setPerson(person, true);
   expect(profiles.snapshot().preferences.people).toEqual([person]);
 });
+
+it("retrying a failed save keeps the choice the person made", async () => {
+  const f = fixture();
+  const user = userEvent.setup();
+  render(f.panel(person));
+  const setItem = vi
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(() => {
+      throw new Error("full");
+    });
+  await user.click(
+    screen.getByRole("button", { name: "Notify me when they post" }),
+  );
+  expect(
+    screen.getByText("Couldn’t save this choice on this device."),
+  ).toBeInTheDocument();
+  setItem.mockRestore();
+  await user.click(screen.getByRole("button", { name: "Retry saving" }));
+  expect(
+    screen.queryByText("Couldn’t save this choice on this device."),
+  ).not.toBeInTheDocument();
+  expect(f.service.snapshot().preferences.people).toEqual([person]);
+  expect(
+    JSON.parse(Object.values({ ...localStorage })[0] ?? "{}").people,
+  ).toEqual([person]);
+});
