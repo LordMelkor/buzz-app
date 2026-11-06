@@ -260,6 +260,9 @@ function fixture(
     deny() {
       channel = { ...channel, members: [viewer] };
     },
+    team() {
+      channel = { ...channel, channelType: "stream" };
+    },
     enqueue(value = message) {
       queue.submit({
         ...value,
@@ -1342,6 +1345,26 @@ it("resumes the saved successor after restart during a handed-off turn", async (
   restarted.work(event, "done");
   await vi.waitFor(() => expect(restarted.queue.snapshot()).toEqual([]));
   expect(restarted.send.mock.calls[0]?.[1]).toBe("Second");
+});
+
+it("completes a channel handoff for an agent this device never sees work", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+  try {
+    const h = fixture();
+    h.team();
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    // No local row or turn ever names the sent message.
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(followUpStorage(scope).handoff("chat")?.complete).not.toBe(true);
+    await vi.advanceTimersByTimeAsync(30_002);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(followUpStorage(scope).handoff("chat")?.complete).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("keeps completed handoffs from blocking a fresh queue after restart", async () => {

@@ -13796,12 +13796,16 @@ it.each([
 );
 
 describe("queued follow-ups in a team channel", () => {
-  function teamChannel(working: string | undefined) {
+  function teamChannel(
+    working: string | undefined,
+    members = [first.pubkey, second.pubkey, "viewer"],
+    additions?: (startWork: () => void) => object,
+  ) {
     localStorage.setItem("buzz-follow-up-behavior.v1", "queue");
     const h = mount();
     h.setLibrary([{ pubkey: first.pubkey, name: "Honey" }]);
     const listeners = new Set<() => void>();
-    const busy = working;
+    let busy = working;
     let state = "working";
     const snapshot = () => ({
       status: "unavailable",
@@ -13823,19 +13827,28 @@ describe("queued follow-ups in a team channel", () => {
         : [],
     });
     let activity = snapshot();
+    const startWork = () => {
+      busy = first.pubkey;
+      state = "working";
+      activity = snapshot();
+      act(() => {
+        for (const listener of listeners) listener();
+      });
+    };
     const channelList = {
       status: "ready",
       channels: [
         {
           id: "channel",
           channelType: "stream",
-          members: [first.pubkey, second.pubkey, "viewer"],
+          members,
         },
       ],
     };
     h.retarget({
       session: {
         ...h.session,
+        ...(additions ? { memberAdditions: additions(startWork) } : {}),
         viewer: "viewer",
         channels: { ...h.session.channels, list: () => channelList },
         channelWrites: {
@@ -13899,6 +13912,21 @@ describe("queued follow-ups in a team channel", () => {
     expect(
       screen.queryByRole("region", { name: "Queued follow-ups" }),
     ).toBeNull();
+  });
+
+  it("holds a message whose agent became busy while a prompt was open", async () => {
+    const members = ["viewer"];
+    const { h } = teamChannel(undefined, members, (startWork) => ({
+      add: vi.fn(async (_channel: string, pubkey: string) => {
+        members.push(pubkey);
+        startWork();
+      }),
+    }));
+    await choicesLoaded();
+    h.submit();
+    fireEvent.click(await screen.findByRole("button", { name: "Invite" }));
+    await screen.findByRole("region", { name: "Queued follow-ups" });
+    expect(h.messages.send).not.toHaveBeenCalled();
   });
 
   it.each([

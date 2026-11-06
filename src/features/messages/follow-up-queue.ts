@@ -66,6 +66,8 @@ function createQueue(session: RelaySession) {
   let storageError: string | undefined;
   let sequence = Date.now();
   const waits = new Map<string, Wait[]>();
+  // First sight of a channel handoff starts its start gap, like a wait's.
+  const handoffStarts = new Map<string, number>();
   const edits = new Set<string>();
   // Persist completion of our handoffs so other windows can recognize it.
   const handoffs = new Map<string, FollowUpHandoff>();
@@ -117,7 +119,10 @@ function createQueue(session: RelaySession) {
           removed.some(
             (entry) =>
               predecessor?.id !== entry.id ||
-              !(predecessor.complete || handoffFinished(predecessor)),
+              !(
+                predecessor.complete ||
+                handoffFinished(predecessor, entry.channelId)
+              ),
           )
         ) {
           entry.restored = true;
@@ -553,7 +558,7 @@ function createQueue(session: RelaySession) {
         predecessor &&
         !requested.has(entry.id) &&
         !predecessor.complete &&
-        !handoffFinished(predecessor) &&
+        !handoffFinished(predecessor, entry.channelId) &&
         predecessor.id !== handoffs.get(entry.channelId)?.id &&
         (await storage.isLive(predecessor));
       // Ownership queries can yield to pauses, removals, and new activity.
@@ -662,9 +667,19 @@ function createQueue(session: RelaySession) {
     // Presentation failures cannot put an already accepted message back in queue.
     if (id) entry.onSend?.(id);
   }
-  function handoffFinished(handoff: FollowUpHandoff) {
+  function handoffFinished(handoff: FollowUpHandoff, channelId: string) {
     const activity = session.agentActivity?.snapshot();
     const message = handoff.message;
+    let expires: number | undefined;
+    if (message && addressed(channelId, handoff.recipients)) {
+      let start = handoffStarts.get(message);
+      if (start === undefined) {
+        start = Date.now();
+        handoffStarts.set(message, start);
+        setTimeout(pump, START_GAP_MS + 1);
+      }
+      expires = start + START_GAP_MS;
+    }
     return (
       !!activity &&
       !!message &&
@@ -673,6 +688,7 @@ function createQueue(session: RelaySession) {
           {
             agent,
             message,
+            ...(expires ? { expires } : {}),
             ...(resumedRequests.has(`${agent}:${message}`)
               ? { resumed: true as const }
               : {}),
@@ -687,7 +703,7 @@ function createQueue(session: RelaySession) {
     for (const [channelId, handoff] of handoffs) {
       if (
         !storage ||
-        (!handoff.complete && !handoffFinished(handoff)) ||
+        (!handoff.complete && !handoffFinished(handoff, channelId)) ||
         settlingHandoffs.has(channelId)
       )
         continue;

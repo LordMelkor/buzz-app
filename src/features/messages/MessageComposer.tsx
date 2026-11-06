@@ -2665,22 +2665,19 @@ function Composer({
     // In a channel, only a message to an agent this device sees working is
     // held; anything else (people, idle agents, threads) goes out now.
     const addressedKeys = capturedRecipients.map(({ pubkey }) => pubkey);
-    const queueFollowUp =
+    const followUpEligible =
       !!host &&
       !threadRootId &&
       followUpBehaviorPreference() === "queue" &&
       capturedRecipients.length > 0 &&
-      !soloHasPeople(
-        addressedKeys,
-        session.viewer,
-        profileSnapshot,
-        agentKeys,
-      ) &&
-      (ownSoloConversation ||
-        (!soloConversation &&
-          // A recipient not yet known to be an agent might be a person.
-          addressedKeys.every((key) => agentKeys.has(key)) &&
-          followUpQueue(host).busy(channelId, addressedKeys)));
+      !soloHasPeople(addressedKeys, session.viewer, profileSnapshot, agentKeys);
+    const queueFollowUp = followUpEligible && ownSoloConversation;
+    // A recipient not yet known to be an agent might be a person.
+    const channelFollowUp =
+      followUpEligible &&
+      !ownSoloConversation &&
+      !soloConversation &&
+      addressedKeys.every((key) => agentKeys.has(key));
     try {
       if (command && onCommand) {
         const handled = onCommand(command, attempt.signal);
@@ -2940,7 +2937,13 @@ function Composer({
       ) => {
         if (compactingNow(recipients))
           throw new Error("Wait for compaction to finish, or interrupt it.");
-        if (!queueFollowUp || !host) return publishNow(uploaded, session);
+        // Prompts and uploads take time: a channel agent may have become busy.
+        const hold =
+          queueFollowUp ||
+          (channelFollowUp &&
+            !!host &&
+            followUpQueue(host).busy(channelId, recipients));
+        if (!hold || !host) return publishNow(uploaded, session);
         const message = {
           channelId,
           text: content,
