@@ -2662,18 +2662,23 @@ function Composer({
       profileSnapshot,
       session.agentChoices.snapshot(),
     );
+    // In a channel, only a message to an agent this device sees working is
+    // held; anything else (people, idle agents, threads) goes out now.
+    const addressedKeys = capturedRecipients.map(({ pubkey }) => pubkey);
     const queueFollowUp =
       !!host &&
-      ownSoloConversation &&
       !threadRootId &&
       followUpBehaviorPreference() === "queue" &&
       capturedRecipients.length > 0 &&
       !soloHasPeople(
-        capturedRecipients.map(({ pubkey }) => pubkey),
+        addressedKeys,
         session.viewer,
         profileSnapshot,
         agentKeys,
-      );
+      ) &&
+      (ownSoloConversation ||
+        (!soloConversation &&
+          followUpQueue(host).busy(channelId, addressedKeys)));
     try {
       if (command && onCommand) {
         const handled = onCommand(command, attempt.signal);
@@ -2941,6 +2946,7 @@ function Composer({
           attachments: uploaded,
           references,
           picks: sentPicks,
+          ...(ownSoloConversation ? {} : { channel: true as const }),
         };
         const send = followUpMessage(host, message);
         return followUpQueue(host).submit(

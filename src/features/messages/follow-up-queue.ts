@@ -1,5 +1,6 @@
 import type { RelaySession } from "../relay/session";
 import type { OutboxRecovery } from "../relay/outbox";
+import { ownSolo } from "../solo/labels";
 import { followUpMessage } from "./follow-up-message";
 import {
   followUpStorage,
@@ -35,7 +36,7 @@ type Entry = {
 };
 const queues = new WeakMap<RelaySession, ReturnType<typeof createQueue>>();
 
-/** Pending Solo sends survive navigation and, with a message payload, restart. */
+/** Pending agent follow-ups survive navigation and, with a message payload, restart. */
 export function followUpQueue(session: RelaySession) {
   let queue = queues.get(session);
   if (!queue) {
@@ -170,7 +171,19 @@ function createQueue(session: RelaySession) {
         (turn.state === "ended" || resumedTurn(turn)),
     );
   }
-  function blockers(channelId: string) {
+  // Solo is one person's workspace, so any work in it holds a follow-up. A
+  // shared channel runs many agents at once: only the addressed agents hold it.
+  function addressed(channelId: string, recipients: readonly string[]) {
+    const channel = session.channels
+      .list()
+      .channels.find((row) => row.id === channelId);
+    return channel && !ownSolo(channel, session.viewer)
+      ? new Set(recipients)
+      : undefined;
+  }
+  function blockers(channelId: string, recipients: readonly string[]) {
+    const agents = addressed(channelId, recipients);
+    const mine = (agent: string) => !agents || agents.has(agent);
     const activity = session.agentActivity?.snapshot();
     let current = waits.get(channelId) ?? [];
     if (activity) {
@@ -197,19 +210,26 @@ function createQueue(session: RelaySession) {
     if (current.length) waits.set(channelId, current);
     else waits.delete(channelId);
     return (
-      current.length > 0 ||
+      current.some((wait) => mine(wait.agent)) ||
       (session.typing?.snapshot() ?? []).some(
         (entry) =>
           entry.channelId === channelId &&
           !entry.threadRootId &&
+          mine(entry.pubkey) &&
           session.agentChoices
             ?.snapshot()
             .identities.some((agent) => agent.pubkey === entry.pubkey),
       ) ||
       (activity?.typing ?? []).some(
-        (entry) => entry.channelId === channelId && !entry.threadRootId,
+        (entry) =>
+          entry.channelId === channelId &&
+          !entry.threadRootId &&
+          mine(entry.agent),
       ) ||
-      (!!activity &&
+      // Unobservable activity is a reason to wait in Solo, but a channel
+      // message to an agent we cannot see working goes out now.
+      (!agents &&
+        !!activity &&
         activity.status !== "listening" &&
         activity.status !== "unavailable")
     );
@@ -512,7 +532,7 @@ function createQueue(session: RelaySession) {
       if (!entries.includes(entry)) return;
       if (
         !requested.has(entry.id) &&
-        (entry.restored || blockers(entry.channelId))
+        (entry.restored || blockers(entry.channelId, entry.recipients))
       )
         return;
       if (storage && entry.message && !storage.has(entry.id)) return;
@@ -683,8 +703,8 @@ function createQueue(session: RelaySession) {
         for (const entry of manual) void release(entry);
         continue;
       }
-      if (blockers(channelId)) continue;
       const first = entries.find((entry) => entry.channelId === channelId);
+      if (blockers(channelId, first?.recipients ?? [])) continue;
       if (first && !first.error && !first.restored && first.ready?.() !== false)
         void release(first);
     }
@@ -820,6 +840,9 @@ function createQueue(session: RelaySession) {
       .catch(() => {});
   return {
     snapshot: () => entries,
+    /** Whether work this device can see would hold a message to these agents. */
+    busy: (channelId: string, recipients: readonly string[]) =>
+      blockers(channelId, recipients),
     storageError: () => storageError,
     subscribe(listener: () => void) {
       if (storage && !listeners.size) {
@@ -854,7 +877,7 @@ function createQueue(session: RelaySession) {
       watch();
       if (
         (validated || !entry.beforeRelease) &&
-        !blockers(entry.channelId) &&
+        !blockers(entry.channelId, entry.recipients) &&
         !entries.some((item) => item.channelId === entry.channelId)
       )
         return sent(entry);

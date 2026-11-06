@@ -6,7 +6,7 @@ const preferenceKey = "buzz-follow-up-behavior.v1";
 const changedEvent = "buzz-follow-up-behavior-changed";
 let unsavedPreference: FollowUpBehavior | undefined;
 
-/** Device-local Solo follow-up behavior; immediate sending remains the default. */
+/** Device-local agent follow-up behavior (Solo and channels); immediate sending remains the default. */
 export function followUpBehaviorPreference(): FollowUpBehavior {
   if (unsavedPreference !== undefined) return unsavedPreference;
   try {
@@ -50,11 +50,11 @@ export function setFollowUpBehaviorPreference(value: FollowUpBehavior): void {
   window.dispatchEvent(new Event(changedEvent));
 }
 
-/** Solo follow-up behavior as a device setting. */
+/** Agent follow-up behavior as a device setting. */
 export const followUpBehaviorSetting: DeviceSetting = {
   key: "conversations.follow_up_behavior",
   description:
-    "In Solo, send follow-ups immediately or queue them until the agent finishes its previous response.",
+    "Send follow-ups to agents immediately, or queue them on this device until the agent finishes its previous response. Applies in Solo and in channels where the agent you tag is working.",
   schema: { type: "string", enum: ["immediate", "queue"] },
   read: () => ({
     value: followUpBehaviorPreference(),

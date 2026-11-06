@@ -610,7 +610,7 @@ Compact and New are enabled while that harness session is idle; Interrupt is
 enabled while it is active, including work after a final Buzz reply. Disabled
 controls remain focusable and explain their state in a tooltip. The app holding
 the agent's runner performs the action; other copies explain where to use it.
-Send keeps its existing steering or Solo queue preference and carries no session
+Send keeps its existing steering or follow-up queue preference and carries no session
 action.
 While manual compaction runs, its icon shows a spinner and the composer says
 “Compacting session…”. Compact, New and Send (including Enter) are disabled;
@@ -700,9 +700,9 @@ shown the mention's thread, including what it already posted there.
 Mentions queued behind a working turn, watch turns and other types are not
 kept.
 
-### Saved Solo follow-ups
+### Saved follow-ups
 
-The queued rows above the Solo composer are unsent messages, separate from the
+The queued rows above the Solo or channel composer are unsent messages, separate from the
 agent runner's interrupted turns. They are saved on this device in view storage,
 partitioned by account and community. Text, recipients, uploaded attachments,
 references, and model/effort choices survive a reload or app restart. An upload

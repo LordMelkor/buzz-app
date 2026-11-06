@@ -8,6 +8,7 @@ import { finalizeEvent, getPublicKey } from "nostr-tools";
 import { createOutbox } from "../relay/outbox";
 import { createAgentActivity } from "../agents/activity";
 import { followUpQueue } from "./follow-up-queue";
+import { followUpMessage } from "./follow-up-message";
 
 type ActivityTyping = ReturnType<
   RelaySession["agentActivity"]["snapshot"]
@@ -20,6 +21,16 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+// Solo holds on any unobservable activity; a channel holds only for its agents.
+const solo = {
+  viewer: "me",
+  channels: {
+    list: () => ({
+      channels: [{ id: "chat", channelType: "solo", creator: "me" }],
+    }),
+  },
+} as unknown as Partial<RelaySession>;
 
 function fixture(extra: Partial<RelaySession> = {}) {
   const listeners = new Set<() => void>();
@@ -259,7 +270,7 @@ it("activates the real observer before deciding and waits for its live snapshot"
   const observe = vi.fn();
   const activity = createAgentActivity(true, observe, () => true);
   const session = {
-    ...fixture().session,
+    ...fixture(solo).session,
     agentActivity: activity.queries,
   } as RelaySession;
   const queue = followUpQueue(session);
@@ -403,6 +414,50 @@ it("holds channel typing until it clears, without treating thread or other-chann
     { ...typing, channelId: "other" },
   ]);
   expect(entry.publish).toHaveBeenCalledOnce();
+});
+
+it("holds a channel message only for the agents it addresses, but any work holds Solo", () => {
+  for (const [extra, holds] of [
+    [{}, false],
+    [solo, true],
+  ] as const) {
+    const h = fixture(extra);
+    h.remote("working");
+    // The working agent is "agent"; this message addresses someone else.
+    expect(h.queue.busy("chat", ["other-agent"])).toBe(holds);
+    expect(h.queue.busy("chat", ["agent"])).toBe(true);
+    const entry = { ...h.entry("next"), recipients: ["other-agent"] };
+    h.queue.submit(entry);
+    expect(entry.publish).toHaveBeenCalledTimes(holds ? 0 : 1);
+    h.remote("ended");
+    expect(entry.publish).toHaveBeenCalledOnce();
+  }
+});
+
+it("publishes a channel row to a member agent that is not the owner's own, and never a Solo row there", () => {
+  const send = vi.fn(() => "sent");
+  const session = {
+    viewer: "me",
+    channels: {
+      list: () => ({ channels: [{ id: "chat", channelType: "stream" }] }),
+    },
+    agentChoices: { snapshot: () => ({ selectable: [], complete: true }) },
+    messages: { send },
+  } as unknown as RelaySession;
+  const row = {
+    channelId: "chat",
+    text: "after you finish",
+    recipients: ["someone-elses-agent"],
+    attachments: [],
+    references: [],
+    picks: {},
+  };
+  expect(followUpMessage(session, { ...row, channel: true }).publish()).toBe(
+    "sent",
+  );
+  expect(() => followUpMessage(session, row).publish()).toThrow(
+    "This Solo chat or its recipients are no longer available.",
+  );
 });
 
 it("rejects a late upload submission after its destination disappeared without allocating a slot or activity lease", () => {

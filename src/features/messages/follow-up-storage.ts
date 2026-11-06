@@ -14,6 +14,8 @@ export type FollowUpMessage = {
   attachments: readonly UploadedAttachment[];
   references: readonly string[];
   picks: MentionPicks;
+  /** Queued in a shared channel; absent means the owner's own Solo chat. */
+  channel?: true;
 };
 export type SavedFollowUp = FollowUpMessage & {
   id: string;
@@ -190,6 +192,7 @@ function valid(value: unknown): value is SavedFollowUp {
     typeof v.channelId === "string" &&
     typeof v.text === "string" &&
     (v.sending === undefined || v.sending === true) &&
+    (v.channel === undefined || v.channel === true) &&
     Number.isFinite(v.createdAt) &&
     strings(v.recipients) &&
     strings(v.references) &&

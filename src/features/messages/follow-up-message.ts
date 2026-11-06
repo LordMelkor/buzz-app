@@ -13,6 +13,7 @@ export function followUpMessage(
     ready() {
       const choices = session.agentChoices.snapshot();
       return (
+        message.channel === true ||
         choices.complete !== false ||
         message.recipients.every((key) =>
           choices.selectable.some((agent) => agent.pubkey === key),
@@ -34,18 +35,24 @@ export function followUpMessage(
         .channels.find((row) => row.id === message.channelId);
       if (!channel || channel.archived || channel.readOnly)
         throw new Error("This chat is no longer available for sending.");
+      // A Solo row needs its Solo chat and the owner's own agents. A channel
+      // row's agents are whoever its members are, which `beforeRelease` checks.
+      const solo = message.channel !== true;
       if (
-        !ownSolo(channel, session.viewer) ||
+        (solo && !ownSolo(channel, session.viewer)) ||
         message.recipients.some(
           (key) =>
             archivedMention(session, key) ||
-            !session.agentChoices
-              .snapshot()
-              .selectable.some((agent) => agent.pubkey === key),
+            (solo &&
+              !session.agentChoices
+                .snapshot()
+                .selectable.some((agent) => agent.pubkey === key)),
         )
       )
         throw new Error(
-          "This Solo chat or its recipients are no longer available.",
+          solo
+            ? "This Solo chat or its recipients are no longer available."
+            : "A queued recipient is no longer available.",
         );
       if (
         !recovery &&

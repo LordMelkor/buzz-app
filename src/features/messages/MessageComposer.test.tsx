@@ -13795,6 +13795,115 @@ it.each([
   },
 );
 
+describe("queued follow-ups in a team channel", () => {
+  function teamChannel(working: string | undefined) {
+    localStorage.setItem("buzz-follow-up-behavior.v1", "queue");
+    const h = mount();
+    h.setLibrary([{ pubkey: first.pubkey, name: "Honey" }]);
+    const listeners = new Set<() => void>();
+    const busy = working;
+    let state = "working";
+    const snapshot = () => ({
+      status: "unavailable",
+      records: [],
+      turns: [],
+      typing: [],
+      local: busy
+        ? [
+            {
+              agent: busy,
+              channelId: "channel",
+              messageId: "previous",
+              state,
+              scope: "scope",
+              threadRootId: "",
+              startedAt: 1,
+            },
+          ]
+        : [],
+    });
+    let activity = snapshot();
+    const channelList = {
+      status: "ready",
+      channels: [
+        {
+          id: "channel",
+          channelType: "stream",
+          members: [first.pubkey, "viewer"],
+        },
+      ],
+    };
+    h.retarget({
+      session: {
+        ...h.session,
+        viewer: "viewer",
+        channels: { ...h.session.channels, list: () => channelList },
+        channelWrites: {
+          refreshMembership: async () => ({
+            id: "channel",
+            members: [first.pubkey, "viewer"],
+          }),
+          addAgents: vi.fn(),
+        },
+        agentActivity: {
+          activate: () => () => {},
+          snapshot: () => activity,
+          subscribe: (listener: () => void) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+        },
+      } as unknown as RelaySession,
+    });
+    act(() => {
+      h.commands().insertMention(first);
+      h.commands().insertText("Then do this");
+    });
+    return {
+      h,
+      finish() {
+        act(() => {
+          state = "done";
+          activity = snapshot();
+          for (const listener of listeners) listener();
+        });
+      },
+    };
+  }
+
+  it("holds a message to a working agent until its turn ends", async () => {
+    const { h, finish } = teamChannel(first.pubkey);
+    await choicesLoaded();
+    h.submit();
+    await screen.findByRole("region", { name: "Queued follow-ups" });
+    expect(h.messages.send).not.toHaveBeenCalled();
+    finish();
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(h.messages.send).toHaveBeenCalledWith(
+      "channel",
+      "@Honey Then do this",
+      [first.pubkey],
+      [],
+      expect.objectContaining({ key: expect.stringMatching(/^follow-up:/) }),
+      [],
+      {},
+    );
+  });
+
+  it.each([
+    ["no agent is working", undefined],
+    ["only another agent is working", second.pubkey],
+  ])("sends at once when %s", async (_name, working) => {
+    const { h } = teamChannel(working);
+    await choicesLoaded();
+    h.submit();
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(
+      screen.queryByRole("region", { name: "Queued follow-ups" }),
+    ).toBeNull();
+  });
+});
+
 it("withholds recording tools while a message edit cannot take attachments", async () => {
   const empty: readonly never[] = [];
   const tools: readonly Contribution<ComposerTool>[] = [
