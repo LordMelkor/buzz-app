@@ -92,9 +92,13 @@ checks, not that an OS banner was displayed or read.
   delivery, so removing someone cancels a waiting alert. A reply outside
   the viewer's own conversations is never unread by the engine's rule, so it does
   not alert; top-level posts and in-conversation replies do. A workflow post is
-  matched on its owner. Other plugins cannot read or change the list: the
-  profile action uses the `notificationPeople` service, which refuses every
-  plugin but the bundled Profiles plugin (`buzz.profiles`), not `ctx.notifications`.
+  matched on its owner. The `notificationPeople` service refuses
+  injection by every plugin except the bundled Profiles plugin
+  (`buzz.profiles`), and the typed `ctx.notifications` contract has no people
+  methods. This is not isolation: plugins are trusted, unsandboxed code (see
+  plugin-architecture.md), so one that digs into host objects or another
+  plugin's rendered panel can still reach the list, as it can every other
+  notification preference.
 - Channel Mute/Unmute uses the session's confirmed, encrypted `channel-mutes`
   preference, independently of whether Channels is mounted. Muted channels suppress
   DM and participating-thread alerts; explicit mentions still pass the channel-mute
