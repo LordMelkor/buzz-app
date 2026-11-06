@@ -2697,6 +2697,11 @@ export class AgentRunners {
       if (!start.ok) throw new Error(start.reason);
       const team = this.host.team(agent.key);
       signal.throwIfAborted();
+      // The turn's actual end, past the handoff deadline `signal` carries.
+      const ended = new AbortController();
+      void working.settled.then(() =>
+        ended.abort(new Error("The turn has ended")),
+      );
       const delivery = Object.freeze({
         trigger: job.trigger,
         ...(job.channelId ? { channelId: job.channelId } : {}),
@@ -2707,6 +2712,7 @@ export class AgentRunners {
         ...pick,
         ...(team ? { team } : {}),
         signal,
+        ended: ended.signal,
         workingUntil: working.hold,
         ...(job.work
           ? {

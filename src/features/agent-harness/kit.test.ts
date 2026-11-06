@@ -483,7 +483,7 @@ describe("harnessKit.tools", () => {
     expect(read).toHaveBeenCalledWith("./a.txt");
   });
 
-  it("withdraws a plugin tool's owner approval when its turn ends", async () => {
+  it("withdraws a plugin tool's owner approval when its turn ends, not at the handoff deadline", async () => {
     const approvals = createToolApprovals(memoryStorage());
     const asking: AddedTool = {
       name: "notes_ask",
@@ -507,11 +507,12 @@ describe("harnessKit.tools", () => {
         live?: () => void,
       ) => approvals.ask("Ampy", ask, signal, live),
     });
+    const deadline = new AbortController();
     const turn = new AbortController();
     const conversation = await kit.conversation(
       delivery(
         { type: "mention", event: reply("2", "1", "@Ampy go") },
-        { signal: turn.signal },
+        { signal: deadline.signal, ended: turn.signal },
       ),
       "thread",
     );
@@ -525,6 +526,10 @@ describe("harnessKit.tools", () => {
       params: { name: "notes_ask", arguments: {} },
     });
     await vi.waitFor(() => expect(approvals.pending()).toHaveLength(1));
+    // Work handed to `workingUntil` outlives the advisory deadline.
+    deadline.abort(new DOMException("deadline", "TimeoutError"));
+    await Promise.resolve();
+    expect(approvals.pending()).toHaveLength(1);
     turn.abort(new Error("The turn ended"));
     expect(await call).toMatchObject({
       result: { isError: true, content: [{ text: "The turn ended" }] },

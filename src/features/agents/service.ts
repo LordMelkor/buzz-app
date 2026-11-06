@@ -703,6 +703,10 @@ export type Delivery<Config = unknown> = Readonly<{
    * resolving `{ ok: false, error }` fails the request; `{ ok: true,
    * stopped: true }` says the owner's Stop ended its turn. */
   workingUntil(done: PromiseLike<unknown>): void;
+  /** Aborts once the run and everything it handed to `workingUntil` have
+   * settled, or the agent is removed or its type replaced. Unlike `signal`,
+   * it has no deadline: it ends with the turn's actual work. */
+  ended?: AbortSignal;
   /** Optional presentation evidence supplied by the harness, not inferred by the UI. */
   step?(tool: string, target?: string): void;
   /** The plugin declined this request; no work or successful outcome is implied. */

@@ -1550,6 +1550,42 @@ it("keeps handed-off activity local, and pulses typing in the thread until the t
   }
 });
 
+it("ends a delivery's turn when its handed-off work settles, not at the deadline", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const { service, run, emit } = await setup();
+  await service.create({ type: "example/echo", name: "Echo" });
+  let finish = () => {};
+  const turn = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let delivery!: Delivery;
+  run.mockImplementationOnce(async (given) => {
+    delivery = given;
+    given.workingUntil(turn);
+  });
+  emit({
+    events: [
+      event("m", {
+        tags: [
+          ["h", channel],
+          ["p", bot],
+        ],
+      }),
+    ],
+    channelId: channel,
+  });
+  try {
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    // Past the default 60 s deadline; the work is still running.
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(delivery.ended?.aborted).toBe(false);
+    finish();
+    await vi.waitFor(() => expect(delivery.ended?.aborted).toBe(true));
+  } finally {
+    finish();
+  }
+});
+
 it("keeps the Mac awake while a turn works and for the chosen time after it", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.stubGlobal("localStorage", {
