@@ -6,6 +6,9 @@ import { eventDto, type EventData, type RelayEvent } from "../relay/events";
 import type { RelayData } from "../relay/service";
 import { keypair, signed } from "../relay/testing";
 import { harnessKit } from "./kit";
+import type { AddedTool } from "../../buzz-mcp/session-tools";
+import { createToolApprovals } from "../agents/tool-approval";
+import { memoryStorage } from "../agents/test-fakes";
 
 const self = "c".repeat(64);
 const alice = "a".repeat(64);
@@ -47,6 +50,7 @@ function setup(
     thread?: readonly EventData[];
     core?: string | null;
     notes?: readonly string[];
+    added?: readonly AddedTool[];
   }> = {},
 ) {
   const read = vi.fn(
@@ -93,7 +97,7 @@ function setup(
   const kit = harnessKit({
     relay: () => relay,
     core: async () => options.core,
-    added: () => [],
+    added: () => options.added ?? [],
     repositories: (partition) => `<repos for="${partition}"/>`,
   });
   const published: { kind: number; content: string; tags: string[][] }[] = [];
@@ -477,6 +481,55 @@ describe("harnessKit.tools", () => {
     expect(JSON.stringify(without)).toContain("cannot read ./a.txt");
     await call(kit.tools(agent, conversation, { read }));
     expect(read).toHaveBeenCalledWith("./a.txt");
+  });
+
+  it("withdraws a plugin tool's owner approval when its turn ends", async () => {
+    const approvals = createToolApprovals(memoryStorage());
+    const asking: AddedTool = {
+      name: "notes_ask",
+      description: "Asks first.",
+      inputSchema: { type: "object" },
+      call: async (client) => {
+        await client.approveTool?.({
+          plugin: "p",
+          tool: "notes_ask",
+          title: "T",
+          detail: "D",
+        });
+        return "done";
+      },
+    };
+    const { kit, agent, delivery } = setup({ added: [asking] });
+    Object.assign(agent, {
+      approveTool: (
+        ask: Parameters<typeof approvals.ask>[1],
+        signal?: AbortSignal,
+        live?: () => void,
+      ) => approvals.ask("Ampy", ask, signal, live),
+    });
+    const turn = new AbortController();
+    const conversation = await kit.conversation(
+      delivery(
+        { type: "mention", event: reply("2", "1", "@Ampy go") },
+        { signal: turn.signal },
+      ),
+      "thread",
+    );
+    const call = kit.tools(
+      agent,
+      conversation,
+    )({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "notes_ask", arguments: {} },
+    });
+    await vi.waitFor(() => expect(approvals.pending()).toHaveLength(1));
+    turn.abort(new Error("The turn ended"));
+    expect(await call).toMatchObject({
+      result: { isError: true, content: [{ text: "The turn ended" }] },
+    });
+    expect(approvals.pending()).toEqual([]);
   });
 
   it("standalone prompts carry the agent's routing context", () => {
