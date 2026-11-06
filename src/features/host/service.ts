@@ -2,6 +2,8 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type {} from "../../plugins/api";
 import { nativeIdentityEnabled } from "../identity/service";
+import type { PluginInfo, StorageResult } from "../../plugins/types";
+import { askOriginConsent } from "./origin-consent";
 
 export type HostRequest = Readonly<{
   url: string;
@@ -198,6 +200,13 @@ export interface Host {
    * `host.files`. Desktop only. */
   resolveDirectory?: (path: string) => Promise<string>;
   request(input: HostRequest): Promise<HostResponse>;
+  /** Asks the person using Buzz to let this plugin reach one more HTTPS
+   * origin, such as a server URL they typed: `https://host[:port]` with no
+   * path or wildcard. Resolves true once `request` may use it, at once when
+   * it already can; false when they decline. It persists for this plugin
+   * until it is removed, across restarts and updates. Installed desktop
+   * plugins only. */
+  requestOrigin?: (origin: string) => Promise<boolean>;
   /** POST-only, desktop and compatible native host required. A repeated call
    * authority rejects with unknown outcome, never resubmits or caches success.
    * Blocks IPC-fallback resends only, not fresh calls or upstream retries.
@@ -596,6 +605,37 @@ export class HostService extends Service implements Host {
     }).catch(rethrow);
   }
 
+  async requestOrigin(origin: string): Promise<boolean> {
+    const owner = this.ctx.pluginOwner;
+    if (!owner || !isTauri() || owner.revision === "bundled")
+      throw new Error("Origin approval requires an installed desktop plugin");
+    if (!bareHttpsOrigin(origin))
+      throw new Error("Use an HTTPS origin: https://host[:port], no path");
+    const plugin = await installedPlugin(owner);
+    if (
+      plugin.manifest.host?.networkOrigins?.includes(origin) ||
+      plugin.approvedOrigins?.includes(origin)
+    )
+      return true;
+    const key = `${owner.id}\n${origin}`;
+    let asking = asked.get(key);
+    if (!asking) {
+      asking = askOriginConsent({
+        plugin: { id: owner.id, name: plugin.manifest.name },
+        origin,
+      }).finally(() => asked.delete(key));
+      asked.set(key, asking);
+    }
+    if (!(await asking)) return false;
+    // The person may have taken a while; the plugin may be gone or updated.
+    await installedPlugin(owner);
+    await invoke("plugin_change", {
+      action: `allow-origin ${origin}`,
+      id: owner.id,
+    }).catch(rethrow);
+    return true;
+  }
+
   async requestOnce(
     input: HostRequest,
     { callId, isEligible }: HostRequestOnceOptions,
@@ -916,6 +956,42 @@ function decodeByteFrame(frame: unknown, maxBytes: number): HostByteResponse {
 }
 
 /** A native command's failure, which arrives as its message, as an Error. */
+/** Prompts in flight, so a repeated ask for one origin shares one prompt. */
+const asked = new Map<string, Promise<boolean>>();
+
+/** The same bare origin native code accepts in a manifest. Native checks too. */
+function bareHttpsOrigin(origin: unknown): origin is string {
+  if (typeof origin !== "string" || origin.includes("*")) return false;
+  try {
+    const url = new URL(origin);
+    return (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      url.origin === origin
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The caller's plugin as installed now, fresh from native storage. */
+async function installedPlugin(
+  owner: NonNullable<Context["pluginOwner"]>,
+): Promise<PluginInfo> {
+  const result = await invoke<StorageResult>("plugin_catalog").catch(rethrow);
+  const plugin =
+    result.status === "ready"
+      ? result.catalog.plugins.find(
+          (item) =>
+            item.manifest.id === owner.id && item.revision === owner.revision,
+        )
+      : undefined;
+  if (!plugin?.enabled)
+    throw new Error("Plugin was disabled or updated; try again");
+  return plugin;
+}
+
 function rethrow(error: unknown): never {
   throw typeof error === "string" ? new Error(error) : error;
 }

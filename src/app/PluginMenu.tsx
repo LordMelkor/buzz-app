@@ -129,7 +129,7 @@ export function PluginMenu({
         finalFocus={deleteTrigger}
         actions={<Button onClick={() => setShowAccess(false)}>Done</Button>}
       >
-        <PluginAccessReview manifest={plugin.manifest} />
+        <PluginAccessReview manifest={withApprovedOrigins(plugin)} />
       </Dialog>
       {confirmRollback && (
         <AlertDialog
@@ -243,4 +243,19 @@ export function PluginMenu({
       )}
     </>
   );
+}
+
+/** Origins the user approved later reach the same requests as declared ones. */
+function withApprovedOrigins({ manifest, approvedOrigins }: PluginInfo) {
+  if (!approvedOrigins?.length) return manifest;
+  return {
+    ...manifest,
+    host: {
+      ...manifest.host,
+      networkOrigins: [
+        ...(manifest.host?.networkOrigins ?? []),
+        ...approvedOrigins,
+      ],
+    },
+  };
 }

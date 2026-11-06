@@ -1,6 +1,7 @@
 import { Context } from "@deepseek-ai/cordis";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { originConsent } from "./origin-consent";
 import { HostService, type Host } from "./service";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -1616,4 +1617,133 @@ it("preserves requestOnce owner-first errors and matches upload owner wording", 
     }),
   ).rejects.toThrow(ownerError);
   expect(invoke).not.toHaveBeenCalled();
+});
+
+const catalog = (
+  plugin: Record<string, unknown> = {},
+  id = "example.plugin",
+  revision = "abc",
+) => ({
+  status: "ready",
+  catalog: {
+    plugins: [
+      {
+        manifest: {
+          id,
+          name: "Example",
+          host: { networkOrigins: ["https://declared.example"] },
+        },
+        enabled: true,
+        revision,
+        ...plugin,
+      },
+    ],
+  },
+});
+const answer = async (approved: boolean) => {
+  await vi.waitFor(() => expect(originConsent.current()).toBeDefined());
+  const asked = originConsent.current();
+  originConsent.answer(approved);
+  return asked;
+};
+
+it("saves an origin only after the person allows it, naming plugin and origin", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "plugin_catalog" ? catalog() : undefined,
+  );
+  const result = plugin.host.requestOrigin?.("https://mcp.example:8443");
+  const asked = await answer(true);
+  expect(asked).toMatchObject({
+    plugin: { id: "example.plugin", name: "Example" },
+    origin: "https://mcp.example:8443",
+  });
+  expect(await result).toBe(true);
+  expect(invoke).toHaveBeenCalledWith("plugin_change", {
+    action: "allow-origin https://mcp.example:8443",
+    id: "example.plugin",
+  });
+});
+
+it("keeps an origin refused when the person denies it", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke).mockResolvedValue(catalog());
+  const result = plugin.host.requestOrigin?.("https://mcp.example");
+  await answer(false);
+  expect(await result).toBe(false);
+  expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
+});
+
+it("does not ask again for an origin the plugin can already reach", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke).mockResolvedValue(
+    catalog({ approvedOrigins: ["https://approved.example"] }),
+  );
+  expect(await plugin.host.requestOrigin?.("https://declared.example")).toBe(
+    true,
+  );
+  expect(await plugin.host.requestOrigin?.("https://approved.example")).toBe(
+    true,
+  );
+  expect(originConsent.current()).toBeUndefined();
+  expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
+});
+
+it("shares one prompt between repeated asks for one origin", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "plugin_catalog" ? catalog() : undefined,
+  );
+  const first = plugin.host.requestOrigin?.("https://mcp.example");
+  const second = plugin.host.requestOrigin?.("https://mcp.example");
+  await answer(true);
+  expect(await Promise.all([first, second])).toEqual([true, true]);
+  expect(originConsent.current()).toBeUndefined();
+});
+
+it.each([
+  "http://mcp.example",
+  "https://mcp.example/mcp",
+  "https://mcp.example/",
+  "https://user@mcp.example",
+  "https://*.example",
+  "https://mcp.example:443",
+  "mcp.example",
+  "",
+])("rejects %j without asking the person", async (origin) => {
+  const { plugin } = pluginContext();
+  await expect(plugin.host.requestOrigin?.(origin)).rejects.toThrow(
+    /HTTPS origin/,
+  );
+  expect(invoke).not.toHaveBeenCalled();
+  expect(originConsent.current()).toBeUndefined();
+});
+
+it("refuses a plugin that was updated or disabled while the person decided", async () => {
+  const { plugin } = pluginContext();
+  vi.mocked(invoke)
+    .mockResolvedValueOnce(catalog())
+    .mockResolvedValueOnce(catalog({ enabled: false }));
+  const result = plugin.host.requestOrigin?.("https://mcp.example");
+  const rejected = expect(result).rejects.toThrow(/disabled or updated/);
+  await answer(true);
+  await rejected;
+  expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
+});
+
+it("is for installed desktop plugins only", async () => {
+  const { root, plugin } = pluginContext();
+  const bundled = root.extend({
+    pluginOwner: { id: "buzz.channels", revision: "bundled" },
+  });
+  await expect(
+    bundled.host.requestOrigin?.("https://a.example"),
+  ).rejects.toThrow(/installed desktop plugin/);
+  vi.mocked(isTauri).mockReturnValue(false);
+  await expect(
+    plugin.host.requestOrigin?.("https://a.example"),
+  ).rejects.toThrow(/installed desktop plugin/);
+  await expect(root.host.requestOrigin?.("https://a.example")).rejects.toThrow(
+    /installed desktop plugin/,
+  );
 });

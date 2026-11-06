@@ -222,6 +222,19 @@ it.each([true, false])(
   },
 );
 
+it("lists origins the user approved among what the plugin can do", async () => {
+  const f = fixture();
+  f.plugin.approvedOrigins = ["https://mcp.example:8443"];
+  render(<PluginMenu plugin={f.plugin} plugins={f.manager} busy={false} />);
+  fireEvent.click(screen.getByRole("button", { name: "More plugin actions" }));
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Review access" }),
+  );
+  expect(
+    await screen.findByText("Connect to https://mcp.example:8443"),
+  ).toBeInTheDocument();
+});
+
 it("removes a pending update action when the user turns off checks", async () => {
   const f = fixture();
   let finish!: (preview: ImportPreview) => void;

@@ -21,6 +21,7 @@ import { ModalWindowDragProvider } from "../shared/design-system/ui/ModalWindowD
 import { modalWindowDragHandlers } from "./shell/title-bar";
 import { isTauri } from "@tauri-apps/api/core";
 import { PairingPrompt } from "../features/credential-pairing/PairingPrompt";
+import { OriginConsentPrompt } from "../features/host/OriginConsentPrompt";
 import { Dialog } from "../shared/design-system/ui/Dialog";
 import { UpdateNotice } from "../features/updates/UpdateNotice";
 import { PluginUpdates } from "./PluginUpdates";
@@ -574,9 +575,12 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
     <>
       <SignInEnding identity={services.federatedIdentity} />
       {isTauri() && (
-        <PairingPrompt
-          communities={client.memberships.map((membership) => membership.id)}
-        />
+        <>
+          <PairingPrompt
+            communities={client.memberships.map((membership) => membership.id)}
+          />
+          <OriginConsentPrompt />
+        </>
       )}
       <ChannelNavigationProvider relay={services.relay}>
         <AppShell

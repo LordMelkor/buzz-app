@@ -439,6 +439,7 @@ mod tests {
             readme_revision: None,
             icon_png_revision: None,
             icon_jpg_revision: None,
+            approved_origins: Vec::new(),
         }
     }
     fn git(repository: &str, commit: Option<&str>, path: &str) -> Option<InstallSource> {

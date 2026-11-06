@@ -1563,6 +1563,23 @@ for long operations such as Apps initialization. Archive uploads have a
 Existing bundled GitHub requests retain their first-party renderer fetch and CSP
 entry.
 
+A plugin that needs an origin only the user knows, such as a server URL they
+typed, calls `await host.requestOrigin?.("https://mcp.example.com")`. Buzz asks the
+person, naming the plugin and the exact origin, with Deny focused. It resolves
+`true` once `request` (and the byte and upload calls) may use that origin, at
+once if the manifest declares it or the person already approved it, and `false`
+when they decline; a denial is not remembered, so asking again asks again. The
+origin must be `https://host[:port]` with no path, credentials, default port or
+wildcard, the same shape a manifest accepts, and an installed desktop plugin may
+approve up to 64. The approval is stored in the plugin registry beside the
+plugin, not in its manifest, and native code adds it to that plugin's declared
+origins whenever it reads them, so no other plugin gains it. It survives restarts
+and plugin updates, is listed under "What this plugin can do" in Settings, and
+is forgotten when the plugin is removed. Like every grant it is consent for
+trusted code, not a sandbox: plugin JavaScript can already call native plugin
+management directly, so the prompt guards a plugin that follows the API, such as
+one acting on a URL an agent or document supplied.
+
 `host.requestOnce?.(request, { callId })` is an explicit opt-in, desktop-only POST
 primitive for non-idempotent submissions on compatible hosts.
 Ordinary `request`, byte GET/save, archive uploads, processes and publication do not
