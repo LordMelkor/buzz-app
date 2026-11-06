@@ -936,6 +936,21 @@ keep it short: it is sent with every turn. `addInstructions` throws on text over
 4096 UTF-8 bytes after trimming. Context for one turn belongs in a note, which
 the agent reads as data.
 
+A tool with side effects can ask the person using Buzz first:
+`await client.approve({ title, detail })` pauses the call and shows a notice
+(`ToolApprovalNotices`, beside the interrupted-agents notice) naming the agent,
+the plugin's tool, `title` and `detail`, with **Allow once**, **Always allow**
+and **Deny**. It resolves `"once"` or `"always"`; a deny throws, which the agent
+sees as a tool error, so a tool that does nothing but `await` it is safe by
+default. **Always allow** is saved on this device (`buzz.plugin-tool-allowed.v1:`
+in local storage) for that plugin and tool across agents, and later calls
+resolve `"always"` without a notice. Pending asks live in memory: they end with
+the agent's turn, and the app restarting drops them. `addTool` binds `approve`
+to the plugin and tool, so a tool cannot ask as another. `client.approve` is
+absent where no owner can be asked, such as a standalone server, so a tool that
+needs approval should refuse then. It is not a per-argument policy, and it
+reaches only this device's app, not remote or mobile owners.
+
 The bundled **Plugin development** plugin (`buzz.plugin-development`, on by
 default) gives local agents three tools. `plugin_authoring_guide` returns
 [the authoring guide](plugin-authoring-guide.md), bundled with the app.

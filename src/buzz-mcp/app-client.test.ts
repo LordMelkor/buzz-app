@@ -3,6 +3,11 @@ import type { AgentHandle } from "../features/agents/service";
 import type { AgentProtection } from "../features/agent-protection/service";
 import { appClient, readFile } from "./app-client";
 import type { Host } from "../features/host/service";
+import { memoryStorage } from "../features/agents/test-fakes";
+import {
+  createToolApprovals,
+  type ToolApprovalAsk,
+} from "../features/agents/tool-approval";
 import { pngChunks } from "../features/messages/image-metadata";
 
 function gate<T>() {
@@ -606,4 +611,70 @@ it("retains native context through the check and releases it on denial", async (
   finish();
   await expect(result).rejects.toThrow("denied");
   expect(release).toHaveBeenCalledOnce();
+});
+
+it("ends a waiting owner approval when a turn that only offers `check` ends", async () => {
+  vi.useFakeTimers();
+  try {
+    let over = false;
+    const approveTool = vi.fn(
+      (_ask: unknown, signal?: AbortSignal) =>
+        new Promise<"once">((_, reject) =>
+          signal?.addEventListener("abort", () => reject(signal.reason)),
+        ),
+    );
+    const client = appClient({ approveTool } as unknown as AgentHandle, {
+      read: vi.fn(),
+      memories: async () => ({ entries: [], partial: false }),
+      check: () => {
+        if (over) throw new Error("The turn has ended");
+      },
+    });
+    const ask = { plugin: "p", tool: "t", title: "T", detail: "D" };
+    const waiting = client.approveTool?.(ask);
+    const outcome = expect(waiting).rejects.toThrow("The turn has ended");
+    over = true;
+    await vi.advanceTimersByTimeAsync(1000);
+    await outcome;
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("saves no Always allow for a call whose turn was interrupted before the owner answered", async () => {
+  vi.useFakeTimers();
+  try {
+    const saved = memoryStorage();
+    const approvals = createToolApprovals(saved);
+    let over = false;
+    // As Goose: a lifetime signal that never ends, and a lazy `check`.
+    const client = appClient(
+      {
+        approveTool: (
+          ask: ToolApprovalAsk,
+          signal?: AbortSignal,
+          live?: () => void,
+        ) => approvals.ask("Echo", ask, signal, live),
+      } as unknown as AgentHandle,
+      {
+        read: vi.fn(),
+        signal: new AbortController().signal,
+        memories: async () => ({ entries: [], partial: false }),
+        check: () => {
+          if (over) throw new Error("The Goose turn has ended");
+        },
+      },
+    );
+    const ask = { plugin: "p", tool: "t", title: "T", detail: "D" };
+    const waiting = client.approveTool?.(ask);
+    const outcome = expect(waiting).rejects.toThrow("The Goose turn has ended");
+    over = true;
+    // The owner clicks before the next poll sees the interrupt.
+    approvals.answer(approvals.pending()[0]?.id ?? "", "always");
+    await outcome;
+    expect(approvals.pending()).toEqual([]);
+    expect(saved.getItem("buzz.plugin-tool-allowed.v1:p/t")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
 });

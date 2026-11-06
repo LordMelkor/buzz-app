@@ -187,6 +187,10 @@ export class ClaudeProcess {
   /** Aborts when the owner stops the work. The next turn, sent or its own,
    * starts anew, so a stopped turn's tool calls stay stopped. */
   private workLifetime = new AbortController();
+  /** Aborts when a turn settles, failed or not, so a tool call it left
+   * waiting, such as for an owner's approval, ends with it. The process and
+   * the next turn's calls are unaffected. */
+  private turnLifetime = new AbortController();
   /** The owner's Stop awaiting Claude's answer, for the work it stopped;
    * another Stop of that work shares it. */
   private stopRequest:
@@ -724,6 +728,8 @@ export class ClaudeProcess {
     this.stopping = false;
     this.stopped = false;
     this.compacting = false;
+    this.turnLifetime.abort(new Error("The turn ended"));
+    this.turnLifetime = new AbortController();
     for (const resolve of this.waiters.splice(0)) resolve(settled);
   }
 
@@ -901,6 +907,7 @@ export class ClaudeProcess {
           AbortSignal.any([
             this.protectionLifetime.signal,
             this.workLifetime.signal,
+            this.turnLifetime.signal,
           ]),
         ).catch((error) => ({
           jsonrpc: "2.0",

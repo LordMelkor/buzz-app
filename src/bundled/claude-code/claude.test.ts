@@ -871,6 +871,52 @@ it("allows tool use and acknowledges hooks it is asked about", async () => {
   ]);
 });
 
+it("cancels a Buzz tool still running when its turn settles, failed or not, and serves the next turn's", async () => {
+  const { spawn, processes } = fakeSpawn();
+  const signals: AbortSignal[] = [];
+  const tools = vi.fn(
+    (_conversation: unknown, _message: unknown, signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise<never>(() => {});
+    },
+  );
+  const claude = await ClaudeProcess.start(spawn, {
+    ...launch,
+    sessionId: "s1",
+    tools,
+  });
+  const fake = processes[0];
+  if (!fake) throw new Error("no process");
+  fake.hold = true;
+  const call = (id: string) =>
+    fake.emit({
+      type: "control_request",
+      request_id: id,
+      request: {
+        subtype: "mcp_message",
+        server_name: "buzz",
+        message: { jsonrpc: "2.0", id: 3, method: "tools/call" },
+      },
+    });
+  const failed = claude.send("first");
+  await flush();
+  call("r1");
+  await vi.waitFor(() => expect(signals).toHaveLength(1));
+  expect(signals[0]?.aborted).toBe(false);
+  // Neither Stop nor a process exit: the turn fails and the process lives on.
+  fake.finish({ error: "Credit balance is too low" });
+  await expect(failed).resolves.toMatchObject({ ok: false });
+  expect(signals[0]?.aborted).toBe(true);
+  const ok = claude.send("second");
+  await flush();
+  call("r2");
+  await vi.waitFor(() => expect(signals).toHaveLength(2));
+  expect(signals[1]?.aborted).toBe(false);
+  fake.finish();
+  await expect(ok).resolves.toEqual({ ok: true });
+  expect(signals[1]?.aborted).toBe(true);
+});
+
 it("cancels a Buzz tool that is still running when its process stops", async () => {
   const { spawn, processes } = fakeSpawn();
   const signals: AbortSignal[] = [];

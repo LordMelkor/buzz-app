@@ -237,3 +237,55 @@ it.each<{ scopes: readonly ExternalScope[] }>([
     expect(publish).not.toHaveBeenCalled();
   },
 );
+
+it("withdraws an owner approval when the agent cancels its request", async () => {
+  const approveTool = vi.fn(
+    (_ask: unknown, signal?: AbortSignal) =>
+      new Promise<"once">((_, reject) =>
+        signal?.addEventListener("abort", () => reject(signal.reason)),
+      ),
+  );
+  const client = {
+    pubkey: "a".repeat(64),
+    key: "a".repeat(64),
+    approveTool,
+  } as unknown as BuzzClient;
+  const asking: AddedTool = {
+    name: "notes_ask",
+    description: "Asks first.",
+    inputSchema: { type: "object" },
+    call: async (c) => {
+      await c.approveTool?.({
+        plugin: "p",
+        tool: "notes_ask",
+        title: "T",
+        detail: "D",
+      });
+      return "done";
+    },
+  };
+  const send = (message: object) =>
+    respondExternal(
+      client,
+      message,
+      () => {},
+      ["agent"],
+      () => [asking],
+    );
+  const reply = send({
+    jsonrpc: "2.0",
+    id: 5,
+    method: "tools/call",
+    params: { name: "notes_ask", arguments: {} },
+  });
+  await vi.waitFor(() => expect(approveTool).toHaveBeenCalled());
+  await send({
+    jsonrpc: "2.0",
+    method: "notifications/cancelled",
+    params: { requestId: 5 },
+  });
+  expect(await reply).toHaveProperty(
+    "result.content.0.text",
+    "The agent cancelled this request",
+  );
+});

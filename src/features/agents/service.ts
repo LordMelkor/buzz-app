@@ -197,6 +197,11 @@ import {
   type Checkpoints,
 } from "./catch-up";
 import { readInterrupted, writeInterrupted } from "./interrupted";
+import {
+  createToolApprovals,
+  type ToolApprovalAsk,
+  type ToolApprovals,
+} from "./tool-approval";
 import { AttentionSources, type AttentionProducer } from "./attention-sources";
 import { type AddedTool, BUZZ_SESSION } from "../../buzz-mcp/session-tools";
 import { soloChannelMetadata } from "../relay/discovery";
@@ -528,6 +533,14 @@ export type AgentHandle = Readonly<{
   ): Promise<Readonly<{ requestId: string; saved: false }>>;
   /** This device's plugins, as the agent may read and change them. */
   plugins?: AgentPlugins | undefined;
+  /** On a run's handle only: asks the owner to allow a plugin tool's call;
+   * see `BuzzClient.approveTool`. `signal` ends the ask with the turn. */
+  approveTool?(
+    ask: ToolApprovalAsk,
+    signal?: AbortSignal,
+    /** Throws once the turn has ended; no answer is taken after. */
+    live?: () => void,
+  ): Promise<"once" | "always">;
   /** On a run's handle only: wakes this agent in another of its
    * conversations, as `Agents.wake` would, telling it the wake is its own. */
   handoff?(handoff: AgentHandoff): void;
@@ -757,6 +770,10 @@ export type Delivery<Config = unknown> = Readonly<{
    * resolving `{ ok: false, error }` fails the request; `{ ok: true,
    * stopped: true }` says the owner's Stop ended its turn. */
   workingUntil(done: PromiseLike<unknown>): void;
+  /** Aborts once the run and everything it handed to `workingUntil` have
+   * settled, or the agent is removed or its type replaced. Unlike `signal`,
+   * it has no deadline: it ends with the turn's actual work. */
+  ended?: AbortSignal;
   /** Optional presentation evidence supplied by the harness, not inferred by the UI. */
   step?(tool: string, target?: string): void;
   /** The plugin declined this request; no work or successful outcome is implied. */
@@ -2108,6 +2125,8 @@ export class AgentsService extends Service implements Agents {
     private readonly bindingFor?: (agent: Agent) => ConfigBinding,
     /** The Buzz settings on this device that agents' runs can change. */
     private readonly deviceSettings?: DeviceSettings,
+    /** Where plugin tools' calls wait for the owner to allow them. */
+    private readonly toolApprovals: ToolApprovals = createToolApprovals(),
   ) {
     super(ctx, "agents");
     this.sessionAdmissions = createSessionAdmissions(
@@ -2538,6 +2557,8 @@ export class AgentsService extends Service implements Agents {
           name: agent.name,
           live: () => !!this.liveMember(agent.key),
         }),
+      approveTool: (agent, ask, signal, live) =>
+        this.toolApprovals.ask(agent.name, ask, signal, live),
       handoff: (agent, { from, ...wake }) =>
         this.wakeIn(agent.key, wake, { from }),
       instructions: (agent) => this.turnInstructions(agent),
@@ -2956,10 +2977,38 @@ export class AgentsService extends Service implements Agents {
     // are not active yet, and the second to take a name must fail.
     if (this.toolNames.has(tool.name))
       throw new Error(`Another plugin adds agent tool ${tool.name}`);
-    this.addedTools.register(this.ctx, { ...tool, id: tool.name });
+    // A tool may ask only as itself: the plugin and tool names come from here.
+    const plugin = this.ctx.pluginOwner?.id ?? "app";
+    // Its asks end with the plugin: a notice for a tool that is gone cannot
+    // be answered for anything.
+    const unloaded = new AbortController();
+    this.addedTools.register(this.ctx, {
+      ...tool,
+      id: tool.name,
+      call: (client, context, args) => {
+        const { approveTool, ...rest } = client;
+        return tool.call(
+          {
+            ...rest,
+            ...(approveTool && {
+              approve: (ask) =>
+                approveTool(
+                  { ...ask, plugin, tool: tool.name },
+                  unloaded.signal,
+                ),
+            }),
+          },
+          context,
+          args,
+        );
+      },
+    });
     this.ctx.effect(() => {
       this.toolNames.add(tool.name);
-      return () => this.toolNames.delete(tool.name);
+      return () => {
+        this.toolNames.delete(tool.name);
+        unloaded.abort(new Error(`${tool.name}'s plugin was unloaded`));
+      };
     });
   }
   addInstructions(instructions: AgentInstructions) {

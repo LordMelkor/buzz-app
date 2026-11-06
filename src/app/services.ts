@@ -69,6 +69,7 @@ import {
 } from "../plugins/installer";
 import { withTimeout } from "../plugins/timeout";
 import { createExternalApps } from "../features/agents/external-connection";
+import { createToolApprovals } from "../features/agents/tool-approval";
 
 export function createServices() {
   const appearance = createAppearance();
@@ -76,6 +77,7 @@ export function createServices() {
   const updates = createUpdates();
   const ctx = new Context();
   const externalApps = createExternalApps();
+  const toolApprovals = createToolApprovals();
   ctx.provide("externalApps", externalApps);
   new HostService(ctx);
   const federatedIdentity = new FederatedIdentityService(ctx);
@@ -165,6 +167,7 @@ export function createServices() {
     decisions,
     undefined,
     deviceSettings(appearance),
+    toolApprovals,
   );
   ctx.effect(() =>
     localAgents.bind({
@@ -320,6 +323,7 @@ export function createServices() {
     rejectedLinks,
     deepLinks,
     externalApps,
+    toolApprovals,
     appearance,
     updates,
     dispose() {

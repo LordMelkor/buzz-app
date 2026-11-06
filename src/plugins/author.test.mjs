@@ -80,6 +80,8 @@ export function apply(ctx: Context) {
   const tool: AddedTool = { name: "example_image", description: "Read an image", inputSchema: {},
     async call(client: BuzzClient, context: AddedToolContext): Promise<AddedToolReply> {
       void [context.channel, context.root, context.topLevel, context.wholeChannel];
+      const allowed: "once" | "always" | undefined = await client.approve?.({ title: "Read an image", detail: "abc.png" });
+      void allowed;
       const media: Media = await client.media("abc.png");
       return media.data ?? "No inline image";
     },

@@ -89,6 +89,7 @@ import { importedTeamId } from "./config-channels";
 import { STANDALONE_DEADLINE_MS } from "../agent-harness/standalone";
 import { readTeams, writeTeams, type AgentRecord } from "./store";
 import { createPluginRequests } from "../../plugins/requests";
+import { createToolApprovals, type ToolApprovals } from "./tool-approval";
 import {
   createDeviceSettings,
   type DeviceSettings,
@@ -216,6 +217,8 @@ async function setup({
   starting = false,
   /** The Buzz settings agents' runs can change. */
   deviceSettings = undefined as DeviceSettings | undefined,
+  /** Where plugin tools' calls wait for the owner. */
+  toolApprovals = undefined as ToolApprovals | undefined,
   /** The echo type's plugin revision: "bundled" for a bundled harness. */
   revision = "one",
 } = {}) {
@@ -260,6 +263,7 @@ async function setup({
     decisions,
     binding,
     deviceSettings,
+    toolApprovals,
   );
   const plugin = ctx.extend({
     pluginOwner: Object.freeze({ id: "example", revision }),
@@ -1561,6 +1565,42 @@ it("keeps handed-off activity local, and pulses typing in the thread until the t
     expect(await published(native, 20002)).toHaveLength(2);
     expect(await published(native, 7)).toEqual([]);
     expect(await published(native, 5)).toEqual([]);
+  } finally {
+    finish();
+  }
+});
+
+it("ends a delivery's turn when its handed-off work settles, not at the deadline", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const { service, run, emit } = await setup();
+  await service.create({ type: "example/echo", name: "Echo" });
+  let finish = () => {};
+  const turn = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let delivery!: Delivery;
+  run.mockImplementationOnce(async (given) => {
+    delivery = given;
+    given.workingUntil(turn);
+  });
+  emit({
+    events: [
+      event("m", {
+        tags: [
+          ["h", channel],
+          ["p", bot],
+        ],
+      }),
+    ],
+    channelId: channel,
+  });
+  try {
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    // Past the default 60 s deadline; the work is still running.
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(delivery.ended?.aborted).toBe(false);
+    finish();
+    await vi.waitFor(() => expect(delivery.ended?.aborted).toBe(true));
   } finally {
     finish();
   }
@@ -15354,7 +15394,7 @@ describe("full external agent access", () => {
     ],
     options: Pick<
       NonNullable<Parameters<typeof setup>[0]>,
-      "readFile" | "revision"
+      "readFile" | "revision" | "toolApprovals"
     > = {},
   ) {
     vi.stubEnv(
@@ -15527,6 +15567,99 @@ describe("full external agent access", () => {
     } finally {
       await f.cleanup();
       vi.unstubAllEnvs();
+    }
+  });
+
+  it("holds a plugin tool's call until the owner allows it, and remembers Always allow", async () => {
+    const toolApprovals = createToolApprovals(memoryStorage());
+    const f = await fixture(["agent"], { toolApprovals });
+    try {
+      const tasks = f.ctx.extend({
+        pluginOwner: Object.freeze({ id: "buzz.tasks", revision: "one" }),
+      });
+      await tasks
+        .plugin({
+          inject: ["agents"],
+          apply: (plugin: Context) =>
+            plugin.agents.addTool({
+              name: "tasks_delete",
+              description: "Delete a task.",
+              inputSchema: { type: "object" },
+              call: async (client) => {
+                if (!client.approve) throw new Error("No owner to ask");
+                await client.approve({
+                  title: "Delete a task",
+                  detail: "Task 7",
+                });
+                return "deleted";
+              },
+            }),
+        })
+        .await();
+      const answered = async (answer: "once" | "always" | "deny") => {
+        const reply = f.call("tasks_delete", {});
+        await vi.waitFor(() => expect(toolApprovals.pending()).toHaveLength(1));
+        expect(toolApprovals.pending()[0]).toMatchObject({
+          agent: "Echo",
+          plugin: "buzz.tasks",
+          tool: "tasks_delete",
+          title: "Delete a task",
+          detail: "Task 7",
+        });
+        toolApprovals.answer(toolApprovals.pending()[0]?.id ?? "", answer);
+        return (await reply).result;
+      };
+      expect(await answered("deny")).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining("denied tasks_delete") }],
+      });
+      expect(await answered("once")).toMatchObject({
+        content: [{ text: "deleted" }],
+      });
+      expect(await answered("always")).toMatchObject({
+        content: [{ text: "deleted" }],
+      });
+      // Remembered: the next call goes straight through.
+      expect(await f.call("tasks_delete", {})).toMatchObject({
+        result: { content: [{ text: "deleted" }] },
+      });
+      expect(toolApprovals.pending()).toEqual([]);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("drops a plugin tool's waiting approval when its plugin unloads", async () => {
+    const toolApprovals = createToolApprovals(memoryStorage());
+    const f = await fixture(["agent"], { toolApprovals });
+    try {
+      const tasks = f.ctx.extend({
+        pluginOwner: Object.freeze({ id: "buzz.tasks", revision: "one" }),
+      });
+      const added = tasks.plugin({
+        inject: ["agents"],
+        apply: (plugin: Context) =>
+          plugin.agents.addTool({
+            name: "tasks_delete",
+            description: "Delete a task.",
+            inputSchema: { type: "object" },
+            call: async (client) => {
+              await client.approve?.({ title: "Delete", detail: "Task 7" });
+              return "deleted";
+            },
+          }),
+      });
+      await added;
+      const reply = f.call("tasks_delete", {});
+      await vi.waitFor(() => expect(toolApprovals.pending()).toHaveLength(1));
+      await added.dispose();
+      expect((await reply).result).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining("unloaded") }],
+      });
+      expect(toolApprovals.pending()).toEqual([]);
+    } finally {
+      await f.cleanup();
     }
   });
 

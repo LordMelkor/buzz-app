@@ -99,11 +99,16 @@ export type HarnessKit = Readonly<{
   standalonePrompt(agent: AgentHandle, text: string): string;
   /** Answers the agent's Buzz tools over MCP, for `Host.serveMcp`, acting in
    * `conversation`, or nowhere by default for a standalone turn. `read` gives
-   * the file an upload names; without it, uploads of local files fail. */
+   * the file an upload names; without it, uploads of local files fail. Calls
+   * end with the turn: a conversation carries its delivery's `ended`, and a
+   * standalone turn passes its own as `signal`. */
   tools(
     agent: AgentHandle,
     conversation?: HarnessConversation,
-    options?: Readonly<{ read?(path: string): Promise<Uint8Array> }>,
+    options?: Readonly<{
+      read?(path: string): Promise<Uint8Array>;
+      signal?: AbortSignal;
+    }>,
   ): McpHandler;
   /** Posts `text` as the agent in the conversation: in the event's thread, or
    * at the top level. `notifyOwner` tags the owner, as for a failed turn. */
@@ -132,6 +137,8 @@ type Admitted = Readonly<{
   name?: string;
   wake?: ConversationWake;
   resumed: boolean;
+  /** The delivery's `ended`: the turn's actual end, not its deadline. */
+  ended?: AbortSignal;
 }>;
 
 const CHAT = [9, 40002];
@@ -208,7 +215,7 @@ export function harnessKit(sources: Sources): HarnessKit {
 
   return Object.freeze({
     async conversation(
-      { trigger, agent, channelId, signal }: Delivery,
+      { trigger, agent, channelId, signal, ended }: Delivery,
       scope: HarnessScope,
     ) {
       if (
@@ -267,6 +274,7 @@ export function harnessKit(sources: Sources): HarnessKit {
         ...(found?.name ? { name: found.name } : {}),
         ...(wake ? { wake } : {}),
         resumed: trigger.type === "mention" && !!trigger.resumed,
+        ...(ended ? { ended } : {}),
       });
       return conversation;
     },
@@ -427,9 +435,12 @@ export function harnessKit(sources: Sources): HarnessKit {
             : { channel: conversation.channel };
       const pubkey = agent.pubkey;
       const reads = () => ownerReads(sources.relay(agent.key), pubkey);
+      const signal =
+        options.signal ?? (conversation && known(conversation).ended);
       return async (message) => {
         const ready = session(agent.key);
         const client = appClient(agent, {
+          ...(signal && { signal }),
           relayAuthor: ready?.relayAuthor,
           signingAuthority: ready?.workflowAuthority,
           read: (path) =>

@@ -10,6 +10,7 @@ import type {
   TeamReadout,
   TeamUpdateInput,
 } from "../features/agents/service";
+import type { ToolApprovalAsk } from "../features/agents/tool-approval";
 import type { AgentPlugins } from "../plugins/requests";
 import type { SettingState } from "../shared/device-settings";
 
@@ -126,6 +127,23 @@ export interface BuzzClient {
   /** This device's plugins, where the host has them: read directly, changed
    * by owner-confirmed request. */
   plugins?: AgentPlugins;
+  /** Asks the owner to allow a call of one plugin tool, in the app. Resolves
+   * when they allow it; throws when they deny it. The app binds it to the
+   * tool as `approve`, and never hands it to a plugin. */
+  approveTool?(
+    ask: ToolApprovalAsk,
+    /** Ends the ask early, as when the tool's plugin unloads. The turn
+     * ending always does. */
+    signal?: AbortSignal,
+  ): Promise<"once" | "always">;
+  /** A plugin tool's own: pauses its call until the owner answers `title`
+   * and `detail` with Allow once, Always allow or Deny. Resolves with what
+   * allowed it (`always` once they chose that, which later calls skip); a deny
+   * throws, which the agent sees as a tool error. Absent where no owner can be
+   * asked, so a tool that needs approval should refuse then. */
+  approve?(
+    ask: Readonly<{ title: string; detail: string }>,
+  ): Promise<"once" | "always">;
   /** Wakes the agent in another of its conversations here, `from` this one. */
   handoff?(
     handoff: Readonly<{
