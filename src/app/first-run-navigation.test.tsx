@@ -8,6 +8,7 @@ import { App } from "./App";
 import { createServices, type AppServices } from "./services";
 import { keypair, signed } from "../features/relay/testing";
 import { communityDestination } from "../features/communities/destination";
+import { askOriginConsent } from "../features/host/origin-consent";
 
 // The startup `home` visit is created inside createServices(), before React
 // renders. On a native first run `Welcome` hides `ConnectedApp`, the only
@@ -230,4 +231,20 @@ it("still times out a visit the mounted presenter never finishes", async () => {
     await screen.findByRole("heading", { name: "This page isn’t available" }),
   ).toBeVisible();
   expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+});
+
+it("asks about a plugin's origin on the first-run landing, before sign-in finishes", async () => {
+  await firstRun();
+  const answer = askOriginConsent(
+    {
+      plugin: { id: "example.mcp", name: "MCP servers" },
+      origin: "https://mcp.example",
+    },
+    new AbortController().signal,
+  );
+  expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+    "https://mcp.example",
+  );
+  screen.getByRole("button", { name: "Deny" }).click();
+  expect(await answer).toBe(false);
 });

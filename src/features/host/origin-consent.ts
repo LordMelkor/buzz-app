@@ -17,12 +17,30 @@ const publish = () => {
 };
 
 /** Resolves true only when the person allows it; closing the prompt or
- * leaving the app declines. */
-export function askOriginConsent(question: OriginQuestion): Promise<boolean> {
+ * leaving the app declines. `signal` withdraws the question, closing its
+ * prompt, and rejects with its reason. */
+export function askOriginConsent(
+  question: OriginQuestion,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (signal.aborted) return Promise.reject(signal.reason);
   if (queue.length >= QUEUE_MAX)
     return Promise.reject(new Error("Too many origin requests are waiting"));
-  return new Promise((resolve) => {
-    queue = [...queue, { ...question, answer: resolve }];
+  return new Promise((resolve, reject) => {
+    const withdraw = () => {
+      queue = queue.filter((item) => item !== pending);
+      publish();
+      reject(signal.reason);
+    };
+    const pending: Pending = {
+      ...question,
+      answer(approved) {
+        signal.removeEventListener("abort", withdraw);
+        resolve(approved);
+      },
+    };
+    signal.addEventListener("abort", withdraw, { once: true });
+    queue = [...queue, pending];
     publish();
   });
 }

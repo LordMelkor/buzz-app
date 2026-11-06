@@ -1660,7 +1660,7 @@ it("saves an origin only after the person allows it, naming plugin and origin", 
   });
   expect(await result).toBe(true);
   expect(invoke).toHaveBeenCalledWith("plugin_change", {
-    action: "allow-origin https://mcp.example:8443",
+    action: "allow-origin abc https://mcp.example:8443",
     id: "example.plugin",
   });
 });
@@ -1719,16 +1719,38 @@ it.each([
   expect(originConsent.current()).toBeUndefined();
 });
 
-it("refuses a plugin that was updated or disabled while the person decided", async () => {
-  const { plugin } = pluginContext();
-  vi.mocked(invoke)
-    .mockResolvedValueOnce(catalog())
-    .mockResolvedValueOnce(catalog({ enabled: false }));
-  const result = plugin.host.requestOrigin?.("https://mcp.example");
-  const rejected = expect(result).rejects.toThrow(/disabled or updated/);
-  await answer(true);
+it("closes the prompt and rejects when the requesting plugin unloads", async () => {
+  const { host, fiber } = await oncePlugin();
+  vi.mocked(invoke).mockResolvedValue(catalog());
+  const result = host.requestOrigin?.("https://mcp.example");
+  const rejected = expect(result).rejects.toThrow(/stopped/);
+  await vi.waitFor(() => expect(originConsent.current()).toBeDefined());
+  await fiber.dispose();
   await rejected;
+  expect(originConsent.current()).toBeUndefined();
   expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
+});
+
+it("never lets a new activation share a prompt or answer from an earlier one", async () => {
+  const first = await oncePlugin();
+  const second = await oncePlugin();
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "plugin_catalog" ? catalog() : undefined,
+  );
+  const asks = [first, second].map(({ host }) =>
+    host.requestOrigin?.("https://mcp.example"),
+  );
+  await answer(true);
+  await expect(asks[0]).resolves.toBe(true);
+  // The second activation is asked itself, not saved on the first's answer.
+  expect(originConsent.current()).toMatchObject({
+    origin: "https://mcp.example",
+  });
+  expect(invoke).toHaveBeenCalledTimes(3);
+  await answer(false);
+  expect(await Promise.all(asks)).toEqual([true, false]);
+  await first.fiber.dispose();
+  await second.fiber.dispose();
 });
 
 it("is for installed desktop plugins only", async () => {

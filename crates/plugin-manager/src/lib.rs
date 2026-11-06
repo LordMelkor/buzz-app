@@ -29,7 +29,8 @@ pub const MAX_HOST_COMMAND_OUTPUT_BYTES: u64 = 1024 * 1024;
 pub const MAX_HOST_COMMAND_INPUT_BYTES: u64 = 64 * 1024;
 /// Origins a user may approve for one plugin at runtime.
 const MAX_APPROVED_ORIGINS: usize = 64;
-/// `change` action prefix; the rest is the origin to approve.
+/// `change` action prefix, then the revision the user was asked about and the
+/// origin to approve.
 const ALLOW_ORIGIN: &str = "allow-origin ";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1191,7 +1192,15 @@ impl Manager {
                     }
                     "disable" => p.enabled = false,
                     _ if action.starts_with(ALLOW_ORIGIN) => {
-                        let origin = &action[ALLOW_ORIGIN.len()..];
+                        let (revision, origin) = action[ALLOW_ORIGIN.len()..]
+                            .split_once(' ')
+                            .ok_or("Invalid origin approval")?;
+                        // Under this lock, as `current_artifact` checks it.
+                        if self.safe_mode || !p.enabled || p.current != revision {
+                            return Err(
+                                "Plugin was disabled or updated; refresh the catalog".into()
+                            );
+                        }
                         valid_origin(origin)?;
                         // `*` is a valid host character to the URL parser.
                         if origin.contains('*') {
@@ -2618,15 +2627,17 @@ mod tests {
         );
 
         let catalog = manager
-            .change("allow-origin https://mcp.example:8443", "example.first")
+            .change(
+                &format!("allow-origin {first} https://mcp.example:8443"),
+                "example.first",
+            )
             .unwrap();
         // Approving twice, or a manifest origin, changes nothing.
-        manager
-            .change("allow-origin https://mcp.example:8443", "example.first")
-            .unwrap();
-        manager
-            .change("allow-origin https://declared.example", "example.first")
-            .unwrap();
+        for origin in ["https://mcp.example:8443", "https://declared.example"] {
+            manager
+                .change(&format!("allow-origin {first} {origin}"), "example.first")
+                .unwrap();
+        }
         let info = catalog
             .plugins
             .iter()
@@ -2652,6 +2663,15 @@ mod tests {
         assert!(origins(&manager, "example.first", &updated)
             .contains(&"https://mcp.example:8443".to_string()));
 
+        // The approval re-checks the installation: a revision the user was
+        // not asked about, safe mode and a disabled plugin all refuse.
+        let late = |revision: &str| format!("allow-origin {revision} https://late.example");
+        assert!(manager.change(&late(&first), "example.first").is_err());
+        let paused = Manager::open(Some(temp.path().into()), "test", true).unwrap();
+        assert!(paused.change(&late(&updated), "example.first").is_err());
+        manager.change("disable", "example.first").unwrap();
+        assert!(manager.change(&late(&updated), "example.first").is_err());
+
         // Removing the plugin forgets its approvals for any reinstall.
         manager.change("remove", "example.first").unwrap();
         let reinstalled = install("example.first", "");
@@ -2673,8 +2693,15 @@ mod tests {
             r#"{"id":"example.page","name":"Example","apiVersion":1}"#,
         )
         .unwrap();
-        manager.install(&source).unwrap();
+        let revision = manager
+            .install(&source)
+            .unwrap()
+            .plugins
+            .pop()
+            .unwrap()
+            .revision;
         manager.change("enable", "example.page").unwrap();
+        let allow = |origin: &str| format!("allow-origin {revision} {origin}");
         for invalid in [
             "http://mcp.example",
             "https://mcp.example/path",
@@ -2688,26 +2715,21 @@ mod tests {
             "",
         ] {
             assert!(
-                manager
-                    .change(&format!("allow-origin {invalid}"), "example.page")
-                    .is_err(),
+                manager.change(&allow(invalid), "example.page").is_err(),
                 "{invalid}"
             );
         }
         for n in 0..super::MAX_APPROVED_ORIGINS {
             manager
-                .change(
-                    &format!("allow-origin https://h{n}.example"),
-                    "example.page",
-                )
+                .change(&allow(&format!("https://h{n}.example")), "example.page")
                 .unwrap();
         }
         assert!(manager
-            .change("allow-origin https://one-too-many.example", "example.page")
+            .change(&allow("https://one-too-many.example"), "example.page")
             .is_err());
         // Bundled plugins have no registry entry to extend.
         assert!(manager
-            .change("allow-origin https://mcp.example", "buzz.reminders")
+            .change(&allow("https://mcp.example"), "buzz.reminders")
             .is_err());
     }
 

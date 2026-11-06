@@ -617,20 +617,23 @@ export class HostService extends Service implements Host {
       plugin.approvedOrigins?.includes(origin)
     )
       return true;
-    const key = `${owner.id}\n${origin}`;
-    let asking = asked.get(key);
-    if (!asking) {
-      asking = askOriginConsent({
-        plugin: { id: owner.id, name: plugin.manifest.name },
-        origin,
-      }).finally(() => asked.delete(key));
-      asked.set(key, asking);
+    // One prompt per activation: a reloaded or updated plugin never shares
+    // the question, or the answer, of the one before it.
+    const { stopped, asking } = originRequests(this.ctx);
+    let answer = asking.get(origin);
+    if (!answer) {
+      answer = askOriginConsent(
+        { plugin: { id: owner.id, name: plugin.manifest.name }, origin },
+        stopped.signal,
+      ).finally(() => asking.delete(origin));
+      asking.set(origin, answer);
     }
-    if (!(await asking)) return false;
-    // The person may have taken a while; the plugin may be gone or updated.
-    await installedPlugin(owner);
+    if (!(await answer)) return false;
+    stopped.signal.throwIfAborted();
+    // Native code checks again that the plugin is installed, enabled and
+    // still this revision, in the same step that saves the approval.
     await invoke("plugin_change", {
-      action: `allow-origin ${origin}`,
+      action: `allow-origin ${owner.revision} ${origin}`,
       id: owner.id,
     }).catch(rethrow);
     return true;
@@ -956,8 +959,25 @@ function decodeByteFrame(frame: unknown, maxBytes: number): HostByteResponse {
 }
 
 /** A native command's failure, which arrives as its message, as an Error. */
-/** Prompts in flight, so a repeated ask for one origin shares one prompt. */
-const asked = new Map<string, Promise<boolean>>();
+const activations = new WeakMap<
+  Context["fiber"],
+  { stopped: AbortController; asking: Map<string, Promise<boolean>> }
+>();
+/** What an activation's origin requests share. Its prompts close and its
+ * pending calls reject when the plugin stops. */
+function originRequests(ctx: Context) {
+  let state = activations.get(ctx.fiber);
+  if (!state) {
+    const stopped = new AbortController();
+    ctx.effect(
+      () => () => stopped.abort(new Error("Plugin stopped before approval")),
+      "origin consent",
+    );
+    state = { stopped, asking: new Map() };
+    activations.set(ctx.fiber, state);
+  }
+  return state;
+}
 
 /** The same bare origin native code accepts in a manifest. Native checks too. */
 function bareHttpsOrigin(origin: unknown): origin is string {

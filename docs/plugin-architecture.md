@@ -1568,7 +1568,8 @@ typed, calls `await host.requestOrigin?.("https://mcp.example.com")`. Buzz asks 
 person, naming the plugin and the exact origin, with Deny focused. It resolves
 `true` once `request` (and the byte and upload calls) may use that origin, at
 once if the manifest declares it or the person already approved it, and `false`
-when they decline; a denial is not remembered, so asking again asks again. The
+when they decline; a denial is not remembered, so asking again asks again. If the plugin
+stops first, its prompt closes and the call rejects. Each activation has its own prompt. The
 origin must be `https://host[:port]` with no path, credentials, default port or
 wildcard, the same shape a manifest accepts, and an installed desktop plugin may
 approve up to 64. The approval is stored in the plugin registry beside the

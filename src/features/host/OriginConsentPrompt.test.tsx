@@ -11,16 +11,15 @@ afterEach(() => {
   originConsent.declineAll();
 });
 
-const question = (origin = "https://mcp.example") => ({
-  plugin: { id: "example.mcp", name: "MCP servers" },
-  origin,
-});
+const ask = (origin = "https://mcp.example") =>
+  askOriginConsent(
+    { plugin: { id: "example.mcp", name: "MCP servers" }, origin },
+    new AbortController().signal,
+  );
 
 it("names the plugin and the exact origin, with Deny focused", async () => {
   render(<OriginConsentPrompt />);
-  const answer = act(() =>
-    askOriginConsent(question("https://mcp.example:8443")),
-  );
+  const answer = act(() => ask("https://mcp.example:8443"));
   const dialog = await screen.findByRole("alertdialog");
   expect(dialog).toHaveTextContent("Let MCP servers connect to this address?");
   expect(dialog).toHaveTextContent("https://mcp.example:8443");
@@ -35,8 +34,8 @@ it("names the plugin and the exact origin, with Deny focused", async () => {
 
 it("declines on Deny and on Escape, then asks the next question", async () => {
   render(<OriginConsentPrompt />);
-  const first = askOriginConsent(question("https://one.example"));
-  const second = askOriginConsent(question("https://two.example"));
+  const first = ask("https://one.example");
+  const second = ask("https://two.example");
   await userEvent.click(await screen.findByRole("button", { name: "Deny" }));
   expect(await first).toBe(false);
   expect(await screen.findByRole("alertdialog")).toHaveTextContent(
@@ -49,7 +48,7 @@ it("declines on Deny and on Escape, then asks the next question", async () => {
 
 it("declines what is waiting when the page goes away", async () => {
   const view = render(<OriginConsentPrompt />);
-  const answer = askOriginConsent(question());
+  const answer = ask();
   await screen.findByRole("alertdialog");
   view.unmount();
   expect(await answer).toBe(false);

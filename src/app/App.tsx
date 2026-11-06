@@ -91,6 +91,8 @@ export function App({ services }: { services: AppServices }) {
         value={isTauri() ? modalWindowDragHandlers : undefined}
       >
         <LaunchWindowControls />
+        {/* Plugins run during onboarding too, so this outlives the Welcome gate. */}
+        {isTauri() && <OriginConsentPrompt />}
         {services.identity ? (
           <Welcome
             identity={services.identity}
@@ -575,12 +577,9 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
     <>
       <SignInEnding identity={services.federatedIdentity} />
       {isTauri() && (
-        <>
-          <PairingPrompt
-            communities={client.memberships.map((membership) => membership.id)}
-          />
-          <OriginConsentPrompt />
-        </>
+        <PairingPrompt
+          communities={client.memberships.map((membership) => membership.id)}
+        />
       )}
       <ChannelNavigationProvider relay={services.relay}>
         <AppShell
