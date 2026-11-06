@@ -644,6 +644,16 @@ and are asked to sign in again in Buzz.
   their avatar previews. The macOS Dock unread dot follows the rows: a muted channel
   lights it only for a mention of you or **Mark as unread**, and a muted DM still lights it.
   Muting does not mark messages or threads as read.
+- **All activity**: by default a channel notifies you about mentions and your
+  own conversations. Choose **Notify for all activity** from its menu, beside
+  **Mute**, to be notified about every post and reply by someone else in it;
+  **Stop notifying for all activity** goes back to the default. **Settings →
+  Notifications → Channels with all activity** lists these channels with
+  **Turn off**, and the **Channel activity** switch under **Notify me about**
+  turns these alerts off without clearing the list. Mute wins, and so does
+  **Unfollow thread** for its replies. A post that mentions you alerts once, as a
+  mention. Nothing alerts while you're viewing the conversation or once it's
+  read. The choice is saved on this device, per community and account.
 - **Hidden DMs**: **Close conversation** and **Hide conversation** take a DM out
   of the sidebar without leaving it. To find one again, start a **New message**
   to exactly the same people. Its earlier messages appear before you send,

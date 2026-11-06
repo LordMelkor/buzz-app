@@ -67,6 +67,7 @@ const categories = Object.freeze([
   { key: "direct", label: "Direct messages" },
   { key: "thread", label: "Thread replies" },
   { key: "agent", label: "Solo chat completions" },
+  { key: "channel", label: "Channel activity" },
 ]);
 const FRESH_MS = 120_000;
 export type NotificationSnapshot = Readonly<{

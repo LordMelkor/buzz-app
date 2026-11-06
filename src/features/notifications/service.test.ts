@@ -337,6 +337,7 @@ it("plays the selected per-category sound once delivery is accepted", async () =
       direct: "unison",
       thread: "doop",
       agent: "doodone",
+      channel: "soft",
     },
   });
   await t.submit("one");

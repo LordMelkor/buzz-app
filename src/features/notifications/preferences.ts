@@ -11,6 +11,7 @@ export const NOTIFICATION_CATEGORIES = [
   "direct",
   "thread",
   "agent",
+  "channel",
 ] as const;
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 export type NotificationPreferences = Readonly<{
@@ -31,6 +32,7 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences =
       direct: true,
       thread: true,
       agent: true,
+      channel: true,
     }),
   });
 const KEY = "buzz-notification-preferences.v1";

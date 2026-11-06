@@ -20,12 +20,19 @@ it("values saved before per-category sounds restore with the defaults", () => {
 });
 
 it.each([
-  { mention: "ping", direct: "unison", thread: "doop", agent: "doodone" },
+  {
+    mention: "ping",
+    direct: "unison",
+    thread: "doop",
+    agent: "doodone",
+    channel: "soft",
+  },
   {
     mention: "silent",
     direct: "silent",
     thread: "silent",
     agent: "silent",
+    channel: "silent",
   },
 ])("saved sound choices round-trip: %j", (sounds) => {
   expect(
@@ -54,6 +61,7 @@ it("a sound name this build lacks falls back to the default for its category onl
     direct: DEFAULT_SOUND,
     thread: DEFAULT_SOUND,
     agent: "doodone",
+    channel: DEFAULT_SOUND,
   });
   expect(Object.isFrozen(sounds)).toBe(true);
 });
