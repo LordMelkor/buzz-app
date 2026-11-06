@@ -115,6 +115,14 @@ export type InlineContent = Readonly<{
   text: string;
   message: ChannelMessage;
   reaction?: ChannelMessage["reactions"][number] | undefined;
+  /** UTF-16 range of `message.content` this segment was written as, so equal
+   * segments in one message can be told apart. Where the author wrote the text
+   * as it appears, `message.content.slice(start, end) === text`. Where Markdown
+   * rewrote it (an escape, entity or line indent), the range is that whole
+   * piece of source and may be longer than `text`. Absent when the host cannot
+   * place the segment exactly, for example text inside a spoiler or beside a
+   * bare link, or in a reaction. */
+  source?: InlineRange | undefined;
 }>;
 export type InlineRange = Readonly<{ start: number; end: number }>;
 export type InlineRenderer = Readonly<{
@@ -126,6 +134,9 @@ export type InlineRenderer = Readonly<{
     TargetOpener & {
       text: string;
       content: InlineContent;
+      /** This match's range within `content.text`; `text` is its slice. */
+      start: number;
+      end: number;
       media(url: string): string | undefined;
     }
   >;

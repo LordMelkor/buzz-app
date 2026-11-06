@@ -171,7 +171,8 @@ export function ReferenceText({
   text: string;
   mentions: readonly string[];
   directory: ReturnType<typeof useReferenceDirectory>;
-  renderText(text: string): ReactNode;
+  /** `at` is where `text` starts in the whole text. */
+  renderText(text: string, at: number): ReactNode;
   onOpenLink(url: string): boolean;
   extensions?: ConversationExtensions | undefined;
   session?: RelaySession | ComposerSession | undefined;
@@ -187,13 +188,13 @@ export function ReferenceText({
     directory.named,
     directory.agents,
   );
-  if (!references.length) return renderText(text);
+  if (!references.length) return renderText(text, 0);
   const parts: ReactNode[] = [];
   let offset = 0;
   for (const reference of references) {
     parts.push(
       <span key={`text:${offset}`}>
-        {renderText(text.slice(offset, reference.start))}
+        {renderText(text.slice(offset, reference.start), offset)}
       </span>,
     );
     const label =
@@ -230,7 +231,9 @@ export function ReferenceText({
     offset = reference.end;
   }
   parts.push(
-    <span key={`text:${offset}`}>{renderText(text.slice(offset))}</span>,
+    <span key={`text:${offset}`}>
+      {renderText(text.slice(offset), offset)}
+    </span>,
   );
   return <>{parts}</>;
 }

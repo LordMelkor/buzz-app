@@ -95,24 +95,49 @@ export const isPlainProse = (content: string) =>
     content,
   );
 
-/** The tree micromark builds for `isPlainProse` content. */
-export const plainProseTree = (content: string) => ({
-  type: "root",
-  children: content
-    .split(/(?:\r\n|\r(?!\n)|\n){2,}/)
-    .map((block) =>
-      block
+/** The tree micromark builds for `isPlainProse` content. A block whose text is
+ * its source unchanged also gets micromark's source position; one trimmed of
+ * indent or trailing space keeps none, as its text no longer matches a span. */
+export const plainProseTree = (content: string) => {
+  const blocks: { source: string; start: number }[] = [];
+  let start = 0;
+  for (const gap of content.matchAll(/(?:\r\n|\r(?!\n)|\n){2,}/g)) {
+    blocks.push({ source: content.slice(start, gap.index), start });
+    start = gap.index + gap[0].length;
+  }
+  blocks.push({ source: content.slice(start), start });
+  return {
+    type: "root",
+    children: blocks.flatMap(({ source, start }) => {
+      const value = source
         .replace(/^ +/gm, "")
         // The lookbehind starts the tail match only at a run's start, so a long
         // mid-line space run is scanned once, not once per space.
-        .replace(/^(?:\r\n?|\n)+|(?<![\r\n ])[\r\n ]+$/g, ""),
-    )
-    .filter(Boolean)
-    .map((value) => ({
-      type: "paragraph",
-      children: [{ type: "text", value }],
-    })),
-});
+        .replace(/^(?:\r\n?|\n)+|(?<![\r\n ])[\r\n ]+$/g, "");
+      return value
+        ? [
+            {
+              type: "paragraph",
+              children: [
+                {
+                  type: "text",
+                  value,
+                  ...(value === source
+                    ? {
+                        position: {
+                          start: { offset: start },
+                          end: { offset: start + value.length },
+                        },
+                      }
+                    : {}),
+                },
+              ],
+            },
+          ]
+        : [];
+    }),
+  };
+};
 
 /** Pure, immutable Markdown work; MessageMarkdown keeps recent results. */
 export function prepareMarkdown(content: string): PreparedMarkdown {

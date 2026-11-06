@@ -831,6 +831,133 @@ describe("Markdown profile mentions", () => {
   });
 });
 
+describe("inline renderer source positions", () => {
+  type Seen = {
+    text: string;
+    source: { start: number; end: number } | undefined;
+    start: number;
+    end: number;
+  };
+  // Claims each whole segment, so every segment the host offers is recorded.
+  function segments(content: string, options: RenderOptions = {}) {
+    const seen: Seen[] = [];
+    const recorder: Contribution<InlineRenderer> = {
+      id: "record",
+      key: "test/record",
+      pluginId: "test",
+      revision: "1",
+      title: "Record",
+      matches: ({ text }) => (text ? [{ start: 0, end: text.length }] : []),
+      component: ({ text, content, start, end }) => {
+        seen.push({ text, source: content.source, start, end });
+        return text;
+      },
+    };
+    render(content, {
+      ...options,
+      extensions: {
+        tools: { snapshot: () => [], subscribe: () => () => {} },
+        inline: { snapshot: () => [recorder], subscribe: () => () => {} },
+      },
+    });
+    return seen;
+  }
+  const slices = (content: string, seen: Seen[]) =>
+    seen.map(({ source }) => source && content.slice(source.start, source.end));
+
+  it.each([
+    ["plain prose", "$x$\n$$\ny\n$$\n$x$"],
+    ["Markdown", "**a**\n$x$\n$$\ny\n$$\n$x$"],
+    ["CRLF", "$x$\r\n$$\r\ny\r\n$$\r\n$x$"],
+  ])("places each of two equal segments in %s separately", (_, content) => {
+    const seen = segments(content).filter(({ text }) => text.length > 1);
+    expect(seen.map(({ text }) => text)).toEqual(["$x$", "$$", "$$", "$x$"]);
+    // Each range slices the message to its own segment.
+    expect(slices(content, seen)).toEqual(["$x$", "$$", "$$", "$x$"]);
+    const starts = seen.map(({ source }) => source?.start);
+    expect(new Set(starts).size).toBe(4);
+    expect(starts[0]).toBe(content.indexOf("$x$"));
+    expect(starts[3]).toBe(content.lastIndexOf("$x$"));
+  });
+
+  it("places segments after text the host replaces with a placeholder", () => {
+    const content = "$x$ &#58; $x$ :party_parrot: $x$ @Mic $x$";
+    const seen = segments(content, { emoji: [party] });
+    expect(seen.map(({ text }) => text)).toEqual([
+      "$x$ ",
+      " $x$ :party_parrot: $x$ ",
+      " $x$",
+    ]);
+    expect(slices(content, seen)).toEqual([
+      "$x$ ",
+      " $x$ :party_parrot: $x$ ",
+      " $x$",
+    ]);
+    expect(seen[2]?.source?.end).toBe(content.length);
+  });
+
+  it("gives the source of rewritten text, only where it is one segment", () => {
+    // The escape is gone from the text but stays in the span.
+    const escaped = "$a\\\\b$";
+    const [one] = segments(escaped);
+    expect(one?.text).toBe("$a\\b$");
+    expect(one?.source).toEqual({ start: 0, end: escaped.length });
+    // Two segments of one rewritten node could not be told apart: no range.
+    const shared = "a\\*b @Mic a\\*b";
+    const seen = segments(shared);
+    expect(seen.map(({ text }) => text)).toEqual(["a*b ", " a*b"]);
+    expect(seen.map(({ source }) => source)).toEqual([undefined, undefined]);
+  });
+
+  it("never gives a range that is not the segment", () => {
+    const corpus = [
+      "||$x$|| $x$ ||$x$||",
+      "see https://a.test/$x$ and $x$\n$x$",
+      "# $x$\n\n- $x$\n- $x$\n\n> $x$\n> $x$",
+      "| $x$ | $x$ |\n| - | - |\n| $x$ | $x$ |",
+      "*$x$* **$x$** ~~$x$~~ $x$",
+      "  $x$\n   $x$   ",
+      "para one\n\n\n\n$x$\n\n$x$",
+      "[$x$](https://a.test) $x$ <b>$x$</b> $x$",
+      // micromark does not count a leading byte order mark in its offsets.
+      "\uFEFF$x$ **b**\n$x$",
+      "\uFEFFxxxx **xxxx**",
+      "a\t$x$\n\t$x$ *i*",
+      "> $x$\n> $x$ **b**",
+    ];
+    for (const content of corpus) {
+      const seen = segments(content);
+      expect(seen.length, content).toBeGreaterThan(0);
+      seen.forEach(({ text, source }, index) => {
+        if (source)
+          expect(content.slice(source.start, source.end), content).toBe(text);
+        expect(seen[index]?.end).toBe(text.length);
+      });
+    }
+  });
+
+  it("passes the component its match range within the segment", () => {
+    const seen: Pick<Seen, "text" | "start" | "end">[] = [];
+    const word: Contribution<InlineRenderer> = {
+      ...pluginRenderer,
+      component: ({ text, start, end }) => {
+        seen.push({ text, start, end });
+        return text;
+      },
+    };
+    render("a PLUGIN b PLUGIN", {
+      extensions: {
+        tools: { snapshot: () => [], subscribe: () => () => {} },
+        inline: { snapshot: () => [word], subscribe: () => () => {} },
+      },
+    });
+    expect(seen).toEqual([
+      { text: "PLUGIN", start: 2, end: 8 },
+      { text: "PLUGIN", start: 11, end: 17 },
+    ]);
+  });
+});
+
 describe("Markdown inline extensions", () => {
   it("preserves custom emoji and plugin prose alongside profile mentions", () => {
     const html = render("**:party_parrot:** PLUGIN @Mic", {
