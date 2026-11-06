@@ -25,7 +25,6 @@ import {
 } from "./ReferenceText";
 import { profileKey } from "../profiles/target";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
-import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { remarkSpoilers } from "./remark-spoilers";
 import type {
@@ -77,14 +76,11 @@ type InlinePart = {
   target?: string | undefined;
   literal?: boolean;
 };
-/** Where `piece`, `at` characters into a span's text, lies in the row's content. */
 type SourcePlacer = (at: number, piece: string) => InlineRange | undefined;
 export type ProtectedContent = {
   content: string;
   prefix: string;
   parts: InlinePart[];
-  /** The offset in the unprotected body of an offset in `content`, or
-   * undefined inside a placeholder, where no single source offset exists. */
   sourceOffset(offset: number): number | undefined;
 };
 /** Bind exact names on the FULL signed body, before Markdown decodes escapes or
@@ -152,8 +148,6 @@ export function protectInlineContent(
       part.target && /[\p{P}\p{S}]$/u.test(part.text) ? "\uFFFC" : "\uE002";
     return `${start}${parts.length - 1}${end}`;
   };
-  // Each placeholder: [its span in `content`, the source span it stands for].
-  // Between placeholders `content` is the source unchanged.
   const edits: [number, number, number, number][] = [];
   let emitted = 0;
   let offset = 0;
@@ -253,7 +247,6 @@ export function protectInlineContent(
     })
     .join("");
   const sourceOffset = (at: number) => {
-    // The last placeholder starting at or before `at`.
     let low = 0;
     let high = edits.length;
     while (low < high) {
@@ -441,42 +434,40 @@ function remarkBareLinkEnd(content: string) {
   };
 }
 
-/** micromark skips a leading byte order mark without counting it, so every
- * position in such a body is off by one: none can be trusted. */
 const hasSourcePositions = (content: string) =>
   content.charCodeAt(0) !== 0xfeff;
 
-/** Chat line breaks, like `remarkBreaks`, but a text node that is its source
- * unchanged keeps each line's source position. `remarkBreaks` splits text into
- * nodes that have none, and then no line of a multi-line message could be
- * placed. Text Markdown rewrote is left for `remarkBreaks`. */
 function remarkSourcedBreaks(content: string) {
+  const positioned = hasSourcePositions(content);
   return function visit(parent: MarkdownNode) {
-    if (!parent.children || !hasSourcePositions(content)) return;
+    if (!parent.children) return;
     parent.children = parent.children.flatMap((child) => {
       const value = child.value ?? "";
-      const start = child.position?.start.offset;
-      const end = child.position?.end.offset;
-      if (
-        child.type !== "text" ||
-        start === undefined ||
-        end === undefined ||
-        !/[\r\n]/.test(value) ||
-        content.slice(start, end) !== value
-      ) {
+      if (child.type !== "text" || !/[\r\n]/.test(value)) {
         visit(child);
         return [child];
       }
+      const start = child.position?.start.offset;
+      const end = child.position?.end.offset;
+      const exact =
+        positioned &&
+        start !== undefined &&
+        end !== undefined &&
+        content.slice(start, end) === value;
       const lines: MarkdownNode[] = [];
       const line = (from: number, to: number) => {
         if (from < to)
           lines.push({
             type: "text",
             value: value.slice(from, to),
-            position: {
-              start: { offset: start + from },
-              end: { offset: start + to },
-            },
+            ...(exact
+              ? {
+                  position: {
+                    start: { offset: (start ?? 0) + from },
+                    end: { offset: (start ?? 0) + to },
+                  },
+                }
+              : {}),
           });
       };
       let from = 0;
@@ -529,13 +520,11 @@ function remarkInlineContent(protectedContent: ProtectedContent) {
         const positioned = hasSourcePositions(protectedContent.content);
         const nodeStart = positioned ? child.position?.start.offset : undefined;
         const nodeEnd = positioned ? child.position?.end.offset : undefined;
-        // Only text that is its source unchanged can be placed within the node.
         const verbatim =
           nodeStart !== undefined &&
           nodeEnd !== undefined &&
           protectedContent.content.slice(nodeStart, nodeEnd) === child.value;
         let plain = "";
-        // Where the pending plain text began in the node's text.
         let plainFrom = 0;
         let end = 0;
         const flush = (to: number) => {
@@ -564,16 +553,17 @@ function remarkInlineContent(protectedContent: ProtectedContent) {
         }
         plain += child.value.slice(end);
         flush(child.value.length);
-        // Rewritten text (escapes, entities, indent) has no exact span. Its node
-        // is the span of a lone segment; of several it would not tell them apart.
-        const plainParts = parts.filter(
-          (part) => !part.target && !part.literal,
-        );
-        if (!verbatim && nodeStart !== undefined && nodeEnd !== undefined) {
-          const [only] = plainParts;
-          if (plainParts.length === 1 && only)
-            only.source = `${nodeStart},${nodeEnd},node`;
-        }
+        const [only] = parts;
+        if (
+          parts.length === 1 &&
+          only &&
+          !only.target &&
+          !only.literal &&
+          !verbatim &&
+          nodeStart !== undefined &&
+          nodeEnd !== undefined
+        )
+          only.source = `${nodeStart},${nodeEnd},node`;
         return parts.map((part) => ({
           type: "buzzInlineContent",
           data: {
@@ -725,8 +715,6 @@ function PreparedMessageMarkdown({
       </MessageLink>
     );
   };
-  /** `source` places a piece of the span's text, `at` characters in, within the
-   * row's content; see `InlineContent.source`. */
   const renderInline = (
     text: string,
     source: SourcePlacer | undefined,
@@ -800,29 +788,21 @@ function PreparedMessageMarkdown({
       protectionKey,
     ],
   );
-  /** Resolve a span's `data-inline-source` (see `remarkInlineContent`) to the
-   * row's own content. Done here, not in the cached tree: equal protected
-   * bodies can come from different sources (`&#58;` and `&#x3a;`). */
-  const sourcePlacer = (
-    attribute: unknown,
-    text: string,
-  ): SourcePlacer | undefined => {
+  const sourcePlacer = (attribute: unknown, text: string) => {
     if (typeof attribute !== "string") return undefined;
     const [from, to, kind] = attribute.split(",");
     const start = protectedContent.sourceOffset(Number(from));
     const end = protectedContent.sourceOffset(Number(to));
     if (start === undefined || end === undefined || start >= end)
       return undefined;
-    // Never vouch for a span that is not the text itself.
     if (kind === "exact") {
       if (row.content.slice(start, end) !== text) return undefined;
-      return (at, piece) => ({
+      return (at: number, piece: string) => ({
         start: start + at,
         end: start + at + piece.length,
       });
     }
-    // A node's span cannot say where in it a part of its text lies.
-    return (at, piece) =>
+    return (at: number, piece: string) =>
       at === 0 && piece.length === text.length ? { start, end } : undefined;
   };
   // Explicit profile links are identity locators, not signed notification intent.
@@ -970,7 +950,6 @@ const MarkdownBody = memo(function MarkdownBody({
           remarkGfm,
           [remarkBareLinkEnd, protectedContent.content],
           [remarkSourcedBreaks, protectedContent.content],
-          remarkBreaks,
           [remarkSpoilers, `<${protectedContent.prefix}spoiler\uE002>`],
           [remarkInlineContent, protectedContent],
           remarkLiteralHtml,

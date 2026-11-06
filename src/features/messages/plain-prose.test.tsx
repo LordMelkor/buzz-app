@@ -128,8 +128,6 @@ const withoutPositions = (node: object): unknown => {
     : rest;
 };
 
-// The fast tree's text nodes may carry a position; where one does it must be
-// micromark's own, as plugins slice the message with it.
 const expectMicromarkTree = (content: string, tree = gfmTree(content)) => {
   const fast = plainProseTree(content);
   expect(withoutPositions(fast), JSON.stringify(content)).toEqual(

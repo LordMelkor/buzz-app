@@ -871,7 +871,6 @@ describe("inline renderer source positions", () => {
     start: number;
     end: number;
   };
-  // Claims each whole segment, so every segment the host offers is recorded.
   function segments(content: string, options: RenderOptions = {}) {
     const seen: Seen[] = [];
     const recorder: Contribution<InlineRenderer> = {
@@ -905,7 +904,6 @@ describe("inline renderer source positions", () => {
   ])("places each of two equal segments in %s separately", (_, content) => {
     const seen = segments(content).filter(({ text }) => text.length > 1);
     expect(seen.map(({ text }) => text)).toEqual(["$x$", "$$", "$$", "$x$"]);
-    // Each range slices the message to its own segment.
     expect(slices(content, seen)).toEqual(["$x$", "$$", "$$", "$x$"]);
     const starts = seen.map(({ source }) => source?.start);
     expect(new Set(starts).size).toBe(4);
@@ -930,16 +928,27 @@ describe("inline renderer source positions", () => {
   });
 
   it("gives the source of rewritten text, only where it is one segment", () => {
-    // The escape is gone from the text but stays in the span.
     const escaped = "$a\\\\b$";
     const [one] = segments(escaped);
     expect(one?.text).toBe("$a\\b$");
     expect(one?.source).toEqual({ start: 0, end: escaped.length });
-    // Two segments of one rewritten node could not be told apart: no range.
     const shared = "a\\*b @Mic a\\*b";
     const seen = segments(shared);
     expect(seen.map(({ text }) => text)).toEqual(["a*b ", " a*b"]);
     expect(seen.map(({ source }) => source)).toEqual([undefined, undefined]);
+    for (const beside of ["a\\*b @Mic", "a\\*b &#58;", "@Mic a\\*b"]) {
+      const [segment] = segments(beside);
+      expect(segment?.text, beside).toMatch(/a\*b/);
+      expect(segment?.source, beside).toBeUndefined();
+    }
+  });
+
+  it("places the last of many lines", () => {
+    const lines = Array.from({ length: 2000 }, (_, index) => `${index}$x$`);
+    const content = lines.join("\n");
+    const seen = segments(content);
+    expect(seen).toHaveLength(2000);
+    expect(slices(content, seen)).toEqual(lines);
   });
 
   it("never gives a range that is not the segment", () => {
@@ -952,7 +961,6 @@ describe("inline renderer source positions", () => {
       "  $x$\n   $x$   ",
       "para one\n\n\n\n$x$\n\n$x$",
       "[$x$](https://a.test) $x$ <b>$x$</b> $x$",
-      // micromark does not count a leading byte order mark in its offsets.
       "\uFEFF$x$ **b**\n$x$",
       "\uFEFFxxxx **xxxx**",
       "a\t$x$\n\t$x$ *i*",
