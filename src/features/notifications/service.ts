@@ -4,6 +4,7 @@ import { createContributions } from "../../plugins/contributions";
 import { parseOpenTarget, type OpenTarget } from "../navigation/targets";
 import type { Navigation } from "../navigation/controller";
 import {
+  MAX_NOTIFICATION_PEOPLE,
   createNotificationPreferences,
   type NotificationPreferences,
 } from "./preferences";
@@ -45,9 +46,16 @@ export interface Notifications {
    * remover; disabling the plugin removes it too. */
   gate(gate: NotificationGate): () => void;
 }
+/** Host-only: the people whose posts notify the viewer. Not part of the
+ * plugin-facing `Notifications`, so a plugin cannot widen what alerts. */
+export type NotificationPeople = Pick<
+  NotificationsService,
+  "snapshot" | "subscribe" | "setPerson"
+>;
 declare module "@deepseek-ai/cordis" {
   interface Context {
     notifications: Notifications;
+    notificationPeople: NotificationPeople;
   }
 }
 export type NotificationEligibility = boolean | "wait";
@@ -67,6 +75,7 @@ const categories = Object.freeze([
   { key: "direct", label: "Direct messages" },
   { key: "thread", label: "Thread replies" },
   { key: "agent", label: "Solo chat completions" },
+  { key: "person", label: "People on your list" },
 ]);
 const FRESH_MS = 120_000;
 export type NotificationSnapshot = Readonly<{
@@ -114,6 +123,15 @@ export class NotificationsService extends Service implements Notifications {
       void playNotificationSound(name),
   ) {
     super(ctx, "notifications");
+    ctx.provide(
+      "notificationPeople",
+      Object.freeze({
+        snapshot: this.snapshot,
+        subscribe: this.subscribe,
+        setPerson: (pubkey: string, listed: boolean) =>
+          this.setPerson(pubkey, listed),
+      }),
+    );
     this.contributions =
       createContributions<NotificationCategoryDescriptor>(ctx);
     this.gates = createContributions<NotificationGate>(ctx);
@@ -201,6 +219,17 @@ export class NotificationsService extends Service implements Notifications {
   }
   updatePreferences(patch: Partial<NotificationPreferences>) {
     return this.preferences.update(patch);
+  }
+  /** Adds or removes one person from the list whose posts notify. False when
+   * the list is full or the choice could not be saved on this device. */
+  setPerson(pubkey: string, listed: boolean) {
+    const { people } = this.state.preferences;
+    const next = people.filter((item) => item !== pubkey);
+    if (listed) {
+      if (next.length >= MAX_NOTIFICATION_PEOPLE) return false;
+      next.push(pubkey);
+    }
+    return this.preferences.update({ people: next });
   }
   reloadPreferences() {
     this.preferences.reload();

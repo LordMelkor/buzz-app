@@ -464,6 +464,7 @@ it("selects and restores Silent for every category, stops previews, and can rest
     mention: "silent",
     thread: "silent",
     agent: "flutter",
+    person: "flutter",
   });
   expect(play).toHaveBeenCalledOnce();
   expect(screen.getByRole("switch", { name: "Desktop alerts" })).toBeChecked();
@@ -472,4 +473,50 @@ it("selects and restores Silent for every category, stops previews, and can rest
   await user.click(await screen.findByRole("option", { name: "flutter" }));
   expect(play).toHaveBeenCalledTimes(2);
   expect(service.snapshot().preferences.sounds.direct).toBe("flutter");
+});
+
+function peopleService() {
+  const ctx = new Context();
+  contexts.push(ctx);
+  const runtime = new PluginRuntime(ctx, async () => ({ apply() {} }));
+  ctx.effect(() => () => runtime.dispose());
+  const service = new NotificationsService(
+    ctx,
+    provideNavigation(ctx).navigation,
+    {
+      label: "Browser",
+      permission: vi.fn(async () => "granted" as const),
+      requestPermission: vi.fn(async () => "granted" as const),
+      show: vi.fn(async () => {}),
+      dispose() {},
+    },
+  );
+  service.selectViewer("a".repeat(64));
+  return service;
+}
+
+it("lists the people on the notify list, removes one, and clears the rest", async () => {
+  const service = peopleService();
+  const ada = "1".repeat(64);
+  const bo = "2".repeat(64);
+  render(<NotificationSettings notifications={service} />, {
+    wrapper: ToastProvider,
+  });
+  expect(screen.getByText("No one on your list")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Clear list" }),
+  ).not.toBeInTheDocument();
+  act(() => {
+    service.setPerson(ada, true);
+    service.setPerson(bo, true);
+  });
+  const user = userEvent.setup();
+  expect(screen.getAllByRole("button", { name: /^Remove / })).toHaveLength(2);
+  const [first] = screen.getAllByRole("button", { name: /^Remove / });
+  if (!first) throw new Error("No people listed");
+  await user.click(first);
+  expect(service.snapshot().preferences.people).toEqual([bo]);
+  await user.click(screen.getByRole("button", { name: "Clear list" }));
+  expect(service.snapshot().preferences.people).toEqual([]);
+  expect(screen.getByText("No one on your list")).toBeInTheDocument();
 });

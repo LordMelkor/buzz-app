@@ -5,6 +5,8 @@ import { SwitchPreferenceRow } from "../shared/design-system/ui/SwitchPreference
 import { Button } from "../shared/design-system/ui/Button";
 import { PreferenceRow } from "../shared/design-system/ui/PreferenceRow";
 import { Select } from "../shared/design-system/ui/Select";
+import { NotificationPeople } from "./NotificationPeople";
+import type { IdentityNameView } from "../features/identity-names/service";
 import { UnreadIndicatorSettings } from "./UnreadIndicatorSettings";
 import { usePermissionCheck } from "./usePermissionCheck";
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
@@ -24,6 +26,7 @@ const SOUND_ROWS: readonly NotificationCategory[] = [
   "mention",
   "thread",
   "agent",
+  "person",
 ];
 
 function AlertSoundRow({
@@ -78,9 +81,12 @@ function AlertSoundRow({
 
 export function NotificationSettings({
   notifications,
+  names,
   active = true,
 }: {
   notifications: NotificationsService;
+  /** Labels the people on the list; absent until a community is connected. */
+  names?: IdentityNameView | undefined;
   active?: boolean;
 }) {
   const state = useSyncExternalStore(
@@ -190,6 +196,11 @@ export function NotificationSettings({
             ))}
           </SettingsGroup>
         </section>
+        <NotificationPeople
+          notifications={notifications}
+          people={preferences.people}
+          names={names}
+        />
         <section id="setting-delivery" aria-label="Desktop delivery">
           <InlineHeader title="Delivery" />
           <SettingsGroup>

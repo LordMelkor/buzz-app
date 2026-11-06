@@ -307,6 +307,15 @@ revokes all of them, and a pairing unused for 30 days expires.
   dots, and do not contribute to the sidebar’s floating **N unread** buttons or
   their avatar previews. Muted activity does not light the macOS Dock unread dot.
   Muting does not mark messages or threads as read.
+- **People on your list**: choose **Notify me when they post** on someone's
+  profile to be notified when they post in a channel you're in; **Stop notifying**
+  removes them. **Settings → Notifications → People on your list** shows everyone
+  you added, with **Remove** and **Clear list**, and the **People on your list**
+  switch under **Notify me about** turns these alerts off without clearing the
+  list. They follow the same rules as other alerts: nothing while you're viewing
+  the conversation, nothing once read, and nothing from a muted channel. If
+  they also mention you, you get one alert, as a mention. Replies count only in
+  conversations you're part of. The list is saved on this device, per account.
 - **Hidden DMs**: **Close conversation** and **Hide conversation** take a DM out
   of the sidebar without leaving it. To find one again, start a **New message**
   to exactly the same people. Its earlier messages appear before you send,

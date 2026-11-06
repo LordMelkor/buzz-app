@@ -337,6 +337,7 @@ it("plays the selected per-category sound once delivery is accepted", async () =
       direct: "unison",
       thread: "doop",
       agent: "doodone",
+      person: "soft",
     },
   });
   await t.submit("one");
@@ -543,4 +544,21 @@ it("plugin display text is flattened and bounded, with the category text as fall
   expect(rich.body.startsWith("Call Ana <b>raw</b> bbb")).toBe(true);
   expect(Array.from(rich.body)).toHaveLength(200);
   expect(shown[1]).toMatchObject({ title: "Buzz", body: "New updates" });
+});
+it("setPerson adds and removes one person, refuses a full list, and survives a reload", () => {
+  const t = setup();
+  const [a, b] = ["a".repeat(64), "b".repeat(64)];
+  expect(t.service.setPerson(a, true)).toBe(true);
+  t.service.setPerson(b, true);
+  t.service.setPerson(a, true);
+  expect(t.service.snapshot().preferences.people).toEqual([b, a]);
+  t.service.reloadPreferences();
+  expect(t.service.snapshot().preferences.people).toEqual([b, a]);
+  t.service.setPerson(b, false);
+  expect(t.service.snapshot().preferences.people).toEqual([a]);
+  for (let i = 0; i < 199; i++)
+    t.service.setPerson(i.toString(16).padStart(64, "0"), true);
+  expect(t.service.snapshot().preferences.people).toHaveLength(200);
+  expect(t.service.setPerson(b, true)).toBe(false);
+  expect(t.service.snapshot().preferences.people).toHaveLength(200);
 });

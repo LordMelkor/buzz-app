@@ -15,6 +15,7 @@ const labels = {
   mention: "Mentions",
   direct: "Direct messages",
   thread: "Thread replies",
+  person: "People on your list",
 };
 /** A local Solo run owns its completion feedback; its reply is not a mention alert. */
 export function localSoloAgentReply(
@@ -143,10 +144,19 @@ export function bindMessageNotifications(
           message.channelId,
           message.messageId,
         );
+        // A post by someone on the viewer's list notifies under the same
+        // gates, but only when no stronger category applies: a listed person
+        // who mentions or messages the viewer alerts once, as that category.
+        const listed = notifications
+          .snapshot()
+          .preferences.people.includes(
+            message.workflowOwnerId ?? message.authorId,
+          );
         // A reply whose conversation lookup is pending may become thread
         // attention; admission waits until the lookup decides it.
         const category =
-          attention.category ?? (attention.pending ? "thread" : undefined);
+          attention.category ??
+          (listed ? "person" : attention.pending ? "thread" : undefined);
         const soloReply =
           category === "mention"
             ? localSoloAgentReply(
@@ -155,12 +165,13 @@ export function bindMessageNotifications(
                 relayPartition(origin, viewer),
               )
             : undefined;
-        if (
-          !category ||
-          (attention.status !== "eligible" && !attention.pending) ||
-          soloReply === "reply"
-        )
-          continue;
+        // An ordinary post earns no engine category; its channel access and
+        // unread state are what decide it. Unknown means no access yet.
+        const admissible =
+          category === "person"
+            ? attention.status !== "unknown" || attention.pending
+            : attention.status === "eligible" || attention.pending;
+        if (!category || !admissible || soloReply === "reply") continue;
         void notifications.admit(
           category,
           labels[category],
@@ -209,9 +220,14 @@ export function bindMessageNotifications(
             }
             const whileViewing =
               notifications.snapshot().preferences.notifyWhileViewing;
+            // A listed person's post has no engine category to match, and an
+            // own or quiet message is never unread, so it stays quiet below.
+            const ordinary = category === "person";
             if (
-              attention.status === "ineligible" ||
-              (!attention.pending && attention.category !== category) ||
+              (!ordinary && attention.status === "ineligible") ||
+              (!ordinary &&
+                !attention.pending &&
+                attention.category !== category) ||
               (!whileViewing && attention.viewing)
             )
               return false;

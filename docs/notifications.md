@@ -76,6 +76,20 @@ checks, not that an OS banner was displayed or read.
   complete snapshot); local-only hosts wait only for local storage. Failed or
   cancelled observation does not release alerts. Visibility is checked after UI
   presentation, without publishing read intent.
+- A person on the viewer's **People on your list** (the `person` category) alerts
+  for their post in a channel the viewer is in, under the same viewing, unread,
+  mute and sync gates as the categories above. The list is the `people` array in
+  the account-local notification preferences (pubkeys, at most 200; saved values
+  without it restore as empty), edited from **Notify me when they post** on a
+  profile and reviewed or cleared in Settings → Notifications; the category
+  switch turns the alerts off and keeps the list. The unread engine's category
+  wins: a listed person who also mentions or DMs the viewer alerts once, as
+  `mention` or `direct`, and a reply in one of the viewer's conversations stays
+  `thread`. Only otherwise-uncategorized posts become `person`. A reply outside
+  the viewer's own conversations is never unread by the engine's rule, so it does
+  not alert; top-level posts and in-conversation replies do. A workflow post is
+  matched on its owner. Plugins cannot read or change the list: the profile
+  action uses the host-only `notificationPeople` service, not `ctx.notifications`.
 - Channel Mute/Unmute uses the session's confirmed, encrypted `channel-mutes`
   preference, independently of whether Channels is mounted. Muted channels suppress
   DM and participating-thread alerts; explicit mentions still pass the channel-mute
