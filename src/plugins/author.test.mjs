@@ -33,7 +33,7 @@ test("generated author package exposes shared messages, captured-read Undo, host
       join(dir, "consumer.ts"),
       `
 import { createElement } from "react";
-import type { Context, DocumentEditorProps, DocumentEditorHandle, DocumentEditorSelection, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops, PluginUi, Seen } from "@buzz/author";
+import type { Context, DocumentEditorProps, DocumentEditorHandle, DocumentEditorSelection, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops, PluginUi, InlineRenderer, Seen } from "@buzz/author";
 export const manifest: PluginManifest = {
   id: "example.plugin", name: "Example", apiVersion: 1,
   host: {
@@ -50,6 +50,20 @@ const ExampleSidebar = ({ target, children }: PageSidebarProps) => {
 };
 const ExamplePreview = ({ close }: PagePreviewProps) =>
   createElement("button", { type: "button", onClick: close }, "Open");
+// The segment's place in message.content and the match's place in the segment.
+export const inlineRenderer: InlineRenderer = {
+  id: "positions",
+  title: "Positions",
+  matches: ({ text, message, source }) => {
+    const raw: string | undefined = source && message.content.slice(source.start, source.end);
+    return raw === text ? [{ start: 0, end: text.length }] : [];
+  },
+  component: ({ text, content, start, end }) => {
+    const from: number | undefined = content.source?.start;
+    void [from, start, end];
+    return text;
+  },
+};
 export const inject = ["agents", "decisions", "host", "identityNames", "pages", "relay"];
 export function apply(ctx: Context) {
   const seen: Seen | undefined = ctx.reflect.get("seen");

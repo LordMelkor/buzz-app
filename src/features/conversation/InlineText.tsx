@@ -66,7 +66,7 @@ export function InlineText({
       >
         <WithTargetOpener
           component={match.renderer.component}
-          props={{ text, content, media }}
+          props={{ text, content, media, start: match.start, end: match.end }}
           registry={registry}
           entry={match.renderer}
         />

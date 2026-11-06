@@ -3169,6 +3169,23 @@ tooltips and anything else that fetches or injects. Marks use the four
 opens the chart in an expanded dialog, and invalid JSON shows the error with the
 source. The host's Copy action copies the fenced JSON.
 
+`registerInline({ id, title, matches, component })` presents ranges of plain Markdown prose;
+links, code and reference labels are never offered. `matches(content)` receives
+`{ text, message, source? }` for one text segment and returns UTF-16 ranges within `text`;
+`component` receives `{ text, content, start, end, media }` for each claimed range, where
+`start`/`end` locate that range within `content.text`. `content.source` is the segment's
+range in `message.content`, so equal segments in one message can be told apart. Where the
+author wrote the text as it appears, `message.content.slice(source.start, source.end)`
+equals `text`, and the range of a match within it is `source.start + start`. Where Markdown
+rewrote the text (an escape, entity or indent), `source` is the whole piece of source the
+segment came from and may be longer than `text`. It is given for a rewritten segment only
+when that piece of source yields just one segment. It is absent when the host cannot place a
+segment exactly: inside a spoiler, beside a bare link, on a later line of a paragraph whose
+quote markers or indent Markdown removed, in a message that begins with a byte order mark,
+and in reactions. The host never gives a range that is not the segment. `message` is the message
+as the host renders it: a message whose wrapped links were repaired for display has those
+links rewritten in `message.content`, and `source` indexes that text.
+
 The conversation preview exposes top-level `registerTool`, `registerCompletion` and `registerInline`
 methods and stable `conversation.ui.Composer` / `.Message` / `.Thread` / `.Conversation` /
 `.ReplyBranch` / `.ReplySummary` / `.MembersDialog` / `.GeneralAccess` components,

@@ -128,6 +128,29 @@ const withoutPositions = (node: object): unknown => {
     : rest;
 };
 
+// The fast tree's text nodes may carry a position; where one does it must be
+// micromark's own, as plugins slice the message with it.
+const expectMicromarkTree = (content: string, tree = gfmTree(content)) => {
+  const fast = plainProseTree(content);
+  expect(withoutPositions(fast), JSON.stringify(content)).toEqual(
+    withoutPositions(tree),
+  );
+  fast.children.forEach((paragraph, index) => {
+    const position = paragraph.children[0]?.position;
+    if (position) {
+      const expected = (tree.children[index] as MdastParent).children[0]
+        ?.position;
+      expect(position.start.offset).toBe(expected?.start.offset);
+      expect(position.end.offset).toBe(expected?.end.offset);
+    }
+  });
+};
+type MdastParent = {
+  children: {
+    position?: { start: { offset?: number }; end: { offset?: number } };
+  }[];
+};
+
 afterEach(() => {
   parser.full = false;
 });
@@ -141,9 +164,7 @@ describe("plain prose fast path", () => {
   it("builds micromark's tree and prepares nothing literal", () => {
     for (const content of corpus) {
       const tree = gfmTree(content);
-      expect(plainProseTree(content), JSON.stringify(content)).toEqual(
-        withoutPositions(tree),
-      );
+      expectMicromarkTree(content, tree);
       // The full preparation's inputs: no literal or deep nodes, no wrapped
       // links and no spoiler pipes, so it equals the fast result.
       const scan = scanMarkdown(content);
@@ -209,10 +230,7 @@ describe("plain prose fast path", () => {
       let content = "";
       for (let count = 1 + Math.floor(random() * 8); count > 0; count--)
         content += atoms[Math.floor(random() * atoms.length)];
-      if (isPlainProse(content))
-        expect(plainProseTree(content), JSON.stringify(content)).toEqual(
-          withoutPositions(gfmTree(content)),
-        );
+      if (isPlainProse(content)) expectMicromarkTree(content);
     }
   });
 
