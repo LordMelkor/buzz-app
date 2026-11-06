@@ -7174,7 +7174,7 @@ it("qualifies both namesakes retroactively without changing source and removes q
   expect(h.messages.send).toHaveBeenCalledWith(
     "channel",
     "@Honey @Honey  ",
-    [first.pubkey, first.pubkey],
+    [first.pubkey],
     [],
   );
 });
@@ -8111,9 +8111,9 @@ it.each([undefined, "root"])(
     h.submit();
     expect(h.input()).toHaveValue("@Honey @Honey @Honey hello");
     h.submit();
+    // Two chips for one person notify once.
     expect(send.mock.calls.at(-1)?.[threadRootId ? 3 : 2]).toEqual([
       first.pubkey,
-      second.pubkey,
       second.pubkey,
     ]);
     expect(h.input()).toHaveValue("@Honey ");
@@ -11943,9 +11943,10 @@ it("a group edit inserts one chip and sends each member once", async () => {
   act(() => void h.commands().insertMention(first));
   h.submit();
   await waitFor(() => expect(h.messages.send).toHaveBeenCalled());
-  expect(new Set(h.messages.send.mock.calls[0]?.[2])).toEqual(
-    new Set([first.pubkey, second.pubkey]),
-  );
+  expect(h.messages.send.mock.calls[0]?.[2]).toEqual([
+    first.pubkey,
+    second.pubkey,
+  ]);
 });
 it("a group picked inside Markdown code is only its name", async () => {
   const h = mount();
@@ -11963,6 +11964,16 @@ it("a group picked inside Markdown code is only its name", async () => {
   });
   await h.user.keyboard("{Enter}");
   expect(h.input()).toHaveValue("@Crew ");
+  expect(h.commands().recipients).toEqual([]);
+});
+it("a group from the picker inside Markdown code is only its name", () => {
+  const h = mount();
+  h.fill("`ab`");
+  act(() => h.input().setSelectionRange(2, 2));
+  act(() =>
+    expect(h.commands().insertMentions([first, second], "Crew")).toBe(true),
+  );
+  expect(h.input()).toHaveValue("`a@Crew b`");
   expect(h.commands().recipients).toEqual([]);
 });
 it("a group edit with an unavailable member adds nothing", async () => {
