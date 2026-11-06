@@ -5,8 +5,43 @@ import {
 } from "./composer-document";
 
 export type MentionRecipient = Readonly<{ pubkey: string; name: string }>;
+/** One recipient on a span. A group chip projects one per member, each with
+ * the group's `label`: then the span reads `@label` instead of `@name`. */
 export type DraftRecipient = MentionRecipient &
-  Readonly<{ start: number; end: number }>;
+  Readonly<{ start: number; end: number; label?: string }>;
+/** A message notifies at most this many distinct people. */
+export const MAX_RECIPIENTS = 32;
+/** The distinct people `recipients` mention; a group shares a span with its
+ * members, and two chips can name the same person. */
+export function distinctRecipients(
+  recipients: readonly MentionRecipient[],
+): number {
+  return new Set(recipients.map((item) => item.pubkey)).size;
+}
+/** `recipients` up to the first `MAX_RECIPIENTS` distinct people, keeping
+ * every span of each one it keeps. */
+function capRecipients<T extends MentionRecipient>(recipients: readonly T[]) {
+  const kept = new Set<string>();
+  return recipients.filter((item) => {
+    if (!kept.has(item.pubkey) && kept.size >= MAX_RECIPIENTS) return false;
+    kept.add(item.pubkey);
+    return true;
+  });
+}
+/** `text` without the spans `recipients` cover; a group's span counts once. */
+export function withoutSpans(
+  text: string,
+  recipients: readonly Readonly<{ start: number; end: number }>[],
+) {
+  const spans = [
+    ...new Map(
+      recipients.map((item) => [`${item.start}:${item.end}`, item]),
+    ).values(),
+  ].sort((a, b) => b.start - a.start);
+  for (const { start, end } of spans)
+    text = text.slice(0, start) + text.slice(end);
+  return text;
+}
 // Serializable draft metadata must not expose editor implementation types to plugins.
 export type ComposerSnapshot = { version: 1; content: unknown };
 /** A name Space committed before the chooser could decide. The editor resolves
@@ -62,11 +97,13 @@ export function mentionDraft(value: unknown): MentionDraft {
           /^[0-9a-f]{64}$/.test(item.pubkey) &&
           typeof item.name === "string" &&
           !!item.name.trim() &&
+          (item.label === undefined ||
+            (typeof item.label === "string" && !!item.label.trim())) &&
           Number.isInteger(item.start) &&
           Number.isInteger(item.end) &&
           item.start >= 0 &&
           item.end <= text.length &&
-          text.slice(item.start, item.end) === `@${item.name}` &&
+          text.slice(item.start, item.end) === `@${item.label ?? item.name}` &&
           mentionBoundary(text, item.end),
       )
     : [];
@@ -93,9 +130,12 @@ export function mentionDraft(value: unknown): MentionDraft {
         }
       : {}),
     ...(doc ? { document: document as ComposerSnapshot } : {}),
-    recipients: safe
-      .slice(0, 32)
-      .map(({ pubkey, name, start, end }) => ({ pubkey, name, start, end })),
+    recipients: capRecipients(safe).map(
+      ({ pubkey, name, label, start, end }) =>
+        label === undefined
+          ? { pubkey, name, start, end }
+          : { pubkey, name, label, start, end },
+    ),
   };
 }
 /** What counts as a draft everywhere: text, an attached chat or GIF, or `files`.
@@ -120,12 +160,7 @@ export function legacyFollowupDraft(value: MentionDraft): boolean {
 export function addressingOnly(value: MentionDraft): boolean {
   if (!value.recipients.length || value.chatCards?.length || value.gifs?.length)
     return false;
-  let rest = value.text;
-  for (const { start, end } of [...value.recipients].sort(
-    (a, b) => b.start - a.start,
-  ))
-    rest = rest.slice(0, start) + rest.slice(end);
-  return !rest.trim();
+  return !withoutSpans(value.text, value.recipients).trim();
 }
 /** Prefill exact, already-selected identities; never infer recipients from prose. */
 export function followupDraft(

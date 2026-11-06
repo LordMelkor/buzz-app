@@ -2438,7 +2438,9 @@ Providers receive immutable observation/range evidence and `publish(result)`—n
 DOM, focus or replacement commands. Results contain stable IDs, labels, optional
 detail/decorative previews, an optional `agent` flag (marked and announced only
 for the bundled mention and channel providers) and either text, an exact `{ pubkey, name }` mention,
-or a `mentions` array of up to 32 such recipients. Batch edit primitives are
+a `mentions` array of up to 32 such recipients, or a `group` of `{ name, mentions }`:
+one `@name` chip that notifies each of its up to 32 mentions. In a message edit a
+group inserts only its name, since edits add no recipients. Batch edit primitives are
 copied and frozen before display, and accepted as a single editor transaction.
 The host copies edit/query primitives and caps publications at 50 choices. A
 publication returns its own withdrawal disposer (or `false` after revocation).

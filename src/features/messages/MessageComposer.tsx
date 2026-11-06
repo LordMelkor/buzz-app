@@ -126,11 +126,13 @@ import styles from "./Messages.module.css";
 import { messageViewKey } from "./view-key";
 import { isEmojiOnly, usesLargeEmojiPresentation } from "./emoji-size";
 import {
+  distinctRecipients,
   legacyFollowupDraft,
   MAX_DRAFT_GIFS,
   mentionBoundary,
   mentionDraft,
   stageableGif,
+  withoutSpans,
   type MentionDraft,
   type MentionRecipient,
 } from "./mention-draft";
@@ -1698,7 +1700,10 @@ function Composer({
       );
       return false;
     }
-    if (recipient && valueRef.current.recipients.length >= 32) {
+    if (
+      recipient &&
+      distinctRecipients([...valueRef.current.recipients, recipient]) > 32
+    ) {
       setError("Choose at most 32 recipients");
       return false;
     }
@@ -1769,7 +1774,7 @@ function Composer({
       ? "unresolved"
       : !admits()(recipient.pubkey)
         ? "unavailable"
-        : valueRef.current.recipients.length >= 32
+        : distinctRecipients([...valueRef.current.recipients, recipient]) > 32
           ? "limit"
           : undefined;
     const accepted =
@@ -2026,6 +2031,69 @@ function Composer({
     setError(undefined);
     return true;
   }
+  /** One chip for the whole group, at `range` or, from a tool, the caret. */
+  function insertGroup(
+    group: Readonly<{ name: string; mentions: readonly MentionRecipient[] }>,
+    range?: CompletionQuery,
+  ) {
+    if (
+      !group ||
+      typeof group.name !== "string" ||
+      !group.name.trim() ||
+      !Array.isArray(group.mentions) ||
+      !group.mentions.length ||
+      group.mentions.some(
+        (person) =>
+          !person ||
+          typeof person.pubkey !== "string" ||
+          !/^[0-9a-f]{64}$/.test(person.pubkey) ||
+          typeof person.name !== "string" ||
+          !person.name.trim(),
+      )
+    )
+      return false;
+    // Message edits only add references, never new notification intent.
+    if (editing.target) return insert(`@${group.name} `, undefined, range);
+    if (
+      !permitted.current ||
+      editingDisabled ||
+      !outbox?.supports(9) ||
+      !input.current?.isConnected ||
+      input.current.disabled ||
+      input.current.readOnly
+    )
+      return false;
+    const members = [
+      ...new Map(
+        group.mentions.map(({ pubkey, name }) => [pubkey, { pubkey, name }]),
+      ).values(),
+    ];
+    const admitted = admits();
+    if (members.some((person) => !admitted(person.pubkey))) {
+      setError(
+        "A group member is no longer available. Refresh choices before trying again.",
+      );
+      return false;
+    }
+    const chip = { label: group.name, members };
+    if (
+      !(solo && !range
+        ? keepProseCaret(
+            (at) => !!input.current?.insertText("", chip, at, undefined, false),
+          )
+        : input.current.insertText("", chip, range))
+    ) {
+      setError(
+        "The group would exceed the message length or 32-recipient limit. Nothing was added.",
+      );
+      return false;
+    }
+    completion.invalidate();
+    for (const person of members)
+      rememberMention(session, channelId, person.pubkey);
+    setError(undefined);
+    return true;
+  }
   function replaceRecipients(recipients: readonly MentionRecipient[]) {
     if (
       !Array.isArray(recipients) ||
@@ -2059,13 +2127,10 @@ function Composer({
   }
   function replaceRecipientsIfEmpty(recipients: readonly MentionRecipient[]) {
     const current = valueRef.current;
-    const prose = [...current.recipients]
-      .sort((a, b) => b.start - a.start)
-      .reduce(
-        (text, tag) => text.slice(0, tag.start) + text.slice(tag.end),
-        current.text,
-      );
-    return !prose.trim() && replaceRecipients(recipients);
+    return (
+      !withoutSpans(current.text, current.recipients).trim() &&
+      replaceRecipients(recipients)
+    );
   }
   function insertResource(resource: ComposerResource): true | string {
     if (
@@ -2114,6 +2179,7 @@ function Composer({
       setError(undefined);
       return true;
     }
+    if ("group" in edit && edit.group) return insertGroup(edit.group, query);
     if ("mentions" in edit && edit.mentions)
       return insertMentions(edit.mentions, query);
     if ("mention" in edit && edit.mention)
@@ -3645,7 +3711,11 @@ function Composer({
                     audience={audience}
                     insertText={(text) => attachGif(text) ?? insert(text)}
                     insertMention={insertMention}
-                    insertMentions={insertMentions}
+                    insertMentions={(people, group) =>
+                      group === undefined
+                        ? insertMentions(people)
+                        : insertGroup({ name: group, mentions: people })
+                    }
                     replaceRecipients={replaceRecipients}
                     replaceRecipientsIfEmpty={replaceRecipientsIfEmpty}
                     insertResource={insertResource}

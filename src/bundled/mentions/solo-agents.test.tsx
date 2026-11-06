@@ -3474,7 +3474,7 @@ it("saved teams resolve exact keys, block automatic Space and revoke a changed c
   try {
     await waitFor(() => expect(h.choice()?.disabled).toBeUndefined());
     await waitFor(() =>
-      expect(h.choice()?.edit.mentions).toEqual([
+      expect(h.choice()?.edit.group?.mentions).toEqual([
         { pubkey: h.member, name: "Member" },
         { pubkey: h.key, name: "Outside agent" },
       ]),
@@ -3506,7 +3506,7 @@ it.each([
     try {
       await waitFor(() => expect(h.choice()?.disabled).toBeTruthy());
       expect(h.choice()?.canSelect?.("Enter")).toBe(false);
-      expect(h.choice()?.edit.mentions).toBeUndefined();
+      expect(h.choice()?.edit.group?.mentions).toBeUndefined();
     } finally {
       h.view.unmount();
       h.library.dispose();
@@ -3516,7 +3516,9 @@ it.each([
 it("archive changes revoke previously published team acceptance", async () => {
   const h = teamFixture();
   try {
-    await waitFor(() => expect(h.choice()?.edit.mentions).toHaveLength(2));
+    await waitFor(() =>
+      expect(h.choice()?.edit.group?.mentions).toHaveLength(2),
+    );
     const selected = h.choice();
     if (!selected) throw new Error("Team missing");
     act(() => h.setArchived([h.key]));
@@ -3559,7 +3561,9 @@ it("team loading has no Retry action and never replaces a people status", async 
 it("a longer team name remains an admitted query after a person's exact name plus Space", async () => {
   const h = teamFixture(undefined, { query: "Member " });
   try {
-    await waitFor(() => expect(h.choice()?.edit.mentions).toHaveLength(2));
+    await waitFor(() =>
+      expect(h.choice()?.edit.group?.mentions).toHaveLength(2),
+    );
     expect(h.result()?.items[0]).toMatchObject({
       id: h.member,
       label: "Member",

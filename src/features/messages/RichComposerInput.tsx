@@ -7,6 +7,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import { useNamesRevision } from "../identity-names/react";
 import { useListedChannel } from "../relay/listed-channel";
 import { InlineChip } from "../../shared/design-system/ui/InlineChip";
+import { UsersIcon } from "../../shared/design-system/icons/index";
 import type { ConversationExtensions } from "../conversation/contracts";
 import type { Profile } from "../relay/contracts";
 import type { CustomEmoji } from "../relay/emoji";
@@ -102,6 +103,34 @@ const TokenChip = memo(function TokenChip({
       }
       interactive={false}
     />
+  );
+});
+
+/** One chip for a group mention: its `@label`, with the members it notifies
+ * in the accessible name and tooltip rather than in the message. */
+const GroupChip = memo(function GroupChip({
+  label,
+  members,
+}: {
+  label: string;
+  members: string;
+}) {
+  return (
+    <span
+      data-buzz-ui=""
+      className="inline-chip"
+      data-kind="person"
+      data-state="resolved"
+      role="img"
+      aria-label={`Group ${label}: ${members}`}
+      title={members}
+    >
+      <UsersIcon className="inline-chip-icon" aria-hidden="true" />
+      <span className="inline-chip-label">
+        <span className="inline-chip-trigger">@</span>
+        {label}
+      </span>
+    </span>
   );
 });
 
@@ -314,8 +343,20 @@ export function RichComposerInput({
           ...(mention ? { mention } : {}),
         });
     };
-    for (const recipient of draft.recipients)
+    // A group's members share its span; the first claims it for the chip.
+    const groups = new Map<number, { label: string; members: string[] }>();
+    for (const recipient of draft.recipients) {
+      if (recipient.label !== undefined) {
+        const group = groups.get(recipient.start);
+        if (group) group.members.push(recipient.pubkey);
+        else
+          groups.set(recipient.start, {
+            label: recipient.label,
+            members: [recipient.pubkey],
+          });
+      }
       add(recipient.start, recipient.end, recipient.pubkey);
+    }
     // Identity links are display references, not new notification recipients.
     // Keep their exact source token so editing surrounding prose preserves it.
     const profileLinks = new Map<number, { pubkey: string; label: string }>();
@@ -367,6 +408,21 @@ export function RichComposerInput({
         const preview = gifPreviews.get(start);
         if (preview && preview.end === end && !mention)
           return { start, end, editAsText: false, content: preview.content };
+        const group = mention ? groups.get(start) : undefined;
+        if (group)
+          return {
+            start,
+            end,
+            editAsText: false,
+            content: (
+              <GroupChip
+                label={group.label}
+                members={group.members
+                  .map((key) => labels.get(key) ?? key)
+                  .join(", ")}
+              />
+            ),
+          };
         const profile = mention ? undefined : profileLinks.get(start);
         const identity = mention ?? profile?.pubkey;
         const label = profile?.label ?? draft.text.slice(start + 1, end);

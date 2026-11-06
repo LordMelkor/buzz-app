@@ -7558,9 +7558,15 @@ it("rejects overlong and over-limit tool edits without changing accepted intent"
   expect(h.input()).toHaveValue("x".repeat(15999));
   expect(screen.getByRole("alert")).toHaveTextContent("too long");
   h.fill("");
+  const people = Array.from({ length: 32 }, (_, i) => ({
+    pubkey: i.toString(16).padStart(64, "0"),
+    name: `P${i}`,
+  }));
   act(() => {
-    for (let i = 0; i < 32; i++)
-      expect(h.commands().insertMention(first)).toBe(true);
+    for (const person of people)
+      expect(h.commands().insertMention(person)).toBe(true);
+    // Someone already mentioned adds no recipient.
+    expect(h.commands().insertMention(people[7] ?? first)).toBe(true);
   });
   const before = h.input().value;
   act(() => {
@@ -11917,6 +11923,49 @@ it("batch insertion rejects an unavailable member atomically and does not send o
   expect(h.messages.send).not.toHaveBeenCalled();
   expect(screen.getByRole("alert")).toHaveTextContent("no longer available");
 });
+it("a group edit inserts one chip and sends each member once", async () => {
+  const h = mount();
+  h.fill("!Crew");
+  act(() => {
+    h.completionRequests.at(-1)?.({
+      items: [
+        {
+          id: "team",
+          label: "Crew",
+          edit: { group: { name: "Crew", mentions: [first, second, first] } },
+        },
+      ],
+    });
+  });
+  await h.user.keyboard("{Enter}");
+  expect(h.input()).toHaveValue("@Crew ");
+  // A member also mentioned alone is still one recipient.
+  act(() => void h.commands().insertMention(first));
+  h.submit();
+  await waitFor(() => expect(h.messages.send).toHaveBeenCalled());
+  expect(new Set(h.messages.send.mock.calls[0]?.[2])).toEqual(
+    new Set([first.pubkey, second.pubkey]),
+  );
+});
+it("a group edit with an unavailable member adds nothing", async () => {
+  const h = mount({ inviteAgents: true });
+  const unavailable = { pubkey: "c".repeat(64), name: "Missing" };
+  h.fill("!Crew");
+  act(() => {
+    h.completionRequests.at(-1)?.({
+      items: [
+        {
+          id: "team",
+          label: "Crew",
+          edit: { group: { name: "Crew", mentions: [first, unavailable] } },
+        },
+      ],
+    });
+  });
+  await h.user.keyboard("{Enter}");
+  expect(h.input()).toHaveValue("!Crew");
+  expect(screen.getByRole("alert")).toHaveTextContent("no longer available");
+});
 it.each(["disabled", "retarget", "unmount"])(
   "revokes batch commands after %s",
   (transition) => {
@@ -15116,7 +15165,10 @@ it.each([
       act(() => {
         h.input().insertText(
           "",
-          Array.from({ length: 32 }, () => second),
+          Array.from({ length: 32 }, (_, i) => ({
+            pubkey: i.toString(16).padStart(64, "0"),
+            name: `P${i}`,
+          })),
         );
       }),
     alert:

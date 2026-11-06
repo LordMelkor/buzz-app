@@ -4791,7 +4791,7 @@ it("keeps retained recipients in place while adding and removing others", () => 
   expect(h.input).toHaveValue("ask @Honey about X");
 });
 
-it("rejects adding a recipient when retained duplicate mentions fill the limit", () => {
+it("counts a person mentioned many times once against the recipient limit", () => {
   const first = { pubkey: "a".repeat(64), name: "Honey" };
   const text = "@Honey ".repeat(32);
   const h = mount({
@@ -4808,9 +4808,9 @@ it("rejects adding a recipient when retained duplicate mentions fill the limit",
         first,
         { pubkey: "b".repeat(64), name: "Mary Jane" },
       ]),
-    ).toBe(false),
+    ).toBe(true),
   );
-  expect(h.input).toHaveValue(text);
+  expect(h.input).toHaveValue(`@Mary Jane ${text}`);
 });
 
 it("toggles inline code, quote and code block with Slack's chords as well as Buzz's", async () => {
@@ -4888,5 +4888,79 @@ describe("oversized paste feedback", () => {
     paste(h.input, "Docs", '<a href="https://example.com/docs">Docs</a>');
     expect(h.markdown()).toBe("");
     expect(onPasteTooLong).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("group chip", () => {
+  const ann = { pubkey: "1".repeat(64), name: "Ann" };
+  const bo = { pubkey: "2".repeat(64), name: "Bo" };
+  const crew = { label: "crew", members: [ann, bo] };
+  const on = (start: number, end: number, ...people: (typeof ann)[]) =>
+    people.map((person) => ({ ...person, label: "crew", start, end }));
+
+  it("inserts one chip whose span names every member", () => {
+    const h = mount();
+    act(() => expect(h.input.insertText("", crew)).toBe(true));
+    expect(h.input).toHaveValue("@crew ");
+    expect(h.input.querySelectorAll("[data-mention]")).toHaveLength(1);
+    expect(h.draft().recipients).toEqual(on(0, 5, ann, bo));
+  });
+
+  it("keeps its members through prose edits and a draft restore", async () => {
+    const h = mount();
+    act(() => void h.input.insertText("", crew));
+    await h.user.keyboard("hi");
+    expect(h.draft().recipients).toEqual(on(0, 5, ann, bo));
+    const restored = mount(h.draft());
+    expect(restored.draft().recipients).toEqual(on(0, 5, ann, bo));
+    expect(restored.input).toHaveValue("@crew hi");
+  });
+
+  it("drops a removed member, and returns to prose with the last", () => {
+    const h = mount();
+    act(() => void h.input.insertText("", crew));
+    act(() => h.input.removeRecipient(ann.pubkey));
+    expect(h.draft().recipients).toEqual(on(0, 5, bo));
+    act(() => h.input.removeRecipient(bo.pubkey));
+    expect(h.draft().recipients).toEqual([]);
+    expect(h.input).toHaveValue("@crew ");
+  });
+
+  it("returns to prose when typed text joins its name", async () => {
+    const h = mount();
+    act(() => void h.input.insertText("", crew));
+    act(() => h.input.setSelectionRange(5, 6));
+    await h.user.keyboard("s");
+    expect(h.input).toHaveValue("@crews");
+    expect(h.draft().recipients).toEqual([]);
+  });
+
+  it("replaces its members as a whole: the span goes only with the last", () => {
+    const h = mount();
+    act(() => void h.input.insertText("", crew));
+    act(() => expect(h.input.replaceRecipients([bo])).toBe(true));
+    expect(h.draft().recipients).toEqual(on(0, 5, bo));
+    act(() => expect(h.input.replaceRecipients([ann])).toBe(true));
+    expect(h.draft().recipients.map(({ pubkey }) => pubkey)).toEqual([
+      ann.pubkey,
+    ]);
+    expect(h.input).toHaveValue("@Ann ");
+  });
+
+  it("counts distinct people against the 32-recipient cap", () => {
+    const people = Array.from({ length: 32 }, (_, i) => ({
+      pubkey: i.toString(16).padStart(64, "0"),
+      name: `P${i}`,
+    }));
+    const h = mount();
+    act(() =>
+      expect(h.input.insertText("", { label: "all", members: people })).toBe(
+        true,
+      ),
+    );
+    // The same people again add no one, so the cap still holds.
+    act(() => expect(h.input.insertText("", people[0])).toBe(true));
+    act(() => expect(h.input.insertText("", ann)).toBe(false));
+    expect(new Set(h.draft().recipients.map((r) => r.pubkey)).size).toBe(32);
   });
 });

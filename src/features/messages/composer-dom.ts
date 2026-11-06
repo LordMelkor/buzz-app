@@ -1,4 +1,5 @@
 import type { MentionDraft, MentionRecipient } from "./mention-draft";
+import type { ComposerGroup } from "./composer-document";
 import type { ComposerResource } from "../conversation/contracts";
 
 export const inlineFormats = [
@@ -101,7 +102,8 @@ export type ComposerInputElement = HTMLDivElement & {
   setSelectionRange(start: number, end: number, direction?: string): void;
   insertText(
     text: string,
-    recipient?: MentionRecipient | readonly MentionRecipient[],
+    /** One chip each, or one chip for a whole group. */
+    recipient?: MentionRecipient | readonly MentionRecipient[] | ComposerGroup,
     range?: { start: number; end: number },
     /** A typed closing colon is recorded before conversion for one-step undo. */
     terminator?: ":",
