@@ -969,11 +969,17 @@ function originRequests(ctx: Context) {
   let state = activations.get(ctx.fiber);
   if (!state) {
     const stopped = new AbortController();
+    const current = { stopped, asking: new Map<string, Promise<boolean>>() };
     ctx.effect(
-      () => () => stopped.abort(new Error("Plugin stopped before approval")),
+      () => () => {
+        stopped.abort(new Error("Plugin stopped before approval"));
+        // A Cordis restart keeps the fiber: the next activation starts fresh.
+        if (activations.get(ctx.fiber) === current)
+          activations.delete(ctx.fiber);
+      },
       "origin consent",
     );
-    state = { stopped, asking: new Map() };
+    state = current;
     activations.set(ctx.fiber, state);
   }
   return state;

@@ -1731,6 +1731,24 @@ it("closes the prompt and rejects when the requesting plugin unloads", async () 
   expect(invoke).not.toHaveBeenCalledWith("plugin_change", expect.anything());
 });
 
+it("asks again after a Cordis restart on the same fiber", async () => {
+  const { host, fiber } = await oncePlugin();
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "plugin_catalog" ? catalog() : undefined,
+  );
+  try {
+    const before = host.requestOrigin?.("https://mcp.example");
+    await answer(false);
+    expect(await before).toBe(false);
+    await fiber.restart();
+    const after = host.requestOrigin?.("https://mcp.example");
+    await answer(true);
+    expect(await after).toBe(true);
+  } finally {
+    await fiber.dispose();
+  }
+});
+
 it("never lets a new activation share a prompt or answer from an earlier one", async () => {
   const first = await oncePlugin();
   const second = await oncePlugin();
