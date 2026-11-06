@@ -154,15 +154,22 @@ export function useTeamMentions(
       : undefined;
   if (installed && !rows) install(undefined);
   // A team holds people as well as agents. Ask for the names of the people in
-  // shown rows: an unnamed key is never offered, as with a pasted link.
+  // shown rows that can mention: an unnamed key is never offered, as with a
+  // pasted link.
   const memberKeys = [
-    ...new Set(rows?.flatMap((team) => team.value.agents) ?? []),
+    ...new Set(
+      rows?.flatMap(({ value }) =>
+        value.agents.length > 32 ? [] : value.agents,
+      ) ?? [],
+    ),
   ]
     .sort()
     .join();
   useEffect(() => {
     if (open && memberKeys)
-      void session.profiles.ensure(memberKeys.split(",")).catch(() => {});
+      void session.profiles
+        .ensure(memberKeys.split(","), "background")
+        .catch(() => {});
   }, [session, open, memberKeys]);
   // mentionCandidates keeps rows per directory array, so reuse one array until
   // its sources change.
