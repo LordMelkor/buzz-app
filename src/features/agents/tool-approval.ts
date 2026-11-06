@@ -120,12 +120,14 @@ export function createToolApprovals(storage: AgentStore = localStore()) {
             item.plugin === request.plugin &&
             item.tool === request.tool,
         );
-        if (release(request, "always"))
-          void storage
-            .set(allowedKey(request), "1")
-            .catch((error) =>
-              console.warn("Could not remember a plugin tool approval", error),
-            );
+        // An Always allow on a stopped call answers nothing: the others
+        // still wait for their own answer.
+        if (!release(request, "always")) return;
+        void storage
+          .set(allowedKey(request), "1")
+          .catch((error) =>
+            console.warn("Could not remember a plugin tool approval", error),
+          );
         // Calls waiting on the same tool have been answered too.
         for (const other of others) release(other, "always");
         return;

@@ -54,3 +54,23 @@ it("remembers Always allow on the device, for that plugin's tool only", async ()
   await Promise.resolve();
   expect(restarted.pending()).toHaveLength(2);
 });
+
+it("lets an Always allow on a stopped call answer no other call", async () => {
+  const saved = memoryStorage();
+  const approvals = createToolApprovals(saved);
+  const stopped = approvals.ask("Echo", { ...ask, detail }, undefined, () => {
+    throw new Error("Turn ended");
+  });
+  const other = approvals.ask("Sky", { ...ask, detail: "Task 8" });
+  await Promise.resolve();
+  approvals.answer(approvals.pending()[0]?.id ?? "", "always");
+  await expect(stopped).rejects.toThrow("Turn ended");
+  expect(approvals.pending()).toMatchObject([{ agent: "Sky" }]);
+  approvals.answer(approvals.pending()[0]?.id ?? "", "once");
+  await expect(other).resolves.toBe("once");
+  // Nothing was remembered: the tool still asks after a restart.
+  const restarted = createToolApprovals(saved);
+  void restarted.ask("Echo", { ...ask, detail });
+  await Promise.resolve();
+  expect(restarted.pending()).toHaveLength(1);
+});
