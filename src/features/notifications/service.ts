@@ -60,8 +60,8 @@ declare module "@deepseek-ai/cordis" {
 }
 /** The built-in feature that edits the list, as `pluginOwner.id` names it. */
 export const PEOPLE_LIST_OWNER = "buzz.profiles";
-// Only the profile card and the host itself may read or change the list, so
-// no other plugin learns whom the owner follows or adds people to it.
+// Calls through another plugin's context are rejected. Plugins are trusted,
+// unsandboxed code, so this keeps the API honest; it is not isolation.
 function providePeopleList(ctx: Context, service: NotificationPeople) {
   const owner = (caller: Context) => {
     const id = caller.pluginOwner?.id;
