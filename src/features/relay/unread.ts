@@ -56,6 +56,8 @@ export type MessageAttention = Readonly<{
    * outside the viewer's conversations counts too, unless the viewer
    * unfollowed its thread. Badges and alerts by category still use `unread`. */
   activityUnread?: true;
+  /** The viewer unfollowed this reply's thread. */
+  unfollowed?: true;
   /** This row is explicitly forced unread during the current channel visit. */
   forced: boolean;
   viewing: boolean;
@@ -836,6 +838,7 @@ export function createUnread({
       (chosen(entry) !== false && afterFrontier(entry, reads.state(), dm))
         ? { activityUnread: true }
         : {}),
+      ...(chosen(entry) === false ? { unfollowed: true } : {}),
       unread,
       forced: forcedMessages.get(channelId)?.has(messageId) ?? false,
       viewing,

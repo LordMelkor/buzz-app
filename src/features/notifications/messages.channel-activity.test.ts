@@ -185,3 +185,89 @@ it("a local Solo run's reply leaves its completion feedback as the only alert", 
   await flush();
   expect(bodies(h)).toEqual(["A later post"]);
 });
+
+it("a reply whose conversation lookup finds no root still alerts once the lookup ends", async () => {
+  vi.spyOn(Date, "now").mockReturnValue(1_780_000_000_000);
+  const h = await setup();
+  allActivity(h, "room");
+  const missing = "f".repeat(64);
+  const base = h.query.getMockImplementation();
+  h.query.mockImplementation(async (filters, ...rest) =>
+    filters[0]?.ids?.includes(missing)
+      ? []
+      : ((await base?.(filters, ...rest)) ?? []),
+  );
+  const answer = message(h.peer, "room", "answer", 1_780_000_000, [
+    ["e", missing, "", "reply"],
+  ]);
+  h.emit([answer], "live");
+  await vi.waitFor(() => expect(h.show).toHaveBeenCalledOnce());
+  expect(h.show.mock.calls[0]?.[0].title).toMatch(/ posted in #Room$/);
+});
+
+it("turning the channel off cancels an alert waiting on a local Solo run", async () => {
+  const h = await setup();
+  allActivity(h, "room");
+  const run = h.activity.begin({
+    scope: `https://relay.example.com:${h.viewer.pubkey}`,
+    agent: h.peer.pubkey,
+    channelId: "room",
+    messageId: "request",
+    threadRootId: "request",
+    soloChat: true,
+    conversationName: "Planning",
+  });
+  run.started();
+  const sent = run.sending();
+  h.emit([post(h, "while sending")], "live");
+  await flush();
+  expect(h.show).not.toHaveBeenCalled();
+  allActivity(h, "room", false);
+  // The app's view subscription revalidates here; this host has no window.
+  h.notifications.revalidate();
+  await flush();
+  allActivity(h, "room");
+  const done = post(h, "Done");
+  h.emit([done], "live");
+  run.reply(done.id);
+  sent();
+  run.finish({ ok: true });
+  h.emit([post(h, "A later post")], "live");
+  await vi.waitFor(() => expect(bodies(h)).toContain("A later post"));
+  await flush();
+  expect(bodies(h)).toEqual(["A later post"]);
+});
+
+it("unfollowing a viewed thread cancels its waiting alert, with Notify while viewing on", async () => {
+  const h = await setup();
+  h.notifications.updatePreferences({ notifyWhileViewing: true });
+  allActivity(h, "room");
+  const root = message(h.peer, "room", "their thread", now() - 1);
+  h.emit([root], "replay");
+  let release!: (permission: "granted") => void;
+  h.permission.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  const answer = reply(h, root, "answer");
+  const lease = h.owner.session.unread.reading("room");
+  const view = h.owner.session.observe([
+    { kinds: [9], "#h": ["room"], limit: 50 },
+  ]);
+  view.subscribe(() => lease.view([answer.id], () => true));
+  h.emit([answer], "live");
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  h.owner.session.unread.follow("room", root.id, false);
+  release("granted");
+  // A viewed top-level post still alerts: Notify while viewing applies.
+  const top = post(h, "top level");
+  view.subscribe(() => lease.view([top.id], () => true));
+  h.emit([top], "live");
+  await vi.waitFor(() => expect(h.show).toHaveBeenCalledOnce());
+  await flush();
+  expect(bodies(h)).toEqual(["top level"]);
+  lease.dispose();
+  view.dispose();
+});

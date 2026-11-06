@@ -209,12 +209,6 @@ export function bindMessageNotifications(
         () => {
           if (!valid() || Date.now() - message.createdAt * 1000 > 120000)
             return false;
-          // A local Solo run's own completion feedback covers its reply.
-          if (category === "mention" || category === "channel") {
-            const current = localSoloAgentReply(localActivity, message, scope);
-            if (current === "reply") return false;
-            if (current === "pending") return "wait";
-          }
           const attention = owned.unread.attention(
             message.channelId,
             message.messageId,
@@ -238,13 +232,21 @@ export function bindMessageNotifications(
             )
               return "wait";
           }
+          // A local Solo run's own completion feedback covers its reply. Turn-off
+          // and mute come first, so they cancel even while this waits.
+          if (category === "mention" || category === "channel") {
+            const current = localSoloAgentReply(localActivity, message, scope);
+            if (current === "reply") return false;
+            if (current === "pending") return "wait";
+          }
           const whileViewing =
             notifications.snapshot().preferences.notifyWhileViewing;
           // Ordinary activity has no category, so its status is ineligible.
-          // It yields to any category; a pending lookup is unknown and waits.
+          // It yields to any category, and to unfollowing its thread even
+          // while viewed; a pending lookup is unknown and waits.
           if (
             (ordinary
-              ? !!attention.category
+              ? !!attention.category || !!attention.unfollowed
               : attention.status === "ineligible" ||
                 (!attention.pending && attention.category !== category)) ||
             (!whileViewing && attention.viewing)
@@ -255,7 +257,9 @@ export function bindMessageNotifications(
             sync.status === "error" ||
             (sync.capability !== "unsupported" &&
               sync.completeness === "unknown") ||
-            attention.status === "unknown"
+            // All activity needs no conversation decision, only a running
+            // lookup's; a finished lookup that found no root still alerts.
+            (ordinary ? !!attention.pending : attention.status === "unknown")
           )
             return "wait";
           // The open view's reading dwell can mark the row read before

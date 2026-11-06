@@ -528,4 +528,20 @@ it("lists the channels set to all activity by name and turns one off", async () 
     );
   expect(activityChannels(scope)).toEqual(["gone"]);
   expect(screen.queryByText("#alpha")).not.toBeInTheDocument();
+  // A save that fails keeps the channel and says so.
+  act(() => {
+    setChannelActivity(scope, "alpha", true);
+  });
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("quota");
+  });
+  await userEvent
+    .setup()
+    .click(
+      screen.getByRole("button", { name: "Turn off all activity for #alpha" }),
+    );
+  expect(
+    screen.getByText("Couldn’t turn off all activity for #alpha"),
+  ).toBeInTheDocument();
+  expect(screen.getByText("#alpha")).toBeInTheDocument();
 });

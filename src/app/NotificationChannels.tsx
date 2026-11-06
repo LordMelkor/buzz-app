@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   setChannelActivity,
   useActivityChannels,
@@ -10,6 +11,7 @@ import { EmptyState } from "../shared/design-system/ui/EmptyState";
 import { InlineHeader } from "../shared/design-system/ui/Header";
 import { PreferenceRow } from "../shared/design-system/ui/PreferenceRow";
 import { SettingsGroup } from "../shared/design-system/ui/SettingsGroup";
+import { ToastNotice } from "../shared/design-system/ui/Toast";
 
 /** The selected community's channels set to notify on all activity, to turn
  * off one by one. They are turned on from the channel's menu, beside Mute. */
@@ -22,6 +24,7 @@ export function NotificationChannels({
 }) {
   const chosen = useActivityChannels(scope);
   const list = useChannelList(channels);
+  const [failed, setFailed] = useState<string>();
   return (
     <section aria-labelledby="notification-channels-title">
       <InlineHeader
@@ -49,7 +52,11 @@ export function NotificationChannels({
                     size="compact"
                     variant="ghost"
                     aria-label={`Turn off all activity for ${name}`}
-                    onClick={() => setChannelActivity(scope, id, false)}
+                    onClick={() =>
+                      setFailed(
+                        setChannelActivity(scope, id, false) ? undefined : name,
+                      )
+                    }
                   >
                     Turn off
                   </Button>
@@ -58,6 +65,14 @@ export function NotificationChannels({
             );
           })}
         </SettingsGroup>
+      )}
+      {failed !== undefined && (
+        <ToastNotice
+          title={`Couldn’t turn off all activity for ${failed}`}
+          description="Please try again."
+          tone="warning"
+          onDismiss={() => setFailed(undefined)}
+        />
       )}
     </section>
   );
