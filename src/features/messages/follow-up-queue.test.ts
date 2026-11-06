@@ -56,14 +56,19 @@ function fixture(extra: Partial<RelaySession> = {}) {
     queue,
     session,
     deactivate,
-    work(messageId: string, state: LocalWork["state"], channelId = "chat") {
+    work(
+      messageId: string,
+      state: LocalWork["state"],
+      channelId = "chat",
+      agent = "agent",
+    ) {
       local = [
         ...local.filter((row) => row.messageId !== messageId),
         {
           messageId,
           state,
           channelId,
-          agent: "agent",
+          agent,
           scope: "scope",
           threadRootId: "",
           startedAt: 1,
@@ -395,7 +400,7 @@ it.each(["unknown", "accepted"] as const)(
 );
 
 it("holds channel typing until it clears, without treating thread or other-channel typing as work", () => {
-  const h = fixture();
+  const h = fixture(solo);
   const typing = {
     agent: "agent",
     channelId: "chat",
@@ -460,6 +465,61 @@ it("publishes a channel row to a member agent that is not the owner's own, and n
   );
 });
 
+it("stops waiting for a teammate's agent whose turn never shows up", () => {
+  vi.useFakeTimers();
+  try {
+    const h = fixture();
+    const first = h.entry("first"),
+      second = h.entry("second");
+    h.work("busy", "working");
+    h.queue.submit(first);
+    h.queue.submit(second);
+    h.work("busy", "done");
+    expect(first.publish).toHaveBeenCalledOnce();
+    // No local row or turn ever references "first".
+    expect(second.publish).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(30_002);
+    expect(second.publish).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("holds a channel row behind a resumed request of another agent", () => {
+  const h = fixture();
+  h.work("busy", "working", "chat", "other");
+  const row = { ...h.entry("next"), recipients: ["other"] };
+  h.queue.submit(row);
+  h.queue.resumeAfter("agent", { original: "chat" });
+  h.work("busy", "done", "chat", "other");
+  expect(row.publish).not.toHaveBeenCalled();
+  h.work("original", "done");
+  expect(row.publish).toHaveBeenCalledOnce();
+});
+
+it("counts a teammate's agent as busy from its public profile", () => {
+  const profiles = new Map([["mate", { isAgent: true }]]);
+  const h = fixture({
+    profiles: { snapshot: () => profiles },
+    typing: { snapshot: () => [{ channelId: "chat", pubkey: "mate" }] },
+  } as never);
+  expect(h.queue.busy("chat", ["mate"])).toBe(true);
+});
+
+it("counts a thread of the channel as busy for the addressed agent", () => {
+  const h = fixture();
+  h.typing([
+    {
+      agent: "agent",
+      channelId: "chat",
+      startedAt: 1,
+      threadRootId: "thread",
+      working: true,
+    },
+  ]);
+  expect(h.queue.busy("chat", ["agent"])).toBe(true);
+});
+
 it("rejects a late upload submission after its destination disappeared without allocating a slot or activity lease", () => {
   const h = fixture({
     channels: { list: () => ({ channels: [] }) },
@@ -497,6 +557,7 @@ it("observes independent owned-agent typing and releases on its updates", () => 
   const listeners = new Set<() => void>();
   const unsubscribe = vi.fn();
   const h = fixture({
+    ...solo,
     typing: {
       async send() {},
       snapshot: () => typing,

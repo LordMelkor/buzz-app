@@ -2678,6 +2678,8 @@ function Composer({
       ) &&
       (ownSoloConversation ||
         (!soloConversation &&
+          // A recipient not yet known to be an agent might be a person.
+          addressedKeys.every((key) => agentKeys.has(key)) &&
           followUpQueue(host).busy(channelId, addressedKeys)));
     try {
       if (command && onCommand) {

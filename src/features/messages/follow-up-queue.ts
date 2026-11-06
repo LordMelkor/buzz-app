@@ -1,5 +1,6 @@
 import type { RelaySession } from "../relay/session";
 import type { OutboxRecovery } from "../relay/outbox";
+import { knownAgentPubkeys } from "../agents/known";
 import { ownSolo } from "../solo/labels";
 import { followUpMessage } from "./follow-up-message";
 import {
@@ -10,7 +11,17 @@ import {
 } from "./follow-up-storage";
 
 type Activity = ReturnType<RelaySession["agentActivity"]["snapshot"]>;
-type Wait = { agent: string; message?: string; turn?: string; resumed?: true };
+type Wait = {
+  agent: string;
+  message?: string;
+  turn?: string;
+  resumed?: true;
+  /** Channel only: give up if no activity for the message ever shows up. */
+  expires?: number;
+};
+// How long a channel waits for an addressed agent's turn to start. A
+// teammate's agent may be invisible or offline, and must not hold rows forever.
+const START_GAP_MS = 30_000;
 type Entry = {
   id: string;
   createdAt?: number;
@@ -162,7 +173,8 @@ function createQueue(session: RelaySession) {
           turn.agent === wait.agent &&
           turn.requests?.some((request) => request.messageId === wait.message),
       );
-      return turns.length > 0 && turns.every((turn) => turn.state === "ended");
+      if (turns.length) return turns.every((turn) => turn.state === "ended");
+      return !!wait.expires && Date.now() > wait.expires;
     }
     return activity.turns.some(
       (turn) =>
@@ -184,6 +196,14 @@ function createQueue(session: RelaySession) {
   function blockers(channelId: string, recipients: readonly string[]) {
     const agents = addressed(channelId, recipients);
     const mine = (agent: string) => !agents || agents.has(agent);
+    // Typing is evidence from any agent we know of, including a teammate's
+    // public profile, and from a thread of the channel; Solo keeps its own.
+    const known = agents
+      ? knownAgentPubkeys(
+          session.profiles?.snapshot() ?? new Map(),
+          session.agentChoices?.snapshot(),
+        )
+      : undefined;
     const activity = session.agentActivity?.snapshot();
     let current = waits.get(channelId) ?? [];
     if (activity) {
@@ -210,20 +230,23 @@ function createQueue(session: RelaySession) {
     if (current.length) waits.set(channelId, current);
     else waits.delete(channelId);
     return (
-      current.some((wait) => mine(wait.agent)) ||
+      // A resumed request is a recovery barrier for the whole chat.
+      current.some((wait) => wait.resumed || mine(wait.agent)) ||
       (session.typing?.snapshot() ?? []).some(
         (entry) =>
           entry.channelId === channelId &&
-          !entry.threadRootId &&
+          (!!agents || !entry.threadRootId) &&
           mine(entry.pubkey) &&
-          session.agentChoices
-            ?.snapshot()
-            .identities.some((agent) => agent.pubkey === entry.pubkey),
+          (known
+            ? known.has(entry.pubkey)
+            : session.agentChoices
+                ?.snapshot()
+                .identities.some((agent) => agent.pubkey === entry.pubkey)),
       ) ||
       (activity?.typing ?? []).some(
         (entry) =>
           entry.channelId === channelId &&
-          !entry.threadRootId &&
+          (!!agents || !entry.threadRootId) &&
           mine(entry.agent),
       ) ||
       // Unobservable activity is a reason to wait in Solo, but a channel
@@ -382,10 +405,16 @@ function createQueue(session: RelaySession) {
     id: string,
   ) {
     // Include the gap between publication and the first working signal.
+    const channel = !!addressed(entry.channelId, entry.recipients);
     waits.set(entry.channelId, [
       ...(waits.get(entry.channelId) ?? []),
-      ...entry.recipients.map((agent) => ({ agent, message: id })),
+      ...entry.recipients.map((agent) => ({
+        agent,
+        message: id,
+        ...(channel ? { expires: Date.now() + START_GAP_MS } : {}),
+      })),
     ]);
+    if (channel) setTimeout(pump, START_GAP_MS + 1);
     watch();
   }
   function sent(entry: Omit<Entry, "id">, recovery?: OutboxRecovery) {

@@ -13829,7 +13829,7 @@ describe("queued follow-ups in a team channel", () => {
         {
           id: "channel",
           channelType: "stream",
-          members: [first.pubkey, "viewer"],
+          members: [first.pubkey, second.pubkey, "viewer"],
         },
       ],
     };
@@ -13841,7 +13841,7 @@ describe("queued follow-ups in a team channel", () => {
         channelWrites: {
           refreshMembership: async () => ({
             id: "channel",
-            members: [first.pubkey, "viewer"],
+            members: [first.pubkey, second.pubkey, "viewer"],
           }),
           addAgents: vi.fn(),
         },
@@ -13888,6 +13888,17 @@ describe("queued follow-ups in a team channel", () => {
       [],
       {},
     );
+  });
+
+  it("sends at once when a tagged recipient is not known to be an agent", async () => {
+    const { h } = teamChannel(first.pubkey);
+    act(() => h.commands().insertMention(second));
+    await choicesLoaded();
+    h.submit();
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(
+      screen.queryByRole("region", { name: "Queued follow-ups" }),
+    ).toBeNull();
   });
 
   it.each([
