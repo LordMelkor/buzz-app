@@ -35,13 +35,15 @@ function chatTitle(
   for (const recipient of [...draft.recipients].sort(
     (a, b) => a.start - b.start,
   )) {
+    // A group's members share its span; it was stripped with the first.
+    if (recipient.end === draftStart) continue;
     if (
       recipient.start < draftStart ||
       draft.text.slice(draftStart, recipient.start).trim()
     )
       break;
     const leading = text.slice(start).match(/^\s*/)?.[0].length ?? 0;
-    const tag = `@${recipient.name}`;
+    const tag = `@${recipient.label ?? recipient.name}`;
     if (!text.startsWith(tag, start + leading)) break;
     start += leading + tag.length;
     draftStart = recipient.end;
