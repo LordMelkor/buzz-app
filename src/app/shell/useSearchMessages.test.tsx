@@ -584,6 +584,87 @@ it("drops a selectable agent's verified name withdrawn while members' names are 
   }
 });
 
+it("finds a member's name ambiguous with a selectable agent's verified name no cached head holds", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const helper = keypair();
+  const bobby = keypair();
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey, bobby.pubkey]),
+  ];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    searchProfiles: async () => [],
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9)))
+        return Promise.resolve([]);
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => filter.kinds?.includes(event.kind)),
+        ),
+      );
+    },
+  });
+  // The agent is verified as jrivera, but only the read says so.
+  const shared = new Map([
+    [helper.pubkey, { name: "Helper" }],
+    [bobby.pubkey, { name: "jrivera" }],
+  ]);
+  const authority = { pubkey: relay.pubkey, multipleIssuers: false };
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      ensure: async () => {},
+      snapshot: () => shared,
+      verifiedAuthority: () => authority,
+    },
+    directMessages: {
+      ...owner.session.directMessages,
+      verified: async (keys: readonly string[]) => ({
+        authority,
+        profiles: new Map(
+          keys.includes(helper.pubkey)
+            ? [
+                [
+                  helper.pubkey,
+                  {
+                    displayName: "Helper",
+                    username: "jrivera",
+                    issuerLabel: "Example",
+                    verifiedAt: 1,
+                    status: "checked" as const,
+                    multipleIssuers: false,
+                  },
+                ],
+              ]
+            : [],
+        ),
+      }),
+    },
+  } as unknown as typeof owner.session;
+  try {
+    owner.session.channels.ensureList();
+    await waitFor(() =>
+      expect(owner.session.channels.get?.("crew")?.members).toHaveLength(2),
+    );
+    const { result } = renderHook(() =>
+      useSearchMessages(
+        session,
+        "from:jrivera deploy",
+        "crew",
+        undefined,
+        new Map([[helper.pubkey, "Helper"]]),
+      ),
+    );
+    await waitFor(() => expect(result.current.ambiguousAuthor).toBe(true));
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("reads members' verified names one read at a time, and not again when only the text changes", async () => {
   const viewer = keypair();
   const relay = keypair();

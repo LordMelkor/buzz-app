@@ -317,17 +317,25 @@ export function useSearchMessages(
                 answeredName(session.profiles, read, pubkey);
             };
             // Selectable agents are offered wherever the picker runs, so they
-            // are always candidates, alongside members or relay matches. They
-            // are matched after each wait, so a name withdrawn meanwhile isn't.
-            const agentMatches = () => [...agents.keys()].filter(known);
+            // are always candidates, alongside members or relay matches, and
+            // their verified names are read with them. They are matched after
+            // each wait, so a name withdrawn meanwhile isn't.
+            const agentMatches = (
+              verified: (pubkey: string) => VerifiedProfile | undefined,
+            ) =>
+              [...agents.keys()].filter(
+                (pubkey) =>
+                  known(pubkey) || named(pubkey, "", verified(pubkey)),
+              );
             // A member's verified head may not be cached yet, so it is read:
             // otherwise another member's profile name would resolve alone.
-            const memberVerified = knownMembers.length
-              ? await readVerified(knownMembers)
-              : undefined;
+            const memberVerified = await readVerified([
+              ...knownMembers,
+              ...agents.keys(),
+            ]);
             const scoped = knownMembers.filter(
               (pubkey) =>
-                known(pubkey) || named(pubkey, "", memberVerified?.(pubkey)),
+                known(pubkey) || named(pubkey, "", memberVerified(pubkey)),
             );
             const resolve = (keys: readonly string[]) => {
               const unique = [...new Set(keys)];
@@ -335,7 +343,10 @@ export function useSearchMessages(
               return { author: unique[0] };
             };
             if (scoped.length) {
-              const found = resolve([...scoped, ...agentMatches()]);
+              const found = resolve([
+                ...scoped,
+                ...agentMatches(memberVerified),
+              ]);
               if (found.ambiguous)
                 return { messages: [], ambiguousAuthor: true };
               author = found.author;
@@ -355,7 +366,10 @@ export function useSearchMessages(
                 candidates,
                 session.profiles.verifiedAuthority?.(),
               );
-              const verifiedOf = await readVerified([...people.keys()]);
+              const verifiedOf = await readVerified([
+                ...people.keys(),
+                ...agents.keys(),
+              ]);
               const matches = [...people]
                 .filter(
                   ([pubkey, profile]) =>
@@ -363,7 +377,7 @@ export function useSearchMessages(
                     pubkey === handle,
                 )
                 .map(([pubkey]) => pubkey);
-              const found = resolve([...matches, ...agentMatches()]);
+              const found = resolve([...matches, ...agentMatches(verifiedOf)]);
               if (found.ambiguous || candidates.length >= limit)
                 return { messages: [], ambiguousAuthor: true };
               author = found.author;
