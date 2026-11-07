@@ -52,13 +52,15 @@ serveStdio(() => {
       },
       async (args) => {
         try {
-          // The relay's key also checks verified names in ordinary tools.
-          const relayed = { ...client, relayAuthor: await relayAuthor() };
           return {
             content: content(
               await (isSoloWorkerTool(tool.name)
-                ? callSoloWorkerTool(relayed, tool.name, args)
-                : callTool(relayed, context, tool.name, args)),
+                ? callSoloWorkerTool(
+                    { ...client, relayAuthor: await relayAuthor() },
+                    tool.name,
+                    args,
+                  )
+                : callTool(client, context, tool.name, args)),
             ),
           };
         } catch (error) {

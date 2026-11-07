@@ -3734,15 +3734,73 @@ it("labels a person by the name their page verified over a cached profile name",
   }
 });
 
-it("chips a verified person with no profile by their verified name", async () => {
+it("labels a page-verified person by that name under the bundled naming policy", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const directory = createAgentDirectory();
+  const cachedName = profile(person, { name: "jr-old" });
+  const owner = createRelaySession(
+    {
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      verifiedProfiles: {
+        pubkey: relay.pubkey,
+        multipleIssuers: false,
+        searchable: true,
+      },
+      async query(filters) {
+        return [cachedName].filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        );
+      },
+      searchProfiles: async () =>
+        [cachedName, jordanHead(relay, person)].map((event) => eventDto(event)),
+    },
+    {
+      identityNames: {
+        bind: (source) =>
+          bindNames(source, {
+            snapshot: () => [directory],
+            subscribe: () => () => {},
+          }),
+      } as IdentityNames,
+    },
+  );
+  try {
+    // The person's public profile is cached, as after seeing them elsewhere.
+    await act(async () => owner.session.profiles.ensure([person.pubkey]));
+    expect(owner.session.profiles.snapshot().get(person.pubkey)?.name).toBe(
+      "jr-old",
+    );
+    render(
+      <SearchResults
+        session={owner.session}
+        query="from:@riv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(screen.getByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+    expect(people.queryByRole("option", { name: /jr-old/ })).toBeNull();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("chips a verified person with no profile by their shared verified name and qualifier", async () => {
   const relay = keypair(),
     viewer = keypair(),
     person = keypair();
   const owner = verifiedSearch(viewer, relay, [jordanHead(relay, person)]);
   // The shared directory holds this person's head and no kind-0 profile.
   const shared = new Map(owner.session.profiles.snapshot());
+  // A namesake elsewhere gave the shared name its qualifier.
   shared.set(person.pubkey, {
-    name: "Jordan",
+    name: "Jordan · 1234",
     verified: {
       displayName: "Jordan",
       username: "jrivera",
@@ -3783,8 +3841,72 @@ it("chips a verified person with no profile by their verified name", async () =>
       ),
     );
     expect(
-      screen.getByRole("button", { name: "Remove author Jordan" }),
+      screen.getByRole("button", { name: "Remove author Jordan · 1234" }),
     ).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("searches again when the verification authority changes while the picker is open", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "jr-old" }),
+  ]);
+  let authority = { pubkey: relay.pubkey, multipleIssuers: false };
+  const listeners = new Set<() => void>();
+  const verified = {
+    displayName: "Jordan",
+    username: "jrivera",
+    fullName: "Jordan Rivera",
+    issuerLabel: "Example",
+    verifiedAt: 1_000_000,
+    status: "checked" as const,
+    multipleIssuers: false,
+  };
+  const read = vi.fn(async () => ({
+    authority,
+    profiles: new Map([[person.pubkey, verified]]),
+  }));
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      verifiedAuthority: () => authority,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        const off = owner.session.profiles.subscribe(listener);
+        return () => {
+          listeners.delete(listener);
+          off();
+        };
+      },
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@riv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(screen.getByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+    // The community re-advertises its authority.
+    authority = { ...authority };
+    act(() => {
+      for (const listener of listeners) listener();
+    });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
   } finally {
     cleanup();
     owner.dispose();

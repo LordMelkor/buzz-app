@@ -631,7 +631,10 @@ export function SearchResults({
     ]),
   );
   const effectiveChannelId = scopedChannelId ?? operatorChannelId;
+  // A new verification authority makes the page's names stale: search again.
+  const authority = session.profiles.verifiedAuthority?.();
   useEffect(() => {
+    void authority;
     if (!showAuthorPicker) return;
     const controller = new AbortController();
     const cancel = searchDebounce(() => {
@@ -702,7 +705,14 @@ export function SearchResults({
       cancel();
       controller.abort();
     };
-  }, [session, effectiveChannelId, query, authorNeedle, showAuthorPicker]);
+  }, [
+    session,
+    effectiveChannelId,
+    query,
+    authorNeedle,
+    showAuthorPicker,
+    authority,
+  ]);
   const members = effectiveChannelId
     ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
     : [];
@@ -761,6 +771,12 @@ export function SearchResults({
   const memberScope = effectiveChannelId
     ? session.channels.get?.(effectiveChannelId)?.members
     : undefined;
+  // The names this page verified, given to the naming scope as people search
+  // gives its own, so a cached profile name does not outrank them.
+  const authorFacts = [...candidates.keys()].flatMap((pubkey) => {
+    const page = pageVerified(pubkey);
+    return page ? [{ pubkey, name: verifiedLabel(page) }] : [];
+  });
   const authorChoices =
     authorToken && showAuthorPicker && authorSuggestions?.query === query
       ? [...candidates]
@@ -784,12 +800,21 @@ export function SearchResults({
           .map(({ pubkey, profile: found }) => {
             const agent = selectableAgents.get(pubkey);
             // The relay found a person by any of their names, so a verified
-            // person is shown, and chipped, by their verified name.
-            const verified = authorVerified(pubkey);
-            const profile = verified
-              ? { ...found, name: verifiedLabel(verified) }
-              : found;
-            const resolved = resolveName(pubkey, profile.name, memberScope);
+            // person is shown, and chipped, by their verified name: the
+            // page's, or the shared one with its namesake qualifier.
+            const page = pageVerified(pubkey);
+            const shared = profiles.get(pubkey);
+            const profile = page
+              ? { ...found, name: verifiedLabel(page) }
+              : shared?.verified
+                ? { ...found, name: shared.name }
+                : found;
+            const resolved = resolveName(
+              pubkey,
+              profile.name,
+              memberScope,
+              authorFacts,
+            );
             const isAgent = !!agent || !!profile.isAgent;
             return {
               key: `author:${pubkey}`,
@@ -798,8 +823,8 @@ export function SearchResults({
               // verified for this page.
               label:
                 pageVerified(pubkey) &&
-                session.names?.lookup(pubkey, memberScope)?.source !==
-                  "agent-directory"
+                session.names?.lookup(pubkey, memberScope, authorFacts)
+                  ?.source === "public-profile"
                   ? profile.name
                   : resolved,
               detail: pubkey.slice(0, 12),
