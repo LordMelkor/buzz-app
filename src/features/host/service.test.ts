@@ -1701,7 +1701,7 @@ it("shares one prompt between repeated asks for one origin", async () => {
   expect(originConsent.current()).toBeUndefined();
 });
 
-it("shares an allowed ask with a later caller until it is saved", async () => {
+it("lets a caller that starts while an Allow is saved join it, not look or ask again", async () => {
   const { plugin } = pluginContext();
   let release!: () => void;
   const saving = new Promise<void>((resolve) => {
@@ -1711,25 +1711,18 @@ it("shares an allowed ask with a later caller until it is saved", async () => {
     if (command === "plugin_change") await saving;
     return command === "plugin_catalog" ? catalog() : undefined;
   });
+  const calls = (name: string) =>
+    vi.mocked(invoke).mock.calls.filter(([command]) => command === name);
   const first = plugin.host.requestOrigin?.("https://mcp.example");
   await answer(true);
-  await vi.waitFor(() =>
-    expect(invoke).toHaveBeenCalledWith("plugin_change", expect.anything()),
-  );
-  // The catalog still says unapproved while the save is pending.
+  await vi.waitFor(() => expect(calls("plugin_change")).toHaveLength(1));
+  // A catalog read now could finish after the save and still be stale.
   const second = plugin.host.requestOrigin?.("https://mcp.example");
-  await vi.waitFor(() =>
-    expect(
-      vi.mocked(invoke).mock.calls.filter(([c]) => c === "plugin_catalog"),
-    ).toHaveLength(2),
-  );
-  await Promise.resolve();
-  expect(originConsent.current()).toBeUndefined();
   release();
   expect(await Promise.all([first, second])).toEqual([true, true]);
-  expect(
-    vi.mocked(invoke).mock.calls.filter(([c]) => c === "plugin_change"),
-  ).toHaveLength(1);
+  expect(calls("plugin_catalog")).toHaveLength(1);
+  expect(calls("plugin_change")).toHaveLength(1);
+  expect(originConsent.current()).toBeUndefined();
 });
 
 it.each([

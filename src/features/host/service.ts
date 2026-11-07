@@ -615,18 +615,17 @@ export class HostService extends Service implements Host {
     // the question, or the answer, of the one before it. Captured before any
     // wait, so a restart meanwhile can't hand this call the next activation.
     const { stopped, asking } = originRequests(this.ctx);
-    const plugin = await installedPlugin(owner);
-    stopped.signal.throwIfAborted();
-    if (
-      plugin.manifest.host?.networkOrigins?.includes(origin) ||
-      plugin.approvedOrigins?.includes(origin)
-    )
-      return true;
-    // Callers asking at once share the whole ask, through the save, so none
-    // sees the origin unapproved while another's Allow is being saved.
+    // Callers asking at once share the whole ask, from the catalog lookup
+    // through the save, so none reads a catalog older than another's Allow.
     let approval = asking.get(origin);
     if (!approval) {
       approval = (async () => {
+        const plugin = await installedPlugin(owner);
+        if (
+          plugin.manifest.host?.networkOrigins?.includes(origin) ||
+          plugin.approvedOrigins?.includes(origin)
+        )
+          return true;
         const allowed = await askOriginConsent(
           { plugin: { id: owner.id, name: plugin.manifest.name }, origin },
           stopped.signal,
