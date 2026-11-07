@@ -497,70 +497,104 @@ it("does not resolve from: by a verified name whose newer shared head arrived du
   }
 });
 
-it("reports from: as ambiguous when a member's own profile name matches another member's verified username", async () => {
-  const viewer = keypair();
-  const relay = keypair();
-  const alex = keypair();
-  const bobby = keypair();
-  const reads: ReadFilter[][] = [];
-  const discovery = [
-    metadata(relay, "crew", "crew"),
-    roster(relay, "crew", [viewer.pubkey, alex.pubkey, bobby.pubkey]),
-  ];
-  const owner = createRelaySession({
-    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
-    searchProfiles: async () => [],
-    query(filters) {
-      if (filters.some((filter) => filter.kinds?.includes(9))) {
-        reads.push(filters as ReadFilter[]);
-        return Promise.resolve([]);
-      }
-      return Promise.resolve(
-        discovery.filter((event) =>
-          filters.some((filter) => filter.kinds?.includes(event.kind)),
-        ),
+it.each([
+  ["", true],
+  [" before that member's verified head is cached", false],
+])(
+  "reports from: as ambiguous when a member's own profile name matches another member's verified username%s",
+  async (_name, cached) => {
+    const viewer = keypair();
+    const relay = keypair();
+    const alex = keypair();
+    const bobby = keypair();
+    const reads: ReadFilter[][] = [];
+    const discovery = [
+      metadata(relay, "crew", "crew"),
+      roster(relay, "crew", [viewer.pubkey, alex.pubkey, bobby.pubkey]),
+      eventDto(
+        signed(relay, {
+          kind: 30382,
+          created_at: 1_000_000,
+          content: "",
+          tags: [
+            ["d", alex.pubkey],
+            ["p", alex.pubkey],
+            ["active", "true"],
+            ["display_name", "Alex"],
+            ["username", "jrivera"],
+            ["issuer_label", "Example"],
+            ["verified_at", "1000000"],
+          ],
+        }),
+      ),
+    ];
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      verifiedProfiles: {
+        pubkey: relay.pubkey,
+        multipleIssuers: false,
+        searchable: true,
+      },
+      searchProfiles: async () => [],
+      query(filters) {
+        if (filters.some((filter) => filter.kinds?.includes(9))) {
+          reads.push(filters as ReadFilter[]);
+          return Promise.resolve([]);
+        }
+        return Promise.resolve(
+          discovery.filter((event) =>
+            filters.some((filter) => filter.kinds?.includes(event.kind)),
+          ),
+        );
+      },
+    });
+    // Shared profiles name a verified person by their verified label; their
+    // own profile name stays in their profile event.
+    const verified = (displayName: string, username: string) => ({
+      displayName,
+      username,
+      issuerLabel: "Example",
+      verifiedAt: 1,
+      status: "checked" as const,
+      multipleIssuers: false,
+    });
+    // Uncached, the shared profiles know Alex only by their profile name.
+    const shared = new Map([
+      [
+        alex.pubkey,
+        cached
+          ? { name: "Alex", verified: verified("Alex", "jrivera") }
+          : { name: "alex" },
+      ],
+      [bobby.pubkey, { name: "Bobby", verified: verified("Bobby", "bobby") }],
+    ]);
+    const events = new Map([
+      [alex.pubkey, profile(alex, { name: "alex" })],
+      [bobby.pubkey, profile(bobby, { name: "jrivera" })],
+    ]);
+    const session = {
+      ...owner.session,
+      profiles: {
+        ...owner.session.profiles,
+        ensure: async () => {},
+        snapshot: () => shared,
+        event: (pubkey: string) => events.get(pubkey),
+        verifiedHeld: () => false,
+      },
+    } as unknown as typeof owner.session;
+    try {
+      owner.session.channels.ensureList();
+      await waitFor(() =>
+        expect(owner.session.channels.get?.("crew")?.members).toHaveLength(3),
       );
-    },
-  });
-  // Shared profiles name a verified person by their verified label; their
-  // own profile name stays in their profile event.
-  const verified = (displayName: string, username: string) => ({
-    displayName,
-    username,
-    issuerLabel: "Example",
-    verifiedAt: 1,
-    status: "checked" as const,
-    multipleIssuers: false,
-  });
-  const shared = new Map([
-    [alex.pubkey, { name: "Alex", verified: verified("Alex", "jrivera") }],
-    [bobby.pubkey, { name: "Bobby", verified: verified("Bobby", "bobby") }],
-  ]);
-  const events = new Map([
-    [alex.pubkey, profile(alex, { name: "alex" })],
-    [bobby.pubkey, profile(bobby, { name: "jrivera" })],
-  ]);
-  const session = {
-    ...owner.session,
-    profiles: {
-      ...owner.session.profiles,
-      ensure: async () => {},
-      snapshot: () => shared,
-      event: (pubkey: string) => events.get(pubkey),
-    },
-  } as unknown as typeof owner.session;
-  try {
-    owner.session.channels.ensureList();
-    await waitFor(() =>
-      expect(owner.session.channels.get?.("crew")?.members).toHaveLength(3),
-    );
-    const { result } = renderHook(() =>
-      useSearchMessages(session, "from:jrivera deploy", "crew"),
-    );
-    await waitFor(() => expect(result.current.ambiguousAuthor).toBe(true));
-    expect(reads).toEqual([]);
-  } finally {
-    cleanup();
-    owner.dispose();
-  }
-});
+      const { result } = renderHook(() =>
+        useSearchMessages(session, "from:jrivera deploy", "crew"),
+      );
+      await waitFor(() => expect(result.current.ambiguousAuthor).toBe(true));
+      expect(reads).toEqual([]);
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);

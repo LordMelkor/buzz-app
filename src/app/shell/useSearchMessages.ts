@@ -265,6 +265,9 @@ export function useSearchMessages(
             const knownMembers = channelId
               ? (session.channels.get?.(channelId)?.members ?? [])
               : [];
+            // Before any read: a shared head that arrives during it (even a
+            // withdrawal since evicted) outranks the names it returns.
+            const asked = session.profiles.verifiedRevision?.() ?? 0;
             if (knownMembers.length) {
               await session.profiles.ensure(knownMembers, "foreground");
               controller.signal.throwIfAborted();
@@ -293,10 +296,45 @@ export function useSearchMessages(
             const known = (pubkey: string) =>
               named(pubkey, shared(pubkey)?.name, shared(pubkey)?.verified) ||
               named(pubkey, publicName(pubkey));
+            // Verified names the shared profiles don't hold yet come from one
+            // read. A failed read leaves profile names, which resolve as before.
+            const readVerified = async (pubkeys: readonly string[]) => {
+              const unverified = pubkeys.filter(
+                (pubkey) =>
+                  !shared(pubkey)?.verified &&
+                  !session.profiles.verifiedHeld?.(pubkey),
+              );
+              const read = unverified.length
+                ? await session.directMessages
+                    .verified?.(unverified, controller.signal)
+                    .catch(() => undefined)
+                : undefined;
+              controller.signal.throwIfAborted();
+              // As in useVerifiedNames, names belong to the authority that
+              // checked them, and a shared head that arrived since the read
+              // began (even a withdrawal, even one since evicted) outranks them.
+              const checked =
+                read?.authority === session.profiles.verifiedAuthority?.()
+                  ? read?.profiles
+                  : undefined;
+              return (pubkey: string) =>
+                shared(pubkey)?.verified ??
+                (superseded(session.profiles, pubkey, asked)
+                  ? undefined
+                  : checked?.get(pubkey));
+            };
             // Selectable agents are offered wherever the picker runs, so they
             // are always candidates, alongside members or relay matches.
             const agentMatches = [...agents.keys()].filter(known);
-            const scoped = knownMembers.filter(known);
+            // A member's verified head may not be cached yet, so it is read:
+            // otherwise another member's profile name would resolve alone.
+            const memberVerified = knownMembers.length
+              ? await readVerified(knownMembers)
+              : undefined;
+            const scoped = knownMembers.filter(
+              (pubkey) =>
+                known(pubkey) || named(pubkey, "", memberVerified?.(pubkey)),
+            );
             const resolve = (keys: readonly string[]) => {
               const unique = [...new Set(keys)];
               if (unique.length > 1) return { ambiguous: true };
@@ -312,9 +350,6 @@ export function useSearchMessages(
               // is unknown, so a full page is as ambiguous as duplicate names.
               // The relay does not fold accents, so it gets the typed text.
               const limit = 40;
-              // Before the search: a shared head that arrives during it (even
-              // a withdrawal since evicted) outranks the names it returns.
-              const asked = session.profiles.verifiedRevision?.() ?? 0;
               const candidates = await session.searchProfiles(
                 typed.toLowerCase(),
                 { limit, signal: controller.signal },
@@ -326,30 +361,7 @@ export function useSearchMessages(
                 candidates,
                 session.profiles.verifiedAuthority?.(),
               );
-              const unverified = [...people.keys()].filter(
-                (pubkey) =>
-                  !shared(pubkey)?.verified &&
-                  !session.profiles.verifiedHeld?.(pubkey),
-              );
-              // A failed read leaves profile names, which resolve as before.
-              const read = unverified.length
-                ? await session.directMessages
-                    .verified?.(unverified, controller.signal)
-                    .catch(() => undefined)
-                : undefined;
-              controller.signal.throwIfAborted();
-              // As in useVerifiedNames, names belong to the authority that
-              // checked them, and a shared head that arrived since the read
-              // began (even a withdrawal, even one since evicted) outranks them.
-              const checked =
-                read?.authority === session.profiles.verifiedAuthority?.()
-                  ? read?.profiles
-                  : undefined;
-              const verifiedOf = (pubkey: string) =>
-                shared(pubkey)?.verified ??
-                (superseded(session.profiles, pubkey, asked)
-                  ? undefined
-                  : checked?.get(pubkey));
+              const verifiedOf = await readVerified([...people.keys()]);
               const matches = [...people]
                 .filter(
                   ([pubkey, profile]) =>
