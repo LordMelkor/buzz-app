@@ -585,6 +585,11 @@ export function SearchResults({
     .toLowerCase();
   const showAuthorPicker = pickerPrompt || showAmbiguousPicker;
   const agents = useAgentChoices(session, showAuthorPicker);
+  // Selectable agents are candidates too; their verified names are read on
+  // their own, so a late agent does not search again.
+  const agentVerified = useVerifiedNames(session, agents.selectable, {
+    settled: showAuthorPicker,
+  });
   // People and agents are destinations for plain typed text outside a
   // conversation scope; an operator asks for messages. `@` asks for a person
   // and `#` for a channel.
@@ -630,9 +635,6 @@ export function SearchResults({
   const effectiveChannelId = scopedChannelId ?? operatorChannelId;
   // A new verification authority makes the page's names stale: search again.
   const authority = session.profiles.verifiedAuthority?.();
-  // Selectable agents are candidates too, so theirs are read with the
-  // members', and again when the choices change.
-  const agentKeys = agents.selectable.map((agent) => agent.pubkey).join(" ");
   useEffect(() => {
     void authority;
     if (!showAuthorPicker) return;
@@ -701,12 +703,9 @@ export function SearchResults({
           [],
         );
         const roster = await pass(
-          [
-            ...(effectiveChannelId
-              ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
-              : []),
-            ...agentKeys.split(" ").filter(Boolean),
-          ],
+          effectiveChannelId
+            ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
+            : [],
           [page],
         );
         setAuthorSuggestions({
@@ -731,7 +730,6 @@ export function SearchResults({
     authorNeedle,
     showAuthorPicker,
     authority,
-    agentKeys,
   ]);
   const members = effectiveChannelId
     ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
@@ -747,16 +745,15 @@ export function SearchResults({
   // component on those changes. The latest pass that answered for the person
   // speaks for them, "not verified" included; an earlier pass does only when
   // the later one never answered for them.
-  const pageVerified = (pubkey: string) =>
-    profiles.get(pubkey)?.verified
-      ? undefined
-      : answeredName(
-          session.profiles,
-          authorSuggestions?.verified
-            ?.filter((read) => read?.answers.has(pubkey))
-            .at(-1),
-          pubkey,
-        );
+  const pageVerified = (pubkey: string) => {
+    if (profiles.get(pubkey)?.verified) return undefined;
+    const read = authorSuggestions?.verified
+      ?.filter((answers) => answers?.answers.has(pubkey))
+      .at(-1);
+    return read
+      ? answeredName(session.profiles, read, pubkey)
+      : agentVerified.get(pubkey);
+  };
   const candidates = new Map([
     ...[...profiles].filter(([pubkey]) => members.includes(pubkey)),
     // A member known only by a verified name, as from: resolves them.
