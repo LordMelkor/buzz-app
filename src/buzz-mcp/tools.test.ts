@@ -3345,6 +3345,22 @@ it("learns the relay's key only when a verified-name path needs it", async () =>
   );
 });
 
+it("asks for the relay's key once per people search", async () => {
+  const { client: known } = verifiedPeople();
+  const { relayAuthor, ...client } = known;
+  // Discovery fails for this search and recovers just after it.
+  const relayAuthority = vi
+    .fn<() => Promise<string | undefined>>()
+    .mockResolvedValueOnce(undefined)
+    .mockResolvedValue(relayAuthor);
+  const found = await callTool({ ...client, relayAuthority }, {}, "users", {
+    q: "Jordan Rivera",
+  });
+  expect(relayAuthority).toHaveBeenCalledOnce();
+  // Without the key, the whole search keeps profile names.
+  expect(found).toBe(`${alice} "Alice Smith"`);
+});
+
 it("quotes a profile's own name, so it can't pass for a verified label", async () => {
   const { client } = verifiedPeople();
   const forger = "d".repeat(64);

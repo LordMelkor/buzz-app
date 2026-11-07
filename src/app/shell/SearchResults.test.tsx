@@ -3883,6 +3883,65 @@ it("chips a verified person with no profile by their shared verified name and qu
   }
 });
 
+it("offers a member by their own profile name after a verified label replaced it", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  // The community's search finds no one, so only local members can match.
+  const owner = verifiedSearch(viewer, relay, []);
+  const own = profile(person, { name: "zed" });
+  const shared = new Map(owner.session.profiles.snapshot());
+  shared.set(person.pubkey, {
+    name: "Jordan",
+    verified: {
+      displayName: "Jordan",
+      username: "jrivera",
+      fullName: "Jordan Rivera",
+      issuerLabel: "Example",
+      verifiedAt: 1_000_000,
+      status: "checked",
+      multipleIssuers: false,
+    },
+  });
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      get: () => ({
+        id: "crew",
+        name: "Crew",
+        channelType: "stream" as const,
+        members: [viewer.pubkey, person.pubkey],
+      }),
+      resolve: async () => {},
+    },
+    profiles: {
+      ...owner.session.profiles,
+      snapshot: () => shared,
+      ensure: async () => {},
+      event: (key: string) => (key === person.pubkey ? own : undefined),
+    },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@zed"
+        scopedChannelId="crew"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("searches again when the verification authority changes while the picker is open", async () => {
   const relay = keypair(),
     viewer = keypair(),

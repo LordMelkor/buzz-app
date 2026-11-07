@@ -2045,7 +2045,8 @@ class Tools {
     ];
     // The search's own heads count too, so a failed read keeps who it found.
     const heads = named?.filter((event) => event.kind !== 0) ?? [];
-    const verified = await this.verifiedNames(order, heads);
+    // One key for the whole search, so its heads and names agree.
+    const verified = await this.verifiedNamesBy(relay, order, heads);
     return { searched: !!named, profiles, verified, order };
   }
 
@@ -2134,12 +2135,16 @@ class Tools {
   /** The relay's verified names (kind 30382) for `pubkeys`, read as the app
    * reads them, so `send` and the app agree on who is verified. None without
    * the connection's relay key. */
-  async verifiedNames(
+  async verifiedNames(pubkeys: readonly string[]) {
+    return this.verifiedNamesBy(await this.relayKey(), pubkeys);
+  }
+
+  private async verifiedNamesBy(
+    relay: string | undefined,
     pubkeys: readonly string[],
     known: readonly unknown[] = [],
   ) {
     const names = new Map<string, VerifiedProfile>();
-    const relay = await this.relayKey();
     if (!relay || !HEX_KEY.test(relay)) return names;
     const authority = { pubkey: relay, multipleIssuers: false };
     const subjects = [...new Set(pubkeys)].filter((key) => HEX_KEY.test(key));

@@ -28,6 +28,7 @@ import { canMessageAgent } from "../../features/agents/choices";
 import { useMentionArchives } from "../../features/messages/use-mention-archives";
 import { archiveHides } from "../../features/relay/identity-archives";
 import { searchedProfiles } from "../../features/relay/profile-search";
+import { foldProfiles } from "../../features/relay/profiles";
 import {
   type VerifiedProfile,
   type VerifiedProfileAuthority,
@@ -761,12 +762,19 @@ export function SearchResults({
   };
   const authorVerified = (pubkey: string) =>
     profiles.get(pubkey)?.verified ?? pageVerified(pubkey);
+  // A verified person's shared name is their verified label, so their own
+  // profile name is read from their profile event, as `from:` resolves it.
+  const publicName = (pubkey: string) => {
+    const event = session.profiles.event?.(pubkey);
+    return event ? foldProfiles([event]).get(pubkey)?.name : undefined;
+  };
   // A selectable agent also matches by its own name, as in @ mentions, and a
-  // verified person by any of their verified names.
+  // verified person by their own profile name and any verified name.
   const authorTier = (pubkey: string, name: string) =>
     Math.min(
       ...[
         name,
+        publicName(pubkey),
         selectableAgents.get(pubkey)?.name,
         ...verifiedAliases(authorVerified(pubkey)),
       ].map((alias) =>
