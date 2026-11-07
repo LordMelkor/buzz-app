@@ -4009,6 +4009,118 @@ it("offers a member by a verified username no cached head holds", async () => {
   }
 });
 
+it("offers a member known only by a verified name no cached head holds", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  // No search result, no public profile and no shared head: only the read.
+  const owner = verifiedSearch(viewer, relay, []);
+  const read = vi.fn(async (keys: readonly string[]) => ({
+    authority: owner.session.profiles.verifiedAuthority?.(),
+    profiles: new Map(
+      keys.includes(person.pubkey)
+        ? [
+            [
+              person.pubkey,
+              {
+                displayName: "Jordan",
+                username: "jrivera",
+                issuerLabel: "Example",
+                verifiedAt: 1_000_000,
+                status: "checked",
+                multipleIssuers: false,
+              },
+            ],
+          ]
+        : [],
+    ),
+  }));
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      get: () => ({
+        id: "crew",
+        name: "Crew",
+        channelType: "stream" as const,
+        members: [viewer.pubkey, person.pubkey],
+      }),
+      resolve: async () => {},
+    },
+    profiles: { ...owner.session.profiles, ensure: async () => {} },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jrivera"
+        scopedChannelId="crew"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("keeps a person the search found by a verified name when a member's read fails", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair(),
+    member = keypair();
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "jr-old" }),
+    jordanHead(relay, person),
+  ]);
+  const verify = owner.session.directMessages.verified;
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      get: () => ({
+        id: "crew",
+        name: "Crew",
+        channelType: "stream" as const,
+        members: [viewer.pubkey, member.pubkey],
+      }),
+      resolve: async () => {},
+    },
+    profiles: { ...owner.session.profiles, ensure: async () => {} },
+    directMessages: {
+      ...owner.session.directMessages,
+      verified: (...args: Parameters<typeof verify>) =>
+        args[0].includes(member.pubkey)
+          ? Promise.reject(new Error("Relay read timed out"))
+          : verify(...args),
+    },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@riv"
+        scopedChannelId="crew"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("searches again when the verification authority changes while the picker is open", async () => {
   const relay = keypair(),
     viewer = keypair(),

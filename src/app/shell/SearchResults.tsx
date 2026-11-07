@@ -339,9 +339,9 @@ export function SearchResults({
     /** Verified names are still being read: more people may match. */
     verifying?: true;
     remote: readonly RelayEvent[];
-    /** Verified names of the people `remote` found and the channel's
+    /** Verified names of the people `remote` found, then of the channel's
      * members, read before they show. */
-    verified?: VerifiedAnswers | undefined;
+    verified?: readonly (VerifiedAnswers | undefined)[];
   }>();
   // Completing either from:name or from:@name selects an exact signed key.
   const datePrompt = operatorMatches(
@@ -668,22 +668,13 @@ export function SearchResults({
         // that their profile name differs from, so name the page, and the
         // channel's members, before they show: from: resolves members by
         // verified names too. A failed read leaves the profile names, as in
-        // New message.
-        const people = [
-          ...searchedProfiles(
-            remote,
-            session.profiles.verifiedAuthority?.(),
-          ).keys(),
-          ...(effectiveChannelId
-            ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
-            : []),
-        ];
-        // Show who already matches by name now; verified names follow.
-        const verified = await lookUpVerified(
-          session,
-          people,
-          controller.signal,
-          {
+        // New message. Show who already matches by name now; verified names
+        // follow.
+        const pass = (
+          pubkeys: readonly string[],
+          earlier: readonly (VerifiedAnswers | undefined)[],
+        ) =>
+          lookUpVerified(session, pubkeys, controller.signal, {
             batch: VERIFIED_PROFILE_BATCH,
             asked,
             onStart: () =>
@@ -691,11 +682,33 @@ export function SearchResults({
                 query,
                 lookupFailed,
                 remote,
+                verified: earlier,
                 verifying: true,
               }),
-          },
+          });
+        // The page first, on its own, so a failed member read cannot drop
+        // the names the search itself answered with.
+        const page = await pass(
+          [
+            ...searchedProfiles(
+              remote,
+              session.profiles.verifiedAuthority?.(),
+            ).keys(),
+          ],
+          [],
         );
-        setAuthorSuggestions({ query, lookupFailed, remote, verified });
+        const roster = await pass(
+          effectiveChannelId
+            ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
+            : [],
+          [page],
+        );
+        setAuthorSuggestions({
+          query,
+          lookupFailed,
+          remote,
+          verified: [page, roster],
+        });
       })().catch(() => {
         if (!controller.signal.aborted)
           setAuthorSuggestions({ query, remote: [], lookupFailed: true });
@@ -720,8 +733,27 @@ export function SearchResults({
   const selectableAgents = new Map(
     agents.selectable.map((agent) => [agent.pubkey, agent]),
   );
+  // The names this search's page was verified with, as useVerifiedNames
+  // keeps them: only for the authority still in force, and not once a shared
+  // head answers for the person (held now, or arrived since the read began,
+  // even a withdrawal since evicted). useVerifiedNames above renders this
+  // component on those changes.
+  const pageVerified = (pubkey: string) =>
+    profiles.get(pubkey)?.verified
+      ? undefined
+      : authorSuggestions?.verified
+          ?.map((read) => answeredName(session.profiles, read, pubkey))
+          .find(Boolean);
   const candidates = new Map([
     ...[...profiles].filter(([pubkey]) => members.includes(pubkey)),
+    // A member known only by a verified name, as from: resolves them.
+    ...members.flatMap((pubkey) => {
+      const verified = profiles.has(pubkey) ? undefined : pageVerified(pubkey);
+      const named: Profile | undefined = verified && {
+        name: verifiedLabel(verified),
+      };
+      return named ? [[pubkey, named] as const] : [];
+    }),
     ...agents.selectable.map(
       (agent) =>
         [
@@ -738,15 +770,6 @@ export function SearchResults({
       session.profiles.verifiedAuthority?.(),
     ),
   ]);
-  // The names this search's page was verified with, as useVerifiedNames
-  // keeps them: only for the authority still in force, and not once a shared
-  // head answers for the person (held now, or arrived since the read began,
-  // even a withdrawal since evicted). useVerifiedNames above renders this
-  // component on those changes.
-  const pageVerified = (pubkey: string) =>
-    profiles.get(pubkey)?.verified
-      ? undefined
-      : answeredName(session.profiles, authorSuggestions?.verified, pubkey);
   const authorVerified = (pubkey: string) =>
     profiles.get(pubkey)?.verified ?? pageVerified(pubkey);
   // A verified person's shared name is their verified label, so their own
