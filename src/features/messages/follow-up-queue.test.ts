@@ -439,6 +439,17 @@ it("holds a channel message only for the agents it addresses, but any work holds
   }
 });
 
+it("asks whether agents are busy without leaving a wait behind", () => {
+  const h = fixture();
+  h.work("busy", "working");
+  // The composer probes for another agent, which is idle, and sends now.
+  expect(h.queue.busy("chat", ["other-agent"])).toBe(false);
+  h.loseEvidence();
+  const entry = h.entry("next");
+  h.queue.submit(entry);
+  expect(entry.publish).toHaveBeenCalledOnce();
+});
+
 it("publishes a channel row to a member agent that is not the owner's own, and never a Solo row there", () => {
   const send = vi.fn(() => "sent");
   const session = {

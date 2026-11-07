@@ -198,7 +198,13 @@ function createQueue(session: RelaySession) {
       ? new Set(recipients)
       : undefined;
   }
-  function blockers(channelId: string, recipients: readonly string[]) {
+  // `record` keeps the waits it found; a probe from outside the queue only
+  // reads, so it never leaves a wait that nothing observes.
+  function blockers(
+    channelId: string,
+    recipients: readonly string[],
+    record = true,
+  ) {
     const agents = addressed(channelId, recipients);
     const mine = (agent: string) => !agents || agents.has(agent);
     // Typing is evidence from any agent we know of, including a teammate's
@@ -232,8 +238,10 @@ function createQueue(session: RelaySession) {
     current = [
       ...new Map(current.map((wait) => [JSON.stringify(wait), wait])).values(),
     ];
-    if (current.length) waits.set(channelId, current);
-    else waits.delete(channelId);
+    if (record) {
+      if (current.length) waits.set(channelId, current);
+      else waits.delete(channelId);
+    }
     return (
       // A resumed request is a recovery barrier for the whole chat.
       current.some((wait) => wait.resumed || mine(wait.agent)) ||
@@ -887,7 +895,7 @@ function createQueue(session: RelaySession) {
     snapshot: () => entries,
     /** Whether work this device can see would hold a message to these agents. */
     busy: (channelId: string, recipients: readonly string[]) =>
-      blockers(channelId, recipients),
+      blockers(channelId, recipients, false),
     storageError: () => storageError,
     subscribe(listener: () => void) {
       if (storage && !listeners.size) {
