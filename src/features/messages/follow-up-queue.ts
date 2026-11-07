@@ -852,6 +852,8 @@ function createQueue(session: RelaySession) {
       void storage
         .lockChat(channelId, async () => {
           if (handoffs.get(key) !== handoff) return;
+          // The agent may have started while another release held the lock.
+          if (!handoff.complete && !handoffFinished(handoff, channelId)) return;
           const current = storage.handoff(key);
           if (
             current?.id === handoff.id &&

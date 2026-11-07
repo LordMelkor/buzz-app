@@ -1474,6 +1474,36 @@ it("keeps a channel handoff open past its start gap while its agent is seen work
   }
 });
 
+it("keeps a channel handoff open when its agent starts while the chat lock is held", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const h = fixture();
+    h.team();
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    // Another release holds the chat lock while the start gap ends, and the
+    // agent starts before the completion gets the lock.
+    let unlock = () => {};
+    const held = followUpStorage(scope).lockChat(
+      "chat",
+      () => new Promise<void>((resolve) => (unlock = resolve)),
+    );
+    await vi.advanceTimersByTimeAsync(30_002);
+    h.work("other-task", "working");
+    unlock();
+    await held;
+    await vi.advanceTimersByTimeAsync(0);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).not.toBe(
+      true,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("releases a saved channel row for one agent while another agent's saved row waits", async () => {
   const other = "b".repeat(64);
   const h = fixture();
