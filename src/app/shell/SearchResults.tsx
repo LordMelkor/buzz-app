@@ -334,6 +334,8 @@ export function SearchResults({
   const [authorSuggestions, setAuthorSuggestions] = useState<{
     query: string;
     lookupFailed?: boolean;
+    /** Verified names are still being read: more people may match. */
+    verifying?: true;
     remote: readonly RelayEvent[];
     /** Verified names of the people `remote` found, read before it shows,
      * with the authority that checked them and the shared heads' revision
@@ -683,7 +685,12 @@ export function SearchResults({
         );
         // Show who already matches by name now; verified names follow.
         if (unverified.length)
-          setAuthorSuggestions({ query, lookupFailed, remote });
+          setAuthorSuggestions({
+            query,
+            lookupFailed,
+            remote,
+            verifying: true,
+          });
         const read = unverified.length
           ? await session.directMessages
               .verified?.(unverified, controller.signal)
@@ -1585,7 +1592,8 @@ export function SearchResults({
             destinations: authorChoices.filter((choice) => !choice.isAgent),
             empty: authorChoices.length
               ? undefined
-              : authorSuggestions?.query !== query
+              : authorSuggestions?.query !== query ||
+                  authorSuggestions.verifying
                 ? "Searching people…"
                 : authorSuggestions.lookupFailed
                   ? "People search is unavailable. Try a longer name."

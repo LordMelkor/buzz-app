@@ -348,6 +348,84 @@ it("does not resolve from: by verified names checked by an authority that change
   }
 });
 
+it("resolves from: again when the verification authority is replaced during the read", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const person = keypair();
+  const reads: ReadFilter[][] = [];
+  const head = signed(relay, {
+    kind: 30382,
+    created_at: 1_000_000,
+    content: "",
+    tags: [
+      ["d", person.pubkey],
+      ["p", person.pubkey],
+      ["active", "true"],
+      ["display_name", "Jordan"],
+      ["username", "jrivera"],
+      ["issuer_label", "Example"],
+      ["verified_at", "1000000"],
+      ["full_name", "Rivera"],
+    ],
+  });
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async () =>
+      [profile(person, { name: "jr-old" }), head].map((event) =>
+        eventDto(event),
+      ),
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9)))
+        reads.push(filters as ReadFilter[]);
+      return Promise.resolve([]);
+    },
+  });
+  // The community re-advertises its authority while the first read runs.
+  const original = owner.session.profiles.verifiedAuthority?.();
+  let current = original;
+  const listeners = new Set<() => void>();
+  const verify = owner.session.directMessages.verified;
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      verifiedAuthority: () => current,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+    directMessages: {
+      ...owner.session.directMessages,
+      verified: async (...args: Parameters<typeof verify>) => {
+        const answer = await verify(...args);
+        if (current !== original) return { ...answer, authority: current };
+        current = original && { ...original };
+        queueMicrotask(() => {
+          for (const listener of listeners) listener();
+        });
+        return answer;
+      },
+    },
+  } as typeof owner.session;
+  try {
+    renderHook(() => useSearchMessages(session, "from:rivera deploy"));
+    await waitFor(() =>
+      expect(reads.at(-1)).toEqual([
+        expect.objectContaining({ authors: [person.pubkey] }),
+      ]),
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("does not resolve from: by a verified name whose newer shared head arrived during the search", async () => {
   const viewer = keypair();
   const relay = keypair();
@@ -413,6 +491,74 @@ it("does not resolve from: by a verified name whose newer shared head arrived du
     await waitFor(() => expect(searched).toBe(true));
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(reads).toHaveLength(0);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("reports from: as ambiguous when a member's own profile name matches another member's verified username", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const alex = keypair();
+  const bobby = keypair();
+  const reads: ReadFilter[][] = [];
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey, alex.pubkey, bobby.pubkey]),
+  ];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    searchProfiles: async () => [],
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9))) {
+        reads.push(filters as ReadFilter[]);
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => filter.kinds?.includes(event.kind)),
+        ),
+      );
+    },
+  });
+  // Shared profiles name a verified person by their verified label; their
+  // own profile name stays in their profile event.
+  const verified = (displayName: string, username: string) => ({
+    displayName,
+    username,
+    issuerLabel: "Example",
+    verifiedAt: 1,
+    status: "checked" as const,
+    multipleIssuers: false,
+  });
+  const shared = new Map([
+    [alex.pubkey, { name: "Alex", verified: verified("Alex", "jrivera") }],
+    [bobby.pubkey, { name: "Bobby", verified: verified("Bobby", "bobby") }],
+  ]);
+  const events = new Map([
+    [alex.pubkey, profile(alex, { name: "alex" })],
+    [bobby.pubkey, profile(bobby, { name: "jrivera" })],
+  ]);
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      ensure: async () => {},
+      snapshot: () => shared,
+      event: (pubkey: string) => events.get(pubkey),
+    },
+  } as unknown as typeof owner.session;
+  try {
+    owner.session.channels.ensureList();
+    await waitFor(() =>
+      expect(owner.session.channels.get?.("crew")?.members).toHaveLength(3),
+    );
+    const { result } = renderHook(() =>
+      useSearchMessages(session, "from:jrivera deploy", "crew"),
+    );
+    await waitFor(() => expect(result.current.ambiguousAuthor).toBe(true));
+    expect(reads).toEqual([]);
   } finally {
     cleanup();
     owner.dispose();

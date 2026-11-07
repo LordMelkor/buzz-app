@@ -3691,6 +3691,40 @@ it("offers people who match by name while their verified names are still read", 
   }
 });
 
+it("keeps searching while a person found by other text may still match by verified name", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  // The relay found them by their about text; their name doesn't match yet.
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "jr-old", about: "rivera" }),
+  ]);
+  const read = vi.fn(() => new Promise<never>(() => {}));
+  const session = {
+    ...owner.session,
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@rivera"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    await waitFor(() => expect(read).toHaveBeenCalled());
+    const people = screen.getByRole("group", { name: "People" });
+    expect(people).toHaveTextContent("Searching people…");
+    expect(people).not.toHaveTextContent("No matching people");
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("labels a person by the name their page verified over a cached profile name", async () => {
   const relay = keypair(),
     viewer = keypair(),

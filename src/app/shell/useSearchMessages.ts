@@ -1,5 +1,12 @@
 import { workflowOwner } from "../../features/relay/workflow-attribution";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   messageSearchable,
   searchDebounce,
@@ -9,6 +16,7 @@ import type { RelaySession } from "../../features/relay/session";
 import type { ReadFilter } from "../../features/relay/events";
 import { superseded } from "../../features/profiles/useVerifiedNames";
 import { searchedProfiles } from "../../features/relay/profile-search";
+import { foldProfiles } from "../../features/relay/profiles";
 import {
   type VerifiedProfile,
   verifiedAliases,
@@ -192,9 +200,22 @@ export function useSearchMessages(
   const newest = sort === "newest" && session.searchSort;
   // Without text the relay reads its ordinary newest-first history.
   const newestFirst = newest || !parsed.text;
+  // Verified names belong to the authority that checked them: a new one
+  // resolves the author again.
+  const authority = useSyncExternalStore(session.profiles.subscribe, () =>
+    session.profiles.verifiedAuthority?.(),
+  );
   const owner = useMemo(
-    () => ({ session, query, channelId, unresolvedChannel, attempt, newest }),
-    [session, query, channelId, unresolvedChannel, attempt, newest],
+    () => ({
+      session,
+      query,
+      channelId,
+      unresolvedChannel,
+      attempt,
+      newest,
+      authority,
+    }),
+    [session, query, channelId, unresolvedChannel, attempt, newest, authority],
   );
   // The copied result changes synchronously even if React has not committed it yet.
   const copied = useRef<Result | undefined>(undefined);
@@ -263,14 +284,19 @@ export function useSearchMessages(
               ].some((alias) => normalizeName(alias) === handle);
             const shared = (pubkey: string) =>
               session.profiles.snapshot().get(pubkey);
+            // The shared name of a verified person is their verified label,
+            // so their own profile name is read from their profile event.
+            const publicName = (pubkey: string) => {
+              const event = session.profiles.event?.(pubkey);
+              return event ? foldProfiles([event]).get(pubkey)?.name : "";
+            };
+            const known = (pubkey: string) =>
+              named(pubkey, shared(pubkey)?.name, shared(pubkey)?.verified) ||
+              named(pubkey, publicName(pubkey));
             // Selectable agents are offered wherever the picker runs, so they
             // are always candidates, alongside members or relay matches.
-            const agentMatches = [...agents.keys()].filter((pubkey) =>
-              named(pubkey, shared(pubkey)?.name, shared(pubkey)?.verified),
-            );
-            const scoped = knownMembers.filter((pubkey) =>
-              named(pubkey, shared(pubkey)?.name, shared(pubkey)?.verified),
-            );
+            const agentMatches = [...agents.keys()].filter(known);
+            const scoped = knownMembers.filter(known);
             const resolve = (keys: readonly string[]) => {
               const unique = [...new Set(keys)];
               if (unique.length > 1) return { ambiguous: true };
