@@ -7,7 +7,6 @@ import { keypair, signed } from "../relay/testing";
 import type { VerifiedProfile } from "../relay/verified-profile";
 import { setNamePreference } from "./name-preference";
 import {
-  latestName,
   lookUpVerified,
   useVerifiedNames,
   verifiedName,
@@ -297,33 +296,28 @@ it("keeps an earlier read landing late out of the lookups once a later read's an
   expect(verifiedName(own.profiles, person)).toBeUndefined();
 });
 
-it("names a person by another caller's later read the lookups hold, over a caller's own earlier pass", async () => {
-  const { session } = fake();
+it("lets a community's read land after another community's lookups evict a later read", async () => {
   const person = key(1);
-  const authority = session.profiles.verifiedAuthority?.();
-  const verified = vi
-    .fn()
-    .mockResolvedValueOnce({
-      authority,
-      profiles: new Map([[person, name("old")]]),
-    })
-    .mockResolvedValueOnce({ authority, profiles: new Map() });
+  const one = fake();
+  const other = fake();
+  const authority = one.session.profiles.verifiedAuthority?.();
+  let land = (_: unknown) => {};
+  const verified = vi.fn(() => new Promise((resolve) => (land = resolve)));
   const own = {
-    ...session,
+    ...one.session,
     directMessages: { verified },
   } as unknown as VerifiedNamesSession;
-  const kept = await lookUpVerified(
-    own,
-    [person],
-    new AbortController().signal,
+  const pending = lookUpVerified(own, [person], new AbortController().signal);
+  // The other community reads more people than its lookups hold.
+  const crowd = Array.from({ length: 1025 }, (_, index) => key(index + 2));
+  await lookUpVerified(other.session, crowd, new AbortController().signal, {
+    batch: 128,
+  });
+  land({ authority, profiles: new Map([[person, name("Jordan")]]) });
+  expect((await pending)?.answers.get(person)?.profile?.displayName).toBe(
+    "Jordan",
   );
-  expect(latestName(own.profiles, [kept], person)?.displayName).toBe("old");
-  // Another caller's read, asked after the person's lookup went stale, finds
-  // them not verified.
-  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000 + 1);
-  await lookUpVerified(own, [person], new AbortController().signal);
-  vi.restoreAllMocks();
-  expect(latestName(own.profiles, [kept], person)).toBeUndefined();
+  expect(verifiedName(own.profiles, person)?.displayName).toBe("Jordan");
 });
 
 it("yields to a head the shared directory holds, so a later revocation is not undone", async () => {

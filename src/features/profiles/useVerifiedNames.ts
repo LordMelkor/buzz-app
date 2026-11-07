@@ -27,9 +27,6 @@ type Found = Map<
 /** Orders reads by when they were asked: a later read's answer outranks an
  * earlier one's, whichever lands first. */
 let reads = 0;
-/** The latest read whose answer the lookups evicted: an earlier read still
- * pending could otherwise put back an answer that one outranked. */
-let evicted = 0;
 
 /** Subjects per read: one people page. */
 const BATCH = 30;
@@ -43,14 +40,21 @@ const none: ReadonlyMap<string, VerifiedProfile> = new Map();
 // starts over.
 const lookups = new WeakMap<
   ProfileQueries,
-  { authority: VerifiedProfileAuthority; found: Found; stop: () => void }
+  {
+    authority: VerifiedProfileAuthority;
+    found: Found;
+    /** The latest read whose answer these lookups evicted: an earlier read
+     * still out could otherwise put back an answer that one outranked. */
+    evicted: number;
+    stop: () => void;
+  }
 >();
 function foundFor(
   profiles: ProfileQueries,
   authority: VerifiedProfileAuthority,
 ) {
   const current = lookups.get(profiles);
-  if (current?.authority === authority) return current.found;
+  if (current?.authority === authority) return current;
   current?.stop();
   const found: Found = new Map();
   // A shared head supersedes a search's answer for good, mounted or not, so
@@ -63,8 +67,9 @@ function foundFor(
     for (const pubkey of found.keys())
       if (superseded(profiles, pubkey, since)) found.delete(pubkey);
   });
-  lookups.set(profiles, { authority, found, stop });
-  return found;
+  const entry = { authority, found, evicted: 0, stop };
+  lookups.set(profiles, entry);
+  return entry;
 }
 /** Whether a shared head outranks a search's answer from `revision`: one is
  * held now, or a later one arrived, even if the shared cache evicted it. */
@@ -126,7 +131,8 @@ export async function lookUpVerified(
   const searched = session.directMessages?.searched;
   const authority = profiles.verifiedAuthority?.();
   if (!authority || !readVerified) return undefined;
-  const found = foundFor(profiles, authority);
+  const cache = foundFor(profiles, authority);
+  const { found } = cache;
   const known = profiles.snapshot();
   const now = Date.now();
   const revision = Math.min(since, profiles.verifiedRevision?.() ?? 0);
@@ -163,7 +169,7 @@ export async function lookUpVerified(
       // answers for no one, as if it failed, since that answer may have been
       // this person's. The lookups keep no answer a shared head arriving
       // during this read outranks.
-      if (read < evicted) continue;
+      if (read < cache.evicted) continue;
       const later = found.get(pubkey);
       if (later && later.read > read) {
         answers.set(pubkey, {
@@ -180,7 +186,7 @@ export async function lookUpVerified(
     }
     for (const pubkey of found.keys()) {
       if (found.size <= PROFILE_CACHE_BASE) break;
-      evicted = Math.max(evicted, found.get(pubkey)?.read ?? 0);
+      cache.evicted = Math.max(cache.evicted, found.get(pubkey)?.read ?? 0);
       found.delete(pubkey);
     }
     onPage?.();
@@ -271,11 +277,10 @@ export function verifiedName(profiles: ProfileQueries, pubkey: string) {
 }
 
 /**
- * `pubkey`'s verified name by the latest read that answered for them, "not
- * verified" included: a caller's own `passes`, or another caller's later read
- * the lookups hold now. A failed read answers for no one. For one decision,
- * such as resolving `from:`; a view that keeps its answers keeps them with
- * keepLatest, so the lookups evicting one cannot bring an older one back.
+ * `pubkey`'s verified name by the latest read among a caller's own `passes`
+ * that answered for them, "not verified" included; a failed read answers for
+ * no one. The caller keeps its passes, so the shared lookups evicting an
+ * answer cannot bring an older one back.
  */
 export function latestName(
   profiles: ProfileQueries,
@@ -288,15 +293,6 @@ export function latestName(
     if (read !== undefined && read >= (latest?.answers.get(pubkey)?.read ?? 0))
       latest = pass;
   }
-  // Another caller's later read, while the lookups still hold it.
-  const authority = profiles.verifiedAuthority?.();
-  const current = authority && lookups.get(profiles);
-  const later =
-    current && current.authority === authority
-      ? current.found.get(pubkey)
-      : undefined;
-  if (later && later.read > (latest?.answers.get(pubkey)?.read ?? 0))
-    return profiles.verifiedHeld?.(pubkey) ? undefined : later.profile;
   return answeredName(profiles, latest, pubkey);
 }
 

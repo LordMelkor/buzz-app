@@ -4971,6 +4971,61 @@ it("keeps a new authority's page answers when the agents' answers are by the ear
   }
 });
 
+it("reads selectable agents' verified names once while the author query is typed", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const owner = verifiedSearch(viewer, relay, []);
+  const source = owner.session.agentChoices;
+  const choice = { pubkey: agent.pubkey, name: "Scout", managed: true };
+  const choices = {
+    ...source.snapshot(),
+    identities: [choice],
+    selectable: [choice],
+  };
+  // The agent's read stays out while the query is typed.
+  const read = vi.fn((keys: readonly string[]) =>
+    keys.includes(agent.pubkey)
+      ? new Promise<never>(() => {})
+      : Promise.resolve({
+          authority: owner.session.profiles.verifiedAuthority?.(),
+          profiles: new Map(),
+        }),
+  );
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  const props = {
+    session,
+    onQueryChange: vi.fn(),
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+  };
+  const agentReads = () =>
+    read.mock.calls.filter(([keys]) => keys.includes(agent.pubkey)).length;
+  try {
+    const view = render(<SearchResults {...props} query="from:@j" />);
+    await waitFor(() => expect(agentReads()).toBe(1));
+    view.rerender(<SearchResults {...props} query="from:@jr" />);
+    view.rerender(<SearchResults {...props} query="from:@jri" />);
+    view.rerender(<SearchResults {...props} query="from:@jriv" />);
+    await act(async () => {});
+    expect(agentReads()).toBe(1);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("distinguishes an unavailable global author lookup from no matching people", async () => {
   const relay = keypair(),
     viewer = keypair();

@@ -588,12 +588,12 @@ export function SearchResults({
   const showAuthorPicker = pickerPrompt || showAmbiguousPicker;
   const agents = useAgentChoices(session, showAuthorPicker);
   // Selectable agents are candidates too; their verified names are read on
-  // their own, so a late agent does not search again, and read again as the
-  // query changes after a failed read.
+  // their own, so a late agent does not search again, and read again after a
+  // failed read as each settled (debounced) query searches.
   const agentAnswers = useVerifiedAnswers(
     session,
     agents.selectable.map(({ pubkey }) => pubkey),
-    { key: authorNeedle, settled: showAuthorPicker },
+    { key: authorSuggestions?.query ?? "", settled: showAuthorPicker },
   );
   // People and agents are destinations for plain typed text outside a
   // conversation scope; an operator asks for messages. `@` asks for a person
