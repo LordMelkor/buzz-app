@@ -13943,6 +13943,21 @@ describe("queued follow-ups in a team channel", () => {
     ).toHaveTextContent("And this");
   });
 
+  it("sends at once when the session cannot read the channel's roster", async () => {
+    const { h } = teamChannel(first.pubkey);
+    // Messaging only: no channel management, so no roster check to release by.
+    const outbox = h.session.outbox as unknown as {
+      supports: (kind: number) => boolean;
+    };
+    outbox.supports = (kind) => kind !== 9007 && kind !== 9000;
+    await choicesLoaded();
+    h.submit();
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(
+      screen.queryByRole("region", { name: "Queued follow-ups" }),
+    ).toBeNull();
+  });
+
   it("sends at once when a tagged recipient is not known to be an agent", async () => {
     const { h } = teamChannel(first.pubkey);
     act(() => h.commands().insertMention(second));

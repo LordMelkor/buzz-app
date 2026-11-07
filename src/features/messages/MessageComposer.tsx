@@ -2680,8 +2680,11 @@ function Composer({
         session.profiles.snapshot(),
         session.agentChoices.snapshot(),
       );
+      // A queued row checks the channel's roster before it is sent, which
+      // a session that cannot manage channels cannot read; it sends now.
       return (
         !!host &&
+        (!!host.outbox?.supports(9007) || !!host.outbox?.supports(9000)) &&
         !threadRootId &&
         !ownSoloConversation &&
         !soloConversation &&
