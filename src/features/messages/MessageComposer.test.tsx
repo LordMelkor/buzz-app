@@ -11976,6 +11976,24 @@ it("a group from the picker inside Markdown code is only its name", () => {
   expect(h.input()).toHaveValue("`a@Crew b`");
   expect(h.commands().recipients).toEqual([]);
 });
+it("a group from the picker inside a removed link's label still notifies", () => {
+  const h = mount();
+  h.fill("see label");
+  act(() => {
+    h.input().setSelectionRange(4, 9);
+    const edit = h.input().editLink();
+    if (!edit) throw new Error("Link editing unavailable");
+    edit.remove();
+    h.input().setSelectionRange(6, 6);
+  });
+  act(() =>
+    expect(h.commands().insertMentions([first, second], "Crew")).toBe(true),
+  );
+  expect(h.commands().recipients.map(({ pubkey }) => pubkey)).toEqual([
+    first.pubkey,
+    second.pubkey,
+  ]);
+});
 it("a group edit with an unavailable member adds nothing", async () => {
   const h = mount({ inviteAgents: true });
   const unavailable = { pubkey: "c".repeat(64), name: "Missing" };
@@ -13098,6 +13116,16 @@ it("while a typed tag decides, a Solo menu toggle edits the tags, not a hidden l
   expect(sendingTo("Ada")).toBeInTheDocument();
 });
 
+it("after a Solo group chip, each picked tag joins the leading tags in order", () => {
+  const { h, ada, bea } = mountSoloAgents({ main: first.pubkey });
+  act(() => {
+    expect(h.commands().insertMentions([ada, bea], "Crew")).toBe(true);
+    h.commands().insertText("hello");
+  });
+  act(() => h.commands().insertMention(ada));
+  act(() => h.commands().insertMention(bea));
+  expect(h.input()).toHaveValue("@Crew @Ada @Bea hello");
+});
 it("while a typed tag decides, a Solo team pick replaces the tags", () => {
   const { h, ada, bea, sendingTo } = mountSoloAgents({ main: first.pubkey });
   act(() => {
