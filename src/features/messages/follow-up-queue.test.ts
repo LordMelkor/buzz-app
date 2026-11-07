@@ -702,6 +702,8 @@ it("holds a channel row behind a resumed request of another agent", () => {
   const row = { ...h.entry("next"), recipients: ["other"] };
   h.queue.submit(row);
   h.queue.resumeAfter("agent", { original: "chat" });
+  // A message left with no agent (all made references) has no row to wait in.
+  expect(h.queue.busy("chat", [])).toBe(false);
   h.work("busy", "done", "chat", "other");
   expect(row.publish).not.toHaveBeenCalled();
   h.work("original", "done");

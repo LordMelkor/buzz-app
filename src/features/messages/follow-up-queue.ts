@@ -870,8 +870,13 @@ function createQueue(session: RelaySession) {
         continue;
       }
       const rows = entries.filter((entry) => entry.channelId === channelId);
+      // A row being edited still holds its own agents' later rows, but not
+      // another agent's.
       const releasable = (entry: Entry) =>
-        !entry.error && !entry.restored && entry.ready?.() !== false;
+        !entry.error &&
+        !entry.restored &&
+        !edits.has(entry.id) &&
+        entry.ready?.() !== false;
       if (!addressed(channelId, [])) {
         const first = rows[0];
         if (blockers(channelId, first?.recipients ?? [])) continue;
@@ -1028,13 +1033,16 @@ function createQueue(session: RelaySession) {
   return {
     snapshot: () => entries,
     /** Whether work this device can see, or a row for one of these agents
-     * still queued or being released, would hold a message to them. */
+     * still queued or being released, would hold a message to them. A
+     * channel message to no agent has no lane to wait in, so it never is. */
     busy: (channelId: string, recipients: readonly string[]) =>
-      entries.some(
+      (!!recipients.length || !addressed(channelId, recipients)) &&
+      (entries.some(
         (entry) =>
           entry.channelId === channelId &&
           entry.recipients.some((agent) => recipients.includes(agent)),
-      ) || blockers(channelId, recipients, false),
+      ) ||
+        blockers(channelId, recipients, false)),
     storageError: () => storageError,
     subscribe(listener: () => void) {
       if (storage && !listeners.size) {

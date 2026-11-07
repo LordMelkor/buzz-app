@@ -1399,6 +1399,28 @@ it("releases a saved channel row for one agent while another agent's saved row w
   expect(h.queue.snapshot()[0]?.restored).toBeFalsy();
 });
 
+it("releases another agent's saved channel row while one agent's row is being edited", async () => {
+  const other = "b".repeat(64);
+  const h = fixture();
+  h.team(other);
+  h.choices(true, [agent, other]);
+  h.work("b-task", "working", other);
+  const id = h.enqueue({ ...message, text: "For A", channel: true });
+  h.enqueue({
+    ...message,
+    text: "For B",
+    recipients: [other],
+    picks: {},
+    channel: true,
+  });
+  const edit = h.queue.edit(id);
+  h.finish();
+  h.work("b-task", "done", other);
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledOnce());
+  expect(h.send.mock.calls[0]?.[1]).toBe("For B");
+  edit.cancel();
+});
+
 it("keeps a channel handoff open for a fresh start gap after a delayed delivery", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
   try {
