@@ -1475,6 +1475,40 @@ it("does not publish when the shared handoff claim cannot be saved", async () =>
   expect(h.send).toHaveBeenCalledOnce();
 });
 
+it("settles a two-agent row's saved claims when a later claim fails", async () => {
+  const other = "b".repeat(64);
+  const h = fixture();
+  h.team(other);
+  h.choices(true, [agent, other]);
+  const both = h.enqueue({
+    ...message,
+    text: "For both",
+    recipients: [agent, other],
+    picks: {},
+    channel: true,
+  });
+  h.enqueue({ ...message, text: "For A", channel: true });
+  const set = Storage.prototype.setItem;
+  const failing = vi
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(function (this: Storage, key, value) {
+      // The first agent's claim saves; the second agent's fails.
+      if (key.includes(`follow-up-handoff:chat:${other}`))
+        throw new Error("Disk full");
+      set.call(this, key, value);
+    });
+  h.finish();
+  await vi.waitFor(() =>
+    expect(h.queue.snapshot()[0]?.error).toContain(
+      "Could not save queued message ordering",
+    ),
+  );
+  failing.mockRestore();
+  h.queue.remove(both);
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledOnce());
+  expect(h.send.mock.calls[0]?.[1]).toBe("For A");
+});
+
 it("repairs a failed event claim before recovering the receipt and restarting", async () => {
   const h = fixture();
   const id = h.enqueue({ ...message, text: "First" });
@@ -1665,9 +1699,7 @@ it("settles a resumed handoff without a saved successor before reopening", async
   h.queue.resumeAfter(agent, { [event]: "chat" });
   await Promise.resolve();
   await followUpStorage(scope).lockChat("chat", async () => {});
-  expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).not.toBe(
-    true,
-  );
+  expect(followUpStorage(scope).handoff("chat")?.complete).not.toBe(true);
   h.work(event, "done");
   await vi.waitFor(() =>
     expect(followUpStorage(scope).handoff("chat")?.complete).toBe(true),
@@ -1711,9 +1743,7 @@ it.each(["abandoned", "removed", "revoked"])(
     else h.roster("ready", false);
     expect(deactivate).toHaveBeenCalledOnce();
     await followUpStorage(scope).lockChat("chat", async () => {});
-    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).not.toBe(
-      true,
-    );
+    expect(followUpStorage(scope).handoff("chat")?.complete).not.toBe(true);
   },
 );
 

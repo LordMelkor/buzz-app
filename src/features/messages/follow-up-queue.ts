@@ -734,13 +734,14 @@ function createQueue(session: RelaySession) {
       if (storage && entry.message) {
         // Retain the claim after removing the row: storage events and agent
         // activity in another window may both arrive after this handoff.
+        // Set first: a later lane's failed claim settles those already saved.
+        claimed = true;
         for (const [key, recipients] of rowLanes(entry))
           storage.claim(key, {
             id: entry.id,
             recipients,
             ...(owner ? { owner } : {}),
           });
-        claimed = true;
         storage.sending(entry.id, true);
       }
       entry.sending = true;
