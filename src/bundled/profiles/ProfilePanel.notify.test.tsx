@@ -140,3 +140,23 @@ it("retrying a failed save keeps the choice the person made", async () => {
     JSON.parse(Object.values({ ...localStorage })[0] ?? "{}").people,
   ).toEqual([person]);
 });
+
+it("says the list is full instead of offering a retry that can't add them", async () => {
+  const f = fixture();
+  const user = userEvent.setup();
+  const others = Array.from({ length: 200 }, (_, i) =>
+    (i + 1).toString(16).padStart(64, "0"),
+  );
+  f.service.updatePreferences({ people: others });
+  render(f.panel(person));
+  await user.click(
+    screen.getByRole("button", { name: "Notify me when they post" }),
+  );
+  expect(
+    screen.getByText(/Your list is full \(200 people\)/),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Retry saving" }),
+  ).not.toBeInTheDocument();
+  expect(f.service.snapshot().preferences.people).toEqual(others);
+});
