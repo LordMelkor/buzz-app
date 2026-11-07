@@ -4603,6 +4603,263 @@ it("reads a selectable agent's verified name again as the query changes after a 
   }
 });
 
+it("keeps a later page read's \"not verified\" when the next query's reads fail", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const active = eventDto(
+    signed(relay, {
+      kind: 30382,
+      created_at: 1_000_000,
+      content: "",
+      tags: [
+        ["d", agent.pubkey],
+        ["p", agent.pubkey],
+        ["active", "true"],
+        ["display_name", "Scout"],
+        ["username", "jrivera"],
+        ["issuer_label", "Example"],
+        ["verified_at", "1000000"],
+      ],
+    }),
+  );
+  const withdrawal = eventDto(
+    signed(relay, {
+      kind: 30382,
+      created_at: 1_000_001,
+      content: "",
+      tags: [
+        ["d", agent.pubkey],
+        ["p", agent.pubkey],
+        ["active", "false"],
+      ],
+    }),
+  );
+  let offline = false,
+    releasePage = () => {};
+  const pageGate = new Promise<void>((resolve) => {
+    releasePage = resolve;
+  });
+  const searched: string[] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async (query) => {
+      searched.push(query);
+      if (offline) throw new Error("offline");
+      await pageGate;
+      return [eventDto(profile(agent, { name: "scout-old" })), withdrawal];
+    },
+    query: async (filters) => {
+      if (
+        filters.some(
+          (filter) =>
+            filter.kinds?.includes(30382) &&
+            filter["#d"]?.includes(agent.pubkey),
+        )
+      ) {
+        if (offline) throw new Error("offline");
+        return [active];
+      }
+      return [];
+    },
+  });
+  const source = owner.session.agentChoices;
+  const choice = { pubkey: agent.pubkey, name: "Scout", managed: true };
+  const choices = {
+    ...source.snapshot(),
+    identities: [choice],
+    selectable: [choice],
+  };
+  const authority = { pubkey: relay.pubkey, multipleIssuers: false };
+  const shared = new Map();
+  const answers: boolean[] = [];
+  let failed = 0;
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      snapshot: () => shared,
+      verifiedAuthority: () => authority,
+      verifiedHeld: () => false,
+      verifiedRevision: () => 0,
+      verifiedSince: () => false,
+    },
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: {
+      ...owner.session.directMessages,
+      searched: () => true,
+      verified: async () => {
+        if (offline) {
+          failed++;
+          throw new Error("offline");
+        }
+        const positive = answers.length === 0;
+        answers.push(positive);
+        return {
+          authority,
+          profiles: new Map(
+            positive
+              ? [
+                  [
+                    agent.pubkey,
+                    {
+                      displayName: "Scout",
+                      username: "jrivera",
+                      issuerLabel: "Example",
+                      verifiedAt: 1_000_000,
+                      status: "checked" as const,
+                      multipleIssuers: false,
+                    },
+                  ],
+                ]
+              : [],
+          ),
+        };
+      },
+    },
+  } as unknown as typeof owner.session;
+  try {
+    // A controlled verified-reader boundary makes the independent hook
+    // answer positive first; the completed page answers negative later.
+    const props = {
+      session,
+      onQueryChange: vi.fn(),
+      input: createRef<HTMLInputElement>(),
+      pages: [],
+      openConversation: () => {},
+    };
+    const view = render(<SearchResults {...props} query="from:@jri" />);
+    await waitFor(() => expect(answers).toEqual([true]));
+    await act(async () => {});
+    await act(async () => releasePage());
+    await waitFor(() => expect(answers.at(-1)).toBe(false));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("option", { name: /Scout/ }),
+      ).not.toBeInTheDocument(),
+    );
+    vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+    offline = true;
+    view.rerender(<SearchResults {...props} query="from:@jriv" />);
+    await waitFor(() => expect(failed).toBeGreaterThan(0));
+    await waitFor(() => expect(searched).toContain("jriv"));
+    await act(async () => {});
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("option", { name: /Scout/ }),
+      ).not.toBeInTheDocument(),
+    );
+  } finally {
+    releasePage();
+    cleanup();
+    owner.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("keeps searching while a selectable agent's verified name is read", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  let searched = 0;
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    // The relay finds nobody; only the agent can match.
+    searchProfiles: async () => {
+      searched++;
+      return [];
+    },
+  });
+  const source = owner.session.agentChoices;
+  const choice = { pubkey: agent.pubkey, name: "Scout", managed: true };
+  const choices = {
+    ...source.snapshot(),
+    identities: [choice],
+    selectable: [choice],
+  };
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const read = vi.fn(async (keys: readonly string[]) => {
+    if (keys.includes(agent.pubkey)) await held;
+    return {
+      authority: owner.session.profiles.verifiedAuthority?.(),
+      profiles: new Map(
+        keys.includes(agent.pubkey)
+          ? [
+              [
+                agent.pubkey,
+                {
+                  displayName: "Scout",
+                  username: "jrivera",
+                  issuerLabel: "Example",
+                  verifiedAt: 1_000_000,
+                  status: "checked" as const,
+                  multipleIssuers: false,
+                },
+              ],
+            ]
+          : [],
+      ),
+    };
+  });
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jriv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    await waitFor(() =>
+      expect(read).toHaveBeenCalledWith(
+        expect.arrayContaining([agent.pubkey]),
+        expect.anything(),
+      ),
+    );
+    await waitFor(() => expect(searched).toBe(1));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(screen.queryByText(/No matching people/)).toBeNull();
+    expect(screen.getByText("Searching people…")).toBeVisible();
+    await act(async () => release());
+    expect(await screen.findByRole("option", { name: /Scout/ })).toBeVisible();
+  } finally {
+    release();
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("distinguishes an unavailable global author lookup from no matching people", async () => {
   const relay = keypair(),
     viewer = keypair();

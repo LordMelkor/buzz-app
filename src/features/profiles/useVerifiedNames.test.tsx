@@ -257,8 +257,41 @@ it("keeps a later read's answer when an earlier read lands after it", async () =
   // with the name it was asked for.
   await lookUpVerified(own, [person], new AbortController().signal);
   land({ authority, profiles: new Map([[person, name("old")]]) });
-  await earlier;
+  // The earlier read's caller gets the later answer too.
+  expect((await earlier)?.answers.get(person)?.profile).toBeUndefined();
   expect(verified).toHaveBeenCalledTimes(2);
+  expect(verifiedName(own.profiles, person)).toBeUndefined();
+});
+
+it("keeps an earlier read landing late out of the lookups once a later read's answer is evicted", async () => {
+  const { session } = fake();
+  const person = key(1);
+  const authority = session.profiles.verifiedAuthority?.();
+  let land = (_: unknown) => {};
+  const verified = vi
+    .fn()
+    .mockImplementationOnce(() => new Promise((resolve) => (land = resolve)))
+    .mockImplementation(async (subjects: readonly string[]) => ({
+      authority,
+      profiles: new Map(
+        subjects.flatMap((subject) =>
+          subject === person ? [] : [[subject, name("other")]],
+        ),
+      ),
+    }));
+  const own = {
+    ...session,
+    directMessages: { verified },
+  } as unknown as VerifiedNamesSession;
+  const earlier = lookUpVerified(own, [person], new AbortController().signal);
+  await lookUpVerified(own, [person], new AbortController().signal);
+  // Other people's answers evict the later read's "not verified".
+  const crowd = Array.from({ length: 1024 }, (_, index) => key(index + 2));
+  await lookUpVerified(own, crowd, new AbortController().signal, {
+    batch: 128,
+  });
+  land({ authority, profiles: new Map([[person, name("old")]]) });
+  await earlier;
   expect(verifiedName(own.profiles, person)).toBeUndefined();
 });
 

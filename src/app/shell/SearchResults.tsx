@@ -97,7 +97,8 @@ import {
 } from "./parseSearchOperators";
 import { avatarMedia } from "../../shared/avatar-source";
 import {
-  latestName,
+  answeredName,
+  keepLatest,
   lookUpVerified,
   useVerifiedAnswers,
   useVerifiedNames,
@@ -747,16 +748,19 @@ export function SearchResults({
   // person (held now, or arrived since the read began, even a withdrawal since
   // evicted). useVerifiedNames above renders this component on those changes.
   // Of this picker's own reads (the page, the channel's members, selectable
-  // agents), the latest that answered for the person speaks for them, "not
-  // verified" included.
+  // agents), for every query it has shown, the latest that answered for the
+  // person speaks for them, "not verified" included. A failed read keeps the
+  // answers it would have replaced.
+  const answers = useRef<VerifiedAnswers>(undefined);
+  for (const pass of [
+    ...(authorSuggestions?.verified ?? []),
+    agentAnswers.answers,
+  ])
+    answers.current = keepLatest(answers.current, pass);
   const pageVerified = (pubkey: string) =>
     profiles.get(pubkey)?.verified
       ? undefined
-      : latestName(
-          session.profiles,
-          [...(authorSuggestions?.verified ?? []), agentAnswers],
-          pubkey,
-        );
+      : answeredName(session.profiles, answers.current, pubkey);
   const candidates = new Map([
     ...[...profiles].filter(([pubkey]) => members.includes(pubkey)),
     // A member known only by a verified name, as from: resolves them.
@@ -1624,7 +1628,8 @@ export function SearchResults({
             empty: authorChoices.length
               ? undefined
               : authorSuggestions?.query !== query ||
-                  authorSuggestions.verifying
+                  authorSuggestions.verifying ||
+                  agentAnswers.asking
                 ? "Searching people…"
                 : authorSuggestions.lookupFailed
                   ? "People search is unavailable. Try a longer name."
