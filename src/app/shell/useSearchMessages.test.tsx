@@ -498,19 +498,25 @@ it("does not resolve from: by a verified name whose newer shared head arrived du
 });
 
 it.each([
-  ["", true],
-  [" before that member's verified head is cached", false],
+  ["", true, 0],
+  [" before that member's verified head is cached", false, 0],
+  // More uncached members than one verified read can take.
+  [" in a channel larger than one verified read", false, 200],
 ])(
   "reports from: as ambiguous when a member's own profile name matches another member's verified username%s",
-  async (_name, cached) => {
+  async (_name, cached, others) => {
     const viewer = keypair();
     const relay = keypair();
     const alex = keypair();
     const bobby = keypair();
     const reads: ReadFilter[][] = [];
+    const crowd = Array.from({ length: others }, (_, index) =>
+      index.toString(16).padStart(64, "0"),
+    );
+    const members = [viewer.pubkey, ...crowd, alex.pubkey, bobby.pubkey];
     const discovery = [
       metadata(relay, "crew", "crew"),
-      roster(relay, "crew", [viewer.pubkey, alex.pubkey, bobby.pubkey]),
+      roster(relay, "crew", members),
       eventDto(
         signed(relay, {
           kind: 30382,
@@ -585,7 +591,9 @@ it.each([
     try {
       owner.session.channels.ensureList();
       await waitFor(() =>
-        expect(owner.session.channels.get?.("crew")?.members).toHaveLength(3),
+        expect(owner.session.channels.get?.("crew")?.members).toHaveLength(
+          members.length,
+        ),
       );
       const { result } = renderHook(() =>
         useSearchMessages(session, "from:jrivera deploy", "crew"),

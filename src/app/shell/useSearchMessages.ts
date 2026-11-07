@@ -18,6 +18,7 @@ import { superseded } from "../../features/profiles/useVerifiedNames";
 import { searchedProfiles } from "../../features/relay/profile-search";
 import { foldProfiles } from "../../features/relay/profiles";
 import {
+  VERIFIED_PROFILE_BATCH,
   type VerifiedProfile,
   verifiedAliases,
 } from "../../features/relay/verified-profile";
@@ -304,24 +305,43 @@ export function useSearchMessages(
                   !shared(pubkey)?.verified &&
                   !session.profiles.verifiedHeld?.(pubkey),
               );
-              const read = unverified.length
-                ? await session.directMessages
-                    .verified?.(unverified, controller.signal)
-                    .catch(() => undefined)
-                : undefined;
+              // One read per relay batch: a filter takes at most that many.
+              const reads = await Promise.all(
+                Array.from(
+                  {
+                    length: Math.ceil(
+                      unverified.length / VERIFIED_PROFILE_BATCH,
+                    ),
+                  },
+                  (_, index) =>
+                    session.directMessages
+                      .verified?.(
+                        unverified.slice(
+                          index * VERIFIED_PROFILE_BATCH,
+                          (index + 1) * VERIFIED_PROFILE_BATCH,
+                        ),
+                        controller.signal,
+                      )
+                      .catch(() => undefined),
+                ),
+              );
               controller.signal.throwIfAborted();
               // As in useVerifiedNames, names belong to the authority that
               // checked them, and a shared head that arrived since the read
               // began (even a withdrawal, even one since evicted) outranks them.
-              const checked =
-                read?.authority === session.profiles.verifiedAuthority?.()
-                  ? read?.profiles
-                  : undefined;
+              const authority = session.profiles.verifiedAuthority?.();
+              const checked = new Map(
+                reads.flatMap((read) =>
+                  read && read.authority === authority
+                    ? [...read.profiles]
+                    : [],
+                ),
+              );
               return (pubkey: string) =>
                 shared(pubkey)?.verified ??
                 (superseded(session.profiles, pubkey, asked)
                   ? undefined
-                  : checked?.get(pubkey));
+                  : checked.get(pubkey));
             };
             // Selectable agents are offered wherever the picker runs, so they
             // are always candidates, alongside members or relay matches.
