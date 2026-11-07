@@ -830,7 +830,13 @@ function createQueue(session: RelaySession) {
       if (resumedRequests.has(id)) wait.resumed = true;
       return wait;
     });
-    return !!activity && pending.every((wait) => finished(wait, activity));
+    // Nor while it still sees the agent working, so a window that sees less
+    // cannot send into that work.
+    return (
+      !!activity &&
+      pending.every((wait) => finished(wait, activity)) &&
+      !(channel && blockers(channelId, handoff.recipients))
+    );
   }
   function pump() {
     if (activating) return;

@@ -1449,6 +1449,31 @@ it("completes a channel handoff for an agent this device never sees work", async
   }
 });
 
+it("keeps a channel handoff open past its start gap while its agent is seen working", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const h = fixture();
+    h.team();
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    // The agent works, but no row or turn names the sent message.
+    h.work("other-task", "working");
+    const complete = async () => {
+      await followUpStorage(scope).lockChat("chat", async () => {});
+      return followUpStorage(scope).handoff(`chat:${agent}`)?.complete;
+    };
+    await vi.advanceTimersByTimeAsync(30_002);
+    expect(await complete()).not.toBe(true);
+    h.work("other-task", "done");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await complete()).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("releases a saved channel row for one agent while another agent's saved row waits", async () => {
   const other = "b".repeat(64);
   const h = fixture();
