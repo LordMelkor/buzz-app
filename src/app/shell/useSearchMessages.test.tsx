@@ -665,6 +665,93 @@ it("finds a member's name ambiguous with a selectable agent's verified name no c
   }
 });
 
+it("resolves a member's verified name when the selectable agents' read fails", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const helper = keypair();
+  const bobby = keypair();
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey, bobby.pubkey]),
+  ];
+  const authors: (readonly string[] | undefined)[] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    searchProfiles: async () => [],
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9))) {
+        authors.push(...filters.map((filter) => filter.authors));
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => filter.kinds?.includes(event.kind)),
+        ),
+      );
+    },
+  });
+  // Only the read knows Bobby as jrivera, and reading the agent fails.
+  const shared = new Map([
+    [helper.pubkey, { name: "Helper" }],
+    [bobby.pubkey, { name: "Bobby" }],
+  ]);
+  const authority = { pubkey: relay.pubkey, multipleIssuers: false };
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      ensure: async () => {},
+      snapshot: () => shared,
+      verifiedAuthority: () => authority,
+    },
+    directMessages: {
+      ...owner.session.directMessages,
+      verified: async (keys: readonly string[]) => {
+        if (keys.includes(helper.pubkey)) throw new Error("offline");
+        return {
+          authority,
+          profiles: new Map(
+            keys.includes(bobby.pubkey)
+              ? [
+                  [
+                    bobby.pubkey,
+                    {
+                      displayName: "Bobby",
+                      username: "jrivera",
+                      issuerLabel: "Example",
+                      verifiedAt: 1,
+                      status: "checked" as const,
+                      multipleIssuers: false,
+                    },
+                  ],
+                ]
+              : [],
+          ),
+        };
+      },
+    },
+  } as unknown as typeof owner.session;
+  try {
+    owner.session.channels.ensureList();
+    await waitFor(() =>
+      expect(owner.session.channels.get?.("crew")?.members).toHaveLength(2),
+    );
+    renderHook(() =>
+      useSearchMessages(
+        session,
+        "from:jrivera deploy",
+        "crew",
+        undefined,
+        new Map([[helper.pubkey, "Helper"]]),
+      ),
+    );
+    await waitFor(() => expect(authors).toContainEqual([bobby.pubkey]));
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("reads members' verified names one read at a time, and not again when only the text changes", async () => {
   const viewer = keypair();
   const relay = keypair();

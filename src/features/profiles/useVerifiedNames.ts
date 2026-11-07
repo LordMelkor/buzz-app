@@ -242,6 +242,30 @@ export function verifiedName(profiles: ProfileQueries, pubkey: string) {
     : undefined;
 }
 
+/**
+ * `pubkey`'s verified name by the latest answer any read gave, "not verified"
+ * included: the lookups keep it, since every pass writes there and a failed
+ * read writes nothing. Once they evict the person, the latest of `passes`
+ * that answered for them speaks. Either holds only while its authority does
+ * and no shared head has answered for the person since.
+ */
+export function latestName(
+  profiles: ProfileQueries,
+  passes: readonly (VerifiedAnswers | undefined)[],
+  pubkey: string,
+) {
+  const authority = profiles.verifiedAuthority?.();
+  const current = authority && lookups.get(profiles);
+  const latest =
+    current && current.authority === authority
+      ? current.found.get(pubkey)
+      : undefined;
+  if (latest)
+    return profiles.verifiedHeld?.(pubkey) ? undefined : latest.profile;
+  const pass = passes.filter((read) => read?.answers.has(pubkey)).at(-1);
+  return answeredName(profiles, pass, pubkey);
+}
+
 /** A searched person as its community verified them, when it has. */
 export type VerifiedPerson<T> = T & {
   /** The verified full name, shown beside the row's detail. */

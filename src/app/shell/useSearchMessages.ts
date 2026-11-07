@@ -15,7 +15,7 @@ import { objectBody } from "../../features/relay/body";
 import type { RelaySession } from "../../features/relay/session";
 import type { ReadFilter } from "../../features/relay/events";
 import {
-  answeredName,
+  latestName,
   lookUpVerified,
 } from "../../features/profiles/useVerifiedNames";
 import { searchedProfiles } from "../../features/relay/profile-search";
@@ -303,8 +303,9 @@ export function useSearchMessages(
             // Verified names the shared profiles don't hold yet are read, or
             // reused from an earlier search. A failed read leaves profile
             // names, which resolve as before. As in useVerifiedNames, names
-            // belong to the authority that checked them, and a shared head
-            // that arrived since (even a withdrawal since evicted) outranks them.
+            // belong to the authority that checked them, a shared head that
+            // arrived since (even a withdrawal since evicted) outranks them,
+            // and the latest answer any read gave speaks for the person.
             const readVerified = async (pubkeys: readonly string[]) => {
               const read = await lookUpVerified(
                 session,
@@ -314,12 +315,13 @@ export function useSearchMessages(
               );
               return (pubkey: string) =>
                 shared(pubkey)?.verified ??
-                answeredName(session.profiles, read, pubkey);
+                latestName(session.profiles, [read], pubkey);
             };
             // Selectable agents are offered wherever the picker runs, so they
-            // are always candidates, alongside members or relay matches, and
-            // their verified names are read with them. They are matched after
-            // each wait, so a name withdrawn meanwhile isn't.
+            // are always candidates, alongside members or relay matches. Their
+            // verified names are read on their own, so a failed agent read
+            // leaves the others' answers. They are matched after each wait, so
+            // a name withdrawn meanwhile isn't.
             const agentMatches = (
               verified: (pubkey: string) => VerifiedProfile | undefined,
             ) =>
@@ -329,10 +331,8 @@ export function useSearchMessages(
               );
             // A member's verified head may not be cached yet, so it is read:
             // otherwise another member's profile name would resolve alone.
-            const memberVerified = await readVerified([
-              ...knownMembers,
-              ...agents.keys(),
-            ]);
+            const memberVerified = await readVerified(knownMembers);
+            const agentVerified = await readVerified([...agents.keys()]);
             const scoped = knownMembers.filter(
               (pubkey) =>
                 known(pubkey) || named(pubkey, "", memberVerified(pubkey)),
@@ -345,7 +345,7 @@ export function useSearchMessages(
             if (scoped.length) {
               const found = resolve([
                 ...scoped,
-                ...agentMatches(memberVerified),
+                ...agentMatches(agentVerified),
               ]);
               if (found.ambiguous)
                 return { messages: [], ambiguousAuthor: true };
@@ -366,10 +366,7 @@ export function useSearchMessages(
                 candidates,
                 session.profiles.verifiedAuthority?.(),
               );
-              const verifiedOf = await readVerified([
-                ...people.keys(),
-                ...agents.keys(),
-              ]);
+              const verifiedOf = await readVerified([...people.keys()]);
               const matches = [...people]
                 .filter(
                   ([pubkey, profile]) =>
@@ -377,7 +374,10 @@ export function useSearchMessages(
                     pubkey === handle,
                 )
                 .map(([pubkey]) => pubkey);
-              const found = resolve([...matches, ...agentMatches(verifiedOf)]);
+              const found = resolve([
+                ...matches,
+                ...agentMatches(agentVerified),
+              ]);
               if (found.ambiguous || candidates.length >= limit)
                 return { messages: [], ambiguousAuthor: true };
               author = found.author;

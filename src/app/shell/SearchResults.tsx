@@ -97,7 +97,7 @@ import {
 } from "./parseSearchOperators";
 import { avatarMedia } from "../../shared/avatar-source";
 import {
-  answeredName,
+  latestName,
   lookUpVerified,
   useVerifiedNames,
   type VerifiedAnswers,
@@ -586,8 +586,10 @@ export function SearchResults({
   const showAuthorPicker = pickerPrompt || showAmbiguousPicker;
   const agents = useAgentChoices(session, showAuthorPicker);
   // Selectable agents are candidates too; their verified names are read on
-  // their own, so a late agent does not search again.
-  const agentVerified = useVerifiedNames(session, agents.selectable, {
+  // their own, so a late agent does not search again, and read again as the
+  // query changes after a failed read. pageVerified reads their answers.
+  useVerifiedNames(session, agents.selectable, {
+    key: authorNeedle,
     settled: showAuthorPicker,
   });
   // People and agents are destinations for plain typed text outside a
@@ -738,22 +740,17 @@ export function SearchResults({
   const selectableAgents = new Map(
     agents.selectable.map((agent) => [agent.pubkey, agent]),
   );
-  // The names this search's page was verified with, as useVerifiedNames
-  // keeps them: only for the authority still in force, and not once a shared
-  // head answers for the person (held now, or arrived since the read began,
-  // even a withdrawal since evicted). useVerifiedNames above renders this
-  // component on those changes. The latest pass that answered for the person
-  // speaks for them, "not verified" included; an earlier pass does only when
-  // the later one never answered for them.
-  const pageVerified = (pubkey: string) => {
-    if (profiles.get(pubkey)?.verified) return undefined;
-    const read = authorSuggestions?.verified
-      ?.filter((answers) => answers?.answers.has(pubkey))
-      .at(-1);
-    return read
-      ? answeredName(session.profiles, read, pubkey)
-      : agentVerified.get(pubkey);
-  };
+  // The names this search's page and agents were verified with: only for the
+  // authority still in force, and not once a shared head answers for the
+  // person (held now, or arrived since the read began, even a withdrawal since
+  // evicted). useVerifiedNames above renders this component on those changes.
+  // The latest answer from any read speaks for the person, "not verified"
+  // included, as the lookups keep it; once they evict the person, the latest
+  // pass of this search that answered for them does.
+  const pageVerified = (pubkey: string) =>
+    profiles.get(pubkey)?.verified
+      ? undefined
+      : latestName(session.profiles, authorSuggestions?.verified ?? [], pubkey);
   const candidates = new Map([
     ...[...profiles].filter(([pubkey]) => members.includes(pubkey)),
     // A member known only by a verified name, as from: resolves them.

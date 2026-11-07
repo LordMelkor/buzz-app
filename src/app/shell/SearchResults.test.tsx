@@ -4421,6 +4421,172 @@ it("offers a selectable agent by a verified name no cached head holds", async ()
   }
 });
 
+it("drops an agent a later agent read answers as not verified", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const head = (active: boolean, at: number) =>
+    eventDto(
+      signed(relay, {
+        kind: 30382,
+        created_at: at,
+        content: "",
+        tags: [
+          ["d", agent.pubkey],
+          ["p", agent.pubkey],
+          ["active", String(active)],
+          ...(active
+            ? [
+                ["display_name", "Scout"],
+                ["username", "jrivera"],
+                ["issuer_label", "Example"],
+                ["verified_at", String(at)],
+              ]
+            : []),
+        ],
+      }),
+    );
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    // The author search finds the agent's verified head; another search
+    // later finds its withdrawal, which no shared head publishes.
+    searchProfiles: async (query) => [
+      eventDto(profile(agent, { name: "scout-old" })),
+      query === "withdrawal" ? head(false, 1_000_001) : head(true, 1_000_000),
+    ],
+    query: async () => [],
+  });
+  const source = owner.session.agentChoices;
+  const choice = { pubkey: agent.pubkey, name: "Scout", managed: true };
+  let choices = {
+    ...source.snapshot(),
+    identities: [] as (typeof choice)[],
+    selectable: [] as (typeof choice)[],
+  };
+  const listeners = new Set<() => void>();
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      retain: () => () => {},
+      ensure: () => {},
+    },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jrivera"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Scout/ })).toBeVisible();
+    await owner.session.searchProfiles("withdrawal", {
+      limit: 40,
+      signal: new AbortController().signal,
+    });
+    // The agent arrives later, and its own read answers "not verified".
+    act(() => {
+      choices = { ...choices, identities: [choice], selectable: [choice] };
+      for (const listener of listeners) listener();
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("option", { name: /Scout/ }),
+      ).not.toBeInTheDocument(),
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("reads a selectable agent's verified name again as the query changes after a failed read", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const owner = verifiedSearch(viewer, relay, []);
+  const source = owner.session.agentChoices;
+  const choices = {
+    ...source.snapshot(),
+    identities: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+    selectable: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+  };
+  let failing = true;
+  const read = vi.fn(async (keys: readonly string[]) => {
+    if (failing && keys.includes(agent.pubkey)) throw new Error("offline");
+    return {
+      authority: owner.session.profiles.verifiedAuthority?.(),
+      profiles: new Map(
+        keys.includes(agent.pubkey)
+          ? [
+              [
+                agent.pubkey,
+                {
+                  displayName: "Scout",
+                  username: "jrivera",
+                  issuerLabel: "Example",
+                  verifiedAt: 1_000_000,
+                  status: "checked" as const,
+                  multipleIssuers: false,
+                },
+              ],
+            ]
+          : [],
+      ),
+    };
+  });
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  const props = {
+    session,
+    onQueryChange: vi.fn(),
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+  };
+  try {
+    const view = render(<SearchResults {...props} query="from:@jri" />);
+    await waitFor(() =>
+      expect(read).toHaveBeenCalledWith(
+        expect.arrayContaining([agent.pubkey]),
+        expect.anything(),
+      ),
+    );
+    expect(screen.queryByRole("option", { name: /Scout/ })).toBeNull();
+    failing = false;
+    view.rerender(<SearchResults {...props} query="from:@jriv" />);
+    const agents = within(await screen.findByRole("group", { name: "Agents" }));
+    expect(await agents.findByRole("option", { name: /Scout/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("distinguishes an unavailable global author lookup from no matching people", async () => {
   const relay = keypair(),
     viewer = keypair();
