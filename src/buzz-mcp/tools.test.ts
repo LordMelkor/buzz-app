@@ -3328,6 +3328,23 @@ it("finds a user by a verified full name that differs from their profile name", 
   );
 });
 
+it("learns the relay's key only when a verified-name path needs it", async () => {
+  const { client: known, carol } = verifiedPeople();
+  // A standalone server learns the key from the relay, not from its host.
+  const { relayAuthor, ...client } = known;
+  const relayAuthority = vi.fn(async () => relayAuthor);
+  const lazy = { ...client, relayAuthority };
+  await callTool(lazy, {}, "channel_list", {});
+  expect(relayAuthority).not.toHaveBeenCalled();
+  const found = await callTool(lazy, {}, "users", { q: "Jordan Rivera" });
+  expect(found).toBe(
+    [
+      `${alice} "Alice Smith" (verified: Jordan Rivera)`,
+      `${carol} (verified: Casey Quinn)`,
+    ].join("\n"),
+  );
+});
+
 it("quotes a profile's own name, so it can't pass for a verified label", async () => {
   const { client } = verifiedPeople();
   const forger = "d".repeat(64);

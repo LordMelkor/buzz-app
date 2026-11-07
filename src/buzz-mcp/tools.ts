@@ -2023,7 +2023,7 @@ class Tools {
       named?.filter((event) => event.kind === 0) ??
         (await this.client.query([{ kinds: [0], search: q, limit: 100 }])),
     );
-    const relay = this.client.relayAuthor;
+    const relay = await this.relayKey();
     const authority =
       relay && HEX_KEY.test(relay)
         ? { pubkey: relay, multipleIssuers: false }
@@ -2126,6 +2126,11 @@ class Tools {
     return aliases;
   }
 
+  /** The connection's relay key, which verified names are checked against. */
+  private async relayKey() {
+    return this.client.relayAuthor ?? (await this.client.relayAuthority?.());
+  }
+
   /** The relay's verified names (kind 30382) for `pubkeys`, read as the app
    * reads them, so `send` and the app agree on who is verified. None without
    * the connection's relay key. */
@@ -2134,7 +2139,7 @@ class Tools {
     known: readonly unknown[] = [],
   ) {
     const names = new Map<string, VerifiedProfile>();
-    const relay = this.client.relayAuthor;
+    const relay = await this.relayKey();
     if (!relay || !HEX_KEY.test(relay)) return names;
     const authority = { pubkey: relay, multipleIssuers: false };
     const subjects = [...new Set(pubkeys)].filter((key) => HEX_KEY.test(key));
