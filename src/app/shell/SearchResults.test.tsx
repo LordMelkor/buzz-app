@@ -4860,6 +4860,117 @@ it("keeps searching while a selectable agent's verified name is read", async () 
   }
 });
 
+it("keeps a new authority's page answers when the agents' answers are by the earlier one", async () => {
+  const relay = keypair(),
+    nextRelay = keypair(),
+    viewer = keypair(),
+    agent = keypair(),
+    person = keypair();
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    searchProfiles: async () => [
+      eventDto(profile(person, { name: "legacy-person" })),
+    ],
+    query: async () => [],
+  });
+  let authority = { pubkey: relay.pubkey, multipleIssuers: false };
+  const source = owner.session.agentChoices,
+    choice = { pubkey: agent.pubkey, name: "Helper", managed: true };
+  let choices = {
+    ...source.snapshot(),
+    identities: [choice],
+    selectable: [choice],
+  };
+  const profileListeners = new Set<() => void>(),
+    choiceListeners = new Set<() => void>();
+  const checked: Array<{ authority: unknown; keys: readonly string[] }> = [];
+  const shared = new Map();
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      snapshot: () => shared,
+      ensure: async () => {},
+      event: () => undefined,
+      verifiedAuthority: () => authority,
+      verifiedHeld: () => false,
+      verifiedRevision: () => 0,
+      verifiedSince: () => false,
+      subscribe: (listener: () => void) => {
+        profileListeners.add(listener);
+        return () => profileListeners.delete(listener);
+      },
+    },
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: (listener: () => void) => {
+        choiceListeners.add(listener);
+        return () => choiceListeners.delete(listener);
+      },
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: {
+      ...owner.session.directMessages,
+      searched: () => true,
+      verified: async (keys: readonly string[]) => {
+        const current = authority;
+        checked.push({ authority: current, keys });
+        return {
+          authority: current,
+          profiles: new Map(
+            keys.map((pubkey) => [
+              pubkey,
+              {
+                displayName: pubkey === person.pubkey ? "Jordan" : "Helper",
+                username: pubkey === person.pubkey ? "jrivera" : "helper",
+                issuerLabel: "Example",
+                verifiedAt: 1,
+                status: "checked" as const,
+                multipleIssuers: false,
+              },
+            ]),
+          ),
+        };
+      },
+    },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jrivera"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(await screen.findByRole("option", { name: /Jordan/ })).toBeVisible();
+    expect(checked.some((row) => row.keys.includes(agent.pubkey))).toBe(true);
+    act(() => {
+      authority = { pubkey: nextRelay.pubkey, multipleIssuers: false };
+      choices = { ...choices, identities: [], selectable: [] };
+      for (const listener of profileListeners) listener();
+      for (const listener of choiceListeners) listener();
+    });
+    await waitFor(() =>
+      expect(
+        checked.some(
+          (row) =>
+            row.authority === authority && row.keys.includes(person.pubkey),
+        ),
+      ).toBe(true),
+    );
+    expect(choices.selectable).toHaveLength(0);
+    expect(await screen.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("distinguishes an unavailable global author lookup from no matching people", async () => {
   const relay = keypair(),
     viewer = keypair();

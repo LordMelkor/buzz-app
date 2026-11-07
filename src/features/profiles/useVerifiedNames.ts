@@ -159,8 +159,11 @@ export async function lookUpVerified(
     for (const pubkey of wanted) {
       const profile = result.profiles.get(pubkey);
       // A later read that landed first answers instead, here and in the
-      // lookups. Neither keeps an answer once the lookups evicted a later
-      // read's, nor one a shared head arriving during this read outranks.
+      // lookups. Once the lookups evicted a later read's answer, this read
+      // answers for no one, as if it failed, since that answer may have been
+      // this person's. The lookups keep no answer a shared head arriving
+      // during this read outranks.
+      if (read < evicted) continue;
       const later = found.get(pubkey);
       if (later && later.read > read) {
         answers.set(pubkey, {
@@ -171,7 +174,6 @@ export async function lookUpVerified(
         continue;
       }
       answers.set(pubkey, { profile, asked, read });
-      if (read < evicted) continue;
       found.delete(pubkey);
       if (!superseded(profiles, pubkey, asked))
         found.set(pubkey, { profile, at, read });
@@ -269,10 +271,11 @@ export function verifiedName(profiles: ProfileQueries, pubkey: string) {
 }
 
 /**
- * `pubkey`'s verified name by the latest read among a caller's own `passes`
- * that answered for them, "not verified" included; a failed read answers for
- * no one. The caller keeps its passes, so the shared lookups evicting an
- * answer cannot bring an older one back.
+ * `pubkey`'s verified name by the latest read that answered for them, "not
+ * verified" included: a caller's own `passes`, or another caller's later read
+ * the lookups hold now. A failed read answers for no one. For one decision,
+ * such as resolving `from:`; a view that keeps its answers keeps them with
+ * keepLatest, so the lookups evicting one cannot bring an older one back.
  */
 export function latestName(
   profiles: ProfileQueries,
@@ -285,6 +288,15 @@ export function latestName(
     if (read !== undefined && read >= (latest?.answers.get(pubkey)?.read ?? 0))
       latest = pass;
   }
+  // Another caller's later read, while the lookups still hold it.
+  const authority = profiles.verifiedAuthority?.();
+  const current = authority && lookups.get(profiles);
+  const later =
+    current && current.authority === authority
+      ? current.found.get(pubkey)
+      : undefined;
+  if (later && later.read > (latest?.answers.get(pubkey)?.read ?? 0))
+    return profiles.verifiedHeld?.(pubkey) ? undefined : later.profile;
   return answeredName(profiles, latest, pubkey);
 }
 

@@ -750,13 +750,15 @@ export function SearchResults({
   // Of this picker's own reads (the page, the channel's members, selectable
   // agents), for every query it has shown, the latest that answered for the
   // person speaks for them, "not verified" included. A failed read keeps the
-  // answers it would have replaced.
+  // answers it would have replaced. Only the authority in force answers, so
+  // a pass by an earlier one cannot displace them.
   const answers = useRef<VerifiedAnswers>(undefined);
   for (const pass of [
     ...(authorSuggestions?.verified ?? []),
     agentAnswers.answers,
   ])
-    answers.current = keepLatest(answers.current, pass);
+    if (pass?.authority === authority)
+      answers.current = keepLatest(answers.current, pass);
   const pageVerified = (pubkey: string) =>
     profiles.get(pubkey)?.verified
       ? undefined
