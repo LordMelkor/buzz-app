@@ -849,14 +849,11 @@ function createQueue(session: RelaySession) {
       )
         continue;
       settlingHandoffs.add(key);
-      let deferred = false;
       void storage
         .lockChat(channelId, async () => {
           if (handoffs.get(key) !== handoff) return;
-          // The agent may have started while another release held the lock;
-          // its finish may come before this attempt settles, so check again.
-          deferred = !handoff.complete && !handoffFinished(handoff, channelId);
-          if (deferred) return;
+          // The agent may have started while another release held the lock.
+          if (!handoff.complete && !handoffFinished(handoff, channelId)) return;
           const current = storage.handoff(key);
           if (
             current?.id === handoff.id &&
@@ -865,14 +862,21 @@ function createQueue(session: RelaySession) {
             storage.claim(key, { ...handoff, complete: true });
           if (handoffs.get(key) === handoff) handoffs.delete(key);
         })
-        .catch((error) => {
-          storageError = error instanceof Error ? error.message : String(error);
-          emit();
-        })
-        .finally(() => {
-          settlingHandoffs.delete(key);
-          if (deferred || handoffs.get(key) !== handoff) pump();
-        });
+        // Every settled attempt tries again, as an activity change does, so
+        // a finish that came while it settled is not missed; a failed write
+        // waits for the next change instead of retrying in a loop.
+        .then(
+          () => {
+            settlingHandoffs.delete(key);
+            pump();
+          },
+          (error) => {
+            settlingHandoffs.delete(key);
+            storageError =
+              error instanceof Error ? error.message : String(error);
+            emit();
+          },
+        );
     }
     for (const channelId of new Set([
       ...waits.keys(),

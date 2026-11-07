@@ -1549,6 +1549,34 @@ it("completes a deferred channel handoff when its agent finishes while the compl
   }
 });
 
+it("reports a channel handoff completion that cannot be saved without retrying it", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  const write = vi.spyOn(Storage.prototype, "setItem");
+  try {
+    const h = fixture();
+    h.team();
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    write.mockClear();
+    write.mockImplementation(() => {
+      throw new Error("Quota exceeded");
+    });
+    await vi.advanceTimersByTimeAsync(30_002);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.queue.storageError()).toContain("Could not save");
+    // Nothing tries the failed write again until something changes.
+    const tries = write.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(write.mock.calls.length).toBe(tries);
+  } finally {
+    write.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
 it("releases a saved channel row for one agent while another agent's saved row waits", async () => {
   const other = "b".repeat(64);
   const h = fixture();
