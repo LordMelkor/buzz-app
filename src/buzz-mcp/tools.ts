@@ -327,7 +327,7 @@ export const TOOLS: readonly Tool[] = [
   ),
   tool(
     "users",
-    "Profiles by pubkey or name: each row's quoted profile name, then (verified: …) when the relay verified a different name.",
+    "Profiles by pubkey or name: each row's quoted profile name, then (verified: …) when the relay verified a different name, then the quoted about text.",
     { ids: strs, q: str },
   ),
   tool("dm", "Open a DM; returns its channel.", { to: strs }, ["to"]),
@@ -1007,15 +1007,15 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
         const name = profileName(profile) ?? "";
         const about =
           typeof profile.about === "string" && profile.about.trim()
-            ? ` — ${profile.about.trim().slice(0, 120)}`
+            ? ` — ${JSON.stringify(profile.about.trim().slice(0, 120))}`
             : "";
         return [
           event.pubkey,
           {
             name,
             aliases: verifiedAliases(verified.get(event.pubkey)),
-            // The profile's own name is quoted, so text in it can't pass
-            // for the verified label that follows.
+            // The profile's own text (name, about) is quoted, so it can't
+            // pass for a verified label or start a row of its own.
             row: `${event.pubkey} ${JSON.stringify(name)}${shown(event.pubkey, name)}${about}`,
           },
         ] as const;
