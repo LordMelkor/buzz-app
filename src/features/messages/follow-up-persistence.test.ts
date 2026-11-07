@@ -1508,6 +1508,47 @@ it("keeps a channel handoff open when its agent starts while the chat lock is he
   }
 });
 
+it("completes a deferred channel handoff when its agent finishes while the completion settles", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const h = fixture();
+    h.team();
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    let unlock = () => {};
+    const held = followUpStorage(scope).lockChat(
+      "chat",
+      () => new Promise<void>((resolve) => (unlock = resolve)),
+    );
+    await vi.advanceTimersByTimeAsync(30_002);
+    h.work("other-task", "working");
+    // The agent finishes right after the locked recheck sees it working,
+    // before that completion attempt has settled.
+    const activity = h.session.agentActivity as { snapshot: () => unknown };
+    const snapshot = activity.snapshot;
+    let armed = true;
+    activity.snapshot = () => {
+      if (armed) {
+        armed = false;
+        queueMicrotask(() => h.work("other-task", "done"));
+      }
+      return snapshot();
+    };
+    unlock();
+    await held;
+    await vi.advanceTimersByTimeAsync(0);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(armed).toBe(false);
+    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).toBe(
+      true,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("releases a saved channel row for one agent while another agent's saved row waits", async () => {
   const other = "b".repeat(64);
   const h = fixture();

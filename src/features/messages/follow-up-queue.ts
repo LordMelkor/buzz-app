@@ -849,11 +849,14 @@ function createQueue(session: RelaySession) {
       )
         continue;
       settlingHandoffs.add(key);
+      let deferred = false;
       void storage
         .lockChat(channelId, async () => {
           if (handoffs.get(key) !== handoff) return;
-          // The agent may have started while another release held the lock.
-          if (!handoff.complete && !handoffFinished(handoff, channelId)) return;
+          // The agent may have started while another release held the lock;
+          // its finish may come before this attempt settles, so check again.
+          deferred = !handoff.complete && !handoffFinished(handoff, channelId);
+          if (deferred) return;
           const current = storage.handoff(key);
           if (
             current?.id === handoff.id &&
@@ -868,7 +871,7 @@ function createQueue(session: RelaySession) {
         })
         .finally(() => {
           settlingHandoffs.delete(key);
-          if (handoffs.get(key) !== handoff) pump();
+          if (deferred || handoffs.get(key) !== handoff) pump();
         });
     }
     for (const channelId of new Set([
