@@ -7,7 +7,7 @@ import { EmptyState } from "../shared/design-system/ui/EmptyState";
 import { InlineHeader } from "../shared/design-system/ui/Header";
 import { PreferenceRow } from "../shared/design-system/ui/PreferenceRow";
 import { SettingsGroup } from "../shared/design-system/ui/SettingsGroup";
-import { formatPublicKey } from "../shared/identity/public-key";
+import { publicKeyLabels } from "../shared/identity/public-key";
 
 /** The people whose posts notify, to review one by one or clear. They are
  * added from a profile, where the person is in front of you. */
@@ -21,6 +21,8 @@ export function NotificationPeople({
   names: IdentityNameView | undefined;
 }) {
   const label = useIdentityNames(names);
+  // Abbreviated keys are lengthened until no two people share one.
+  const keys = publicKeyLabels(people);
   return (
     <section aria-labelledby="notification-people-title">
       <InlineHeader
@@ -51,7 +53,7 @@ export function NotificationPeople({
           {people.map((pubkey) => {
             const name = label(
               pubkey,
-              formatPublicKey(pubkey) ?? pubkey.slice(0, 8),
+              keys.get(pubkey.toLowerCase()) ?? pubkey.slice(0, 8),
             );
             return (
               <PreferenceRow

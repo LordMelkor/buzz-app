@@ -520,3 +520,21 @@ it("lists the people on the notify list, removes one, and clears the rest", asyn
   expect(service.snapshot().preferences.people).toEqual([]);
   expect(screen.getByText("No one on your list")).toBeInTheDocument();
 });
+
+it("gives two unnamed people whose keys end alike different labels", () => {
+  const service = peopleService();
+  // Their npubs share the last three characters.
+  const one = (2245).toString(16).padStart(64, "0");
+  const two = (16384).toString(16).padStart(64, "0");
+  render(<NotificationSettings notifications={service} />, {
+    wrapper: ToastProvider,
+  });
+  act(() => {
+    service.setPerson(one, true);
+    service.setPerson(two, true);
+  });
+  const labels = screen
+    .getAllByRole("button", { name: /^Remove / })
+    .map((button) => button.getAttribute("aria-label"));
+  expect(new Set(labels).size).toBe(2);
+});
