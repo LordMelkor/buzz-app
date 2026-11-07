@@ -957,9 +957,14 @@ function createQueue(session: RelaySession) {
       .catch(() => {});
   return {
     snapshot: () => entries,
-    /** Whether work this device can see would hold a message to these agents. */
+    /** Whether work this device can see, or a row for one of these agents
+     * still queued or being released, would hold a message to them. */
     busy: (channelId: string, recipients: readonly string[]) =>
-      blockers(channelId, recipients, false),
+      entries.some(
+        (entry) =>
+          entry.channelId === channelId &&
+          entry.recipients.some((agent) => recipients.includes(agent)),
+      ) || blockers(channelId, recipients, false),
     storageError: () => storageError,
     subscribe(listener: () => void) {
       if (storage && !listeners.size) {

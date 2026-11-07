@@ -2938,15 +2938,11 @@ function Composer({
         if (compactingNow(recipients))
           throw new Error("Wait for compaction to finish, or interrupt it.");
         // Prompts and uploads take time: a channel agent may have become busy.
-        // A row still queued or being released here goes first.
         const hold =
           queueFollowUp ||
           (channelFollowUp &&
             !!host &&
-            (followUpQueue(host).busy(channelId, recipients) ||
-              followUpQueue(host)
-                .snapshot()
-                .some((entry) => entry.channelId === channelId)));
+            followUpQueue(host).busy(channelId, recipients));
         if (!hold || !host) return publishNow(uploaded, session);
         const message = {
           channelId,

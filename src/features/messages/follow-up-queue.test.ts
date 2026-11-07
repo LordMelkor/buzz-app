@@ -523,6 +523,15 @@ it("asks whether agents are busy without leaving a wait behind", () => {
   expect(entry.publish).toHaveBeenCalledOnce();
 });
 
+it("does not hold a message to an idle agent behind another agent's queued row", () => {
+  const h = fixture();
+  h.work("busy", "working");
+  const held = h.entry("held");
+  h.queue.submit(held);
+  expect(h.queue.snapshot()).toHaveLength(1);
+  expect(h.queue.busy("chat", ["other-agent"])).toBe(false);
+});
+
 it("publishes a channel row to a member agent that is not the owner's own, and never a Solo row there", () => {
   const send = vi.fn(() => "sent");
   const session = {
