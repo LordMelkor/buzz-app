@@ -2045,9 +2045,12 @@ function Composer({
   function keepProseCaret(add: (at: CompletionQuery) => boolean, focus = true) {
     const before = valueRef.current;
     let start = 0;
-    for (const tag of [...before.recipients].sort(
-      (a, b) => a.start - b.start,
-    )) {
+    // A group's members share one span: each chip counts once.
+    for (const tag of [
+      ...new Map(
+        before.recipients.map((tag) => [`${tag.start}:${tag.end}`, tag]),
+      ).values(),
+    ].sort((a, b) => a.start - b.start)) {
       if (tag.start !== start || !/[ \t]/.test(before.text[tag.end] ?? ""))
         break;
       start = tag.end;
@@ -2131,16 +2134,21 @@ function Composer({
     setError(undefined);
     return true;
   }
-  /** Whether `range` overlaps code: a code block, inline code, or Markdown
-   * code the draft's text spells with backticks. */
-  function inMarkdownCode(range: Readonly<{ start: number; end: number }>) {
+  /** Whether `range` overlaps Markdown code the draft spells with backticks
+   * or, with `rich`, any rich span Markdown can't reach: code, a link or
+   * literal text such as a removed link's label. */
+  function inMarkdownCode(
+    range: Readonly<{ start: number; end: number }>,
+    rich = false,
+  ) {
     const doc = readComposerSnapshot(valueRef.current.document);
     const context = doc
       ? composerMarkdownContext(doc)
       : { text: valueRef.current.text, protected: [] };
-    return [...context.protected, ...markdownRanges(context.text).literal].some(
-      (r) => range.start < r.end && range.end > r.start,
-    );
+    return [
+      ...(rich ? context.protected : []),
+      ...markdownRanges(context.text).literal,
+    ].some((r) => range.start < r.end && range.end > r.start);
   }
   /** One chip for the whole group, at `range` or, from a tool, the caret. */
   function insertGroup(
@@ -2164,7 +2172,8 @@ function Composer({
     )
       return false;
     // Message edits only add references, never new notification intent, and
-    // in code a group is only its name: code never carries recipients.
+    // in code a group is only its name: code never carries recipients. The
+    // editor keeps code blocks and inline code plain; this catches backticks.
     const at = range ?? {
       start: input.current?.selectionStart ?? valueRef.current.text.length,
       end: input.current?.selectionEnd ?? valueRef.current.text.length,
@@ -2274,7 +2283,7 @@ function Composer({
     // A typed terminator (Space, closing punctuation after a name, the closing
     // emoji colon) stays literal in code. Tab, Enter and a click are not typed.
     const typed = key?.length === 1 ? key : undefined;
-    if (typed && inMarkdownCode(query)) return false;
+    if (typed && inMarkdownCode(query, true)) return false;
     const chosen = chosenWorkspace(edit);
     if (chosen !== undefined) {
       // The chat's workspace leaves no text behind; the control shows it.
