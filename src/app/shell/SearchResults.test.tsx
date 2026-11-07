@@ -3627,6 +3627,170 @@ it.each([
   },
 );
 
+type Keys = ReturnType<typeof keypair>;
+const jordanHead = (relay: Keys, person: Keys) =>
+  signed(relay, {
+    kind: 30382,
+    created_at: 1_000_000,
+    content: "",
+    tags: [
+      ["d", person.pubkey],
+      ["p", person.pubkey],
+      ["active", "true"],
+      ["display_name", "Jordan"],
+      ["username", "jrivera"],
+      ["issuer_label", "Example"],
+      ["verified_at", "1000000"],
+      ["full_name", "Jordan Rivera"],
+    ],
+  });
+const verifiedSearch = (
+  viewer: Keys,
+  relay: Keys,
+  found: readonly RelayEvent[],
+) =>
+  createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async () => found.map((event) => eventDto(event)),
+  });
+
+it("offers people who match by name while their verified names are still read", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "Jordan" }),
+  ]);
+  // The verified read for this person never answers.
+  const read = vi.fn(() => new Promise<never>(() => {}));
+  const session = {
+    ...owner.session,
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jor"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(screen.getByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("labels a person by the name their page verified over a cached profile name", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "jr-old" }),
+    jordanHead(relay, person),
+  ]);
+  // The names service answers from a cached public profile, as it does
+  // without a naming policy.
+  const names = owner.session.names as NonNullable<typeof owner.session.names>;
+  const session = {
+    ...owner.session,
+    names: {
+      ...names,
+      lookup: (...args: Parameters<typeof names.lookup>) =>
+        args[0] === person.pubkey
+          ? { name: "jr-old", source: "public-profile" as const }
+          : names.lookup(...args),
+      resolve: (...args: Parameters<typeof names.resolve>) =>
+        args[0] === person.pubkey ? "jr-old" : names.resolve(...args),
+    },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@riv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(screen.getByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+    expect(people.queryByRole("option", { name: /jr-old/ })).toBeNull();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("chips a verified person with no profile by their verified name", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = verifiedSearch(viewer, relay, [jordanHead(relay, person)]);
+  // The shared directory holds this person's head and no kind-0 profile.
+  const shared = new Map(owner.session.profiles.snapshot());
+  shared.set(person.pubkey, {
+    name: "Jordan",
+    verified: {
+      displayName: "Jordan",
+      username: "jrivera",
+      fullName: "Jordan Rivera",
+      issuerLabel: "Example",
+      verifiedAt: 1_000_000,
+      status: "checked",
+      multipleIssuers: false,
+    },
+  });
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      snapshot: () => shared,
+      verifiedHeld: (key: string) => key === person.pubkey,
+    },
+  } as typeof owner.session;
+  function Search() {
+    const [query, setQuery] = useState("from:@riv");
+    return (
+      <SearchResults
+        session={session}
+        query={query}
+        onQueryChange={setQuery}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />
+    );
+  }
+  try {
+    render(<Search />);
+    fireEvent.click(
+      await within(screen.getByRole("group", { name: "People" })).findByRole(
+        "option",
+        { name: /Jordan/ },
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Remove author Jordan" }),
+    ).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("does not offer a person by verified names a newer shared head has since answered for", async () => {
   const relay = keypair(),
     viewer = keypair(),

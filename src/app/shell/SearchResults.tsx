@@ -678,6 +678,9 @@ export function SearchResults({
             !shared.get(pubkey)?.verified &&
             !session.profiles.verifiedHeld?.(pubkey),
         );
+        // Show who already matches by name now; verified names follow.
+        if (unverified.length)
+          setAuthorSuggestions({ query, lookupFailed, remote });
         const read = unverified.length
           ? await session.directMessages
               .verified?.(unverified, controller.signal)
@@ -755,6 +758,9 @@ export function SearchResults({
           : (matchPerson(alias, authorNeedle)?.tier ?? Infinity),
       ),
     );
+  const memberScope = effectiveChannelId
+    ? session.channels.get?.(effectiveChannelId)?.members
+    : undefined;
   const authorChoices =
     authorToken && showAuthorPicker && authorSuggestions?.query === query
       ? [...candidates]
@@ -777,23 +783,25 @@ export function SearchResults({
           .map(([pubkey, profile]) => ({ pubkey, profile }))
           .map(({ pubkey, profile: found }) => {
             const agent = selectableAgents.get(pubkey);
-            // The relay found a person by any of their names; a person the
-            // shared profiles have not verified is shown by the name this
-            // search's page was verified with.
-            const page = pageVerified(pubkey);
-            const profile = page
-              ? { ...found, name: verifiedLabel(page) }
+            // The relay found a person by any of their names, so a verified
+            // person is shown, and chipped, by their verified name.
+            const verified = authorVerified(pubkey);
+            const profile = verified
+              ? { ...found, name: verifiedLabel(verified) }
               : found;
+            const resolved = resolveName(pubkey, profile.name, memberScope);
             const isAgent = !!agent || !!profile.isAgent;
             return {
               key: `author:${pubkey}`,
-              label: resolveName(
-                pubkey,
-                profile.name,
-                effectiveChannelId
-                  ? session.channels.get?.(effectiveChannelId)?.members
-                  : undefined,
-              ),
+              // As in people search: without a naming policy the names fall
+              // back to the public profile, which must not outrank a name
+              // verified for this page.
+              label:
+                pageVerified(pubkey) &&
+                session.names?.lookup(pubkey, memberScope)?.source !==
+                  "agent-directory"
+                  ? profile.name
+                  : resolved,
               detail: pubkey.slice(0, 12),
               icon: ChatCircleIcon,
               avatar: {
