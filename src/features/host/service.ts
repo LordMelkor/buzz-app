@@ -611,15 +611,17 @@ export class HostService extends Service implements Host {
       throw new Error("Origin approval requires an installed desktop plugin");
     if (!bareHttpsOrigin(origin))
       throw new Error("Use an HTTPS origin: https://host[:port], no path");
+    // One prompt per activation: a reloaded or updated plugin never shares
+    // the question, or the answer, of the one before it. Captured before any
+    // wait, so a restart meanwhile can't hand this call the next activation.
+    const { stopped, asking } = originRequests(this.ctx);
     const plugin = await installedPlugin(owner);
+    stopped.signal.throwIfAborted();
     if (
       plugin.manifest.host?.networkOrigins?.includes(origin) ||
       plugin.approvedOrigins?.includes(origin)
     )
       return true;
-    // One prompt per activation: a reloaded or updated plugin never shares
-    // the question, or the answer, of the one before it.
-    const { stopped, asking } = originRequests(this.ctx);
     let answer = asking.get(origin);
     if (!answer) {
       answer = askOriginConsent(
@@ -636,6 +638,7 @@ export class HostService extends Service implements Host {
       action: `allow-origin ${owner.revision} ${origin}`,
       id: owner.id,
     }).catch(rethrow);
+    stopped.signal.throwIfAborted();
     return true;
   }
 

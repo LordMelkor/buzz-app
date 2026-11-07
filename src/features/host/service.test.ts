@@ -1776,6 +1776,55 @@ it("asks again after a Cordis restart on the same fiber", async () => {
   }
 });
 
+it("rejects without asking when the plugin restarts during the catalog lookup", async () => {
+  const { host, fiber } = await oncePlugin();
+  let release!: () => void;
+  const lookup = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "plugin_catalog") await lookup;
+    return command === "plugin_catalog" ? catalog() : undefined;
+  });
+  try {
+    const stale = host.requestOrigin?.("https://mcp.example");
+    const declared = host.requestOrigin?.("https://declared.example");
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    await fiber.restart();
+    release();
+    await expect(stale).rejects.toThrow(/stopped/);
+    await expect(declared).rejects.toThrow(/stopped/);
+    expect(originConsent.current()).toBeUndefined();
+  } finally {
+    await fiber.dispose();
+  }
+});
+
+it("rejects an allowed origin when the plugin restarts while it is saved", async () => {
+  const { host, fiber } = await oncePlugin();
+  let release!: () => void;
+  const saving = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "plugin_change") await saving;
+    return command === "plugin_catalog" ? catalog() : undefined;
+  });
+  try {
+    const result = host.requestOrigin?.("https://mcp.example");
+    const rejected = expect(result).rejects.toThrow(/stopped/);
+    await answer(true);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("plugin_change", expect.anything()),
+    );
+    await fiber.restart();
+    release();
+    await rejected;
+  } finally {
+    await fiber.dispose();
+  }
+});
+
 it("never lets a new activation share a prompt or answer from an earlier one", async () => {
   const first = await oncePlugin();
   const second = await oncePlugin();
