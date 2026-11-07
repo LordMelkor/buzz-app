@@ -523,6 +523,19 @@ it("asks whether agents are busy without leaving a wait behind", () => {
   expect(entry.publish).toHaveBeenCalledOnce();
 });
 
+it("releases one agent's queued row while another agent's row still waits", () => {
+  const h = fixture();
+  h.work("a-task", "working", "chat", "agent");
+  h.work("b-task", "working", "chat", "other-agent");
+  const forA = h.entry("for a");
+  const forB = { ...h.entry("for b"), recipients: ["other-agent"] };
+  h.queue.submit(forA);
+  h.queue.submit(forB);
+  h.work("b-task", "done", "chat", "other-agent");
+  expect(forB.publish).toHaveBeenCalledOnce();
+  expect(forA.publish).not.toHaveBeenCalled();
+});
+
 it("does not hold a message to an idle agent behind another agent's queued row", () => {
   const h = fixture();
   h.work("busy", "working");

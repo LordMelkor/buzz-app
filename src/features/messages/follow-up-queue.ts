@@ -820,10 +820,31 @@ function createQueue(session: RelaySession) {
         for (const entry of manual) void release(entry);
         continue;
       }
-      const first = entries.find((entry) => entry.channelId === channelId);
-      if (blockers(channelId, first?.recipients ?? [])) continue;
-      if (first && !first.error && !first.restored && first.ready?.() !== false)
-        void release(first);
+      const rows = entries.filter((entry) => entry.channelId === channelId);
+      const releasable = (entry: Entry) =>
+        !entry.error && !entry.restored && entry.ready?.() !== false;
+      if (!addressed(channelId, [])) {
+        const first = rows[0];
+        if (blockers(channelId, first?.recipients ?? [])) continue;
+        if (first && releasable(first)) void release(first);
+        continue;
+      }
+      // A channel keeps each agent's rows in order, so one agent's queue
+      // never holds a row for another.
+      if (!rows.length) blockers(channelId, []);
+      const next = rows.find(
+        (entry, index) =>
+          !rows
+            .slice(0, index)
+            .some((earlier) =>
+              earlier.recipients.some((agent) =>
+                entry.recipients.includes(agent),
+              ),
+            ) &&
+          releasable(entry) &&
+          !blockers(channelId, entry.recipients),
+      );
+      if (next) void release(next);
     }
     if (
       !entries.length &&
