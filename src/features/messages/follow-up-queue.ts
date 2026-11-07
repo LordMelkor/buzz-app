@@ -19,8 +19,12 @@ type Wait = {
   /** Channel only: give up if no activity for the message ever shows up
    * (or, for `typing`, once the agent stops typing), on the `now()` clock. */
   expires?: number;
-  /** Channel only: an agent seen only typing, held across a typing gap. */
+  /** Channel only: an agent seen only typing, held across a typing gap
+   * that starts when its typing clears. */
   typing?: true;
+  /** Channel only: the message's delivery outlived its start gap, which
+   * starts again once it's delivered. */
+  delivering?: true;
 };
 // How long a channel waits for an addressed agent's turn to start. A
 // teammate's agent may be invisible or offline, and must not hold rows forever.
@@ -179,7 +183,7 @@ function createQueue(session: RelaySession) {
           item.delivery !== "seen",
       );
   function finished(wait: Wait, activity: Activity) {
-    if (wait.typing) return now() > (wait.expires ?? 0);
+    if (wait.typing) return wait.expires !== undefined && now() > wait.expires;
     if (wait.message) {
       const local = activity.local?.find(
         (row) => row.agent === wait.agent && row.messageId === wait.message,
@@ -198,9 +202,19 @@ function createQueue(session: RelaySession) {
           turn.requests?.some((request) => request.messageId === wait.message),
       );
       if (turns.length) return turns.every((turn) => turn.state === "ended");
-      return (
-        !!wait.expires && now() > wait.expires && !undelivered(wait.message)
-      );
+      if (!wait.expires || now() <= wait.expires) return false;
+      if (undelivered(wait.message)) {
+        wait.delivering = true;
+        return false;
+      }
+      // Delivered at last: give the agent its start gap from now.
+      if (wait.delivering) {
+        delete wait.delivering;
+        wait.expires = now() + START_GAP_MS;
+        setTimeout(pump, START_GAP_MS + 1);
+        return false;
+      }
+      return true;
     }
     return activity.turns.some(
       (turn) =>
@@ -256,11 +270,16 @@ function createQueue(session: RelaySession) {
           current.push({ agent: turn.agent, turn: turn.turnId });
       }
     }
-    // An agent seen only typing keeps holding through its typing gaps; one
-    // whose turns or local work this device sees ends with them.
+    // An agent seen only typing keeps holding through a typing gap after its
+    // typing clears; one whose current work this device sees ends with it.
     if (agents) {
       const observed = new Set(
-        [...(activity?.local ?? []), ...(activity?.turns ?? [])]
+        [
+          ...(activity?.local ?? []).filter(
+            (row) => row.state === "working" || row.state === "waiting",
+          ),
+          ...(activity?.turns ?? []).filter((turn) => turn.state === "working"),
+        ]
           .filter((row) => row.channelId === channelId)
           .map((row) => row.agent),
       );
@@ -282,22 +301,19 @@ function createQueue(session: RelaySession) {
           )
           .map((entry) => entry.agent),
       );
+      let cleared = false;
       current = [
-        // A newer sighting, or a turn this device now sees, supersedes it.
-        ...current.filter(
-          (wait) =>
-            !(
-              wait.typing &&
-              (typing.has(wait.agent) || observed.has(wait.agent))
-            ),
-        ),
-        ...[...typing].map((agent) => ({
-          agent,
-          typing: true as const,
-          expires: now() + TYPING_GAP_MS,
-        })),
+        ...current.flatMap((wait) => {
+          if (!wait.typing) return [wait];
+          // Current work this device sees, or typing again, supersedes it.
+          if (observed.has(wait.agent) || typing.has(wait.agent)) return [];
+          if (wait.expires !== undefined) return [wait];
+          cleared = true;
+          return [{ ...wait, expires: now() + TYPING_GAP_MS }];
+        }),
+        ...[...typing].map((agent) => ({ agent, typing: true as const })),
       ];
-      if (record && typing.size) setTimeout(pump, TYPING_GAP_MS + 1);
+      if (record && cleared) setTimeout(pump, TYPING_GAP_MS + 1);
     }
     current = [
       ...new Map(current.map((wait) => [JSON.stringify(wait), wait])).values(),

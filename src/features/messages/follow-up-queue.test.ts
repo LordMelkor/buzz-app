@@ -397,7 +397,11 @@ it("keeps a failed channel delivery holding its successors past the start gap", 
     await vi.waitFor(() =>
       expect(owner.outbox.snapshot()[0]?.delivery).toBe("accepted"),
     );
-    await vi.waitFor(() => expect(next.publish).toHaveBeenCalledOnce());
+    // Delivered at last, the message gets its start gap from now.
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(next.publish).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_002);
+    expect(next.publish).toHaveBeenCalledOnce();
   } finally {
     owner.dispose();
     vi.useRealTimers();
@@ -424,6 +428,36 @@ it("holds a channel row for a typing-only agent through a typing gap", () => {
     h.typing([typing]);
     h.typing([]);
     vi.advanceTimersByTime(5_002);
+    expect(entry.publish).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it.each([
+  ["typing that lasted long before it cleared", false],
+  ["an agent whose earlier work is finished", true],
+])("starts the typing gap when typing clears, for %s", (_name, history) => {
+  vi.useFakeTimers();
+  try {
+    const h = fixture();
+    if (history) h.work("earlier", "done");
+    h.typing([
+      {
+        agent: "agent",
+        channelId: "chat",
+        startedAt: 1,
+        threadRootId: undefined,
+        working: true,
+      },
+    ]);
+    const entry = h.entry("next");
+    h.queue.submit(entry);
+    vi.advanceTimersByTime(10_000);
+    h.typing([]);
+    vi.advanceTimersByTime(4_000);
+    expect(entry.publish).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1_002);
     expect(entry.publish).toHaveBeenCalledOnce();
   } finally {
     vi.useRealTimers();
@@ -818,9 +852,10 @@ it("retires stopped local waits after independent work clears and ignores late c
     work.finish({ ok: true });
     expect(owner.reader.work()[0]?.state).toBe("stopped");
     expect(next.publish).not.toHaveBeenCalled();
-    h.remote("ended");
-    expect(next.publish).not.toHaveBeenCalled();
+    // Typing clears while the turn is still seen, so no typing gap follows.
     h.typing([]);
+    expect(next.publish).not.toHaveBeenCalled();
+    h.remote("ended");
     expect(next.publish).toHaveBeenCalledOnce();
     h.work("next", "done");
     await vi.waitFor(() => expect(h.deactivate).toHaveBeenCalledOnce());
