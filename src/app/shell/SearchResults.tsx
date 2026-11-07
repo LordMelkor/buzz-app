@@ -630,6 +630,9 @@ export function SearchResults({
   const effectiveChannelId = scopedChannelId ?? operatorChannelId;
   // A new verification authority makes the page's names stale: search again.
   const authority = session.profiles.verifiedAuthority?.();
+  // Selectable agents are candidates too, so theirs are read with the
+  // members', and again when the choices change.
+  const agentKeys = agents.selectable.map((agent) => agent.pubkey).join(" ");
   useEffect(() => {
     void authority;
     if (!showAuthorPicker) return;
@@ -698,9 +701,12 @@ export function SearchResults({
           [],
         );
         const roster = await pass(
-          effectiveChannelId
-            ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
-            : [],
+          [
+            ...(effectiveChannelId
+              ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
+              : []),
+            ...agentKeys.split(" ").filter(Boolean),
+          ],
           [page],
         );
         setAuthorSuggestions({
@@ -725,6 +731,7 @@ export function SearchResults({
     authorNeedle,
     showAuthorPicker,
     authority,
+    agentKeys,
   ]);
   const members = effectiveChannelId
     ? (session.channels.get?.(effectiveChannelId)?.members ?? [])

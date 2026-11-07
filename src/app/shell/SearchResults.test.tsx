@@ -4359,6 +4359,68 @@ it("still offers a selectable agent whose public profile has no name", async () 
   }
 });
 
+it("offers a selectable agent by a verified name no cached head holds", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  // The search finds no one, and only the read knows the agent's verified name.
+  const owner = verifiedSearch(viewer, relay, []);
+  const source = owner.session.agentChoices;
+  const choices = {
+    ...source.snapshot(),
+    identities: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+    selectable: [{ pubkey: agent.pubkey, name: "Scout", managed: true }],
+  };
+  const read = vi.fn(async (keys: readonly string[]) => ({
+    authority: owner.session.profiles.verifiedAuthority?.(),
+    profiles: new Map(
+      keys.includes(agent.pubkey)
+        ? [
+            [
+              agent.pubkey,
+              {
+                displayName: "Scout",
+                username: "jrivera",
+                issuerLabel: "Example",
+                verifiedAt: 1_000_000,
+                status: "checked" as const,
+                multipleIssuers: false,
+              },
+            ],
+          ]
+        : [],
+    ),
+  }));
+  const session = {
+    ...owner.session,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: () => () => {},
+      retain: () => () => {},
+      ensure: () => {},
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jriv"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const agents = within(await screen.findByRole("group", { name: "Agents" }));
+    expect(await agents.findByRole("option", { name: /Scout/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("distinguishes an unavailable global author lookup from no matching people", async () => {
   const relay = keypair(),
     viewer = keypair();
