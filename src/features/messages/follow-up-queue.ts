@@ -75,7 +75,6 @@ function createQueue(session: RelaySession) {
   const waits = new Map<string, Wait[]>();
   // First sight of a channel handoff starts its start gap, like a wait's.
   const handoffStarts = new Map<string, number>();
-  let typingTimer: ReturnType<typeof setTimeout> | undefined;
   const edits = new Set<string>();
   // Persist completion of our handoffs so other windows can recognize it.
   const handoffs = new Map<string, FollowUpHandoff>();
@@ -284,17 +283,21 @@ function createQueue(session: RelaySession) {
           .map((entry) => entry.agent),
       );
       current = [
-        ...current.filter((wait) => !(wait.typing && typing.has(wait.agent))),
+        // A newer sighting, or a turn this device now sees, supersedes it.
+        ...current.filter(
+          (wait) =>
+            !(
+              wait.typing &&
+              (typing.has(wait.agent) || observed.has(wait.agent))
+            ),
+        ),
         ...[...typing].map((agent) => ({
           agent,
           typing: true as const,
           expires: now() + TYPING_GAP_MS,
         })),
       ];
-      if (record && typing.size) {
-        clearTimeout(typingTimer);
-        typingTimer = setTimeout(pump, TYPING_GAP_MS + 1);
-      }
+      if (record && typing.size) setTimeout(pump, TYPING_GAP_MS + 1);
     }
     current = [
       ...new Map(current.map((wait) => [JSON.stringify(wait), wait])).values(),
@@ -465,7 +468,6 @@ function createQueue(session: RelaySession) {
       pump();
     });
     stop = () => {
-      clearTimeout(typingTimer);
       offOutbox?.();
       unsubscribe();
       offTyping?.();

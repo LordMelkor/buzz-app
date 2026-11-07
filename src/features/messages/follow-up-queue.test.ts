@@ -430,6 +430,32 @@ it("holds a channel row for a typing-only agent through a typing gap", () => {
   }
 });
 
+it("lets a turn seen after typing end the hold when it ends", () => {
+  vi.useFakeTimers();
+  try {
+    const h = fixture();
+    h.typing([
+      {
+        agent: "agent",
+        channelId: "chat",
+        startedAt: 1,
+        threadRootId: undefined,
+        working: true,
+      },
+    ]);
+    const entry = h.entry("next");
+    h.queue.submit(entry);
+    // The agent's work becomes visible, then ends well inside the gap.
+    h.work("task", "working");
+    h.typing([]);
+    vi.advanceTimersByTime(2_000);
+    h.work("task", "done");
+    expect(entry.publish).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it.each(["unknown", "accepted"] as const)(
   "retains waits after dismissing %s delivery",
   async (delivery) => {
