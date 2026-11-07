@@ -21,8 +21,8 @@ const publish = () => {
   for (const listener of listeners) listener();
 };
 
-/** Resolves true only when the person allows it; closing the prompt or
- * leaving the app declines. `signal` withdraws the question, closing its
+/** Resolves true only when the person allows it; closing the prompt
+ * declines. `signal` withdraws the question, closing its
  * prompt, and rejects with its reason. */
 export function askOriginConsent(
   question: OriginQuestion,
@@ -65,13 +65,6 @@ export const originConsent = {
     if (!first) return;
     queue = rest;
     first.answer(approved);
-    publish();
-  },
-  /** Declines everything waiting. */
-  declineAll() {
-    const waiting = queue;
-    queue = [];
-    for (const item of waiting) item.answer(false);
     publish();
   },
 };

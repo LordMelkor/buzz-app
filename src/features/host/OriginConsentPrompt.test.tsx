@@ -2,13 +2,14 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { afterEach, expect, it } from "vitest";
 import { OriginConsentPrompt } from "./OriginConsentPrompt";
 import { askOriginConsent, originConsent } from "./origin-consent";
 
 afterEach(() => {
   cleanup();
-  originConsent.declineAll();
+  while (originConsent.current()) originConsent.answer(false);
 });
 
 const ask = (origin = "https://mcp.example") =>
@@ -46,14 +47,6 @@ it("declines on Deny and on Escape, then asks the next question", async () => {
   expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 
-it("declines what is waiting when the page goes away", async () => {
-  const view = render(<OriginConsentPrompt />);
-  const answer = ask();
-  await screen.findByRole("alertdialog");
-  view.unmount();
-  expect(await answer).toBe(false);
-});
-
 it("puts focus back on Deny for a repeat of the same question", async () => {
   render(<OriginConsentPrompt />);
   void ask();
@@ -63,4 +56,16 @@ it("puts focus back on Deny for a repeat of the same question", async () => {
   screen.getByRole("button", { name: "Allow" }).focus();
   act(() => originConsent.answer(false));
   await expect.poll(deny).toHaveFocus();
+});
+
+it("keeps a question asked before it mounts through React's effect replay", async () => {
+  const answer = ask();
+  render(
+    <StrictMode>
+      <OriginConsentPrompt />
+    </StrictMode>,
+  );
+  expect(await screen.findByRole("alertdialog")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Allow" }));
+  expect(await answer).toBe(true);
 });

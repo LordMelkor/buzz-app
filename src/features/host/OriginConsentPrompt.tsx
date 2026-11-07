@@ -1,4 +1,4 @@
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useRef, useSyncExternalStore } from "react";
 import { AlertDialog } from "../../shared/design-system/ui/AlertDialog";
 import { Button } from "../../shared/design-system/ui/Button";
 import { originConsent } from "./origin-consent";
@@ -11,8 +11,8 @@ export function OriginConsentPrompt() {
     originConsent.current,
   );
   const deny = useRef<HTMLButtonElement>(null);
-  // Leaving the page declines what was asked.
-  useEffect(() => originConsent.declineAll, []);
+  // Mounted for the app's lifetime: an unanswered question ends with the
+  // window, not with an effect cleanup (React replays those in development).
   if (!question) return null;
   const { plugin, origin } = question;
   return (

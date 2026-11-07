@@ -622,24 +622,30 @@ export class HostService extends Service implements Host {
       plugin.approvedOrigins?.includes(origin)
     )
       return true;
-    let answer = asking.get(origin);
-    if (!answer) {
-      answer = askOriginConsent(
-        { plugin: { id: owner.id, name: plugin.manifest.name }, origin },
-        stopped.signal,
-      ).finally(() => asking.delete(origin));
-      asking.set(origin, answer);
+    // Callers asking at once share the whole ask, through the save, so none
+    // sees the origin unapproved while another's Allow is being saved.
+    let approval = asking.get(origin);
+    if (!approval) {
+      approval = (async () => {
+        const allowed = await askOriginConsent(
+          { plugin: { id: owner.id, name: plugin.manifest.name }, origin },
+          stopped.signal,
+        );
+        if (!allowed) return false;
+        stopped.signal.throwIfAborted();
+        // Native code checks again that the plugin is installed, enabled and
+        // still this revision, in the same step that saves the approval.
+        await invoke("plugin_change", {
+          action: `allow-origin ${owner.revision} ${origin}`,
+          id: owner.id,
+        }).catch(rethrow);
+        return true;
+      })().finally(() => asking.delete(origin));
+      asking.set(origin, approval);
     }
-    if (!(await answer)) return false;
+    const allowed = await approval;
     stopped.signal.throwIfAborted();
-    // Native code checks again that the plugin is installed, enabled and
-    // still this revision, in the same step that saves the approval.
-    await invoke("plugin_change", {
-      action: `allow-origin ${owner.revision} ${origin}`,
-      id: owner.id,
-    }).catch(rethrow);
-    stopped.signal.throwIfAborted();
-    return true;
+    return allowed;
   }
 
   async requestOnce(

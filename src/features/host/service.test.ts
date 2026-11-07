@@ -1701,6 +1701,37 @@ it("shares one prompt between repeated asks for one origin", async () => {
   expect(originConsent.current()).toBeUndefined();
 });
 
+it("shares an allowed ask with a later caller until it is saved", async () => {
+  const { plugin } = pluginContext();
+  let release!: () => void;
+  const saving = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "plugin_change") await saving;
+    return command === "plugin_catalog" ? catalog() : undefined;
+  });
+  const first = plugin.host.requestOrigin?.("https://mcp.example");
+  await answer(true);
+  await vi.waitFor(() =>
+    expect(invoke).toHaveBeenCalledWith("plugin_change", expect.anything()),
+  );
+  // The catalog still says unapproved while the save is pending.
+  const second = plugin.host.requestOrigin?.("https://mcp.example");
+  await vi.waitFor(() =>
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([c]) => c === "plugin_catalog"),
+    ).toHaveLength(2),
+  );
+  await Promise.resolve();
+  expect(originConsent.current()).toBeUndefined();
+  release();
+  expect(await Promise.all([first, second])).toEqual([true, true]);
+  expect(
+    vi.mocked(invoke).mock.calls.filter(([c]) => c === "plugin_change"),
+  ).toHaveLength(1);
+});
+
 it.each([
   "http://mcp.example",
   "https://mcp.example/mcp",
