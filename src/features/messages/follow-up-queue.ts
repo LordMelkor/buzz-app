@@ -1034,15 +1034,19 @@ function createQueue(session: RelaySession) {
     snapshot: () => entries,
     /** Whether work this device can see, or a row for one of these agents
      * still queued or being released, would hold a message to them. A
-     * channel message to no agent has no lane to wait in, so it never is. */
-    busy: (channelId: string, recipients: readonly string[]) =>
-      (!!recipients.length || !addressed(channelId, recipients)) &&
-      (entries.some(
-        (entry) =>
-          entry.channelId === channelId &&
-          entry.recipients.some((agent) => recipients.includes(agent)),
-      ) ||
-        blockers(channelId, recipients, false)),
+     * channel message to no agent has no lane to wait in, so it never is.
+     * Rows another window saved count too, as they do for `submit`. */
+    busy(channelId: string, recipients: readonly string[]) {
+      if (recipients.length || !addressed(channelId, recipients)) restore();
+      else return false;
+      return (
+        entries.some(
+          (entry) =>
+            entry.channelId === channelId &&
+            entry.recipients.some((agent) => recipients.includes(agent)),
+        ) || blockers(channelId, recipients, false)
+      );
+    },
     storageError: () => storageError,
     subscribe(listener: () => void) {
       if (storage && !listeners.size) {

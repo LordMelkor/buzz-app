@@ -487,6 +487,17 @@ it("serializes competing releases from two windows", async () => {
   expect(h.send.mock.calls.length + second.send.mock.calls.length).toBe(1);
 });
 
+it("counts another window's queued channel row as busy for the same agent", () => {
+  const second = fixture();
+  second.team();
+  second.finish();
+  const h = fixture();
+  h.team();
+  h.enqueue({ ...message, channel: true });
+  // This window never saw the row arrive: it isn't subscribed to storage.
+  expect(second.queue.busy("chat", [agent])).toBe(true);
+});
+
 it("keeps unreadable storage intact and reports it instead of overwriting", () => {
   const key = `buzz-view.v1:${JSON.stringify([scope, "follow-up:broken"])}`;
   localStorage.setItem(key, "not json");
