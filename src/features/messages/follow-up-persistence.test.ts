@@ -498,7 +498,7 @@ it("counts another window's queued channel row as busy for the same agent", () =
   expect(second.queue.busy("chat", [agent])).toBe(true);
 });
 
-it("counts another window's sent, unfinished channel row as busy", async () => {
+it("holds messages behind another window's sent, unfinished channel row", async () => {
   const h = fixture();
   h.team();
   h.enqueue({ ...message, channel: true });
@@ -512,6 +512,14 @@ it("counts another window's sent, unfinished channel row as busy", async () => {
   // Only the handoff remains: the row left storage when it was sent.
   expect(second.queue.busy("chat", [agent])).toBe(true);
   expect(second.queue.busy("chat", ["b".repeat(64)])).toBe(false);
+  // A message the composer validated just now still waits behind it.
+  const next = { ...message, text: "Next", channel: true as const };
+  second.queue.submit(
+    { ...next, message: next, ...followUpMessage(second.session, next) },
+    true,
+  );
+  expect(second.send).not.toHaveBeenCalled();
+  expect(second.queue.snapshot()).toMatchObject([{ text: "Next" }]);
 });
 
 it("keeps unreadable storage intact and reports it instead of overwriting", () => {

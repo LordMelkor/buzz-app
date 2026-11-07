@@ -800,6 +800,14 @@ function createQueue(session: RelaySession) {
     // Presentation failures cannot put an already accepted message back in queue.
     if (id) entry.onSend?.(id);
   }
+  // A channel row any window handed off holds its agent's lane until the
+  // agent finishes; release drops one whose window has closed.
+  function handedOff(channelId: string, recipients: readonly string[]) {
+    return lanes(channelId, recipients, true).some(([key]) => {
+      const handoff = storage?.handoff(key);
+      return !!handoff && !handoff.complete;
+    });
+  }
   function handoffFinished(handoff: FollowUpHandoff, channelId: string) {
     const activity = session.agentActivity?.snapshot();
     const message = handoff.message;
@@ -1036,8 +1044,7 @@ function createQueue(session: RelaySession) {
      * still queued or being released, would hold a message to them. A
      * channel message to no agent has no lane to wait in, so it never is.
      * Rows another window saved count too, as they do for `submit`, and so
-     * does a row any window handed off that its agent has not yet finished;
-     * release drops one whose window has closed. */
+     * does a channel row any window handed off (`handedOff`). */
     busy(channelId: string, recipients: readonly string[]) {
       if (recipients.length || !addressed(channelId, recipients)) restore();
       else return false;
@@ -1047,10 +1054,7 @@ function createQueue(session: RelaySession) {
             entry.channelId === channelId &&
             entry.recipients.some((agent) => recipients.includes(agent)),
         ) ||
-        lanes(channelId, recipients, true).some(([key]) => {
-          const handoff = storage?.handoff(key);
-          return !!handoff && !handoff.complete;
-        }) ||
+        handedOff(channelId, recipients) ||
         blockers(channelId, recipients, false)
       );
     },
@@ -1089,7 +1093,10 @@ function createQueue(session: RelaySession) {
       if (
         (validated || !entry.beforeRelease) &&
         !blockers(entry.channelId, entry.recipients) &&
-        !entries.some((item) => item.channelId === entry.channelId)
+        !entries.some((item) => item.channelId === entry.channelId) &&
+        !(
+          entry.message?.channel && handedOff(entry.channelId, entry.recipients)
+        )
       )
         return sent(entry);
       if (entries.length >= 50)
