@@ -357,6 +357,79 @@ it("only releases a failed Outbox wait after durable dismissal", async () => {
   }
 });
 
+it("keeps a failed channel delivery holding its successors past the start gap", async () => {
+  vi.useFakeTimers();
+  const key = new Uint8Array(32).fill(7);
+  let signs = 0;
+  const owner = createOutbox(
+    getPublicKey(key),
+    {
+      sign: async (event) => {
+        signs += 1;
+        if (signs === 1) throw new Error("Signing failed");
+        return finalizeEvent(structuredClone(event), key);
+      },
+      publish: async () => {},
+    },
+    { load: () => [], save: async () => {} },
+  );
+  const h = fixture({ outbox: owner.outbox });
+  try {
+    await owner.ready;
+    const id =
+      h.queue.submit({
+        ...h.entry("first"),
+        publish: () =>
+          owner.outbox.send({
+            kind: 9,
+            content: "first",
+            tags: [["h", "chat"]],
+          }),
+      }) ?? "missing";
+    await vi.waitFor(() =>
+      expect(owner.outbox.snapshot()[0]?.delivery).toBe("failed"),
+    );
+    const next = h.entry("next");
+    h.queue.submit(next);
+    await vi.advanceTimersByTimeAsync(30_002);
+    expect(next.publish).not.toHaveBeenCalled();
+    owner.outbox.retry(id);
+    await vi.waitFor(() =>
+      expect(owner.outbox.snapshot()[0]?.delivery).toBe("accepted"),
+    );
+    await vi.waitFor(() => expect(next.publish).toHaveBeenCalledOnce());
+  } finally {
+    owner.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("holds a channel row for a typing-only agent through a typing gap", () => {
+  vi.useFakeTimers();
+  try {
+    const h = fixture();
+    const typing = {
+      agent: "agent",
+      channelId: "chat",
+      startedAt: 1,
+      threadRootId: undefined,
+      working: true,
+    };
+    h.typing([typing]);
+    const entry = h.entry("next");
+    h.queue.submit(entry);
+    // A progress reply clears typing for a moment.
+    h.typing([]);
+    expect(entry.publish).not.toHaveBeenCalled();
+    h.typing([typing]);
+    h.typing([]);
+    vi.advanceTimersByTime(5_002);
+    expect(entry.publish).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it.each(["unknown", "accepted"] as const)(
   "retains waits after dismissing %s delivery",
   async (delivery) => {
@@ -476,25 +549,32 @@ it("publishes a channel row to a member agent that is not the owner's own, and n
   );
 });
 
-it("stops waiting for a teammate's agent whose turn never shows up", () => {
-  vi.useFakeTimers();
-  try {
-    const h = fixture();
-    const first = h.entry("first"),
-      second = h.entry("second");
-    h.work("busy", "working");
-    h.queue.submit(first);
-    h.queue.submit(second);
-    h.work("busy", "done");
-    expect(first.publish).toHaveBeenCalledOnce();
-    // No local row or turn ever references "first".
-    expect(second.publish).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(30_002);
-    expect(second.publish).toHaveBeenCalledOnce();
-  } finally {
-    vi.useRealTimers();
-  }
-});
+it.each([
+  ["", 0],
+  [" even when the system clock moves back", 60_000],
+])(
+  "stops waiting for a teammate's agent whose turn never shows up%s",
+  (_name, back) => {
+    vi.useFakeTimers();
+    try {
+      const h = fixture();
+      const first = h.entry("first"),
+        second = h.entry("second");
+      h.work("busy", "working");
+      h.queue.submit(first);
+      h.queue.submit(second);
+      h.work("busy", "done");
+      expect(first.publish).toHaveBeenCalledOnce();
+      // No local row or turn ever references "first".
+      expect(second.publish).not.toHaveBeenCalled();
+      vi.setSystemTime(Date.now() - back);
+      vi.advanceTimersByTime(30_002);
+      expect(second.publish).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
 
 it("holds a channel row behind a resumed request of another agent", () => {
   const h = fixture();

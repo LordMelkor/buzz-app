@@ -13800,6 +13800,10 @@ describe("queued follow-ups in a team channel", () => {
     working: string | undefined,
     members = [first.pubkey, second.pubkey, "viewer"],
     additions?: (startWork: () => void) => object,
+    refreshMembership = async () => ({
+      id: "channel",
+      members: [first.pubkey, second.pubkey, "viewer"],
+    }),
   ) {
     localStorage.setItem("buzz-follow-up-behavior.v1", "queue");
     const h = mount();
@@ -13852,10 +13856,7 @@ describe("queued follow-ups in a team channel", () => {
         viewer: "viewer",
         channels: { ...h.session.channels, list: () => channelList },
         channelWrites: {
-          refreshMembership: async () => ({
-            id: "channel",
-            members: [first.pubkey, second.pubkey, "viewer"],
-          }),
+          refreshMembership,
           addAgents: vi.fn(),
         },
         agentActivity: {
@@ -13901,6 +13902,45 @@ describe("queued follow-ups in a team channel", () => {
       [],
       {},
     );
+  });
+
+  it("queues a message behind a row that is still being released", async () => {
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { h, finish } = teamChannel(
+      first.pubkey,
+      undefined,
+      undefined,
+      async () => {
+        await released;
+        return {
+          id: "channel",
+          members: [first.pubkey, second.pubkey, "viewer"],
+        };
+      },
+    );
+    await choicesLoaded();
+    h.submit();
+    await screen.findByRole("region", { name: "Queued follow-ups" });
+    finish();
+    act(() => {
+      h.commands().insertMention(first);
+      h.commands().insertText("And this");
+    });
+    h.submit();
+    await waitFor(() =>
+      expect(screen.getAllByText(/And this/).length).toBeGreaterThan(0),
+    );
+    expect(h.messages.send).not.toHaveBeenCalled();
+    await act(async () => release());
+    // The first goes; the second waits for the agent to take it up.
+    await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+    expect(h.messages.send.mock.calls[0]?.[1]).toBe("@Honey Then do this");
+    expect(
+      screen.getByRole("region", { name: "Queued follow-ups" }),
+    ).toHaveTextContent("And this");
   });
 
   it("sends at once when a tagged recipient is not known to be an agent", async () => {

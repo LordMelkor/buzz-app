@@ -1348,7 +1348,7 @@ it("resumes the saved successor after restart during a handed-off turn", async (
 });
 
 it("completes a channel handoff for an agent this device never sees work", async () => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
   try {
     const h = fixture();
     h.team();

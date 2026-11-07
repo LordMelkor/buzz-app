@@ -16,12 +16,19 @@ type Wait = {
   message?: string;
   turn?: string;
   resumed?: true;
-  /** Channel only: give up if no activity for the message ever shows up. */
+  /** Channel only: give up if no activity for the message ever shows up
+   * (or, for `typing`, once the agent stops typing), on the `now()` clock. */
   expires?: number;
+  /** Channel only: an agent seen only typing, held across a typing gap. */
+  typing?: true;
 };
 // How long a channel waits for an addressed agent's turn to start. A
 // teammate's agent may be invisible or offline, and must not hold rows forever.
 const START_GAP_MS = 30_000;
+// Typing clears for a moment after each reply an agent posts mid-task.
+const TYPING_GAP_MS = 5_000;
+// Deadlines use a monotonic clock, so moving the system clock moves none.
+const now = () => performance.now();
 type Entry = {
   id: string;
   createdAt?: number;
@@ -68,6 +75,7 @@ function createQueue(session: RelaySession) {
   const waits = new Map<string, Wait[]>();
   // First sight of a channel handoff starts its start gap, like a wait's.
   const handoffStarts = new Map<string, number>();
+  let typingTimer: ReturnType<typeof setTimeout> | undefined;
   const edits = new Set<string>();
   // Persist completion of our handoffs so other windows can recognize it.
   const handoffs = new Map<string, FollowUpHandoff>();
@@ -160,7 +168,19 @@ function createQueue(session: RelaySession) {
   const emit = () => {
     for (const listener of listeners) listener();
   };
+  // A channel delivery still sending, failed or unconfirmed holds its
+  // successors, so a retry never lands after a later message.
+  const undelivered = (id: string) =>
+    !!session.outbox
+      ?.snapshot()
+      .some(
+        (item) =>
+          item.event.id === id &&
+          item.delivery !== "accepted" &&
+          item.delivery !== "seen",
+      );
   function finished(wait: Wait, activity: Activity) {
+    if (wait.typing) return now() > (wait.expires ?? 0);
     if (wait.message) {
       const local = activity.local?.find(
         (row) => row.agent === wait.agent && row.messageId === wait.message,
@@ -179,7 +199,9 @@ function createQueue(session: RelaySession) {
           turn.requests?.some((request) => request.messageId === wait.message),
       );
       if (turns.length) return turns.every((turn) => turn.state === "ended");
-      return !!wait.expires && Date.now() > wait.expires;
+      return (
+        !!wait.expires && now() > wait.expires && !undelivered(wait.message)
+      );
     }
     return activity.turns.some(
       (turn) =>
@@ -233,6 +255,45 @@ function createQueue(session: RelaySession) {
           !resumedTurn(turn)
         )
           current.push({ agent: turn.agent, turn: turn.turnId });
+      }
+    }
+    // An agent seen only typing keeps holding through its typing gaps; one
+    // whose turns or local work this device sees ends with them.
+    if (agents) {
+      const observed = new Set(
+        [...(activity?.local ?? []), ...(activity?.turns ?? [])]
+          .filter((row) => row.channelId === channelId)
+          .map((row) => row.agent),
+      );
+      const typing = new Set(
+        [
+          ...(session.typing?.snapshot() ?? [])
+            .filter((entry) => known?.has(entry.pubkey))
+            .map((entry) => ({
+              agent: entry.pubkey,
+              channelId: entry.channelId,
+            })),
+          ...(activity?.typing ?? []),
+        ]
+          .filter(
+            (entry) =>
+              entry.channelId === channelId &&
+              mine(entry.agent) &&
+              !observed.has(entry.agent),
+          )
+          .map((entry) => entry.agent),
+      );
+      current = [
+        ...current.filter((wait) => !(wait.typing && typing.has(wait.agent))),
+        ...[...typing].map((agent) => ({
+          agent,
+          typing: true as const,
+          expires: now() + TYPING_GAP_MS,
+        })),
+      ];
+      if (record && typing.size) {
+        clearTimeout(typingTimer);
+        typingTimer = setTimeout(pump, TYPING_GAP_MS + 1);
       }
     }
     current = [
@@ -400,8 +461,11 @@ function createQueue(session: RelaySession) {
     });
     const offOutbox = session.outbox?.subscribe(() => {
       reconcileDelivery();
+      // A delivery that settles may release the rows behind it.
+      pump();
     });
     stop = () => {
+      clearTimeout(typingTimer);
       offOutbox?.();
       unsubscribe();
       offTyping?.();
@@ -424,7 +488,7 @@ function createQueue(session: RelaySession) {
       ...entry.recipients.map((agent) => ({
         agent,
         message: id,
-        ...(channel ? { expires: Date.now() + START_GAP_MS } : {}),
+        ...(channel ? { expires: now() + START_GAP_MS } : {}),
       })),
     ]);
     if (channel) setTimeout(pump, START_GAP_MS + 1);
@@ -682,7 +746,7 @@ function createQueue(session: RelaySession) {
     if (message && addressed(channelId, handoff.recipients)) {
       let start = handoffStarts.get(message);
       if (start === undefined) {
-        start = Date.now();
+        start = now();
         handoffStarts.set(message, start);
         setTimeout(pump, START_GAP_MS + 1);
       }
