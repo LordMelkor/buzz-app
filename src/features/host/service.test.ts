@@ -1824,6 +1824,20 @@ it("rejects without asking when the plugin restarts during the catalog lookup", 
   }
 });
 
+it("rejects at once when the plugin stops while native work is stalled", async () => {
+  const { host, fiber } = await oncePlugin();
+  // The catalog lookup never answers, as under registry-lock contention.
+  vi.mocked(invoke).mockImplementation(() => new Promise(() => {}));
+  try {
+    const stalled = host.requestOrigin?.("https://mcp.example");
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+    await fiber.restart();
+    await expect(stalled).rejects.toThrow(/stopped/);
+  } finally {
+    await fiber.dispose();
+  }
+});
+
 it("rejects an allowed origin when the plugin restarts while it is saved", async () => {
   const { host, fiber } = await oncePlugin();
   let release!: () => void;

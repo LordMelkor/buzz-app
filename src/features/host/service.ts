@@ -642,7 +642,18 @@ export class HostService extends Service implements Host {
       })().finally(() => asking.delete(origin));
       asking.set(origin, approval);
     }
-    const allowed = await approval;
+    // A stopping plugin's caller stops waiting at once, even while native
+    // work is still running: Cordis waits for a startup awaiting this. The
+    // shared ask settles on its own.
+    const shared = approval;
+    const allowed = await new Promise<boolean>((resolve, reject) => {
+      const abort = () => reject(stopped.signal.reason);
+      if (stopped.signal.aborted) return abort();
+      stopped.signal.addEventListener("abort", abort, { once: true });
+      shared
+        .then(resolve, reject)
+        .finally(() => stopped.signal.removeEventListener("abort", abort));
+    });
     stopped.signal.throwIfAborted();
     return allowed;
   }
