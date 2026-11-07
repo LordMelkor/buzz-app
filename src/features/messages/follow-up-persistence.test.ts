@@ -1494,11 +1494,15 @@ it("keeps a channel handoff open when its agent starts while the chat lock is he
     h.work("other-task", "working");
     unlock();
     await held;
-    await vi.advanceTimersByTimeAsync(0);
-    await followUpStorage(scope).lockChat("chat", async () => {});
-    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).not.toBe(
-      true,
-    );
+    const complete = async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await followUpStorage(scope).lockChat("chat", async () => {});
+      return followUpStorage(scope).handoff(`chat:${agent}`)?.complete;
+    };
+    expect(await complete()).not.toBe(true);
+    // Once the agent is done, the deferred completion runs.
+    h.work("other-task", "done");
+    expect(await complete()).toBe(true);
   } finally {
     vi.useRealTimers();
   }
