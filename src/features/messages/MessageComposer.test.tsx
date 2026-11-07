@@ -13974,6 +13974,32 @@ describe("queued follow-ups in a team channel", () => {
     expect(h.messages.send.mock.calls[0]?.[5]).toEqual([second.pubkey]);
   });
 
+  it("holds a message whose recipient became known as an agent while a prompt was open", async () => {
+    const members = [first.pubkey, second.pubkey, "viewer"];
+    const outsider = { pubkey: "c".repeat(64), name: "Bee" };
+    const { h } = teamChannel(second.pubkey, members, undefined, async () => ({
+      id: "channel",
+      members,
+    }));
+    act(() => {
+      h.commands().insertMention(second);
+      h.commands().insertMention(outsider);
+    });
+    await choicesLoaded();
+    h.submit();
+    const later = await screen.findByRole("button", { name: "Do nothing" });
+    act(() =>
+      h.setLibrary([
+        { pubkey: first.pubkey, name: "Honey" },
+        { pubkey: second.pubkey, name: "Honey" },
+      ]),
+    );
+    await act(async () => {});
+    fireEvent.click(later);
+    await screen.findByRole("region", { name: "Queued follow-ups" });
+    expect(h.messages.send).not.toHaveBeenCalled();
+  });
+
   it("holds a message whose agent became busy while a prompt was open", async () => {
     const members = ["viewer"];
     const { h } = teamChannel(undefined, members, (startWork) => ({

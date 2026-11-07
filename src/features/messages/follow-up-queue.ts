@@ -812,7 +812,13 @@ function createQueue(session: RelaySession) {
     const activity = session.agentActivity?.snapshot();
     const message = handoff.message;
     if (!message) return false;
-    const channel = addressed(channelId, handoff.recipients);
+    // Only the window that sent it sees its delivery in its Outbox, so only
+    // that window gives up on a channel handoff after its start gap; it then
+    // marks the handoff complete. Another window waits for that, or for the
+    // agent's work, or for the sending window to close.
+    const channel =
+      addressed(channelId, handoff.recipients) &&
+      [...handoffs.values()].some((own) => own.id === handoff.id);
     const pending = handoff.recipients.map((agent) => {
       const id = `${agent}:${message}`;
       const wait = handoffWaits.get(id) ?? { agent, message };

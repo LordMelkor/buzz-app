@@ -522,6 +522,45 @@ it("holds messages behind another window's sent, unfinished channel row", async 
   expect(second.queue.snapshot()).toMatchObject([{ text: "Next" }]);
 });
 
+it("keeps another window's unconfirmed channel delivery ahead past its start gap", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const first = fixture();
+    first.team();
+    // Open before the first window sends, so its Outbox never loads that send.
+    const second = fixture();
+    second.team();
+    second.finish();
+    await Promise.all([first.owner.ready, second.owner.ready]);
+    // The first window's delivery never confirms; only its Outbox knows.
+    first.holdSigning(new Promise<void>(() => {}));
+    first.enqueue({ ...message, channel: true });
+    first.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.send).toHaveBeenCalledOnce();
+    expect(second.session.outbox?.snapshot()).toEqual([]);
+    // Its first follow-up pauses behind the live handoff; after the start
+    // gap the person removes it and sends a replacement.
+    const paused = second.enqueue({ ...message, text: "Newer", channel: true });
+    await vi.advanceTimersByTimeAsync(0);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    expect(second.queue.snapshot()[0]?.restored).toBe(true);
+    await vi.advanceTimersByTimeAsync(31_000);
+    second.queue.remove(paused);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    second.enqueue({ ...message, text: "Replacement", channel: true });
+    await vi.advanceTimersByTimeAsync(0);
+    await followUpStorage(scope).lockChat("chat", async () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(second.send).not.toHaveBeenCalled();
+    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).not.toBe(
+      true,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("keeps unreadable storage intact and reports it instead of overwriting", () => {
   const key = `buzz-view.v1:${JSON.stringify([scope, "follow-up:broken"])}`;
   localStorage.setItem(key, "not json");

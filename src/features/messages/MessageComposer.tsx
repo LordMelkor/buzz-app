@@ -2672,16 +2672,24 @@ function Composer({
       capturedRecipients.length > 0 &&
       !soloHasPeople(addressedKeys, session.viewer, profileSnapshot, agentKeys);
     const queueFollowUp = followUpEligible && ownSoloConversation;
-    // Decided on the recipients that are sent, after people become references.
-    // A recipient not yet known to be an agent might be a person.
-    const channelFollowUp = (sent: readonly string[]) =>
-      !!host &&
-      !threadRootId &&
-      !ownSoloConversation &&
-      !soloConversation &&
-      followUpBehaviorPreference() === "queue" &&
-      sent.length > 0 &&
-      sent.every((key) => agentKeys.has(key));
+    // Decided when the message goes, on the recipients that are sent (after
+    // people become references) and the agents known by then. A recipient
+    // not yet known to be an agent might be a person.
+    const channelFollowUp = (sent: readonly string[]) => {
+      const agentsNow = knownAgentPubkeys(
+        session.profiles.snapshot(),
+        session.agentChoices.snapshot(),
+      );
+      return (
+        !!host &&
+        !threadRootId &&
+        !ownSoloConversation &&
+        !soloConversation &&
+        followUpBehaviorPreference() === "queue" &&
+        sent.length > 0 &&
+        sent.every((key) => agentsNow.has(key))
+      );
+    };
     try {
       if (command && onCommand) {
         const handled = onCommand(command, attempt.signal);
