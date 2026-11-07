@@ -42,6 +42,7 @@ import {
   readJournal,
   type ReadJournal,
 } from "../../features/relay/read-state-storage";
+import { lookUpVerified } from "../../features/profiles/useVerifiedNames";
 import type { AppServices } from "../services";
 import type { SearchGroup } from "./SearchChoices";
 import { setUnreadFirstPreference } from "../../features/search/unread-first-preference";
@@ -4421,7 +4422,7 @@ it("offers a selectable agent by a verified name no cached head holds", async ()
   }
 });
 
-it("drops an agent a later agent read answers as not verified", async () => {
+it("drops an agent a later agent read answers as not verified, even once the lookups evict that answer", async () => {
   const relay = keypair(),
     viewer = keypair(),
     agent = keypair();
@@ -4509,6 +4510,21 @@ it("drops an agent a later agent read answers as not verified", async () => {
         screen.queryByRole("option", { name: /Scout/ }),
       ).not.toBeInTheDocument(),
     );
+    // Another list's reads evict that answer from the shared lookups, and
+    // the agent's choice changes; the earlier page answer stays retired.
+    const crowd = Array.from({ length: 1024 }, (_, index) =>
+      (index + 1).toString(16).padStart(64, "0"),
+    );
+    await lookUpVerified(session, crowd, new AbortController().signal, {
+      batch: 128,
+    });
+    act(() => {
+      const renamed = { ...choice, name: "Scout updated" };
+      choices = { ...choices, identities: [renamed], selectable: [renamed] };
+      for (const listener of listeners) listener();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole("option", { name: /Scout/ })).toBeNull();
   } finally {
     cleanup();
     owner.dispose();

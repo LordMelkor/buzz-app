@@ -17,6 +17,7 @@ import type { ReadFilter } from "../../features/relay/events";
 import {
   latestName,
   lookUpVerified,
+  type VerifiedAnswers,
 } from "../../features/profiles/useVerifiedNames";
 import { searchedProfiles } from "../../features/relay/profile-search";
 import { foldProfiles } from "../../features/relay/profiles";
@@ -306,16 +307,17 @@ export function useSearchMessages(
             // belong to the authority that checked them, a shared head that
             // arrived since (even a withdrawal since evicted) outranks them,
             // and the latest answer any read gave speaks for the person.
+            const reads: (VerifiedAnswers | undefined)[] = [];
             const readVerified = async (pubkeys: readonly string[]) => {
-              const read = await lookUpVerified(
-                session,
-                pubkeys,
-                controller.signal,
-                { batch: VERIFIED_PROFILE_BATCH, asked },
+              reads.push(
+                await lookUpVerified(session, pubkeys, controller.signal, {
+                  batch: VERIFIED_PROFILE_BATCH,
+                  asked,
+                }),
               );
               return (pubkey: string) =>
                 shared(pubkey)?.verified ??
-                latestName(session.profiles, [read], pubkey);
+                latestName(session.profiles, reads, pubkey);
             };
             // Selectable agents are offered wherever the picker runs, so they
             // are always candidates, alongside members or relay matches. Their

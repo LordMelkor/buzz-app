@@ -99,6 +99,7 @@ import { avatarMedia } from "../../shared/avatar-source";
 import {
   latestName,
   lookUpVerified,
+  useVerifiedAnswers,
   useVerifiedNames,
   type VerifiedAnswers,
 } from "../../features/profiles/useVerifiedNames";
@@ -587,11 +588,12 @@ export function SearchResults({
   const agents = useAgentChoices(session, showAuthorPicker);
   // Selectable agents are candidates too; their verified names are read on
   // their own, so a late agent does not search again, and read again as the
-  // query changes after a failed read. pageVerified reads their answers.
-  useVerifiedNames(session, agents.selectable, {
-    key: authorNeedle,
-    settled: showAuthorPicker,
-  });
+  // query changes after a failed read.
+  const agentAnswers = useVerifiedAnswers(
+    session,
+    agents.selectable.map(({ pubkey }) => pubkey),
+    { key: authorNeedle, settled: showAuthorPicker },
+  );
   // People and agents are destinations for plain typed text outside a
   // conversation scope; an operator asks for messages. `@` asks for a person
   // and `#` for a channel.
@@ -744,13 +746,17 @@ export function SearchResults({
   // authority still in force, and not once a shared head answers for the
   // person (held now, or arrived since the read began, even a withdrawal since
   // evicted). useVerifiedNames above renders this component on those changes.
-  // The latest answer from any read speaks for the person, "not verified"
-  // included, as the lookups keep it; once they evict the person, the latest
-  // pass of this search that answered for them does.
+  // Of this picker's own reads (the page, the channel's members, selectable
+  // agents), the latest that answered for the person speaks for them, "not
+  // verified" included.
   const pageVerified = (pubkey: string) =>
     profiles.get(pubkey)?.verified
       ? undefined
-      : latestName(session.profiles, authorSuggestions?.verified ?? [], pubkey);
+      : latestName(
+          session.profiles,
+          [...(authorSuggestions?.verified ?? []), agentAnswers],
+          pubkey,
+        );
   const candidates = new Map([
     ...[...profiles].filter(([pubkey]) => members.includes(pubkey)),
     // A member known only by a verified name, as from: resolves them.

@@ -7,7 +7,9 @@ import { keypair, signed } from "../relay/testing";
 import type { VerifiedProfile } from "../relay/verified-profile";
 import { setNamePreference } from "./name-preference";
 import {
+  lookUpVerified,
   useVerifiedNames,
+  verifiedName,
   withVerifiedNames,
   type VerifiedNamesSession,
 } from "./useVerifiedNames";
@@ -235,6 +237,29 @@ it("asks each person of a list larger than the cache once, and stops", async () 
   expect(t.reads).toHaveLength(35);
   expect(new Set(asked).size).toBe(asked.length);
   expect(asked).toHaveLength(1024);
+});
+
+it("keeps a later read's answer when an earlier read lands after it", async () => {
+  const { session } = fake();
+  const person = key(1);
+  const authority = session.profiles.verifiedAuthority?.();
+  let land = (_: unknown) => {};
+  const verified = vi
+    .fn()
+    .mockImplementationOnce(() => new Promise((resolve) => (land = resolve)))
+    .mockImplementationOnce(async () => ({ authority, profiles: new Map() }));
+  const own = {
+    ...session,
+    directMessages: { verified },
+  } as unknown as VerifiedNamesSession;
+  const earlier = lookUpVerified(own, [person], new AbortController().signal);
+  // A later read answers "not verified" first; the earlier one then lands
+  // with the name it was asked for.
+  await lookUpVerified(own, [person], new AbortController().signal);
+  land({ authority, profiles: new Map([[person, name("old")]]) });
+  await earlier;
+  expect(verified).toHaveBeenCalledTimes(2);
+  expect(verifiedName(own.profiles, person)).toBeUndefined();
 });
 
 it("yields to a head the shared directory holds, so a later revocation is not undone", async () => {
