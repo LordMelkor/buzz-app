@@ -286,6 +286,9 @@ export function useSearchMessages(
               // is unknown, so a full page is as ambiguous as duplicate names.
               // The relay does not fold accents, so it gets the typed text.
               const limit = 40;
+              // Before the search: a shared head that arrives during it (even
+              // a withdrawal since evicted) outranks the names it returns.
+              const asked = session.profiles.verifiedRevision?.() ?? 0;
               const candidates = await session.searchProfiles(
                 typed.toLowerCase(),
                 { limit, signal: controller.signal },
@@ -303,7 +306,6 @@ export function useSearchMessages(
                   !session.profiles.verifiedHeld?.(pubkey),
               );
               // A failed read leaves profile names, which resolve as before.
-              const asked = session.profiles.verifiedRevision?.() ?? 0;
               const read = unverified.length
                 ? await session.directMessages
                     .verified?.(unverified, controller.signal)

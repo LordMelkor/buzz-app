@@ -325,7 +325,11 @@ export const TOOLS: readonly Tool[] = [
     { channel: str, pubkeys: strs },
     ["pubkeys"],
   ),
-  tool("users", "Profiles by pubkey or name.", { ids: strs, q: str }),
+  tool(
+    "users",
+    "Profiles by pubkey or name: each row's quoted profile name, then (verified: …) when the relay verified a different name.",
+    { ids: strs, q: str },
+  ),
   tool("dm", "Open a DM; returns its channel.", { to: strs }, ["to"]),
   tool(
     "mem_get",
@@ -1010,7 +1014,9 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
           {
             name,
             aliases: verifiedAliases(verified.get(event.pubkey)),
-            row: `${event.pubkey} ${name}${shown(event.pubkey, name)}${about}`,
+            // The profile's own name is quoted, so text in it can't pass
+            // for the verified label that follows.
+            row: `${event.pubkey} ${JSON.stringify(name)}${shown(event.pubkey, name)}${about}`,
           },
         ] as const;
       }),
@@ -2037,7 +2043,9 @@ class Tools {
         ),
       ),
     ];
-    const verified = await this.verifiedNames(order);
+    // The search's own heads count too, so a failed read keeps who it found.
+    const heads = named?.filter((event) => event.kind !== 0) ?? [];
+    const verified = await this.verifiedNames(order, heads);
     return { searched: !!named, profiles, verified, order };
   }
 
@@ -2121,7 +2129,10 @@ class Tools {
   /** The relay's verified names (kind 30382) for `pubkeys`, read as the app
    * reads them, so `send` and the app agree on who is verified. None without
    * the connection's relay key. */
-  async verifiedNames(pubkeys: readonly string[]) {
+  async verifiedNames(
+    pubkeys: readonly string[],
+    known: readonly unknown[] = [],
+  ) {
     const names = new Map<string, VerifiedProfile>();
     const relay = this.client.relayAuthor;
     if (!relay || !HEX_KEY.test(relay)) return names;
@@ -2130,20 +2141,24 @@ class Tools {
     const batches: string[][] = [];
     for (let at = 0; at < subjects.length; at += VERIFIED_PROFILE_BATCH)
       batches.push(subjects.slice(at, at + VERIFIED_PROFILE_BATCH));
-    const found = (
-      await Promise.all(
-        batches.map((batch) =>
-          this.client
-            .query([verifiedProfileFilter(relay, batch)])
-            .catch(() => []),
-        ),
-      )
-    ).flat();
+    const found = [
+      ...known,
+      ...(
+        await Promise.all(
+          batches.map((batch) =>
+            this.client
+              .query([verifiedProfileFilter(relay, batch)])
+              .catch(() => []),
+          ),
+        )
+      ).flat(),
+    ];
     // The newest event at each address decides; a newer malformed or
     // retracted one leaves the person unverified, as in the app.
     const latest = new Map<string, RelayEvent>();
     for (const item of found) {
-      // Queries admit the events whose signatures they checked; the app's
+      // Queries and the name search admit the events whose signatures they
+      // checked; the app's
       // projection takes only those.
       const event = item as unknown as RelayEvent;
       const subject = verifiedProfileSubject(event, authority);

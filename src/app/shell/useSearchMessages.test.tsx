@@ -347,3 +347,74 @@ it("does not resolve from: by verified names checked by an authority that change
     owner.dispose();
   }
 });
+
+it("does not resolve from: by a verified name whose newer shared head arrived during the search", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const person = keypair();
+  const reads: ReadFilter[][] = [];
+  const head = signed(relay, {
+    kind: 30382,
+    created_at: 1_000_000,
+    content: "",
+    tags: [
+      ["d", person.pubkey],
+      ["p", person.pubkey],
+      ["active", "true"],
+      ["display_name", "Jordan"],
+      ["username", "jrivera"],
+      ["issuer_label", "Example"],
+      ["verified_at", "1000000"],
+      ["full_name", "Rivera"],
+    ],
+  });
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async () =>
+      [profile(person, { name: "jr-old" }), head].map((event) =>
+        eventDto(event),
+      ),
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9)))
+        reads.push(filters as ReadFilter[]);
+      return Promise.resolve([]);
+    },
+  });
+  // While the search runs, the shared profiles accept a newer head for the
+  // person (a withdrawal), then evict it, so only its revision remains.
+  let revision = 0;
+  let accepted = 0;
+  let searched = false;
+  const search = owner.session.searchProfiles;
+  const session = {
+    ...owner.session,
+    searchProfiles: async (...args: Parameters<typeof search>) => {
+      const found = await search(...args);
+      accepted = revision = 1;
+      searched = true;
+      return found;
+    },
+    profiles: {
+      ...owner.session.profiles,
+      verifiedRevision: () => revision,
+      verifiedSince: (pubkey: string, since: number) =>
+        pubkey === person.pubkey && accepted > since,
+    },
+  } as typeof owner.session;
+  try {
+    const { result } = renderHook(() =>
+      useSearchMessages(session, "from:rivera deploy"),
+    );
+    await waitFor(() => expect(searched).toBe(true));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(reads).toHaveLength(0);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});

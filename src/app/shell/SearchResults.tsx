@@ -649,6 +649,9 @@ export function SearchResults({
         }
         let remote: readonly RelayEvent[] = [];
         let lookupFailed = false;
+        // Before the search: a shared head that arrives during it (even a
+        // withdrawal since evicted) outranks the names it returns.
+        const asked = session.profiles.verifiedRevision?.() ?? 0;
         if (searchable(authorNeedle)) {
           try {
             remote = await session.searchProfiles(authorNeedle, {
@@ -675,7 +678,6 @@ export function SearchResults({
             !shared.get(pubkey)?.verified &&
             !session.profiles.verifiedHeld?.(pubkey),
         );
-        const asked = session.profiles.verifiedRevision?.() ?? 0;
         const read = unverified.length
           ? await session.directMessages
               .verified?.(unverified, controller.signal)
