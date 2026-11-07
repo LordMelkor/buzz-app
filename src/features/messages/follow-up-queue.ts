@@ -33,6 +33,37 @@ const START_GAP_MS = 30_000;
 const TYPING_GAP_MS = 5_000;
 // Deadlines use a monotonic clock, so moving the system clock moves none.
 const now = () => performance.now();
+// Saved rows keep order per lane: a Solo chat is one lane, and a channel has
+// one lane per agent, so one agent's handoff never holds another's rows.
+type Lane = readonly [key: string, recipients: readonly string[]];
+const lanes = (
+  channelId: string,
+  recipients: readonly string[],
+  channel?: boolean,
+): Lane[] =>
+  channel
+    ? recipients.map((agent) => [`${channelId}:${agent}`, [agent]])
+    : [[channelId, recipients]];
+// An agent's request may be in its chat's lane or its own channel lane.
+const agentLanes = (channelId: string, agent: string) => [
+  channelId,
+  `${channelId}:${agent}`,
+];
+const laneChannel = (key: string) => key.split(":", 1)[0] ?? key;
+const rowLanes = (row: {
+  channelId: string;
+  recipients: readonly string[];
+  message?: { channel?: true } | undefined;
+  channel?: true;
+}) =>
+  lanes(row.channelId, row.recipients, !!(row.message?.channel ?? row.channel));
+const sharesLane = (
+  a: Parameters<typeof rowLanes>[0],
+  b: Parameters<typeof rowLanes>[0],
+) => {
+  const keys = rowLanes(b).map(([key]) => key);
+  return rowLanes(a).some(([key]) => keys.includes(key));
+};
 type Entry = {
   id: string;
   createdAt?: number;
@@ -78,7 +109,9 @@ function createQueue(session: RelaySession) {
   let sequence = Date.now();
   const waits = new Map<string, Wait[]>();
   // First sight of a channel handoff starts its start gap, like a wait's.
-  const handoffStarts = new Map<string, number>();
+  // Kept per agent and message, so a deadline renewed after a delayed
+  // delivery outlives the check that renewed it.
+  const handoffWaits = new Map<string, Wait>();
   const edits = new Set<string>();
   // Persist completion of our handoffs so other windows can recognize it.
   const handoffs = new Map<string, FollowUpHandoff>();
@@ -98,6 +131,7 @@ function createQueue(session: RelaySession) {
           removed.filter(
             (entry) =>
               entry.channelId === row.channelId &&
+              sharesLane(entry, row) &&
               entry.createdAt !== undefined &&
               (row.createdAt > entry.createdAt ||
                 (row.createdAt === entry.createdAt &&
@@ -123,17 +157,21 @@ function createQueue(session: RelaySession) {
       });
       for (const entry of entries) {
         const removed = predecessors.get(entry.id) ?? [];
-        const predecessor = removed.length
-          ? storage.handoff(entry.channelId)
-          : null;
         if (
           removed.some(
-            (entry) =>
-              predecessor?.id !== entry.id ||
-              !(
-                predecessor.complete ||
-                handoffFinished(predecessor, entry.channelId)
-              ),
+            (prior) =>
+              !rowLanes(entry)
+                .filter(([key]) =>
+                  rowLanes(prior).some(([other]) => other === key),
+                )
+                .some(([key]) => {
+                  const predecessor = storage.handoff(key);
+                  return (
+                    predecessor?.id === prior.id &&
+                    (predecessor.complete ||
+                      handoffFinished(predecessor, entry.channelId))
+                  );
+                }),
           )
         ) {
           entry.restored = true;
@@ -202,7 +240,7 @@ function createQueue(session: RelaySession) {
           turn.requests?.some((request) => request.messageId === wait.message),
       );
       if (turns.length) return turns.every((turn) => turn.state === "ended");
-      if (!wait.expires || now() <= wait.expires) return false;
+      if (!wait.expires) return false;
       if (undelivered(wait.message)) {
         wait.delivering = true;
         return false;
@@ -214,7 +252,7 @@ function createQueue(session: RelaySession) {
         setTimeout(pump, START_GAP_MS + 1);
         return false;
       }
-      return true;
+      return now() > wait.expires;
     }
     return activity.turns.some(
       (turn) =>
@@ -293,11 +331,11 @@ function createQueue(session: RelaySession) {
             })),
           ...(activity?.typing ?? []),
         ]
+          // Every agent's typing, so checking one row never clears
+          // another agent's wait; the result below keeps only ours.
           .filter(
             (entry) =>
-              entry.channelId === channelId &&
-              mine(entry.agent) &&
-              !observed.has(entry.agent),
+              entry.channelId === channelId && !observed.has(entry.agent),
           )
           .map((entry) => entry.agent),
       );
@@ -360,16 +398,13 @@ function createQueue(session: RelaySession) {
     )
       return false;
     if (storage && entry.message && storage.has(entry.id)) {
-      const handoff = storage.handoff(entry.channelId);
+      const handoff = rowLanes(entry)
+        .map(([key]) => storage.handoff(key))
+        .find((handoff) => handoff?.id === entry.id);
       const receipt = await session.outbox?.recovery(
         followUpRecovery(entry.id).key,
       );
-      if (
-        (handoff?.id === entry.id &&
-          handoff.message &&
-          handoff.message !== dismissed) ||
-        receipt
-      ) {
+      if ((handoff?.message && handoff.message !== dismissed) || receipt) {
         entry.dismissedDelivery = undefined;
         entry.deliveryId = receipt?.event.id ?? entry.deliveryId;
         entry.sending = true;
@@ -409,7 +444,7 @@ function createQueue(session: RelaySession) {
       const retired = new Set(
         [
           ...waits.keys(),
-          ...handoffs.keys(),
+          ...[...handoffs.keys()].map(laneChannel),
           ...entries.map((entry) => entry.channelId),
         ].filter((id) => {
           const channel = roster.channels.find((row) => row.id === id);
@@ -428,10 +463,9 @@ function createQueue(session: RelaySession) {
         retired.has(entry.channelId),
       ))
         remove(entry.id);
-      for (const id of retired) {
-        waits.delete(id);
-        handoffs.delete(id);
-      }
+      for (const id of retired) waits.delete(id);
+      for (const key of handoffs.keys())
+        if (retired.has(laneChannel(key))) handoffs.delete(key);
       emit();
       pump();
     });
@@ -474,7 +508,8 @@ function createQueue(session: RelaySession) {
       ))
         remove(entry.id);
       waits.delete(channelId);
-      handoffs.delete(channelId);
+      for (const key of handoffs.keys())
+        if (laneChannel(key) === channelId) handoffs.delete(key);
       emit();
       pump();
     });
@@ -608,16 +643,18 @@ function createQueue(session: RelaySession) {
             throw new Error(
               "This message is owned by another window. Reload to recover its delivery.",
             );
-          if (storage.handoff(entry.channelId)?.id === entry.id) {
-            const handoff = {
-              id: entry.id,
-              message: previous.event.id,
-              recipients: entry.recipients,
-              owner: await storage.owner(),
-            };
-            storage.claim(entry.channelId, handoff);
-            handoffs.set(entry.channelId, handoff);
-          }
+          const owner = await storage.owner();
+          for (const [key, recipients] of rowLanes(entry))
+            if (storage.handoff(key)?.id === entry.id) {
+              const handoff = {
+                id: entry.id,
+                message: previous.event.id,
+                recipients,
+                owner,
+              };
+              storage.claim(key, handoff);
+              handoffs.set(key, handoff);
+            }
           await session.outbox.recover(
             previous.event.id,
             followUpRecovery(entry.id),
@@ -641,16 +678,19 @@ function createQueue(session: RelaySession) {
       validating.delete(entry.id);
       const owner =
         storage && entry.message ? await storage.owner() : undefined;
-      const predecessor =
-        storage && entry.message ? storage.handoff(entry.channelId) : null;
-      const livePredecessor =
-        storage &&
-        predecessor &&
-        !requested.has(entry.id) &&
-        !predecessor.complete &&
-        !handoffFinished(predecessor, entry.channelId) &&
-        predecessor.id !== handoffs.get(entry.channelId)?.id &&
-        (await storage.isLive(predecessor));
+      let livePredecessor = false;
+      if (storage && entry.message && !requested.has(entry.id))
+        for (const [key] of rowLanes(entry)) {
+          const predecessor = storage.handoff(key);
+          if (
+            predecessor &&
+            !predecessor.complete &&
+            !handoffFinished(predecessor, entry.channelId) &&
+            predecessor.id !== handoffs.get(key)?.id &&
+            (await storage.isLive(predecessor))
+          )
+            livePredecessor = true;
+        }
       // Ownership queries can yield to pauses, removals, and new activity.
       // Keep the final publication guards and claim in one synchronous step.
       if (!entries.includes(entry)) return;
@@ -667,7 +707,10 @@ function createQueue(session: RelaySession) {
       if (storage && entry.message) {
         const first = storage
           .load()
-          .find((row) => row.channelId === entry.channelId);
+          .find(
+            (row) =>
+              row.channelId === entry.channelId && sharesLane(row, entry),
+          );
         if (
           !requested.has(entry.id) &&
           (first?.id !== entry.id || livePredecessor)
@@ -691,11 +734,12 @@ function createQueue(session: RelaySession) {
       if (storage && entry.message) {
         // Retain the claim after removing the row: storage events and agent
         // activity in another window may both arrive after this handoff.
-        storage.claim(entry.channelId, {
-          id: entry.id,
-          recipients: entry.recipients,
-          ...(owner ? { owner } : {}),
-        });
+        for (const [key, recipients] of rowLanes(entry))
+          storage.claim(key, {
+            id: entry.id,
+            recipients,
+            ...(owner ? { owner } : {}),
+          });
         claimed = true;
         storage.sending(entry.id, true);
       }
@@ -708,16 +752,17 @@ function createQueue(session: RelaySession) {
           entry.message ? followUpRecovery(entry.id) : undefined,
         );
         entry.deliveryId = id;
-        if (storage && entry.message) {
-          const handoff = {
-            id: entry.id,
-            message: id,
-            recipients: entry.recipients,
-            ...(owner ? { owner } : {}),
-          };
-          handoffs.set(entry.channelId, handoff);
-          storage.claim(entry.channelId, handoff);
-        }
+        if (storage && entry.message)
+          for (const [key, recipients] of rowLanes(entry)) {
+            const handoff = {
+              id: entry.id,
+              message: id,
+              recipients,
+              ...(owner ? { owner } : {}),
+            };
+            handoffs.set(key, handoff);
+            storage.claim(key, handoff);
+          }
       } catch (error) {
         if (storage && entry.message && !id) storage.sending(entry.id, false);
         throw error;
@@ -732,11 +777,8 @@ function createQueue(session: RelaySession) {
       entries = entries.filter((item) => item !== entry);
     } catch (error) {
       if (claimed && !id)
-        handoffs.set(entry.channelId, {
-          id: entry.id,
-          recipients: entry.recipients,
-          complete: true,
-        });
+        for (const [key, recipients] of rowLanes(entry))
+          handoffs.set(key, { id: entry.id, recipients, complete: true });
       entries = entries.map((item) =>
         item === entry
           ? {
@@ -760,62 +802,50 @@ function createQueue(session: RelaySession) {
   function handoffFinished(handoff: FollowUpHandoff, channelId: string) {
     const activity = session.agentActivity?.snapshot();
     const message = handoff.message;
-    let expires: number | undefined;
-    if (message && addressed(channelId, handoff.recipients)) {
-      let start = handoffStarts.get(message);
-      if (start === undefined) {
-        start = now();
-        handoffStarts.set(message, start);
+    if (!message) return false;
+    const channel = addressed(channelId, handoff.recipients);
+    const pending = handoff.recipients.map((agent) => {
+      const id = `${agent}:${message}`;
+      const wait = handoffWaits.get(id) ?? { agent, message };
+      handoffWaits.set(id, wait);
+      if (channel && wait.expires === undefined) {
+        wait.expires = now() + START_GAP_MS;
         setTimeout(pump, START_GAP_MS + 1);
       }
-      expires = start + START_GAP_MS;
-    }
-    return (
-      !!activity &&
-      !!message &&
-      handoff.recipients.every((agent) =>
-        finished(
-          {
-            agent,
-            message,
-            ...(expires ? { expires } : {}),
-            ...(resumedRequests.has(`${agent}:${message}`)
-              ? { resumed: true as const }
-              : {}),
-          },
-          activity,
-        ),
-      )
-    );
+      if (resumedRequests.has(id)) wait.resumed = true;
+      return wait;
+    });
+    return !!activity && pending.every((wait) => finished(wait, activity));
   }
   function pump() {
     if (activating) return;
-    for (const [channelId, handoff] of handoffs) {
+    for (const [key, handoff] of handoffs) {
+      const channelId = laneChannel(key);
       if (
         !storage ||
         (!handoff.complete && !handoffFinished(handoff, channelId)) ||
-        settlingHandoffs.has(channelId)
+        settlingHandoffs.has(key)
       )
         continue;
-      settlingHandoffs.add(channelId);
+      settlingHandoffs.add(key);
       void storage
         .lockChat(channelId, async () => {
-          if (handoffs.get(channelId) !== handoff) return;
-          const current = storage.handoff(channelId);
+          if (handoffs.get(key) !== handoff) return;
+          const current = storage.handoff(key);
           if (
             current?.id === handoff.id &&
             (!current.message || current.message === handoff.message)
           )
-            storage.claim(channelId, { ...handoff, complete: true });
-          if (handoffs.get(channelId) === handoff) handoffs.delete(channelId);
+            storage.claim(key, { ...handoff, complete: true });
+          if (handoffs.get(key) === handoff) handoffs.delete(key);
         })
         .catch((error) => {
           storageError = error instanceof Error ? error.message : String(error);
           emit();
         })
         .finally(() => {
-          settlingHandoffs.delete(channelId);
-          if (handoffs.get(channelId) !== handoff) pump();
+          settlingHandoffs.delete(key);
+          if (handoffs.get(key) !== handoff) pump();
         });
     }
     for (const channelId of new Set([
@@ -1069,29 +1099,36 @@ function createQueue(session: RelaySession) {
       const channels = new Set(Object.values(turns).filter(Boolean));
       for (const [message, channelId] of Object.entries(turns)) {
         if (!channelId) continue;
-        let handoff: FollowUpHandoff | null | undefined;
+        let resumedHandoff: FollowUpHandoff | undefined;
+        let key = channelId;
         try {
-          handoff = storage?.handoff(channelId);
+          for (const lane of agentLanes(channelId, agent)) {
+            const handoff = storage?.handoff(lane);
+            if (
+              handoff &&
+              !handoff.complete &&
+              handoff.message === message &&
+              handoff.recipients.includes(agent)
+            ) {
+              resumedHandoff = handoff;
+              key = lane;
+              break;
+            }
+          }
         } catch (error) {
           storageError = error instanceof Error ? error.message : String(error);
         }
-        const resumedHandoff =
-          handoff &&
-          !handoff.complete &&
-          handoff.message === message &&
-          handoff.recipients.includes(agent)
-            ? handoff
-            : undefined;
         if (resumedHandoff && storage) {
-          handoffs.set(channelId, resumedHandoff);
+          const handoff = resumedHandoff;
+          handoffs.set(key, handoff);
           void storage
             .lockChat(channelId, async () => {
-              const current = storage.handoff(channelId);
-              if (current?.id !== resumedHandoff.id || current.complete) return;
-              resumedHandoff.owner = await storage.owner();
-              storage.claim(channelId, {
+              const current = storage.handoff(key);
+              if (current?.id !== handoff.id || current.complete) return;
+              handoff.owner = await storage.owner();
+              storage.claim(key, {
                 ...current,
-                owner: resumedHandoff.owner,
+                owner: handoff.owner,
               });
             })
             .catch((error) => {
@@ -1138,18 +1175,20 @@ function createQueue(session: RelaySession) {
         if (!storage) continue;
         void storage
           .lockChat(channelId, async () => {
-            const marker = storage.handoff(channelId);
-            if (
-              marker?.message &&
-              marker.message in turns &&
-              marker.recipients.includes(agent)
-            ) {
-              const recipients = marker.recipients.filter(
-                (recipient) => recipient !== agent,
-              );
-              if (recipients.length)
-                storage.claim(channelId, { ...marker, recipients });
-              else storage.retire(channelId);
+            for (const key of agentLanes(channelId, agent)) {
+              const marker = storage.handoff(key);
+              if (
+                marker?.message &&
+                marker.message in turns &&
+                marker.recipients.includes(agent)
+              ) {
+                const recipients = marker.recipients.filter(
+                  (recipient) => recipient !== agent,
+                );
+                if (recipients.length)
+                  storage.claim(key, { ...marker, recipients });
+                else storage.retire(key);
+              }
             }
           })
           .catch((error) => {
@@ -1158,7 +1197,7 @@ function createQueue(session: RelaySession) {
             emit();
           });
       }
-      for (const [channelId, handoff] of handoffs)
+      for (const [key, handoff] of handoffs)
         if (
           handoff.message &&
           handoff.message in turns &&
@@ -1167,9 +1206,8 @@ function createQueue(session: RelaySession) {
           const recipients = handoff.recipients.filter(
             (recipient) => recipient !== agent,
           );
-          if (recipients.length)
-            handoffs.set(channelId, { ...handoff, recipients });
-          else handoffs.delete(channelId);
+          if (recipients.length) handoffs.set(key, { ...handoff, recipients });
+          else handoffs.delete(key);
         }
       for (const [channelId, current] of waits) {
         const remaining = current.filter(

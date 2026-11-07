@@ -357,53 +357,91 @@ it("only releases a failed Outbox wait after durable dismissal", async () => {
   }
 });
 
-it("keeps a failed channel delivery holding its successors past the start gap", async () => {
-  vi.useFakeTimers();
-  const key = new Uint8Array(32).fill(7);
-  let signs = 0;
-  const owner = createOutbox(
-    getPublicKey(key),
-    {
-      sign: async (event) => {
-        signs += 1;
-        if (signs === 1) throw new Error("Signing failed");
-        return finalizeEvent(structuredClone(event), key);
+it.each([
+  ["past the start gap", 30_002],
+  ["when its retry succeeds within the start gap", 20_000],
+])(
+  "keeps a failed channel delivery holding its successors %s",
+  async (_name, retryAt) => {
+    vi.useFakeTimers();
+    const key = new Uint8Array(32).fill(7);
+    let signs = 0;
+    const owner = createOutbox(
+      getPublicKey(key),
+      {
+        sign: async (event) => {
+          signs += 1;
+          if (signs === 1) throw new Error("Signing failed");
+          return finalizeEvent(structuredClone(event), key);
+        },
+        publish: async () => {},
       },
-      publish: async () => {},
-    },
-    { load: () => [], save: async () => {} },
-  );
-  const h = fixture({ outbox: owner.outbox });
+      { load: () => [], save: async () => {} },
+    );
+    const h = fixture({ outbox: owner.outbox });
+    try {
+      await owner.ready;
+      const id =
+        h.queue.submit({
+          ...h.entry("first"),
+          publish: () =>
+            owner.outbox.send({
+              kind: 9,
+              content: "first",
+              tags: [["h", "chat"]],
+            }),
+        }) ?? "missing";
+      await vi.waitFor(() =>
+        expect(owner.outbox.snapshot()[0]?.delivery).toBe("failed"),
+      );
+      const next = h.entry("next");
+      h.queue.submit(next);
+      await vi.advanceTimersByTimeAsync(retryAt);
+      expect(next.publish).not.toHaveBeenCalled();
+      owner.outbox.retry(id);
+      await vi.waitFor(() =>
+        expect(owner.outbox.snapshot()[0]?.delivery).toBe("accepted"),
+      );
+      // Delivered at last, the message gets its start gap from now.
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(next.publish).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_002);
+      expect(next.publish).toHaveBeenCalledOnce();
+    } finally {
+      owner.dispose();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("keeps a typing agent's wait open while another agent's row is checked", () => {
+  vi.useFakeTimers();
   try {
-    await owner.ready;
-    const id =
-      h.queue.submit({
-        ...h.entry("first"),
-        publish: () =>
-          owner.outbox.send({
-            kind: 9,
-            content: "first",
-            tags: [["h", "chat"]],
-          }),
-      }) ?? "missing";
-    await vi.waitFor(() =>
-      expect(owner.outbox.snapshot()[0]?.delivery).toBe("failed"),
-    );
-    const next = h.entry("next");
-    h.queue.submit(next);
-    await vi.advanceTimersByTimeAsync(30_002);
-    expect(next.publish).not.toHaveBeenCalled();
-    owner.outbox.retry(id);
-    await vi.waitFor(() =>
-      expect(owner.outbox.snapshot()[0]?.delivery).toBe("accepted"),
-    );
-    // Delivered at last, the message gets its start gap from now.
-    await vi.advanceTimersByTimeAsync(29_000);
-    expect(next.publish).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1_002);
-    expect(next.publish).toHaveBeenCalledOnce();
+    const h = fixture();
+    h.typing([
+      {
+        agent: "agent",
+        channelId: "chat",
+        startedAt: 1,
+        threadRootId: undefined,
+        working: true,
+      },
+    ]);
+    h.work("b-task", "working", "chat", "other-agent");
+    const forA = h.entry("for a");
+    const forB = { ...h.entry("for b"), recipients: ["other-agent"] };
+    h.queue.submit(forA);
+    h.queue.submit(forB);
+    h.work("b-task", "done", "chat", "other-agent");
+    expect(forB.publish).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(4_900);
+    // A posts a reply mid-task, so its typing clears for a moment.
+    h.typing([]);
+    vi.advanceTimersByTime(200);
+    expect(forA.publish).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(5_000);
+    expect(forA.publish).toHaveBeenCalledOnce();
   } finally {
-    owner.dispose();
     vi.useRealTimers();
   }
 });

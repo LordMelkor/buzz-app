@@ -260,8 +260,12 @@ function fixture(
     deny() {
       channel = { ...channel, members: [viewer] };
     },
-    team() {
-      channel = { ...channel, channelType: "stream" };
+    team(...members: string[]) {
+      channel = {
+        ...channel,
+        channelType: "stream",
+        members: [...channel.members, ...members],
+      };
     },
     enqueue(value = message) {
       queue.submit({
@@ -1358,10 +1362,73 @@ it("completes a channel handoff for an agent this device never sees work", async
     expect(h.send).toHaveBeenCalledOnce();
     // No local row or turn ever names the sent message.
     await followUpStorage(scope).lockChat("chat", async () => {});
-    expect(followUpStorage(scope).handoff("chat")?.complete).not.toBe(true);
+    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).not.toBe(
+      true,
+    );
     await vi.advanceTimersByTimeAsync(30_002);
     await followUpStorage(scope).lockChat("chat", async () => {});
-    expect(followUpStorage(scope).handoff("chat")?.complete).toBe(true);
+    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).toBe(
+      true,
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("releases a saved channel row for one agent while another agent's saved row waits", async () => {
+  const other = "b".repeat(64);
+  const h = fixture();
+  h.team(other);
+  h.choices(true, [agent, other]);
+  h.work("b-task", "working", other);
+  h.enqueue({ ...message, text: "For A", channel: true });
+  h.enqueue({
+    ...message,
+    text: "For B",
+    recipients: [other],
+    picks: {},
+    channel: true,
+  });
+  h.work("b-task", "done", other);
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledOnce());
+  expect(h.send.mock.calls[0]?.[1]).toBe("For B");
+  await vi.waitFor(() =>
+    expect(h.queue.snapshot()).toMatchObject([{ text: "For A" }]),
+  );
+  expect(h.queue.snapshot()[0]?.error).toBeUndefined();
+  expect(h.queue.snapshot()[0]?.restored).toBeFalsy();
+});
+
+it("keeps a channel handoff open for a fresh start gap after a delayed delivery", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "performance"] });
+  try {
+    const h = fixture();
+    h.team();
+    let sign = () => {};
+    h.holdSigning(
+      new Promise<void>((resolve) => {
+        sign = resolve;
+      }),
+    );
+    h.enqueue({ ...message, channel: true });
+    h.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send).toHaveBeenCalledOnce();
+    const event = h.send.mock.results[0]?.value as string;
+    const complete = async () => {
+      await followUpStorage(scope).lockChat("chat", async () => {});
+      return followUpStorage(scope).handoff(`chat:${agent}`)?.complete;
+    };
+    // The first attempt times out; a retry is accepted at 45 s.
+    await vi.advanceTimersByTimeAsync(45_000);
+    sign();
+    h.session.outbox?.retry(event);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(h.publish).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(28_000);
+    expect(await complete()).not.toBe(true);
+    await vi.advanceTimersByTimeAsync(2_002);
+    expect(await complete()).toBe(true);
   } finally {
     vi.useRealTimers();
   }
@@ -1598,7 +1665,9 @@ it("settles a resumed handoff without a saved successor before reopening", async
   h.queue.resumeAfter(agent, { [event]: "chat" });
   await Promise.resolve();
   await followUpStorage(scope).lockChat("chat", async () => {});
-  expect(followUpStorage(scope).handoff("chat")?.complete).not.toBe(true);
+  expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).not.toBe(
+    true,
+  );
   h.work(event, "done");
   await vi.waitFor(() =>
     expect(followUpStorage(scope).handoff("chat")?.complete).toBe(true),
@@ -1642,7 +1711,9 @@ it.each(["abandoned", "removed", "revoked"])(
     else h.roster("ready", false);
     expect(deactivate).toHaveBeenCalledOnce();
     await followUpStorage(scope).lockChat("chat", async () => {});
-    expect(followUpStorage(scope).handoff("chat")?.complete).not.toBe(true);
+    expect(followUpStorage(scope).handoff(`chat:${agent}`)?.complete).not.toBe(
+      true,
+    );
   },
 );
 
