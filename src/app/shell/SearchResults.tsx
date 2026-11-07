@@ -737,13 +737,19 @@ export function SearchResults({
   // keeps them: only for the authority still in force, and not once a shared
   // head answers for the person (held now, or arrived since the read began,
   // even a withdrawal since evicted). useVerifiedNames above renders this
-  // component on those changes.
+  // component on those changes. The latest pass that answered for the person
+  // speaks for them, "not verified" included; an earlier pass does only when
+  // the later one never answered for them.
   const pageVerified = (pubkey: string) =>
     profiles.get(pubkey)?.verified
       ? undefined
-      : authorSuggestions?.verified
-          ?.map((read) => answeredName(session.profiles, read, pubkey))
-          .find(Boolean);
+      : answeredName(
+          session.profiles,
+          authorSuggestions?.verified
+            ?.filter((read) => read?.answers.has(pubkey))
+            .at(-1),
+          pubkey,
+        );
   const candidates = new Map([
     ...[...profiles].filter(([pubkey]) => members.includes(pubkey)),
     // A member known only by a verified name, as from: resolves them.

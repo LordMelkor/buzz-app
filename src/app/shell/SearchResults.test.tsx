@@ -4121,6 +4121,80 @@ it("keeps a person the search found by a verified name when a member's read fail
   }
 });
 
+it("drops a person a later member read answers as not verified", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  const owner = verifiedSearch(viewer, relay, [
+    profile(person, { name: "jr-old" }),
+  ]);
+  const authority = owner.session.profiles.verifiedAuthority?.();
+  // The page's read verifies Jordan; the member read after it, asked again
+  // because a search answered for them since, finds the name withdrawn.
+  const read = vi.fn(async (keys: readonly string[]) => ({
+    authority,
+    profiles: new Map(
+      keys.includes(person.pubkey) && read.mock.calls.length === 1
+        ? [
+            [
+              person.pubkey,
+              {
+                displayName: "Jordan",
+                username: "jrivera",
+                issuerLabel: "Example",
+                verifiedAt: 1_000_000,
+                status: "checked" as const,
+                multipleIssuers: false,
+              },
+            ],
+          ]
+        : [],
+    ),
+  }));
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      get: () => ({
+        id: "crew",
+        name: "Crew",
+        channelType: "stream" as const,
+        members: [viewer.pubkey, person.pubkey],
+      }),
+      resolve: async () => {},
+    },
+    profiles: { ...owner.session.profiles, ensure: async () => {} },
+    directMessages: {
+      ...owner.session.directMessages,
+      verified: read,
+      searched: (pubkey: string) => pubkey === person.pubkey,
+    },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jrivera"
+        scopedChannelId="crew"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        read.mock.calls.filter(([keys]) => keys.includes(person.pubkey)),
+      ).toHaveLength(2),
+    );
+    await act(async () => {});
+    expect(screen.queryByRole("option", { name: /Jordan/ })).toBeNull();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("searches again when the verification authority changes while the picker is open", async () => {
   const relay = keypair(),
     viewer = keypair(),
