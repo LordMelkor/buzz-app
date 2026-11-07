@@ -602,13 +602,19 @@ async fn plugin_change(
     action: String,
     id: String,
 ) -> Result<InstallationResult, String> {
-    registrations.retire(&id);
+    // An approved origin leaves the running plugin's requests in flight.
+    let retires = buzzodz_plugins::changes_running_plugin(&action);
+    if retires {
+        registrations.retire(&id);
+    }
     let plugin = id.clone();
     let result = with_manager(manager, move |m| {
         m.change(&action, &plugin).map(|catalog| ready(&m, catalog))
     })
     .await;
-    registrations.retire(&id);
+    if retires {
+        registrations.retire(&id);
+    }
     result
 }
 #[tauri::command]

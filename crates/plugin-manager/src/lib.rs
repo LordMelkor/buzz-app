@@ -33,6 +33,13 @@ const MAX_APPROVED_ORIGINS: usize = 64;
 /// origin to approve.
 const ALLOW_ORIGIN: &str = "allow-origin ";
 
+/// Whether a `change` action can alter the running plugin: its code, revision
+/// or enabled state. Approving an origin only adds a grant, so the plugin's
+/// live registrations and requests stay valid.
+pub fn changes_running_plugin(action: &str) -> bool {
+    !action.starts_with(ALLOW_ORIGIN)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Manifest {
@@ -1693,8 +1700,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        artifact_from_text, bundled_manifests, enabled_by_default, validate_candidate_path,
-        Manager, Manifest, Release, MAX_HOST_COMMAND_OUTPUT_BYTES,
+        artifact_from_text, bundled_manifests, changes_running_plugin, enabled_by_default,
+        validate_candidate_path, Manager, Manifest, Release, MAX_HOST_COMMAND_OUTPUT_BYTES,
     };
     use std::collections::BTreeMap;
     use std::fs;
@@ -2679,6 +2686,16 @@ mod tests {
             origins(&manager, "example.first", &reinstalled),
             ["https://declared.example"]
         );
+    }
+
+    #[test]
+    fn approving_an_origin_is_the_only_change_that_leaves_the_plugin_running() {
+        assert!(!changes_running_plugin(
+            "allow-origin 0123abcd https://mcp.example"
+        ));
+        for action in ["enable", "disable", "remove", "rollback"] {
+            assert!(changes_running_plugin(action), "{action}");
+        }
     }
 
     #[test]
