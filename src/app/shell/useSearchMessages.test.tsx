@@ -497,6 +497,91 @@ it("does not resolve from: by a verified name whose newer shared head arrived du
   }
 });
 
+it("drops a selectable agent's verified name withdrawn while members' names are read", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const helper = keypair();
+  const bobby = keypair();
+  const reads: ReadFilter[][] = [];
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey, bobby.pubkey]),
+  ];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    searchProfiles: async () => [],
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9))) {
+        reads.push(filters as ReadFilter[]);
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => filter.kinds?.includes(event.kind)),
+        ),
+      );
+    },
+  });
+  const shared = new Map<string, { name: string; verified?: object }>([
+    [
+      helper.pubkey,
+      {
+        name: "Helper",
+        verified: {
+          displayName: "Helper",
+          username: "jrivera",
+          issuerLabel: "Example",
+          verifiedAt: 1,
+          status: "checked",
+          multipleIssuers: false,
+        },
+      },
+    ],
+    [bobby.pubkey, { name: "jrivera" }],
+  ]);
+  const verify = owner.session.directMessages.verified;
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      ensure: async () => {},
+      snapshot: () => shared,
+    },
+    directMessages: {
+      ...owner.session.directMessages,
+      // The agent's verified name is withdrawn while the members are read.
+      verified: async (...args: Parameters<typeof verify>) => {
+        shared.set(helper.pubkey, { name: "Helper" });
+        return verify(...args);
+      },
+    },
+  } as unknown as typeof owner.session;
+  try {
+    owner.session.channels.ensureList();
+    await waitFor(() =>
+      expect(owner.session.channels.get?.("crew")?.members).toHaveLength(2),
+    );
+    const { result } = renderHook(() =>
+      useSearchMessages(
+        session,
+        "from:jrivera deploy",
+        "crew",
+        undefined,
+        new Map([[helper.pubkey, "Helper"]]),
+      ),
+    );
+    await waitFor(() =>
+      expect(reads).toContainEqual([
+        expect.objectContaining({ authors: [bobby.pubkey] }),
+      ]),
+    );
+    expect(result.current.ambiguousAuthor).toBeFalsy();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it.each([
   ["", true, 0],
   [" before that member's verified head is cached", false, 0],

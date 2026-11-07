@@ -344,8 +344,9 @@ export function useSearchMessages(
                   : checked.get(pubkey));
             };
             // Selectable agents are offered wherever the picker runs, so they
-            // are always candidates, alongside members or relay matches.
-            const agentMatches = [...agents.keys()].filter(known);
+            // are always candidates, alongside members or relay matches. They
+            // are matched after each wait, so a name withdrawn meanwhile isn't.
+            const agentMatches = () => [...agents.keys()].filter(known);
             // A member's verified head may not be cached yet, so it is read:
             // otherwise another member's profile name would resolve alone.
             const memberVerified = knownMembers.length
@@ -361,7 +362,7 @@ export function useSearchMessages(
               return { author: unique[0] };
             };
             if (scoped.length) {
-              const found = resolve([...scoped, ...agentMatches]);
+              const found = resolve([...scoped, ...agentMatches()]);
               if (found.ambiguous)
                 return { messages: [], ambiguousAuthor: true };
               author = found.author;
@@ -389,7 +390,7 @@ export function useSearchMessages(
                     pubkey === handle,
                 )
                 .map(([pubkey]) => pubkey);
-              const found = resolve([...matches, ...agentMatches]);
+              const found = resolve([...matches, ...agentMatches()]);
               if (found.ambiguous || candidates.length >= limit)
                 return { messages: [], ambiguousAuthor: true };
               author = found.author;
