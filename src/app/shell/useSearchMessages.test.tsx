@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { ReadFilter } from "../../features/relay/events";
 import { eventDto } from "../../features/relay/events";
 import { createRelaySession } from "../../features/relay/session";
@@ -540,12 +540,14 @@ it("drops a selectable agent's verified name withdrawn while members' names are 
     [bobby.pubkey, { name: "jrivera" }],
   ]);
   const verify = owner.session.directMessages.verified;
+  const authority = { pubkey: relay.pubkey, multipleIssuers: false };
   const session = {
     ...owner.session,
     profiles: {
       ...owner.session.profiles,
       ensure: async () => {},
       snapshot: () => shared,
+      verifiedAuthority: () => authority,
     },
     directMessages: {
       ...owner.session.directMessages,
@@ -576,6 +578,88 @@ it("drops a selectable agent's verified name withdrawn while members' names are 
       ]),
     );
     expect(result.current.ambiguousAuthor).toBeFalsy();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("reads members' verified names one read at a time, and not again when only the text changes", async () => {
+  const viewer = keypair();
+  const relay = keypair();
+  const bobby = keypair();
+  const reads: ReadFilter[][] = [];
+  // More uncached members than one verified read can take.
+  const crowd = Array.from({ length: 200 }, (_, index) =>
+    index.toString(16).padStart(64, "0"),
+  );
+  const members = [viewer.pubkey, ...crowd, bobby.pubkey];
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", members),
+  ];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    verifiedProfiles: {
+      pubkey: relay.pubkey,
+      multipleIssuers: false,
+      searchable: true,
+    },
+    searchProfiles: async () => [],
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9))) {
+        reads.push(filters as ReadFilter[]);
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => filter.kinds?.includes(event.kind)),
+        ),
+      );
+    },
+  });
+  let running = 0;
+  let most = 0;
+  const verified = vi.fn(async () => {
+    most = Math.max(most, ++running);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    running -= 1;
+    return {
+      authority: owner.session.profiles.verifiedAuthority?.(),
+      profiles: new Map(),
+    };
+  });
+  const shared = new Map([[bobby.pubkey, { name: "jrivera" }]]);
+  const session = {
+    ...owner.session,
+    profiles: {
+      ...owner.session.profiles,
+      ensure: async () => {},
+      snapshot: () => shared,
+      verifiedHeld: () => false,
+    },
+    directMessages: { ...owner.session.directMessages, verified },
+  } as unknown as typeof owner.session;
+  try {
+    owner.session.channels.ensureList();
+    await waitFor(() =>
+      expect(owner.session.channels.get?.("crew")?.members).toHaveLength(
+        members.length,
+      ),
+    );
+    const { rerender } = renderHook(
+      ({ query }) => useSearchMessages(session, query, "crew"),
+      { initialProps: { query: "from:jrivera deploy" } },
+    );
+    await waitFor(() => expect(reads).toHaveLength(1));
+    expect(reads[0]).toEqual([
+      expect.objectContaining({ authors: [bobby.pubkey] }),
+    ]);
+    expect(verified).toHaveBeenCalledTimes(2);
+    expect(most).toBe(1);
+    rerender({ query: "from:jrivera ship" });
+    await waitFor(() => expect(reads).toHaveLength(2));
+    expect(verified).toHaveBeenCalledTimes(2);
   } finally {
     cleanup();
     owner.dispose();

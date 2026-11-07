@@ -70,6 +70,111 @@ export function superseded(
   );
 }
 
+/** What one `lookUpVerified` pass knows: each person's verified name, or its
+ * absence, by the authority that checked it and the shared heads' revision
+ * it was asked at. */
+export type VerifiedAnswers = {
+  authority: VerifiedProfileAuthority;
+  answers: ReadonlyMap<
+    string,
+    { profile: VerifiedProfile | undefined; asked: number }
+  >;
+};
+
+/**
+ * Reads the verified names of `pubkeys` that neither the shared profiles nor
+ * fresh lookups hold, `batch` at a time and one read after another, so a
+ * waiting read does not spend its deadline in the reader's queue. Answers go
+ * into the lookups `verifiedName` reads and are returned too, so a pass
+ * longer than the lookups hold keeps all of its own. A failed read, or one
+ * by another authority, ends the pass; the rest keep their profile names.
+ * At most `limit` people are asked. `asked` is the shared heads' revision
+ * the caller's search began at, when it began before this pass: a head that
+ * arrived since outranks this pass's answers, even those the search found.
+ */
+export async function lookUpVerified(
+  session: VerifiedNamesSession,
+  pubkeys: readonly string[],
+  signal: AbortSignal,
+  {
+    batch = BATCH,
+    limit = Infinity,
+    asked: since = Infinity,
+    onStart,
+    onPage,
+  }: {
+    batch?: number;
+    limit?: number;
+    asked?: number;
+    onStart?: () => void;
+    onPage?: () => void;
+  } = {},
+): Promise<VerifiedAnswers | undefined> {
+  const { profiles } = session;
+  const read = session.directMessages?.verified;
+  const searched = session.directMessages?.searched;
+  const authority = profiles.verifiedAuthority?.();
+  if (!authority || !read) return undefined;
+  const found = foundFor(profiles, authority);
+  const known = profiles.snapshot();
+  const now = Date.now();
+  const revision = Math.min(since, profiles.verifiedRevision?.() ?? 0);
+  const answers = new Map<
+    string,
+    { profile: VerifiedProfile | undefined; asked: number }
+  >();
+  // Each person is asked once a pass, and eviction during it asks nobody
+  // again. A search that answered for someone since their lookup outdates it.
+  const queue: string[] = [];
+  for (const pubkey of new Set(pubkeys)) {
+    if (known.get(pubkey)?.verified || profiles.verifiedHeld?.(pubkey))
+      continue;
+    const held = found.get(pubkey);
+    if (held && now - held.at < FRESH_MS && !searched?.(pubkey, authority))
+      answers.set(pubkey, { profile: held.profile, asked: revision });
+    else if (queue.length < limit) queue.push(pubkey);
+  }
+  if (queue.length) onStart?.();
+  for (let start = 0; start < queue.length; start += batch) {
+    const wanted = queue.slice(start, start + batch);
+    const asked = Math.min(since, profiles.verifiedRevision?.() ?? 0);
+    // A failed read checked nothing, like a changed authority.
+    const result = await read(wanted, signal).catch(() => undefined);
+    signal.throwIfAborted();
+    if (result?.authority !== authority) break;
+    const at = Date.now();
+    for (const pubkey of wanted) {
+      const profile = result.profiles.get(pubkey);
+      answers.set(pubkey, { profile, asked });
+      found.delete(pubkey);
+      // A shared head that arrived during the read answers instead.
+      if (!superseded(profiles, pubkey, asked))
+        found.set(pubkey, { profile, at });
+    }
+    for (const pubkey of found.keys()) {
+      if (found.size <= PROFILE_CACHE_BASE) break;
+      found.delete(pubkey);
+    }
+    onPage?.();
+  }
+  return { authority, answers };
+}
+
+/** `pubkey`'s verified name in a pass's `answers`, while their authority
+ * holds and no shared head has answered for the person since. */
+export function answeredName(
+  profiles: ProfileQueries,
+  verified: VerifiedAnswers | undefined,
+  pubkey: string,
+) {
+  const answer = verified?.answers.get(pubkey);
+  return answer &&
+    verified?.authority === profiles.verifiedAuthority?.() &&
+    !superseded(profiles, pubkey, answer.asked)
+    ? answer.profile
+    : undefined;
+}
+
 /**
  * Community-verified names for people a search found that the shared profiles
  * have not verified. While `settled`, the unasked ones are read in the
@@ -104,50 +209,11 @@ export function useVerifiedNames(
   // biome-ignore lint/correctness/useExhaustiveDependencies: a changed key cancels the read.
   useEffect(() => {
     if (!settled || !authority || !read || !subjects) return;
-    const found = foundFor(profiles, authority);
-    const known = profiles.snapshot();
-    const now = Date.now();
-    // One pass asks each unasked person once, in pages, at most as many as the
-    // cache holds; eviction during the pass cannot ask anyone again. A search
-    // that answered for someone since their lookup outdates it.
-    const queue = subjects
-      .split(",")
-      .filter(
-        (pubkey) =>
-          (now - (found.get(pubkey)?.at ?? -Infinity) >= FRESH_MS ||
-            !!searched?.(pubkey, authority)) &&
-          !known.get(pubkey)?.verified &&
-          !profiles.verifiedHeld?.(pubkey),
-      )
-      .slice(0, PROFILE_CACHE_BASE);
-    if (!queue.length) return;
     const controller = new AbortController();
-    void (async () => {
-      for (let start = 0; start < queue.length; start += BATCH) {
-        const wanted = queue.slice(start, start + BATCH);
-        const asked = profiles.verifiedRevision?.() ?? 0;
-        const result = await read(wanted, controller.signal).catch(
-          // A failed read checked nothing, like a changed authority: the pass
-          // ends, and the rows keep their profile names until asked again.
-          () => undefined,
-        );
-        // Nothing was checked, or not by this authority: ask again later.
-        if (controller.signal.aborted || result?.authority !== authority)
-          return;
-        const at = Date.now();
-        for (const pubkey of wanted) {
-          found.delete(pubkey);
-          // A shared head that arrived during the read answers instead.
-          if (!superseded(profiles, pubkey, asked))
-            found.set(pubkey, { profile: result.profiles.get(pubkey), at });
-        }
-        for (const pubkey of found.keys()) {
-          if (found.size <= PROFILE_CACHE_BASE) break;
-          found.delete(pubkey);
-        }
-        setRevision((value) => value + 1);
-      }
-    })();
+    void lookUpVerified(session, subjects.split(","), controller.signal, {
+      limit: PROFILE_CACHE_BASE,
+      onPage: () => setRevision((value) => value + 1),
+    }).catch(() => {});
     return () => controller.abort();
   }, [profiles, read, searched, authority, subjects, settled, key]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: a landed read moves the revision.

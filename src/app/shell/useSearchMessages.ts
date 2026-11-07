@@ -14,7 +14,10 @@ import {
 import { objectBody } from "../../features/relay/body";
 import type { RelaySession } from "../../features/relay/session";
 import type { ReadFilter } from "../../features/relay/events";
-import { superseded } from "../../features/profiles/useVerifiedNames";
+import {
+  answeredName,
+  lookUpVerified,
+} from "../../features/profiles/useVerifiedNames";
 import { searchedProfiles } from "../../features/relay/profile-search";
 import { foldProfiles } from "../../features/relay/profiles";
 import {
@@ -297,51 +300,21 @@ export function useSearchMessages(
             const known = (pubkey: string) =>
               named(pubkey, shared(pubkey)?.name, shared(pubkey)?.verified) ||
               named(pubkey, publicName(pubkey));
-            // Verified names the shared profiles don't hold yet come from one
-            // read. A failed read leaves profile names, which resolve as before.
+            // Verified names the shared profiles don't hold yet are read, or
+            // reused from an earlier search. A failed read leaves profile
+            // names, which resolve as before. As in useVerifiedNames, names
+            // belong to the authority that checked them, and a shared head
+            // that arrived since (even a withdrawal since evicted) outranks them.
             const readVerified = async (pubkeys: readonly string[]) => {
-              const unverified = pubkeys.filter(
-                (pubkey) =>
-                  !shared(pubkey)?.verified &&
-                  !session.profiles.verifiedHeld?.(pubkey),
-              );
-              // One read per relay batch: a filter takes at most that many.
-              const reads = await Promise.all(
-                Array.from(
-                  {
-                    length: Math.ceil(
-                      unverified.length / VERIFIED_PROFILE_BATCH,
-                    ),
-                  },
-                  (_, index) =>
-                    session.directMessages
-                      .verified?.(
-                        unverified.slice(
-                          index * VERIFIED_PROFILE_BATCH,
-                          (index + 1) * VERIFIED_PROFILE_BATCH,
-                        ),
-                        controller.signal,
-                      )
-                      .catch(() => undefined),
-                ),
-              );
-              controller.signal.throwIfAborted();
-              // As in useVerifiedNames, names belong to the authority that
-              // checked them, and a shared head that arrived since the read
-              // began (even a withdrawal, even one since evicted) outranks them.
-              const authority = session.profiles.verifiedAuthority?.();
-              const checked = new Map(
-                reads.flatMap((read) =>
-                  read && read.authority === authority
-                    ? [...read.profiles]
-                    : [],
-                ),
+              const read = await lookUpVerified(
+                session,
+                pubkeys,
+                controller.signal,
+                { batch: VERIFIED_PROFILE_BATCH, asked },
               );
               return (pubkey: string) =>
                 shared(pubkey)?.verified ??
-                (superseded(session.profiles, pubkey, asked)
-                  ? undefined
-                  : checked.get(pubkey));
+                answeredName(session.profiles, read, pubkey);
             };
             // Selectable agents are offered wherever the picker runs, so they
             // are always candidates, alongside members or relay matches. They

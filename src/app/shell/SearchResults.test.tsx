@@ -3942,6 +3942,73 @@ it("offers a member by their own profile name after a verified label replaced it
   }
 });
 
+it("offers a member by a verified username no cached head holds", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    person = keypair();
+  // The community's search finds no one, so only local members can match.
+  const owner = verifiedSearch(viewer, relay, []);
+  const shared = new Map(owner.session.profiles.snapshot());
+  shared.set(person.pubkey, { name: "zed" });
+  const read = vi.fn(async (keys: readonly string[]) => ({
+    authority: owner.session.profiles.verifiedAuthority?.(),
+    profiles: new Map(
+      keys.includes(person.pubkey)
+        ? [
+            [
+              person.pubkey,
+              {
+                displayName: "Jordan",
+                username: "jrivera",
+                issuerLabel: "Example",
+                verifiedAt: 1_000_000,
+                status: "checked",
+                multipleIssuers: false,
+              },
+            ],
+          ]
+        : [],
+    ),
+  }));
+  const session = {
+    ...owner.session,
+    channels: {
+      ...owner.session.channels,
+      get: () => ({
+        id: "crew",
+        name: "Crew",
+        channelType: "stream" as const,
+        members: [viewer.pubkey, person.pubkey],
+      }),
+      resolve: async () => {},
+    },
+    profiles: {
+      ...owner.session.profiles,
+      snapshot: () => shared,
+      ensure: async () => {},
+    },
+    directMessages: { ...owner.session.directMessages, verified: read },
+  } as unknown as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@jrivera"
+        scopedChannelId="crew"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    expect(await people.findByRole("option", { name: /Jordan/ })).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
 it("searches again when the verification authority changes while the picker is open", async () => {
   const relay = keypair(),
     viewer = keypair(),
