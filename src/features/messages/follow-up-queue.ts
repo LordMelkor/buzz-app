@@ -1035,7 +1035,9 @@ function createQueue(session: RelaySession) {
     /** Whether work this device can see, or a row for one of these agents
      * still queued or being released, would hold a message to them. A
      * channel message to no agent has no lane to wait in, so it never is.
-     * Rows another window saved count too, as they do for `submit`. */
+     * Rows another window saved count too, as they do for `submit`, and so
+     * does a row any window handed off that its agent has not yet finished;
+     * release drops one whose window has closed. */
     busy(channelId: string, recipients: readonly string[]) {
       if (recipients.length || !addressed(channelId, recipients)) restore();
       else return false;
@@ -1044,7 +1046,12 @@ function createQueue(session: RelaySession) {
           (entry) =>
             entry.channelId === channelId &&
             entry.recipients.some((agent) => recipients.includes(agent)),
-        ) || blockers(channelId, recipients, false)
+        ) ||
+        lanes(channelId, recipients, true).some(([key]) => {
+          const handoff = storage?.handoff(key);
+          return !!handoff && !handoff.complete;
+        }) ||
+        blockers(channelId, recipients, false)
       );
     },
     storageError: () => storageError,

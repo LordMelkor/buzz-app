@@ -498,6 +498,22 @@ it("counts another window's queued channel row as busy for the same agent", () =
   expect(second.queue.busy("chat", [agent])).toBe(true);
 });
 
+it("counts another window's sent, unfinished channel row as busy", async () => {
+  const h = fixture();
+  h.team();
+  h.enqueue({ ...message, channel: true });
+  h.finish();
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledOnce());
+  await followUpStorage(scope).lockChat("chat", async () => {});
+  expect(h.queue.snapshot()).toEqual([]);
+  const second = fixture();
+  second.team();
+  second.finish();
+  // Only the handoff remains: the row left storage when it was sent.
+  expect(second.queue.busy("chat", [agent])).toBe(true);
+  expect(second.queue.busy("chat", ["b".repeat(64)])).toBe(false);
+});
+
 it("keeps unreadable storage intact and reports it instead of overwriting", () => {
   const key = `buzz-view.v1:${JSON.stringify([scope, "follow-up:broken"])}`;
   localStorage.setItem(key, "not json");

@@ -2672,12 +2672,16 @@ function Composer({
       capturedRecipients.length > 0 &&
       !soloHasPeople(addressedKeys, session.viewer, profileSnapshot, agentKeys);
     const queueFollowUp = followUpEligible && ownSoloConversation;
+    // Decided on the recipients that are sent, after people become references.
     // A recipient not yet known to be an agent might be a person.
-    const channelFollowUp =
-      followUpEligible &&
+    const channelFollowUp = (sent: readonly string[]) =>
+      !!host &&
+      !threadRootId &&
       !ownSoloConversation &&
       !soloConversation &&
-      addressedKeys.every((key) => agentKeys.has(key));
+      followUpBehaviorPreference() === "queue" &&
+      sent.length > 0 &&
+      sent.every((key) => agentKeys.has(key));
     try {
       if (command && onCommand) {
         const handled = onCommand(command, attempt.signal);
@@ -2940,7 +2944,7 @@ function Composer({
         // Prompts and uploads take time: a channel agent may have become busy.
         const hold =
           queueFollowUp ||
-          (channelFollowUp &&
+          (channelFollowUp(recipients) &&
             !!host &&
             followUpQueue(host).busy(channelId, recipients));
         if (!hold || !host) return publishNow(uploaded, session);
