@@ -1769,7 +1769,9 @@ pub(crate) fn media_protocol<R: tauri::Runtime>(
         .clone();
     tauri::async_runtime::spawn(async move {
         let response = match media_request(&request) {
-            Ok((url, range)) => serve_media(&host, Some(&fi), url, range).await,
+            Ok((url, range)) => serve_media(&host, Some(&fi), url, range)
+                .await
+                .map(|(_, response)| response),
             Err(status) => Err(status),
         };
         let mut response = response.unwrap_or_else(|status| {
@@ -2211,19 +2213,32 @@ pub(crate) async fn media_download<R: tauri::Runtime>(
         return Err("This attachment is no longer available in this window".into());
     }
     let url = download_target(&source).ok_or("Invalid media URL")?;
-    let filename = download_name(&name, &url).to_owned();
     let directory = app
         .path()
         .download_dir()
         .map_err(|_| "Downloads unavailable")?;
-    let response = fetch_media(host.inner(), Some(fi.inner()), url, None)
+    save_media(host.inner(), Some(fi.inner()), url, directory, &name).await?;
+    Ok(())
+}
+
+/// Fetches relay media `url` as `buzz-media` serves it and saves it to
+/// `directory` as `name`, or else the name of the blob that served it,
+/// numbered if taken, returning where.
+pub(crate) async fn save_media(
+    host: &IdentityHost,
+    fi: Option<&FederatedIdentity>,
+    url: Url,
+    directory: std::path::PathBuf,
+    name: &str,
+) -> Result<std::path::PathBuf> {
+    let (url, response) = serve_media(host, fi, url, None)
         .await
         .map_err(|_| "Media download failed")?;
+    let filename = download_name(name, &url).to_owned();
     let body = response.into_body();
     tauri::async_runtime::spawn_blocking(move || save_download(&directory, &filename, &body))
         .await
-        .map_err(|_| "Media download interrupted".to_owned())??;
-    Ok(())
+        .map_err(|_| "Media download interrupted".to_owned())?
 }
 
 /// Saves an agent snapshot the app built to Downloads as media is saved, and
@@ -2287,16 +2302,20 @@ fn media_request(
     Ok((url, range))
 }
 
+/// `url`'s blob, or an older upload's `.thumb.jpg` for its missing
+/// `.thumb.webp`, with the URL that served it.
 async fn serve_media(
     host: &IdentityHost,
     fi: Option<&FederatedIdentity>,
     url: Url,
     range: Option<(u64, u64)>,
-) -> std::result::Result<tauri::http::Response<Vec<u8>>, u16> {
-    let fallback = jpeg_thumb(&url);
-    match (serve_blob(host, fi, url, range).await, fallback) {
-        (Err(404), Some(url)) => serve_blob(host, fi, url, range).await,
-        (response, _) => response,
+) -> std::result::Result<(Url, tauri::http::Response<Vec<u8>>), u16> {
+    match (
+        serve_blob(host, fi, url.clone(), range).await,
+        jpeg_thumb(&url),
+    ) {
+        (Err(404), Some(jpeg)) => Ok((jpeg.clone(), serve_blob(host, fi, jpeg, range).await?)),
+        (response, _) => Ok((url, response?)),
     }
 }
 

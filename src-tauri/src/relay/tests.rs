@@ -1921,7 +1921,7 @@ async fn webp_thumbnails_fall_back_to_jpeg_only_when_missing() {
     let webp = format!("/media/{hash}.thumb.webp");
     let jpeg = format!("/media/{hash}.thumb.jpg");
     let (base, paths) = thumbnail_server("404 Not Found");
-    let response = serve_media(
+    let (served, response) = serve_media(
         &IdentityHost::fixture(),
         None,
         base.join(&webp).unwrap(),
@@ -1930,7 +1930,8 @@ async fn webp_thumbnails_fall_back_to_jpeg_only_when_missing() {
     .await
     .unwrap();
     assert_eq!(response.body(), b"jpeg");
-    assert_eq!(*paths.lock().unwrap(), [webp.clone(), jpeg]);
+    assert_eq!(served, base.join(&jpeg).unwrap());
+    assert_eq!(*paths.lock().unwrap(), [webp.clone(), jpeg.clone()]);
 
     let (base, paths) = thumbnail_server("401 Unauthorized");
     let status = serve_media(
@@ -1946,6 +1947,25 @@ async fn webp_thumbnails_fall_back_to_jpeg_only_when_missing() {
 
     let png = Url::parse(&format!("https://relay.test/media/{hash}.png")).unwrap();
     assert_eq!(jpeg_thumb(&png), None);
+}
+
+#[tokio::test]
+async fn saved_webp_thumbnails_fall_back_to_jpeg_under_its_name() {
+    let hash = "a".repeat(64);
+    let (base, _) = thumbnail_server("404 Not Found");
+    let dir = tempfile::tempdir().unwrap();
+    let url = base.join(&format!("/media/{hash}.thumb.webp")).unwrap();
+    let saved = save_media(
+        &IdentityHost::fixture(),
+        None,
+        url,
+        dir.path().to_owned(),
+        "",
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved, dir.path().join(format!("{hash}.thumb.jpg")));
+    assert_eq!(std::fs::read(&saved).unwrap(), b"jpeg");
 }
 
 #[test]
