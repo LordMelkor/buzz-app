@@ -1,3 +1,4 @@
+import { definitionSource } from "./markdown-container-definitions";
 import { required } from "./markdown-limits";
 // Assemble one requested part; retain at most that part's prepared source.
 import type {
@@ -621,6 +622,7 @@ export function assemblePart(
     if (visited.has(key)) continue;
     visited.add(key);
     const span = (note ? context?.footnotes : context?.links)?.get(label);
+    if (note && span?.deep) return plain(false, true);
     if (!span || (span.start >= part.start && span.end <= part.end)) continue;
     prepend ||=
       localDefinitions.has(key) ||
@@ -632,7 +634,7 @@ export function assemblePart(
     const overhead = selected.length * 2 + (prepend ? 10 : 1);
     if (baseLength + definitionLength + overhead > MAX_RENDER_CHARS)
       return plain(true);
-    const definition = text.slice(span.start, span.end);
+    const definition = definitionSource(text, span);
     const nested = references(
       note ? footnoteBody(definition) : definition,
       undefined,
@@ -651,7 +653,7 @@ export function assemblePart(
   const synthetic: DefinitionSpan[] = [];
   if (selected.length) {
     const definitions = selected
-      .map((span) => text.slice(span.start, span.end))
+      .map((span) => definitionSource(text, span))
       .join("\n\n");
     if (prepend) {
       const block = `${definitions}\n\n<!-- -->\n\n`;
@@ -662,6 +664,9 @@ export function assemblePart(
     } else source += `\n\n${definitions}\n`;
   }
 
+  // Admission charges physical source spans; tab projection can add virtual
+  // padding, so the assembled result still obeys the same rendering budget.
+  if (source.length > MAX_RENDER_CHARS) return plain(true);
   const headings = new Map<number, string>();
   let low = 0,
     high = context.headings.length;

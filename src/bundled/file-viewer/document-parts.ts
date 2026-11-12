@@ -1,5 +1,11 @@
 import { required } from "./markdown-limits";
 import GithubSlugger from "github-slugger";
+import {
+  containerDefinitions,
+  definitionSource,
+} from "./markdown-container-definitions";
+import type { DefinitionReader } from "./markdown-container-definitions";
+import { MAX_RENDER_DEPTH } from "./markdown-limits";
 import { decodeString } from "micromark-util-decode-string";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
@@ -23,7 +29,7 @@ import {
 } from "./markdown-references";
 import type { ReferenceDefinition } from "./markdown-references";
 import { fenceLine } from "./markdown-fences";
-import type { Fence as CodeFence, FenceState } from "./markdown-fences";
+import type { Fence as CodeFence, FenceState, Owner } from "./markdown-fences";
 import { startsBlankHtmlBlock, isStandaloneHtmlTag } from "./markdown-html";
 import { explicitHtmlStart, explicitHtmlEnd } from "./markdown-html-explicit";
 import type { ExplicitHtml } from "./markdown-html-explicit";
@@ -56,7 +62,14 @@ export type DocumentParts = Readonly<{
   partFallback(index: number): "too-large" | "too-deep" | "context" | undefined;
   partOf(id: string): number | undefined;
 }>;
-export type DefinitionSpan = { start: number; end: number };
+export type DefinitionSpan = {
+  start: number;
+  end: number;
+  owners?: readonly Owner[] | undefined;
+  bodyStart?: number | undefined;
+  padding?: number | undefined;
+  deep?: true | undefined;
+};
 type IndexedHeading = {
   offset: number;
   end: number;
@@ -117,6 +130,8 @@ type Line = Readonly<{
   end: number;
   next: number;
   body: string;
+  bodyStart: number;
+  bodyPadding: number;
   blank: boolean;
   heading?: RegExpMatchArray | undefined;
   after?: Fence | undefined;
@@ -128,7 +143,7 @@ type Line = Readonly<{
   explicit?: ExplicitHtml | undefined;
   explicitEnd?: number | undefined;
   explicitVisible?: number | undefined;
-  definition?: { label: string; start: number; end: number } | undefined;
+  definition?: (DefinitionSpan & { label: string }) | undefined;
   paragraph: boolean;
   code: boolean;
   syntax: FenceState;
@@ -156,7 +171,7 @@ function initialCursor(_text: string): Cursor {
 function sourceLine(
   text: string,
   cursor: Cursor,
-  definitionAt?: ReturnType<typeof referenceDefinitions>,
+  definitionAt?: DefinitionReader,
 ): Line {
   if (cursor.current) return cursor.current;
   // One search per line: separately searching for CR on an LF-only file
@@ -221,9 +236,20 @@ function sourceLine(
       ...region,
       owners: syntax.after.owners.map((owner) => owner.id),
     };
+  const sameOwners =
+    (cursor.syntax?.owners.length ?? 0) === syntax.after.owners.length &&
+    syntax.after.owners.every(
+      (owner, at) => owner.id === cursor.syntax?.owners[at]?.id,
+    );
   const definition =
-    !region && !syntax.code && !cursor.paragraph
-      ? definitionAt?.(cursor.offset)
+    !region && !syntax.code && (!cursor.paragraph || !sameOwners)
+      ? (definitionAt?.(cursor.offset) ??
+        definitionAt?.contained?.(
+          cursor.offset,
+          cursor.offset + syntax.bodyOffset,
+          syntax.after,
+          syntax.bodyPadding,
+        ))
       : undefined;
   if (definition) region = { kind: "definition", end: definition.end };
   let afterOpaque = region;
@@ -271,6 +297,8 @@ function sourceLine(
     end,
     next,
     body: syntax.body,
+    bodyStart: cursor.offset + syntax.bodyOffset,
+    bodyPadding: syntax.bodyPadding,
     blank,
     heading,
     after,
@@ -664,6 +692,7 @@ function footnoteNumbers(
   origins: Map<string, number>,
   counts?: Map<string, number>,
 ): Map<string, number> {
+  const sourceText = text;
   const numbers = new Map<string, number>();
   if (!defined.size) return numbers;
   let origin: number | undefined;
@@ -675,12 +704,14 @@ function footnoteNumbers(
     }
   };
   const scanRegion = (note?: DefinitionSpan) => {
+    const source = note ? definitionSource(sourceText, note) : sourceText;
+    const text = source;
     let cursor = initialCursor(note ? "" : text),
       start: number | undefined;
     if (note) {
       const colon =
         required(
-          footnoteLabelEnd(text, text.indexOf("[^", note.start) + 2, note.end),
+          footnoteLabelEnd(text, text.indexOf("[^", 0) + 2, text.length),
         ) + 1;
       cursor = {
         ...cursor,
@@ -688,7 +719,7 @@ function footnoteNumbers(
           colon + 1 + (/^[\t ]/.test(text.slice(colon + 1, colon + 2)) ? 1 : 0),
       };
     }
-    const end = note?.end ?? text.length;
+    const end = text.length;
     let noteIndex = 0,
       table = 0,
       first = true;
@@ -1155,6 +1186,16 @@ type Index = {
   plain: boolean;
 };
 
+function deepOwners(state: FenceState): boolean {
+  return (
+    !!state.overflow ||
+    state.owners.reduce(
+      (depth, owner) => depth + (owner.kind === "list" ? 2 : 1),
+      0,
+    ) >= MAX_RENDER_DEPTH
+  );
+}
+
 function indexSource(text: string, counts?: Map<string, number>): Index {
   const headings: IndexedHeading[] = [],
     links = new Map<string, DefinitionSpan>(),
@@ -1163,7 +1204,7 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
     origins = new Map<string, number>();
   const definitions = new Map<number, ReferenceDefinition>();
   const budget = definitionBudget(),
-    definitionAt = referenceDefinitions(text, budget);
+    definitionAt = containerDefinitions(text, budget);
   let cursor = initialCursor(text),
     note: DefinitionSpan | undefined,
     noteCursor = initialCursor("");
@@ -1186,14 +1227,18 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
     const line = sourceLine(text, cursor, definitionAt);
     if (budget.exhausted) break;
     if (line.definition) definitions.set(cursor.offset, line.definition);
-    const content = text.slice(cursor.offset, line.end);
+    const raw = text.slice(cursor.offset, line.end);
+    const content = line.body,
+      bodyStart = line.bodyStart - line.bodyPadding;
     let column = 0,
       indent = 0;
     while (column < 4 && (content[indent] === " " || content[indent] === "\t"))
       column += content[indent++] === "\t" ? 4 - (column % 4) : 1;
     const inner = {
       ...noteCursor,
-      offset: cursor.offset + (column >= 4 ? indent : 0),
+      offset:
+        line.bodyStart +
+        (column >= 4 ? Math.max(0, indent - line.bodyPadding) : 0),
     };
     const noteLine = note ? sourceLine(text, inner) : undefined;
     const sameOwners =
@@ -1214,9 +1259,15 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
       sameOwners &&
       footnoteDefinitionLabel(content) === undefined;
     let inNote = false;
-    if (note && (line.blank || column >= 4 || lazy)) {
+    const sameNoteOwners =
+      (note?.owners?.length ?? 0) === line.syntax.owners.length &&
+      line.syntax.owners.every(
+        (owner, at) => owner.id === note?.owners?.[at]?.id,
+      );
+    if (note && sameNoteOwners && (line.blank || column >= 4 || lazy)) {
       inNote = true;
       if (!line.blank) note.end = line.next;
+      if (deepOwners(required(noteLine).syntax)) note.deep = true;
       noteCursor = nextLine(inner, required(noteLine));
     } else {
       note = undefined;
@@ -1230,9 +1281,17 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
         if (line.definition) referenceEnd = line.definition.end;
         if (label !== undefined || line.definition) {
           const key = label ?? required(line.definition).label;
-          const span = {
+          const span: DefinitionSpan = {
+            ...line.definition,
             start: cursor.offset,
             end: line.definition?.end ?? line.next,
+            ...(line.syntax.owners.length
+              ? {
+                  owners: line.syntax.owners,
+                  bodyStart: line.bodyStart,
+                  padding: line.bodyPadding,
+                }
+              : {}),
           };
           const map = label !== undefined ? footnotes : links;
           if (!map.has(key)) map.set(key, span);
@@ -1251,13 +1310,15 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
             const beginning = {
               ...initialCursor(""),
               offset:
-                cursor.offset +
+                bodyStart +
                 colon +
                 1 +
                 (/^[\t ]/.test(content.slice(colon + 1)) ? 1 : 0),
               line: cursor.line,
             };
-            noteCursor = nextLine(beginning, sourceLine(text, beginning));
+            const beginningLine = sourceLine(text, beginning);
+            if (deepOwners(beginningLine.syntax)) span.deep = true;
+            noteCursor = nextLine(beginning, beginningLine);
           }
         }
       }
@@ -1313,10 +1374,7 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
         .replace(/[\t ]+#+[\t ]*$/, "")
         .trim();
       retain(
-        cursor.offset +
-          content.length -
-          line.body.length +
-          (line.body.match(/^ */)?.[0].length ?? 0),
+        bodyStart + (line.body.match(/^ */)?.[0].length ?? 0),
         line.next,
         required(line.heading[1]).length,
         title,
@@ -1327,13 +1385,9 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
       !line.code &&
       !line.opaque &&
       line.paragraph &&
-      tableIndent(content, line.body)
+      tableIndent(raw, line.body)
     ) {
-      const offset =
-        cursor.offset +
-        content.length -
-        line.body.length +
-        (line.body.match(/^ */)?.[0].length ?? 0);
+      const offset = bodyStart + (line.body.match(/^ */)?.[0].length ?? 0);
       paragraph =
         paragraph && sameParagraphOwners && cursor.paragraph
           ? paragraph
@@ -1609,6 +1663,10 @@ export function indexDocument(text: string, kind: DocumentKind): DocumentParts {
       } catch {
         /* preserve malformed literals */
       }
+      // A literal slug wins when it also looks like a prefixed identifier.
+      // Callers can use the additional prefix for that heading's rendered ID.
+      const bare = anchors.get(id);
+      if (bare !== undefined) return bare;
       id = id.replace(/^user-content-/, "");
       const exact = anchors.get(id);
       if (exact !== undefined) return exact;
@@ -1755,9 +1813,7 @@ export function rehypePartFootnotes(
         : id;
     };
     const numberFor = (id: string): number | undefined => {
-      let label = id
-        .replace(/^#?user-content-fn(?:ref)?-/, "")
-        .replace(/-part-\d+$/, "");
+      let label = id.replace(/^#?user-content-fn(?:ref)?-/, "");
       try {
         label = decodeURIComponent(label);
       } catch {
@@ -1771,15 +1827,23 @@ export function rehypePartFootnotes(
     const stack: (HastRoot | Element)[] = [tree];
     while (stack.length) {
       const node = required(stack.pop());
+      let number: number | undefined;
       if (node.type === "element") {
         const props = node.properties;
+        if (
+          (props.dataFootnoteRef !== undefined ||
+            props.dataFootnoteBackref !== undefined) &&
+          typeof props.href === "string"
+        )
+          number = numberFor(props.href);
         if (typeof props.id === "string") {
           if (
             node.tagName === "li" &&
             props.id.startsWith("user-content-fn-")
           ) {
-            const number = numberFor(props.id);
-            if (number !== undefined) props.value = String(number);
+            const definitionNumber = numberFor(props.id);
+            if (definitionNumber !== undefined)
+              props.value = String(definitionNumber);
           }
           props.id = suffixFor(props.id);
         }
@@ -1793,7 +1857,6 @@ export function rehypePartFootnotes(
           props.dataFootnoteRef !== undefined &&
           typeof props.href === "string"
         ) {
-          const number = numberFor(props.href);
           if (number !== undefined)
             node.children = [{ type: "text", value: String(number) }];
         }
@@ -1804,7 +1867,6 @@ export function rehypePartFootnotes(
         typeof node.properties.href === "string" &&
         typeof node.properties.ariaLabel === "string"
       ) {
-        const number = numberFor(node.properties.href);
         if (number !== undefined)
           node.properties.ariaLabel = node.properties.ariaLabel.replace(
             /^(Back to reference )\d+/,

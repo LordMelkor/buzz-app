@@ -43,6 +43,8 @@ export type FenceLine = Readonly<{
   opened: boolean;
   endedBefore: boolean;
   body: string;
+  bodyOffset: number;
+  bodyPadding: number;
 }>;
 
 type Position = { at: number; column: number; pending: number };
@@ -244,6 +246,8 @@ export function fenceLine(
       opened: false,
       endedBefore,
       body: bodyAt(raw, pos),
+      bodyOffset: pos.at,
+      bodyPadding: pos.pending,
       after: {
         owners,
         fence: closed ? undefined : before,
@@ -325,6 +329,8 @@ export function fenceLine(
       opened: true,
       endedBefore,
       body: bodyAt(raw, pos),
+      bodyOffset: pos.at,
+      bodyPadding: pos.pending,
       after: { owners, fence: afterFence, paragraph: false, nextId },
     };
   }
@@ -334,6 +340,8 @@ export function fenceLine(
     opened: false,
     endedBefore,
     body: bodyAt(raw, pos),
+    bodyOffset: pos.at,
+    bodyPadding: pos.pending,
     after: {
       owners,
       paragraph: !opaque && !overflow && paragraphAfter(raw, pos, paragraph),

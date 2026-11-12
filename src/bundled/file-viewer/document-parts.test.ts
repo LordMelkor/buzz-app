@@ -78,16 +78,18 @@ describe("bounded document parts", () => {
 
   it("assigns global heading IDs by source offset and indexes rendered container/setext headings", () => {
     const text =
-      "#### Repeat\n\n# Repeat\n\n> ## Quoted *heading*\n\n- ### Listed\n\n  ### Indented\n\nSetext &amp; `code`\n===\n\n" +
+      "# User content files\n\n#### Repeat\n\n# Repeat\n\n> ## Quoted *heading*\n\n- ### Listed\n\n  ### Indented\n\nSetext &amp; `code`\n===\n\n" +
       "paragraph\n\n".repeat(2000) +
-      "# Repeat\n";
+      "# Files\n\n# Repeat\n";
     const indexed = indexDocument(text, "markdown");
     expect(indexed.outline.map((item) => [item.text, item.id])).toEqual([
+      ["User content files", "user-content-files"],
       ["Repeat", "repeat-1"],
       ["Quoted heading", "quoted-heading"],
       ["Listed", "listed"],
       ["Indented", "indented"],
       ["Setext & code", "setext--code"],
+      ["Files", "files"],
       ["Repeat", "repeat-2"],
     ]);
     for (let i = 0; i < indexed.parts.length; i++) {
@@ -97,6 +99,9 @@ describe("bounded document parts", () => {
       for (const heading of indexed.outline.filter((item) => item.part === i))
         expect(ids).toContain(`user-content-${heading.id}`);
     }
+    expect(indexed.partOf("#user-content-files")).toBe(0);
+    expect(indexed.partOf("#files")).toBe(indexed.parts.length - 1);
+    expect(indexed.partOf("#user-content-user-content-files")).toBe(0);
     expect(indexed.partOf("user-content-repeat-2")).toBe(
       indexed.parts.length - 1,
     );
@@ -119,6 +124,32 @@ describe("bounded document parts", () => {
   });
 
   it("preserves first definitions and builds local footnotes with canonical navigation", () => {
+    for (const [owner, noteOwner] of [
+      ["> ", "> "],
+      [">\t", ">\t"],
+      ["- ", "  "],
+      ["- ", "- "],
+    ] as const) {
+      const source = `${owner}[site]: https://example.org/first\n${noteOwner}[^n]: Footnote\n${owner.startsWith(">") ? ">     " : "      "}continued [site].\n\n${"paragraph\n\n".repeat(1500)}[site]: https://example.org/later\n\nRead [site] and note[^n].\n`;
+      const parts = indexDocument(source, "markdown"),
+        last = elements(rendered(parts, parts.parts.length - 1));
+      expect(
+        last.some(
+          (node) => node.properties.href === "https://example.org/first",
+        ),
+      ).toBe(true);
+      expect(
+        last.some(
+          (node) => node.properties.href === "https://example.org/later",
+        ),
+      ).toBe(false);
+      expect(
+        last
+          .filter((node) => node.tagName === "li")
+          .map(textOf)
+          .join(""),
+      ).toContain("Footnote\ncontinued");
+    }
     const text =
       "[site]: https://example.org/first\n\nFirst [site] and other[^other], then note[^n].\n\n" +
       "paragraph\n\n".repeat(1400) +
@@ -259,6 +290,19 @@ describe("bounded document parts", () => {
   });
 
   it("routes encoded footnote identifiers and keeps code-only notes unreferenced", () => {
+    const suffixed = indexDocument(
+      `First[^z].\n\n${"paragraph\n\n".repeat(1500)}Second[^n-part-1].\n\n[^z]: Z\n[^n-part-1]: N\n`,
+      "markdown",
+    );
+    const suffixNodes = elements(rendered(suffixed, suffixed.parts.length - 1));
+    expect(
+      suffixNodes
+        .filter((node) => node.properties.dataFootnoteRef !== undefined)
+        .map(textOf),
+    ).toEqual(["2"]);
+    expect(
+      suffixNodes.find((node) => node.tagName === "li")?.properties.value,
+    ).toBe("2");
     const text =
       "`[^unused]` <!-- [^unused] --> Call[^é].\n\n" +
       "paragraph\n\n".repeat(1300) +
@@ -271,6 +315,27 @@ describe("bounded document parts", () => {
   });
 
   it("reports admitted-size fallback and renders literal source without a delimiter escape", () => {
+    for (const [prefix, nesting] of [
+      ["", 6000],
+      [`${"paragraph\n\n".repeat(1300)}safe\n\n`, 600],
+    ] as const) {
+      const source = `${prefix}${"> ".repeat(nesting)}word\n`;
+      const parts = indexDocument(source, "markdown");
+      const at = parts.parts.findIndex((part) => part.end === source.length);
+      if (prefix)
+        expect(required(parts.parts[at]).start).toBeLessThan(prefix.length);
+      expect(() => rendered(parts, at)).not.toThrow();
+      expect(parts.partFallback(at)).toBe("too-deep");
+      expect(
+        elements(rendered(parts, at))
+          .filter((node) => node.tagName === "code")
+          .map(textOf),
+      ).toEqual([source.slice(required(parts.parts[at]).start)]);
+    }
+    const noteSource = `Call[^deep].\n\n${"paragraph\n\n".repeat(1500)}[^deep]: ${"> ".repeat(6000)}word\n`;
+    const noteParts = indexDocument(noteSource, "markdown");
+    expect(noteParts.partFallback(0)).toBe("too-deep");
+    expect(() => rendered(noteParts, 0)).not.toThrow();
     const definition = `[^n]: ${"value ".repeat(170_000)}\n`;
     const text =
       "Use[^n].\n\n```literal\n```\n\n" +

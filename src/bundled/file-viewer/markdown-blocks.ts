@@ -235,6 +235,13 @@ export function markdownBlocks(
     }
     frames.length = depth;
   }
+  const tooDeep = (owners: readonly Owner[]): boolean =>
+    frames.length * 2 >= MAX_RENDER_DEPTH ||
+    owners.reduce(
+      (depth, owner) => depth + (owner.kind === "list" ? 2 : 1),
+      0,
+    ) >= MAX_RENDER_DEPTH ||
+    !!fences.overflow;
   function capture(offset: number): void {
     while (
       part + 1 < parts.length &&
@@ -245,14 +252,7 @@ export function markdownBlocks(
       // Each enclosing list contributes both a list and an item to the tree.
       // Do not retain oversized ancestor inventories for already-deep output.
       const owners = cut === start ? beforeOwners : fences.owners;
-      if (
-        frames.length * 2 >= MAX_RENDER_DEPTH ||
-        owners.reduce(
-          (depth, owner) => depth + (owner.kind === "list" ? 2 : 1),
-          0,
-        ) >= MAX_RENDER_DEPTH ||
-        fences.overflow
-      ) {
+      if (tooDeep(owners)) {
         entry.deep = true;
         continue;
       }
@@ -341,7 +341,11 @@ export function markdownBlocks(
       if (table && cut >= table.end) entry.table = table;
       entry.prefix = prefix;
     }
+    // Admission belongs to every source slice touched by this line, including
+    // the initial part and depth first encountered between two cuts.
+    if (tooDeep(fences.owners)) required(result[part]).deep = true;
   }
+
   for (;;) {
     const ending = breaks.exec(text),
       end = ending?.index ?? text.length,
