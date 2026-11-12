@@ -111,7 +111,7 @@ it("adds, confirms removal, and adds again without an installed runtime", async 
   await waitFor(() => expect(add).not.toHaveAttribute("aria-disabled"));
   expect(spawn).not.toHaveBeenCalled();
   await user.type(add, "sk-ant-first");
-  await user.click(screen.getByRole("button", { name: "Save key" }));
+  await user.click(screen.getByRole("button", { name: "Save" }));
   await savedKey();
   const confirmation = await removeKey(user);
   expect(confirmation).toHaveAccessibleDescription(
@@ -138,7 +138,7 @@ it("adds, confirms removal, and adds again without an installed runtime", async 
   await screen.findByLabelText("Anthropic API key");
   expect(native.saved).toBe(false);
   await user.type(screen.getByLabelText("Anthropic API key"), "sk-ant-third");
-  await user.click(screen.getByRole("button", { name: "Save key" }));
+  await user.click(screen.getByRole("button", { name: "Save" }));
   await savedKey();
   expect(native.saved).toBe(true);
 });
@@ -274,7 +274,7 @@ it("treats a credential read failure as unknown and offers retry", async () => {
   expect(
     screen.queryByRole("button", { name: "API key actions" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Save key" })).toHaveAttribute(
+  expect(screen.getByRole("button", { name: "Save" })).toHaveAttribute(
     "aria-disabled",
     "true",
   );
@@ -458,6 +458,8 @@ it("starts replacement blank, gates Save, and discards the draft on Cancel", asy
   expect(input).toHaveAttribute("type", "password");
   await waitFor(() => expect(input).toHaveFocus());
   const save = screen.getByRole("button", { name: "Save" });
+  expect(save).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible();
   expect(
     screen.queryByRole("menuitem", { name: "Remove" }),
   ).not.toBeInTheDocument();
@@ -465,13 +467,13 @@ it("starts replacement blank, gates Save, and discards the draft on Cancel", asy
   expect(
     screen.queryByRole("button", { name: "API key actions" }),
   ).not.toBeInTheDocument();
-  expect(save).toBeDisabled();
   await user.keyboard("{Enter}");
   fireEvent.change(input, { target: { value: "" } });
   expect(save).toBeDisabled();
   fireEvent.keyDown(input, { key: "Enter" });
   fireEvent.change(input, { target: { value: "sk-ant-draft" } });
   expect(save).toBeEnabled();
+  expect(input).toHaveFocus();
   fireEvent.change(input, { target: { value: native.value } });
   expect(save).toBeEnabled();
   fireEvent.change(input, { target: { value: "sk-ant-draft" } });

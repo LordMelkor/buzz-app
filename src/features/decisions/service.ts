@@ -142,7 +142,9 @@ export type DecisionProvider = Readonly<{
   ): Promise<DecisionReply>;
   /** Its settings, shown under Settings > Decisions API while it is
    * selected. */
-  Settings?: ComponentType<{ active(): boolean }>;
+  Settings?: ComponentType<{ active(): boolean; grouped?: boolean }>;
+  /** Whether Settings adds a heading above the contribution. Defaults to true. */
+  showSettingsHeading?: boolean;
   /** Lower comes first in Settings. Default 0. */
   order?: number;
 }>;

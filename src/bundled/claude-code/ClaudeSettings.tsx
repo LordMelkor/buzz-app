@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { SavedApiKey } from "../../features/settings/SavedApiKey";
 import { isApplePlatform } from "../../features/shortcuts/format";
 import { AlertDialog } from "../../shared/design-system/ui/AlertDialog";
 import { Button } from "../../shared/design-system/ui/Button";
@@ -6,7 +7,6 @@ import { Header, InlineHeader } from "../../shared/design-system/ui/Header";
 import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
 import { SignIn } from "./auth";
-import { SavedClaudeKey } from "./SavedClaudeKey";
 import type { ClaudeSetup } from "./setup";
 
 /** Credentials are independent of the installed Claude version, so a missing
@@ -103,8 +103,9 @@ export function ClaudeSettings({
               }
             >
               {configured === true ? (
-                <SavedClaudeKey
-                  setup={setup}
+                <SavedApiKey
+                  credential={setup.auth}
+                  onSaved={() => setup.check()}
                   active={active}
                   disabled={disabled}
                   conceal={confirm || clearing || !!readError || !active()}

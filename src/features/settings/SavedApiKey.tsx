@@ -1,5 +1,6 @@
 import {
   type RefObject,
+  type ReactNode,
   useCallback,
   useEffect,
   useRef,
@@ -18,27 +19,36 @@ import {
   MenuTrigger,
 } from "../../shared/design-system/ui/Menu";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
-import type { ClaudeSetup } from "./setup";
 
 /** Replaces a saved credential without reading its stored value into the UI. */
-export function SavedClaudeKey({
-  setup,
+export function SavedApiKey({
+  credential,
+  onSaved,
   active,
   disabled,
   conceal,
   onSavingChange,
   trigger,
   onRemove,
+  description = "Saved securely on this computer.",
+  label,
+  labelVisibility = "hidden",
 }: {
-  setup: ClaudeSetup;
+  credential: {
+    subscribe(listener: () => void): () => void;
+    save(key: string): Promise<unknown>;
+  };
+  onSaved?: () => Promise<unknown>;
   active(): boolean;
   disabled: boolean;
   conceal: boolean;
   onSavingChange(saving: boolean): void;
   trigger: RefObject<HTMLButtonElement | null>;
   onRemove(): void;
+  description?: ReactNode;
+  label?: string;
+  labelVisibility?: "visible" | "hidden";
 }) {
-  const { auth } = setup;
   const [replacing, setReplacing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
@@ -60,14 +70,14 @@ export function SavedClaudeKey({
   useEffect(() => {
     reset();
     if (conceal) return;
-    const unsubscribe = auth.subscribe(() => {
+    const unsubscribe = credential.subscribe(() => {
       if (!writing.current) reset();
     });
     return () => {
       request.current++;
       unsubscribe();
     };
-  }, [auth, conceal, reset]);
+  }, [credential, conceal, reset]);
   useEffect(() => {
     if (editing) input.current?.focus();
   }, [editing]);
@@ -101,13 +111,13 @@ export function SavedClaudeKey({
     onSavingChange(true);
     setError("");
     try {
-      await auth.save(draft.trim());
+      await credential.save(draft.trim());
       if (!active() || request.current !== current) return;
       saved = true;
       reset();
       notify("Saved", "success");
       // A runtime refresh cannot undo the completed credential save.
-      await setup.check().catch(() => undefined);
+      await onSaved?.().catch(() => undefined);
     } catch (failure) {
       if (active()) setError(String(failure));
     } finally {
@@ -126,9 +136,9 @@ export function SavedClaudeKey({
   return (
     <div aria-busy={saving}>
       <Field
-        label={editing ? "Replacement API key" : "Saved API key"}
-        labelVisibility="hidden"
-        description="Saved securely on this computer."
+        label={label ?? (editing ? "Replacement API key" : "Saved API key")}
+        labelVisibility={labelVisibility}
+        description={description}
         error={error}
       >
         <MenuRoot

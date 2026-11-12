@@ -1062,7 +1062,9 @@ available rather than silently discarding it.
   the chevron also opens it. **Replace** opens a blank, masked field with small
   **Cancel / Save** buttons inside it. **Save** stores a non-empty replacement
   and returns to the masked view; **Cancel** discards the draft. Settings cannot
-  reveal or copy the saved key. Leaving the page discards the replacement draft.
+  reveal or copy the saved key. The small inline **Save** stays visible and is
+  disabled until you enter a key; **Cancel** stays available during replacement.
+  Leaving the page discards the replacement draft.
   **Remove** deletes the saved key from this device’s secure storage after
   confirmation. Key actions are unavailable while replacing the key.
   You can also add or remove a key
@@ -1258,6 +1260,18 @@ tab, asks **Discard changes?** first; **Keep editing** keeps them.
   its settings: sections it adds, such as GitHub comment authors, and Decisions
   API for a decision provider, such as TypeSafe. Only sections the Settings
   sidebar currently shows are linked. Back from one returns to those details.
+- When Builderlab and TypeSafe are available in **Settings → Decisions API**,
+  the **Decision provider** dropdown chooses Builderlab or TypeSafe. Each choice
+  uses that provider for requests. Choosing TypeSafe without a key opens a setup dialog.
+  Saving the key completes the switch; closing setup keeps the current provider.
+  If a selected Builderlab account lacks Decisions API access, the pane explains
+  that you can use your own TypeSafe key or contact your account administrator.
+- In **Settings → Decisions API**, TypeSafe’s saved API key stays masked. Its
+  chevron menu offers **Replace / Remove**. Replacement starts blank and masked,
+  with inline **Cancel / Save** controls. **Save** stays disabled until you enter
+  a key; removal asks for confirmation before
+  deleting the key from this device’s secure storage. Settings cannot reveal or
+  copy the saved key.
 - Some plugins let the person's other agents on this computer, such as Claude
   Code, Codex or Pi, use their tools while Buzz is open. Those agents run the
   helper Buzz installs, for example
