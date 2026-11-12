@@ -525,11 +525,11 @@ export class AcpProcess {
   ): Promise<Wire | undefined> {
     const { id, method = "", params } = (message ?? {}) as Wire;
     if (id === undefined || id === null) return undefined;
-    const response = (await tools(session?.conversation, {
-      id,
-      method,
-      params,
-    })) as Wire;
+    const response = (await tools(
+      session?.conversation,
+      { id, method, params },
+      session?.signal ?? AbortSignal.abort(new Error("The turn has ended")),
+    )) as Wire;
     const call = (params ?? {}) as {
       name?: unknown;
       arguments?: { final?: unknown };

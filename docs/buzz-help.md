@@ -1137,7 +1137,7 @@ available rather than silently discarding it.
   agent’s activity or stop an individual request. Expand recorded work for its
   activity controls. Stop availability
   depends on the agent type.
-  For native Claude and Codex, Stop also cancels pending plugin tool calls
+  For native Claude, Codex and Goose, Stop also cancels pending plugin tool calls
   that use the host signal. It cannot undo a write already sent.
 - Agent-to-agent messages stay in the conversation as collapsed history after
   work finishes or you reopen a thread. Expand them to read dispatches, handoffs,

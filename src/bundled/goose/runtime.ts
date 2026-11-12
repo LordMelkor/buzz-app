@@ -824,14 +824,19 @@ export class GooseRuntime {
     };
     // Every session of the agent shares them, so they read the settings, the
     // handle and the conversation's place as they are when called.
-    const tools: ToolServer = async (conversation, message) => {
+    const tools: ToolServer = async (conversation, message, workSignal) => {
       const handle = entry.handle;
       // A call in a conversation answers only while its turn runs unstopped.
       const current = conversation && entry.sessions.current(conversation);
+      const signal = AbortSignal.any([
+        entry.lifetime.signal,
+        workSignal ?? AbortSignal.abort(new Error("The turn has ended")),
+      ]);
       const client =
         handle &&
         appClient(handle, {
-          signal: entry.lifetime.signal,
+          signal,
+          callSignal: signal,
           ...(current && {
             check: () => {
               if (!current()) throw new Error("The Goose turn has ended");

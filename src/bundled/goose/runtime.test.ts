@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AddedTool } from "../../buzz-mcp/session-tools";
 import type { BuzzClient, Memories } from "../../buzz-mcp/client";
 import { callTool, memoryVersion } from "../../buzz-mcp/tools";
 import { createAgentMemories } from "../../features/agents/memory";
@@ -66,6 +67,7 @@ function setup(
   options: Readonly<{
     /** Channels that are the owner's own Solo chats; the owner is the viewer. */
     solo?: Set<string>;
+    added?: readonly AddedTool[];
     hold?: boolean;
     reply?: string;
     thread?: readonly EventData[];
@@ -189,7 +191,7 @@ function setup(
     () => relay,
     core,
     storage,
-    undefined,
+    () => options.added ?? [],
     options.repositories,
   );
   const published: { kind: number; content: string; tags: string[][] }[] = [];
@@ -853,6 +855,158 @@ describe("GooseRuntime", () => {
     await interruptible.mock.calls[0]?.[0]();
     await flush(100);
     expect(process?.cancelled).toEqual([process?.turns[0]?.sessionId]);
+  });
+
+  it("lists added tools and cancels a held write across Stop without reviving it in the next turn", async () => {
+    let signal: AbortSignal | undefined;
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const write = vi.fn();
+    const tool: AddedTool = {
+      name: "fixture_save",
+      description: "Fixture write",
+      inputSchema: { type: "object" },
+      call: async (client) => {
+        signal = client.signal;
+        if (!signal) throw new Error("Cancellation required");
+        signal.throwIfAborted();
+        enter();
+        await held;
+        signal.throwIfAborted();
+        write();
+        return "saved";
+      },
+    };
+    const f = setup({ hold: true, scope: "channel", added: [tool] });
+    const interruptible = vi.fn<NonNullable<Delivery["interruptible"]>>();
+    await f.deliver(message("1", "save"), { interruptible });
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+    const process = f.goose();
+    const sessionId = process?.turns[0]?.sessionId;
+    if (!process || !sessionId) throw new Error("Turn missing");
+    expect(await process.mcp(sessionId, "tools/list")).toMatchObject({
+      result: {
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: tool.name }),
+        ]),
+      },
+    });
+    const pending = process.mcp(sessionId, "tools/call", {
+      name: tool.name,
+      arguments: {},
+    });
+    try {
+      await entered;
+      expect(signal?.aborted).toBe(false);
+      await interruptible.mock.calls[0]?.[0]();
+      expect(signal?.aborted).toBe(true);
+      await f.deliver(message("2", "next"));
+      await vi.waitFor(() => expect(process.turns).toHaveLength(2));
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      release();
+    }
+    expect(await pending).toMatchObject({ result: { isError: true } });
+    expect(write).not.toHaveBeenCalled();
+    const old = signal;
+    expect(
+      await process.mcp(sessionId, "tools/call", {
+        name: tool.name,
+        arguments: {},
+      }),
+    ).not.toMatchObject({ result: { isError: true } });
+    expect(signal).not.toBe(old);
+    expect(signal?.aborted).toBe(false);
+    expect(write).toHaveBeenCalledTimes(1);
+    process.turns[1]?.finish();
+    await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(
+      await process.mcp(sessionId, "tools/call", {
+        name: tool.name,
+        arguments: {},
+      }),
+    ).toMatchObject({ result: { isError: true } });
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps steered work live, then cancels its plugin calls on a successful final send or retirement", async () => {
+    const signals: AbortSignal[] = [];
+    const f = setup({
+      hold: true,
+      scope: "channel",
+      added: [
+        {
+          name: "fixture_signal",
+          description: "Capture cancellation",
+          inputSchema: { type: "object" },
+          call: async (client) => {
+            if (!client.signal) throw new Error("Cancellation required");
+            client.signal.throwIfAborted();
+            signals.push(client.signal);
+            return "live";
+          },
+        },
+      ],
+    });
+    try {
+      await f.deliver(message("1", "first"));
+      await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+      const process = f.goose();
+      const id = process?.turns[0]?.sessionId;
+      if (!process || !id) throw new Error("Missing turn");
+      const capture = () =>
+        process.mcp(id, "tools/call", { name: "fixture_signal" });
+      await capture();
+      await f.deliver(message("2", "steer"));
+      await vi.waitFor(() => expect(process.turns[0]?.steered).toHaveLength(1));
+      expect(signals[0]?.aborted).toBe(false);
+      expect(
+        await process.mcp(id, "tools/call", {
+          name: "send",
+          arguments: { text: "Finished", audience: "everyone", final: true },
+          _meta: { "agent-tool-call-request-id": "final-call" },
+        }),
+      ).not.toMatchObject({ result: { isError: true } });
+      // A burst with steered messages is not finished by a single final send.
+      expect(signals[0]?.aborted).toBe(false);
+      process.turns[0]?.finish();
+      await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true));
+      await f.deliver(message("3", "new work"));
+      await vi.waitFor(() => expect(process.turns).toHaveLength(2));
+      await capture();
+      expect(signals[1]?.aborted).toBe(false);
+      expect(
+        await process.mcp(id, "tools/call", {
+          name: "send",
+          arguments: { text: "Done", audience: "everyone", final: true },
+          _meta: { "agent-tool-call-request-id": "final-call" },
+        }),
+      ).not.toMatchObject({ result: { isError: true } });
+      expect(signals[1]?.aborted).toBe(true);
+      // The final tool result still reaches Goose before ACP cancel is sent.
+      expect(process.cancelled).toHaveLength(0);
+      process.update(id, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "final-call",
+        status: "completed",
+      });
+      await vi.waitFor(() => expect(process.cancelled).toHaveLength(1));
+      await f.deliver(message("4", "retire"));
+      await vi.waitFor(() => expect(process.turns).toHaveLength(3));
+      await capture();
+      expect(signals[2]?.aborted).toBe(false);
+      const retired = f.runtime.retire(self);
+      expect(signals[2]?.aborted).toBe(true);
+      await retired;
+    } finally {
+      f.runtime.dispose();
+    }
   });
 
   it("returns no read that the owner's Stop overtook", async () => {

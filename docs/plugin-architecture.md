@@ -911,8 +911,11 @@ lowercase and cannot be a Buzz tool's. The tool is removed when its plugin's
 scope ends, so safe mode removes installed plugins' tools.
 
 `call(client, context, args)` can read `client.signal`, a host-owned
-`AbortSignal` captured for that call. Native Claude and Codex cancel it on
-Stop. Keep that exact signal across waits. Pass it to work that supports
+`AbortSignal` captured for that call. Native Claude, Codex and Goose cancel it on
+Stop. Goose captures the current ACP work burst: steers share its signal, and
+Stop, eligible final-message settlement, normal completion, failure or session close abort
+it. Calls before a Goose session starts work or while idle receive an aborted
+signal; agent retirement also aborts captured calls. Keep that exact signal across waits. Pass it to work that supports
 cancellation, then call `signal.throwIfAborted()` before an external write.
 A new turn does not restore a canceled call. The supplied client also checks
 cancellation before it publishes. Stop cannot undo a write already sent.

@@ -326,11 +326,11 @@ describe("GooseProcess", () => {
     const session = await open();
     session.conversation = "channel/root";
     const response = await process.mcp(session.id, "tools/list");
-    expect(tools).toHaveBeenCalledWith("channel/root", {
-      id: 1,
-      method: "tools/list",
-      params: {},
-    });
+    expect(tools).toHaveBeenCalledWith(
+      "channel/root",
+      { id: 1, method: "tools/list", params: {} },
+      expect.objectContaining({ aborted: true }),
+    );
     // goose matches the reply to its request by the id it sent.
     expect(response).toEqual({
       jsonrpc: "2.0",

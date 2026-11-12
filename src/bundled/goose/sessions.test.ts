@@ -207,11 +207,11 @@ describe("AgentSessions", () => {
     ]);
     await goose?.mcp("session-2", "tools/list");
     expect(ada).not.toHaveBeenCalled();
-    expect(bo).toHaveBeenCalledWith("chan/root", {
-      id: expect.anything(),
-      method: "tools/list",
-      params: {},
-    });
+    expect(bo).toHaveBeenCalledWith(
+      "chan/root",
+      { id: expect.anything(), method: "tools/list", params: {} },
+      expect.objectContaining({ aborted: true }),
+    );
     await goose?.mcp("session-1", "tools/list");
     expect(ada).toHaveBeenCalledOnce();
     expect(bo).toHaveBeenCalledOnce();
