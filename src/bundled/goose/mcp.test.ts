@@ -230,28 +230,40 @@ describe("Goose native MCP sessions", () => {
     }
   });
 
-  it("reads controlled defaults back with an explicit false for every configured name before prompting", async () => {
-    const t = await setup({});
-    try {
-      const session = await t.open();
-      const { done } = await t.finish(session);
-      expect(t.kit.started).toHaveBeenCalledWith(t.who, session.id, [], {
-        fixture: false,
-        other: false,
-      });
-      expect(
-        t.requests.findIndex(
-          (r) => r.method === "_goose/unstable/session/extensions/list",
-        ),
-      ).toBeLessThan(
-        t.requests.findIndex((r) => r.method === "session/prompt"),
-      );
-      present(t.native.turns[0]).finish();
-      await done;
-    } finally {
-      await t.goose.kill();
-    }
-  });
+  it.each([{}, { summon: true, delegate: true }])(
+    "keeps controlled defaults off and cannot select platform delegation with %j",
+    async (choice) => {
+      const t = await setup(choice);
+      try {
+        expect(
+          (await t.mcp.report(t.goose)).servers.map((s) => s.name),
+        ).toEqual(["fixture", "other"]);
+        const session = await t.open();
+        const { done } = await t.finish(session);
+        const meta = present(t.native.opened[0])._meta as {
+          enabledExtensions: { name?: string; server?: { name: string } }[];
+        };
+        expect(
+          meta.enabledExtensions.map((e) => e.server?.name ?? e.name),
+        ).toEqual(["developer", "buzz"]);
+        expect(t.kit.started).toHaveBeenCalledWith(t.who, session.id, [], {
+          fixture: false,
+          other: false,
+        });
+        expect(
+          t.requests.findIndex(
+            (r) => r.method === "_goose/unstable/session/extensions/list",
+          ),
+        ).toBeLessThan(
+          t.requests.findIndex((r) => r.method === "session/prompt"),
+        );
+        present(t.native.turns[0]).finish();
+        await done;
+      } finally {
+        await t.goose.kill();
+      }
+    },
+  );
 
   it("updates one saved session's native tool filter and omits all-off extensions", async () => {
     const t = await setup();

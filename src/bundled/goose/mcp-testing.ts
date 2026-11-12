@@ -16,6 +16,11 @@ const configured = [
     enabled: true,
     extension: { type: "platform", name: "developer" },
   },
+  {
+    configKey: "summon",
+    enabled: true,
+    extension: { type: "platform", name: "summon" },
+  },
   { configKey: "fixture", enabled: true, extension: native("fixture") },
   { configKey: "other", enabled: false, extension: native("other") },
   { configKey: "buzz", enabled: true, extension: native("buzz") },
