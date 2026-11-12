@@ -34,7 +34,7 @@ afterEach(() => {
 });
 
 it.each([true, false])(
-  "offers forwarding in the toolbar and menu with link available=%s",
+  "offers forwarding only in the menu with link available=%s",
   async (available) => {
     pointerMedia(false);
     const user = userEvent.setup();
@@ -47,24 +47,19 @@ it.each([true, false])(
       />,
     );
     fireEvent.pointerEnter(screen.getByTestId("message"));
-    const button = await screen.findByRole("button", {
-      name: "Forward message",
-    });
-    expect((button as HTMLButtonElement).disabled).toBe(!available);
-    if (available) {
-      await user.click(button);
-      expect(forward).toHaveBeenCalledTimes(1);
-    }
     await user.click(
-      screen.getByRole("button", { name: "More message actions" }),
+      await screen.findByRole("button", { name: "More message actions" }),
     );
+    expect(
+      screen.queryByRole("button", { name: "Forward message" }),
+    ).toBeNull();
     const item = await screen.findByRole("menuitem", {
       name: "Forward message",
     });
     expect(item.hasAttribute("data-disabled")).toBe(!available);
     if (available) {
       await user.click(item);
-      await waitFor(() => expect(forward).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(forward).toHaveBeenCalledTimes(1));
       expect(screen.queryByRole("menu")).toBeNull();
     }
   },

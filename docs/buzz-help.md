@@ -361,16 +361,17 @@ for 30 days expires.
 - Long message bubbles use the available conversation width, stopping 32px
   before the opposite speaker’s avatar column. Short messages hug their text.
 - Hover over a message to reveal the capsule above it: add a reaction, reply,
-  copy its link, forward it, or open More. **Copy message** is in More. Keyboard
-  focus also reveals these actions; touch layouts keep actions inline.
+  copy its link, or open More. **Copy message** and **Forward message** are in
+  More. Keyboard focus also reveals these actions; touch layouts keep actions
+  inline.
 - Plugins can add actions to this toolbar. A link to an active plugin panel
   opens that panel in the conversation. If the plugin is removed, its actions
   and panel links become unavailable.
-- **Forward message** in a message's hover actions or message menu sends its link
-  to one person in the current community, with an optional note. Buzz sends it
-  in your direct message with them, starting one if needed, and you stay where
-  you are; select the confirmation notice while it's showing to open the
-  forwarded message in that DM. The link previews the original message; the
+- **Forward message** in a message's menu sends its link to one person in the
+  current community, with an optional note. Buzz sends it in your direct
+  message with them, starting one if needed, and you stay where you are;
+  select the confirmation notice while it's showing to open the forwarded
+  message in that DM. The link previews the original message; the
   recipient still needs access to its conversation. Forwarding is unavailable
   when the connection cannot start DMs or the message has no link yet.
 

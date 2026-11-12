@@ -238,8 +238,7 @@ function MessageActionBarControls({
               setHandingOffFocus(true);
               // Forward returns focus to what is focused when it opens. So
               // focus this menu's target first (⋯, however it opened, or the
-              // context menu's target), as the toolbar Forward button focuses
-              // itself; a press need not have focused ⋯.
+              // context menu's target); a press need not have focused ⋯.
               afterClose.current = () => {
                 const target = children
                   ? contextFocus.current
@@ -357,20 +356,6 @@ function MessageActionBarControls({
                 if (link) void copy(() => link, "Link");
               }}
             />
-            {onForward && (
-              <IconButton
-                hint={link ? "familiar" : "helpful"}
-                aria-label="Forward message"
-                title={link ? "Forward message" : "Message link unavailable"}
-                size="sm"
-                disabled={!link}
-                icon={<ForwardIcon />}
-                onClick={(event) => {
-                  event.currentTarget.focus();
-                  onForward();
-                }}
-              />
-            )}
             <MenuRoot
               open={open}
               onOpenChange={(next, details) => {
