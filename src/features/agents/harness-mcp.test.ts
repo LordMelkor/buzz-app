@@ -633,6 +633,16 @@ describe("the call gate", () => {
     expect(mcp.kit.ran(handle, call())).toBe(true);
   });
 
+  it("denies a call whose turn already ended, even without a call hook, and records no allow", async () => {
+    const { mcp } = await gated();
+    const abort = new AbortController();
+    abort.abort();
+    await expect(
+      mcp.kit.call(handle, call(), options({ signal: abort.signal })),
+    ).resolves.toMatch(/turn ended/);
+    expect(mcp.kit.ran(handle, call())).toBe(true);
+  });
+
   it("denies a call of unknown tool when the server leaves any tool out", async () => {
     const { mcp } = await gated({}, { alpha: ["write"], gamma: [] });
     const { tool: _, ...unnamed } = call("u1");

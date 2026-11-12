@@ -190,6 +190,9 @@ type Active = {
   tools: AbortController;
   /** Every request this turn has taken in, the first and each steered one. */
   requests: Request[];
+  /** Every request sent to steer this turn, recorded before Codex answers:
+   * Codex can take one in before Buzz sees the answer, or despite an error. */
+  steered?: Request[];
   /** A harness MCP choice is in play for this thread: its native MCP calls
    * are put to `mcp.call`, and one that runs unasked stops the turn. */
   gated?: true;
@@ -660,17 +663,29 @@ export class CodexRuntime {
     action: SessionControlAction,
     reset?: (change: () => Promise<void>) => Promise<void>,
   ) {
+    return this.track(agent.key, (signal) =>
+      this.changeSession(agent, place, action, signal, reset),
+    );
+  }
+  /** Runs `work` as one of `agent`'s actions, which retiring the agent aborts
+   * and waits for. */
+  private track<T>(agent: AgentKey, work: (signal: AbortSignal) => Promise<T>) {
     const abort = new AbortController();
+    const done = work(abort.signal);
+    // Settles either way: the caller sees the rejection, retiring only waits.
     const pending = {
       abort,
-      done: this.changeSession(agent, place, action, abort.signal, reset),
+      done: done.then(
+        () => undefined,
+        () => undefined,
+      ),
     };
-    const actions = this.actions.get(agent.key) ?? new Set();
-    this.actions.set(agent.key, actions);
+    const actions = this.actions.get(agent) ?? new Set();
+    this.actions.set(agent, actions);
     actions.add(pending);
-    return pending.done.finally(() => {
+    return done.finally(() => {
       actions.delete(pending);
-      if (!actions.size) this.actions.delete(agent.key);
+      if (!actions.size) this.actions.delete(agent);
     });
   }
   private async changeSession(
@@ -974,12 +989,22 @@ export class CodexRuntime {
   }
   /** Lists one server's tools on an ephemeral thread where every other server
    * is off. No turn runs and nothing is saved. */
-  async inspectMcp(agent: Agent, server: string) {
+  inspectMcp(agent: Agent, server: string) {
+    return this.track(agent.key, (signal) =>
+      this.inspectTools(agent, server, signal),
+    );
+  }
+  private async inspectTools(
+    agent: Agent,
+    server: string,
+    lifetime: AbortSignal,
+  ) {
     if (await this.inspect?.(agent.key))
       throw new Error("An execution target reports no MCP servers");
     if (agent.protection)
       throw new Error("A protected agent loads no MCP server");
     const { rpc, cwd, servers } = await this.mcpServers(agent);
+    lifetime.throwIfAborted();
     const started = await rpc.request<{ thread: { id: string } }>(
       "thread/start",
       {
@@ -1003,10 +1028,12 @@ export class CodexRuntime {
     );
     const threadId = started.thread.id;
     try {
+      lifetime.throwIfAborted();
       const { data } = await rpc.request<{ data: McpRow[] }>(
         "mcpServerStatus/list",
         { threadId, serverName: server, detail: "toolsAndAuthOnly" },
       );
+      lifetime.throwIfAborted();
       const row = data.find(({ name }) => name === server);
       if (row?.runtimeStatus !== "connected" || row.toolsError)
         throw new Error(
@@ -2104,6 +2131,8 @@ export class CodexRuntime {
                 request.answered();
                 return;
               }
+              active.steered ??= [];
+              active.steered.push(request);
               await active.rpc.request("turn/steer", {
                 threadId: active.threadId,
                 expectedTurnId: active.turnId,
@@ -3085,14 +3114,15 @@ export class CodexRuntime {
   }
   /** The running turn of thread `threadId`, its stop signal, and what started
    * it. A steered turn answers for its first request that is not the owner's
-   * own message, so `direct` holds only when every request is. */
+   * own message, so `direct` holds only when every request, and every steer
+   * sent, is. */
   private turnOf(threadId: string) {
     const turn = this.runningOf(threadId);
     if (turn && "requests" in turn) {
       const active = turn;
       const { owner } = active.reply.agent;
       const request =
-        active.requests.find(
+        [...active.requests, ...(active.steered ?? [])].find(
           ({ trigger }) => !trigger || !directTrigger(trigger, owner),
         ) ?? active.reply;
       return {

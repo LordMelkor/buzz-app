@@ -345,6 +345,7 @@ export function createHarnessMcp(
       try {
         const { hold, signal, turn } = options;
         if (agent.protection) return "A protected agent loads no MCP server";
+        if (signal.aborted) return "The turn ended before the call was checked";
         const session = recorded(agent.key, call.session);
         if (!session) return "Buzz has no record of this session's MCP servers";
         if (!allows(session.choice, call))
@@ -382,7 +383,9 @@ export function createHarnessMcp(
               answer.deny) ||
             "The MCP call policy did not allow it"
           );
-        // The session may have started again, or the plugin stopped, meanwhile.
+        // The session may have started again, the plugin stopped or the turn
+        // ended meanwhile.
+        if (signal.aborted) return "The turn ended before the call was allowed";
         if (
           recorded(agent.key, call.session) !== session ||
           control !== live ||

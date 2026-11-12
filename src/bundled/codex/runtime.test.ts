@@ -8279,6 +8279,30 @@ describe("harness MCP report and inspect", () => {
     expect(plain.sent.map((wire) => wire.method)).not.toContain("config/read");
   });
 
+  it("makes retiring the agent stop an inspection and wait until its thread is gone", async () => {
+    const f = fixture();
+    withServers(f, "alpha");
+    f.statusRows.rows = [
+      { name: "alpha", runtimeStatus: "connected", tools: {} },
+    ];
+    const listing = deferred<void>();
+    f.held.set("mcpServerStatus/list", listing.promise);
+    const agent = agentOf(f);
+    const inspected = f.runtime.inspectMcp(agent, "alpha");
+    void inspected.catch(() => undefined);
+    await vi.waitFor(() => expect(statusCalls(f)).toHaveLength(1));
+    let retired = false;
+    const retiring = f.runtime.retire(agent.key).then(() => {
+      retired = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(retired).toBe(false);
+    listing.resolve();
+    await retiring;
+    await expect(inspected).rejects.toThrow();
+    expect(f.sent.map((wire) => wire.method)).toContain("thread/unsubscribe");
+  });
+
   it("lists one server's tools on an ephemeral thread where every other server is off", async () => {
     const f = fixture();
     withServers(f, "alpha", "beta", "gamma");
@@ -8449,6 +8473,49 @@ describe("harness MCP call gate", () => {
     });
   const interrupts = (f: ReturnType<typeof fixture>) =>
     f.sent.filter((wire) => wire.method === "turn/interrupt");
+
+  it("counts a steer that is not the owner's own against direct as soon as it is sent", async () => {
+    const { f, kit, pre } = gated({ "my.server": true });
+    const secret = schnorr.utils.randomSecretKey();
+    const owner = bytesToHex(schnorr.getPublicKey(secret));
+    const sibling = bytesToHex(
+      schnorr.getPublicKey(schnorr.utils.randomSecretKey()),
+    );
+    const as = (delivery: Delivery, pubkey: string) => {
+      if ("event" in delivery.trigger) delivery.trigger.event.pubkey = pubkey;
+      return { ...delivery, agent: { ...delivery.agent, owner } };
+    };
+    await f.runtime.run(as(f.delivery("@Codex hello"), owner));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    const answer = deferred<void>();
+    f.held.set("turn/steer", answer.promise);
+    const steer = as(f.delivery("@Codex more"), sibling);
+    if ("event" in steer.trigger)
+      steer.trigger.event.tags.push([
+        "auth",
+        owner,
+        "",
+        bytesToHex(
+          schnorr.sign(
+            createHash("sha256")
+              .update(`nostr:agent-auth:${sibling}:`)
+              .digest(),
+            secret,
+          ),
+        ),
+      ]);
+    void f.runtime.run(steer);
+    await vi.waitFor(() =>
+      expect(f.sent.some((wire) => wire.method === "turn/steer")).toBe(true),
+    );
+    // Codex may take the steer in before Buzz sees its answer.
+    await pre("mcp__my_server__write");
+    expect(kit.call.mock.calls.at(-1)?.[2]?.turn?.trigger).toMatchObject({
+      event: { pubkey: sibling },
+    });
+    answer.resolve();
+    await f.complete();
+  });
 
   it("puts a native MCP call to the kit with its raw names, and lets an allow carry on to plugin hooks", async () => {
     const { f, kit, plugin, pre, begin } = gated({ "my.server": true });
