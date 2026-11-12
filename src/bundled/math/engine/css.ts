@@ -10,7 +10,7 @@ export const css = source.replace(/@font-face\s*\{[^}]*\}/g, "");
 export const fontDescriptors = [
   ...source.matchAll(/@font-face\s*\{([^}]*)\}/g),
 ].map(([, rule = ""]) => ({
-  family: fontField(/font-family:\s*"([^"]+)"/, rule),
+  family: fontField(/font-family\b:\s*"([^"]+)"/, rule),
   file: fontField(/url\(([^)]+\.woff2)\)/, rule),
   style: fontField(/font-style:\s*([^;]+);/, rule),
   weight: fontField(/font-weight:\s*([^;]+);/, rule),

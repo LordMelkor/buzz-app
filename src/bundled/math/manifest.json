@@ -3,8 +3,5 @@
   "name": "Math equations",
   "apiVersion": 1,
   "description": "Typeset LaTeX math in conversations: $…$ and \\(…\\) inline, $$…$$, \\[…\\] and math code blocks as equations, with an equation editor in the composer.",
-  "discovery": {
-    "category": "communication",
-    "tags": ["Math", "LaTeX", "KaTeX", "Equations"]
-  }
+  "discovery": { "category": "communication" }
 }
