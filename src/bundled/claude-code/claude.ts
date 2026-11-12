@@ -728,9 +728,12 @@ export class ClaudeProcess {
     this.stopping = false;
     this.stopped = false;
     this.compacting = false;
+    this.endTurn();
+    for (const resolve of this.waiters.splice(0)) resolve(settled);
+  }
+  private endTurn() {
     this.turnLifetime.abort(new Error("The turn ended"));
     this.turnLifetime = new AbortController();
-    for (const resolve of this.waiters.splice(0)) resolve(settled);
   }
 
   private readError(data: string) {
@@ -793,10 +796,13 @@ export class ClaudeProcess {
       this.reportsState = true;
       const active = this.active;
       const starts = !this.working && !this.busy && message.state !== "idle";
+      const ends = this.working && message.state === "idle";
       this.working = message.state !== "idle";
       // A turn of its own, such as a background task's, is new work.
       if (starts) this.renew();
       if (!this.working && this.pending) this.done();
+      // A turn of its own has no message to settle; its calls end with it.
+      else if (!this.working && ends) this.endTurn();
       if (!this.active) this.stopping = false;
       if (active !== this.active) this.onActivity?.();
       if (active && !this.active) this.onQuiet?.();
