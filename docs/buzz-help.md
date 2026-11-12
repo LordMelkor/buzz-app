@@ -1169,8 +1169,9 @@ available rather than silently discarding it.
   which of your harness's MCP servers an agent's sessions load, including ones
   Buzz leaves off. The plugin cannot add or call servers. Protected agents load
   none. If that plugin is enabled but not running, new sessions load none until
-  it runs. Without such a plugin nothing changes: each harness loads the servers
-  in its own configuration, as before.
+  it runs. Without such a plugin nothing changes: each harness keeps its own
+  default. Codex agents load none of your MCP servers, and Claude agents load
+  the ones in your Claude Code configuration.
 - **Settings → Agent details → Previous versions** expands saved revisions for
   agents whose configuration syncs here. Settings and instructions appear together
   in one feed, newest first, with a label on each version. Versions are kept

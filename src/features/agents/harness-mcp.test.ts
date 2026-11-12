@@ -18,8 +18,15 @@ function setup(
   const status = {
     unavailable: false,
     settled: true,
+    active: true,
     listeners: new Set<() => void>(),
-    change(next: Partial<{ unavailable: boolean; settled: boolean }>) {
+    change(
+      next: Partial<{
+        unavailable: boolean;
+        settled: boolean;
+        active: boolean;
+      }>,
+    ) {
       Object.assign(status, next);
       for (const listener of [...status.listeners]) listener();
     },
@@ -28,7 +35,8 @@ function setup(
   const mcp = createHarnessMcp(
     () =>
       ({
-        isActive: () => true,
+        isActive: (id: string, revision: string) =>
+          status.active && id === "policy" && revision === "1",
         subscribe: (listener: () => void) => {
           status.listeners.add(listener);
           return () => status.listeners.delete(listener);
@@ -77,6 +85,43 @@ it("leaves the harness's default alone while no control or declaring plugin exis
   ).not.toThrow();
 });
 
+it("keeps only booleans and lists of tool names from a control's answer", async () => {
+  const { mcp, install } = setup();
+  const choose = vi.fn<HarnessMcpControl["choose"]>();
+  await install({ choose });
+  choose.mockReturnValue({
+    alpha: true,
+    beta: ["write"],
+    gamma: "yes",
+    delta: [1],
+    constructor: true,
+  } as never);
+  const choice = await mcp.kit.choice(handle);
+  expect({ ...(choice as object) }).toEqual({
+    alpha: true,
+    beta: ["write"],
+    gamma: false,
+    delta: false,
+    constructor: true,
+  });
+  expect(Object.getPrototypeOf(choice)).toBeNull();
+  for (const odd of ["all", ["alpha"], Promise.resolve({}), null]) {
+    choose.mockReturnValue(odd as never);
+    await expect(mcp.kit.choice(handle)).resolves.toBe("none");
+  }
+});
+
+it("does not ask a control whose plugin is no longer running", async () => {
+  const { mcp, install, status } = setup();
+  const choose = vi.fn<HarnessMcpControl["choose"]>(() => ({ alpha: true }));
+  await install({ choose });
+  status.change({ active: false, unavailable: true });
+  await expect(mcp.kit.choice(handle)).resolves.toBe("none");
+  expect(choose).not.toHaveBeenCalled();
+  status.change({ active: true, unavailable: false });
+  await expect(mcp.kit.choice(handle)).resolves.toEqual({ alpha: true });
+});
+
 it("asks the registered control, and an error from it loads nothing", async () => {
   const { mcp, install } = setup();
   const choose = vi.fn<HarnessMcpControl["choose"]>(() => ({ alpha: true }));
@@ -87,8 +132,9 @@ it("asks the registered control, and an error from it loads nothing", async () =
     throw new Error("control failed");
   });
   await expect(mcp.kit.choice(handle)).resolves.toBe("none");
+  // Leaving every name out keeps every default, and is still read back.
   choose.mockReturnValue(undefined);
-  await expect(mcp.kit.choice(handle)).resolves.toBeUndefined();
+  await expect(mcp.kit.choice(handle)).resolves.toEqual({});
   await expect(mcp.kit.choice({ key: "gone" } as never)).resolves.toBe("none");
 });
 

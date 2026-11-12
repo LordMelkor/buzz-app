@@ -21,6 +21,7 @@ import {
 import type { AgentKey } from "../../features/agents/membership";
 import type {
   HarnessMcpAnswer,
+  HarnessMcpChoice,
   HarnessMcpKit,
   HarnessMcpReport,
   HarnessMcpTool,
@@ -246,9 +247,10 @@ const turnedOff = (server: McpConfig) => ({
     : { url: server.url }),
   enabled: false,
 });
+// "disabled" is not here: in a thread's status it is also a server Buzz
+// turned off, which the user's configuration may have on.
 const MCP_STATES = {
   connected: "connected",
-  disabled: "disabled",
   authenticationRequired: "needs-auth",
   failed: "failed",
   cancelled: "failed",
@@ -761,7 +763,14 @@ export class CodexRuntime {
         throw new Error(
           "The workspace changed. Send a message to start its session first.",
         );
-      const { params, bridge } = await this.prepare(
+      // Compaction loads no MCP server; with a choice in play it is read
+      // back as off, which is how a protected agent proves it here too.
+      const who = {
+        key: agent.key,
+        protection: this.handle(agent.key)?.protection,
+      };
+      const choice = await this.mcp?.choice(who);
+      const { params, bridge, applied } = await this.prepare(
         rpc,
         agent,
         settings,
@@ -769,6 +778,7 @@ export class CodexRuntime {
         {},
         undefined,
         home,
+        choice && "none",
       );
       try {
         signal.throwIfAborted();
@@ -779,6 +789,7 @@ export class CodexRuntime {
           excludeTurns: true,
         });
         signal.throwIfAborted();
+        await this.verifyMcp(rpc, who, thread.threadId, applied);
         await this.compact(rpc, signal, thread.threadId, agent.key, key);
         this.status(agent.key, key, "Idle");
       } catch (error) {
@@ -924,6 +935,8 @@ export class CodexRuntime {
         sandbox: "read-only",
         ephemeral: true,
         config: {
+          // Unloads once unsubscribed, which stops the server it started.
+          thread_unload_delay_secs: 0,
           web_search: "disabled",
           "features.plugins": false,
           "features.apps": false,
@@ -2179,16 +2192,17 @@ export class CodexRuntime {
       signal.throwIfAborted();
       once.workspace = workspace;
       const choice = await this.mcp?.choice(agent);
-      const { params, model, effort, summary, bridge } = await this.prepare(
-        rpc,
-        agent,
-        settings,
-        workspace,
-        {},
-        delivery.synced,
-        undefined,
-        choice,
-      );
+      const { params, model, effort, summary, bridge, applied } =
+        await this.prepare(
+          rpc,
+          agent,
+          settings,
+          workspace,
+          {},
+          delivery.synced,
+          undefined,
+          choice,
+        );
       hookBridge = bridge;
       const text = await prompt();
       if (text === undefined) return { ok: true };
@@ -2206,7 +2220,7 @@ export class CodexRuntime {
       bridge?.bind(once.threadId);
       server.threads.set(once.threadId, agent.key);
       signal.throwIfAborted();
-      await this.verifyMcp(rpc, agent, once.threadId, choice, bridge?.config);
+      await this.verifyMcp(rpc, agent, once.threadId, applied);
       if (!delivery.current()) return { ok: true };
       const turnStarted = await rpc.request<{ turn: { id: string } }>(
         "turn/start",
@@ -2787,11 +2801,19 @@ export class CodexRuntime {
     );
     // A server chosen on has no entry, so `config.toml` applies; with a tool
     // list it keeps its own disabled tools too. Nothing is ever forced on.
+    // Codex's default is off, so a name the choice leaves out is off.
+    const picks = named.map(([name, server]) => {
+      const picked = choice === "none" ? undefined : choice?.[name];
+      return [
+        name,
+        server,
+        Array.isArray(picked) ? picked : picked === true,
+      ] as const;
+    });
     const mcp = Object.fromEntries(
-      named.flatMap(([name, server]): [string, object][] => {
-        const picked = choice === "none" ? undefined : choice?.[name];
+      picks.flatMap(([name, server, picked]): [string, object][] => {
         if (picked === true) return [];
-        if (typeof picked === "object")
+        if (picked)
           return [
             [
               name,
@@ -2805,6 +2827,11 @@ export class CodexRuntime {
         return [[name, turnedOff(server)]];
       }),
     );
+    // What each server was given, for the read-back; none without a choice.
+    const applied: HarnessMcpChoice | undefined =
+      choice === undefined
+        ? undefined
+        : Object.fromEntries(picks.map(([name, , picked]) => [name, picked]));
     const features = normalized.config.features;
     const disabled = (features?.hooks ?? features?.codex_hooks) === false;
     const hooks =
@@ -2849,6 +2876,7 @@ export class CodexRuntime {
       effort,
       summary,
       bridge,
+      applied,
       // What the thread's `mcp_servers` is with no choice: the title thread's.
       silenced: { ...silenced, ...bridge?.config },
     };
@@ -2860,30 +2888,37 @@ export class CodexRuntime {
     rpc: AppServer,
     agent: Pick<AgentHandle, "key" | "protection">,
     threadId: string,
-    choice: HarnessMcpAnswer,
-    own: Record<string, unknown> | undefined,
+    applied: HarnessMcpChoice | undefined,
   ) {
-    if (!this.mcp || choice === undefined) return;
-    const { data } = await rpc.request<{ data: McpRow[] }>(
-      "mcpServerStatus/list",
-      { threadId, detail: "toolsAndAuthOnly" },
-    );
-    this.mcpRows.set(agent.key, data);
+    if (!this.mcp || applied === undefined) return;
+    // By name, the status reads the thread's own connection; without one,
+    // Codex starts every server again to list it. Buzz's own hook-bridge
+    // server is not a `config/read` name, so it is not asked about.
+    const rows = (
+      await Promise.all(
+        Object.keys(applied).map((serverName) =>
+          rpc.request<{ data: McpRow[] }>("mcpServerStatus/list", {
+            threadId,
+            serverName,
+            detail: "toolsAndAuthOnly",
+          }),
+        ),
+      )
+    ).flatMap(({ data }) => data);
+    this.mcpRows.set(agent.key, rows);
     this.mcp.started(
       agent,
       threadId,
-      data
+      rows
         .filter(
-          ({ name, runtimeStatus }) =>
-            !(own && name in own) &&
-            runtimeStatus !== "disabled" &&
-            runtimeStatus !== "notStarted",
+          ({ runtimeStatus }) =>
+            runtimeStatus !== "disabled" && runtimeStatus !== "notStarted",
         )
         .map((row) => ({
           name: row.name,
           tools: mcpTools(row).map((t) => t.name),
         })),
-      choice,
+      applied,
     );
   }
   /** Shared thread setup; a voice seat retains it between delegated turns. */
@@ -2909,7 +2944,7 @@ export class CodexRuntime {
     const saved = entry.saved[key];
     const existing = resumable(saved, agent.protection);
     const choice = await this.mcp?.choice(agent);
-    const { params, model, effort, summary, bridge, silenced } =
+    const { params, model, effort, summary, bridge, silenced, applied } =
       await this.prepare(
         rpc,
         agent,
@@ -2996,7 +3031,7 @@ export class CodexRuntime {
         threadId: threadId,
         name: sessionName(agent, request.conversation),
       });
-      await this.verifyMcp(rpc, agent, threadId, choice, bridge?.config);
+      await this.verifyMcp(rpc, agent, threadId, applied);
       return {
         threadId,
         workspace,
@@ -3013,8 +3048,11 @@ export class CodexRuntime {
         fresh,
       };
     } catch (error) {
-      if (threadId)
+      if (threadId) {
+        if (server.threads.get(threadId) === agent.key)
+          server.threads.delete(threadId);
         await rpc.request("thread/unsubscribe", { threadId }).catch(() => {});
+      }
       await bridge?.close();
       throw error;
     }

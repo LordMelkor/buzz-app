@@ -41,6 +41,24 @@ export type HarnessMcpLoaded = readonly Readonly<{
 }>[];
 
 type Who = Pick<AgentHandle, "key" | "protection">;
+/** A control's answer as core uses it: an own-keys copy where a value that is
+ * neither a boolean nor a list of tool names means off, and anything but a
+ * plain object means none. Leaving every name out keeps every default. */
+function normalize(raw: unknown): HarnessMcpChoice | "none" {
+  if (raw === undefined) return {};
+  if (Object.prototype.toString.call(raw) !== "[object Object]") return "none";
+  const choice: Record<string, boolean | readonly string[]> =
+    Object.create(null);
+  for (const [name, value] of Object.entries(raw as object))
+    choice[name] =
+      typeof value === "boolean"
+        ? value
+        : Array.isArray(value) &&
+            value.every((tool) => typeof tool === "string")
+          ? Object.freeze([...value])
+          : false;
+  return Object.freeze(choice);
+}
 /** undefined: the harness keeps its default. "none": no native server. */
 export type HarnessMcpAnswer = HarnessMcpChoice | "none" | undefined;
 /** For adapters, bundled or not, through the harness kit. */
@@ -69,14 +87,18 @@ export function createHarnessMcp(
     "key" | "harnessMcp" | "protectionUnavailable"
   >[],
 ) {
-  let control: HarnessMcpControl | undefined;
+  /** The registered control, with the installation that registered it. */
+  let control:
+    | Readonly<{ value: HarnessMcpControl; id: string; revision: string }>
+    | undefined;
   /** A protected agent's proof: the protection key under which a session
    * last showed nothing loaded. Absent: unproven, or a session since loaded
    * a server. Sessions starting meanwhile do not revoke it. */
   const proofs = new Map<AgentKey, string>();
   const seen = new Map<string, readonly HarnessMcpTool[]>();
+  // A control answers only while its plugin is running, as contributions do.
   const state = (): Control =>
-    control
+    control && status().isActive(control.id, control.revision)
       ? "controlled"
       : !status().agentMcpUnavailable?.()
         ? "absent"
@@ -103,7 +125,9 @@ export function createHarnessMcp(
       case "controlled": {
         const found = running(agent.key);
         try {
-          return found && control ? control.choose(found) : "none";
+          return found && control
+            ? normalize(control.value.choose(found))
+            : "none";
         } catch {
           return "none";
         }
@@ -161,12 +185,19 @@ export function createHarnessMcp(
     /** Registers the one control, until the calling plugin's scope ends. */
     control(ctx: Context, next: HarnessMcpControl) {
       declared(ctx);
+      const owner = ctx.pluginOwner;
+      if (!owner) throw new Error("Declare host.agentMcp access");
       if (control)
         throw new Error("A harness MCP control is already registered");
+      const entry = Object.freeze({
+        value: next,
+        id: owner.id,
+        revision: owner.revision,
+      });
       ctx.effect(() => {
-        control = next;
+        control = entry;
         return () => {
-          if (control === next) control = undefined;
+          if (control === entry) control = undefined;
         };
       });
     },

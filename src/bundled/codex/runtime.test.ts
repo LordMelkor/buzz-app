@@ -210,7 +210,14 @@ function fixture(
           },
         };
       if (request.method === "mcpServerStatus/list")
-        result = { data: statusRows.rows, nextCursor: null };
+        result = {
+          data: statusRows.rows.filter(
+            (row) =>
+              params.serverName === undefined ||
+              (row as { name: string }).name === params.serverName,
+          ),
+          nextCursor: null,
+        };
       if (request.method === "thread/start")
         result = { thread: { id: `thread-${++thread}`, cwd: params.cwd } };
       if (request.method === "thread/resume")
@@ -7840,8 +7847,10 @@ describe("harness MCP choice", () => {
     ];
     await f.runtime.run(f.delivery("@Codex hello"));
     await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    // One call per server name: without a name Codex starts servers again.
     expect(statusCalls(f).map((wire) => wire.params)).toEqual([
-      { threadId: "thread-1", detail: "toolsAndAuthOnly" },
+      { threadId: "thread-1", serverName: "alpha", detail: "toolsAndAuthOnly" },
+      { threadId: "thread-1", serverName: "beta", detail: "toolsAndAuthOnly" },
     ]);
     const order = f.sent.map((wire) => wire.method);
     expect(order.indexOf("mcpServerStatus/list")).toBeGreaterThan(
@@ -7855,7 +7864,7 @@ describe("harness MCP choice", () => {
       expect.objectContaining({ key: pubkey }),
       "thread-1",
       [{ name: "alpha", tools: ["read", "write"] }],
-      { alpha: true },
+      { alpha: true, beta: false },
     );
   });
 
@@ -7982,11 +7991,83 @@ describe("harness MCP choice", () => {
     });
     await vi.waitFor(() => expect(f.worker.starts()).toHaveLength(1));
     expect(threadConfig(f.worker).mcp_servers).toEqual({ alpha: off("alpha") });
-    expect(started).toHaveBeenCalledWith(f.handle, "thread-1", [], "none");
+    expect(started).toHaveBeenCalledWith(f.handle, "thread-1", [], {
+      alpha: false,
+    });
     const order = f.worker.sent.map((wire) => wire.method);
     expect(order.indexOf("mcpServerStatus/list")).toBeLessThan(
       order.indexOf("turn/start"),
     );
+  });
+
+  it("compacts with every server off, and reads that back before compacting", async () => {
+    const started = vi.fn();
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mcpKit({ alpha: true }, started),
+    );
+    withServers(f, "alpha");
+    f.statusRows.rows = [
+      { name: "alpha", runtimeStatus: "connected", tools: {} },
+    ];
+    const delivery = f.delivery("first");
+    const agent = {
+      ...delivery.agent,
+      config: delivery.config,
+    } as unknown as Agent;
+    const place = { channelId: "channel", root };
+    await f.runtime.run(delivery);
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    await f.complete();
+    await vi.waitFor(() =>
+      expect(f.runtime.sessionState(agent, place)).toBe("idle"),
+    );
+    started.mockClear();
+    f.statusRows.rows = [
+      { name: "alpha", runtimeStatus: "disabled", tools: {} },
+    ];
+    const compacted = f.runtime
+      .session(agent, place, "compact")
+      .catch((error) => error);
+    await vi.waitFor(() =>
+      expect(f.sent.map((wire) => wire.method)).toContain(
+        "thread/compact/start",
+      ),
+    );
+    const resumes = f.sent.filter((wire) => wire.method === "thread/resume");
+    expect(
+      (
+        resumes.at(-1)?.params as
+          | { config: Record<string, unknown> }
+          | undefined
+      )?.config.mcp_servers,
+    ).toEqual({ alpha: off("alpha") });
+    expect(started).toHaveBeenCalledWith(
+      expect.objectContaining({ key: pubkey }),
+      "thread-1",
+      [],
+      { alpha: false },
+    );
+    const order = f.sent.map((wire) => wire.method);
+    expect(order.lastIndexOf("mcpServerStatus/list")).toBeLessThan(
+      order.indexOf("thread/compact/start"),
+    );
+    await f.runtime.session(agent, place, "interrupt");
+    f.emit({
+      method: "turn/started",
+      params: { threadId: "thread-1", turn: { id: "compact" } },
+    });
+    await compacted;
   });
 
   it("reads the same choice for a watch's one-off thread, before its turn", async () => {
@@ -8023,7 +8104,8 @@ describe("harness MCP choice", () => {
       expect.objectContaining({ key: pubkey }),
       "thread-1",
       [{ name: "alpha", tools: [] }],
-      { alpha: true },
+      // A name the choice leaves out is checked as off, Codex's default.
+      { alpha: true, beta: false },
     );
   });
 });
@@ -8086,7 +8168,8 @@ describe("harness MCP report and inspect", () => {
         state: "connected",
         tools: [{ name: "read", description: "Reads" }, { name: "write" }],
       },
-      { name: "beta", default: false, state: "disabled" },
+      // Off in Buzz's thread is not off in the user's configuration.
+      { name: "beta", default: false },
     ]);
   });
 
@@ -8172,6 +8255,8 @@ describe("harness MCP report and inspect", () => {
       ephemeral: true,
       sandbox: "read-only",
       approvalPolicy: "never",
+      // Unloaded once unsubscribed, so the server it started stops.
+      config: { thread_unload_delay_secs: 0 },
     });
     expect(threadConfig(f).mcp_servers).toEqual({
       beta: off("beta"),
