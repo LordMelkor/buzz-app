@@ -78,6 +78,10 @@ describe("Goose native MCP sessions", () => {
   it("keeps the no-control allowlist, auto mode and protocol unchanged", async () => {
     const t = await setup(undefined);
     t.choose(undefined); // setup's default argument is intentionally overridden.
+    t.saved("fixture", {
+      envs: { TOKEN: "fixture-secret" },
+      cwd: "/private-config",
+    });
     try {
       const session = await t.open();
       const { done } = await t.finish(session);
@@ -92,6 +96,13 @@ describe("Goose native MCP sessions", () => {
       expect(
         t.requests.some((r) =>
           /extensions|tools\/list|session\/set_mode/.test(r.method),
+        ),
+      ).toBe(false);
+      expect(
+        t.requests.some(
+          (r) =>
+            r.method === "_goose/unstable/config/read" &&
+            r.params.key === "extensions",
         ),
       ).toBe(false);
       expect(t.kit.started).not.toHaveBeenCalled();
@@ -265,6 +276,84 @@ describe("Goose native MCP sessions", () => {
       }
     },
   );
+
+  it.each([
+    { envs: { TOKEN: "fixture-secret" } },
+    { cwd: "/private-config" },
+    { env: { TOKEN: "fixture-secret" } },
+  ])("refuses lossy native launches and inspection with %j", async (saved) => {
+    const t = await setup();
+    try {
+      t.saved("fixture", { name: undefined, ...saved });
+      const report = await t.mcp.report(t.goose);
+      expect(report.servers.find((s) => s.name === "fixture")).toMatchObject({
+        default: false,
+        state: "failed",
+      });
+      expect(report.note).toMatch(/fixture.*can't start|can't start.*fixture/);
+      expect(report.note).toContain("carry over");
+      expect(report.note).toContain(
+        "cwd" in saved ? "working directory" : "environment values",
+      );
+      expect(JSON.stringify(report)).not.toMatch(
+        /fixture-secret|private-config|TOKEN/,
+      );
+      await expect(
+        t.mcp.inspect(
+          t.goose,
+          "/work",
+          "fixture",
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow(/carry over/);
+      await expect(t.open()).rejects.toThrow(/carry over/);
+      expect(t.native.opened).toEqual([]);
+      expect(t.requests.some((r) => r.method.endsWith("extensions/add"))).toBe(
+        false,
+      );
+    } finally {
+      await t.goose.kill();
+    }
+  });
+
+  it("keeps a lossy server Off while selecting another server, and refuses a later lossy change", async () => {
+    const t = await setup({ fixture: false, other: true });
+    try {
+      t.saved("fixture", {
+        envs: { TOKEN: "fixture-secret" },
+        cwd: "/private-config",
+      });
+      const session = await t.open();
+      const first = await t.finish(session);
+      expect(t.kit.started).toHaveBeenLastCalledWith(
+        t.who,
+        session.id,
+        [{ name: "other", tools: ["read_echo", "write_marker"] }],
+        { fixture: false, other: true },
+      );
+      present(t.native.turns[0]).finish();
+      await first.done;
+      t.choose({ fixture: true, other: true });
+      const additions = t.requests.filter((r) =>
+        r.method.endsWith("extensions/add"),
+      ).length;
+      let settled = false;
+      const next = session.send("Turn on the lossy server").finally(() => {
+        settled = true;
+      });
+      await vi.waitFor(() =>
+        expect(settled || t.native.turns.length === 2).toBe(true),
+      );
+      t.native.turns[1]?.finish();
+      expect((await next).ok).toBe(false);
+      expect(t.native.turns).toHaveLength(1);
+      expect(
+        t.requests.filter((r) => r.method.endsWith("extensions/add")),
+      ).toHaveLength(additions);
+    } finally {
+      await t.goose.kill();
+    }
+  });
 
   it("updates one saved session's native tool filter and omits all-off extensions", async () => {
     const t = await setup();
@@ -535,6 +624,34 @@ describe("Goose native MCP sessions", () => {
       await next;
       expect(t.kit.call).not.toHaveBeenCalled();
       expect(t.kit.ran).not.toHaveBeenCalled();
+    } finally {
+      await t.goose.kill();
+    }
+  });
+
+  it("reports a native never-allow result as rejected without asking", async () => {
+    const t = await setup();
+    try {
+      t.permission("write_marker", "never_allow");
+      const session = await t.open();
+      const { done } = await t.finish(session);
+      t.native.update(session.id, update("native-denial"));
+      t.native.update(session.id, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "native-denial",
+        status: "failed",
+      });
+      await vi.waitFor(() => expect(t.kit.ran).toHaveBeenCalledOnce());
+      expect(t.kit.ran).toHaveBeenCalledWith(t.who, {
+        session: session.id,
+        id: "native-denial",
+        server: "fixture",
+        tool: "write_marker",
+        rejected: true,
+      });
+      expect(t.kit.call).not.toHaveBeenCalled();
+      present(t.native.turns[0]).finish();
+      await done;
     } finally {
       await t.goose.kill();
     }
