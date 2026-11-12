@@ -36,6 +36,14 @@ and `-end` for row geometry. Other host classes and module class names are
 private. Conversations are not drag sources and cannot file into personal
 workspaces.
 
+A source can open a channel that also appears in Team with
+`ctx.navigation.open(target, { sidebar: "preserve" })`. This opening keeps the
+sidebar scope, scroll, and disclosure state. It does not select or reveal the
+Team row. The source supplies its own selected row. Check
+`ctx.navigation.snapshot().attempt.sidebar` along with the target to select it
+only for this opening. Retry retains the option. Later opens and Back/Forward
+use the normal destination rules. The option does not change access or focus.
+
 `data-solo-destination-id` is a supported behavior hook. A primary
 `Conversation.Link` carries its channel ID; secondary links omit the marker.
 Recovery destinations use the same marker. Nexus uses it to identify dragged

@@ -151,6 +151,7 @@ export function ChannelInventory({
   queries,
   cached,
   layoutReady = true,
+  preserveSidebar = false,
   connectionError,
   scope,
   viewer,
@@ -166,6 +167,7 @@ export function ChannelInventory({
   cached: boolean;
   /** Other inventories sharing this viewport must settle before restoring it. */
   layoutReady?: boolean;
+  preserveSidebar?: boolean;
   connectionError?: string | undefined;
   scope: string;
   viewer?: string | undefined;
@@ -279,6 +281,7 @@ export function ChannelInventory({
         target.scope.communityOrigin !== scope.slice(0, -(viewer.length + 1)))
       ? undefined
       : sidebarEntryLocation(target),
+    preserveSidebar,
   );
   const { channels, profiles: dmProfiles } = useChannelLabels(
     list.channels,
@@ -1443,7 +1446,7 @@ export function ChannelInventory({
               }
               channels={{
                 rows: section.hiddenRows,
-                selected: current?.id,
+                selected: preserveSidebar ? undefined : current?.id,
                 select,
               }}
               onRemove={
@@ -1537,7 +1540,9 @@ export function ChannelInventory({
               >
                 {section.rows.map((channel) => {
                   const selected =
-                    current?.id === channel.id ? current.id : undefined;
+                    !preserveSidebar && current?.id === channel.id
+                      ? current.id
+                      : undefined;
                   // Every row offers Copy link; build items only for the open
                   // menu. useChannelRowMenu closes a menu left with none.
                   const menuOpen =
