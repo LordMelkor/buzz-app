@@ -400,6 +400,26 @@ const report = (overrides: Partial<HarnessMcpReport> = {}) => ({
   ...overrides,
 });
 
+it("passes on calls only when the type says exactly true, and never for a protected agent", async () => {
+  const said = { value: true as unknown };
+  const { mcp, scope } = setup({
+    harnessMcp: {
+      report: async () => report({ calls: said.value, servers: [] } as never),
+    },
+  });
+  expect(await mcp.report(scope(), key)).toMatchObject({ calls: true });
+  said.value = "yes";
+  expect(await mcp.report(scope(), key)).not.toHaveProperty("calls");
+  said.value = true;
+  const guarded = agent as { protection?: unknown };
+  guarded.protection = { key: "p" };
+  try {
+    expect(await mcp.report(scope(), key)).not.toHaveProperty("calls");
+  } finally {
+    delete guarded.protection;
+  }
+});
+
 it("reports a type's servers only to a plugin with the manifest key, with last-seen tools", async () => {
   const inspect = vi.fn(async () => [{ name: "read", description: "Reads" }]);
   const { mcp, scope } = setup({

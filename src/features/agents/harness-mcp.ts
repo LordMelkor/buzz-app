@@ -41,6 +41,10 @@ export type HarnessMcpReport = Readonly<{
   tools: boolean;
   /** Whether `inspectHarnessMcp` can list a server's tools. */
   inspect: boolean;
+  /** The harness puts this agent's native MCP calls to the control's `call`
+   * before they run. Without it no call can be held: a call the choice allows
+   * runs unasked, and `ran` stops the turn. */
+  calls?: true;
   /** Plain text from the adapter, shown as is: what this harness cannot guarantee. */
   note?: string;
   servers: readonly HarnessMcpServer[];
@@ -441,16 +445,17 @@ export function createHarnessMcp(
       declared(ctx);
       const found = reporter(key);
       const report = found && (await found.mcp.report(found.agent));
-      return (
-        report && {
-          ...report,
-          inspect: !!found.mcp.inspect,
-          servers: report.servers.map((server) => {
-            const tools = server.tools ?? seen.get(slot(key, server.name));
-            return tools ? { ...server, tools: tidy(tools) } : server;
-          }),
-        }
-      );
+      if (!found || !report) return undefined;
+      const { calls, ...rest } = report;
+      return {
+        ...rest,
+        ...(calls === true && !found.agent.protection && { calls }),
+        inspect: !!found.mcp.inspect,
+        servers: report.servers.map((server) => {
+          const tools = server.tools ?? seen.get(slot(key, server.name));
+          return tools ? { ...server, tools: tidy(tools) } : server;
+        }),
+      };
     },
     /** Lists one server's tools in a session with no model turn, and keeps
      * them as that agent's last-seen tools for it. */

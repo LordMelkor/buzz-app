@@ -926,9 +926,16 @@ export class CodexRuntime {
       this.resolveConfig(agent.config).workspace,
     );
     const { config } = await rpc.request<{
-      config: { mcp_servers?: Record<string, McpConfig> };
+      config: {
+        mcp_servers?: Record<string, McpConfig>;
+        features?: { hooks?: boolean; codex_hooks?: boolean };
+      };
     }>("config/read", { cwd });
-    return { rpc, cwd, servers: config.mcp_servers ?? {} };
+    const hooks =
+      (config.features?.hooks ?? config.features?.codex_hooks) !== false;
+    // The hook bridge serves only threads on the main app-server.
+    const calls = hooks && !!this.hooks && this.server?.rpc === rpc;
+    return { rpc, cwd, servers: config.mcp_servers ?? {}, calls };
   }
   /** The agent's MCP servers by name, with the state and tools its last
    * thread's status showed. An execution target reports and applies nothing. */
@@ -945,9 +952,10 @@ export class CodexRuntime {
     const rows = new Map(
       this.mcpRows.get(agent.key)?.map((row) => [row.name, row]),
     );
-    const { servers } = await this.mcpServers(agent);
+    const { servers, calls } = await this.mcpServers(agent);
     return {
       tools: true,
+      ...(calls && { calls: true as const }),
       servers: Object.entries(servers).map(([name, server]) => {
         const row = rows.get(name);
         const tools = row ? mcpTools(row) : [];

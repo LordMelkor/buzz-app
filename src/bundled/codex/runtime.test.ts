@@ -8140,6 +8140,37 @@ describe("harness MCP report and inspect", () => {
     expect(f.starts()).toEqual([]);
   });
 
+  it("says calls can be held only while Codex hooks run through Buzz's bridge", async () => {
+    const hooks = {
+      serve: (async () => ({
+        url: "http://127.0.0.1:1/mcp",
+        headers: [],
+        close: async () => {},
+        closed: new Promise(() => {}),
+      })) as never,
+      run: vi.fn(async () => ({})),
+    };
+    const on = fixture([], undefined, false, {}, undefined, hooks);
+    expect(await on.runtime.harnessMcp(agentOf(on))).toMatchObject({
+      calls: true,
+    });
+    const off = fixture(
+      [],
+      undefined,
+      false,
+      { features: { hooks: false } },
+      undefined,
+      hooks,
+    );
+    expect(await off.runtime.harnessMcp(agentOf(off))).not.toHaveProperty(
+      "calls",
+    );
+    const bare = fixture();
+    expect(await bare.runtime.harnessMcp(agentOf(bare))).not.toHaveProperty(
+      "calls",
+    );
+  });
+
   it("adds the state and tools its last session's status showed", async () => {
     const f = fixture(
       [],
