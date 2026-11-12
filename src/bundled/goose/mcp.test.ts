@@ -216,6 +216,7 @@ describe("Goose native MCP sessions", () => {
     try {
       expect(await t.mcp.report(t.goose)).toMatchObject({
         tools: true,
+        calls: true,
         servers: [
           { name: "fixture", default: false },
           { name: "other", default: false, state: "disabled" },
