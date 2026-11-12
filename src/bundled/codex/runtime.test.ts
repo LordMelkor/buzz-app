@@ -8578,6 +8578,29 @@ describe("harness MCP call gate", () => {
     });
   });
 
+  it("gives plugin hooks only what the gate left of the hook's budget", async () => {
+    const { kit, plugin, pre, begin } = gated({ "my.server": true });
+    await begin();
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      kit.call.mockImplementationOnce(async () => {
+        now += 7_000;
+        return undefined;
+      });
+      await pre("mcp__my_server__write");
+      expect(plugin).toHaveBeenLastCalledWith(
+        pubkey,
+        "thread-1",
+        "PreToolUse",
+        expect.anything(),
+        18_000,
+      );
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("gates a subagent's native MCP calls under the thread that spawned it", async () => {
     const { f, kit, plugin, hook, pre, begin } = gated({ "my.server": true });
     await begin();

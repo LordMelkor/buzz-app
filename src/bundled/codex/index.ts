@@ -8,7 +8,7 @@ import type { PluginModule } from "../../plugins/api";
 import { CodexLogoIcon } from "../../shared/design-system/icons";
 import { type Config, config, defaults, validWorkspace } from "./config";
 import { codexRun, TYPE_ID } from "./run";
-import { CodexRuntime } from "./runtime";
+import { CodexRuntime, PLUGIN_HOOK_MS } from "./runtime";
 import { CodexSetup, explainTurn, reviewHome, withScript } from "./setup";
 import { CodexProvider, createTabs } from "./tabs";
 import { readUsage } from "./usage";
@@ -46,7 +46,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     ctx.host.serveMcp
       ? {
           serve: ctx.host.serveMcp.bind(ctx.host),
-          run: async (agent, session, event, input) => {
+          run: async (agent, session, event, input, milliseconds) => {
             return ((await ctx.agents.dispatchHook(
               typeKey,
               event,
@@ -57,7 +57,10 @@ export const apply: PluginModule["apply"] = (ctx) => {
                   !!output &&
                   typeof output === "object" &&
                   Object.keys(output).length > 0,
-                milliseconds: event === "Interrupt" ? 2500 : 25000,
+                milliseconds:
+                  event === "Interrupt"
+                    ? 2500
+                    : (milliseconds ?? PLUGIN_HOOK_MS),
                 compose: nativeHookOutput,
               },
             )) ?? {}) as Record<string, unknown>;
