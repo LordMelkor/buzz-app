@@ -334,6 +334,9 @@ for 30 days expires.
 
 ## Conversations and communities
 
+- Notification sounds and their Settings previews do not become media players;
+  keyboard play/pause remains available to music and other media apps.
+
 - In dialogs, a ring shows which button has keyboard focus, including when the
   dialog opens after a click. Enter or Space activates that button; Tab moves
   focus. The filled action button can be different from the focused button.

@@ -33,6 +33,10 @@ choices stay as saved. Restore writes nothing, so a later upgrade finds the name
 unless a notification setting was changed on this build in the meantime: any
 change saves all four categories as currently restored, replacing the name.
 
+Alerts and previews use one-shot Web Audio buffers, not resumable media elements,
+so notification clips do not take over the system’s play/pause controls. Each
+playback closes its audio context on completion, cancellation or failure.
+
 ```ts
 export const inject = ["notifications"];
 export function apply(ctx) {
