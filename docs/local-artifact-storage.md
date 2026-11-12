@@ -144,6 +144,8 @@ Writes request strict durability. Transactions include only the object stores th
 and indexed pages use all four stores. Metadata operations use only metadata.
 Large row batches can still delay other collections' reads or writes. A changed row rewrites
 its indexes. Index upgrades scan the collection. Delta completion does not scan records.
+An unchanged record and preference need no row writes or index rebuild.
+Source, refresh, and revision checks still run before this comparison.
 Ancestry comparison and separate source-membership writes are absent. The database upgrade removes the obsolete membership store, builds the host
 channel index, and preserves records and device preferences. Leaving a community purges only its saved partition. If database
 opening fails, close that handle and open another after the cause clears.

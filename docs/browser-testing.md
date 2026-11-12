@@ -116,7 +116,7 @@ verified clean commit or source manifest.
 
 ## CI coverage and local-only WebKit checks
 
-The artifact storage scale case has the `@local-only` tag. CI excludes it in both engines. It seeds 50,000 records and measures indexed reads and write latency. Run it locally with `bin/pnpm test:browser tests/browser/artifact-storage.spec.mjs --project chromium --project webkit --no-deps --workers=1 --grep @local-only`. The other 15 artifact storage cases remain in CI in both engines.
+The artifact storage scale case has the `@local-only` tag. CI excludes it in both engines. It seeds 50,000 records and measures indexed reads and write latency. Run it locally with `bin/pnpm test:browser tests/browser/artifact-storage.spec.mjs --project chromium --project webkit --no-deps --workers=1 --grep @local-only`. The other 17 artifact storage cases remain in CI in both engines.
 
 Most CI runs on `ubuntu-24.04`. `pnpm test:browser:ci` inherits the ordinary config and
 excludes tests tagged `@local-webkit` from `webkit-measurements`. Their Chromium
