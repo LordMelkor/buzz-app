@@ -20,6 +20,7 @@ import {
 } from "../../bundled/claude-code/prompt";
 import type { McpHandler } from "../host/service";
 import type { AgentKey } from "../agents/membership";
+import type { HarnessMcpKit } from "../agents/harness-mcp";
 import { fromOwner } from "../agents/owner-attestation";
 import { ownerReads } from "../agents/reads";
 import type {
@@ -113,6 +114,9 @@ export type HarnessKit = Readonly<{
     text: string,
     options?: Readonly<{ notifyOwner?: boolean }>,
   ): Promise<void>;
+  /** Which of the harness's own MCP servers a session loads, as the agent's
+   * controlling plugin chose, and the proof that the choice took effect. */
+  mcp: HarnessMcpKit;
 }>;
 
 type Sources = Readonly<{
@@ -122,6 +126,7 @@ type Sources = Readonly<{
   added(): readonly AddedTool[];
   /** The repositories folder section for a relay's partition. */
   repositories(partition: string | undefined): string;
+  mcp: HarnessMcpKit;
 }>;
 
 /** What the kit keeps of a conversation it admitted. */
@@ -207,6 +212,7 @@ export function harnessKit(sources: Sources): HarnessKit {
   };
 
   return Object.freeze({
+    mcp: sources.mcp,
     async conversation(
       { trigger, agent, channelId, signal }: Delivery,
       scope: HarnessScope,

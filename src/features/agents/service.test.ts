@@ -17259,6 +17259,40 @@ it("reports unsupported hooks when their harness registers later", async () => {
   }
 });
 
+it("lets only a plugin with agent MCP access choose harness MCP servers, one at a time", async () => {
+  const { plugin, ctx } = await setup();
+  const control = { choose: () => undefined };
+  expect(() => plugin.agents.controlHarnessMcp(control)).toThrow(
+    /Declare host.agentMcp/,
+  );
+  await expect(plugin.agents.harnessMcp("agent" as never)).rejects.toThrow(
+    /Declare host.agentMcp/,
+  );
+  await expect(
+    plugin.agents.inspectHarnessMcp("agent" as never, "server"),
+  ).rejects.toThrow(/Declare host.agentMcp/);
+  const scope = ctx.extend({
+    pluginOwner: { id: "mcp", revision: "one", agentMcp: true },
+  });
+  const fiber = scope.plugin((chooser) => {
+    chooser.agents.controlHarnessMcp(control);
+    expect(() => chooser.agents.controlHarnessMcp(control)).toThrow(
+      /already registered/,
+    );
+  });
+  await fiber.await();
+  await expect(
+    scope.agents.harnessMcp("agent" as never),
+  ).resolves.toBeUndefined();
+  await fiber.dispose();
+  const again = scope.plugin((chooser) => {
+    chooser.agents.controlHarnessMcp(control);
+  });
+  await again.await();
+  await again.dispose();
+  await ctx.fiber.dispose();
+});
+
 describe("synced teams", () => {
   const home = "https://relay.example.test";
   /** Each community's config channels; `saveTeam` answers as `answer`. */
