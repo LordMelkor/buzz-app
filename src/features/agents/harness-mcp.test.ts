@@ -1,5 +1,5 @@
 import { Context } from "@deepseek-ai/cordis";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentProtection } from "../agent-protection/service";
 import {
   createHarnessMcp,
@@ -9,7 +9,12 @@ import {
 import type { Agent } from "./service";
 
 const key = "agent-key" as Agent["key"];
-const agent = { key, type: "third/type", name: "Ampy" } as Agent;
+const agent = {
+  key,
+  type: "third/type",
+  name: "Ampy",
+  owner: "owner-key",
+} as Agent;
 const handle = { key } as never;
 
 function setup(
@@ -431,6 +436,38 @@ it("reports a type's servers only to a plugin with the manifest key, with last-s
   ).resolves.toBeUndefined();
 });
 
+it("keeps a tool's ungated flag only when it is exactly true", async () => {
+  const listed = [
+    { name: "a", ungated: true },
+    { name: "b", ungated: "yes" },
+    { name: "c", ungated: false, description: "Reads" },
+    { name: "d" },
+  ] as never;
+  const { mcp, scope } = setup({
+    harnessMcp: {
+      report: async () =>
+        report({
+          servers: [
+            { name: "alpha", default: false, tools: listed },
+            { name: "beta", default: false },
+          ],
+        }),
+      inspect: async () => listed,
+    },
+  });
+  const expected = [
+    { name: "a", ungated: true },
+    { name: "b" },
+    { name: "c", description: "Reads" },
+    { name: "d" },
+  ];
+  const first = await mcp.report(scope(), key);
+  expect(first?.servers[0]?.tools).toEqual(expected);
+  await expect(mcp.inspect(scope(), key, "beta")).resolves.toEqual(expected);
+  const after = await mcp.report(scope(), key);
+  expect(after?.servers[1]?.tools).toEqual(expected);
+});
+
 it("lists a type's tools only for a known server of an unprotected agent", async () => {
   const inspect = vi.fn(async () => [{ name: "read" }]);
   const { mcp, scope } = setup({
@@ -527,4 +564,399 @@ it("never lists tools for a protected agent or a type that cannot", async () => 
     "cannot list",
   );
   expect((await mcp.report(scope(), key))?.inspect).toBe(true);
+});
+
+describe("the call gate", () => {
+  const owner = "owner-key";
+  const options = (
+    extra: Partial<{ hold: number; signal: AbortSignal }> = {},
+  ) => ({
+    hold: 1000,
+    signal: new AbortController().signal,
+    ...extra,
+  });
+  const call = (id = "c1", extra: object = {}) => ({
+    session: "s1",
+    id,
+    server: "alpha",
+    tool: "write",
+    arguments: { path: "/tmp/x" },
+    ...extra,
+  });
+  const mention = (pubkey: string) =>
+    ({
+      trigger: {
+        type: "mention",
+        event: { pubkey, tags: [["h", "chan"]] },
+      },
+    }) as never;
+  /** A control installed, and a session started under `choice`. */
+  async function gated(
+    control: Partial<HarnessMcpControl> = {},
+    choice: Record<string, boolean | string[]> = { alpha: true, beta: false },
+    who: object = handle,
+  ) {
+    const made = setup();
+    await made.install({ choose: () => undefined, ...control });
+    made.mcp.kit.started(who as never, "s1", [], choice);
+    return made;
+  }
+  const alpha = { alpha: true } as const;
+
+  it("allows what an absent call hook does not stop, and leaves it to ran once", async () => {
+    const { mcp } = await gated();
+    await expect(
+      mcp.kit.call(handle, call(), options()),
+    ).resolves.toBeUndefined();
+    // The harness shows it run: the allow is used up.
+    expect(mcp.kit.ran(handle, call())).toBe(false);
+    expect(mcp.kit.ran(handle, call())).toBe(true);
+  });
+
+  it("tells the control what it needs, with direct only for the owner's own message", async () => {
+    const asked = vi.fn<NonNullable<HarnessMcpControl["call"]>>(
+      () => undefined,
+    );
+    const { mcp } = await gated({ call: asked });
+    await mcp.kit.call(handle, call("c1"), {
+      ...options(),
+      turn: mention(owner),
+    });
+    await mcp.kit.call(handle, call("c2"), {
+      ...options(),
+      turn: mention("other"),
+    });
+    await mcp.kit.call(handle, call("c3"), options());
+    expect(asked.mock.calls.map(([seen]) => seen.direct)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    expect(asked.mock.calls[0]?.[0]).toEqual({
+      agent: key,
+      session: "s1",
+      id: "c1",
+      server: "alpha",
+      tool: "write",
+      arguments: { path: "/tmp/x" },
+      hold: 1000,
+      direct: true,
+      conversation: { channel: "chan" },
+    });
+    expect(asked.mock.calls[2]?.[0]).not.toHaveProperty("conversation");
+  });
+
+  it("takes the conversation of a thread's message or a wake", async () => {
+    const asked = vi.fn<NonNullable<HarnessMcpControl["call"]>>(
+      () => undefined,
+    );
+    const { mcp } = await gated({ call: asked });
+    const root = "e".repeat(64);
+    await mcp.kit.call(handle, call("c1"), {
+      ...options(),
+      turn: {
+        trigger: {
+          type: "mention",
+          event: {
+            pubkey: owner,
+            tags: [
+              ["h", "chan"],
+              ["e", root, "", "reply"],
+            ],
+          },
+        },
+      } as never,
+    });
+    await mcp.kit.call(handle, call("c2"), {
+      ...options(),
+      turn: {
+        trigger: {
+          type: "plugin",
+          plugin: "p",
+          channel: "c2",
+          root,
+          text: "",
+          id: "w",
+          at: 1,
+        },
+      } as never,
+    });
+    expect(asked.mock.calls.map(([seen]) => seen.conversation)).toEqual([
+      { channel: "chan", root },
+      { channel: "c2", root },
+    ]);
+    expect(asked.mock.calls.map(([seen]) => seen.direct)).toEqual([
+      true,
+      false,
+    ]);
+  });
+
+  it("denies in each place the choice, the session or the plugin does not allow it", async () => {
+    const asked = vi.fn<NonNullable<HarnessMcpControl["call"]>>(
+      () => undefined,
+    );
+    const { mcp, status } = await gated(
+      { call: asked },
+      { alpha: true, beta: false, gamma: ["write"] },
+    );
+    const deny = (extra: object, who: object = handle) =>
+      mcp.kit.call(who as never, call("d", extra), options());
+    await expect(deny({ server: "beta" })).resolves.toMatch(/beta/);
+    await expect(deny({ server: "gamma" })).resolves.toMatch(/gamma\.write/);
+    // A tool the list does not leave out, and one nobody could name, go on.
+    await expect(
+      deny({ server: "gamma", tool: "read" }),
+    ).resolves.toBeUndefined();
+    await expect(
+      deny({ server: "gamma", tool: undefined }),
+    ).resolves.toBeUndefined();
+    // A server the applied choice does not name, and one object property it inherits.
+    await expect(deny({ server: "delta" })).resolves.toMatch(/delta/);
+    await expect(deny({ server: "constructor" })).resolves.toMatch(
+      /constructor/,
+    );
+    await expect(deny({ session: "other" })).resolves.toMatch(/no record/);
+    await expect(deny({}, { key: "elsewhere" })).resolves.toMatch(/no record/);
+    asked.mockClear();
+    status.change({ active: false, unavailable: true });
+    await expect(deny({})).resolves.toMatch(/not running/);
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it("denies when no control is registered, whatever the session recorded", async () => {
+    const { mcp, install } = setup();
+    const fiber = await install({ choose: () => undefined });
+    mcp.kit.started(handle, "s1", [], alpha);
+    await fiber.dispose();
+    await expect(mcp.kit.call(handle, call(), options())).resolves.toMatch(
+      /not running/,
+    );
+  });
+
+  it("denies a protected agent without asking, and a none choice for any server", async () => {
+    const asked = vi.fn<NonNullable<HarnessMcpControl["call"]>>(
+      () => undefined,
+    );
+    const guarded = { key, protection: { key: "p" } } as never;
+    const { mcp } = await gated({ call: asked }, alpha, guarded);
+    await expect(mcp.kit.call(guarded, call(), options())).resolves.toMatch(
+      /protected/,
+    );
+    const plain = await gated({ call: asked });
+    plain.mcp.kit.started(handle, "s1", [], "none");
+    await expect(
+      plain.mcp.kit.call(handle, call(), options()),
+    ).resolves.toMatch(/alpha/);
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it("takes a control's reason, and any answer that is not an allow, as a denial", async () => {
+    const answers: unknown[] = [
+      { deny: "Ask the owner first" },
+      { deny: "" },
+      { deny: 3 },
+      null,
+      "ok",
+      false,
+    ];
+    let next = 0;
+    const { mcp } = await gated({ call: () => answers[next++] as never });
+    const reasons = [];
+    for (const id of answers.keys())
+      reasons.push(await mcp.kit.call(handle, call(`c${id}`), options()));
+    expect(reasons[0]).toBe("Ask the owner first");
+    expect(
+      reasons.slice(1).every((reason) => typeof reason === "string" && reason),
+    ).toBe(true);
+    // None of them was allowed: each one that runs is reported.
+    expect(mcp.kit.ran(handle, call("c0"))).toBe(true);
+  });
+
+  it("denies when the control throws or rejects", async () => {
+    const control = vi.fn<NonNullable<HarnessMcpControl["call"]>>(() => {
+      throw new Error("secret detail");
+    });
+    const { mcp } = await gated({ call: control });
+    await expect(mcp.kit.call(handle, call("a"), options())).resolves.toBe(
+      "The MCP call policy failed",
+    );
+    control.mockRejectedValue(new Error("secret detail"));
+    await expect(mcp.kit.call(handle, call("b"), options())).resolves.toBe(
+      "The MCP call policy failed",
+    );
+    expect(mcp.kit.ran(handle, call("a"))).toBe(true);
+  });
+
+  it("holds for the control's answer, then denies once the hold passes, ignoring a late allow", async () => {
+    vi.useFakeTimers();
+    try {
+      let answer!: (value: undefined) => void;
+      const { mcp } = await gated({
+        call: () => new Promise((resolve) => (answer = resolve)),
+      });
+      const asked = mcp.kit.call(handle, call(), options({ hold: 500 }));
+      await vi.advanceTimersByTimeAsync(499);
+      let settled = false;
+      void asked.then(() => (settled = true));
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(asked).resolves.toMatch(/did not answer in time/);
+      answer(undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      // The late allow did not take.
+      expect(mcp.kit.ran(handle, call())).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("allows a call the control answers within its hold", async () => {
+    const { mcp } = await gated({ call: async () => undefined });
+    await expect(
+      mcp.kit.call(handle, call(), options()),
+    ).resolves.toBeUndefined();
+  });
+
+  it("denies when the turn's signal aborts, before or during the hold", async () => {
+    const abort = new AbortController();
+    const control = vi.fn<NonNullable<HarnessMcpControl["call"]>>(
+      () => new Promise(() => {}),
+    );
+    const { mcp } = await gated({ call: control });
+    const asked = mcp.kit.call(
+      handle,
+      call("a"),
+      options({ signal: abort.signal, hold: 60_000 }),
+    );
+    abort.abort();
+    await expect(asked).resolves.toMatch(/turn ended/);
+    await expect(
+      mcp.kit.call(
+        handle,
+        call("b"),
+        options({ signal: abort.signal, hold: 60_000 }),
+      ),
+    ).resolves.toMatch(/turn ended/);
+  });
+
+  it("denies an allow that comes after the session started again or the plugin stopped", async () => {
+    let answer!: (value: undefined) => void;
+    const { mcp, status } = await gated({
+      call: () => new Promise((resolve) => (answer = resolve)),
+    });
+    const first = mcp.kit.call(handle, call("a"), options());
+    await Promise.resolve();
+    mcp.kit.started(handle, "s1", [], alpha);
+    answer(undefined);
+    await expect(first).resolves.toMatch(/changed/);
+    const second = mcp.kit.call(handle, call("b"), options());
+    await Promise.resolve();
+    status.change({ active: false, unavailable: true });
+    answer(undefined);
+    await expect(second).resolves.toMatch(/changed/);
+    expect(mcp.kit.ran(handle, call("a"))).toBe(true);
+  });
+
+  it("never throws, whatever the call or options hold", async () => {
+    const { mcp } = await gated();
+    await expect(
+      mcp.kit.call(handle, undefined as never, undefined as never),
+    ).resolves.toEqual(expect.any(String));
+  });
+
+  it("tells the control about a call that ran with no allow, without its arguments", async () => {
+    const skipped = vi.fn();
+    const { mcp } = await gated({ skipped });
+    expect(
+      mcp.kit.ran(handle, {
+        session: "s1",
+        id: "x",
+        server: "alpha",
+        tool: "write",
+        ...{ arguments: "hidden" },
+      } as never),
+    ).toBe(true);
+    expect(skipped).toHaveBeenCalledWith({
+      agent: key,
+      session: "s1",
+      id: "x",
+      server: "alpha",
+      tool: "write",
+    });
+    // A session nothing recorded fails closed the same way.
+    expect(
+      mcp.kit.ran(handle, { session: "none", id: "y", server: "alpha" }),
+    ).toBe(true);
+    expect(skipped).toHaveBeenLastCalledWith({
+      agent: key,
+      session: "none",
+      id: "y",
+      server: "alpha",
+    });
+  });
+
+  it("does not count a call the harness blocked, and survives a control that fails to hear of one", async () => {
+    const skipped = vi.fn(() => {
+      throw new Error("boom");
+    });
+    const { mcp } = await gated({ skipped });
+    expect(mcp.kit.ran(handle, { ...call(), rejected: true })).toBe(false);
+    expect(skipped).not.toHaveBeenCalled();
+    expect(mcp.kit.ran(handle, call())).toBe(true);
+    skipped.mockRejectedValue(new Error("boom") as never);
+    expect(mcp.kit.ran(handle, call())).toBe(true);
+  });
+
+  it("never tells the control about a protected agent's call", async () => {
+    const skipped = vi.fn();
+    const guarded = { key, protection: { key: "p" } } as never;
+    const { mcp } = await gated({ skipped }, alpha, guarded);
+    expect(mcp.kit.ran(guarded, call())).toBe(true);
+    expect(skipped).not.toHaveBeenCalled();
+  });
+
+  it("forgets a session whose start failed, and one that began with no choice", async () => {
+    const { mcp } = await gated();
+    expect(() =>
+      mcp.kit.started(handle, "s1", loaded("beta"), { beta: false }),
+    ).toThrow();
+    await expect(mcp.kit.call(handle, call(), options())).resolves.toMatch(
+      /no record/,
+    );
+    mcp.kit.started(handle, "s1", [], alpha);
+    mcp.kit.started(handle, "s1", [], undefined);
+    await expect(mcp.kit.call(handle, call(), options())).resolves.toMatch(
+      /no record/,
+    );
+  });
+
+  it("keeps a bounded number of sessions for each agent, oldest forgotten first", async () => {
+    const { mcp } = await gated();
+    for (let index = 0; index < 64; index++)
+      mcp.kit.started(handle, `extra-${index}`, [], alpha);
+    // s1 was the oldest of 65: forgotten, so denied and reported when it runs.
+    await expect(mcp.kit.call(handle, call(), options())).resolves.toMatch(
+      /no record/,
+    );
+    await expect(
+      mcp.kit.call(handle, call("e", { session: "extra-63" }), options()),
+    ).resolves.toBeUndefined();
+    // Starting a session again keeps it newest.
+    mcp.kit.started(handle, "extra-0", [], alpha);
+    mcp.kit.started(handle, "fresh", [], alpha);
+    await expect(
+      mcp.kit.call(handle, call("f", { session: "extra-0" }), options()),
+    ).resolves.toBeUndefined();
+    await expect(
+      mcp.kit.call(handle, call("g", { session: "extra-1" }), options()),
+    ).resolves.toMatch(/no record/);
+  });
+
+  it("empties a session's allows when it starts again", async () => {
+    const { mcp } = await gated();
+    await mcp.kit.call(handle, call("a"), options());
+    mcp.kit.started(handle, "s1", [], alpha);
+    expect(mcp.kit.ran(handle, call("a"))).toBe(true);
+  });
 });

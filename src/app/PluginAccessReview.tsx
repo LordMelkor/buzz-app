@@ -77,17 +77,16 @@ function hostDeclarations(
       ? [
           {
             key: "agentMcp",
-            signature: "Agent MCP servers: choose which load",
+            signature: "Agent MCP servers: choose which load, review calls",
             title: "Agent MCP servers:",
             label: "Choose which MCP servers your agents load",
-            hint: "Choose which of your harnesses' MCP servers your agents load, including servers Buzz leaves off. Can start a configured server to list its tools. Cannot add servers or call their tools.",
+            hint: "Choose which of your harnesses' MCP servers your agents load, including servers Buzz leaves off, and see and block their MCP tool calls. Cannot add or call servers.",
             icon: PlugIcon,
             details: (
               <p className="m-0">
-                Sees each agent's MCP server names, state and tools. Never
-                receives a server's command, address or sign-in. Only one plugin
-                controls this at a time: the first one to start. When it stops,
-                another plugin with this access can take over.
+                Sees each agent's MCP server names, state and tools, and the
+                arguments of an MCP tool call before it runs. Never receives a
+                server's command, address or sign-in.
               </p>
             ),
           },

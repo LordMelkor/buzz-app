@@ -43,7 +43,7 @@ import type {
   HostProcessOptions,
 } from "../../features/host/service";
 import { BUZZ_PROMPT, TOP_LEVEL_PROMPT } from "../../buzz-mcp/prompt";
-import { CodexRuntime, codexStep, programs } from "./runtime";
+import { CodexRuntime, codexStep, mcpCallOf, programs } from "./runtime";
 import { codexRun } from "./run";
 import { config } from "./config";
 import type { AddedTool } from "../../buzz-mcp/session-tools";
@@ -7691,7 +7691,13 @@ type McpKit = NonNullable<ConstructorParameters<typeof CodexRuntime>[15]>;
 const mcpKit = (
   answer: Awaited<ReturnType<McpKit["choice"]>>,
   started: McpKit["started"] = vi.fn(),
-) => ({ choice: vi.fn(async () => answer), started }) satisfies McpKit;
+) =>
+  ({
+    choice: vi.fn(async () => answer),
+    started,
+    call: vi.fn<McpKit["call"]>(async () => undefined),
+    ran: vi.fn<McpKit["ran"]>(() => false),
+  }) satisfies McpKit;
 const server = (name: string, extra: object = {}) => [
   name,
   { command: `run-${name}`, enabled: true, url: null, ...extra },
@@ -8318,5 +8324,401 @@ describe("harness MCP report and inspect", () => {
       f.sent.find((wire) => wire.method === "thread/unsubscribe")?.params,
     ).toEqual({ threadId: "thread-1" });
     expect(f.sent.map((wire) => wire.method)).not.toContain("turn/start");
+  });
+});
+
+describe("harness MCP call gate", () => {
+  /** A thread with servers `names` whose hook bridge the test can call, and
+   * the plugin hooks that run behind it. */
+  const gated = (
+    answer: Parameters<typeof mcpKit>[0],
+    names = ["my.server"],
+    rows: unknown[] = [
+      {
+        name: "my.server",
+        runtimeStatus: "connected",
+        tools: { "get-thing": {}, write: {} },
+      },
+    ],
+  ) => {
+    let handler!: McpHandler;
+    const plugin = vi.fn(async () => ({ plugin: "ran" }));
+    const kit = mcpKit(answer);
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      {
+        serve: async (run) => {
+          handler = run;
+          return {
+            url: "http://127.0.0.1:1/mcp",
+            headers: [],
+            close: async () => {},
+            closed: new Promise(() => {}),
+          };
+        },
+        run: plugin,
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      kit,
+    );
+    withServers(f, ...names);
+    f.statusRows.rows = rows;
+    const hook = async (event: string, input: Record<string, unknown> = {}) => {
+      const wire = (await handler({
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: event,
+          arguments: { session_id: "thread-1", ...input },
+        },
+      })) as { result: { content: { text: string }[] } };
+      return JSON.parse(wire.result.content[0]?.text ?? "null");
+    };
+    const pre = (tool_name: string, extra: Record<string, unknown> = {}) =>
+      hook("PreToolUse", {
+        tool_name,
+        tool_use_id: "call-1",
+        tool_input: { path: "/tmp/x" },
+        ...extra,
+      });
+    const begin = async () => {
+      await f.runtime.run(f.delivery("@Codex hello"));
+      await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    };
+    return { f, kit, plugin, hook, pre, begin };
+  };
+  const deny = (reason: string) => ({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: reason,
+    },
+  });
+  const item = (extra: object = {}) => ({
+    type: "mcpToolCall",
+    id: "call-1",
+    server: "my.server",
+    tool: "write",
+    status: "inProgress",
+    arguments: {},
+    ...extra,
+  });
+  const started = (f: ReturnType<typeof fixture>, value: object) =>
+    f.emit({
+      method: "item/started",
+      params: { threadId: "thread-1", turnId: "turn-1", item: value },
+    });
+  const interrupts = (f: ReturnType<typeof fixture>) =>
+    f.sent.filter((wire) => wire.method === "turn/interrupt");
+
+  it("puts a native MCP call to the kit with its raw names, and lets an allow carry on to plugin hooks", async () => {
+    const { f, kit, plugin, pre, begin } = gated({ "my.server": true });
+    await begin();
+    expect(await pre("mcp__my_server__write")).toEqual({ plugin: "ran" });
+    expect(kit.call).toHaveBeenCalledOnce();
+    const [who, call, options] = kit.call.mock.calls[0] ?? [];
+    expect(who).toEqual({ key: pubkey, protection: undefined });
+    expect(call).toEqual({
+      session: "thread-1",
+      id: "call-1",
+      server: "my.server",
+      tool: "write",
+      arguments: { path: "/tmp/x" },
+    });
+    expect(options?.hold).toBe(10_000);
+    expect(options?.signal.aborted).toBe(false);
+    expect(options?.turn?.trigger).toMatchObject({
+      type: "mention",
+      event: { pubkey: owner },
+    });
+    expect(plugin).toHaveBeenCalledOnce();
+    // The tool's own name is found from Codex's sanitized one.
+    await pre("mcp__my_server__get_thing");
+    expect(kit.call.mock.calls[1]?.[1]).toMatchObject({ tool: "get-thing" });
+    // A name the status did not list leaves the tool out, not the server.
+    await pre("mcp__my_server__other");
+    expect(kit.call.mock.calls[2]?.[1]).toEqual({
+      session: "thread-1",
+      id: "call-1",
+      server: "my.server",
+      arguments: { path: "/tmp/x" },
+    });
+    await f.complete();
+  });
+
+  it("blocks the call with the kit's reason and runs no plugin hook", async () => {
+    const { f, kit, plugin, pre, begin } = gated({ "my.server": true });
+    kit.call.mockResolvedValue("Ask the owner first");
+    await begin();
+    expect(await pre("mcp__my_server__write")).toEqual(
+      deny("Ask the owner first"),
+    );
+    expect(plugin).not.toHaveBeenCalled();
+    await f.complete();
+  });
+
+  it("denies a call whose server matches none of the thread's, or more than one, without asking", async () => {
+    const { f, kit, pre, begin } = gated(
+      { a: true, "a-": true, "a b": true, c: true },
+      ["a", "a-", "a b", "c"],
+      [],
+    );
+    await begin();
+    for (const name of [
+      "mcp__nobody__write",
+      // "a" and "a-" read alike once sanitized, so they cannot be told apart.
+      "mcp__a__write",
+      "mcp__",
+    ])
+      expect(await pre(name)).toEqual(
+        deny("Buzz could not tell which MCP server this call is for"),
+      );
+    expect(await pre("mcp__c__write", { tool_use_id: 7 })).toEqual(
+      deny("Buzz could not tell which MCP server this call is for"),
+    );
+    expect(kit.call).not.toHaveBeenCalled();
+    await f.complete();
+  });
+
+  it("denies when the kit itself throws", async () => {
+    const { f, kit, pre, begin } = gated({ "my.server": true });
+    kit.call.mockRejectedValue(new Error("boom"));
+    await begin();
+    expect(await pre("mcp__my_server__write")).toEqual(
+      deny("The MCP call could not be checked"),
+    );
+    await f.complete();
+  });
+
+  it("never routes other tools, other events, or Buzz's own bridge server through the kit", async () => {
+    const { f, kit, plugin, hook, pre, begin } = gated({ "my.server": true });
+    await begin();
+    await pre("Bash");
+    await pre("mcp__buzz_native_hooks__PreToolUse");
+    await hook("PostToolUse", {
+      tool_name: "mcp__my_server__write",
+      tool_use_id: "call-1",
+    });
+    await hook("UserPromptSubmit", { prompt: "mcp__my_server__write" });
+    expect(kit.call).not.toHaveBeenCalled();
+    expect(plugin).toHaveBeenCalledTimes(4);
+    await f.complete();
+  });
+
+  it("changes nothing when no choice is in play: the same thread config and hooks, no kit call", async () => {
+    const config = (f: ReturnType<typeof fixture>) =>
+      f.sent.find((wire) => wire.method === "thread/start")?.params;
+    const plain = gated(undefined);
+    // The same fixture with no kit at all.
+    let handler!: McpHandler;
+    const bare = fixture([], undefined, false, {}, undefined, {
+      serve: async (run) => {
+        handler = run;
+        return {
+          url: "http://127.0.0.1:1/mcp",
+          headers: [],
+          close: async () => {},
+          closed: new Promise(() => {}),
+        };
+      },
+      run: async () => ({ plugin: "ran" }),
+    });
+    withServers(bare, "my.server");
+    await bare.runtime.run(bare.delivery("@Codex hello"));
+    await vi.waitFor(() => expect(bare.starts()).toHaveLength(1));
+    await plain.begin();
+    expect(config(plain.f)).toEqual(config(bare));
+    expect(plain.f.sent.map((wire) => wire.method)).toEqual(
+      bare.sent.map((wire) => wire.method),
+    );
+    expect(await plain.pre("mcp__my_server__write")).toEqual({ plugin: "ran" });
+    expect(
+      await handler({
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "PreToolUse",
+          arguments: {
+            session_id: "thread-1",
+            tool_name: "mcp__my_server__write",
+            tool_use_id: "call-1",
+          },
+        },
+      }),
+    ).toMatchObject({ result: { content: [{ text: '{"plugin":"ran"}' }] } });
+    expect(plain.kit.call).not.toHaveBeenCalled();
+    started(plain.f, item());
+    expect(plain.kit.ran).not.toHaveBeenCalled();
+    expect(interrupts(plain.f)).toHaveLength(0);
+    await plain.f.complete();
+    await bare.complete();
+  });
+
+  it("stops the turn when a native MCP call starts that nothing allowed", async () => {
+    const { f, kit, begin } = gated({ "my.server": true });
+    kit.ran.mockReturnValue(true);
+    await begin();
+    started(f, item());
+    expect(kit.ran).toHaveBeenCalledWith(
+      { key: pubkey, protection: undefined },
+      { session: "thread-1", id: "call-1", server: "my.server", tool: "write" },
+    );
+    await vi.waitFor(() => expect(interrupts(f)).toHaveLength(1));
+    expect(interrupts(f)[0]?.params).toEqual({
+      threadId: "thread-1",
+      turnId: "turn-1",
+    });
+  });
+
+  it("lets a call that ran after an allow go on, and checks each call once, at its start", async () => {
+    const { f, kit, begin } = gated({ "my.server": true });
+    await begin();
+    started(f, item());
+    f.emit({
+      method: "item/completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: item({ status: "completed" }),
+      },
+    });
+    expect(kit.ran).toHaveBeenCalledOnce();
+    expect(interrupts(f)).toHaveLength(0);
+    await f.complete();
+  });
+
+  it("does not ask `ran` about Buzz's own tools or items that are not native MCP calls", async () => {
+    const { f, kit, begin } = gated({ "my.server": true });
+    kit.ran.mockReturnValue(true);
+    await begin();
+    started(f, item({ server: "buzz_native_hooks" }));
+    started(f, {
+      type: "dynamicToolCall",
+      namespace: "buzz",
+      tool: "send",
+      id: "d",
+    });
+    started(f, { type: "commandExecution", command: "ls", id: "e" });
+    started(f, item({ id: undefined }));
+    expect(kit.ran).not.toHaveBeenCalled();
+    expect(interrupts(f)).toHaveLength(0);
+    await f.complete();
+  });
+
+  it("tells the kit a protected agent's session, which is denied every call", async () => {
+    const kit = mcpKit("none");
+    kit.ran.mockReturnValue(true);
+    const f = protectedPreview(undefined, kit);
+    withServers(f.worker, "my.server");
+    f.worker.statusRows.rows = [
+      { name: "my.server", runtimeStatus: "disabled", tools: {} },
+    ];
+    if (!f.handle) throw new Error("Missing protected handle");
+    await f.runtime.run({
+      ...f.delivery("Summarize"),
+      agent: f.handle,
+      config: f.agent.config,
+    });
+    await vi.waitFor(() => expect(f.worker.starts()).toHaveLength(1));
+    started(f.worker, item());
+    expect(kit.ran).toHaveBeenCalledWith(
+      { key: f.handle.key, protection: f.handle.protection },
+      expect.objectContaining({ server: "my.server" }),
+    );
+    await vi.waitFor(() =>
+      expect(interrupts(f.worker as ReturnType<typeof fixture>)).toHaveLength(
+        1,
+      ),
+    );
+  });
+
+  it("gates a watch's standalone turn too, naming its trigger and stopping a call nothing allowed", async () => {
+    const { f, kit, pre } = gated({ "my.server": true });
+    kit.ran.mockReturnValue(true);
+    const watch = {
+      type: "event",
+      enabled: true,
+      interest_id: "ops",
+      since: 0,
+      channels: "all",
+      kinds: [9],
+    } as const;
+    f.objects.set("watch/deploys", watch);
+    const base = f.delivery("someone else's message");
+    if (base.trigger.type !== "mention") throw new Error("Expected mention");
+    const trigger = {
+      type: "watch" as const,
+      event: base.trigger.event,
+      slug: "watch/deploys",
+      watch,
+    };
+    f.wake({ ...base, trigger });
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    expect(await pre("mcp__my_server__write")).toEqual({ plugin: "ran" });
+    expect(kit.call.mock.calls[0]?.[2].turn).toEqual({ trigger });
+    started(f, item());
+    await vi.waitFor(() => expect(interrupts(f)).toHaveLength(1));
+    await f.complete(0, "");
+  });
+
+  it("tells the kit a steered turn's first request that is not the owner's own message", async () => {
+    const { f, kit, pre, begin } = gated({ "my.server": true });
+    await begin();
+    await pre("mcp__my_server__write");
+    expect(kit.call.mock.calls[0]?.[2].turn?.trigger).toMatchObject({
+      type: "mention",
+      event: { pubkey: owner },
+    });
+    // A plugin's wake steered into the owner's turn: the turn is no longer
+    // only the owner's message.
+    await f.runtime.run(pluginWake(f, root));
+    await vi.waitFor(() =>
+      expect(
+        f.sent.filter((wire) => wire.method === "turn/steer"),
+      ).toHaveLength(1),
+    );
+    await pre("mcp__my_server__write");
+    expect(kit.call.mock.calls[1]?.[2].turn?.trigger).toMatchObject({
+      type: "plugin",
+    });
+    await f.complete();
+  });
+});
+
+describe("mcpCallOf", () => {
+  const tools =
+    (...names: string[]) =>
+    () => ({ tools: Object.fromEntries(names.map((name) => [name, {}])) });
+  it.each([
+    ["mcp__alpha__write", ["alpha"], { server: "alpha" }],
+    ["mcp__my_server__write", ["my.server"], { server: "my.server" }],
+    // Codex joins a namespace and a name after trimming their edge underscores.
+    ["mcp__a__tool", ["a_"], { server: "a_" }],
+    ["mcp__a__tool", ["a", "b"], { server: "a" }],
+    ["mcp__alpha__x__y", ["alpha", "alpha__x"], undefined],
+    ["mcp__beta__write", ["alpha"], undefined],
+    ["mcp__alpha", ["alpha"], undefined],
+  ])("%s among %j", (name, servers, expected) => {
+    expect(mcpCallOf(name, servers, () => undefined)).toEqual(expected);
+  });
+  it("finds the tool by its sanitized name, with edge underscores trimmed", () => {
+    expect(
+      mcpCallOf("mcp__alpha__get_thing", ["alpha"], tools("get-thing")),
+    ).toEqual({ server: "alpha", tool: "get-thing" });
+    expect(mcpCallOf("mcp__alpha__x", ["alpha"], tools("_x"))).toEqual({
+      server: "alpha",
+      tool: "_x",
+    });
+    expect(mcpCallOf("mcp__alpha__x", ["alpha"], tools("y"))).toEqual({
+      server: "alpha",
+    });
   });
 });

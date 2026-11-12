@@ -1,7 +1,7 @@
 import type { Host } from "../../features/host/service";
 import { nativeHookArgs } from "./hooks";
 
-const SERVER = "buzz_native_hooks";
+export const HOOK_SERVER = "buzz_native_hooks";
 const fields = {
   PreToolUse: ["tool_name", "tool_input", "tool_use_id"],
   PostToolUse: ["tool_name", "tool_input", "tool_use_id", "tool_response"],
@@ -25,7 +25,7 @@ export const callbackHookArgs = nativeHookArgs(
           hooks: [
             {
               type: "mcp_tool",
-              server: SERVER,
+              server: HOOK_SERVER,
               tool: event,
               input: Object.fromEntries(
                 [
@@ -74,7 +74,7 @@ export async function openHookBridge(
         return result({
           protocolVersion: "2025-06-18",
           capabilities: { tools: {} },
-          serverInfo: { name: SERVER, version: "1" },
+          serverInfo: { name: HOOK_SERVER, version: "1" },
         });
       // Hooks call the dispatcher directly. Do not advertise it to the model.
       if (wire.method === "tools/list") return result({ tools: [] });
@@ -98,7 +98,7 @@ export async function openHookBridge(
   );
   return {
     config: {
-      [SERVER]: {
+      [HOOK_SERVER]: {
         url: server.url,
         http_headers: Object.fromEntries(
           server.headers.map(({ name, value }) => [name, value]),

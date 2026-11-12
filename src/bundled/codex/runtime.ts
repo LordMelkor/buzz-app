@@ -5,7 +5,7 @@ import type {
   AgentExecutionSession,
 } from "../../features/agents/execution";
 import { CodexExecution } from "./execution";
-import { callbackHookArgs, openHookBridge } from "./hook-bridge";
+import { callbackHookArgs, HOOK_SERVER, openHookBridge } from "./hook-bridge";
 import type { Host } from "../../features/host/service";
 import { nativeHookState } from "./hooks";
 import { isFinalMessage } from "../../buzz-mcp/session-tools";
@@ -19,12 +19,13 @@ import {
   wakeLands,
 } from "../../features/agent-harness/plugin-wake";
 import type { AgentKey } from "../../features/agents/membership";
-import type {
-  HarnessMcpAnswer,
-  HarnessMcpChoice,
-  HarnessMcpKit,
-  HarnessMcpReport,
-  HarnessMcpTool,
+import {
+  directTrigger,
+  type HarnessMcpAnswer,
+  type HarnessMcpChoice,
+  type HarnessMcpKit,
+  type HarnessMcpReport,
+  type HarnessMcpTool,
 } from "../../features/agents/harness-mcp";
 import type { AgentReads } from "../../features/agents/reads";
 import {
@@ -45,6 +46,7 @@ import type {
   Delivery,
   Models,
   StandaloneTurn,
+  Trigger,
   TurnResult,
 } from "../../features/agents/service";
 import type { EventData } from "../../features/relay/events";
@@ -105,6 +107,8 @@ import {
 import { findConversation } from "./transcript";
 
 type Request = {
+  /** What started this request; a voice seat's has none. */
+  trigger?: Trigger;
   current?: () => boolean;
   /** The agent's community and owner, as `origin:viewer`. */
   scope: string;
@@ -186,14 +190,19 @@ type Active = {
   tools: AbortController;
   /** Every request this turn has taken in, the first and each steered one. */
   requests: Request[];
+  /** A harness MCP choice is in play for this thread: its native MCP calls
+   * are put to `mcp.call`, and one that runs unasked stops the turn. */
+  gated?: true;
   /** Latest acknowledged mention per Buzz thread; independent of session scope. */
   activity: Map<string, Request>;
 };
 /** A watch or timer turn on an ephemeral thread of its own. Its tools have
  * no default destination and it answers no request. */
 type Once = {
+  trigger: Trigger;
   threadId?: string;
   turnId?: string;
+  gated?: true;
   finished: boolean;
   signal: AbortSignal;
   workspace: string;
@@ -260,6 +269,28 @@ const mcpTools = (row: McpRow): HarnessMcpTool[] =>
     name,
     ...(description ? { description } : {}),
   }));
+/** Codex's model-visible name for a name: other characters become `_`. */
+const modelName = (text: string) => text.replace(/[^A-Za-z0-9_]/g, "_");
+/** The server, and the tool where known, behind a hook's `mcp__<server>__<tool>`
+ * name, among the thread's server names. Undefined when the name matches no
+ * single server (two names can read alike once sanitized). */
+export function mcpCallOf(
+  name: string,
+  servers: readonly string[],
+  row: (server: string) => Pick<McpRow, "tools"> | undefined,
+): { server: string; tool?: string } | undefined {
+  const rest = name.slice("mcp__".length);
+  const prefix = (server: string) =>
+    `${modelName(server).replace(/_+$/, "")}__`;
+  const hits = servers.filter((server) => rest.startsWith(prefix(server)));
+  const [server] = hits;
+  if (!server || hits.length !== 1) return undefined;
+  const given = rest.slice(prefix(server).length);
+  const tool = Object.keys(row(server)?.tools ?? {}).find(
+    (own) => modelName(own).replace(/^_+/, "") === given,
+  );
+  return { server, ...(tool && { tool }) };
+}
 export type SessionView = { key: string; status: string; detail: string };
 /** A saved binding, newest first, for the owner's transcript list, with the
  * channel's name and kind when this community lists it. */
@@ -1930,6 +1961,7 @@ export class CodexRuntime {
     // Codex makes one more model call after a final send before its turn
     // ends; the agent is done working on this request once it has replied.
     const request: TextRequest = {
+      trigger,
       scope: reads.scope,
       ...(wake ? { current: delivery.current } : {}),
       event,
@@ -2176,6 +2208,7 @@ export class CodexRuntime {
     const signal = AbortSignal.any([entry.abort.signal, turnSignal]);
     let release!: () => void;
     const once: Once = {
+      trigger: delivery.trigger,
       finished: false,
       signal,
       workspace: settings.workspace,
@@ -2185,7 +2218,10 @@ export class CodexRuntime {
         release = resolve;
       }),
     };
-    const followed = follow(server.rpc, signal, once);
+    const followed = follow(server.rpc, signal, once, (method, item) => {
+      if (method === "item/started")
+        this.unasked(once, agent, server.rpc, item);
+    });
     entry.onces.add(once);
     let hookBridge: Awaited<ReturnType<typeof openHookBridge>> | undefined;
     try {
@@ -2207,6 +2243,7 @@ export class CodexRuntime {
           choice,
         );
       hookBridge = bridge;
+      if (applied !== undefined) once.gated = true;
       const text = await prompt();
       if (text === undefined) return { ok: true };
       const memory = await this.core(agent.key, signal);
@@ -2845,8 +2882,13 @@ export class CodexRuntime {
     const hookAdapter =
       !disabled && this.server?.rpc === rpc ? this.hooks : undefined;
     const bridge = hookAdapter
-      ? await openHookBridge(hookAdapter.serve, (session, event, input) =>
-          hookAdapter.run(agent.key, session, event, input),
+      ? await openHookBridge(
+          hookAdapter.serve,
+          async (session, event, input) =>
+            // With a choice in play, a native MCP call is put to the kit first.
+            (applied &&
+              (await this.gate(agent.key, session, event, input, applied))) ||
+            hookAdapter.run(agent.key, session, event, input),
         )
       : undefined;
     // Codex sets it on this thread's commands only; app-server has none.
@@ -2924,6 +2966,121 @@ export class CodexRuntime {
         })),
       applied,
     );
+  }
+  /** A PreToolUse for a native MCP call, put to the kit. Returns the hook
+   * output that blocks it; undefined to carry on: not an MCP call, one of
+   * Buzz's own, or allowed. Codex runs the call if the hook errors or runs
+   * past its limit, so the kit is held for 10 s at most and `unasked` is the
+   * backstop. */
+  private async gate(
+    key: AgentKey,
+    session: string,
+    event: string,
+    input: unknown,
+    applied: HarnessMcpChoice,
+  ) {
+    const {
+      tool_name: name,
+      tool_use_id: id,
+      tool_input: args,
+    } = (input ?? {}) as Record<string, unknown>;
+    if (
+      event !== "PreToolUse" ||
+      typeof name !== "string" ||
+      !name.startsWith("mcp__") ||
+      name.startsWith(`mcp__${HOOK_SERVER}__`)
+    )
+      return undefined;
+    const block = (reason: string) => ({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: reason,
+      },
+    });
+    try {
+      // The hook gives only Codex's model-visible name; the raw names are
+      // matched from it, and a call that matches no single server is denied.
+      const found = mcpCallOf(name, Object.keys(applied), (server) =>
+        this.mcpRows.get(key)?.find((row) => row.name === server),
+      );
+      if (!found || typeof id !== "string")
+        return block("Buzz could not tell which MCP server this call is for");
+      const turn = this.turnOf(session);
+      const reason = await this.mcp?.call(
+        { key, protection: this.handle(key)?.protection },
+        { session, id, ...found, arguments: args },
+        {
+          hold: 10_000,
+          signal: turn?.signal ?? new AbortController().signal,
+          ...(turn?.trigger && { turn: { trigger: turn.trigger } }),
+        },
+      );
+      return reason === undefined ? undefined : block(reason);
+    } catch {
+      return block("The MCP call could not be checked");
+    }
+  }
+  /** The running turn of thread `threadId`, its stop signal, and what started
+   * it. A steered turn answers for its first request that is not the owner's
+   * own message, so `direct` holds only when every request is. */
+  private turnOf(threadId: string) {
+    const entries = [...this.entries.values()];
+    const active = entries
+      .flatMap((entry) => [...entry.lanes.values()])
+      .map((lane) => lane.active)
+      .find((turn) => turn?.threadId === threadId);
+    if (active) {
+      const { owner } = active.reply.agent;
+      const request =
+        active.requests.find(
+          ({ trigger }) => !trigger || !directTrigger(trigger, owner),
+        ) ?? active.reply;
+      return {
+        signal: AbortSignal.any([active.signal, active.tools.signal]),
+        trigger: request.trigger,
+      };
+    }
+    const once = entries
+      .flatMap((entry) => [...entry.onces])
+      .find((turn) => turn.threadId === threadId);
+    return once && { signal: once.signal, trigger: once.trigger };
+  }
+  /** A native MCP call the harness started: if nothing allowed it, the turn
+   * stops. Only for a thread with a choice in play; Buzz's own tools are not
+   * `mcpToolCall` items. Codex starts no item for a call a hook blocked. */
+  private unasked(
+    turn: Active | Once,
+    agent: Pick<AgentHandle, "key">,
+    rpc: AppServer,
+    { type, id, server, tool }: Item,
+  ) {
+    const { threadId, turnId } = turn;
+    if (
+      !turn.gated ||
+      type !== "mcpToolCall" ||
+      !id ||
+      !server ||
+      server === HOOK_SERVER ||
+      !threadId ||
+      !turnId
+    )
+      return;
+    const who = {
+      key: agent.key,
+      protection: this.handle(agent.key)?.protection,
+    };
+    if (
+      this.mcp?.ran(who, {
+        session: threadId,
+        id,
+        server,
+        ...(tool && { tool }),
+      })
+    )
+      void rpc
+        .request("turn/interrupt", { threadId, turnId })
+        .catch(() => rpc.close());
   }
   /** Shared thread setup; a voice seat retains it between delegated turns. */
   async loadThread(
@@ -3051,6 +3208,7 @@ export class CodexRuntime {
         existing,
         resuming,
         fresh,
+        applied,
       };
     } catch (error) {
       if (threadId)
@@ -3104,6 +3262,8 @@ export class CodexRuntime {
     lane.active = active;
     const { settings, agent } = request;
     const followed = follow(server.rpc, signal, active, (method, item) => {
+      if (method === "item/started")
+        this.unasked(active, agent, server.rpc, item);
       const step = method === "item/started" ? codexStep(item) : undefined;
       if (step)
         for (const taken of active.activity.values())
@@ -3145,6 +3305,7 @@ export class CodexRuntime {
         fresh,
       } = loaded;
       active.threadId = threadId;
+      if (loaded.applied !== undefined) active.gated = true;
       // A refusal outside this turn does not explain how it ends.
       explain = server.explainer?.(threadId);
       active.workspace = workspace;
@@ -3340,6 +3501,10 @@ export class CodexRuntime {
 /** A started or completed item, as the app-server reports it. */
 type Item = {
   type: string;
+  id?: string;
+  /** An `mcpToolCall`'s raw server and tool names. */
+  server?: string;
+  tool?: string;
   text?: string;
   phase?: string;
   command?: string;
