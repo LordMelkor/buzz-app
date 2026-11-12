@@ -1931,8 +1931,9 @@ program such as `base64` or `pwd` that Windows lacks.
 missing file rejects with an error whose message contains "No such file".
 `ctx.host.resolveDirectory(path)` returns an absolute or `~/…` directory as an
 absolute path without symbolic links, in the platform's ordinary form, and
-creates it if missing, as a process's `cwd` is. Both act with the user's full
-access; the import preview says so.
+creates it if missing, as a process's `cwd` is; with `{ create: false }` a
+missing path, or one that is not a directory, rejects instead. Both act with
+the user's full access; the import preview says so.
 
 `ctx.host.repositoryFolders(binding, signal)` lists the repositories folder that
 the binding's community and account configured in **Local settings**, or the

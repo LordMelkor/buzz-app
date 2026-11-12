@@ -78,6 +78,11 @@ import {
 } from "./hooks";
 import { ownerReads } from "./reads";
 import { createToolOperation, type AgentToolProvider } from "./tool-operation";
+import {
+  assignConversationFolder as assignFolder,
+  conversationFolder as storedFolder,
+  conversationKey,
+} from "./conversation-folders";
 // Agents: agents that are plugins from the start. A plugin registers an agent
 // type (its summary line, peek view, settings tabs and `run`); each agent made
 // from it has its own native-held key, an `agent-attention/v1` configuration the
@@ -190,6 +195,7 @@ import {
   type Team,
   type Unfinished,
 } from "./store";
+import { isHuddleRoom } from "../huddle/lifecycle";
 import { soloChat } from "./solo-chat";
 import {
   readCheckpoints,
@@ -1018,6 +1024,11 @@ export type AgentType<Config = unknown> = {
   protection?: true;
   /** Uses the agent's saved execution target for native process and file I/O. */
   execution?: true;
+  /** Starts a conversation that `Agents.assignConversationFolder` gave a
+   * folder in that folder, and refuses its turns while the folder is
+   * missing. `sessions` lists each conversation that has a session, which
+   * then gets no folder. Without it, its agents' conversations get none. */
+  conversationFolders?: true;
   /** Why protected runs must stop when this runtime cannot enforce the contract. */
   protectionUnavailable?: string;
   /** Fully retires native sessions for this membership key before policy changes. */
@@ -1556,6 +1567,25 @@ export type Agents = {
     place: SessionPlace,
     action: SessionControlAction,
   ): Promise<void>;
+  /** Gives one conversation of the owner's local agent its own working
+   * folder, before its first turn: its session starts there, with that
+   * folder's repository configuration, and the agent's workspace stays
+   * reachable. `place` names the conversation as session controls do; a DM
+   * or Solo chat has no root, and rejects one, as a huddle room rejects any
+   * folder. `path` is absolute or `~/…` and must be an
+   * existing directory. Resolves with the folder, without symbolic links.
+   * Kept on this device only, and set once: the same folder again resolves,
+   * another rejects, as does a conversation that already has a session.
+   * Requires `host.files`. Rejects for a harness without conversation
+   * folders, or an agent on an execution target. A folder that
+   * is later removed makes the conversation's next turn fail, naming it. */
+  assignConversationFolder(
+    agent: AgentKey,
+    place: SessionPlace,
+    path: string,
+  ): Promise<string>;
+  /** The folder `assignConversationFolder` gave the conversation, if any. */
+  conversationFolder(agent: AgentKey, place: SessionPlace): string | undefined;
   /** Has a hosted agent's provider stop its turn in one conversation. False
    * when nothing there was running. */
   interrupt(
@@ -4743,6 +4773,89 @@ export class AgentsService extends Service implements Agents {
           : undefined,
       );
     });
+  }
+
+  async assignConversationFolder(
+    key: AgentKey,
+    place: SessionPlace,
+    path: string,
+  ) {
+    const host = this.ctx.host;
+    if (!this.ctx.pluginOwner || !host?.resolveDirectory)
+      throw new Error("Only a desktop plugin assigns a conversation folder");
+    const { scope, agent, conversation } = this.folderPlace(key, place);
+    const type = this.types().find((kind) => kind.key === agent.type);
+    if (!type?.conversationFolders)
+      throw new Error(
+        `${type?.title ?? "This"} agents do not support conversation folders`,
+      );
+    if (await this.executions.inspect(key))
+      throw new Error(
+        "Conversation folders are unavailable for agents on an execution target",
+      );
+    // Harnesses run a DM or Solo chat as one conversation, so a root would
+    // name a conversation that never runs. They key a huddle room's
+    // conversations differently, so none gets a folder.
+    const reads = ownerReads(this.relay(key), pubkeyOf(key));
+    const channel = await reads?.channel(place.channelId);
+    if (isHuddleRoom(channel?.about))
+      throw new Error("Conversation folders are unavailable in a huddle");
+    if (
+      place.root &&
+      (channel?.dm ||
+        (await reads?.soloChat(
+          agent.owner,
+          place.channelId,
+          new AbortController().signal,
+        )))
+    )
+      throw new Error(
+        "A DM or Solo chat is one conversation: give its folder without a root",
+      );
+    // With the calling plugin's own file access, which the host checks.
+    const folder = await host.resolveDirectory(path, { create: false });
+    // Its session's history stays where it began, so a folder given later
+    // would start it over.
+    if (
+      !storedFolder(this.storage, scope, key, conversation) &&
+      type.sessions
+        ?.list(key)
+        .some(
+          (session) =>
+            conversationKey(session.channelId, session.root) === conversation,
+        )
+    )
+      throw new Error(
+        "This conversation already started in the agent's workspace",
+      );
+    return assignFolder(this.storage, scope, key, conversation, folder);
+  }
+  conversationFolder(key: AgentKey, place: SessionPlace) {
+    try {
+      const { scope, conversation } = this.folderPlace(key, place);
+      return storedFolder(this.storage, scope, key, conversation);
+    } catch {
+      return undefined;
+    }
+  }
+  /** Where the owner's local agent keeps a conversation's folder: keyed as
+   * its harness keys the conversation's session. */
+  private folderPlace(key: AgentKey, place: SessionPlace) {
+    const agent = this.agent(key);
+    const type = agent && this.types().find((kind) => kind.key === agent.type);
+    if (!agent || !this.liveMember(key) || type?.remote)
+      throw new Error("No such local agent on this device");
+    const scope = ownerReads(this.relay(key), pubkeyOf(key))?.scope;
+    if (!scope) throw new Error("The agent's community is not connected");
+    const channel = type?.sessionControls?.scope(agent) === "channel";
+    return {
+      scope,
+      agent,
+      conversation: conversationKey(
+        place.channelId,
+        channel ? undefined : place.root,
+      ),
+    };
   }
 
   /** Whether the owner can stop a hosted agent's turn: its provider can. A

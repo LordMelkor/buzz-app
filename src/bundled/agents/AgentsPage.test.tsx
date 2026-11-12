@@ -387,6 +387,8 @@ function setup(
     interruptible: () => false,
     hostedInstructions: () => undefined,
     interrupt: vi.fn(async () => false),
+    assignConversationFolder: vi.fn(async () => "/folder"),
+    conversationFolder: () => undefined,
     note: () => false,
     classifier: () => "unavailable",
     saveTeam: vi.fn(async (change: TeamChange) => {
