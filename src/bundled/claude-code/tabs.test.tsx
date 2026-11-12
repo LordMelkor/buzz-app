@@ -325,6 +325,14 @@ function applied({
     },
     agents: {
       storage,
+      harness: {
+        mcp: {
+          choice: async () => undefined,
+          started: vi.fn(),
+          call: async () => undefined,
+          ran: () => false,
+        },
+      },
       executionBinding: () => (remote ? { provider: "nexus/blox" } : undefined),
       inspectExecution: vi.fn(async () =>
         remote ? { provider: "nexus/blox" } : undefined,
