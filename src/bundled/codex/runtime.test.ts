@@ -102,7 +102,13 @@ function fixture(
     handle: ConstructorParameters<typeof CodexRuntime>[13];
   },
   resolveDirectory?: ConstructorParameters<typeof CodexRuntime>[14],
+  mcp?: ConstructorParameters<typeof CodexRuntime>[15],
 ) {
+  /** The servers `config/read` lists, and the rows a thread's status answers. */
+  const servers: Record<string, unknown> = {
+    "company.tools": { command: "secret-tool", enabled: true, url: null },
+  };
+  const statusRows: { rows: unknown[] } = { rows: [] };
   let terminals = remainingTerminals;
   let options: HostProcessOptions | undefined;
   let thread = 0;
@@ -200,15 +206,11 @@ function fixture(
         result = {
           config: {
             ...configured,
-            mcp_servers: {
-              "company.tools": {
-                command: "secret-tool",
-                enabled: true,
-                url: null,
-              },
-            },
+            mcp_servers: servers,
           },
         };
+      if (request.method === "mcpServerStatus/list")
+        result = { data: statusRows.rows, nextCursor: null };
       if (request.method === "thread/start")
         result = { thread: { id: `thread-${++thread}`, cwd: params.cwd } };
       if (request.method === "thread/resume")
@@ -419,6 +421,7 @@ function fixture(
     security?.host,
     security?.handle,
     resolveDirectory,
+    mcp,
   );
   runtimes.push(runtime);
   const events: EventData[] = [];
@@ -541,6 +544,7 @@ function fixture(
       agentProtection: { registerModels: vi.fn() },
       host: { spawn },
       agents: {
+        harness: { mcp: undefined },
         executionBinding: () => undefined,
         inspectExecution: async () => undefined,
         execution: async () => undefined,
@@ -689,6 +693,8 @@ function fixture(
     failing,
     failures,
     held,
+    servers,
+    statusRows,
     emit,
     publish,
     read,
@@ -1204,6 +1210,7 @@ it("shares model discovery with active turns and another agent", async () => {
 
 function protectedPreview(
   resolveDirectory?: ConstructorParameters<typeof CodexRuntime>[14],
+  mcp?: ConstructorParameters<typeof CodexRuntime>[15],
 ) {
   const engine = () => {
     const next = fixture();
@@ -1252,6 +1259,7 @@ function protectedPreview(
       handle: (key) => (key === pubkey ? handle : undefined),
     },
     resolveDirectory,
+    mcp,
   );
   const original = {
     ...f.delivery("unused").agent,
@@ -7668,5 +7676,554 @@ describe("a conversation given its own folder", () => {
     );
     f.complete(0, "DONE");
     await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(1));
+  });
+});
+
+/** What the owner's choice and the harness's status look like to an adapter. */
+type McpKit = NonNullable<ConstructorParameters<typeof CodexRuntime>[15]>;
+const mcpKit = (
+  answer: Awaited<ReturnType<McpKit["choice"]>>,
+  started: McpKit["started"] = vi.fn(),
+) => ({ choice: vi.fn(async () => answer), started }) satisfies McpKit;
+const server = (name: string, extra: object = {}) => [
+  name,
+  { command: `run-${name}`, enabled: true, url: null, ...extra },
+];
+const withServers = (f: ReturnType<typeof fixture>, ...named: string[]) => {
+  for (const key of Object.keys(f.servers)) delete f.servers[key];
+  Object.assign(f.servers, Object.fromEntries(named.map((n) => server(n))));
+};
+const threadConfig = (f: ReturnType<typeof fixture>, index = 0) =>
+  (
+    f.sent.filter((wire) => wire.method === "thread/start")[index]?.params as
+      | { config: Record<string, unknown> }
+      | undefined
+  )?.config ?? {};
+const off = (name: string) => ({ command: `run-${name}`, enabled: false });
+const statusCalls = (f: ReturnType<typeof fixture>) =>
+  f.sent.filter((wire) => wire.method === "mcpServerStatus/list");
+
+describe("harness MCP choice", () => {
+  it("starts exactly as before when nothing chooses", async () => {
+    const plain = fixture();
+    await plain.runtime.run(plain.delivery("@Codex hello"));
+    await vi.waitFor(() => expect(plain.starts()).toHaveLength(1));
+    const kit = mcpKit(undefined);
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      kit,
+    );
+    await f.runtime.run(f.delivery("@Codex hello"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    expect(kit.choice).toHaveBeenCalledOnce();
+    expect(threadConfig(f)).toEqual(threadConfig(plain));
+    expect(threadConfig(f).mcp_servers).toEqual({
+      "company.tools": { command: "secret-tool", enabled: false },
+    });
+    expect(f.sent.map((wire) => wire.method)).toEqual(
+      plain.sent.map((wire) => wire.method),
+    );
+    expect(kit.started).not.toHaveBeenCalled();
+  });
+
+  it("leaves a server chosen on to its own configuration, and trims chosen tools", async () => {
+    const kit = mcpKit({ alpha: true, beta: ["write"], gamma: false });
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      kit,
+    );
+    withServers(f, "alpha", "beta", "gamma", "delta");
+    f.servers.beta = server("beta", { disabled_tools: ["delete"] })[1];
+    await f.runtime.run(f.delivery("@Codex hello"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    // Alpha has no entry, so `config.toml` applies; beta keeps its own list
+    // too; the rest stay off as before. Nothing is forced on.
+    expect(threadConfig(f).mcp_servers).toEqual({
+      beta: { disabled_tools: ["delete", "write"] },
+      gamma: off("gamma"),
+      delta: off("delta"),
+    });
+  });
+
+  it("never sends a name the harness does not list", async () => {
+    const kit = mcpKit({ ghost: true, phantom: ["x"], alpha: true });
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      kit,
+    );
+    withServers(f, "alpha", "beta");
+    await f.runtime.run(f.delivery("@Codex hello"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    expect(threadConfig(f).mcp_servers).toEqual({ beta: off("beta") });
+  });
+
+  it("turns every server off when the answer is none", async () => {
+    const kit = mcpKit("none");
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      kit,
+    );
+    withServers(f, "alpha", "beta");
+    await f.runtime.run(f.delivery("@Codex hello"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    expect(threadConfig(f).mcp_servers).toEqual({
+      alpha: off("alpha"),
+      beta: off("beta"),
+    });
+  });
+
+  it("reads the thread's status after it starts and before its first turn", async () => {
+    const started = vi.fn();
+    const kit = mcpKit({ alpha: true }, started);
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      kit,
+    );
+    withServers(f, "alpha", "beta");
+    f.statusRows.rows = [
+      {
+        name: "alpha",
+        runtimeStatus: "connected",
+        tools: { read: {}, write: {} },
+      },
+      { name: "beta", runtimeStatus: "disabled", tools: {} },
+    ];
+    await f.runtime.run(f.delivery("@Codex hello"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    expect(statusCalls(f).map((wire) => wire.params)).toEqual([
+      { threadId: "thread-1", detail: "toolsAndAuthOnly" },
+    ]);
+    const order = f.sent.map((wire) => wire.method);
+    expect(order.indexOf("mcpServerStatus/list")).toBeGreaterThan(
+      order.indexOf("thread/start"),
+    );
+    expect(order.indexOf("mcpServerStatus/list")).toBeLessThan(
+      order.indexOf("turn/start"),
+    );
+    // A server that is off is not loaded, so only alpha is listed.
+    expect(started).toHaveBeenCalledWith(
+      expect.objectContaining({ key: pubkey }),
+      "thread-1",
+      [{ name: "alpha", tools: ["read", "write"] }],
+    );
+  });
+
+  it.each([
+    ["the kit refuses what loaded", () => undefined],
+    [
+      "the status cannot be read",
+      (f: ReturnType<typeof fixture>) => f.failing.add("mcpServerStatus/list"),
+    ],
+  ])("starts no turn when %s", async (_name, arrange) => {
+    const started = vi.fn(() => {
+      throw new Error("MCP servers loaded that were turned off");
+    });
+    const kit = mcpKit({ alpha: false }, started);
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      kit,
+    );
+    withServers(f, "alpha");
+    f.statusRows.rows = [
+      { name: "alpha", runtimeStatus: "connected", tools: {} },
+    ];
+    arrange(f);
+    await f.runtime.run(f.delivery("@Codex hello"));
+    await vi.waitFor(() =>
+      expect(f.sent.some((wire) => wire.method === "thread/unsubscribe")).toBe(
+        true,
+      ),
+    );
+    expect(f.starts()).toEqual([]);
+    expect(f.publish).toHaveBeenCalled();
+  });
+
+  it("does not count Buzz's own hook server as a loaded server", async () => {
+    const started = vi.fn();
+    const kit = mcpKit("none", started);
+    const hooks = {
+      serve: vi.fn(async () => ({
+        url: "http://127.0.0.1:1/mcp",
+        headers: [],
+        closed: new Promise<void>(() => {}),
+        close: async () => {},
+      })),
+      run: vi.fn(async () => ({})),
+    };
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      hooks,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      kit,
+    );
+    withServers(f, "alpha");
+    f.statusRows.rows = [
+      { name: "buzz_native_hooks", runtimeStatus: "connected", tools: {} },
+      { name: "alpha", runtimeStatus: "disabled", tools: {} },
+    ];
+    await f.runtime.run(f.delivery("@Codex hello"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    expect(started.mock.calls[0]?.[2]).toEqual([]);
+  });
+
+  it("starts the title thread with every listed server off, by name", async () => {
+    const kit = mcpKit({ alpha: true, beta: ["write"] });
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      kit,
+    );
+    withServers(f, "alpha", "beta", "gamma");
+    asSoloChat(f);
+    await f.runtime.run({ ...f.delivery("@Codex fix it"), named: vi.fn() });
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(2));
+    expect(threadConfig(f, 0).mcp_servers).toEqual({
+      beta: { disabled_tools: ["write"] },
+      gamma: off("gamma"),
+    });
+    expect(threadConfig(f, 1).mcp_servers).toEqual({
+      alpha: off("alpha"),
+      beta: off("beta"),
+      gamma: off("gamma"),
+    });
+  });
+
+  it("gives a protected worker the empty proof before its first turn", async () => {
+    const started = vi.fn();
+    const kit = mcpKit("none", started);
+    const f = protectedPreview(undefined, kit);
+    withServers(f.worker, "alpha");
+    f.worker.statusRows.rows = [
+      { name: "alpha", runtimeStatus: "disabled", tools: {} },
+    ];
+    if (!f.handle) throw new Error("Missing protected handle");
+    await f.runtime.run({
+      ...f.delivery("Summarize"),
+      agent: f.handle,
+      config: f.agent.config,
+    });
+    await vi.waitFor(() => expect(f.worker.starts()).toHaveLength(1));
+    expect(threadConfig(f.worker).mcp_servers).toEqual({ alpha: off("alpha") });
+    expect(started).toHaveBeenCalledWith(f.handle, "thread-1", []);
+    const order = f.worker.sent.map((wire) => wire.method);
+    expect(order.indexOf("mcpServerStatus/list")).toBeLessThan(
+      order.indexOf("turn/start"),
+    );
+  });
+
+  it("reads the same choice for a watch's one-off thread, before its turn", async () => {
+    const started = vi.fn();
+    const kit = mcpKit({ alpha: true }, started);
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      kit,
+    );
+    withServers(f, "alpha", "beta");
+    f.statusRows.rows = [
+      { name: "alpha", runtimeStatus: "connected", tools: {} },
+    ];
+    const delivery = f.delivery("unused");
+    void f.runtime.runOnce({
+      delivery,
+      key: "watch",
+      signal: delivery.signal,
+      prompt: async () => "check",
+    });
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    expect(threadConfig(f).mcp_servers).toEqual({ beta: off("beta") });
+    expect(started).toHaveBeenCalledWith(
+      expect.objectContaining({ key: pubkey }),
+      "thread-1",
+      [{ name: "alpha", tools: [] }],
+    );
+  });
+});
+
+describe("harness MCP report and inspect", () => {
+  const agentOf = (f: ReturnType<typeof fixture>, extra: object = {}) =>
+    ({
+      ...f.delivery("unused").agent,
+      config: f.delivery("unused").config,
+      ...extra,
+    }) as unknown as Agent;
+
+  it("names the servers from config/read, without any status call or turn", async () => {
+    const f = fixture();
+    withServers(f, "alpha", "beta");
+    f.servers.beta = server("beta", { enabled: false })[1];
+    const report = await f.runtime.harnessMcp(agentOf(f));
+    expect(report).toEqual({
+      tools: true,
+      servers: [
+        { name: "alpha", default: false },
+        { name: "beta", default: false, state: "disabled" },
+      ],
+    });
+    expect(statusCalls(f)).toEqual([]);
+    expect(f.starts()).toEqual([]);
+  });
+
+  it("adds the state and tools its last session's status showed", async () => {
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mcpKit({ alpha: true }),
+    );
+    withServers(f, "alpha", "beta");
+    f.statusRows.rows = [
+      {
+        name: "alpha",
+        runtimeStatus: "connected",
+        tools: { read: { description: "Reads" }, write: {} },
+      },
+      { name: "beta", runtimeStatus: "disabled", tools: {} },
+    ];
+    await f.runtime.run(f.delivery("@Codex hello"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    const report = await f.runtime.harnessMcp(agentOf(f));
+    expect(report?.servers).toEqual([
+      {
+        name: "alpha",
+        default: false,
+        state: "connected",
+        tools: [{ name: "read", description: "Reads" }, { name: "write" }],
+      },
+      { name: "beta", default: false, state: "disabled" },
+    ]);
+  });
+
+  it("forgets what a stopped agent's last session showed", async () => {
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mcpKit({ alpha: true }),
+    );
+    withServers(f, "alpha");
+    f.statusRows.rows = [
+      { name: "alpha", runtimeStatus: "connected", tools: { read: {} } },
+    ];
+    await f.runtime.run(f.delivery("@Codex hello"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    await f.runtime.retire(pubkey);
+    const report = await f.runtime.harnessMcp(agentOf(f));
+    expect(report?.servers).toEqual([{ name: "alpha", default: false }]);
+  });
+
+  it("starts no thread to close when the harness refuses to start one", async () => {
+    const f = fixture();
+    withServers(f, "alpha");
+    f.failing.add("thread/start");
+    await expect(f.runtime.inspectMcp(agentOf(f), "alpha")).rejects.toThrow(
+      "thread/start failed",
+    );
+    expect(f.sent.map((wire) => wire.method)).not.toContain(
+      "thread/unsubscribe",
+    );
+    expect(statusCalls(f)).toEqual([]);
+  });
+
+  it("reports and applies nothing on an execution target, and lists no server for a protected agent", async () => {
+    const f = fixture(
+      [],
+      undefined,
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => ({ provider: "test/guest" }),
+    );
+    await expect(f.runtime.harnessMcp(agentOf(f))).resolves.toBeUndefined();
+    await expect(f.runtime.inspectMcp(agentOf(f), "alpha")).rejects.toThrow(
+      "execution target",
+    );
+    const plain = fixture();
+    const protectedReport = await plain.runtime.harnessMcp(
+      agentOf(plain, { protection: { provider: "p", policy: {} } }),
+    );
+    expect(protectedReport?.servers).toEqual([]);
+    expect(plain.sent.map((wire) => wire.method)).not.toContain("config/read");
+  });
+
+  it("lists one server's tools on an ephemeral thread where every other server is off", async () => {
+    const f = fixture();
+    withServers(f, "alpha", "beta", "gamma");
+    f.statusRows.rows = [
+      {
+        name: "alpha",
+        runtimeStatus: "connected",
+        tools: { read: { description: "Reads" } },
+      },
+    ];
+    const before = [...f.storage.keys()];
+    await expect(f.runtime.inspectMcp(agentOf(f), "alpha")).resolves.toEqual([
+      { name: "read", description: "Reads" },
+    ]);
+    const start = f.sent.find((wire) => wire.method === "thread/start");
+    expect(start?.params).toMatchObject({
+      ephemeral: true,
+      sandbox: "read-only",
+      approvalPolicy: "never",
+    });
+    expect(threadConfig(f).mcp_servers).toEqual({
+      beta: off("beta"),
+      gamma: off("gamma"),
+    });
+    expect(statusCalls(f).map((wire) => wire.params)).toEqual([
+      { threadId: "thread-1", serverName: "alpha", detail: "toolsAndAuthOnly" },
+    ]);
+    expect(
+      f.sent.find((wire) => wire.method === "thread/unsubscribe")?.params,
+    ).toEqual({ threadId: "thread-1" });
+    expect(f.sent.map((wire) => wire.method)).not.toContain("turn/start");
+    expect([...f.storage.keys()]).toEqual(before);
+  });
+
+  it.each([
+    [
+      "does not connect",
+      (f: ReturnType<typeof fixture>) => {
+        f.statusRows.rows = [
+          {
+            name: "alpha",
+            runtimeStatus: "failed",
+            tools: {},
+            toolsError: "boom",
+          },
+        ];
+      },
+      "boom",
+    ],
+    [
+      "is not listed",
+      (f: ReturnType<typeof fixture>) => {
+        f.statusRows.rows = [];
+      },
+      "not listed",
+    ],
+    [
+      "cannot be asked",
+      (f: ReturnType<typeof fixture>) => {
+        f.failing.add("mcpServerStatus/list");
+      },
+      "failed",
+    ],
+  ])("closes the thread when the server %s", async (_name, arrange, text) => {
+    const f = fixture();
+    withServers(f, "alpha", "beta");
+    arrange(f);
+    await expect(f.runtime.inspectMcp(agentOf(f), "alpha")).rejects.toThrow(
+      text,
+    );
+    expect(
+      f.sent.find((wire) => wire.method === "thread/unsubscribe")?.params,
+    ).toEqual({ threadId: "thread-1" });
+    expect(f.sent.map((wire) => wire.method)).not.toContain("turn/start");
   });
 });

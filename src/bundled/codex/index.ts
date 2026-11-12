@@ -71,6 +71,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     ctx.host,
     (pubkey) => ctx.agents.handle(pubkey),
     ctx.host.resolveDirectory?.bind(ctx.host),
+    ctx.agents.harness.mcp,
   );
   // Failed turns' notices link to where Codex signs in.
   runtime.explain = (notice) =>
@@ -173,6 +174,10 @@ export const apply: PluginModule["apply"] = (ctx) => {
     },
     execution: true,
     hooks: { events: CODEX_HOOK_EVENTS },
+    harnessMcp: {
+      report: (agent) => runtime.harnessMcp(agent),
+      inspect: (agent, server) => runtime.inspectMcp(agent, server),
+    },
     retire: (pubkey) => runtime.retire(pubkey),
     protection: true,
     title: "Codex",

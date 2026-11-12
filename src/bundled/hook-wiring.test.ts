@@ -69,6 +69,7 @@ it.each(["claude", "codex", "pi"] as const)(
       host: { request: vi.fn(), serveMcp: vi.fn() },
       agents: {
         register: vi.fn(),
+        harness: { mcp: undefined },
         relay: () => undefined,
         subscribe: () => () => {},
         snapshot: () => ({ status: "ready", running: [] }),

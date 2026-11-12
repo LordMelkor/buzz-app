@@ -29,6 +29,7 @@ function applied(binding?: AgentExecutionBinding) {
     pluginOwner: { id: "buzz.codex", revision: "r1" },
     host: { spawn: vi.fn(), readFile: vi.fn(), request: vi.fn() },
     agents: {
+      harness: { mcp: undefined },
       executionBinding: () => binding,
       inspectExecution: async () => binding,
       execution: async () => undefined,
@@ -133,6 +134,7 @@ it("stops agents that stop running even when the agent list could not be read", 
     pluginOwner: { id: "buzz.codex" },
     host: { spawn: vi.fn(), request: vi.fn() },
     agents: {
+      harness: { mcp: undefined },
       executionBinding: () => undefined,
       inspectExecution: async () => undefined,
       execution: async () => undefined,
@@ -201,6 +203,7 @@ it("starts the server once Codex is updated and checked, only while a Codex agen
     pluginOwner: { id: "buzz.codex" },
     host: { spawn: vi.fn(), request: vi.fn() },
     agents: {
+      harness: { mcp: undefined },
       executionBinding: () => undefined,
       inspectExecution: async () => undefined,
       execution: async () => undefined,
