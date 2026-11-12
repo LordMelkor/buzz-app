@@ -398,6 +398,46 @@ it("lists a type's tools only for a known server of an unprotected agent", async
   ]);
 });
 
+it("checks again after the report, before a server starts", async () => {
+  const inspect = vi.fn(async () => [{ name: "read" }]);
+  let current: Agent = agent;
+  const types = () => [
+    {
+      key: "third/type",
+      harnessMcp: {
+        report: async () => {
+          // The agent turns protected while its type reports.
+          current = {
+            ...agent,
+            protection: { provider: "p", policy: {} },
+          } as Agent;
+          return report();
+        },
+        inspect,
+      },
+    } as never,
+  ];
+  const mcp = createHarnessMcp(
+    () => ({ isActive: () => true, subscribe: () => () => {} }) as never,
+    () => current,
+    types,
+  );
+  const { scope } = setup();
+  await expect(mcp.inspect(scope(), key, "alpha")).rejects.toThrow("protected");
+  const {
+    mcp: stopped,
+    scope: stoppedScope,
+    status,
+  } = setup({
+    harnessMcp: { report: async () => report(), inspect },
+  });
+  status.change({ active: false });
+  await expect(stopped.inspect(stoppedScope(), key, "alpha")).rejects.toThrow(
+    "not running",
+  );
+  expect(inspect).not.toHaveBeenCalled();
+});
+
 it("never lists tools for a protected agent or a type that cannot", async () => {
   const protectedAgent = {
     ...agent,

@@ -878,6 +878,7 @@ export class CodexRuntime {
 
   /** The servers `config/read` lists for the agent, which starts none. */
   private async mcpServers(agent: Agent) {
+    if (this.disposed) throw new Error("Codex runtime is disposed");
     const rpc = await this.open(this.handle(agent.key)).opening;
     const cwd = await this.workspace(
       this.resolveConfig(agent.config).workspace,
@@ -926,6 +927,8 @@ export class CodexRuntime {
   async inspectMcp(agent: Agent, server: string) {
     if (await this.inspect?.(agent.key))
       throw new Error("An execution target reports no MCP servers");
+    if (agent.protection)
+      throw new Error("A protected agent loads no MCP server");
     const { rpc, cwd, servers } = await this.mcpServers(agent);
     const started = await rpc.request<{ thread: { id: string } }>(
       "thread/start",
@@ -2221,6 +2224,7 @@ export class CodexRuntime {
       server.threads.set(once.threadId, agent.key);
       signal.throwIfAborted();
       await this.verifyMcp(rpc, agent, once.threadId, applied);
+      signal.throwIfAborted();
       if (!delivery.current()) return { ok: true };
       const turnStarted = await rpc.request<{ turn: { id: string } }>(
         "turn/start",
@@ -3032,6 +3036,7 @@ export class CodexRuntime {
         name: sessionName(agent, request.conversation),
       });
       await this.verifyMcp(rpc, agent, threadId, applied);
+      signal.throwIfAborted();
       return {
         threadId,
         workspace,
@@ -3048,11 +3053,8 @@ export class CodexRuntime {
         fresh,
       };
     } catch (error) {
-      if (threadId) {
-        if (server.threads.get(threadId) === agent.key)
-          server.threads.delete(threadId);
+      if (threadId)
         await rpc.request("thread/unsubscribe", { threadId }).catch(() => {});
-      }
       await bridge?.close();
       throw error;
     }

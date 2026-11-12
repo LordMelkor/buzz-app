@@ -231,7 +231,14 @@ export function createHarnessMcp(
       const report = await found.mcp.report(found.agent);
       if (!report?.servers.some(({ name }) => name === server))
         throw new Error(`The harness has no MCP server named ${server}`);
-      const tools = await found.mcp.inspect(found.agent, server);
+      // The agent may have changed, or the plugin stopped, while it reported.
+      const now = reporter(key);
+      if (!now?.mcp.inspect || now.agent.protection)
+        throw new Error("A protected agent loads no MCP server");
+      const owner = ctx.pluginOwner;
+      if (!owner || !status().isActive(owner.id, owner.revision))
+        throw new Error("The plugin that asked is not running");
+      const tools = await now.mcp.inspect(now.agent, server);
       seen.set(slot(key, server), tools);
       return tools;
     },
