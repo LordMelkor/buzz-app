@@ -929,8 +929,9 @@ function createQueue(session: RelaySession) {
         continue;
       }
       // A channel keeps each agent's rows in order, so one agent's queue
-      // never holds a row for another.
-      if (!rows.length) blockers(channelId, []);
+      // never holds a row for another. Its waits are recorded even when no
+      // row can go yet, such as one being edited.
+      blockers(channelId, []);
       const next = rows.find(
         (entry, index) =>
           !rows

@@ -472,6 +472,37 @@ it("holds a channel row for a typing-only agent through a typing gap", () => {
   }
 });
 
+it("sees an agent's typing while its only channel row cannot go yet", () => {
+  vi.useFakeTimers();
+  try {
+    const h = fixture();
+    let ready = false;
+    const entry = { ...h.entry("next"), ready: () => ready };
+    h.remote("working");
+    h.queue.submit(entry);
+    // While the row is still being prepared, its turn ends, the agent starts
+    // typing, and a progress reply clears the typing.
+    h.remote("ended");
+    h.typing([
+      {
+        agent: "agent",
+        channelId: "chat",
+        startedAt: 1,
+        threadRootId: undefined,
+        working: true,
+      },
+    ]);
+    h.typing([]);
+    ready = true;
+    h.typing([]);
+    expect(entry.publish).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(5_002);
+    expect(entry.publish).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it.each([
   ["typing that lasted long before it cleared", false],
   ["an agent whose earlier work is finished", true],
