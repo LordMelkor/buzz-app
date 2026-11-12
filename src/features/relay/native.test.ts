@@ -872,7 +872,9 @@ it.each(["message", "reaction"] as const)(
 
 it("exposes workflow history over the purpose-bound native route and workflow write kinds", async () => {
   const transport = await connectNativeTransport(community);
-  expect(nativeWriteKinds).toEqual(expect.arrayContaining([30620, 46020, 5]));
+  expect(nativeWriteKinds).toEqual(
+    expect.arrayContaining([30620, 46020, 5, 48103]),
+  );
   expect(transport.writer?.kinds).toEqual(nativeWriteKinds);
   assert.exists(transport.workflows);
   const id = "11111111-1111-4111-8111-111111111111";

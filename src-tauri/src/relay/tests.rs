@@ -4652,3 +4652,33 @@ async fn a_plugin_request_refused_without_the_users_sign_in_is_not_their_refusal
         }
     }
 }
+
+#[test]
+fn huddle_end_requires_one_parent_and_a_distinct_room() {
+    let parent = "00000000-0000-4000-8000-000000000001";
+    let room = "00000000-0000-4000-8000-000000000002";
+    let mut event = EventTemplate {
+        kind: 48103,
+        created_at: 1,
+        content: serde_json::json!({"ephemeral_channel_id": room}).to_string(),
+        tags: vec![vec!["h".into(), parent.into()]],
+    };
+    assert!(validate_event("https://relay.test", &event).is_ok());
+    event
+        .tags
+        .push(vec!["client-id".into(), uuid::Uuid::new_v4().to_string()]);
+    event.tags.push(vec!["ms".into(), "999".into()]);
+    assert!(validate_event("https://relay.test", &event).is_ok());
+    event.tags.push(vec!["h".into(), room.into()]);
+    assert!(validate_event("https://relay.test", &event).is_err());
+    event.tags.pop();
+    for content in [
+        "{}".to_string(),
+        "bad".into(),
+        serde_json::json!({"ephemeral_channel_id":parent}).to_string(),
+        serde_json::json!({"ephemeral_channel_id":"bad"}).to_string(),
+    ] {
+        event.content = content;
+        assert!(validate_event("https://relay.test", &event).is_err());
+    }
+}

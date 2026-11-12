@@ -395,6 +395,39 @@ fn validate_event(community: &str, event: &EventTemplate) -> Result<()> {
         if !event.content.is_empty() || !scoped {
             return Err("Invalid typing indicator".into());
         }
+    } else if event.kind == 48103 {
+        let body = serde_json::from_str::<serde_json::Value>(&event.content).ok();
+        let room = body
+            .as_ref()
+            .and_then(|body| body.get("ephemeral_channel_id"))
+            .and_then(|id| id.as_str());
+        let tags: Vec<_> = event
+            .tags
+            .iter()
+            .filter(|tag| !matches!(tag.first().map(String::as_str), Some("client-id" | "ms")))
+            .collect();
+        let valid = event
+            .tags
+            .iter()
+            .all(|tag| match tag.first().map(String::as_str) {
+                Some("client-id") => {
+                    matches!(tag.as_slice(), [_, id] if uuid::Uuid::parse_str(id).is_ok())
+                }
+                Some("ms") => {
+                    matches!(tag.as_slice(), [_, ms] if ms.parse::<u16>().is_ok_and(|ms| ms < 1000))
+                }
+                _ => true,
+            })
+            && matches!(tags.as_slice(), [tag] if matches!(tag.as_slice(), [name, parent]
+            if name == "h" && uuid::Uuid::parse_str(parent).is_ok()
+                && room.is_some_and(|room| room != parent && uuid::Uuid::parse_str(room).is_ok())))
+            && body
+                .as_ref()
+                .and_then(|body| body.as_object())
+                .is_some_and(|body| body.len() == 1);
+        if !valid {
+            return Err("Invalid Huddle ending".into());
+        }
     } else if event.kind == 20003 {
         // Owner presence for agents: a status and one `p` tag per agent; the
         // relay keeps only the agents the signer owns.
