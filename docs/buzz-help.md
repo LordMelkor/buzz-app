@@ -1461,6 +1461,13 @@ even when no session is connected; it asks you to confirm first. Full access req
 
 On desktop, **Connect [agent name]** may appear inside a DM with an old agent you own that is available to import from this computer. It preselects compatible saved harness, provider and model choices, and preserves saved effort settings. Choose another harness if the old type is unavailable or does not support inline connection setup; settings that were not saved use the selected type’s defaults. Review the inline controls; **Connect** stays disabled until the harness has a resolved model and provider, including usable defaults. If a saved Codex model is unavailable, choose another model or harness to continue. Complete installation or sign-in if prompted, stop the agent in old Buzz, then choose **Connect**. Your agent keeps its identity and conversation. This does not resend earlier messages. The same private card can appear in a channel or thread after you send a new mention of an eligible agent you own while that conversation is open, if that agent is still a member of the channel. Loading older mentions does not show cards, and known-archived agents are excluded. Only you see it, once per agent in the loaded conversation. Choose the **X** in the card’s top-right corner to hide that agent’s card in this conversation; the dismissal survives reopening and reloads. After connecting, **Ask the agent to respond** explicitly queues a follow-up addressed only to that agent in the original message’s thread; it does not automatically replay your request. If no prompt appears, use **Agents → New agent → Import an agent**.
 
+## Choosing a channel for a workflow
+
+When creating a workflow, direct-message choices use participant names when available. Search
+matches the displayed participant name. When no participant name is available, Buzz shows a short
+public-key prefix. A direct message with yourself is labeled **Notes to self**.
+These labels only help identify the conversation you select.
+
 ## Deleting an agent’s workflow
 
 In **Workflows → Owner → All channel workflows**, open the workflow’s actions
