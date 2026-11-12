@@ -48,6 +48,13 @@ export class PluginRuntime {
     root.provide("pluginStatus", {
       isActive: this.isActive,
       subscribe: this.subscribe,
+      agentMcpUnavailable: () =>
+        [...this.entries.values()].some(
+          ({ plugin, cancelled }) =>
+            !cancelled &&
+            plugin.manifest.host?.agentMcp &&
+            !this.isActive(plugin.manifest.id, plugin.revision),
+        ),
       settled: () =>
         !configuring() &&
         Object.values(this.states).every(({ status }) => status !== "starting"),
@@ -161,6 +168,9 @@ export class PluginRuntime {
         agentExecution: Object.freeze([
           ...(entry.plugin.manifest.host?.agentExecution ?? []),
         ]),
+        ...(entry.plugin.manifest.host?.agentMcp
+          ? { agentMcp: true as const }
+          : {}),
       });
       // The loader runs only the host's own module for a bundled source.
       const scope = this.root.extend({

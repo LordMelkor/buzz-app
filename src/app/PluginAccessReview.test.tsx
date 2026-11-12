@@ -102,6 +102,29 @@ it.each([
   },
 );
 
+it("discloses agent MCP access as a new permission", () => {
+  render(
+    <PluginAccessReview
+      manifest={{
+        id: "policy",
+        name: "Policy",
+        apiVersion: 1,
+        host: { agentMcp: true },
+      }}
+      previousManifest={{ id: "policy", name: "Policy", apiVersion: 1 }}
+    />,
+  );
+  const added = within(
+    screen.getByRole("region", { name: "Added declarations" }),
+  );
+  expect(
+    added.getByRole("button", {
+      name: /Choose which MCP servers your agents load/,
+    }),
+  ).toBeVisible();
+  expect(added.getByText(/Cannot add or call servers/)).toBeVisible();
+});
+
 it("shows a registered harness title while keeping its exact key in details", async () => {
   const types = [{ key: "third/custom", title: "Custom Agent" }];
   const agents = {

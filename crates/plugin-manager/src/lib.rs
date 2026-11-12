@@ -69,6 +69,9 @@ pub struct HostGrants {
     /// Execution targets may run these native agent types.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_execution: Vec<String>,
+    /// The plugin may choose which of the agent types' own MCP servers load.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_mcp: bool,
     #[serde(default)]
     pub commands: Vec<HostCommand>,
     #[serde(default)]
@@ -3110,5 +3113,24 @@ mod tests {
                 assert_eq!(manifest.validate().is_ok(), valid);
             }
         }
+    }
+    #[test]
+    fn reads_agent_mcp_as_a_boolean_grant() {
+        let read = |value| {
+            serde_json::from_value::<super::Manifest>(serde_json::json!({
+                "id": "policy", "name": "Policy", "apiVersion": 1,
+                "host": { "agentMcp": value },
+            }))
+        };
+        let on = read(serde_json::json!(true)).unwrap();
+        assert!(on.host.as_ref().unwrap().agent_mcp);
+        assert!(on.validate().is_ok());
+        assert_eq!(serde_json::to_value(&on).unwrap()["host"]["agentMcp"], true);
+        let off = read(serde_json::json!(false)).unwrap();
+        assert!(!off.host.as_ref().unwrap().agent_mcp);
+        assert!(serde_json::to_value(&off).unwrap()["host"]
+            .get("agentMcp")
+            .is_none());
+        assert!(read(serde_json::json!("true")).is_err());
     }
 }

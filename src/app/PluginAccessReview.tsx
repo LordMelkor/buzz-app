@@ -73,6 +73,24 @@ function hostDeclarations(
       icon: PlugIcon,
       details: <code className={styles.sourcePath}>{harness}</code>,
     })),
+    ...(manifest.host?.agentMcp
+      ? [
+          {
+            key: "agentMcp",
+            signature: "Agent MCP servers: choose which load",
+            title: "Agent MCP servers:",
+            label: "Choose which MCP servers your agents load",
+            hint: "Choose which of your harnesses' MCP servers your agents load, including servers Buzz leaves off. Cannot add or call servers.",
+            icon: PlugIcon,
+            details: (
+              <p className="m-0">
+                Sees each agent's MCP server names, state and tools. Never
+                receives a server's command, address or sign-in.
+              </p>
+            ),
+          },
+        ]
+      : []),
     ...(manifest.host?.commands ?? []).map((command) => ({
       key: `command:${command.id}`,
       signature: `Command ${command.id}: ${JSON.stringify([command.program, ...command.args])} · input: ${command.maxInputBytes === undefined ? "none" : `up to ${command.maxInputBytes} bytes`} · output: up to ${command.maxOutputBytes ?? 4096} bytes`,

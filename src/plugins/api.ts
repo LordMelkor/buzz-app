@@ -23,6 +23,9 @@ export type PluginManifest = Readonly<{
     agentHooks?: readonly string[];
     /** Offer execution targets for these native agent type keys. */
     agentExecution?: readonly string[];
+    /** Choose which of the harnesses' own MCP servers agents load. Cannot add
+     * or call servers. */
+    agentMcp?: boolean;
     commands?: readonly Readonly<{
       id: string;
       program: string;
@@ -99,6 +102,7 @@ declare module "@deepseek-ai/cordis" {
       revision: string;
       agentHooks?: readonly string[];
       agentExecution?: readonly string[];
+      agentMcp?: true;
     }>;
   }
 }

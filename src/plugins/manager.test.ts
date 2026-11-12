@@ -134,6 +134,44 @@ it("keeps startup unsettled until the catalog is read and its plugins start", as
   expect(pages.snapshot()).toHaveLength(1);
   expect(root.pluginStatus.settled?.()).toBe(true);
 });
+it("reports an enabled agent MCP plugin that is not running, until it runs or is turned off", async () => {
+  const withGrant = (enabled: boolean): StorageResult => {
+    const catalog = ready(enabled);
+    if (catalog.status !== "ready") throw new Error("not ready");
+    const [plugin] = catalog.catalog.plugins;
+    if (plugin)
+      plugin.manifest = { ...plugin.manifest, host: { agentMcp: true } };
+    return catalog;
+  };
+  let failing = true;
+  const catalog = vi.fn<PluginStorage["getCatalog"]>(async () =>
+    withGrant(true),
+  );
+  const { root, plugins } = harness(
+    {
+      getCatalog: catalog,
+      changePlugin: vi.fn(async () => withGrant(false)),
+    },
+    () => failing,
+  );
+  const unavailable = () => root.pluginStatus.agentMcpUnavailable?.();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(plugins.snapshot().activation.example?.status).toBe("failed");
+  expect(unavailable()).toBe(true);
+  failing = false;
+  plugins.retryPlugin("example");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(plugins.snapshot().activation.example?.status).toBe("active");
+  expect(unavailable()).toBe(false);
+  await plugins.change("disable", "example");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(unavailable()).toBe(false);
+});
+it("does not report a plugin that does not declare agent MCP access", async () => {
+  const { root } = harness({}, true);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(root.pluginStatus.agentMcpUnavailable?.()).toBe(false);
+});
 it("keeps startup unsettled while a failed catalog read retries, but not in recovery the user must act on", async () => {
   const { root, pages } = harness({
     getCatalog: vi
