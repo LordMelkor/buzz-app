@@ -234,7 +234,7 @@ Runtime types declare `protection: true` only when every supported model request
 tool execution and tool result passes `AgentHandle.protection`. Their `retire(key)`
 method (with the membership key, not its bare public key) must fully end existing native sessions before a policy changes. Missing
 coverage refuses protected runs and session mutations, with the type's explicit
-`protectionUnavailable` reason. Shared Buzz tool dispatch also gates exact input
+`protectionUnavailable` reason. Protected sessions load no native MCP server; a type that reports its MCP servers must show an empty listing before a protected session's first prompt ([harness MCP servers](harness-mcp.md)). Shared Buzz tool dispatch also gates exact input
 snapshots and returned output/errors. It does not ask again about a call that a
 runtime's native tool gate already reviewed with identical arguments; a captured
 file body changes them, so that call is still reviewed.

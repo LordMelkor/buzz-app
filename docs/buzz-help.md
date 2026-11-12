@@ -1165,6 +1165,12 @@ available rather than silently discarding it.
   where you use them. Agents work in their **Workspace** folder (`~/.buzz` by
   default), so keep those servers out of that folder, the folders above it,
   and any Git repository it is in.
+- With a plugin that has MCP server access installed and enabled, you can choose
+  which of your harness's MCP servers an agent's sessions load, including ones
+  Buzz leaves off. The plugin cannot add or call servers. Protected agents load
+  none. If that plugin is enabled but not running, new sessions load none until
+  it runs. Without such a plugin nothing changes: each harness loads the servers
+  in its own configuration, as before.
 - **Settings → Agent details → Previous versions** expands saved revisions for
   agents whose configuration syncs here. Settings and instructions appear together
   in one feed, newest first, with a label on each version. Versions are kept
