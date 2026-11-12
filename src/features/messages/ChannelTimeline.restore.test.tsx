@@ -258,6 +258,7 @@ function mount(bottom = false, revealOnMount = false, anchorLoaded = true) {
 }
 
 /** `reading`: this list's own dwell can mark rows read, as the real store would. */
+type HeadReadState = "pending" | "verified" | "deferred" | "error";
 function boundaryFixture({ reading = false } = {}) {
   const viewer = keypair(),
     peer = keypair(),
@@ -409,7 +410,32 @@ function boundaryFixture({ reading = false } = {}) {
         }
       : {}),
   };
-  const session = { ...owner.session, channels, unread };
+  // The session's catch-up head reads, as its live view reports them.
+  let headReads: { channelId: string; state: HeadReadState }[] = [];
+  const liveListeners = new Set<() => void>();
+  const live = {
+    ...owner.session.live,
+    snapshot: () => ({ ...owner.session.live.snapshot(), heads: headReads }),
+    subscribe(listener: () => void) {
+      liveListeners.add(listener);
+      const stop = owner.session.live.subscribe(listener);
+      return () => {
+        liveListeners.delete(listener);
+        stop();
+      };
+    },
+  };
+  /** Report the channel's catch-up head read; undefined is none owed. */
+  function headRead(state: HeadReadState | undefined, channelId = "c") {
+    headReads = [
+      ...headReads.filter((head) => head.channelId !== channelId),
+      ...(state ? [{ channelId, state }] : []),
+    ];
+    act(() => {
+      for (const listener of [...liveListeners]) listener();
+    });
+  }
+  const session = { ...owner.session, channels, unread, live };
   function row(
     event: RelayEvent,
     channelId = "c",
@@ -438,6 +464,8 @@ function boundaryFixture({ reading = false } = {}) {
     hasMore = false,
     active = true,
     presented = true,
+    // What the store reports instead of a ready, verified page.
+    state: Partial<ChannelWindow> = {},
   ) {
     const window: ChannelWindow = {
       channelId,
@@ -448,6 +476,7 @@ function boundaryFixture({ reading = false } = {}) {
       historyLimited: false,
       error: undefined,
       rows,
+      ...state,
     };
     windows.set(channelId, window);
     return (
@@ -503,6 +532,7 @@ function boundaryFixture({ reading = false } = {}) {
     enterChannel,
     subscribers: () => ({ unread: listeners.size, sync: syncListeners.size }),
     completeReadStateSnapshot,
+    headRead,
     async completeEntry() {
       const entry = entries.find((candidate) => !candidate.settled);
       if (!entry) throw new Error("No pending channel entry");
@@ -927,6 +957,204 @@ it("a read-intent change from elsewhere during the held wait still settles with 
   }
 });
 
+// The page states a visit waits in for the head read that verifies its rows.
+// `entered` is what the visit is captured on; the store reports `waiting`
+// once the channel's load effect has run.
+const awaitedPages: {
+  name: string;
+  entered: Partial<ChannelWindow>;
+  waiting: Partial<ChannelWindow>;
+  /** The read is the session's catch-up, which the page does not report. */
+  catchUp?: true;
+}[] = [
+  {
+    name: "a revisit refresh past the head's freshness lease",
+    entered: {},
+    waiting: { refreshing: true },
+  },
+  {
+    name: "saved rows whose head read is running",
+    entered: { freshness: "cached" },
+    waiting: { freshness: "cached", refreshing: true },
+  },
+  {
+    name: "cached rows whose catch-up read is queued",
+    entered: { freshness: "cached" },
+    waiting: { freshness: "cached" },
+    catchUp: true,
+  },
+  {
+    // The store marks a page verified when an older page lands, with the
+    // head still unread: these rows are not yet what the reader enters on.
+    name: "rows an older page verified while the catch-up read is queued",
+    entered: { freshness: "cached" },
+    waiting: {},
+    catchUp: true,
+  },
+  {
+    // The retry keeps the earlier error until it settles.
+    name: "a retry of a failed head read",
+    entered: { freshness: "cached", error: "Relay read failed" },
+    waiting: {
+      freshness: "cached",
+      error: "Relay read failed",
+      refreshing: true,
+    },
+  },
+];
+
+/** A focused reader at the bottom of rows that wait for their head read, with
+ * two unread arrivals below a row catch-up read. One dwell has elapsed. */
+async function pageReader({
+  entered,
+  waiting,
+  catchUp,
+}: Pick<(typeof awaitedPages)[number], "entered" | "waiting" | "catchUp">) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const h = boundaryFixture({ reading: true });
+  if (catchUp) h.headRead("pending");
+  const read = h.row(message(h.peer, "c", "Read before leaving", 2));
+  const first = h.row(message(h.peer, "c", "First unread arrival", 3));
+  const later = h.row(message(h.peer, "c", "Later unread arrival", 4));
+  h.unreadIds.add(first.id);
+  h.unreadIds.add(later.id);
+  h.completeReadStateSnapshot();
+  h.publish();
+  const page = (state: Partial<ChannelWindow> = {}) =>
+    h.tree("c", [read, first, later], false, true, true, state);
+  const mounted = render(page(entered));
+  mounted.rerender(page(waiting));
+  await h.completeEntry();
+  await h.focusReader();
+  await h.dwell();
+  return { h, mounted, page, later };
+}
+
+it.each(awaitedPages)(
+  "holds this list's reading while the boundary waits for the page's head read, then reads once it is placed: $name",
+  async (states) => {
+    const { h, mounted, page, later } = await pageReader(states);
+    try {
+      // Without the hold, catch-up's read would advance the read revision
+      // before the head read lands, and the visit would settle with no line.
+      expect(h.catchUp).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(
+        screen.queryByRole("separator", { name: "New messages" }),
+      ).toBeNull();
+
+      mounted.rerender(page());
+      if (states.catchUp) h.headRead("verified");
+      h.publish();
+      expect(
+        precedes(divider(), screen.getByText("First unread arrival")),
+      ).toBe(true);
+      expect(precedes(screen.getByText("Read before leaving"), divider())).toBe(
+        true,
+      );
+      expect(h.catchUp).not.toHaveBeenCalled();
+
+      // The hold lifting starts dwell on its own.
+      await h.dwell();
+      expect(h.catchUp).toHaveBeenCalledWith(later.id, undefined);
+      expect(
+        precedes(divider(), screen.getByText("First unread arrival")),
+      ).toBe(true);
+    } finally {
+      mounted.unmount();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it.each(awaitedPages)(
+  "resumes this list's reading with no boundary when the page's head read fails: $name",
+  async (states) => {
+    const { h, mounted, page, later } = await pageReader(states);
+    try {
+      expect(h.catchUp).not.toHaveBeenCalled();
+      // A failed head read leaves the rows unverified and reports its error.
+      mounted.rerender(
+        page({ freshness: "cached", error: "Relay read failed" }),
+      );
+      if (states.catchUp) h.headRead("error");
+      await h.dwell();
+      expect(h.catchUp).toHaveBeenCalledWith(later.id, undefined);
+      expect(
+        screen.queryByRole("separator", { name: "New messages" }),
+      ).toBeNull();
+
+      // Reading has changed the evidence, so a later read places no line.
+      mounted.rerender(page());
+      h.publish();
+      expect(
+        screen.queryByRole("separator", { name: "New messages" }),
+      ).toBeNull();
+    } finally {
+      mounted.unmount();
+      vi.useRealTimers();
+    }
+  },
+);
+
+// A catch-up cancelled by an access change elsewhere ends as deferred with no
+// error on the page, and a saved session that cannot connect never reads at
+// all. Nothing will verify those rows, so nothing may wait for it.
+it.each([
+  { name: "cancelled", head: "deferred" as const },
+  { name: "never sent", head: undefined },
+])(
+  "resumes this list's reading on unverified rows whose head read is $name",
+  async ({ head }) => {
+    const { h, mounted, later } = await pageReader({
+      entered: { freshness: "cached" },
+      waiting: { freshness: "cached" },
+      catchUp: true,
+    });
+    try {
+      expect(h.catchUp).not.toHaveBeenCalled();
+      h.headRead(head);
+      await h.dwell();
+      expect(h.catchUp).toHaveBeenCalledWith(later.id, undefined);
+      expect(
+        screen.queryByRole("separator", { name: "New messages" }),
+      ).toBeNull();
+    } finally {
+      mounted.unmount();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("does not carry the page hold into the next channel", async () => {
+  const { h, mounted } = await pageReader({
+    entered: {},
+    waiting: { refreshing: true },
+  });
+  try {
+    expect(h.catchUp).not.toHaveBeenCalled();
+    const next = h.row(
+      message(h.peer, "other", "Unread elsewhere", 5),
+      "other",
+    );
+    h.unreadIds.add(next.id);
+    h.publish("other");
+    mounted.rerender(h.tree("other", [next]));
+    await h.completeEntry();
+    await frame();
+    await frame();
+    await act(async () => {
+      screen.getByRole("region", { name: "Channel message history" }).focus();
+      await Promise.resolve();
+    });
+    await h.dwell();
+    expect(h.catchUp).toHaveBeenCalledWith(next.id, undefined);
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
 it.each([{ remoteRead: false }, { remoteRead: true }])(
   "does not infer an entry boundary when the oldest unread message is outside the entry window: %j",
   async ({ remoteRead }) => {
@@ -1061,10 +1289,10 @@ it.each([1, 10, 11])(
   },
 );
 
-it("does not adopt later-loaded unread rows as entry membership", async () => {
+it("does not adopt a row that arrives in a loaded, empty window as entry membership", async () => {
   const h = boundaryFixture();
   const mounted = render(h.tree("c", []));
-  const late = h.row(message(h.peer, "c", "First loaded after entry", 1));
+  const late = h.row(message(h.peer, "c", "First arrival after entry", 1));
   h.unreadIds.add(late.id);
   mounted.rerender(h.tree("c", [late]));
   await h.completeEntry();
@@ -1075,6 +1303,137 @@ it("does not adopt later-loaded unread rows as entry membership", async () => {
   expect(h.unread.attention("c", late.id).unread).toBe(true);
   mounted.unmount();
 });
+
+// A channel first opened this session, or evicted since, starts its visit
+// before its window loads. The placeholder stands in for the timeline until
+// the first page arrives, as the channel body does.
+const unloaded = [{ status: "idle" as const }, { status: "loading" as const }];
+
+it.each(unloaded)(
+  "takes entry membership from the first verified page when the visit began on an unloaded window: %j",
+  async (state) => {
+    const h = boundaryFixture();
+    const read = h.row(message(h.peer, "c", "Read before leaving", 1));
+    const first = h.row(message(h.peer, "c", "First unread arrival", 2));
+    const later = h.row(message(h.peer, "c", "Later unread arrival", 3));
+    h.unreadIds.add(first.id);
+    h.unreadIds.add(later.id);
+    h.completeReadStateSnapshot();
+    h.publish();
+    const mounted = render(h.tree("c", [], true, true, false, state));
+    await h.completeEntry();
+    const revision = h.unread.revision();
+
+    mounted.rerender(h.tree("c", [read, first, later], true));
+    h.publish();
+
+    const placed = divider();
+    expect(precedes(screen.getByText("Read before leaving"), placed)).toBe(
+      true,
+    );
+    expect(precedes(placed, screen.getByText("First unread arrival"))).toBe(
+      true,
+    );
+    expect(h.unread.revision()).toBe(revision);
+    expect(h.enterChannel).toHaveBeenCalledTimes(1);
+    mounted.unmount();
+  },
+);
+
+// Rows restored from disk show at once, and a channel selected at launch can
+// start its visit on them once the roster confirms membership.
+it.each([{ entered: "unloaded" }, { entered: "saved" }])(
+  "takes entry membership from the verified page when a visit first shows saved rows: %j",
+  async ({ entered }) => {
+    const h = boundaryFixture();
+    const read = h.row(message(h.peer, "c", "Saved and read", 1));
+    const unread = h.row(message(h.peer, "c", "Arrived while closed", 2));
+    h.unreadIds.add(unread.id);
+    h.completeReadStateSnapshot();
+    h.publish();
+    // The head read that verifies the saved rows is in flight.
+    const saved = () =>
+      h.tree("c", [read], true, true, true, {
+        freshness: "cached",
+        refreshing: true,
+      });
+    const mounted = render(
+      entered === "saved"
+        ? saved()
+        : h.tree("c", [], true, true, false, { status: "idle" }),
+    );
+    await h.completeEntry();
+    if (entered === "unloaded") mounted.rerender(saved());
+    h.publish();
+    expect(
+      screen.queryByRole("separator", { name: "New messages" }),
+    ).toBeNull();
+
+    mounted.rerender(h.tree("c", [read, unread], true));
+    h.publish();
+    const placed = divider();
+    expect(precedes(screen.getByText("Saved and read"), placed)).toBe(true);
+    expect(precedes(placed, screen.getByText("Arrived while closed"))).toBe(
+      true,
+    );
+    expect(h.enterChannel).toHaveBeenCalledTimes(1);
+    mounted.unmount();
+  },
+);
+
+it("does not adopt a row that arrives after the first verified page of a visit that began unloaded", async () => {
+  const h = boundaryFixture();
+  const read = h.row(message(h.peer, "c", "Read before leaving", 1));
+  const mounted = render(
+    h.tree("c", [], true, true, false, { status: "loading" }),
+  );
+  await h.completeEntry();
+  // Read sync is still incomplete, so the first page cannot settle the visit.
+  mounted.rerender(h.tree("c", [read], true));
+
+  const live = h.row(message(h.peer, "c", "Arrived after the first page", 2));
+  h.unreadIds.add(live.id);
+  mounted.rerender(h.tree("c", [read, live], true));
+  h.completeReadStateSnapshot();
+  h.publish();
+
+  // The visit settled, rather than still waiting to place a line.
+  expect(h.subscribers()).toEqual({ unread: 0, sync: 0 });
+  expect(screen.queryByRole("separator", { name: "New messages" })).toBeNull();
+  expect(h.unread.attention("c", live.id).unread).toBe(true);
+  mounted.unmount();
+});
+
+it.each([{ outside: true }, { outside: false }])(
+  "keeps the incomplete-history guards for a visit that began on an unloaded window: %j",
+  async ({ outside }) => {
+    const h = boundaryFixture();
+    // Either an older unread message sits above the first page, or the page's
+    // own first row is the oldest unread one the store knows.
+    const older = h.row(message(h.peer, "c", "Above the first page", 1));
+    const first = h.row(message(h.peer, "c", "First row of the page", 2));
+    const later = h.row(message(h.peer, "c", "Later row of the page", 3));
+    if (outside) h.unreadIds.add(older.id);
+    else h.unreadIds.add(first.id);
+    h.unreadIds.add(later.id);
+    h.completeReadStateSnapshot();
+    h.publish();
+    const mounted = render(
+      h.tree("c", [], true, true, false, { status: "idle" }),
+    );
+    await h.completeEntry();
+
+    mounted.rerender(h.tree("c", [first, later], true));
+    h.publish();
+
+    expect(h.subscribers()).toEqual({ unread: 0, sync: 0 });
+    expect(
+      screen.queryByRole("separator", { name: "New messages" }),
+    ).toBeNull();
+    expect(h.unread.attention("c", later.id).unread).toBe(true);
+    mounted.unmount();
+  },
+);
 
 it.each([
   { entryReady: false, unreadAtEntry: false },

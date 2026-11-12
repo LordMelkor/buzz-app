@@ -157,7 +157,14 @@ viewport):
   would otherwise read the loaded rows and erase the evidence it waits for. Once
   `sampled` is set the divider is placed and reading starts at once; if
   `sampling` clears first, the visit settles with no divider and reading resumes
-  without waiting for a retry. A batch that filled its limit can still stop
+  without waiting for a retry. The timeline holds its reading in the same way
+  while the rows on screen wait for the head read that verifies them (a revisit
+  refresh, rows restored from disk, a queued catch-up), since dwell is shorter
+  than a slow read and the divider cannot settle before that page. The hold
+  follows the read itself (the window's `refreshing` flag, or a pending head
+  job in the session's live view), not the page's freshness: when the read
+  fails or is cancelled, reading resumes while the visit stays unsettled, and
+  unverified rows that nothing is reading are never held. A batch that filled its limit can still stop
   short of the true oldest unread message. `prefixRead` rules that out for
   ordinary rows, but not for mentions, broadcasts, broadcast replies or messages
   marked unread, which catch-up's `activity:` mark never reads: a short sample

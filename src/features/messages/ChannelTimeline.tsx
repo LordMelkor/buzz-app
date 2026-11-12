@@ -47,7 +47,7 @@ import type {
   ChannelWindow,
 } from "../relay/contracts";
 import { useRowProfiles } from "../relay/react";
-import { useRecovery } from "../relay/RecoveryNotice";
+import { useHeadReadPending, useRecovery } from "../relay/RecoveryNotice";
 import { geometryFor, geometrySignature } from "./geometry";
 import { readView, writeView } from "../../shared/view-state";
 import styles from "./Messages.module.css";
@@ -118,7 +118,7 @@ type NewMessageBoundaryBaseline = {
   scope: string;
   channelId: string;
   revision?: number;
-  messageIds: ReadonlySet<string>;
+  messageIds: ReadonlySet<string> | undefined;
   attention: Map<string, Pick<MessageAttention, "unread" | "forced"> | null>;
 };
 // Inline message seeks can unmount the timeline without ending its channel visit.
@@ -398,6 +398,11 @@ function Timeline({
     getUnreadSync,
     getUnreadSync,
   );
+  // The catch-up head read the session owes this channel, queued or in
+  // flight. The store marks a page verified when any page lands, so an older
+  // page read meanwhile says nothing about the head still being read.
+  const headPending = useHeadReadPending(queries.live, channelId);
+  const awaitingHead = window.refreshing === true || headPending;
   const boundaryBaseline = useRef<NewMessageBoundaryBaseline | undefined>(
     retainedVisit?.baseline,
   );
@@ -416,10 +421,22 @@ function Timeline({
       ...(ownsMessageVisit && messageVisit?.active
         ? { revision: messageVisit.entryReadRevision }
         : {}),
-      messageIds: messageVisit?.entryMessageIds ?? new Set(),
+      messageIds: messageVisit ? messageVisit.entryMessageIds : new Set(),
       attention: new Map(messageVisit?.entryAttention),
     };
   const baseline = boundaryBaseline.current;
+  // A visit that began on an unloaded window, or on rows awaiting the head
+  // read that verifies them, captured no entry rows. Its first verified page
+  // is what the reader enters on, so those rows are its entry membership;
+  // whatever arrives after that page is not. Entry history stays incomplete,
+  // so the oldest-unread and read-row checks below still apply.
+  if (
+    !baseline.messageIds &&
+    window.status === "ready" &&
+    window.freshness === "verified" &&
+    !awaitingHead
+  )
+    baseline.messageIds = new Set(window.rows.map((row) => row.id));
   const entryAttention =
     boundaryPending &&
     ownsMessageVisit &&
@@ -430,7 +447,7 @@ function Timeline({
             (row) =>
               // Backdated live arrivals and older pages must neither define
               // nor erase the entry boundary, so only entry rows are classified.
-              baseline.messageIds.has(row.id) &&
+              baseline.messageIds?.has(row.id) &&
               !row.membership &&
               !row.huddle &&
               row.audience !== "agents" &&
@@ -455,11 +472,23 @@ function Timeline({
     if (
       window.status !== "ready" ||
       window.freshness !== "verified" ||
-      window.refreshing ||
+      awaitingHead ||
       window.loadingOlder ||
       unreadSync.completeness !== "snapshot"
     )
-      return { ready: false };
+      return {
+        ready: false,
+        // Rows are on screen and the head read that verifies them is running
+        // or queued: a revisit past the head's freshness lease, rows restored
+        // from disk, a catch-up queued behind another. Dwell is shorter than
+        // a slow read, so this list's own reading is held for that wait too.
+        // The hold follows the read itself, not the page's freshness: a read
+        // that settles, fails or is cancelled ends it, and unverified rows
+        // that nothing is reading (a saved session that cannot connect, a
+        // cancelled catch-up) never start it. The visit then waits without
+        // holding reading, so no page state can keep the channel unread.
+        awaitingPage: window.status === "ready" && awaitingHead,
+      };
     if (
       unreadSnapshot?.coverage !== "observed" ||
       unreadSnapshot?.freshness !== "observed"
@@ -475,16 +504,16 @@ function Timeline({
       // Every relay read feeds the store, so until its repair has sampled
       // history it may know only the loaded rows, and its oldest unread one
       // can sit in the window below any read row while older ones are unread.
-      // This is the only gate that holds this list's own reading: every
-      // earlier one has passed, so the repair alone is awaited. A repair that
-      // ended without sampling (failed, overflowed, abandoned) settles the
-      // visit with no line, so reading never waits for a later retry.
+      // This gate holds this list's own reading as well: every earlier one
+      // has passed, so the repair alone is awaited. A repair that ended
+      // without sampling (failed, overflowed, abandoned) settles the visit
+      // with no line, so reading never waits for a later retry.
       if (!unreadSnapshot.sampled)
         return unreadSnapshot.sampling
           ? { ready: false, awaitingRepair: true }
           : { ready: true };
       const oldest = unreadSnapshot.oldestUnreadId;
-      if (!oldest || !baseline.messageIds.has(oldest)) return { ready: true };
+      if (!oldest || !baseline.messageIds?.has(oldest)) return { ready: true };
     }
     if (!chronologicalRows.length) return { ready: noUnreadEvidence };
     // A repair batch that fills its limit can stop inside the window, leaving
@@ -1126,10 +1155,15 @@ function Timeline({
     // Reading before the entry boundary settles would erase the evidence it
     // waits for: catch-up reads every loaded row and observe the unread ones,
     // and either advances the read revision that settles it with no line.
-    // Hold reading while the boundary waits for the repair; re-enabling
-    // schedules dwell at once. A failed repair marks freshness stale, which
-    // an earlier gate catches, so the hold ends with the repair either way.
-    enabled: marksRead && !boundaryCandidate.awaitingRepair,
+    // Hold reading while the boundary waits for the page's head read or for
+    // the repair; re-enabling schedules dwell at once. The page hold ends
+    // when its head read does, however it ends, and a failed repair marks
+    // freshness stale, which an earlier gate catches, so each hold ends with
+    // its read either way.
+    enabled:
+      marksRead &&
+      !boundaryCandidate.awaitingPage &&
+      !boundaryCandidate.awaitingRepair,
   });
   // Shift keeps the distance from the end, so it holds the reader only while
   // the rows from their first visible item to the end are kept. Relay pages

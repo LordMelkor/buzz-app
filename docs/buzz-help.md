@@ -481,13 +481,17 @@ for 30 days expires.
   read, reveal another message, or receive new messages. In a channel with more
   history than loads on entry, it appears when the oldest unread message is
   among the rows loaded on entry, below a message you read by reaching the
-  bottom of the channel or marking the channel read. When the unread messages
+  bottom of the channel or marking the channel read. The same rule applies to
+  a channel whose messages load as you enter it, such as the first time you
+  open it after starting Buzz. When the unread messages
   start at the first loaded row or further up, or the messages above them were
   only read one by one as you scrolled past, there is no divider for that visit,
   even if older rows load later. While Buzz is still checking such a channel's
   older history for unread messages, the channel waits to mark anything read,
   so opening it then does not hide its own divider; if that check fails, there
-  is no divider for that visit and reading resumes. It may also be absent when
+  is no divider for that visit and reading resumes. The channel waits in the
+  same way while it loads or refreshes the messages you entered on, however
+  slow the connection; if that fails, reading resumes. It may also be absent when
   unread evidence is incomplete, or when
   read intent or the read evidence needed to locate the boundary changes
   elsewhere before it is established.
