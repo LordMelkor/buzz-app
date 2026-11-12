@@ -337,8 +337,6 @@ it("a listed person's broadcast reply is kept until its root loads, then alerts"
     "unknown",
   );
   expect(h.show).not.toHaveBeenCalled();
-  // The sidebar's channel count is what asks for the missing root.
-  h.owner.session.unread.snapshot({ kind: "channel", channelId: "room" });
   release();
   await vi.waitFor(() => expect(h.show).toHaveBeenCalledOnce());
   expect(h.show.mock.calls[0]?.[0].body).toBe("also for everyone");

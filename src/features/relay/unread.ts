@@ -1051,7 +1051,10 @@ export function createUnread({
     // A queued or running lookup may still make this reply thread attention.
     // A read reply is never looked up, so it is undecided but not pending.
     const open = undecided(entry, dm);
-    if (open) want(entry, dm);
+    // A categoryless reply whose root is still missing (a broadcast) is asked
+    // for here too, so a waiting person alert does not depend on a mounted view.
+    if (open || (!kind && threadReference(event) && !entry.rootId))
+      want(entry, dm);
     const pending =
       open &&
       lookups.get(conversationKey(channelId, entry.parentId ?? ""))?.done ===
