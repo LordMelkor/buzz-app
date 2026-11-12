@@ -351,7 +351,10 @@ fn validate_event(community: &str, event: &EventTemplate) -> Result<()> {
             return Err("Relay authentication does not match this community".into());
         }
     } else if event.kind == 5 {
-        if !valid_message_deletion(event) && !valid_managed_agent_deletion(event) {
+        if !valid_message_deletion(event)
+            && !valid_reaction_deletion(event)
+            && !valid_managed_agent_deletion(event)
+        {
             validate_workflow_template(event)?;
         }
     } else if matches!(event.kind, 30620 | 46020) {
@@ -502,6 +505,37 @@ fn valid_managed_agent_deletion(event: &EventTemplate) -> bool {
         && parts.next().is_some_and(hex_key)
         && parts.next().is_some_and(hex_key)
         && parts.next().is_none()
+}
+
+/** One reaction outside any channel, such as a star on a shared agent. Like
+ * every kind-5 without `h`, the relay derives scope from the single target and
+ * deletes it only for its author. */
+fn valid_reaction_deletion(event: &EventTemplate) -> bool {
+    event.kind == 5
+        && event.content.is_empty()
+        && event.created_at <= 9_007_199_254_740_991
+        && event
+            .tags
+            .iter()
+            .all(|tag| tag.len() == 2 && tag[1].len() <= 256)
+        && event
+            .tags
+            .iter()
+            .all(|tag| matches!(tag[0].as_str(), "e" | "k" | "client-id"))
+        && ["e", "k"]
+            .iter()
+            .all(|name| event.tags.iter().filter(|tag| tag[0] == *name).count() == 1)
+        && event
+            .tags
+            .iter()
+            .filter(|tag| tag[0] == "client-id")
+            .count()
+            <= 1
+        && event.tags.iter().any(|tag| tag[0] == "k" && tag[1] == "7")
+        && event
+            .tags
+            .iter()
+            .any(|tag| tag[0] == "e" && hex_key(&tag[1]))
 }
 
 /** Keep the shared kind-5 writer aligned with the broker's channel-local deletion shape. */
