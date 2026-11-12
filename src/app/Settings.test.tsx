@@ -1994,7 +1994,7 @@ it("records the plugin Open in Buzz shows on the visit replacing its import", as
 });
 
 it("keeps the plugin a URL link's Open plugin shows when its dismissal lands later", async () => {
-  const fromGit = {
+  const fromFolder = {
     manifest: { id: "example.artifact", name: "Artifact", apiVersion: 1 },
     source: "external",
     enabled: true,
@@ -2002,13 +2002,13 @@ it("keeps the plugin a URL link's Open plugin shows when its dismissal lands lat
     previous: null,
     reloadable: false,
     error: null,
-    updateSource: { ...imported, path: "." },
+    updateSource: { root: "/plugins/artifact", path: "." },
   };
   const snapshot = {
     configuration: {
       status: "ready",
       externalPluginsPaused: false,
-      catalog: { profile: "test", location: "test", plugins: [fromGit] },
+      catalog: { profile: "test", location: "test", plugins: [fromFolder] },
     },
     activation: {},
     busy: false,

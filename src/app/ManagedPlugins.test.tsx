@@ -9,6 +9,7 @@ import {
   within,
 } from "@testing-library/react";
 import { StrictMode } from "react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import type { PluginManager } from "../plugins/manager";
 import type {
@@ -776,6 +777,11 @@ const fromGit = {
     path: "dist",
   },
 };
+/** `installed`, recorded as installed from a local folder. */
+const fromFolder = {
+  ...installed,
+  updateSource: { root: "/plugins/example", path: "." },
+};
 
 it("reviews a plugin's URL install request and reports the install", async () => {
   const { manager, git } = harness();
@@ -827,43 +833,94 @@ it("cancels a plugin's URL install request when its review closes", async () => 
   expect(manager.installImport).not.toHaveBeenCalled();
 });
 
-it("refuses a URL install request over a plugin installed from Git before downloading it", async () => {
-  const { manager } = harness();
-  const url = vi.fn(async () =>
-    preview({
-      commit: null,
-      candidates: [{ path: ".", revision: artifact.sha256, manifest }],
-    }),
-  );
-  Object.assign(manager.imports, { url });
-  const onOpenInstalled = vi.fn();
-  const { outcome } = showRequest(manager, [fromGit], onOpenInstalled);
-  const dialog = await screen.findByRole("dialog", {
-    name: "Already installed",
-  });
-  expect(dialog).toHaveAccessibleDescription(
-    `Requested by Market. Installed example is already installed from https://example.com/plugins; remove it first to install it from ${artifact.url}.`,
-  );
-  expect(within(dialog).queryByRole("button", { name: "Update" })).toBeNull();
-  expect(
-    within(dialog).queryByRole("button", { name: "Try again" }),
-  ).toBeNull();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Open plugin" }));
-  expect(onOpenInstalled).toHaveBeenCalledExactlyOnceWith(manifest.id);
-  await expect(outcome).resolves.toBe("cancelled");
-  expect(screen.queryByRole("dialog")).toBeNull();
-  expect(url).not.toHaveBeenCalled();
-  expect(manager.installImport).not.toHaveBeenCalled();
-});
+it.each([true, false])(
+  "reviews a Git-to-URL update without removing or changing enabled=%s",
+  async (enabled) => {
+    const user = userEvent.setup();
+    const { manager } = harness();
+    Object.assign(manager.imports, {
+      url: vi.fn(async () =>
+        preview({
+          commit: null,
+          candidates: [{ path: ".", revision: artifact.sha256, manifest }],
+        }),
+      ),
+    });
+    const { outcome } = showRequest(manager, [{ ...fromGit, enabled }]);
+    const dialog = await screen.findByRole("dialog", {
+      name: "Update Managed example",
+    });
+    expect(
+      await within(dialog).findByText(
+        /switches this plugin from Git to a packaged download/,
+      ),
+    ).toBeVisible();
+    expect(within(dialog).getByText(artifact.url)).toBeVisible();
+    expect(manager.installImport).not.toHaveBeenCalled();
+    expect(manager.change).not.toHaveBeenCalled();
+    if (!enabled)
+      expect(
+        within(dialog).getByText("This plugin will stay disabled."),
+      ).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "Update" }));
+    await expect(outcome).resolves.toBe("updated");
+    expect(manager.installImport).toHaveBeenCalledExactlyOnceWith(
+      "preview",
+      ".",
+    );
+    expect(manager.change).not.toHaveBeenCalled();
+  },
+);
 
-it("refuses a link's URL install over a plugin installed from Git without naming a requester", async () => {
+it.each([
+  { updateSource: fromFolder.updateSource, label: "/plugins/example" },
+  { updateSource: null, label: "an unknown source" },
+])(
+  "refuses a URL install request over $label before downloading it",
+  async ({ updateSource, label }) => {
+    const { manager } = harness();
+    const url = vi.fn(async () =>
+      preview({
+        commit: null,
+        candidates: [{ path: ".", revision: artifact.sha256, manifest }],
+      }),
+    );
+    Object.assign(manager.imports, { url });
+    const onOpenInstalled = vi.fn();
+    const { outcome } = showRequest(
+      manager,
+      [{ ...installed, updateSource }],
+      onOpenInstalled,
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Already installed",
+    });
+    expect(dialog).toHaveAccessibleDescription(
+      `Requested by Market. Installed example is already installed from ${label}; remove it first to install it from ${artifact.url}.`,
+    );
+    expect(within(dialog).queryByRole("button", { name: "Update" })).toBeNull();
+    expect(
+      within(dialog).queryByRole("button", { name: "Try again" }),
+    ).toBeNull();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Open plugin" }),
+    );
+    expect(onOpenInstalled).toHaveBeenCalledExactlyOnceWith(manifest.id);
+    await expect(outcome).resolves.toBe("cancelled");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(url).not.toHaveBeenCalled();
+    expect(manager.installImport).not.toHaveBeenCalled();
+  },
+);
+
+it("refuses a link's URL install over a plugin installed from a folder without naming a requester", async () => {
   const { manager } = harness();
   const url = vi.fn();
   Object.assign(manager.imports, { url });
   render(
     <UrlPluginInstallReview
       plugins={manager as unknown as PluginManager}
-      catalog={catalog([fromGit])}
+      catalog={catalog([fromFolder])}
       busy={false}
       source={artifact}
       requester="A link"
@@ -873,7 +930,7 @@ it("refuses a link's URL install over a plugin installed from Git without naming
   expect(
     await screen.findByRole("dialog", { name: "Already installed" }),
   ).toHaveAccessibleDescription(
-    `Installed example is already installed from https://example.com/plugins; remove it first to install it from ${artifact.url}.`,
+    `Installed example is already installed from /plugins/example; remove it first to install it from ${artifact.url}.`,
   );
   expect(url).not.toHaveBeenCalled();
 });
@@ -887,7 +944,7 @@ it("installs, rather than updates, once the conflicting plugin is removed while 
     }),
   );
   Object.assign(manager.imports, { url });
-  const { outcome, rerender } = showRequest(manager, [fromGit]);
+  const { outcome, rerender } = showRequest(manager, [fromFolder]);
   await screen.findByRole("dialog", { name: "Already installed" });
   expect(url).not.toHaveBeenCalled();
   rerender([]);

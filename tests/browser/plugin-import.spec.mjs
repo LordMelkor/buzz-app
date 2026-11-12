@@ -1937,6 +1937,87 @@ test("an artifact link reviews and installs the pinned URL", async ({
   ]);
 });
 
+test("a Git-installed plugin reviews its URL self-update and survives requester replacement", async ({
+  page,
+  app,
+}) => {
+  const sample = {
+    ...artifactPlugin[0],
+    code: `export function apply(ctx) {
+      const installer = ctx.reflect.get("pluginInstaller");
+      window.requestMigration = () => {
+        window.migrationOutcome = "pending";
+        installer.requestInstall(${JSON.stringify({ id: "example.artifact", url: artifactUrl, sha256: artifactSha })})
+          .then(result => { window.migrationOutcome = result; });
+      };
+      ctx.effect(() => () => { window.migrationDisposals = (window.migrationDisposals ?? 0) + 1; });
+    }`,
+  };
+  await page.addInitScript((sample) => {
+    window.installedPlugins = [
+      {
+        ...sample,
+        source: "external",
+        enabled: true,
+        revision: "git-revision",
+        previous: null,
+        reloadable: false,
+        error: null,
+        updateSource: {
+          repository: "https://example.com/plugins",
+          reference: "v1",
+          path: ".",
+        },
+      },
+    ];
+  }, sample);
+  await nativeImports(page, [sample], { warnings: [] });
+  await servesArtifact(page);
+  await page.goto(app.origin);
+  await expect
+    .poll(() => page.evaluate(() => typeof window.requestMigration))
+    .toBe("function");
+  await page.evaluate(() => window.requestMigration());
+  const review = page.getByRole("dialog", {
+    name: "Update Artifact",
+    exact: true,
+  });
+  await expect(review).toContainText(
+    "This update switches this plugin from Git to a packaged download.",
+  );
+  await expect(review).toContainText(artifactUrl);
+  await review.getByRole("button", { name: "Update", exact: true }).click();
+  await expect(review).toBeHidden();
+  await expect
+    .poll(() => page.evaluate(() => window.migrationOutcome))
+    .toBe("updated");
+  await expect
+    .poll(() => page.evaluate(() => window.migrationDisposals))
+    .toBe(1);
+  await expect(pluginAction(page, "Artifact")).toHaveAccessibleName(
+    "Disable Artifact",
+  );
+  await button(page, "View Artifact details").click();
+  await expect(
+    page.getByRole("region", { name: "Plugin updates", exact: true }),
+  ).toContainText(artifactUrl);
+  expect(
+    await page.evaluate(() =>
+      window.importCalls.filter(({ command }) => command === "plugin_change"),
+    ),
+  ).toEqual([]);
+  expect(await importCalls(page)).toEqual([
+    {
+      command: "plugin_import_url",
+      args: { url: artifactUrl, sha256: artifactSha },
+    },
+    {
+      command: "plugin_import_install",
+      args: { token: "preview-1", path: "." },
+    },
+  ]);
+});
+
 // Native IPC throws Git's own text, as plugin_import_git does when offline.
 test("a failed update check stays on its Settings row, and Check again clears it while it checks", async ({
   page,

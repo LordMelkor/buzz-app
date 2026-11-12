@@ -623,6 +623,15 @@ export function ManagedPluginReview({
               {requestedBy.reason}
             </p>
           )}
+          {"url" in entry &&
+            existing?.source === "external" &&
+            existing.updateSource &&
+            "repository" in existing.updateSource && (
+              <p className="mb-4 mt-0 break-words">
+                This update switches this plugin from Git to a packaged
+                download. The URL below replaces its saved Git source.
+              </p>
+            )}
           <code className={`${importStyles.sourcePath} break-all`}>
             {location(entry)}
           </code>
@@ -720,14 +729,11 @@ export function UrlPluginInstallReview({
   );
   const saved = current?.updateSource;
   const conflict =
-    current?.source !== "external" || (saved && "url" in saved)
+    current?.source !== "external" ||
+    (saved && ("url" in saved || "repository" in saved))
       ? undefined
       : `${current.manifest.name} is already installed from ${
-          saved && "repository" in saved
-            ? saved.repository
-            : saved
-              ? saved.root
-              : "an unknown source"
+          saved ? saved.root : "an unknown source"
         }; remove it first to install it from ${source.url}.`;
   const close = () => {
     setClosed(true);
