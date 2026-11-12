@@ -8,6 +8,9 @@ const CUSTOM_REACTION = /^:([a-z0-9_-]{1,64}):$/i;
 export function validReactionContent(value: string): boolean {
   return [...value].length <= 64 || CUSTOM_REACTION.test(value);
 }
+/** A `:shortcode:` token, which a reaction slot must never show as text. */
+export const isReactionShortcode = (value: string) =>
+  CUSTOM_REACTION.test(value);
 export function normalizeShortcode(value: string): string | undefined {
   const code = value
     .trim()

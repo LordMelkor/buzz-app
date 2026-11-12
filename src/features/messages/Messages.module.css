@@ -428,25 +428,22 @@ html[data-keyboard-navigation] .authorLink:focus-visible {
 .reactionGlyph .reactionNativeEmoji {
   padding: var(--space-half);
 }
-.reactionFallbackEmoji {
-  display: inline-block;
-  min-width: 0;
-  max-width: var(--compact-control-size, var(--size-control-sm));
-  font-size: var(--text-caption);
-  line-height: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .reactionCustomEmoji {
   display: block;
   width: 0.75rem;
   height: 0.75rem;
   object-fit: contain;
 }
+/* A shortcode without usable artwork shows this neutral glyph, never its text. */
+.reactionPlaceholder {
+  display: block;
+  width: 0.75rem;
+  height: 0.75rem;
+}
 /* Paint 12px artwork at 14px (10.5pt), keeping the capsule's layout box. */
 .reactionGlyph [data-reaction-artwork],
-.reactionGlyph .reactionCustomEmoji {
+.reactionGlyph .reactionCustomEmoji,
+.reactionGlyph .reactionPlaceholder {
   scale: calc(7 / 6);
 }
 .visuallyHidden {
@@ -487,7 +484,8 @@ html[data-keyboard-navigation] .authorLink:focus-visible {
   /* Color glyph ink extends beyond its em square, especially on macOS. */
   line-height: 1.25;
 }
-.reactionPreviewEmoji .reactionCustomEmoji {
+.reactionPreviewEmoji .reactionCustomEmoji,
+.reactionPreviewEmoji .reactionPlaceholder {
   width: calc(var(--space-6) * 2);
   height: calc(var(--space-6) * 2);
 }

@@ -349,7 +349,9 @@ for 30 days expires.
   who reacted. Large lists scroll within the preview. With a keyboard, Tab into
   the list to scroll it; Escape dismisses the preview. Clicking the emoji adds
   or removes your reaction. Capsules you reacted with take your solid accent
-  color; on your own messages they take a neutral gray instead.
+  color; on your own messages they take a neutral gray instead. A reaction
+  never shows a `:shortcode:` as text: it draws the community's custom emoji
+  with that name, or a neutral smiley when there is none or its image can't load.
 - In the fullscreen video viewer, comments and emoji reactions at the current
   frame stay attached to that video when you move through a thread's media.
 - With **Voice Notes** enabled, use the microphone in the composer to record
