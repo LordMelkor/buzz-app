@@ -1056,7 +1056,7 @@ export function createUnread({
     // A reply's thread read frontier applies once its root is known, so a
     // root recovery also leaves it pending, even for a broadcast reply that
     // needs no conversation lookup.
-    want(entry, dm);
+    want(entry, dm, true);
     const pending =
       (open &&
         lookups.get(conversationKey(channelId, entry.parentId ?? ""))?.done ===
@@ -1841,16 +1841,24 @@ export function createUnread({
   // so channels nobody observes cost nothing. Fetched events are structure
   // only: they never count and never start another lookup, so a lookup cannot
   // walk up an old thread.
-  function want(entry: Evidence, dm: boolean) {
+  function want(entry: Evidence, dm: boolean, activity = false) {
     const { event, channelId, parentId, threadRootId } = entry;
     if (!parentId || event.pubkey === viewer) return;
     // Activity groups unread thread replies by root, so fetch a root the
     // sampled window dropped for a followed thread or an unread reply in it.
+    // A reply counted as channel activity (`attention` only) needs its root
+    // too, because the thread's read frontier applies only once it is known.
+    // That is after the conversation lookup: an undecided reply's lookup
+    // fetches the root itself, and a structural one must not replace it.
     const structuralRootId =
       !entry.rootId &&
       (chosen(entry) === true ||
         ((entry.mentioned || entry.broadcast || conversation(entry)) &&
-          isUnread(entry, reads.state(), dm)))
+          isUnread(entry, reads.state(), dm)) ||
+        (activity &&
+          !undecided(entry, dm) &&
+          chosen(entry) !== false &&
+          afterFrontier(entry, reads.state(), dm)))
         ? threadRootId
         : undefined;
     const structuralRecovery = structuralRootId !== undefined;
