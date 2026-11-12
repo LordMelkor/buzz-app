@@ -133,7 +133,7 @@ ${focus(".bzm-template")}
 .bzm-textarea::placeholder { color: var(--text-metadata); }
 .bzm-textarea:focus-visible { border-color: var(--border-focus); }
 .bzm-textarea[aria-invalid="true"] { border-color: var(--border-danger); }
-.bzm-segment { display: inline-flex; justify-self: start; padding: var(--space-half, 0.125rem); border-radius: var(--radius-capsule); background: var(--surface-inset); }
+.bzm-segment { display: inline-flex; justify-self: start; padding: var(--space-half); border-radius: var(--radius-capsule); background: var(--surface-inset); }
 .bzm-segment button { min-height: 1.75rem; padding: 0 var(--space-3); border: 0; border-radius: var(--radius-capsule); background: transparent;
   font: inherit; font-size: var(--text-label-sm); font-weight: var(--text-label-sm--font-weight); color: var(--text-subtle); cursor: pointer; }
 .bzm-segment button[aria-pressed="true"] { background: var(--surface-panel); color: var(--text-standard); box-shadow: var(--shadow-xs); }

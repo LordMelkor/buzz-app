@@ -65,6 +65,22 @@ const artworkColors = new Map([
     new Set(["#ff4d4d", "#ffe75c", "#73ef75", "#63c6f2", "#b141ff"]),
   ],
 ]);
+// Math sizes KaTeX against the inherited text, not the type scale: TeX's x-height
+// needs 1.15em to match Inter's, and equation tags keep TeX's 2em quad. Each
+// exact declaration is listed; any other size or spacing there is still checked.
+const texGeometry = new Map([
+  [
+    "bundled/math/ui/styles.ts",
+    new Set([
+      "font-size: 1.15em",
+      "font-size: 1.6em",
+      "font-size: 1.25em",
+      "font-size: 1.4em",
+      "font-size: 1em",
+      "padding-inline-start: 2em",
+    ]),
+  ],
+]);
 for (const path of files(root)) {
   // Ignore comments without changing reported line numbers. Plain TS is included
   // because Emoji Mart's shadow-root stylesheet lives in its adapter module.
@@ -77,6 +93,13 @@ for (const path of files(root)) {
       if (
         rule === "literal color" &&
         artworkColors.get(relative(root, path))?.has(match[0])
+      )
+        continue;
+      if (
+        (rule === "custom text size" || rule === "custom spacing") &&
+        texGeometry
+          .get(relative(root, path))
+          ?.has(match[0].replace(/^[\s;{]+/, ""))
       )
         continue;
       // The host root applies the saved interface scale once to every rem role.
