@@ -18,6 +18,7 @@ const nonIconDependencies = new Set([
   "@earendil-works/pi-ai",
   "@earendil-works/pi-durable",
   "@earendil-works/pi-schema",
+  "@e965/xlsx",
   "@emoji-mart/data",
   "@fontsource-variable/inter",
   "@fontsource/jetbrains-mono",
@@ -52,6 +53,7 @@ const nonIconDependencies = new Set([
   "dockview-react",
   "echarts", // Chart marks; not an icon library.
   "emoji-mart",
+  "fflate",
   "flexlayout-react",
   "github-slugger", // Heading IDs; not an icon library.
   "hast", // Type-only module supplied by @types/hast.
@@ -83,6 +85,7 @@ const nonIconDependencies = new Set([
   "react-diff-view", // Patch tables/parser, not an icon library.
   "react-dom",
   "react-markdown",
+  "rehype-sanitize",
   "remark-breaks",
   "remark-gfm",
   "remark-parse", // Markdown parsing; not an icon library.
