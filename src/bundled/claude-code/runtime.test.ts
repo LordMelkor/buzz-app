@@ -99,6 +99,7 @@ function setup(
     /** Raw text after the history, as a line Claude is still writing. */
     nativeTail?: string;
     resolveDirectory?: Host["resolveDirectory"];
+    mcp?: boolean;
   }> = {},
 ) {
   const fake = fakeSpawn();
@@ -156,7 +157,40 @@ function setup(
     const process = fake.spawn(id, spawnOptions);
     const started = fake.processes.at(-1);
     if (options.hold && started) started.hold = true;
-    return process;
+    if (!options.mcp) return process;
+    return process.then((host) => ({
+      ...host,
+      write: async (text) => {
+        const message = JSON.parse(text);
+        const subtype = message.request?.subtype;
+        if (subtype !== "mcp_status" && subtype !== "get_context_usage")
+          return host.write(text);
+        started?.received.push(message);
+        started?.emit({
+          type: "control_response",
+          response: {
+            subtype: "success",
+            request_id: message.request_id,
+            response:
+              subtype === "mcp_status"
+                ? {
+                    mcpServers: [
+                      {
+                        name: "alpha",
+                        status: "connected",
+                        tools: [{ name: "read_echo" }],
+                      },
+                    ],
+                  }
+                : {
+                    mcpTools: [
+                      { name: "mcp__alpha__read_echo", serverName: "alpha" },
+                    ],
+                  },
+          },
+        });
+      },
+    }));
   };
   const host = {
     spawn,
@@ -2008,6 +2042,262 @@ const pluginWake = (root?: string) => ({
   text: "CI failed: lint",
   id: WAKE_ID,
   at: 200_000,
+});
+
+it.each([false, true])(
+  "keeps mixed native work non-owner regardless of owner steering order (%s)",
+  async (ownerFirst) => {
+    const f = setup([], { hold: true, mcp: true });
+    const call = vi.fn(
+      async (
+        _agent: unknown,
+        _call: unknown,
+        _options: { turn?: Pick<Delivery, "trigger"> },
+      ) => undefined,
+    );
+    f.runtime.mcp = {
+      choice: async () => ({}),
+      started: () => {},
+      call,
+      ran: () => false,
+    };
+    const root = message("1", "owner work");
+    const owner = (id: string) => ({
+      type: "mention" as const,
+      event: message(id, "owner steering", {
+        tags: [
+          ["h", channel],
+          ["e", root.id, "", "reply"],
+        ],
+      }),
+    });
+    try {
+      if (ownerFirst) await f.deliver({ type: "mention", event: root });
+      await f.deliver(pluginWake(root.id));
+      await f.deliver(owner("2"));
+      await vi.waitFor(() =>
+        expect(
+          f
+            .claudes()
+            .some((process) => process.prompts.length === (ownerFirst ? 3 : 2)),
+        ).toBe(true),
+      );
+      const process = f.claudes().find((process) => process.prompts.length);
+      process?.emit({
+        type: "control_request",
+        request_id: "mcp-mixed",
+        request: {
+          subtype: "can_use_tool",
+          tool_name: "mcp__alpha__read_echo",
+          tool_use_id: "mixed-call",
+          mcp_server: { name: "alpha" },
+          input: {},
+        },
+      });
+      await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+      expect(call.mock.calls[0]?.[2].turn?.trigger.type).toBe("plugin");
+    } finally {
+      f.runtime.dispose();
+    }
+  },
+);
+
+it("keeps owner-only admitted work direct and permits a fresh owner turn after mixed work ends", async () => {
+  const f = setup([], { hold: true, mcp: true });
+  const call = vi.fn(
+    async (
+      _agent: unknown,
+      _call: unknown,
+      _options: { turn?: Pick<Delivery, "trigger"> },
+    ) => undefined,
+  );
+  f.runtime.mcp = {
+    choice: async () => ({}),
+    started: () => {},
+    call,
+    ran: () => false,
+  };
+  const root = message("1", "owner work");
+  const owner = (id: string) => ({
+    type: "mention" as const,
+    event: message(id, "owner followup", {
+      tags: [
+        ["h", channel],
+        ["e", root.id, "", "reply"],
+      ],
+    }),
+  });
+  try {
+    await f.deliver({ type: "mention", event: root });
+    await f.deliver(owner("2"));
+    await vi.waitFor(() =>
+      expect(f.claudes().some((process) => process.prompts.length === 2)).toBe(
+        true,
+      ),
+    );
+    const process = f.claudes().find((process) => process.prompts.length);
+    const ask = (id: string) =>
+      process?.emit({
+        type: "control_request",
+        request_id: id,
+        request: {
+          subtype: "can_use_tool",
+          tool_name: "mcp__alpha__read_echo",
+          tool_use_id: id,
+          mcp_server: { name: "alpha" },
+          input: {},
+        },
+      });
+    ask("owner-only");
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+    expect(call.mock.calls[0]?.[2].turn?.trigger).toEqual(owner("2"));
+    await f.deliver(pluginWake(root.id));
+    await vi.waitFor(() => expect(process?.prompts).toHaveLength(3));
+    process?.finish();
+    await f.deliver(owner("3"));
+    await vi.waitFor(() => expect(process?.prompts).toHaveLength(4));
+    ask("fresh-owner");
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
+    expect(call.mock.calls[1]?.[2].turn?.trigger).toEqual(owner("3"));
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it("does not let an owner delivery that fails admission relabel a running plugin turn", async () => {
+  const f = setup([], { hold: true, mcp: true });
+  const call = vi.fn(
+    async (
+      _agent: unknown,
+      _call: unknown,
+      _options: { turn?: Pick<Delivery, "trigger"> },
+    ) => undefined,
+  );
+  let release!: () => void;
+  let held: Promise<void> | undefined;
+  let choosing = false;
+  f.runtime.mcp = {
+    choice: async () => {
+      if (held) {
+        choosing = true;
+        await held;
+      }
+      return {};
+    },
+    started: () => {},
+    call,
+    ran: () => false,
+  };
+  const root = message("1", "thread");
+  let current = true;
+  try {
+    await f.deliver(pluginWake(root.id));
+    await vi.waitFor(() =>
+      expect(f.claudes().some((process) => process.prompts.length === 1)).toBe(
+        true,
+      ),
+    );
+    held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const queued = f.runtime.run({
+      trigger: {
+        type: "mention",
+        event: message("2", "unadmitted owner steer", {
+          tags: [
+            ["h", channel],
+            ["e", root.id, "", "reply"],
+          ],
+        }),
+      },
+      channelId: channel,
+      agent: f.agent,
+      config: DEFAULT_CONFIG,
+      signal: new AbortController().signal,
+      current: () => current,
+      workingUntil: () => {},
+    } as unknown as Delivery);
+    await vi.waitFor(() => expect(choosing).toBe(true));
+    current = false;
+    release();
+    await queued;
+    const process = f.claudes().find((process) => process.prompts.length);
+    expect(process?.prompts).toHaveLength(1);
+    process?.emit({
+      type: "control_request",
+      request_id: "mcp-unadmitted",
+      request: {
+        subtype: "can_use_tool",
+        tool_name: "mcp__alpha__read_echo",
+        tool_use_id: "unadmitted-call",
+        mcp_server: { name: "alpha" },
+        input: {},
+      },
+    });
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+    expect(call.mock.calls[0]?.[2].turn?.trigger.type).toBe("plugin");
+  } finally {
+    release?.();
+    f.runtime.dispose();
+  }
+});
+
+it("does not turn unknown autonomous native work into a direct turn through owner steering", async () => {
+  const f = setup([], { hold: true, mcp: true });
+  const call = vi.fn(
+    async (
+      _agent: unknown,
+      _call: unknown,
+      _options: { turn?: Pick<Delivery, "trigger"> },
+    ) => undefined,
+  );
+  f.runtime.mcp = {
+    choice: async () => ({}),
+    started: () => {},
+    call,
+    ran: () => false,
+  };
+  const root = message("1", "owner work");
+  try {
+    await f.deliver({ type: "mention", event: root });
+    await vi.waitFor(() =>
+      expect(f.claudes().some((process) => process.prompts.length === 1)).toBe(
+        true,
+      ),
+    );
+    const process = f.claudes().find((process) => process.prompts.length);
+    process?.finish();
+    process?.emit({
+      type: "system",
+      subtype: "session_state_changed",
+      state: "running",
+    });
+    await f.deliver({
+      type: "mention",
+      event: message("2", "owner steer", {
+        tags: [
+          ["h", channel],
+          ["e", root.id, "", "reply"],
+        ],
+      }),
+    });
+    await vi.waitFor(() => expect(process?.prompts).toHaveLength(2));
+    process?.emit({
+      type: "control_request",
+      request_id: "mcp-unknown-origin",
+      request: {
+        subtype: "can_use_tool",
+        tool_name: "mcp__alpha__read_echo",
+        tool_use_id: "unknown-origin-call",
+        mcp_server: { name: "alpha" },
+        input: {},
+      },
+    });
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+    expect(call.mock.calls[0]?.[2].turn).toBeUndefined();
+  } finally {
+    f.runtime.dispose();
+  }
 });
 
 it("takes a plugin's wake in its thread's session, as the plugin's and not a message", async () => {
