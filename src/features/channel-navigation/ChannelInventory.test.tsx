@@ -28,6 +28,7 @@ import type {
   SidebarFilterMode,
   SidebarSortMode,
 } from "../relay/sidebar-preferences";
+import type { LiveCallbacks } from "../relay/live";
 import type { RelayData, RelaySnapshot } from "../relay/service";
 import type { ChannelList, ChannelSummary } from "../relay/contracts";
 import type { UnreadSnapshot } from "../relay/unread";
@@ -3601,4 +3602,73 @@ it("updates decorated unread data and a selected unread sort without rewriting p
   } finally {
     prefs.dispose();
   }
+});
+
+it("moves a mounted session-backed sidebar on a CLI hint without clearing stars or other assignments", async () => {
+  const viewer = keypair(),
+    relay = keypair();
+  let live!: LiveCallbacks;
+  let data: SidebarPreferences = {
+    sections: [{ id: "work", name: "Work", order: 0 }],
+    assignments: { gamma: "work" },
+    starred: ["beta"],
+    muted: [],
+  };
+  const reads: unknown[] = [];
+  const owner = createRelaySession({
+    viewer: viewer.pubkey,
+    relayAuthor: relay.pubkey,
+    scope: "https://relay.example.org",
+    media: () => undefined,
+    async query(filters) {
+      reads.push(filters);
+      return [];
+    },
+    decodeSidebarPreferences: async () => data,
+    subscribe(callbacks) {
+      live = callbacks;
+      return { update() {}, retry() {}, dispose() {} };
+    },
+  });
+  owners.push(owner);
+  await owner.session.sidebarPreferences.ensure();
+  const h = fixture(owner.session.sidebarPreferences);
+  render(h.view("alpha"));
+  const row = await screen.findByRole("button", { name: "alpha" });
+  const sidebar = screen.getByRole("complementary", { name: "Sidebar" });
+  expect(sidebar).toContainElement(row);
+  const placement = (name: string) =>
+    screen
+      .getByRole("button", { name })
+      .closest("[data-sidebar-section]")
+      ?.getAttribute("data-sidebar-section");
+  expect(placement("alpha")).toBe("channels");
+  expect(placement("beta")).toBe("starred");
+  expect(placement("gamma")).toBe("group:work");
+  data = {
+    ...data,
+    assignments: { ...data.assignments, alpha: "work", beta: "work" },
+  };
+  await act(async () => {
+    live.receive([
+      signed(viewer, {
+        kind: 30078,
+        created_at: 1700000000,
+        content: "encrypted",
+        tags: [
+          ["d", "channel-sections"],
+          ["t", "channel-sections"],
+        ],
+      }),
+    ]);
+    await Promise.resolve();
+    await owner.session.sidebarPreferences.ensure();
+  });
+  await waitFor(() => expect(placement("alpha")).toBe("group:work"));
+  expect(placement("beta")).toBe("starred");
+  expect(placement("gamma")).toBe("group:work");
+  expect(screen.getByRole("button", { name: "alpha" }).closest("aside")).toBe(
+    sidebar,
+  );
+  expect(reads).toHaveLength(2);
 });

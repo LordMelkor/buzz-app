@@ -27,6 +27,7 @@ import {
 } from "./events.ts";
 import { yieldToHost } from "./yield.ts";
 import { EMOJI_SET } from "./emoji.ts";
+import { SIDEBAR_COORDINATES } from "./sidebar-preferences.ts";
 import {
   ARTIFACT_SYNC_MAX_VIEWS,
   type ArtifactSyncFilter,
@@ -1367,6 +1368,13 @@ export function subscribeRelayTraffic(
                 kinds: [30078],
                 authors: [viewer],
                 "#t": ["read-state"],
+                since: route.since,
+                limit: LIVE_REPLAY_LIMIT,
+              },
+              {
+                kinds: [30078],
+                authors: [viewer],
+                "#d": [...SIDEBAR_COORDINATES],
                 since: route.since,
                 limit: LIVE_REPLAY_LIMIT,
               },

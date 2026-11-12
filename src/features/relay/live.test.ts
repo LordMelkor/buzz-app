@@ -28,6 +28,8 @@ import {
   scriptedTransport,
 } from "./testing";
 import type { SignatureVerifier } from "./events";
+import type { ReadTransport } from "./transport";
+import type { SidebarDecoder } from "./sidebar-preferences";
 import { yieldToHost } from "./yield";
 import { createRelaySession } from "./session";
 import { liveRecoveryStatus } from "./live-recovery";
@@ -6440,5 +6442,135 @@ it("gives no resume point to a profile sync whose EOSE is still being verified",
   } finally {
     release();
     h.owner.dispose();
+  }
+});
+
+it("subscribes to own sidebar coordinates alongside read state and verifies delivery", async () => {
+  vi.useFakeTimers();
+  const h = setup([]);
+  try {
+    await h.first.auth();
+    const event = signed(h.key, {
+      kind: 30078,
+      created_at: Math.floor(Date.now() / 1000),
+      content: "encrypted",
+      tags: [
+        ["d", "channel-sections"],
+        ["t", "channel-sections"],
+      ],
+    });
+    const route = h.first
+      .requests()
+      .find((request) =>
+        filtersOf(request).some((filter) => matchesEvent(event, filter)),
+      );
+    assert.exists(route);
+    expect(
+      filtersOf(route).some((filter) =>
+        matchesEvent({ ...event, pubkey: keypair().pubkey }, filter),
+      ),
+    ).toBe(false);
+    expect(
+      filtersOf(route).some((filter) =>
+        matchesEvent({ ...event, tags: [["d", "other"]] }, filter),
+      ),
+    ).toBe(false);
+    const readState = signed(h.key, {
+      kind: 30078,
+      created_at: event.created_at,
+      content: "marker",
+      tags: [
+        ["d", `read-state:${"ab".repeat(16)}`],
+        ["t", "read-state"],
+      ],
+    });
+    expect(
+      filtersOf(route).some((filter) => matchesEvent(readState, filter)),
+    ).toBe(true);
+    await h.first.receive([
+      "EVENT",
+      route[1],
+      { ...event, sig: "0".repeat(128) },
+    ]);
+    expect(h.callbacks.receive).not.toHaveBeenCalled();
+    await h.first.receive(["EVENT", route[1], event]);
+    expect(h.callbacks.receive).toHaveBeenCalledWith([event], {
+      phase: "replay",
+    });
+  } finally {
+    h.owner.dispose();
+  }
+});
+
+it("delivers a canonical sidebar event through the emitted wire into the real session store", async () => {
+  vi.useFakeTimers();
+  const h = setup([]);
+  const relay = keypair();
+  const read = vi.fn<ReadTransport["query"]>(async () => []);
+  const data = {
+    sections: [{ id: "work", name: "Work", order: 0 }],
+    assignments: { alpha: "work" },
+    starred: ["beta"],
+    muted: [],
+  };
+  const decode = vi.fn<SidebarDecoder>(async () => data);
+  const owner = createRelaySession({
+    viewer: h.key.pubkey,
+    relayAuthor: relay.pubkey,
+    media: () => undefined,
+    query: read,
+    decodeSidebarPreferences: decode,
+    subscribe(callbacks) {
+      h.callbacks.receive.mockImplementation(callbacks.receive);
+      return h.owner;
+    },
+  });
+  try {
+    await owner.session.sidebarPreferences.ensure();
+    await h.first.auth();
+    const event = signed(h.key, {
+      kind: 30078,
+      created_at: Math.floor(Date.now() / 1000),
+      content: "encrypted",
+      tags: [
+        ["d", "channel-sections"],
+        ["t", "channel-sections"],
+      ],
+    });
+    const route = h.first
+      .requests()
+      .find((request) =>
+        filtersOf(request).some((filter) => matchesEvent(event, filter)),
+      );
+    assert.exists(route);
+    await h.first.receive(["EOSE", route[1]]);
+    decode.mockResolvedValueOnce({
+      ...data,
+      assignments: { alpha: "work", gamma: "work" },
+    });
+    await h.first.receive(["EVENT", route[1], event]);
+    await owner.session.sidebarPreferences.ensure();
+    expect(
+      owner.session.sidebarPreferences.snapshot().data?.assignments,
+    ).toEqual({ alpha: "work", gamma: "work" });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read.mock.calls[1]?.[0]).toEqual(
+      [
+        "channel-sections",
+        "channel-stars",
+        "channel-mutes",
+        "channel-sort",
+        "channel-filter",
+      ].map((coordinate) => ({
+        kinds: [30078],
+        authors: [h.key.pubkey],
+        "#d": [coordinate],
+        limit: 1,
+        consistency: "strong",
+      })),
+    );
+    expect(decode).toHaveBeenCalledTimes(2);
+  } finally {
+    owner.dispose();
   }
 });

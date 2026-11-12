@@ -841,6 +841,10 @@ for 30 days expires.
   for that community and identity. Collapsed section headings highlight when
   their channels have unread messages or thread replies. Muted channels do not
   highlight the heading.
+- Saved sidebar groups, stars, mutes, sorting and filters from another device or
+  a paired CLI update the open sidebar automatically while connected, in hosts
+  that support saved sidebar preferences. A CLI section-only move keeps a
+  starred channel in Starred until you unstar it.
 - **Plugin channel rows**: a plugin can open a channel from its Solo row and keep
   that row selected. The sidebar then keeps its scope, scroll position, and open
   sections. Opening the channel from Team follows the usual Team navigation.
