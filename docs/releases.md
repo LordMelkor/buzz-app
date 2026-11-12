@@ -430,8 +430,11 @@ build` runs it through `beforeBuildCommand`; `just desktop` runs it with `--dev`
 (a debug build, and a failure only warns). It selects `TAURI_ENV_TARGET_TRIPLE`
 or the host, installs under `target/buzz-cli/<rev>/<target>/<profile>`, which
 lets Cargo skip an install that is already current, and replaces the staged file
-atomically. Linked worktrees use the main checkout's `target/`, so they share
-one build of each revision. A first release build takes about two minutes.
+atomically. Each revision also builds in its own `target/buzz-cli-build/<rev>`:
+Cargo trusts an earlier build of a git checkout even after the revision changes,
+so a shared build directory would stage the old CLI after a bump. Linked
+worktrees use the main checkout's `target/`, so they share one build of each
+revision. A first release build takes about two minutes.
 
 The macOS release signing service signs the executable with the Developer ID
 certificate and the hardened runtime, as it does `goose-acp` and
