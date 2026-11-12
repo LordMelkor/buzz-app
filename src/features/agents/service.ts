@@ -388,12 +388,16 @@ export type RegisteredAgentAddedTab = Contribution<AgentAddedTab>;
  * of the app runs, or of those `when` accepts, while the plugin is on. */
 export type AgentInstructions = Readonly<{
   id: string;
-  /** Sent with every turn, so keep it short. */
+  /** Sent with every turn, so keep it short: at most 4 KB (UTF-8). */
   text: string;
   /** Whether the agent's turns get them; absent, every agent's do. Asked as
    * each turn's prompt is built. A `when` that throws leaves out only these. */
   when?: (agent: Agent) => boolean;
 }>;
+/** Most UTF-8 bytes one `AgentInstructions` text may have, after trimming.
+ * It goes with every turn, so this matches a watch classifier's true/false
+ * text, not the once-a-session blocks such as agent instructions. */
+const INSTRUCTIONS_TEXT_LIMIT = 4 * 1024;
 /** Instructions for one turn, with the plugin that gave them. */
 export type TurnInstructions = Readonly<{ plugin: string; text: string }>;
 /** One of an agent's conversation sessions on this device. Without `root` it
@@ -2959,15 +2963,23 @@ export class AgentsService extends Service implements Agents {
     });
   }
   addInstructions(instructions: AgentInstructions) {
+    // What is checked is what is kept, whatever the object does later.
+    const { id, text, when } = instructions;
     if (
-      !/^[a-z0-9][a-z0-9._-]*$/.test(instructions.id ?? "") ||
-      typeof instructions.text !== "string" ||
-      !instructions.text.trim() ||
-      (instructions.when !== undefined &&
-        typeof instructions.when !== "function")
+      !/^[a-z0-9][a-z0-9._-]*$/.test(id ?? "") ||
+      typeof text !== "string" ||
+      !text.trim() ||
+      (when !== undefined && typeof when !== "function")
     )
       throw new Error("Agent instructions need an id and text");
-    this.addedInstructions.register(this.ctx, instructions);
+    if (new TextEncoder().encode(text.trim()).length > INSTRUCTIONS_TEXT_LIMIT)
+      throw new Error(
+        `Agent instructions are over ${INSTRUCTIONS_TEXT_LIMIT} bytes`,
+      );
+    this.addedInstructions.register(
+      this.ctx,
+      when ? { id, text, when } : { id, text },
+    );
   }
   /** The instructions active plugins give this agent's turns now, ordered by
    * plugin and id so the order plugins start in does not change a prompt. */

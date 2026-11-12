@@ -3385,6 +3385,21 @@ it("leaves a plugin's note for an agent's next turn in a channel, once, while th
   ]);
 });
 
+it("takes plugin instructions of at most 4 KB of UTF-8 text", async () => {
+  const { ctx } = await setup();
+  const { agents } = ctx.extend({
+    pluginOwner: Object.freeze({ id: "buzz.big", revision: "bundled" }),
+  });
+  // "é" is two bytes; the surrounding spaces are trimmed before measuring.
+  for (const text of ["x".repeat(4097), "é".repeat(2049)])
+    expect(() => agents.addInstructions({ id: "rules", text })).toThrow(
+      /over 4096 bytes/,
+    );
+  expect(() =>
+    agents.addInstructions({ id: "rules", text: ` ${"é".repeat(2048)} ` }),
+  ).not.toThrow();
+});
+
 it("gives plugins' instructions to every turn of the agents they choose, until the plugin goes", async () => {
   const { service, ctx, run, emit } = await setup();
   const owner = (id: string) =>
