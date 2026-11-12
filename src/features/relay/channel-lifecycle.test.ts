@@ -13,6 +13,7 @@ import {
   vi,
 } from "vitest";
 import { ReadError } from "./errors";
+import { ApiPaused } from "./http-admission";
 import { FRESH_FOR } from "./store";
 import { finalizeEvent, getPublicKey, type EventTemplate } from "nostr-tools";
 import { PublishRejected } from "./outbox";
@@ -1094,6 +1095,33 @@ it("distinguishes a rejected publication from an uncertain delivery without repl
   await expect(h.owner.capability.run("delete", id)).rejects.toBeInstanceOf(
     ChannelLifecycleUnconfirmed,
   );
+  expect(h.publish).toHaveBeenCalledTimes(2);
+  expect(h.removed).not.toHaveBeenCalled();
+  h.owner.dispose();
+});
+it("surfaces a pause bare only before publication; after it, the delete is uncertain", async () => {
+  // The delete dialog offers Retry only for a bare pause, so this boundary
+  // decides whether "nothing was deleted" is true.
+  const h = harness();
+  h.read.mockRejectedValueOnce(new ApiPaused(1000));
+  const before = await h.owner.capability
+    .run("delete", id)
+    .catch((error: unknown) => error);
+  expect(before).toBeInstanceOf(ApiPaused);
+  expect(h.publish).not.toHaveBeenCalled();
+  h.publish.mockImplementationOnce(async () => {
+    h.read.mockRejectedValueOnce(new ApiPaused(1000));
+  });
+  const after = await h.owner.capability
+    .run("delete", id)
+    .catch((error: unknown) => error);
+  expect(after).toBeInstanceOf(ChannelLifecycleUnconfirmed);
+  expect(h.publish).toHaveBeenCalledOnce();
+  h.publish.mockRejectedValueOnce(new ApiPaused(1000));
+  const during = await h.owner.capability
+    .run("delete", id)
+    .catch((error: unknown) => error);
+  expect(during).toBeInstanceOf(ChannelLifecycleUnconfirmed);
   expect(h.publish).toHaveBeenCalledTimes(2);
   expect(h.removed).not.toHaveBeenCalled();
   h.owner.dispose();

@@ -609,6 +609,9 @@ for 30 days expires.
   or are removed in People.
 - In a channel, typing `/leave` by itself opens the same **Leave channel**
   confirmation. The command is not posted as a message.
+- If **Delete chat** or **Delete channel** fails because relay requests are
+  paused, nothing was deleted and the confirmation stays open. **Retry** becomes
+  available when the pause ends; it checks your permission again before deleting.
 - **Pasted web links** keep their labels when the clipboard's HTML and plain
   text agree, including image alt text. Use ordinary paste; plain-text paste
   uses only the clipboard's plain text.
