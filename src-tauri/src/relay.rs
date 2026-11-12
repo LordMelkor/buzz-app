@@ -2152,6 +2152,42 @@ pub(crate) async fn media_copy_image<R: tauri::Runtime>(
     crate::clipboard::write_image(&app, pixels.0, pixels.1, pixels.2).await
 }
 
+/// Lifts the subject out of relay image media as a transparent PNG. As for Copy
+/// image, the host owns authenticated media access; the webview gets only the
+/// result.
+#[tauri::command]
+pub(crate) async fn media_lift_subject(
+    host: tauri::State<'_, IdentityHost>,
+    fi: tauri::State<'_, FederatedIdentity>,
+    source: String,
+) -> Result<tauri::ipc::Response> {
+    crate::subject_lift::supported()?;
+    let url = download_target(&source).ok_or("Invalid media URL")?;
+    let response = fetch_media_bounded(
+        host.inner(),
+        Some(fi.inner()),
+        url,
+        None,
+        crate::subject_lift::MAX_SOURCE_BYTES,
+    )
+    .await
+    .map_err(|_| "Could not fetch image")?;
+    if !response
+        .headers()
+        .get("Content-Type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|kind| kind.starts_with("image/") && kind != "image/svg+xml")
+    {
+        return Err("Choose an image".into());
+    }
+    let png = tauri::async_runtime::spawn_blocking(move || {
+        crate::subject_lift::lift_subject(response.body())
+    })
+    .await
+    .map_err(|_| "Could not lift the subject".to_owned())??;
+    Ok(tauri::ipc::Response::new(png))
+}
+
 /// Persist an authenticated bounded response without replacing an existing file.
 /// The host, not the webview, owns the save path and collision policy.
 #[tauri::command]

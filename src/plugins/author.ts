@@ -30,6 +30,7 @@ export type {
   Pages,
 } from "../features/pages/service";
 export type { Backdrop, Backdrops } from "../features/backdrops/service";
+export type { SubjectLift } from "../features/messages/subject-lift";
 export type {
   SidebarRow,
   SidebarRowSortMode,

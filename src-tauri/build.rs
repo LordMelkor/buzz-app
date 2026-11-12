@@ -152,6 +152,8 @@ fn main() {
             "media_download",
             "file_download",
             "media_copy_image",
+            "media_lift_subject",
+            "media_lift_subject_supported",
             "clipboard_write_text",
             "draft_diagnostics_save",
             "media_stream_base",

@@ -378,6 +378,30 @@ remaining acceptance work and historical evidence.
 
 ## Starting contracts
 
+### Subject lift
+
+A plugin can lift the subject out of a message image, as Photos and Messages do
+for stickers. Read the optional `subjectLift` service with
+`ctx.reflect.get("subjectLift")`; it is `undefined` on older hosts.
+
+```ts
+type SubjectLift = {
+  supports(source: string): boolean;
+  lift(source: string, signal?: AbortSignal): Promise<File>;
+};
+```
+
+`source` is what `session.media(attachment.url)` returned. `supports` is true
+only for desktop media URLs on a host that can lift, which today means the Mac
+app on macOS 14 or later, so check it before offering the action. `lift` resolves with the image's subjects over a transparent
+background, cropped to them and at most 512 px on the longer side, as a
+metadata-free PNG that `session.emoji.upload` accepts. It rejects with the
+host's reason, for example when no subject is found, the image is not GIF,
+JPEG, PNG or WebP, or the image is too large. The result is a still image, so
+an animated GIF or WebP loses its animation; offer the whole image for those.
+The host fetches the authenticated media and runs Vision's foreground instance
+mask (`media_lift_subject`); the plugin never receives media credentials.
+
 ### Plugin installer
 
 A plugin, such as a catalog or marketplace page, may ask the host to review a plugin

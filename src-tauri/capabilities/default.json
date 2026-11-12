@@ -98,6 +98,8 @@
     "allow-media-download",
     "allow-file-download",
     "allow-media-copy-image",
+    "allow-media-lift-subject",
+    "allow-media-lift-subject-supported",
     "allow-clipboard-write-text",
     "allow-draft-diagnostics-save",
     "allow-media-stream-base",
