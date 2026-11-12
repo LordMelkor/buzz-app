@@ -2,6 +2,7 @@
 // adapter; plugins receive only names, state and the tools a session listed.
 import type {
   HarnessMcpAnswer,
+  HarnessMcpCall as Call,
   HarnessMcpKit,
   HarnessMcpTool,
 } from "../../features/agents/harness-mcp";
@@ -25,29 +26,6 @@ type Configured = {
   key: string;
   enabled: boolean;
   extension: Extension;
-};
-type Call = {
-  session: string;
-  id: string;
-  server: string;
-  tool?: string;
-  arguments: unknown;
-};
-// P2 adds these methods to HarnessMcpKit. Keep its provisional mapping here only.
-type Gate = {
-  call(
-    agent: Who,
-    call: Call,
-    options: {
-      hold: number;
-      signal: AbortSignal;
-      turn?: Pick<Delivery, "trigger">;
-    },
-  ): Promise<string | undefined>;
-  ran(
-    agent: Who,
-    call: Omit<Call, "arguments"> & { rejected?: boolean; ungated?: boolean },
-  ): boolean;
 };
 const request = (
   p: AcpProcess,
@@ -345,10 +323,10 @@ export class GooseMcp {
             }
             observed.phase = "held";
             const agent = this.who();
-            const gate = this.kit as HarnessMcpKit & Partial<Gate>;
+            const gate = this.kit;
             let reason: string | undefined = "The MCP control is unavailable";
             try {
-              if (agent && gate.call) {
+              if (agent) {
                 const turn = this.turn(session);
                 reason = await gate.call(agent, observed.call, {
                   hold: 120_000,
@@ -413,8 +391,8 @@ export class GooseMcp {
             const observed = calls.get(id);
             calls.delete(id);
             const agent = this.who();
-            const gate = this.kit as HarnessMcpKit & Partial<Gate>;
-            if (!observed?.call || !agent || !gate.ran) return;
+            const gate = this.kit;
+            if (!observed?.call || !agent) return;
             // A forced call to a filtered tool has a failed result, but never ran.
             if (
               observed.phase === "unavailable" &&

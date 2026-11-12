@@ -572,7 +572,12 @@ describe("Goose tools-only lifecycle", () => {
     "stops an isolated inspection after %s",
     async (outcome) => {
       const wire = transport();
-      const kit = { choice: async () => undefined, started: vi.fn() };
+      const kit = {
+        choice: async () => undefined,
+        started: vi.fn(),
+        call: vi.fn(),
+        ran: vi.fn(),
+      };
       const host = {
         spawn: wire.spawn,
         resolveDirectory: wire.fake.resolveDirectory,
