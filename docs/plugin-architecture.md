@@ -1185,7 +1185,7 @@ contracts with their own layout and local navigation.
 ### Bundled defaults
 
 **Channels is the only required bundled plugin.** Todos, Usage, Reminders,
-Workflows, Changesets, Shared compute and Charts are off by default for fresh installs. Bestie,
+Workflows, Changesets, Shared compute, Charts and Media viewer are off by default for fresh installs. Bestie,
 Feedback, Diff viewer, Identity Naming, Agent Activity, Terminal, Links, GitHub, Inbox,
 Repositories, Agents, Claude, Codex, Builderlab,
 Membership, and Moderation are on by default, but optional. Both browser and
@@ -2710,6 +2710,15 @@ tooltips and anything else that fetches or injects. Marks use the four
 `chart-series` roles, with extra version 1 series summed into Other. Its action
 opens the chart in an expanded dialog, and invalid JSON shows the error with the
 source. The host's Copy action copies the fenced JSON.
+The bundled **Media viewer** plugin (`buzz.media-viewer`, off by default) claims
+file cards for PDFs, Markdown, code, text, CSV and TSV at `order: 50`, so a
+plugin registered at the default order for the same files takes them over. The
+card's preview opens a `buzz-file:?url=…&name=…&mime=…` panel target, which
+other plugins may also open. The panel reads only `/media/` URLs on the current
+community's origin, through the session's media proxy, and caps text at 20 MB
+and PDFs at 100 MB. Markdown renders through `SafeMarkdown`. PDFs use
+[PDF.js](https://mozilla.github.io/pdf.js/) in a worker, loaded on the first
+PDF, and draw only the pages near the viewport.
 
 The conversation preview exposes top-level `registerTool`, `registerCompletion` and `registerInline`
 methods and stable `conversation.ui.Composer` / `.Message` / `.Thread` / `.Conversation` /

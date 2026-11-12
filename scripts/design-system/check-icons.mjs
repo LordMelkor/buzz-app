@@ -62,6 +62,7 @@ const nonIconDependencies = new Set([
   "micromark-extension-gfm-table",
   "motion",
   "nostr-tools",
+  "pdfjs-dist", // PDF page rendering; not an icon library.
   "pele",
   "postcss",
   "proper-lockfile", // The Pi host's lock on each agent's storage.

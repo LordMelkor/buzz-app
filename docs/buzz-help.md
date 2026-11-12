@@ -1356,6 +1356,22 @@ lists the plotted values as text.
   attribution under the chart; it is not verified. `note` adds a caveat line.
 - An invalid chart shows its error and source instead of drawing.
 
+### Reading shared files beside a conversation
+
+The optional **Media viewer** plugin, off until turned on in Settings → Plugins,
+opens PDFs, Markdown, code, text, CSV and TSV files shared in a conversation in a
+tab beside it. Choose the file's card to open it; the card's download button
+still saves the file. PDFs show every page in one scrolling column: turn pages
+with ‹ and › or the arrow keys, and zoom with **−**, **+** or **Fit to width**.
+**Copy text** copies a text file.
+
+- Only files shared in the current community open. Text files open up to 20 MB
+  and PDFs up to 100 MB, laid out to the first 1,000 pages.
+- CSV and TSV files show as a table of the first 5,000 rows and 200 columns.
+- Markdown follows the Notes rules: no raw HTML, and images show as their alt
+  text.
+- Office files, images, video and audio are not opened by the viewer.
+
 ### Saved External apps approval
 
 External apps can request saved approval. The app can renew valid approval

@@ -461,6 +461,10 @@ pub fn bundled_manifests() -> Vec<Manifest> {
         serde_json::from_str(include_str!("../../../src/bundled/charts/manifest.json"))
             .expect("bundled charts manifest"),
         serde_json::from_str(include_str!(
+            "../../../src/bundled/media-viewer/manifest.json"
+        ))
+        .expect("bundled media viewer manifest"),
+        serde_json::from_str(include_str!(
             "../../../src/bundled/link-previews/manifest.json"
         ))
         .expect("bundled link previews manifest"),
