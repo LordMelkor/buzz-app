@@ -179,10 +179,15 @@ export type HarnessMcpKit = Readonly<{
     },
   ): Promise<string | undefined>;
   /** A native call the harness shows as run. True: nothing allowed it, so
-   * stop the turn. `rejected`: the harness blocked it, so it did not run. */
+   * stop the turn. `rejected`: the harness blocked it, so it did not run.
+   * `ungated`: the harness's own setting ran it without asking; that wins
+   * where the session's choice leaves the tool on. */
   ran(
     agent: Who,
-    call: Omit<HarnessMcpCall, "arguments"> & { rejected?: boolean },
+    call: Omit<HarnessMcpCall, "arguments"> & {
+      rejected?: boolean;
+      ungated?: boolean;
+    },
   ): boolean;
 }>;
 
@@ -214,6 +219,19 @@ export function createHarnessMcp(
     tools.map(({ ungated, ...tool }) =>
       ungated === true ? { ...tool, ungated } : tool,
     );
+  /** Whether a session's applied choice leaves this server and tool on. A
+   * call whose tool is unknown is off when the server leaves any tool out. */
+  const allows = (
+    choice: Session["choice"],
+    { server, tool }: Pick<HarnessMcpCall, "server" | "tool">,
+  ) => {
+    const picked =
+      choice !== "none" && Object.hasOwn(choice, server)
+        ? choice[server]
+        : false;
+    if (!Array.isArray(picked)) return picked === true;
+    return tool ? !picked.includes(tool) : picked.length === 0;
+  };
   /** Each agent's sessions, oldest first. */
   const sessions = new Map<AgentKey, Map<string, Session>>();
   const recorded = (agent: AgentKey, session: string) =>
@@ -317,15 +335,7 @@ export function createHarnessMcp(
         if (agent.protection) return "A protected agent loads no MCP server";
         const session = recorded(agent.key, call.session);
         if (!session) return "Buzz has no record of this session's MCP servers";
-        const { choice } = session;
-        const picked =
-          choice !== "none" && Object.hasOwn(choice, call.server)
-            ? choice[call.server]
-            : false;
-        if (
-          picked === false ||
-          (Array.isArray(picked) && !!call.tool && picked.includes(call.tool))
-        )
+        if (!allows(session.choice, call))
           return `${call.server}${call.tool ? `.${call.tool}` : ""} is turned off for this agent`;
         const live = control;
         if (!live || state() !== "controlled")
@@ -375,7 +385,14 @@ export function createHarnessMcp(
     },
     ran(agent, call) {
       if (call.rejected) return false;
-      if (recorded(agent.key, call.session)?.allowed.delete(call.id))
+      const session = recorded(agent.key, call.session);
+      if (session?.allowed.delete(call.id)) return false;
+      if (
+        call.ungated &&
+        session &&
+        !agent.protection &&
+        allows(session.choice, call)
+      )
         return false;
       if (
         control?.value.skipped &&

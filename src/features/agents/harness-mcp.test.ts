@@ -613,6 +613,42 @@ describe("the call gate", () => {
     expect(mcp.kit.ran(handle, call())).toBe(true);
   });
 
+  it("denies a call of unknown tool when the server leaves any tool out", async () => {
+    const { mcp } = await gated({}, { alpha: ["write"], gamma: [] });
+    const { tool: _, ...unnamed } = call("u1");
+    await expect(mcp.kit.call(handle, unnamed, options())).resolves.toMatch(
+      /turned off/,
+    );
+    await expect(
+      mcp.kit.call(
+        handle,
+        { ...unnamed, id: "u2", server: "gamma" },
+        options(),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      mcp.kit.call(handle, call("u3", { tool: "read" }), options()),
+    ).resolves.toBeUndefined();
+  });
+
+  it("lets the harness's own always-allow run a tool the choice leaves on", async () => {
+    const skipped = vi.fn();
+    const { mcp } = await gated({ skipped }, { alpha: ["write"], beta: false });
+    expect(
+      mcp.kit.ran(handle, call("g1", { tool: "read", ungated: true })),
+    ).toBe(false);
+    expect(skipped).not.toHaveBeenCalled();
+    // The choice still wins: a tool or server it turns off stops the turn.
+    expect(mcp.kit.ran(handle, call("g2", { ungated: true }))).toBe(true);
+    expect(
+      mcp.kit.ran(handle, call("g3", { server: "beta", ungated: true })),
+    ).toBe(true);
+    expect(
+      mcp.kit.ran(handle, call("g4", { session: "other", ungated: true })),
+    ).toBe(true);
+    expect(skipped).toHaveBeenCalledTimes(3);
+  });
+
   it("tells the control what it needs, with direct only for the owner's own message", async () => {
     const asked = vi.fn<NonNullable<HarnessMcpControl["call"]>>(
       () => undefined,
@@ -703,13 +739,13 @@ describe("the call gate", () => {
       mcp.kit.call(who as never, call("d", extra), options());
     await expect(deny({ server: "beta" })).resolves.toMatch(/beta/);
     await expect(deny({ server: "gamma" })).resolves.toMatch(/gamma\.write/);
-    // A tool the list does not leave out, and one nobody could name, go on.
+    // A tool the list does not leave out goes on; one nobody could name does not.
     await expect(
       deny({ server: "gamma", tool: "read" }),
     ).resolves.toBeUndefined();
-    await expect(
-      deny({ server: "gamma", tool: undefined }),
-    ).resolves.toBeUndefined();
+    await expect(deny({ server: "gamma", tool: undefined })).resolves.toMatch(
+      /gamma is turned off/,
+    );
     // A server the applied choice does not name, and one object property it inherits.
     await expect(deny({ server: "delta" })).resolves.toMatch(/delta/);
     await expect(deny({ server: "constructor" })).resolves.toMatch(
