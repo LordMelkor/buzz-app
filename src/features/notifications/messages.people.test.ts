@@ -304,3 +304,38 @@ it("a listed person's broadcast reply in a thread the viewer opted out of stays 
     vi.unstubAllGlobals();
   }
 });
+
+it("a listed person's broadcast reply is kept until its root loads, then alerts", async () => {
+  vi.spyOn(Date, "now").mockReturnValue(1_780_000_000_000);
+  const h = await setup();
+  h.notifications.setPerson(h.peer.pubkey, true);
+  const root = message(keypair(), "room", "old root", 1_700_000_000);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const base = h.query.getMockImplementation();
+  h.query.mockImplementation(async (filters, ...rest) => {
+    if (filters[0]?.ids?.includes(root.id)) {
+      await held;
+      return [root];
+    }
+    return (await base?.(filters, ...rest)) ?? [];
+  });
+  const reply = message(h.peer, "room", "also for everyone", 1_780_000_000, [
+    ["e", root.id, "", "root"],
+    ["e", root.id, "", "reply"],
+    ["broadcast", "1"],
+  ]);
+  h.emit([reply], "live");
+  await flush();
+  expect(h.owner.session.unread.attention("room", reply.id).status).toBe(
+    "unknown",
+  );
+  expect(h.show).not.toHaveBeenCalled();
+  // The sidebar's channel count is what asks for the missing root.
+  h.owner.session.unread.snapshot({ kind: "channel", channelId: "room" });
+  release();
+  await vi.waitFor(() => expect(h.show).toHaveBeenCalledOnce());
+  expect(h.show.mock.calls[0]?.[0].body).toBe("also for everyone");
+});

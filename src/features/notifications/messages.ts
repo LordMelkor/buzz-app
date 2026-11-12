@@ -169,12 +169,14 @@ export function bindMessageNotifications(
                 relayPartition(origin, viewer),
               )
             : undefined;
-        // An ordinary post earns no engine category, so it is admitted unless
-        // the channel is unknown (no access yet).
+        // An ordinary post earns no engine category, so it is always admitted:
+        // a broadcast reply whose root is still loading reads "unknown" until
+        // the root arrives, and release below waits on that. Channel access is
+        // checked by admit, and a message the index lacks is cancelled there.
         const admissible =
-          category === "person"
-            ? attention.status !== "unknown"
-            : attention.status === "eligible" || attention.pending;
+          category === "person" ||
+          attention.status === "eligible" ||
+          attention.pending;
         if (!category || !admissible || soloReply === "reply") continue;
         void notifications.admit(
           category,
