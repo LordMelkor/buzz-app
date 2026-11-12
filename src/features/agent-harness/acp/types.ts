@@ -6,7 +6,7 @@ import type {
   McpHandler,
 } from "../../host/service";
 import type { AcpProcess } from "./process";
-import type { ConfigOptions } from "./session";
+import type { AcpSession, ConfigOptions } from "./session";
 
 export type Spawn = (
   id: string,
@@ -45,6 +45,9 @@ export type ActivityReceipt = Readonly<{
   /** The prompt was handed to the harness, after cancellation and provider
    * checks. */
   delivered?: () => void;
+  /** Opt-in provenance update immediately before a prompt or steer is sent.
+   * A steer that fails may already have influenced the running turn. */
+  admitting?: (steered: boolean) => void;
   /** Steps show on the latest acknowledged message of each scope. */
   activityScope?: string;
   step?: (tool: string, target?: string) => void;
@@ -105,7 +108,14 @@ export type AcpHooks = Readonly<{
       platform?: PlatformTools;
       tags?: Readonly<Record<string, string>>;
     }>,
-  ): Record<string, unknown>;
+    process?: AcpProcess,
+  ): Record<string, unknown> | Promise<Record<string, unknown>>;
+  /** Optional per-session controls, installed before the session can be prompted. */
+  sessionOpened?(
+    process: AcpProcess,
+    session: AcpSession,
+    meta?: Record<string, unknown>,
+  ): void;
   /** Appends `text` to a new session's system prompt; a throw closes it.
    * Without it, ACP's `systemPrompt` carries it when advertised, else it
    * leads the session's first prompt. */

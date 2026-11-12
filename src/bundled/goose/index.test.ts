@@ -7,6 +7,7 @@ import { apply } from "./index";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true }));
 afterEach(() => vi.restoreAllMocks());
+const harness = { mcp: { choice: async () => undefined, started: () => {} } };
 
 it("observes saved conversations with the status of open sessions", () => {
   vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
@@ -29,6 +30,7 @@ it("observes saved conversations with the status of open sessions", () => {
     host: { request: vi.fn() },
     agentProtection: { registerModels: vi.fn() },
     agents: {
+      harness,
       register: (registered: AgentType) => {
         type = registered;
       },
@@ -84,7 +86,7 @@ it("lists the models of the providers that answer when another's list fails", as
     pluginOwner: { id: "buzz.goose", revision: "r1" },
     host: { request: vi.fn() },
     agentProtection: { registerModels },
-    agents: { register: vi.fn(), relay: () => undefined },
+    agents: { harness, register: vi.fn(), relay: () => undefined },
     effect: vi.fn(),
   } as never);
   const [registered] = registerModels.mock.calls[0] as [
@@ -110,7 +112,7 @@ it("lists no review models for the providers Goose reviews refuse", async () => 
     pluginOwner: { id: "buzz.goose", revision: "r1" },
     host: { request: vi.fn() },
     agentProtection: { registerModels },
-    agents: { register: vi.fn(), relay: () => undefined },
+    agents: { harness, register: vi.fn(), relay: () => undefined },
     effect: vi.fn(),
   } as never);
   const [registered] = registerModels.mock.calls[0] as [
@@ -138,6 +140,7 @@ it("links a failed turn's refused key to Goose's own Agent setup, quoting goose"
     host: { request: vi.fn() },
     agentProtection: { registerModels: vi.fn() },
     agents: {
+      harness,
       register: (registered: AgentType) => {
         type = registered;
       },

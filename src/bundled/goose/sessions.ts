@@ -7,6 +7,7 @@ import {
 } from "../../features/agent-harness/acp/agent-sessions";
 import type { AgentProtection } from "../../features/agent-protection/service";
 import { nativeProtectionBridge } from "../../features/agent-protection/native-bridge";
+import type { GooseMcp } from "./mcp";
 import { GooseProcess, type GooseHost, type ServeMcp } from "./goose";
 import type {
   SavedConversation,
@@ -41,6 +42,7 @@ export class AgentProcess {
     private readonly agent: () =>
       | Readonly<{ pubkey: string; relay: string }>
       | undefined = () => undefined,
+    private readonly mcp?: () => GooseMcp | undefined,
   ) {}
 
   /** The running process. One that failed to start is started again on the
@@ -54,6 +56,7 @@ export class AgentProcess {
         this.protection &&
         (await nativeProtectionBridge(this.serve, this.protection));
       try {
+        const mcp = this.mcp?.();
         const goose = await GooseProcess.start(
           (id, options) =>
             this.protection
@@ -62,6 +65,7 @@ export class AgentProcess {
           {
             cwd: await this.host.resolveDirectory("~"),
             serve: this.serve,
+            ...(mcp && { mcp }),
             onProcess: (goose) => (this.process = goose),
             ...(agent && {
               agent: { pubkey: agent.pubkey, relay: agent.relay },

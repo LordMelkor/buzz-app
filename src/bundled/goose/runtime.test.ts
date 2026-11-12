@@ -1,3 +1,6 @@
+import { localStore } from "../../features/agents/store";
+import type { HarnessMcpKit } from "../../features/agents/harness-mcp";
+import { transport as mcpTransport } from "./mcp-testing";
 import { describe, expect, it, vi } from "vitest";
 import type { AddedTool } from "../../buzz-mcp/session-tools";
 import type { BuzzClient, Memories } from "../../buzz-mcp/client";
@@ -69,6 +72,7 @@ function setup(
     solo?: Set<string>;
     added?: readonly AddedTool[];
     hold?: boolean;
+    mcpKit?: HarnessMcpKit;
     reply?: string;
     thread?: readonly EventData[];
     scope?: "thread" | "channel";
@@ -193,6 +197,8 @@ function setup(
     storage,
     () => options.added ?? [],
     options.repositories,
+    localStore(storage),
+    options.mcpKit,
   );
   const published: { kind: number; content: string; tags: string[][] }[] = [];
   const agent = {
@@ -2499,4 +2505,175 @@ it("keeps foreign-channel roots out of conversation context", async () => {
     ],
     expect.anything(),
   );
+});
+
+/** Reads the provenance delivered to core through the actual native permission path. */
+function provenanceKit() {
+  return {
+    choice: async () => ({ fixture: true }),
+    started: () => {},
+    call: vi.fn(
+      async (
+        _agent: unknown,
+        _call: unknown,
+        options: { turn?: Pick<Delivery, "trigger"> },
+      ) => {
+        void options;
+        return undefined as string | undefined;
+      },
+    ),
+    ran: () => false,
+  };
+}
+async function nativePermission(f: ReturnType<typeof setup>, id: string) {
+  const native = f.goose();
+  const sessionId = native?.turns.at(-1)?.sessionId;
+  if (!native || !sessionId)
+    throw new Error("Native fixture did not admit a turn");
+  native.update(sessionId, {
+    sessionUpdate: "tool_call",
+    toolCallId: id,
+    rawInput: {},
+    _meta: {
+      goose: {
+        toolCall: {
+          extensionName: "fixture",
+          toolName: "fixture__write_marker",
+        },
+      },
+    },
+  });
+  await native.ask("session/request_permission", {
+    sessionId,
+    toolCall: { toolCallId: id },
+    options: [
+      { kind: "allow_once", optionId: "once" },
+      { kind: "reject_once", optionId: "reject" },
+    ],
+  });
+}
+
+it("keeps a queued owner message out of active unattended MCP provenance until its own prompt", async () => {
+  const wire = mcpTransport();
+  const kit = provenanceKit();
+  const f = setup({
+    hold: true,
+    scope: "channel",
+    wrap: wire.wrap,
+    mcpKit: kit,
+  });
+  try {
+    await f.run(pluginWake("root"));
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+    await f.deliver(message("2", "Owner next"), { model: "next-model" });
+    await nativePermission(f, "before-next-prompt");
+    expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("plugin");
+    f.goose()?.turns[0]?.finish();
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(2));
+    await nativePermission(f, "after-next-prompt");
+    expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("mention");
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it.each(["owner-first", "wake-first"] as const)(
+  "taints mixed steering before its native reply (%s)",
+  async (order) => {
+    const wire = mcpTransport();
+    const kit = provenanceKit();
+    let reached!: () => void;
+    let release!: () => void;
+    const boundary = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = setup({
+      hold: true,
+      scope: "channel",
+      mcpKit: kit,
+      wrap: (spawn) =>
+        wire.wrap(async (id, options) => {
+          const process = await spawn(id, options);
+          return {
+            ...process,
+            write: async (data) => {
+              if (JSON.parse(data).method === "_goose/unstable/session/steer") {
+                reached();
+                await held;
+              }
+              return process.write(data);
+            },
+          };
+        }),
+    });
+    try {
+      if (order === "owner-first") await f.deliver(message("1", "Owner start"));
+      else await f.run(pluginWake("root"));
+      await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+      const steering =
+        order === "owner-first"
+          ? f.run(pluginWake("root"))
+          : f.deliver(message("2", "Owner steer"));
+      await boundary;
+      // The native steer has been sent but cannot have replied. Its influence must already be tainted.
+      await nativePermission(f, "during-held-steer");
+      expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("plugin");
+      release();
+      await steering;
+      await vi.waitFor(() =>
+        expect(f.goose()?.turns[0]?.steered).toHaveLength(1),
+      );
+      await nativePermission(f, "after-steer");
+      expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("plugin");
+    } finally {
+      release();
+      f.runtime.dispose();
+    }
+  },
+);
+
+it("does not reuse an ended owner's provenance for a system compaction prompt", async () => {
+  const wire = mcpTransport();
+  const kit = provenanceKit();
+  const f = setup({
+    hold: true,
+    scope: "channel",
+    wrap: wire.wrap,
+    mcpKit: kit,
+  });
+  try {
+    await f.deliver(message("1", "Owner start"));
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+    f.goose()?.turns[0]?.finish();
+    await vi.waitFor(() =>
+      expect(
+        f.runtime.sessionState(
+          { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent,
+          { channelId: channel },
+        ),
+      ).toBe("idle"),
+    );
+    const compact = f.runtime.session(
+      { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent,
+      { channelId: channel },
+      "compact",
+    );
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(2));
+    await nativePermission(f, "compaction");
+    expect(kit.call.mock.calls.at(-1)?.[2].turn).toBeUndefined();
+    const native = f.goose();
+    const turn = native?.turns[1];
+    if (!native || !turn) throw new Error("Compaction was not admitted");
+    native.update(turn.sessionId, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "Compaction complete" },
+    });
+    turn.finish();
+    await compact;
+  } finally {
+    f.runtime.dispose();
+  }
 });
