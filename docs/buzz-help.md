@@ -1201,6 +1201,13 @@ tab, asks **Discard changes?** first; **Keep editing** keeps them.
   A saved plugin sort can briefly wait for its plugin at startup, within the
   sidebar's 1.5-second loading budget. If unavailable, it falls back to A–Z
   without forgetting the saved choice.
+- In **Settings → Plugins → Manage plugins → Add**, copy a plugin listing’s
+  **Ref** into **Branch or tag**. Leave it blank to scan the repository’s
+  default branch. If Git reports a size or repository-entry limit, try a ref
+  with a smaller plugin source or ask the publisher for a plugin-focused ref or
+  repository. If the message says the repository has more than 20,000 files,
+  choose **Back** and enter the plugin folder in **Folder**; a smaller folder
+  can bring that file count under the limit.
 - On desktop, plugins can support update checks and set them on or off by default.
   Use **Check for updates automatically** in the plugin's actions menu to change
   this choice. Buzz saves your choice across updates and restarts. Plugins without

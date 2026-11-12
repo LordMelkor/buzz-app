@@ -601,6 +601,110 @@ test("Settings controls scale together and keep enlarged labels reachable", asyn
   }
 });
 
+test("manual Git release-ref guidance stays readable across scale and themes", async ({
+  page,
+  app,
+}) => {
+  await nativeImports(page);
+  await openPlugins(page, app.origin);
+  await page.setViewportSize({ width: 320, height: 900 });
+  await selectSettingsSection(page, "Appearance");
+  await chooseColorMode(page, "Light");
+  await selectSettingsSection(page, "Manage plugins");
+  await button(page, "Add").click();
+
+  const dialog = page.getByRole("dialog", { name: "Add a plugin" });
+  const guidance = dialog.getByText(
+    /Leave blank to scan the repository’s default branch/,
+  );
+  const reference = dialog.getByRole("textbox", {
+    name: "Branch or tag (optional)",
+  });
+  await expect(guidance).toBeVisible();
+  await reference.scrollIntoViewIfNeeded();
+  await expect(reference).toBeInViewport({ ratio: 1 });
+  const bounds = await guidance.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(320);
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+
+  await selectSettingsSection(page, "Appearance");
+  for (let i = 0; i < 10; i++)
+    await button(page, "Increase interface size").click();
+  await expect(page.getByRole("status", { name: "Interface size" })).toHaveText(
+    "200%",
+  );
+  await chooseColorMode(page, "Dark");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await selectSettingsSection(page, "Manage plugins");
+  await button(page, "Add").click();
+  const enlargedDialog = page.getByRole("dialog", { name: "Add a plugin" });
+  const enlargedGuidance = enlargedDialog.getByText(
+    /Leave blank to scan the repository’s default branch/,
+  );
+  const enlargedReference = enlargedDialog.getByRole("textbox", {
+    name: "Branch or tag (optional)",
+  });
+  await expect(enlargedGuidance).toBeVisible();
+  await enlargedReference.scrollIntoViewIfNeeded();
+  await expect(enlargedReference).toBeInViewport({ ratio: 1 });
+  await button(page, "Browse plugin folder").focus();
+  await page.keyboard.press("Tab");
+  await expect(
+    enlargedDialog.getByRole("textbox", { name: "Git or GitHub repository" }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(enlargedReference).toBeFocused();
+  await page.setViewportSize({ width: 320, height: 900 });
+  await enlargedReference.scrollIntoViewIfNeeded();
+  await expect(enlargedGuidance).toBeVisible();
+  await expect(enlargedReference).toBeInViewport({ ratio: 1 });
+  const narrowBounds = await enlargedGuidance.boundingBox();
+  expect(narrowBounds).not.toBeNull();
+  expect(narrowBounds.x).toBeGreaterThanOrEqual(0);
+  expect(narrowBounds.x + narrowBounds.width).toBeLessThanOrEqual(320);
+
+  await page.evaluate(() => {
+    window.importAcquisitionError = "Git output exceeds the import size limit";
+  });
+  const enlargedRepository = enlargedDialog.getByRole("textbox", {
+    name: "Git or GitHub repository",
+  });
+  await enlargedRepository.fill("https://example.org/plugins");
+  await enlargedRepository.press("Enter");
+
+  const alert = enlargedDialog.getByRole("alert");
+  await expect(alert).toBeVisible();
+  const refusal = alert.getByText(
+    "Error: Git output exceeds the import size limit",
+    { exact: true },
+  );
+  const recovery = alert.getByText(
+    "Try another branch or tag. If the same output limit persists, ask the publisher for a ref or repository that Buzz can read.",
+    { exact: true },
+  );
+  await expect(refusal).toBeVisible();
+  await expect(recovery).toBeVisible();
+  await refusal.scrollIntoViewIfNeeded();
+  await expect(refusal).toBeInViewport({ ratio: 1 });
+  await recovery.scrollIntoViewIfNeeded();
+  await expect(recovery).toBeInViewport({ ratio: 1 });
+  await expect(button(page, "Back")).toBeFocused();
+  const alertBounds = await alert.boundingBox();
+  expect(alertBounds).not.toBeNull();
+  expect(alertBounds.x).toBeGreaterThanOrEqual(0);
+  expect(alertBounds.x + alertBounds.width).toBeLessThanOrEqual(320);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.keyboard.press("Enter");
+  await expect(enlargedRepository).toBeFocused();
+  await expect(alert).toHaveCount(0);
+});
+
 test("folder/Git preview selects the exact subfolder and preserves enabled state through updates", async ({
   page,
   app,
