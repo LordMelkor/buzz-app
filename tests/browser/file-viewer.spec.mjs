@@ -60,7 +60,7 @@ const FILES = {
 
 test.beforeAll(async () => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
-  directory = await mkdtemp(join(tmpdir(), "buzz-media-viewer-"));
+  directory = await mkdtemp(join(tmpdir(), "buzz-file-viewer-"));
   const config = {
     root,
     configFile: false,
@@ -68,7 +68,7 @@ test.beforeAll(async () => {
     logLevel: "error",
     plugins: [react()],
     build: {
-      rollupOptions: { input: join(root, "tests/browser/media-viewer.html") },
+      rollupOptions: { input: join(root, "tests/browser/file-viewer.html") },
       outDir: join(directory, "dist"),
       emptyOutDir: true,
       target: "esnext",
@@ -79,7 +79,7 @@ test.beforeAll(async () => {
     ...config,
     preview: { host: "127.0.0.1", port: 0, strictPort: true },
   });
-  url = `http://127.0.0.1:${server.httpServer.address().port}/tests/browser/media-viewer.html`;
+  url = `http://127.0.0.1:${server.httpServer.address().port}/tests/browser/file-viewer.html`;
 });
 test.afterAll(async () => {
   if (server) await new Promise((resolve) => server.httpServer.close(resolve));
@@ -123,7 +123,7 @@ for (const { name, width, theme, large } of [
       .getByRole("button", { name: /notes\.md/ })
       .first()
       .click();
-    const viewer = page.getByRole("complementary", { name: "Media viewer" });
+    const viewer = page.getByRole("complementary", { name: "File viewer" });
     await expect(
       viewer.getByRole("heading", { name: "Launch notes", level: 1 }),
     ).toBeVisible();
@@ -204,7 +204,7 @@ test("explains a file that can't be loaded", async ({ page }) => {
     .click();
   await expect(
     page
-      .getByRole("complementary", { name: "Media viewer" })
+      .getByRole("complementary", { name: "File viewer" })
       .getByText(/couldn't be loaded/),
   ).toBeVisible();
 });
@@ -226,7 +226,7 @@ test("draws a PDF that needs a bundled CMap, without leaving the app", async ({
     .getByRole("button", { name: /japanese\.pdf/ })
     .first()
     .click();
-  const viewer = page.getByRole("complementary", { name: "Media viewer" });
+  const viewer = page.getByRole("complementary", { name: "File viewer" });
   await expect(viewer.getByText("Page 1 of 1")).toBeVisible();
   await expect
     .poll(() => assets.find(([name]) => name.startsWith("UniJIS-UCS2-H")))

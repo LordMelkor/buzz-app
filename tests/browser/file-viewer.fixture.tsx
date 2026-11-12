@@ -7,7 +7,7 @@ import type {
 import { FileAttachment } from "../../src/features/messages/FileAttachment";
 import type { Attachment } from "../../src/features/relay/contracts";
 import type { Panel } from "../../src/features/panels/service";
-import { apply } from "../../src/bundled/media-viewer";
+import { apply } from "../../src/bundled/file-viewer";
 import { ToastProvider } from "../../src/shared/design-system/ui/Toast";
 import "../../src/shared/styles/globals.css";
 
@@ -99,7 +99,7 @@ function Fixture() {
         )}
       </main>
       {Panel && target && (
-        <aside aria-label="Media viewer">
+        <aside aria-label="File viewer">
           <Panel
             key={target}
             target={target}

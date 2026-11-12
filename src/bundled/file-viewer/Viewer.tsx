@@ -18,7 +18,7 @@ import {
 import { decodeText, LoadError, readBytes } from "./load";
 import { parseTable } from "./table";
 import type { FileTarget } from "./target";
-import styles from "./MediaViewer.module.css";
+import styles from "./FileViewer.module.css";
 
 const PdfView = lazy(() => import("./PdfView"));
 

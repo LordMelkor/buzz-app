@@ -38,7 +38,7 @@ explicit dictionary cleanup, and lazy loading for the session-owned catalog.
 The chart grammar, option sanitizer and data-row tables in `src/bundled/charts`
 are adapted from a Charts plugin by Alessandro Joabar (GitHub `sandro-sq`).
 
-The file viewer in `src/bundled/media-viewer` is adapted from a Media viewer
+The file viewer in `src/bundled/file-viewer` is adapted from a Media viewer
 plugin by Krish Ray (GitHub `LordMelkor`), and its PDF view from a PDF viewer
 plugin by Eric Morgan (GitHub `ericm-square`). PDF pages are drawn with PDF.js
 (`pdfjs-dist`), Copyright Mozilla Foundation, under the Apache License 2.0.

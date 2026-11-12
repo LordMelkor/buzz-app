@@ -18,7 +18,7 @@ import { EmptyState } from "../../shared/design-system/ui/EmptyState";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import { openPdf, PdfError, type PageSize, type PdfDocument } from "./pdf";
-import styles from "./MediaViewer.module.css";
+import styles from "./FileViewer.module.css";
 
 export const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
 const MAX_ZOOM = 3;

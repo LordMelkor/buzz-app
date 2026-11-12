@@ -46,15 +46,15 @@ function setup() {
 
 it("is bundled off by default", () => {
   const entry = bundledPlugins.find(
-    (plugin) => plugin.manifest.id === "buzz.media-viewer",
+    (plugin) => plugin.manifest.id === "buzz.file-viewer",
   );
   expect(entry?.enabledByDefault).toBe(false);
 });
 
 it("claims readable community files at a yielding order", () => {
   const { panel, renderer } = setup();
-  expect(panel.order).toBe(50);
-  expect(renderer.order).toBe(50);
+  expect(panel.order).toBe(100);
+  expect(renderer.order).toBe(100);
   expect(panel.matches(fileTarget({ url: MEDIA, name: "a.md" }))).toBe(true);
   expect(panel.matches(fileTarget({ url: MEDIA, name: "a.zip" }))).toBe(false);
   expect(panel.matches("https://example.org/a.md")).toBe(false);

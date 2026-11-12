@@ -19,8 +19,8 @@ import mermaidManifest from "./mermaid/manifest.json";
 import * as mermaid from "./mermaid";
 import chartsManifest from "./charts/manifest.json";
 import * as charts from "./charts";
-import mediaViewerManifest from "./media-viewer/manifest.json";
-import * as mediaViewer from "./media-viewer";
+import fileViewerManifest from "./file-viewer/manifest.json";
+import * as fileViewer from "./file-viewer";
 import namingManifest from "./identity-naming/manifest.json";
 import * as naming from "./identity-naming";
 import feedbackManifest from "./feedback/manifest.json";
@@ -156,8 +156,8 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     enabledByDefault: false,
   },
   {
-    manifest: { ...mediaViewerManifest, apiVersion: 1 },
-    module: mediaViewer,
+    manifest: { ...fileViewerManifest, apiVersion: 1 },
+    module: fileViewer,
     enabledByDefault: false,
   },
   {

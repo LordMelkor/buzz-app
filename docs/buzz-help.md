@@ -1358,7 +1358,7 @@ lists the plotted values as text.
 
 ### Reading shared files beside a conversation
 
-The optional **Media viewer** plugin, off until turned on in Settings → Plugins,
+The optional **File viewer** plugin, off until turned on in Settings → Plugins,
 opens PDFs, Markdown, code, text, CSV and TSV files shared in a conversation in a
 tab beside it. Choose the file's card to open it; the card's download button
 still saves the file. PDFs show every page in one scrolling column: turn pages

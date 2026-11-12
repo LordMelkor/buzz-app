@@ -15,23 +15,23 @@ import { Viewer } from "./Viewer";
 
 /** A basic default: a plugin made for one format, claiming at the host's
  * default order 0, takes those files over. */
-const ORDER = 50;
+const ORDER = 100;
 
 export const inject = ["panels", "conversation", "relay"];
 export const apply: PluginModule["apply"] = (ctx) => {
   const relay: RelayData = ctx.relay;
 
   ctx.panels.register({
-    id: "media-viewer",
-    title: "Media viewer",
+    id: "file-viewer",
+    title: "File viewer",
     keepOpen: true,
     deferUntilShown: true,
     order: ORDER,
     matches: (target) => parseFileTarget(target) !== undefined,
-    component: function MediaViewerPanel({ target, context }) {
+    component: function FileViewerPanel({ target, context }) {
       const connection = useRelayConnection(relay);
       const file = useMemo(() => parseFileTarget(target), [target]);
-      usePanelTabTitle(file?.name ?? "Media viewer");
+      usePanelTabTitle(file?.name ?? "File viewer");
       if (!file) return null;
       if (!connection.origin && connection.status !== "ready")
         return (
@@ -80,7 +80,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
   }
   ctx.conversation.registerAttachment({
     id: "file-card",
-    title: "Media viewer",
+    title: "File viewer",
     order: ORDER,
     matches: (attachment) =>
       attachment.kind === "file" &&
