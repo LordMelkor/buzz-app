@@ -376,3 +376,38 @@ it("Activity recovers the dropped root of a read reply marked unread", async () 
     stop();
   }
 });
+
+it("a read thread's reply recovers its evicted root before counting as channel activity", async () => {
+  const root = event(peer, 9, 10, []);
+  const branch = event(peer, 9, 20, [
+    ["e", root.id, "", "root"],
+    ["e", root.id, "", "reply"],
+  ]);
+  const under = (time: number) =>
+    event(peer, 9, time, [
+      ["e", root.id, "", "root"],
+      ["e", branch.id, "", "reply"],
+    ]);
+  // The thread is read through 500: `late` is newer, `read` is covered.
+  const late = under(700);
+  const read = under(400);
+  const prior = newReadJournal();
+  const { owner, store } = await setup({
+    ...prior,
+    state: { ...prior.state, frontiers: { [`thread:${root.id}`]: 500 } },
+  });
+  store.push(root, branch, late, read, ...flood(498, 1000));
+  // The window holds the root, so the lookup for `branch` does not fetch it.
+  owner.accept([root, branch, late]);
+  const attention = (id: string) => owner.capability.attention("c0", id);
+  await vi.waitFor(() => expect(attention(late.id).pending).toBeUndefined());
+  // The overflow reset drops the root; the refreshed sample lacks it. The
+  // finished lookup stays, so only a root recovery can apply the frontier.
+  owner.accept(flood(4096, 3000));
+  await owner.capability.refresh();
+  await vi.waitFor(() =>
+    expect(attention(read.id)).toMatchObject({ rootId: root.id }),
+  );
+  expect(attention(read.id).activityUnread).toBeUndefined();
+  expect(attention(late.id).activityUnread).toBe(true);
+});
