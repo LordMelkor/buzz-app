@@ -43,6 +43,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     repositoriesContext,
     agents.storage,
     recommended,
+    agents.harness.mcp,
   );
   const desktop =
     host.spawn && host.resolveDirectory
@@ -114,6 +115,10 @@ export const apply: PluginModule["apply"] = (ctx) => {
 
   agents.register<Config>({
     id: TYPE_ID,
+    harnessMcp: {
+      report: (agent) => runtime.harnessMcp(agent),
+      inspect: (agent, server) => runtime.inspectMcp(agent, server),
+    },
     retire: (pubkey) => runtime.retire(pubkey),
     protection: true,
     title: "Goose",

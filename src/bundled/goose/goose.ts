@@ -1,6 +1,7 @@
 // goose on the shared ACP client: one `goose-acp` process, with goose's
 // extensions for the system prompt, steering, and per-turn provider and model
 // picks. Each session's Buzz tools reach goose over HTTP MCP, never a Buzz key.
+import type { GooseMcp } from "./mcp";
 import { sessionTools } from "../../buzz-mcp/session-tools";
 import {
   AcpProcess,
@@ -201,19 +202,24 @@ export const GooseProcess = {
       env?: Readonly<Record<string, string | null>>;
       serve?: ServeMcp;
       protected?: boolean;
+      mcp?: GooseMcp;
       signal?: AbortSignal;
       onProcess?: (goose: AcpProcess) => void;
       agent?: Readonly<{ pubkey: string; relay: string }>;
     }>,
   ) => {
-    const goose = await AcpProcess.start(spawn, GOOSE, {
-      ...launch,
-      env: {
-        ...databricks(),
-        ...launch.env,
-        ...(launch.protected && { GOOSE_DISABLE_SESSION_NAMING: "true" }),
+    const goose = await AcpProcess.start(
+      spawn,
+      launch.mcp?.hooks(GOOSE) ?? GOOSE,
+      {
+        ...launch,
+        env: {
+          ...databricks(),
+          ...launch.env,
+          ...(launch.protected && { GOOSE_DISABLE_SESSION_NAMING: "true" }),
+        },
       },
-    });
+    );
     const cancel = () => void goose.kill();
     launch.signal?.addEventListener("abort", cancel, { once: true });
     try {

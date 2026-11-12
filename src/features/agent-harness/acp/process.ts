@@ -287,9 +287,21 @@ export class AcpProcess {
         void this.close(session);
       }
     });
+    let meta: Record<string, unknown> | undefined;
     let sessionId: string;
     let opened: ConfigOptions;
     try {
+      const prepared = hooks.newSessionMeta?.(
+        buzz,
+        {
+          ...(title ? { title } : {}),
+          provider,
+          ...(launch.platform ? { platform: launch.platform } : {}),
+          ...(launch.tags ? { tags: launch.tags } : {}),
+        },
+        this,
+      );
+      meta = prepared instanceof Promise ? await prepared : prepared;
       ({ sessionId, ...opened } = (await this.request(
         "session/new",
         {
@@ -301,14 +313,7 @@ export class AcpProcess {
               content: [{ type: "text", text: systemPrompt }],
             },
           }),
-          ...(hooks.newSessionMeta && {
-            _meta: hooks.newSessionMeta(buzz, {
-              ...(title ? { title } : {}),
-              provider,
-              ...(launch.platform ? { platform: launch.platform } : {}),
-              ...(launch.tags ? { tags: launch.tags } : {}),
-            }),
-          }),
+          ...(meta && { _meta: meta }),
         },
         REQUEST_TIMEOUT_MS,
       )) as ConfigOptions & { sessionId: string });
@@ -333,6 +338,7 @@ export class AcpProcess {
       throw new Error(STOPPED);
     }
     try {
+      hooks.sessionOpened?.(this, session, meta);
       if (systemPrompt && hooks.systemPrompt)
         await hooks.systemPrompt(
           this,
@@ -515,9 +521,15 @@ export class AcpProcess {
     params: Record<string, unknown>,
   ) {
     let reply: Wire;
-    if (method === "session/request_permission")
-      reply = { jsonrpc: "2.0", id, result: { outcome: allow(params) } };
-    else
+    if (method === "session/request_permission") {
+      const session = this.sessions.get(String(params.sessionId));
+      const outcome = session?.controls
+        ? await session.controls
+            .permission(params)
+            .catch(() => ({ outcome: "cancelled" }))
+        : allow(params);
+      reply = { jsonrpc: "2.0", id, result: { outcome } };
+    } else
       reply = {
         jsonrpc: "2.0",
         id,
