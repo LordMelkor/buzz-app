@@ -384,14 +384,20 @@ it("keeps a session-only server and its last tools in the report after a later s
       signal: new AbortController().signal,
       prompt: async () => undefined,
     });
-    expect((await runtime.harnessMcp(agent))?.servers).toEqual([
-      {
-        name: "alpha",
-        default: true,
-        state: "connected",
-        tools: [{ name: "read_echo" }, { name: "write_marker" }],
-      },
-    ]);
+    expect(await runtime.harnessMcp(agent)).toMatchObject({
+      calls: true,
+      servers: [
+        {
+          name: "alpha",
+          default: true,
+          state: "connected",
+          tools: [{ name: "read_echo" }, { name: "write_marker" }],
+        },
+      ],
+    });
+    expect(
+      await runtime.harnessMcp({ ...agent, protection: {} } as Agent),
+    ).not.toHaveProperty("calls");
     expect(
       f.processes.every((process) => process.killed && !process.prompts.length),
     ).toBe(true);
@@ -421,6 +427,7 @@ it("keeps earlier inspected names when a later inspection lists only its selecte
     names[0] = "beta";
     await runtime.inspectMcp(agent, "beta");
     definitions = { mcpServers: {} } as typeof definitions;
+    expect(await runtime.harnessMcp(agent)).not.toHaveProperty("calls");
     expect(
       (await runtime.harnessMcp(agent))?.servers.map((server) => server.name),
     ).toEqual(["alpha", "beta"]);
