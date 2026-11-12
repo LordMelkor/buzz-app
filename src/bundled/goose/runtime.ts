@@ -926,14 +926,13 @@ export class GooseRuntime {
         model: entry.config.model.trim(),
         effort: entry.config.effort,
       }),
+      // The prompt's other parts, its instructions, team, name and core
+      // memory, reach a running session in place as its next turn starts.
       fingerprint: () =>
         JSON.stringify([
           entry.config.provider.trim() ? 0 : this.defaultsRevision,
           entry.config.workspace,
-          entry.config.instructions,
           entry.config.scope,
-          entry.team,
-          entry.name,
           addedKey(this.added()),
         ]),
       launch: async () => {

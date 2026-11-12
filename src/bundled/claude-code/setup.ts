@@ -31,8 +31,9 @@ export type Request = (input: HostRequest) => Promise<HostResponse>;
 
 /** Where Anthropic publishes each release with its checksums. */
 const RELEASES = "https://downloads.claude.ai/claude-code-releases";
-/** Model discovery disables customizations with --safe-mode (2.1.169+). */
-export const MIN_VERSION = "2.1.169";
+/** Sessions pass --system-prompt-snapshot (2.1.267+); model discovery also
+ * needs --safe-mode (2.1.169+). */
+export const MIN_VERSION = "2.1.267";
 /** `uname -sm` to the release's platform name. */
 const PLATFORMS: Readonly<Record<string, string>> = {
   "Darwin arm64": "darwin-arm64",
@@ -396,15 +397,17 @@ export class ClaudeSetup {
 
   /** Holds a delivery while Buzz looks for its copy and downloads a first
    * one, so a mention sent meanwhile is answered rather than lost to a
-   * missing copy. Once a copy is found, updating it holds nothing. */
+   * missing copy. A copy too old for Buzz waits for its update too, and
+   * refuses the delivery if it is still too old. Once a usable copy is found,
+   * updating it holds nothing. */
   async installed(signal: AbortSignal) {
-    const found = () => {
-      const status = this.state.status;
-      return status !== undefined && status.state !== "missing";
+    const unusable = () => {
+      const state = this.state.status?.state;
+      return state === "missing" || state === "outdated";
     };
-    // After a first download failed, a mention tries it again.
-    if (!this.holding && this.state.status?.state === "missing")
-      void this.update(true);
+    const found = () => this.state.status !== undefined && !unusable();
+    // After a first download or an update failed, a mention tries it again.
+    if (!this.holding && unusable()) void this.update(true);
     for (let work = this.holding; work && !found(); work = this.holding) {
       const ended = work;
       await new Promise<void>((resolve, reject) => {
@@ -429,6 +432,11 @@ export class ClaudeSetup {
         if (signal.aborted) abort();
       });
     }
+    const status = this.state.status;
+    if (status?.state === "outdated")
+      throw new Error(
+        `Claude ${status.version} is older than Buzz needs (${MIN_VERSION}), and updating it failed. Update it in Settings.`,
+      );
   }
   /** Makes `work` what deliveries wait on, until it ends. */
   private hold(work: Promise<void>) {

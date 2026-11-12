@@ -1282,6 +1282,59 @@ it("puts the agent's teams in its system prompt, resuming idle sessions when the
   runtime.dispose();
 });
 
+it("runs a timer on the core memory as it is then, after an ordinary turn read it", async () => {
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const { deliver, claudes, core } = setup([root]);
+  const prompted = () => claudes().filter((process) => process.prompts.length);
+  core.mockResolvedValue("Old rules.");
+  await deliver({ type: "mention", event: root });
+  await flush(10);
+  core.mockResolvedValue("New rules.");
+  await deliver(timer("daily", "ops"));
+  await flush(10);
+  const standalone = prompted()[1];
+  expect(standalone?.prompts[0]).toContain("Timer: daily");
+  expect(systemPromptOf(standalone)).toContain("New rules.");
+  expect(systemPromptOf(standalone)).not.toContain("Old rules.");
+});
+
+it("resumes an idle session on the agent's new core memory", async () => {
+  const root = message("2", "@Claude hi", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const reply = message("3", "@Claude again", {
+    tags: [
+      ["h", channel],
+      ["e", root.id, "", "reply"],
+      ["p", self],
+    ],
+  });
+  const { deliver, claudes, core } = setup([root, reply]);
+  const prompted = () => claudes().filter((process) => process.prompts.length);
+  core.mockResolvedValue("Old rules.");
+  await deliver({ type: "mention", event: root });
+  await flush(10);
+  const [first] = prompted();
+  expect(systemPromptOf(first)).toContain("Old rules.");
+  // Written from another conversation: the host's copy is all that changed.
+  core.mockResolvedValue("New rules.");
+  await deliver({ type: "mention", event: reply });
+  await flush(10);
+  const second = prompted()[1];
+  expect(first?.killed).toBe(true);
+  expect(second?.options.args).toContain("--resume");
+  expect(systemPromptOf(second)).toContain("New rules.");
+  expect(systemPromptOf(second)).not.toContain("Old rules.");
+});
+
 it("starts each session from the host's core memory, reading only recent notes from the relay", async () => {
   const { deliver, claudes, core, memoryRead } = setup();
   const mention = (id: string) =>

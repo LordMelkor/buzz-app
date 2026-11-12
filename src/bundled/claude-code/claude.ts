@@ -274,6 +274,10 @@ export class ClaudeProcess {
         "stream-json",
         "--verbose",
         "--replay-user-messages",
+        // A resumed session takes the system prompt it is launched with, not
+        // the one its session file saved when it began.
+        "--system-prompt-snapshot",
+        "off",
         // Recent models return empty thinking unless asked for summaries.
         "--thinking-display",
         "summarized",

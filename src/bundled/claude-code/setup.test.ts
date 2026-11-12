@@ -283,22 +283,22 @@ it("finds Claude missing when Buzz has no copy", async () => {
 
 it("finds a copy older than Buzz needs outdated", async () => {
   const { spawn } = scripted({
-    "claude --version": { stdout: "2.1.168 (Claude Code)\n" },
+    "claude --version": { stdout: "2.1.266 (Claude Code)\n" },
   });
   await expect(checkClaude(spawn, new ClaudeAuth(spawn))).resolves.toEqual({
     state: "outdated",
-    version: "2.1.168",
+    version: "2.1.266",
   });
 });
 
 it("reports the version and whether an API key is saved", async () => {
   const signedOut = scripted({
-    "claude --version": { stdout: "2.1.200 (Claude Code)\n" },
+    "claude --version": { stdout: "2.1.280 (Claude Code)\n" },
   });
   nativeKey.saved = false;
   await expect(
     checkClaude(signedOut.spawn, new ClaudeAuth(signedOut.spawn)),
-  ).resolves.toEqual({ state: "signed-out", version: "2.1.200" });
+  ).resolves.toEqual({ state: "signed-out", version: "2.1.280" });
   const signedOutSetup = new ClaudeSetup(signedOut.spawn);
   await signedOutSetup.check();
   expect(signedOutSetup.providerSnapshot()).toEqual({
@@ -307,11 +307,11 @@ it("reports the version and whether an API key is saved", async () => {
   });
   nativeKey.saved = true;
   const ready = scripted({
-    "claude --version": { stdout: "2.1.200 (Claude Code)\n" },
+    "claude --version": { stdout: "2.1.280 (Claude Code)\n" },
   });
   await expect(
     checkClaude(ready.spawn, new ClaudeAuth(ready.spawn)),
-  ).resolves.toEqual({ state: "ready", version: "2.1.200" });
+  ).resolves.toEqual({ state: "ready", version: "2.1.280" });
   const setup = new ClaudeSetup(ready.spawn);
   await setup.check();
   const refreshing = setup.check();
@@ -334,7 +334,7 @@ class InteractiveAuth extends ClaudeAuth {
 it("runs an interactive sign-in, shows its output, and checks again after", async () => {
   const { spawn, calls } = scripted({
     "claude auth login": { stdout: "Opening browser…\n" },
-    "claude --version": { stdout: "2.1.200\n" },
+    "claude --version": { stdout: "2.1.280\n" },
   });
   const setup = new ClaudeSetup(spawn, undefined, new InteractiveAuth(spawn));
   const run = setup.run("sign-in");
@@ -343,7 +343,7 @@ it("runs an interactive sign-in, shows its output, and checks again after", asyn
   expect(setup.snapshot()).toMatchObject({
     running: undefined,
     output: "Opening browser…\n",
-    status: { state: "ready", version: "2.1.200" },
+    status: { state: "ready", version: "2.1.280" },
   });
   expect(calls.map((call) => call.args.join(" "))).toEqual([
     "auth login",
@@ -401,7 +401,7 @@ it("explains that it needs the desktop app", async () => {
 
 it("caches failed model discovery until retry and closes a late probe on disposal", async () => {
   const checks = scripted({
-    "claude --version": { stdout: "2.1.200" },
+    "claude --version": { stdout: "2.1.280" },
   });
   let release!: (process: HostProcess) => void;
   const late = new Promise<HostProcess>((resolve) => {
@@ -435,7 +435,7 @@ it("caches failed model discovery until retry and closes a late probe on disposa
 /** Health checks answer from a script; `claude` sessions answer like Claude. */
 function discoverable() {
   const checks = scripted({
-    "claude --version": { stdout: "2.1.200" },
+    "claude --version": { stdout: "2.1.280" },
   });
   const claude = fakeSpawn();
   const spawn = vi.fn<Spawn>(async (id, options) =>
@@ -474,7 +474,7 @@ it("looks for the catalog again after a discovery that listed nothing", async ()
 
 it("bounds a stalled discovery and releases it for an explicit retry", async () => {
   const checks = scripted({
-    "claude --version": { stdout: "2.1.200" },
+    "claude --version": { stdout: "2.1.280" },
   });
   let exit!: (code: number | null) => void;
   const exited = new Promise<number | null>((resolve) => {
@@ -596,7 +596,7 @@ it("installs the latest release once it passes its test", async () => {
 
 it("keeps the copy in use when a new release fails its test", async () => {
   const { spawn, request, state } = releases("2.1.300", {
-    current: "2.1.200",
+    current: "2.1.280",
     broken: "2.1.300",
   });
   const setup = new ClaudeSetup(spawn, request);
@@ -605,8 +605,8 @@ it("keeps the copy in use when a new release fails its test", async () => {
   expect(state.used).toEqual([]);
   expect(setup.snapshot()).toMatchObject({
     notice:
-      "Claude 2.1.300 failed its test: Killed: 9. Buzz keeps using 2.1.200.",
-    status: { state: "ready", version: "2.1.200" },
+      "Claude 2.1.300 failed its test: Killed: 9. Buzz keeps using 2.1.280.",
+    status: { state: "ready", version: "2.1.280" },
   });
   // A refused release is not downloaded again, unless the person asks.
   await setup.update(false);
@@ -960,7 +960,7 @@ it("stops holding a delivery when its deadline passes", async () => {
 });
 
 it("does not hold deliveries while it updates a copy in use", async () => {
-  const disk = releases("2.1.300", { current: "2.1.200" });
+  const disk = releases("2.1.300", { current: "2.1.280" });
   const { spawn, waiting, release } = held(disk, "install");
   const setup = new ClaudeSetup(spawn, disk.request);
   const update = setup.update(false);
@@ -996,4 +996,35 @@ it("tries the first download again when a mention finds no copy", async () => {
   await setup.installed(new AbortController().signal);
   expect(disk.state.fetched).toHaveLength(2);
   expect(disk.state.used).toEqual(["2.1.300"]);
+});
+
+it("holds a delivery while it updates a copy too old for Buzz", async () => {
+  const disk = releases("2.1.300", { current: "2.1.177" });
+  const { spawn, waiting, release } = held(disk, "install");
+  const setup = new ClaudeSetup(spawn, disk.request);
+  const update = setup.update(false);
+  await waiting;
+  let delivered = false;
+  const delivery = setup.installed(new AbortController().signal).then(() => {
+    delivered = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(delivered).toBe(false);
+  release();
+  await Promise.all([update, delivery]);
+  expect(setup.snapshot().status).toMatchObject({ version: "2.1.300" });
+});
+
+it("refuses a delivery when a copy too old for Buzz could not be updated", async () => {
+  const disk = releases("2.1.300", { current: "2.1.177" });
+  disk.state.offline = true;
+  const setup = new ClaudeSetup(disk.spawn, disk.request);
+  await setup.update(false);
+  expect(setup.snapshot().status).toEqual({
+    state: "outdated",
+    version: "2.1.177",
+  });
+  await expect(setup.installed(new AbortController().signal)).rejects.toThrow(
+    "Claude 2.1.177 is older than Buzz needs (2.1.267)",
+  );
 });

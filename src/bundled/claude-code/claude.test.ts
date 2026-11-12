@@ -31,6 +31,8 @@ it("starts Claude as the SDK does and initializes it with the system prompt", as
     "stream-json",
     "--verbose",
     "--replay-user-messages",
+    "--system-prompt-snapshot",
+    "off",
     "--thinking-display",
     "summarized",
     "--permission-mode",
@@ -57,6 +59,14 @@ it("starts Claude as the SDK does and initializes it with the system prompt", as
   });
   expect(claude.sessionId).toBe("new-session");
   expect(claude.started).toBe(false);
+});
+
+it("resumes a session on the system prompt it is launched with, not the one it saved", async () => {
+  const { spawn, processes } = fakeSpawn();
+  await ClaudeProcess.start(spawn, { ...launch, resume: "old-session" });
+  const args = processes[0]?.options.args ?? [];
+  expect(args).toContain("--resume");
+  expect(args[args.indexOf("--system-prompt-snapshot") + 1]).toBe("off");
 });
 
 it("lets its Buzz credential act as its agent before it initializes", async () => {

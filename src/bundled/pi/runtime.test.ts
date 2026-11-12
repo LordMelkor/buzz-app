@@ -435,7 +435,6 @@ it("hands Pi the core memory apart from the instructions, and none it could not 
   // note that there is none.
   expect(read.core).toEqual({
     text: "<core-memory>\nRemember the build\n</core-memory>",
-    placeholder: expect.stringContaining("No core memory found"),
   });
   expect(String(read.instructions)).not.toContain("core-memory");
   expect(await turn(undefined)).not.toHaveProperty("core");

@@ -137,6 +137,9 @@ type Entry = {
   team: string;
   /** The agent's name, for its prompt; a rename restarts idle sessions. */
   name?: string;
+  /** Its `core` memory as its latest turn read it; a change restarts idle
+   * sessions, which resume with their history. */
+  memory?: string | null | undefined;
   /** The agent's handle from its latest delivery, for the tools to act with. */
   handle?: AgentHandle;
   /** Where each conversation's tools default to: its latest turn's thread. */
@@ -1235,6 +1238,8 @@ export class ClaudeRuntime {
     entry.team = team ?? "";
     const refused = await this.refusal(agent.key, delivery.synced?.effort);
     if (refused) return { ok: false, error: refused };
+    // Its new process launches on the core memory read now.
+    entry.memory = await this.core(agent.key);
     const done = entry.sessions.runOnce(key, prompt, signal);
     this.notify();
     return done.finally(() => this.notify());
@@ -1334,7 +1339,13 @@ export class ClaudeRuntime {
     solo = topLevel,
   ) {
     const reads = this.reads(agent.key);
-    const summary = await reads?.channel(channelId);
+    const [summary, memory] = await Promise.all([
+      reads?.channel(channelId),
+      this.core(agent.key),
+    ]);
+    // Read as each turn starts, so a change made in any conversation restarts
+    // this one's idle session on its next message.
+    entry.memory = memory;
     const dm = summary?.dm === true;
     const thread = threadReference(event);
     const rootId = thread?.rootId ?? event.id;
@@ -1544,6 +1555,7 @@ export class ClaudeRuntime {
           entry.config.scope,
           entry.team,
           entry.name,
+          entry.memory,
           addedKey(this.added()),
           this.credentials,
         ]),
@@ -1553,10 +1565,11 @@ export class ClaudeRuntime {
         if (entry.protected && !gate)
           throw new Error("The protected agent has no live policy binding");
         gate?.assertAvailable();
-        // Read once per process: a new note doesn't restart a session, and a
-        // slow read starts it without them.
+        // Notes are read once per process: a new note doesn't restart a
+        // session, and a slow read starts it without them. Core memory is the
+        // copy the fingerprint holds, once a turn has read it.
         const [memory, notes] = await Promise.all([
-          this.core(agent),
+          "memory" in entry ? entry.memory : this.core(agent),
           recentNotesSection((slug) =>
             this.memories(agent, slug, AbortSignal.timeout(NOTES_WAIT_MS)),
           ),
