@@ -480,8 +480,11 @@ per-message reads in that set: it does not expand to replies or descendants,
 advance a channel/thread prefix, or include later arrivals. After the saved
 action succeeds, only those IDs' visit-local forced-unread overlays are cleared;
 the shared message-force hint and independent channel, root, and thread marks
-remain. If local read-state retention would need to raise its device-wide floor
-for these marks, or cannot retain a selected message's receipt under the durable
+remain. The input is deduplicated, and if any ID is no longer verified,
+accessible, or retained as a readable message, the whole operation rejects
+before saving rather than returning partial results. If local read-state
+retention would need to raise its device-wide floor for these marks, or cannot
+retain a selected message's receipt under the durable
 coverage rules, the save rejects unchanged with `CapturedReadWouldWidenError` or
 `CapturedReadNotRetainedError`. The selected local unread overlays remain in
 place on either rejection. A full journal and reserve can make an exact read
@@ -492,6 +495,20 @@ offers a broader read as an alternative, it must be a separate explicit user
 choice. A newer shared message-force hint can also fence a save, so retry the
 same explicit set only after preserving that newer intent. Older hosts may omit
 this capability, so callers must check it before invoking it.
+
+A successful captured read returns one `ReadMutationResult` for the entire
+set. Its optional `undo` is returned only when that save cleared one or more
+saved `msg:<id>` local-unread markers belonging to the captured IDs; it restores
+exactly those markers. The handle is omitted when there was no saved marker to
+restore, even if the read advanced per-message frontiers or cleared visit-local
+overlays. Undo never rewinds a frontier or restores a visit-local forced overlay;
+the shared `message-force:` hint remains outside this inverse. Any later saved
+journal revision, or invalidation of the selected messages, access, session, or
+visit evidence, expires the handle.
+
+A queued force-unread intent for any captured ID also suppresses the handle if
+it is pending when the result is returned; if it starts later, the handle's
+existing validity check rejects it.
 
 `prepareChannelRead(channelId, rootId?)` captures the channel's existing
 prefix/time cut and owned local-mark keys once. Invoke its returned function to
@@ -535,12 +552,15 @@ or session disposal invalidate captured intent; leaving the channel invalidates
 only Undo, not the saved read. The thread operation additionally requires its
 captured message evidence to remain valid.
 
-An individual saved explicit-read result may expose an optional `undo` only when
-that action cleared saved local-unread journal markers and cleared no
-forced-message marker or covered overlay. The handle is also withheld if a force
-mark for covered messages is queued while the read saves. Undo restores only the
-local-unread journal markers that exact saved action removed, in a new storage
-transaction; it does not restore overlays or rewind or publish a read frontier.
+Prepared channel/thread read results may expose an optional `undo` only when
+that action cleared saved local-unread journal markers without clearing a
+covered forced overlay. The handle is also withheld if a force mark for covered
+messages is queued while the read saves. Captured-message Undo follows the
+ID-scoped rule above and may accompany clearing those IDs' visit-local overlays;
+it still restores only saved journal markers. A direct `markMessageRead()` call
+does not provide an inverse. Undo runs in a new storage transaction and never
+rewinds or publishes a read frontier. These conditional results do not make
+every read operation undoable.
 The handle is conditional on the exact saved journal revision and the
 operation's access/lifecycle evidence. Its revision guard covers the whole
 journal: any later save that advances the revision, including an unrelated

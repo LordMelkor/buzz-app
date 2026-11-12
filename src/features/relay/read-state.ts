@@ -57,9 +57,9 @@ export type ReadMutationResult = Readonly<{
   operationId: string;
   durability: "saved";
   sync: "pending" | "local-only";
-  /** Local-only restore of saved unread journal markers only; forced-message
-   * overlays are not restored. Any later journal revision, even unrelated, or
-   * lost operation validity makes the handle stale. */
+  /** Local-only restore of cleared saved unread journal markers; never rewinds
+   * read frontiers or restores per-visit forced-message overlays. Any later
+   * journal revision, even unrelated, or lost operation validity makes it stale. */
   undo?: () => Promise<ReadMutationResult>;
 }>;
 export type ReadPublisherLock = (
