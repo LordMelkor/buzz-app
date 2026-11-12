@@ -20,6 +20,9 @@ export default defineConfig({
   },
   test: {
     maxWorkers,
+    // Vitest stubs CSS imports by default. Math reads KaTeX's stylesheet as
+    // text (`katex.css?raw`) to install its fonts and layout rules.
+    css: { include: [/katex.*\.css/] },
     include: [
       "src/**/*.test.{ts,tsx,mjs}",
       "browser-host/**/*.test.mjs",

@@ -53,13 +53,17 @@ const nonIconDependencies = new Set([
   "emoji-mart",
   "flexlayout-react",
   "jsdom",
+  "katex", // Math typesetting for the bundled Math plugin, not an icon library.
   "mdast", // Type-only module supplied by @types/mdast.
   "mdast-util-from-markdown",
+  "mdast-util-gfm",
   "mdast-util-gfm-strikethrough",
   "mdast-util-gfm-table",
   "mdast-util-to-markdown",
+  "micromark-extension-gfm",
   "micromark-extension-gfm-strikethrough",
   "micromark-extension-gfm-table",
+  "micromark-util-decode-string",
   "motion",
   "nostr-tools",
   "pele",

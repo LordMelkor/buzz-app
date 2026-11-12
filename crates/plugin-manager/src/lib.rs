@@ -460,6 +460,8 @@ pub fn bundled_manifests() -> Vec<Manifest> {
             .expect("bundled mermaid manifest"),
         serde_json::from_str(include_str!("../../../src/bundled/charts/manifest.json"))
             .expect("bundled charts manifest"),
+        serde_json::from_str(include_str!("../../../src/bundled/math/manifest.json"))
+            .expect("bundled math manifest"),
         serde_json::from_str(include_str!(
             "../../../src/bundled/link-previews/manifest.json"
         ))
@@ -552,6 +554,7 @@ fn enabled_by_default(id: &str) -> bool {
             | "buzz.feedback"
             | "buzz.diffs"
             | "buzz.mermaid"
+            | "com.squareup.math"
             | "buzz.identity-naming"
             | "buzz.agent-activity"
             | "buzz.terminal"
@@ -578,7 +581,7 @@ fn enabled_by_default(id: &str) -> bool {
     )
 }
 /// Bundled ids that older profiles may still hold as installed plugins.
-const FORMERLY_INSTALLED: &[&str] = &["buzz.claude-code", "buzz.codex"];
+const FORMERLY_INSTALLED: &[&str] = &["buzz.claude-code", "buzz.codex", "com.squareup.math"];
 /// Host-owned features stay reserved even though they have no catalog entries.
 const BUILT_IN: &[&str] = &["buzz.emoji", "buzz.mentions", "buzz.plugin-requests"];
 fn is_bundled(id: &str) -> bool {
@@ -2975,7 +2978,7 @@ mod tests {
     }
 
     #[test]
-    fn formerly_installed_agent_plugins_upgrade_to_the_bundled_copy() {
+    fn formerly_installed_plugins_upgrade_to_the_bundled_copy() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!(
             "../../../src/bundled/claude-code/manifest.json"
         ))
