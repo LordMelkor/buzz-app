@@ -22,7 +22,6 @@ import styles from "./MediaViewer.module.css";
 
 export const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
 const MAX_ZOOM = 3;
-const GUTTER = 32;
 
 export function fitScale(size: PageSize, width: number) {
   return Math.max(0.25, Math.min(4, width / size.width));
@@ -119,7 +118,7 @@ function useNear(
   useEffect(() => {
     if (!node || !root) return;
     const observer = new IntersectionObserver(
-      ([entry]) => setNear(!!entry?.isIntersecting),
+      (entries) => setNear(!!entries.at(-1)?.isIntersecting),
       { root, rootMargin: `${Math.max(margin, 400)}px 0px` },
     );
     observer.observe(node);
@@ -262,19 +261,26 @@ function Pages({ pdf, name }: { pdf: PdfDocument; name: string }) {
   const [page, setPage] = useState(1);
   const [zoom, setZoom] = useState<number | "fit">("fit");
   const [stage, setStage] = useState<HTMLElement | null>(null);
+  const [column, setColumn] = useState<HTMLDivElement | null>(null);
   const { width, height } = useSize(stage);
+  const padding = column
+    ? Number.parseFloat(getComputedStyle(column).paddingInlineStart) +
+      Number.parseFloat(getComputedStyle(column).paddingInlineEnd)
+    : 0;
   const widest = useMemo(
     () =>
       pdf.sizes.reduce((wide, size) => (size.width > wide.width ? size : wide)),
     [pdf],
   );
   const scale =
-    zoom === "fit" ? fitScale(widest, Math.max(width - GUTTER, 160)) : zoom;
+    zoom === "fit" ? fitScale(widest, Math.max(width - padding, 160)) : zoom;
   const scrollTo = usePageTracking(stage, pages, scale, setPage);
   const go = (to: number) => scrollTo(Math.min(Math.max(1, to), pages));
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === "ArrowRight" || event.key === "PageDown") go(page + 1);
-    else if (event.key === "ArrowLeft" || event.key === "PageUp") go(page - 1);
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+      return;
+    if (event.key === "ArrowRight") go(page + 1);
+    else if (event.key === "ArrowLeft") go(page - 1);
     else return;
     event.preventDefault();
   };
@@ -288,7 +294,7 @@ function Pages({ pdf, name }: { pdf: PdfDocument; name: string }) {
             disabled={page <= 1}
             onClick={() => go(page - 1)}
           />
-          <output className={styles.count} aria-live="polite">
+          <output className={styles.count}>
             Page {page} of {pages}
           </output>
           <IconButton
@@ -332,7 +338,7 @@ function Pages({ pdf, name }: { pdf: PdfDocument; name: string }) {
         aria-label={`${name} pages`}
         onKeyDown={onKeyDown}
       >
-        <div className={styles.column}>
+        <div ref={setColumn} className={styles.column}>
           {pdf.sizes.map((size, index) => (
             <Page
               // biome-ignore lint/suspicious/noArrayIndexKey: The page number is its identity.

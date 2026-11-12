@@ -11,20 +11,28 @@ let server;
 let directory;
 let url;
 
-/** A small valid PDF with one line of text per page. */
-function pdf(lines) {
+/** A small valid PDF with one line of Latin text per page, and optionally a
+ * page of Japanese in a non-embedded font that needs a predefined CMap. */
+function pdf(lines, { japanese = false } = {}) {
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    `<< /Type /Pages /Kids [${lines.map((_, i) => `${4 + i * 2} 0 R`).join(" ")}] /Count ${lines.length} >>`,
+    "",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    "<< /Type /Font /Subtype /Type0 /BaseFont /KozMinPr6N-Regular /Encoding /UniJIS-UCS2-H /DescendantFonts [5 0 R] >>",
+    "<< /Type /Font /Subtype /CIDFontType0 /BaseFont /KozMinPr6N-Regular /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >> /FontDescriptor 6 0 R >>",
+    "<< /Type /FontDescriptor /FontName /KozMinPr6N-Regular /Flags 4 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 700 /StemV 80 >>",
   ];
-  for (const [index, line] of lines.entries()) {
-    const stream = `BT /F1 24 Tf 72 700 Td (${line}) Tj ET`;
+  const kids = [];
+  const page = (stream) => {
+    kids.push(`${objects.length + 1} 0 R`);
     objects.push(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + index * 2} 0 R >>`,
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${objects.length + 2} 0 R >>`,
       `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
     );
-  }
+  };
+  for (const line of lines) page(`BT /F1 24 Tf 72 700 Td (${line}) Tj ET`);
+  if (japanese) page("BT /F2 32 Tf 72 700 Td <65E5672C8A9E> Tj ET");
+  objects[1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${kids.length} >>`;
   let body = "%PDF-1.4\n";
   const offsets = objects.map((object, index) => {
     const offset = body.length;
@@ -47,6 +55,7 @@ const FILES = {
   b: ["text/csv", 'name,role\nAda,"Engineer, lead"\nGrace,Admiral\n'],
   c: ["text/plain", 'fn main() {\n    println!("hi");\n}\n'],
   d: ["application/pdf", pdf(["First page", "Second page"])],
+  f: ["application/pdf", pdf([], { japanese: true })],
 };
 
 test.beforeAll(async () => {
@@ -198,4 +207,29 @@ test("explains a file that can't be loaded", async ({ page }) => {
       .getByRole("complementary", { name: "Media viewer" })
       .getByText(/couldn't be loaded/),
   ).toBeVisible();
+});
+
+test("draws a PDF that needs a bundled CMap, without leaving the app", async ({
+  page,
+}) => {
+  const { unexplained } = watchPageErrors(page);
+  await serveMedia(page);
+  const assets = [];
+  page.on("response", (response) => {
+    const path = new URL(response.url()).pathname;
+    if (/\.(bcmap|pfb|ttf|wasm)$/.test(path))
+      assets.push([path.split("/").pop(), response.status()]);
+  });
+  await page.goto(`${url}?extra=japanese`);
+  await page
+    .getByRole("main", { name: "Message" })
+    .getByRole("button", { name: /japanese\.pdf/ })
+    .first()
+    .click();
+  const viewer = page.getByRole("complementary", { name: "Media viewer" });
+  await expect(viewer.getByText("Page 1 of 1")).toBeVisible();
+  await expect
+    .poll(() => assets.find(([name]) => name.startsWith("UniJIS-UCS2-H")))
+    .toEqual([expect.stringMatching(/\.bcmap$/), 200]);
+  expect(unexplained()).toEqual([]);
 });

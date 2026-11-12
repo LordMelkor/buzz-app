@@ -8,7 +8,13 @@ import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { SafeMarkdown } from "../../features/messages/SafeMarkdown";
 import type { RelaySession } from "../../features/relay/session";
-import { type FileFormat, formatLabel, maxBytes } from "./formats";
+import {
+  type FileFormat,
+  formatLabel,
+  MAX_MARKDOWN_CHARS,
+  MAX_SHOWN_CHARS,
+  maxBytes,
+} from "./formats";
 import { decodeText, LoadError, readBytes } from "./load";
 import { parseTable } from "./table";
 import type { FileTarget } from "./target";
@@ -18,7 +24,6 @@ const PdfView = lazy(() => import("./PdfView"));
 
 export type ViewerProps = Readonly<{
   file: FileTarget;
-  /** The readable address of the file, or undefined when it can't open here. */
   source: string | undefined;
   session?: RelaySession | undefined;
   openLink(url: string): boolean;
@@ -72,7 +77,6 @@ function Unavailable({ title, message }: { title: string; message: string }) {
   );
 }
 
-/** A shared file read beside the conversation. */
 export function Viewer({
   file,
   source,
@@ -159,7 +163,7 @@ function Contents({
         tabIndex={0}
         aria-label={file.name}
       >
-        {file.format === "markdown" ? (
+        {file.format === "markdown" && text.length <= MAX_MARKDOWN_CHARS ? (
           <article className={styles.markdown}>
             <SafeMarkdown
               content={text}
@@ -173,7 +177,21 @@ function Contents({
             delimiter={file.format === "csv" ? "," : "\t"}
           />
         ) : (
-          <pre className={styles.text}>{text}</pre>
+          <>
+            {file.format === "markdown" && (
+              <p className={styles.note} role="note">
+                This Markdown file is too long to format, so it shows as plain
+                text.
+              </p>
+            )}
+            <pre className={styles.text}>{text.slice(0, MAX_SHOWN_CHARS)}</pre>
+            {text.length > MAX_SHOWN_CHARS && (
+              <p className={styles.note} role="note">
+                Showing the first {MAX_SHOWN_CHARS.toLocaleString()} characters.
+                Copy text copies all of it, or download the file.
+              </p>
+            )}
+          </>
         )}
       </section>
     </>

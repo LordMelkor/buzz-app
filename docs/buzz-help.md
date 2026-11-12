@@ -1367,7 +1367,9 @@ with ‹ and › or the arrow keys, and zoom with **−**, **+** or **Fit to wid
 
 - Only files shared in the current community open. Text files open up to 20 MB
   and PDFs up to 100 MB, laid out to the first 1,000 pages.
-- CSV and TSV files show as a table of the first 5,000 rows and 200 columns.
+- CSV and TSV files show as a table of the first 5,000 rows and 200 columns,
+  up to 50,000 cells. Text shows its first 2,000,000 characters, and Markdown
+  over 500,000 characters shows as plain text.
 - Markdown follows the Notes rules: no raw HTML, and images show as their alt
   text.
 - Office files, images, video and audio are not opened by the viewer.

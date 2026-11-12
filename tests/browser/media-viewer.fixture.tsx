@@ -55,6 +55,16 @@ const FILES: Attachment[] = [
   { url: media("c"), kind: "file", name: "main.rs" },
   { url: media("d"), kind: "file", name: "guide.pdf", mime: "application/pdf" },
   { url: media("e"), kind: "file", name: "archive.zip" },
+  ...(params.get("extra") === "japanese"
+    ? [
+        {
+          url: media("f"),
+          kind: "file",
+          name: "japanese.pdf",
+          mime: "application/pdf",
+        } as const,
+      ]
+    : []),
 ];
 
 const HostFileCard = (props: FileCardProps) => <FileAttachment {...props} />;

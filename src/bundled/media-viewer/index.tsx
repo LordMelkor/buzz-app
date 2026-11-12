@@ -4,9 +4,11 @@ import {
   isNativeMediaSource,
   isProxySource,
 } from "../../features/messages/attachment-source";
+import { usePanelTabTitle } from "../../features/panels/PanelWorkspace";
 import { useRelayConnection } from "../../features/relay/react";
 import type { RelayData } from "../../features/relay/service";
 import type { PluginModule } from "../../plugins/api";
+import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import { fileFormat, formatLabel } from "./formats";
 import { fileTarget, isCommunityMedia, parseFileTarget } from "./target";
 import { Viewer } from "./Viewer";
@@ -29,7 +31,14 @@ export const apply: PluginModule["apply"] = (ctx) => {
     component: function MediaViewerPanel({ target, context }) {
       const connection = useRelayConnection(relay);
       const file = useMemo(() => parseFileTarget(target), [target]);
+      usePanelTabTitle(file?.name ?? "Media viewer");
       if (!file) return null;
+      if (!connection.origin && connection.status !== "ready")
+        return (
+          <LoadingRegion pending label={`Loading ${file.name}`}>
+            {null}
+          </LoadingRegion>
+        );
       const source = isCommunityMedia(file.url, connection.origin)
         ? connection.session.media(file.url)
         : undefined;

@@ -1,9 +1,9 @@
 export const MAX_ROWS = 5000;
 export const MAX_COLUMNS = 200;
+export const MAX_CELLS = 50_000;
 
 export type Table = Readonly<{
   rows: readonly (readonly string[])[];
-  /** Rows and columns past the limits, which the viewer leaves out. */
   omittedRows: number;
   omittedColumns: number;
 }>;
@@ -42,6 +42,14 @@ export function parseTable(text: string, delimiter: "," | "\t"): Table {
     } else field += char;
   }
   if (field !== "" || row.length > 0) endRow();
+  const fit = Math.max(
+    1,
+    Math.floor(MAX_CELLS / Math.max(1, Math.min(widest, MAX_COLUMNS))),
+  );
+  if (rows.length > fit) {
+    omittedRows += rows.length - fit;
+    rows.length = fit;
+  }
   return {
     rows,
     omittedRows,

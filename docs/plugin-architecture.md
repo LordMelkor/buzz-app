@@ -2716,9 +2716,12 @@ plugin registered at the default order for the same files takes them over. The
 card's preview opens a `buzz-file:?url=…&name=…&mime=…` panel target, which
 other plugins may also open. The panel reads only `/media/` URLs on the current
 community's origin, through the session's media proxy, and caps text at 20 MB
-and PDFs at 100 MB. Markdown renders through `SafeMarkdown`. PDFs use
+and PDFs at 100 MB; tables stop at 50,000 cells and text at 2,000,000 shown
+characters. Markdown renders through `SafeMarkdown`. PDFs use
 [PDF.js](https://mozilla.github.io/pdf.js/) in a worker, loaded on the first
-PDF, and draw only the pages near the viewport.
+PDF, and draw only the pages near the viewport. Its CMaps, standard fonts and
+image decoders are bundled assets served through a `BinaryDataFactory`, so
+PDFs need no network access beyond the file.
 
 The conversation preview exposes top-level `registerTool`, `registerCompletion` and `registerInline`
 methods and stable `conversation.ui.Composer` / `.Message` / `.Thread` / `.Conversation` /

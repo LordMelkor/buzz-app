@@ -6,7 +6,6 @@ export class LoadError extends Error {
   }
 }
 
-/** The file's bytes, refusing more than `limit` before or while reading. */
 export async function readBytes(
   source: string,
   limit: number,
@@ -40,6 +39,7 @@ export async function readBytes(
   } finally {
     if (total > limit || signal.aborted) void reader.cancel().catch(() => {});
   }
+  if (chunks.length === 1 && chunks[0]) return chunks[0];
   const bytes = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {

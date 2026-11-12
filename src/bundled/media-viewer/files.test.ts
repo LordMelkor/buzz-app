@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { fileFormat } from "./formats";
 import { decodeText, LoadError, readBytes } from "./load";
-import { MAX_COLUMNS, MAX_ROWS, parseTable } from "./table";
+import { MAX_CELLS, MAX_COLUMNS, MAX_ROWS, parseTable } from "./table";
 import { fileTarget, isCommunityMedia, parseFileTarget } from "./target";
 
 const ORIGIN = "https://relay.example.org";
@@ -82,6 +82,12 @@ it("parses quoted CSV fields and caps rows and columns", () => {
   const long = parseTable("r\n".repeat(MAX_ROWS + 7), ",");
   expect(long.rows).toHaveLength(MAX_ROWS);
   expect(long.omittedRows).toBe(7);
+  const big = parseTable(
+    `${Array(MAX_COLUMNS).fill("x").join(",")}\n`.repeat(300),
+    ",",
+  );
+  expect(big.rows).toHaveLength(MAX_CELLS / MAX_COLUMNS);
+  expect(big.omittedRows).toBe(300 - MAX_CELLS / MAX_COLUMNS);
 });
 
 const respond = (body: BodyInit, headers: HeadersInit = {}, status = 200) =>

@@ -8,6 +8,37 @@ import workerSrc from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 
 export const MAX_PDF_PAGES = 1000;
 const MAX_CANVAS_PIXELS = 16_000_000;
+
+const DATA = {
+  cMapUrl: import.meta.glob<string>(
+    "../../../node_modules/pdfjs-dist/cmaps/*.bcmap",
+    { query: "?url", import: "default" },
+  ),
+  standardFontDataUrl: import.meta.glob<string>(
+    "../../../node_modules/pdfjs-dist/standard_fonts/*.{pfb,ttf}",
+    { query: "?url", import: "default" },
+  ),
+  wasmUrl: import.meta.glob<string>(
+    "../../../node_modules/pdfjs-dist/wasm/*.wasm",
+    { query: "?url", import: "default" },
+  ),
+};
+
+/** Serves pdf.js its CMaps, standard fonts and image decoders from the
+ * app's own bundled assets rather than a directory URL. */
+class BundledData {
+  async fetch({ kind, filename }: { kind: string; filename: string }) {
+    const files = DATA[kind as keyof typeof DATA] ?? {};
+    const load = Object.entries(files).find(([path]) =>
+      path.endsWith(`/${filename}`),
+    )?.[1];
+    if (!load) throw new Error(`No bundled PDF data named ${filename}`);
+    const response = await fetch(await load());
+    if (!response.ok) throw new Error(`PDF data ${filename} didn't load`);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+}
+
 const SIZE_BATCH = 16;
 
 export type PageSize = Readonly<{ width: number; height: number }>;
@@ -38,6 +69,9 @@ export async function openPdf(
   GlobalWorkerOptions.workerSrc ||= workerSrc;
   const loading = getDocument({
     data: bytes,
+    BinaryDataFactory: BundledData,
+    useWorkerFetch: false,
+    cMapPacked: true,
     enableXfa: false,
     verbosity: VerbosityLevel.ERRORS,
   });
