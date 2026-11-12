@@ -263,6 +263,10 @@ it.each([
     h.emit([relayed(h.relay, "relayed")], "live");
     await vi.waitFor(() => expect(h.show).toHaveBeenCalledOnce());
     expect(h.show.mock.calls[0]?.[0].body).toBe("relayed");
+    // The alert names the attributed person, not the relay that signed it.
+    const title = h.show.mock.calls[0]?.[0].title;
+    expect(title).toContain(h.peer.pubkey.slice(0, 10));
+    expect(title).not.toContain(h.relay.pubkey.slice(0, 10));
   },
 );
 

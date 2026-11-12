@@ -9,7 +9,7 @@ import type { IncomingListener } from "../relay/incoming";
 import { relayPartition } from "../relay/partition";
 import type { RelaySession } from "../relay/session";
 import type { NotificationsService } from "./service";
-import { messageNotificationText } from "./content";
+import { messageNotificationText, notificationAuthor } from "./content";
 
 const labels = {
   mention: "Mentions",
@@ -262,9 +262,9 @@ export function bindMessageNotifications(
                 .channels.find((item) => item.id === message.channelId),
               owned.profiles
                 .snapshot()
-                .get(message.workflowOwnerId ?? message.authorId),
+                .get(notificationAuthor(message, category)),
               owned.names.resolve(
-                message.workflowOwnerId ?? message.authorId,
+                notificationAuthor(message, category),
                 undefined,
                 owned.channels
                   .list()
