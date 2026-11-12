@@ -26,6 +26,7 @@ type Configured = {
   key: string;
   enabled: boolean;
   extension: Extension;
+  unavailable?: string;
 };
 const request = (
   p: AcpProcess,
@@ -64,6 +65,22 @@ export class GooseMcp {
     };
     if (!Array.isArray(extensions))
       throw new Error("Goose did not list its configured extensions");
+    type Saved = {
+      name?: string;
+      envs?: object | null;
+      env?: object | null;
+      cwd?: unknown;
+    };
+    let saved: Record<string, Saved> | undefined;
+    try {
+      ({ value: saved } = (await request(p, "config/read", {
+        key: "extensions",
+        isSecret: false,
+      })) as { value: Record<string, Saved> });
+    } catch {
+      // An unverifiable configuration can still be left Off, but never launched.
+    }
+    const settings = Object.entries(saved ?? {});
     return extensions
       .filter((e) => mcp(e) && e.configKey !== "buzz")
       .map((e) => {
@@ -72,21 +89,48 @@ export class GooseMcp {
           typeof e.extension.server.name !== "string"
         )
           throw new Error("Goose returned invalid extension metadata");
+        const name = e.extension.server.name;
+        const matches = settings.filter(
+          ([key, value]) =>
+            value && typeof value === "object" && (value.name ?? key) === name,
+        );
+        const lost = [];
+        if (
+          matches.some(
+            ([, value]) =>
+              Object.keys(value.envs ?? {}).length ||
+              Object.keys(value.env ?? {}).length,
+          )
+        )
+          lost.push("environment values");
+        if (matches.some(([, value]) => value.cwd != null))
+          lost.push("working directory");
+        const reason = !matches.length
+          ? "its saved launch settings could not be verified"
+          : lost.length
+            ? `the API doesn't carry over its saved ${lost.join(" and ")}`
+            : undefined;
         return {
-          name: e.extension.server.name,
+          name,
           key: e.configKey,
           enabled: e.enabled,
           extension: e.extension,
+          ...(reason && {
+            unavailable: `Goose can't start ${name} for one session: ${reason}.`,
+          }),
         };
       });
   }
   async report(p: AcpProcess) {
-    const servers = (await this.configured(p)).map(({ name, enabled }) => {
+    const configured = await this.configured(p);
+    const servers = configured.map(({ name, enabled, unavailable }) => {
       const tools = this.seen.get(name);
       return {
         name,
         default: false,
-        ...(!enabled && { state: "disabled" as const }),
+        ...(unavailable
+          ? { state: "failed" as const }
+          : !enabled && { state: "disabled" as const }),
         ...(tools && { tools }),
       };
     });
@@ -94,7 +138,12 @@ export class GooseMcp {
       tools: true,
       calls: true as const,
       servers,
-      note: "Tool inspection starts only the selected server, without a model turn. Goose may refresh its provider catalog. List tools before excluding individual tools. Native preallowed tools can skip approval; their results are checked afterward.",
+      note: [
+        "Tool inspection starts only the selected server, without a model turn. Goose may refresh its provider catalog. List tools before excluding individual tools. Native preallowed tools can skip approval; their results are checked afterward.",
+        ...configured.flatMap((entry) =>
+          entry.unavailable ? [entry.unavailable] : [],
+        ),
+      ].join(" "),
     };
   }
   async inspect(p: AcpProcess, cwd: string, name: string, signal: AbortSignal) {
@@ -102,6 +151,7 @@ export class GooseMcp {
     const configured = (await this.configured(p)).find((e) => e.name === name);
     if (!configured)
       throw new Error(`Goose has no configured MCP server named ${name}`);
+    if (configured.unavailable) throw new Error(configured.unavailable);
     signal.throwIfAborted();
     const { sessionId } = (await p.request(
       "session/new",
@@ -113,7 +163,7 @@ export class GooseMcp {
       REQUEST_TIMEOUT_MS,
     )) as { sessionId: string };
     signal.throwIfAborted();
-    const tools = await this.tools(p, sessionId, configured);
+    const { tools } = await this.tools(p, sessionId, configured);
     signal.throwIfAborted();
     return tools;
   }
@@ -149,7 +199,16 @@ export class GooseMcp {
       ).values(),
     ]);
     this.seen.set(entry.name, own);
-    return own;
+    const denied = new Set(
+      tools
+        .filter((tool) => tool.permission === "never_allow")
+        .map((tool) =>
+          tool.name.startsWith(prefix)
+            ? tool.name.slice(prefix.length)
+            : tool.name,
+        ),
+    );
+    return { tools: own, denied };
   }
   private selection(configured: Configured[], choice: HarnessMcpAnswer) {
     const selected: Configured[] = [];
@@ -182,6 +241,8 @@ export class GooseMcp {
           });
       }
     }
+    for (const entry of selected)
+      if (entry.unavailable) throw new Error(entry.unavailable);
     return { selected, applied };
   }
   hooks(base: AcpHooks): AcpHooks {
@@ -227,11 +288,15 @@ export class GooseMcp {
         );
         let native = new Map<
           string,
-          Configured & { tools: readonly { name: string; ungated?: true }[] }
+          Configured & {
+            tools: readonly { name: string; ungated?: true }[];
+            denied: ReadonlySet<string>;
+          }
         >();
         type Observed = {
           call?: Call;
           ungated?: true;
+          nativeDenied?: true;
           phase: "observed" | "unavailable" | "held" | "allowed" | "denied";
         };
         const calls = new Map<string, Observed>();
@@ -293,8 +358,8 @@ export class GooseMcp {
               if (!known)
                 throw new Error("Goose loaded an unconfigured MCP server");
               const item = known;
-              const tools = await this.tools(p, session.id, item);
-              native.set(item.key, { ...item, tools });
+              const { tools, denied } = await this.tools(p, session.id, item);
+              native.set(item.key, { ...item, tools, denied });
               loaded.push({ name: item.name, tools: tools.map((t) => t.name) });
             }
             this.kit.started(
@@ -366,6 +431,8 @@ export class GooseMcp {
                 calls.set(id, {
                   phase: admitted ? "observed" : "unavailable",
                   ...(admitted?.ungated && { ungated: true }),
+                  ...(admitted &&
+                    entry.denied.has(admitted.name) && { nativeDenied: true }),
                   call: {
                     session: session.id,
                     id,
@@ -402,7 +469,11 @@ export class GooseMcp {
             )
               return;
             const { arguments: _arguments, ...call } = observed.call;
-            const rejected = observed.phase === "denied";
+            const rejected =
+              observed.phase === "denied" ||
+              (observed.phase === "observed" &&
+                observed.nativeDenied === true &&
+                update.status === "failed");
             if (
               gate.ran(agent, {
                 ...call,

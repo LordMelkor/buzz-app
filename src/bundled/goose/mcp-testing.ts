@@ -7,7 +7,6 @@ export const native = (name: string) => ({
     name,
     command: "/fixture",
     args: ["private-config"],
-    env: [{ name: "TOKEN", value: "fixture-secret" }],
   },
 });
 const configured = [
@@ -35,6 +34,24 @@ type Selected = {
 /** Native protocol fixture layered over the existing ACP spawn boundary. */
 export function transport() {
   const fake = fakeSpawn({ hold: true });
+  const saved: Record<string, Record<string, unknown>> = Object.fromEntries(
+    configured.flatMap((entry) =>
+      "server" in entry.extension
+        ? [
+            [
+              entry.configKey,
+              {
+                type: "stdio",
+                name: entry.extension.server.name,
+                cmd: "/fixture",
+                args: ["private-config"],
+                enabled: entry.enabled,
+              },
+            ],
+          ]
+        : [],
+    ),
+  );
   const sessions = new Map<string, Selected[]>();
   const requests: { method: string; params: Record<string, unknown> }[] = [];
   let failTools = false;
@@ -56,6 +73,11 @@ export function transport() {
             options.onStdout?.(
               `${JSON.stringify({ jsonrpc: "2.0", id: wire.id, result })}\n`,
             );
+          if (
+            method === "_goose/unstable/config/read" &&
+            params.key === "extensions"
+          )
+            return reply({ value: saved });
           if (method === "_goose/unstable/config/extensions/list")
             return reply({ extensions: configured });
           if (method === "session/new")
@@ -122,6 +144,9 @@ export function transport() {
     spawn: wrap(fake.spawn),
     wrap,
     requests,
+    saved: (name: string, values: Record<string, unknown>) => {
+      saved[name] = { ...saved[name], ...values };
+    },
     permission: (name: string, value: string | null) =>
       permissions.set(name, value),
     failTools: () => {
