@@ -1441,6 +1441,11 @@ lists the plotted values as text.
   attribution under the chart; it is not verified. `note` adds a caveat line.
 - An invalid chart shows its error and source instead of drawing.
 
+Code blocks draw the same way, through plugins such as Charts and Mermaid, in
+Canvas, shared notes and repository pages. Those, plus the memory panel, agent
+transcript replies and plugin READMEs, offer **Copy code block** on each code
+block.
+
 ### Saved External apps approval
 
 External apps can request saved approval. The app can renew valid approval

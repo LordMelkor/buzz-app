@@ -6,7 +6,6 @@ import {
   useContext,
   useMemo,
   useState,
-  useSyncExternalStore,
   type ComponentPropsWithoutRef,
   type ReactElement,
   type ReactNode,
@@ -24,25 +23,14 @@ import {
   emptyReferenceDirectory,
   MentionLabel,
 } from "./ReferenceText";
-import { CopyIcon } from "../../shared/design-system/icons/index";
-import { IconButton } from "../../shared/design-system/ui/IconButton";
-import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { profileKey } from "../profiles/target";
 import referenceStyles from "../../shared/InlineReference.module.css";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { remarkSpoilers } from "./remark-spoilers";
-import type {
-  CodeBlockRenderer,
-  ContributionReader,
-  ConversationExtensions,
-} from "../conversation/contracts";
-import {
-  ContributionBoundary,
-  contributionKey,
-} from "../conversation/ContributionBoundary";
-import { resolveMatch } from "../../plugins/contributions";
+import type { ConversationExtensions } from "../conversation/contracts";
+import { CodeFence, observeTableOverflow } from "../markdown/code-blocks";
 import { InlineText } from "../conversation/InlineText";
 import type { ChannelMessage, Profile } from "../relay/contracts";
 import { emojiMatches, linkPart, messageParts } from "../relay/emoji";
@@ -57,7 +45,6 @@ import {
   type LiteralRange,
   type PreparedMarkdown,
 } from "./markdown-preparation";
-import { writeClipboardText } from "../../shared/clipboard";
 
 type MarkdownNode = {
   type: string;
@@ -469,6 +456,10 @@ type MessageComponents = {
     props: ComponentPropsWithoutRef<Tag> & ExtraProps,
   ) => ReactNode;
 };
+const MESSAGE_CODE_CLASSES = {
+  frame: styles.codeBlock,
+  actions: styles.codeActions,
+};
 const MessageComponentsContext = createContext<MessageComponents | null>(null);
 function useMessageComponents() {
   const components = useContext(MessageComponentsContext);
@@ -487,34 +478,6 @@ const markdownComponents: Components = {
     <table ref={observeTableOverflow} {...props} />
   ),
 };
-
-/** WebKit adds an `overflow-x: auto` scrollbar after flex and grid ancestors
- * have taken their heights, then lays out only the table again. A scrollbar
- * that takes space then overlaps the next row, or leaves a gap when removed.
- * CSS chooses the scrollbar from measured overflow so it is laid out with
- * the ancestors. Observe content too: edits can change scrollWidth without
- * resizing a table at its width cap. Measure on mount because the resize
- * observer's first report arrives after the row's. */
-function observeTableOverflow(table: HTMLTableElement | null) {
-  if (!table || typeof ResizeObserver === "undefined") return;
-  const update = () => {
-    const overflow = String(table.scrollWidth > table.clientWidth);
-    if (table.dataset.overflow !== overflow) table.dataset.overflow = overflow;
-  };
-  update();
-  const observer = new ResizeObserver(update);
-  observer.observe(table);
-  const contentObserver = new MutationObserver(update);
-  contentObserver.observe(table, {
-    childList: true,
-    characterData: true,
-    subtree: true,
-  });
-  return () => {
-    observer.disconnect();
-    contentObserver.disconnect();
-  };
-}
 
 export function MessageMarkdown({
   row,
@@ -799,27 +762,15 @@ function PreparedMessageMarkdown({
         <span {...props}>{children}</span>
       );
     },
-    pre: ({ node, children, ...props }) => {
-      const code = labelText(children).replace(/\n$/, "");
-      const plain = (
-        <pre {...props}>
-          {children}
-          {interactive && <CodeActions code={code} />}
-        </pre>
-      );
-      const language = codeLanguage(node);
-      // Previews are not interactive, so they keep the plain code.
-      return interactive && language && extensions?.codeBlocks ? (
-        <CodeBlock
-          registry={extensions.codeBlocks}
-          language={language}
-          code={code}
-          fallback={plain}
-        />
-      ) : (
-        plain
-      );
-    },
+    // Previews are not interactive, so they keep the plain code.
+    pre: (props) => (
+      <CodeFence
+        {...props}
+        copy={interactive}
+        registry={interactive ? extensions?.codeBlocks : undefined}
+        classes={MESSAGE_CODE_CLASSES}
+      />
+    ),
   };
 
   const markdown = (
@@ -951,95 +902,6 @@ function MessageSpoiler({
       >
         {children}
       </span>
-    </span>
-  );
-}
-
-/** The fence's info-string language, as remark records it on the inner `code`. */
-function codeLanguage(pre: ExtraProps["node"]) {
-  const code = pre?.children[0];
-  if (code?.type !== "element" || code.tagName !== "code") return undefined;
-  const classes = code.properties.className;
-  return Array.isArray(classes)
-    ? classes
-        .map(String)
-        .find((name) => name.startsWith("language-"))
-        ?.slice("language-".length)
-    : undefined;
-}
-
-/** A plugin presents the block and may add an action; the host keeps the frame,
- * action placement and copy, and restores the plain code when the plugin fails
- * or is removed. */
-function CodeBlock({
-  registry,
-  language,
-  code,
-  fallback,
-}: {
-  registry: ContributionReader<CodeBlockRenderer>;
-  language: string;
-  code: string;
-  fallback: ReactNode;
-}) {
-  const renderers = useSyncExternalStore(
-    registry.subscribe,
-    registry.snapshot,
-    registry.snapshot,
-  );
-  const renderer = resolveMatch(renderers, language);
-  if (!renderer) return fallback;
-  const { component: Renderer, action: Action } = renderer;
-  return (
-    <ContributionBoundary
-      key={`${contributionKey(renderer)}:${language}:${code}`}
-      fallback={fallback}
-    >
-      {/* Selection copy reads the source here (selection-copy.ts). */}
-      <div
-        className={styles.codeBlock}
-        data-copy-code={code}
-        data-copy-language={language}
-      >
-        <Renderer code={code} language={language} />
-        <CodeActions code={code}>
-          {Action && <Action code={code} language={language} />}
-        </CodeActions>
-      </div>
-    </ContributionBoundary>
-  );
-}
-
-function CodeActions({
-  code,
-  children,
-}: {
-  code: string;
-  children?: ReactNode;
-}) {
-  const notify = useToastNotification();
-  const [copying, setCopying] = useState(false);
-  return (
-    <span className={styles.codeActions}>
-      {children}
-      <IconButton
-        hint="familiar"
-        aria-label="Copy code block"
-        title="Copy code block"
-        disabled={copying}
-        focusableWhenDisabled
-        icon={<CopyIcon />}
-        onClick={() => {
-          setCopying(true);
-          void Promise.resolve()
-            .then(() => writeClipboardText(code))
-            .then(
-              () => notify("Copied code to clipboard", "success"),
-              () => notify("Failed to copy code", "error"),
-            )
-            .finally(() => setCopying(false));
-        }}
-      />
     </span>
   );
 }
