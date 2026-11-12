@@ -26,14 +26,17 @@ it("round-trips file targets and rejects unreadable ones", () => {
     url: MEDIA,
     name: "a b.md",
     mime: "text/markdown",
+    time: 1_700_000_000,
   });
   expect(target.startsWith("buzz-file:?")).toBe(true);
   expect(parseFileTarget(target)).toEqual({
     url: MEDIA,
     name: "a b.md",
     mime: "text/markdown",
+    time: 1_700_000_000,
     format: "markdown",
   });
+  expect(parseFileTarget(`${target}x`)).not.toHaveProperty("time");
   expect(
     parseFileTarget(`buzz-file:?url=${encodeURIComponent(`${MEDIA}.pdf`)}`),
   ).toMatchObject({

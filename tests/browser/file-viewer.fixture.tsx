@@ -55,17 +55,23 @@ const FILES: Attachment[] = [
   { url: media("c"), kind: "file", name: "main.rs" },
   { url: media("d"), kind: "file", name: "guide.pdf", mime: "application/pdf" },
   { url: media("e"), kind: "file", name: "archive.zip" },
-  ...(params.get("extra") === "japanese"
-    ? [
-        {
-          url: media("f"),
-          kind: "file",
-          name: "japanese.pdf",
-          mime: "application/pdf",
-        } as const,
-      ]
-    : []),
 ];
+// Files a spec asks for with `?extra=<name>`, so the shared list stays short.
+const EXTRA: Record<string, Attachment> = {
+  japanese: {
+    url: media("f"),
+    kind: "file",
+    name: "japanese.pdf",
+    mime: "application/pdf",
+  },
+  long: { url: media("1"), kind: "file", name: "long.md" },
+  pictures: { url: media("2"), kind: "file", name: "pictures.md" },
+  blank: { url: media("3"), kind: "file", name: "blank.pdf" },
+};
+for (const name of params.getAll("extra")) {
+  const extra = EXTRA[name];
+  if (extra) FILES.push(extra);
+}
 
 const HostFileCard = (props: FileCardProps) => <FileAttachment {...props} />;
 

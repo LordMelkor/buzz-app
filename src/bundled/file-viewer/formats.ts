@@ -2,11 +2,6 @@ export type FileFormat = "pdf" | "markdown" | "csv" | "tsv" | "text";
 
 export const MAX_TEXT_BYTES = 20 * 1024 * 1024;
 export const MAX_PDF_BYTES = 100 * 1024 * 1024;
-/** Text past this is left out of the page (Copy text still copies it all),
- * and Markdown past `MAX_MARKDOWN_CHARS` shows as plain text, so a large file
- * can't stall the panel. */
-export const MAX_SHOWN_CHARS = 2_000_000;
-export const MAX_MARKDOWN_CHARS = 500_000;
 
 const MARKDOWN = new Set(["md", "markdown", "mdown", "mkd", "mdx"]);
 const TEXT = new Set([

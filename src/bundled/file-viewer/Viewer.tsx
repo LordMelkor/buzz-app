@@ -1,20 +1,12 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { writeClipboardText } from "../../shared/clipboard";
-import { CopyIcon, FileTextIcon } from "../../shared/design-system/icons";
+import { FileTextIcon } from "../../shared/design-system/icons";
 import { EmptyState } from "../../shared/design-system/ui/EmptyState";
 import { InlineHeader } from "../../shared/design-system/ui/Header";
-import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
-import { useToastNotification } from "../../shared/design-system/ui/Toast";
-import { SafeMarkdown } from "../../features/messages/SafeMarkdown";
 import type { RelaySession } from "../../features/relay/session";
-import {
-  type FileFormat,
-  formatLabel,
-  MAX_MARKDOWN_CHARS,
-  MAX_SHOWN_CHARS,
-  maxBytes,
-} from "./formats";
+import { CopyText } from "./CopyText";
+import { DocumentView, type MediaSource } from "./DocumentView";
+import { type FileFormat, formatLabel, maxBytes } from "./formats";
 import { decodeText, LoadError, readBytes } from "./load";
 import { parseTable } from "./table";
 import type { FileTarget } from "./target";
@@ -27,6 +19,8 @@ export type ViewerProps = Readonly<{
   source: string | undefined;
   session?: RelaySession | undefined;
   openLink(url: string): boolean;
+  /** Where a Markdown image may be drawn from; without it, images are alt text. */
+  media?: MediaSource | undefined;
   fetcher?: typeof fetch;
 }>;
 
@@ -82,6 +76,7 @@ export function Viewer({
   source,
   session,
   openLink,
+  media,
   fetcher,
 }: ViewerProps) {
   const loaded = useBytes(file.format, source, fetcher);
@@ -106,6 +101,7 @@ export function Viewer({
           bytes={loaded.bytes}
           session={session}
           openLink={openLink}
+          media={media}
         />
       )}
     </div>
@@ -117,11 +113,13 @@ function Contents({
   bytes,
   session,
   openLink,
+  media,
 }: {
   file: FileTarget;
   bytes: Uint8Array;
   session: RelaySession | undefined;
   openLink(url: string): boolean;
+  media: MediaSource | undefined;
 }) {
   const text = useMemo(() => {
     if (file.format === "pdf") return undefined;
@@ -150,12 +148,22 @@ function Contents({
         message="This file isn't text. Download it to open it in another app."
       />
     );
+  if (file.format !== "csv" && file.format !== "tsv")
+    return (
+      <DocumentView
+        file={file}
+        text={text}
+        session={session}
+        openLink={openLink}
+        media={media}
+      />
+    );
   return (
     <>
       <InlineHeader
         title={file.name}
         subtitle={formatLabel(file.format)}
-        actions={<CopyText text={text} />}
+        actions={<CopyText read={() => text} />}
       />
       <section
         className={styles.scroll}
@@ -163,59 +171,9 @@ function Contents({
         tabIndex={0}
         aria-label={file.name}
       >
-        {file.format === "markdown" && text.length <= MAX_MARKDOWN_CHARS ? (
-          <article className={styles.markdown}>
-            <SafeMarkdown
-              content={text}
-              openLink={openLink}
-              session={session}
-            />
-          </article>
-        ) : file.format === "csv" || file.format === "tsv" ? (
-          <TableView
-            text={text}
-            delimiter={file.format === "csv" ? "," : "\t"}
-          />
-        ) : (
-          <>
-            {file.format === "markdown" && (
-              <p className={styles.note} role="note">
-                This Markdown file is too long to format, so it shows as plain
-                text.
-              </p>
-            )}
-            <pre className={styles.text}>{text.slice(0, MAX_SHOWN_CHARS)}</pre>
-            {text.length > MAX_SHOWN_CHARS && (
-              <p className={styles.note} role="note">
-                Showing the first {MAX_SHOWN_CHARS.toLocaleString()} characters.
-                Copy text copies all of it, or download the file.
-              </p>
-            )}
-          </>
-        )}
+        <TableView text={text} delimiter={file.format === "csv" ? "," : "\t"} />
       </section>
     </>
-  );
-}
-
-function CopyText({ text }: { text: string }) {
-  const notify = useToastNotification();
-  const [copying, setCopying] = useState(false);
-  return (
-    <IconButton
-      aria-label="Copy text"
-      icon={<CopyIcon />}
-      disabled={copying}
-      onClick={() => {
-        setCopying(true);
-        writeClipboardText(text)
-          .then(
-            () => notify("Copied text to clipboard", "success"),
-            () => notify("Failed to copy text", "error"),
-          )
-          .finally(() => setCopying(false));
-      }}
-    />
   );
 }
 

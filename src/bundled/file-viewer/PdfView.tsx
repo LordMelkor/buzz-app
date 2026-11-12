@@ -17,11 +17,15 @@ import { Button } from "../../shared/design-system/ui/Button";
 import { EmptyState } from "../../shared/design-system/ui/EmptyState";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
+import { CopyText } from "./CopyText";
+import { useNear, useSize } from "./layout";
 import { openPdf, PdfError, type PageSize, type PdfDocument } from "./pdf";
 import styles from "./FileViewer.module.css";
 
 export const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
 const MAX_ZOOM = 3;
+/** A page this near view is drawn, in pixels, however short the panel. */
+const MIN_DRAW_REACH = 400;
 
 export function fitScale(size: PageSize, width: number) {
   return Math.max(0.25, Math.min(4, width / size.width));
@@ -95,38 +99,6 @@ export default function PdfView({
   return <Pages pdf={opened.pdf} name={name} />;
 }
 
-function useSize(node: HTMLElement | null) {
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  useLayoutEffect(() => {
-    if (!node) return;
-    const measure = () =>
-      setSize({ width: node.clientWidth, height: node.clientHeight });
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [node]);
-  return size;
-}
-
-function useNear(
-  node: HTMLElement | null,
-  root: HTMLElement | null,
-  margin: number,
-) {
-  const [near, setNear] = useState(false);
-  useEffect(() => {
-    if (!node || !root) return;
-    const observer = new IntersectionObserver(
-      (entries) => setNear(!!entries.at(-1)?.isIntersecting),
-      { root, rootMargin: `${Math.max(margin, 400)}px 0px` },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [node, root, margin]);
-  return near;
-}
-
 function Drawing({
   pdf,
   page,
@@ -178,7 +150,7 @@ function Page({
   screen: number;
 }) {
   const [node, setNode] = useState<HTMLDivElement | null>(null);
-  const near = useNear(node, root, screen);
+  const near = useNear(node, root, Math.max(screen, MIN_DRAW_REACH));
   return (
     <div
       ref={setNode}
@@ -329,6 +301,7 @@ function Pages({ pdf, name }: { pdf: PdfDocument; name: string }) {
             Fit to width
           </Button>
         </span>
+        <CopyText read={(signal) => pdf.text(signal)} />
       </div>
       <section
         ref={setStage}

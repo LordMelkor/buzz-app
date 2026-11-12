@@ -3,18 +3,33 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentType } from "react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type {
   AttachmentRenderer,
   FileCardProps,
 } from "../../features/conversation/contracts";
 import type { Panel, PanelProps } from "../../features/panels/service";
+import type { ChannelMessage } from "../../features/relay/contracts";
 import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { bundledPlugins } from "..";
 import { apply } from "./index";
 import { fileTarget } from "./target";
 import { Viewer } from "./Viewer";
 
+/** jsdom lays nothing out, so nothing is ever in view or resized. */
+class Unobserved {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+beforeEach(() => {
+  vi.stubGlobal("IntersectionObserver", Unobserved);
+  vi.stubGlobal("ResizeObserver", Unobserved);
+  Element.prototype.scrollIntoView = vi.fn();
+});
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -89,6 +104,7 @@ it("opens the viewer from a message's file card", async () => {
   render(
     <Card
       attachment={attachment}
+      message={{ createdAt: 1_700_000_000 } as ChannelMessage}
       source={proxied(MEDIA)}
       placement="message"
       FileCard={HostFileCard}
@@ -98,7 +114,9 @@ it("opens the viewer from a message's file card", async () => {
   );
   expect(seen.at(-1)?.typeLabel).toBe("Markdown");
   await userEvent.click(screen.getByRole("button", { name: "Preview" }));
-  expect(open).toHaveBeenCalledWith(fileTarget(attachment));
+  expect(open).toHaveBeenCalledWith(
+    fileTarget({ ...attachment, time: 1_700_000_000 }),
+  );
 
   cleanup();
   render(
@@ -114,9 +132,13 @@ it("opens the viewer from a message's file card", async () => {
   expect(seen.at(-1)?.onPreview).toBeUndefined();
 });
 
-function renderPanel(panel: Panel, target: string) {
+function renderPanel(
+  panel: Panel,
+  target: string,
+  context?: PanelProps["context"],
+) {
   const Component = panel.component;
-  const props: PanelProps = { target, close: () => {} };
+  const props: PanelProps = { target, close: () => {}, context };
   return render(<Component {...props} />, { wrapper: ToastProvider });
 }
 
@@ -124,16 +146,35 @@ it("renders a shared Markdown file through the host's safe Markdown", async () =
   const { panel } = setup();
   const fetcher = vi.fn(
     async () =>
-      new Response("# Plan\n\n- [x] ship\n\n<script>alert(1)</script>\n"),
+      new Response(
+        "# Plan\n\n- [x] ship\n\n<script>alert(1)</script>\n\n[Risks](#risks)\n\n## Risks\n\nNone.\n",
+      ),
   );
   vi.stubGlobal("fetch", fetcher);
-  renderPanel(panel, fileTarget({ url: MEDIA, name: "plan.md" }));
+  const context = {
+    channelId: "channel",
+    canOpen: () => true,
+    open: vi.fn(() => true),
+  };
+  renderPanel(panel, fileTarget({ url: MEDIA, name: "plan.md" }), context);
   expect(
     await screen.findByRole("heading", { name: "Plan", level: 1 }),
   ).toBeInTheDocument();
   expect(fetcher).toHaveBeenCalledWith(proxied(MEDIA), expect.anything());
   expect(document.querySelector("script")).toBeNull();
   expect(screen.getByRole("checkbox")).toBeChecked();
+  expect(
+    screen.getByText(/Markdown · 1 min read · \d+ words/),
+  ).toBeInTheDocument();
+
+  // A `#` link goes to its heading in the file instead of opening anything.
+  await userEvent.click(screen.getByRole("link", { name: "Risks" }));
+  const { contexts } = vi.mocked(Element.prototype.scrollIntoView).mock;
+  expect(contexts).toHaveLength(1);
+  expect(contexts[0]).toBe(
+    screen.getByRole("heading", { name: "Risks", level: 2 }),
+  );
+  expect(context.open).not.toHaveBeenCalled();
 });
 
 it("refuses files from outside the community without fetching", () => {
@@ -162,7 +203,9 @@ it("shows CSV as a table and plain text as written", async () => {
   cleanup();
   vi.stubGlobal("fetch", async () => new Response("fn main() {}\n<b>x</b>"));
   renderPanel(panel, fileTarget({ url: MEDIA, name: "main.rs" }));
-  expect(await screen.findByText(/fn main\(\) \{\}/)).toBeInTheDocument();
+  const code = await screen.findByText("fn", { selector: "code span" });
+  expect(code.closest("code")).toHaveTextContent("fn main() {} <b>x</b>");
+  expect(screen.getByText("Text · 2 lines")).toBeInTheDocument();
   expect(document.querySelector("b")).toBeNull();
 });
 

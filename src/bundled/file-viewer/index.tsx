@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import type { AttachmentRendererProps } from "../../features/conversation/contracts";
 import {
   isNativeMediaSource,
@@ -7,6 +7,7 @@ import {
 import { usePanelTabTitle } from "../../features/panels/PanelWorkspace";
 import { useRelayConnection } from "../../features/relay/react";
 import type { RelayData } from "../../features/relay/service";
+import type { RelaySession } from "../../features/relay/session";
 import type { PluginModule } from "../../plugins/api";
 import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import { fileFormat, formatLabel } from "./formats";
@@ -16,6 +17,20 @@ import { Viewer } from "./Viewer";
 /** A basic default: a plugin made for one format, claiming at the host's
  * default order 0, takes those files over. */
 const ORDER = 100;
+
+/** Where the viewer may read `url` from: only media shared in this community,
+ * through the session's own media source. Files and Markdown images alike. */
+function readableSource(
+  url: string,
+  origin: string | undefined,
+  session: RelaySession,
+): string | undefined {
+  if (!isCommunityMedia(url, origin)) return undefined;
+  const source = session.media(url);
+  return source && (isProxySource(source) || isNativeMediaSource(source))
+    ? source
+    : undefined;
+}
 
 export const inject = ["panels", "conversation", "relay"];
 export const apply: PluginModule["apply"] = (ctx) => {
@@ -32,6 +47,15 @@ export const apply: PluginModule["apply"] = (ctx) => {
       const connection = useRelayConnection(relay);
       const file = useMemo(() => parseFileTarget(target), [target]);
       usePanelTabTitle(file?.name ?? "File viewer");
+      const { origin, session } = connection;
+      const media = useCallback(
+        (url: string) => readableSource(url, origin, session),
+        [origin, session],
+      );
+      const openLink = useCallback(
+        (url: string) => context?.open(url) ?? false,
+        [context],
+      );
       if (!file) return null;
       if (!connection.origin && connection.status !== "ready")
         return (
@@ -39,19 +63,15 @@ export const apply: PluginModule["apply"] = (ctx) => {
             {null}
           </LoadingRegion>
         );
-      const source = isCommunityMedia(file.url, connection.origin)
-        ? connection.session.media(file.url)
-        : undefined;
-      const readable =
-        source && (isProxySource(source) || isNativeMediaSource(source))
-          ? source
-          : undefined;
       return (
+        // A new file starts afresh, never showing the last one's contents under its name.
         <Viewer
+          key={target}
           file={file}
-          source={readable}
-          session={connection.session}
-          openLink={(url) => context?.open(url) ?? false}
+          source={readableSource(file.url, origin, session)}
+          session={session}
+          openLink={openLink}
+          media={media}
         />
       );
     },
@@ -59,6 +79,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
 
   function FileCard({
     attachment,
+    message,
     source,
     placement,
     FileCard: HostFileCard,
@@ -73,7 +94,15 @@ export const apply: PluginModule["apply"] = (ctx) => {
         onOpenLink={open}
         {...(format ? { typeLabel: formatLabel(format) } : {})}
         {...(placement === "message"
-          ? { onPreview: () => void open(fileTarget(attachment)) }
+          ? {
+              onPreview: () =>
+                void open(
+                  fileTarget({
+                    ...attachment,
+                    ...(message ? { time: message.createdAt } : {}),
+                  }),
+                ),
+            }
           : {})}
       />
     );

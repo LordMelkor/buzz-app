@@ -1363,15 +1363,20 @@ opens PDFs, Markdown, code, text, CSV and TSV files shared in a conversation in 
 tab beside it. Choose the file's card to open it; the card's download button
 still saves the file. PDFs show every page in one scrolling column: turn pages
 with ‹ and › or the arrow keys, and zoom with **−**, **+** or **Fit to width**.
-**Copy text** copies a text file.
+**Copy text** copies a file's text; for a PDF it reads the pages when pressed,
+and says when a scanned PDF has none.
 
 - Only files shared in the current community open. Text files open up to 20 MB
   and PDFs up to 100 MB, laid out to the first 1,000 pages.
+- Markdown, code and text files of any length read in parts, loaded as you
+  scroll. In a Markdown file with three or more headings, **Outline** goes to
+  any section, and `#` links do too. Code is highlighted, with line numbers.
+- The header shows when the file was shared, and a Markdown file's reading time
+  and words, or a code or text file's lines.
 - CSV and TSV files show as a table of the first 5,000 rows and 200 columns,
-  up to 50,000 cells. Text shows its first 2,000,000 characters, and Markdown
-  over 500,000 characters shows as plain text.
-- Markdown follows the Notes rules: no raw HTML, and images show as their alt
-  text.
+  up to 50,000 cells.
+- Markdown follows the Notes rules: no raw HTML. Images shared in the current
+  community are drawn; other images show as their alt text.
 - Office files, images, video and audio are not opened by the viewer.
 
 ### Saved External apps approval
