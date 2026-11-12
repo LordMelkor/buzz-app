@@ -582,6 +582,9 @@ export function createUnread({
     done: boolean;
     evidence: string | undefined;
     more: boolean;
+    /** The lookup fetched the reply's thread root, which may since have left
+     * the structural cache: asking for it again cannot place it for long. */
+    rooted?: true;
   };
   const lookups = new Map<string, Lookup>();
   const lookupEvents = new Map<string, RelayEvent>();
@@ -1849,7 +1852,9 @@ export function createUnread({
     // A reply counted as channel activity (`attention` only) needs its root
     // too, because the thread's read frontier applies only once it is known.
     // That is after the conversation lookup: an undecided reply's lookup
-    // fetches the root itself, and a structural one must not replace it.
+    // fetches the root itself, and a structural one must not replace it. A
+    // root that lookup already fetched is not asked for again: past the
+    // structural cache's bound, each refetch would only evict another root.
     const structuralRootId =
       !entry.rootId &&
       (chosen(entry) === true ||
@@ -1857,6 +1862,7 @@ export function createUnread({
           isUnread(entry, reads.state(), dm)) ||
         (activity &&
           !undecided(entry, dm) &&
+          !lookups.get(conversationKey(channelId, parentId))?.rooted &&
           chosen(entry) !== false &&
           afterFrontier(entry, reads.state(), dm)))
         ? threadRootId
@@ -2107,6 +2113,9 @@ export function createUnread({
             done: true,
             evidence: undefined,
             more: found.length + authored.length > 1,
+            ...(!target.rootId || target.ids.has(target.rootId)
+              ? { rooted: true as const }
+              : {}),
           };
           remember(conversationKey(channelId, target.parentId), lookup);
           // The viewer's own parent or root is the witness when there is one:
