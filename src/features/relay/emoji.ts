@@ -3,7 +3,7 @@ import type { EventData } from "./events.ts";
 export type CustomEmoji = Readonly<{ shortcode: string; url: string }>;
 export const EMOJI_SET = "buzz:custom-emoji";
 export const EMOJI_SET_KIND = 30030;
-const CUSTOM_REACTION = /^:([a-z0-9_-]{1,64}):$/i;
+export const CUSTOM_REACTION = /^:([a-z0-9_-]{1,64}):$/i;
 /** Reaction text stays small, while a valid custom token gets its two delimiters. */
 export function validReactionContent(value: string): boolean {
   return [...value].length <= 64 || CUSTOM_REACTION.test(value);

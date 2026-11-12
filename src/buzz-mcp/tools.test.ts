@@ -727,6 +727,49 @@ it("tags the community emoji a message or edit uses, as the composer does", asyn
   ]);
 });
 
+it("tags a community emoji reaction and refuses a shortcode outside the palette", async () => {
+  const approve = "https://relay/media/approve.png";
+  const { client, published } = fake([
+    ...community,
+    event({ id: root, pubkey: alice }),
+    event({
+      id: "e".repeat(64),
+      pubkey: bob,
+      created_at: 20,
+      kind: 30030,
+      tags: [
+        ["d", "buzz:custom-emoji"],
+        ["emoji", "approve", approve],
+      ],
+    }),
+  ]);
+  await callTool(client, {}, "react", { id: root, emoji: ":Approve:" });
+  await callTool(client, {}, "react", { id: root, emoji: "👍" });
+  expect(published).toEqual([
+    {
+      kind: 7,
+      content: ":Approve:",
+      tags: [
+        ["e", root],
+        ["p", alice],
+        ["emoji", "approve", approve],
+      ],
+    },
+    {
+      kind: 7,
+      content: "👍",
+      tags: [
+        ["e", root],
+        ["p", alice],
+      ],
+    },
+  ]);
+  await expect(
+    callTool(client, {}, "react", { id: root, emoji: ":foo:" }),
+  ).rejects.toThrow("unknown custom emoji :foo:");
+  expect(published).toHaveLength(2);
+});
+
 it("reads no emoji sets for a message without a shortcode", async () => {
   const { client } = fake(community);
   await callTool(client, { channel: "chan" }, "send", {
