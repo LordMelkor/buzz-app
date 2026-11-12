@@ -193,6 +193,8 @@ type Active = {
   /** A harness MCP choice is in play for this thread: its native MCP calls
    * are put to `mcp.call`, and one that runs unasked stops the turn. */
   gated?: true;
+  /** Subagent threads this turn spawned, gated under its thread. */
+  children?: Set<string>;
   /** Latest acknowledged mention per Buzz thread; independent of session scope. */
   activity: Map<string, Request>;
 };
@@ -203,6 +205,7 @@ type Once = {
   threadId?: string;
   turnId?: string;
   gated?: true;
+  children?: Set<string>;
   finished: boolean;
   signal: AbortSignal;
   workspace: string;
@@ -2218,10 +2221,13 @@ export class CodexRuntime {
         release = resolve;
       }),
     };
-    const followed = follow(server.rpc, signal, once, (method, item) => {
-      if (method === "item/started")
-        this.unasked(once, agent, server.rpc, item);
-    });
+    const followed = follow(
+      server.rpc,
+      signal,
+      once,
+      (method, item) => this.native(once, agent, server.rpc, method, item),
+      (method, item) => this.native(once, agent, server.rpc, method, item),
+    );
     entry.onces.add(once);
     let hookBridge: Awaited<ReturnType<typeof openHookBridge>> | undefined;
     try {
@@ -2889,6 +2895,22 @@ export class CodexRuntime {
             (applied &&
               (await this.gate(agent.key, session, event, input, applied))) ||
             hookAdapter.run(agent.key, session, event, input),
+          // A subagent of this thread is gated under it; any other thread's
+          // native MCP call has no record, so it is denied.
+          applied &&
+            (async (bound, session, event, input) => {
+              const own =
+                bound && this.runningOf(bound)?.children?.has(session);
+              // Plugin hooks serve the bound thread only, so an allow ends here.
+              return this.gate(
+                agent.key,
+                own ? bound : session,
+                event,
+                input,
+                applied,
+                {},
+              );
+            }),
         )
       : undefined;
     // Codex sets it on this thread's commands only; app-server has none.
@@ -2978,6 +3000,8 @@ export class CodexRuntime {
     event: string,
     input: unknown,
     applied: HarnessMcpChoice,
+    /** What an allowed call answers; undefined carries on to plugin hooks. */
+    allow?: Record<string, unknown>,
   ) {
     const {
       tool_name: name,
@@ -3016,7 +3040,7 @@ export class CodexRuntime {
           ...(turn?.trigger && { turn: { trigger: turn.trigger } }),
         },
       );
-      return reason === undefined ? undefined : block(reason);
+      return reason === undefined ? allow : block(reason);
     } catch {
       return block("The MCP call could not be checked");
     }
@@ -3025,12 +3049,9 @@ export class CodexRuntime {
    * it. A steered turn answers for its first request that is not the owner's
    * own message, so `direct` holds only when every request is. */
   private turnOf(threadId: string) {
-    const entries = [...this.entries.values()];
-    const active = entries
-      .flatMap((entry) => [...entry.lanes.values()])
-      .map((lane) => lane.active)
-      .find((turn) => turn?.threadId === threadId);
-    if (active) {
+    const turn = this.runningOf(threadId);
+    if (turn && "requests" in turn) {
+      const active = turn;
       const { owner } = active.reply.agent;
       const request =
         active.requests.find(
@@ -3041,10 +3062,39 @@ export class CodexRuntime {
         trigger: request.trigger,
       };
     }
-    const once = entries
-      .flatMap((entry) => [...entry.onces])
-      .find((turn) => turn.threadId === threadId);
-    return once && { signal: once.signal, trigger: once.trigger };
+    return turn && { signal: turn.signal, trigger: turn.trigger };
+  }
+  /** The running turn, regular or once, on thread `threadId`. */
+  private runningOf(threadId: string): Active | Once | undefined {
+    const entries = [...this.entries.values()];
+    return (
+      entries
+        .flatMap((entry) => [...entry.lanes.values()])
+        .map((lane) => lane.active)
+        .find((turn) => turn?.threadId === threadId) ??
+      entries
+        .flatMap((entry) => [...entry.onces])
+        .find((turn) => turn.threadId === threadId)
+    );
+  }
+  /** A gated turn's native item, from its thread or a subagent's: a spawn
+   * adds the subagent's thread to the turn, and a started MCP call goes to
+   * `unasked`. */
+  private native(
+    turn: Active | Once,
+    agent: Pick<AgentHandle, "key">,
+    rpc: AppServer,
+    method: string,
+    item: Item,
+  ) {
+    if (!turn.gated) return;
+    if (item.type === "collabAgentToolCall") {
+      turn.children ??= new Set();
+      const { children } = turn;
+      for (const child of item.receiverThreadIds ?? [])
+        if (typeof child === "string") children.add(child);
+    }
+    if (method === "item/started") this.unasked(turn, agent, rpc, item);
   }
   /** A native MCP call the harness started: if nothing allowed it, the turn
    * stops. Only for a thread with a choice in play; Buzz's own tools are not
@@ -3261,23 +3311,30 @@ export class CodexRuntime {
     void active.ready.catch(() => undefined);
     lane.active = active;
     const { settings, agent } = request;
-    const followed = follow(server.rpc, signal, active, (method, item) => {
-      if (method === "item/started")
-        this.unasked(active, agent, server.rpc, item);
-      const step = method === "item/started" ? codexStep(item) : undefined;
-      if (step)
-        for (const taken of active.activity.values())
-          taken.step?.(step.tool, step.target);
-      if (method === "item/started" && item.command)
-        this.status(agent.key, key, "Working", item.command);
-      if (method === "item/completed" && item.type === "commandExecution")
-        this.status(
-          agent.key,
-          key,
-          "Working",
-          `${item.command ?? ""}\n${item.aggregatedOutput ?? ""}`,
-        );
-    });
+    const native = (method: string, item: Item) =>
+      this.native(active, agent, server.rpc, method, item);
+    const followed = follow(
+      server.rpc,
+      signal,
+      active,
+      (method, item) => {
+        native(method, item);
+        const step = method === "item/started" ? codexStep(item) : undefined;
+        if (step)
+          for (const taken of active.activity.values())
+            taken.step?.(step.tool, step.target);
+        if (method === "item/started" && item.command)
+          this.status(agent.key, key, "Working", item.command);
+        if (method === "item/completed" && item.type === "commandExecution")
+          this.status(
+            agent.key,
+            key,
+            "Working",
+            `${item.command ?? ""}\n${item.aggregatedOutput ?? ""}`,
+          );
+      },
+      native,
+    );
     let hookBridge: Awaited<ReturnType<typeof openHookBridge>> | undefined;
     let explain: (() => string | undefined) | undefined;
     try {
@@ -3505,6 +3562,8 @@ type Item = {
   /** An `mcpToolCall`'s raw server and tool names. */
   server?: string;
   tool?: string;
+  /** A `collabAgentToolCall`'s spawned subagent threads, once it completes. */
+  receiverThreadIds?: readonly unknown[];
   text?: string;
   phase?: string;
   command?: string;
@@ -3516,8 +3575,15 @@ type Item = {
 function follow(
   rpc: AppServer,
   signal: AbortSignal,
-  turn: { threadId?: string; turnId?: string; finished: boolean },
+  turn: {
+    threadId?: string;
+    turnId?: string;
+    finished: boolean;
+    children?: ReadonlySet<string>;
+  },
   onItem?: (method: string, item: Item) => void,
+  /** Items of the turn's subagent threads, when Codex sends them. */
+  onChild?: (method: string, item: Item) => void,
 ) {
   let finish!: (status: string) => void;
   let fail!: (error: Error) => void;
@@ -3539,6 +3605,16 @@ function follow(
       | undefined;
     if (wire.method === "connection/closed") {
       fail(new Error(p?.message ?? "Codex connection closed"));
+      return;
+    }
+    if (
+      p?.item &&
+      p.threadId &&
+      wire.method &&
+      !turn.finished &&
+      turn.children?.has(p.threadId)
+    ) {
+      onChild?.(wire.method, p.item);
       return;
     }
     if (!p || !turn.threadId || p.threadId !== turn.threadId || turn.finished)

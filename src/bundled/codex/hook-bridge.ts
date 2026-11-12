@@ -54,6 +54,14 @@ export async function openHookBridge(
     event: string,
     input: unknown,
   ) => Promise<Record<string, unknown>>,
+  /** A hook from another thread than the bound one, such as a subagent's.
+   * Its output answers the hook; undefined refuses it as before. */
+  other?: (
+    bound: string | undefined,
+    session: string,
+    event: string,
+    input: unknown,
+  ) => Promise<Record<string, unknown> | undefined>,
 ) {
   let session: string | undefined;
   let closed = false;
@@ -87,9 +95,11 @@ export async function openHookBridge(
         typeof input?.session_id !== "string"
       )
         throw new Error("Invalid Codex hook callback");
-      if (session !== input.session_id)
-        throw new Error("Codex hook session mismatch");
-      const output = await run(session, event, input);
+      const output =
+        session === input.session_id
+          ? await run(session, event, input)
+          : await other?.(session, input.session_id, event, input);
+      if (!output) throw new Error("Codex hook session mismatch");
       return result({
         content: [{ type: "text", text: JSON.stringify(output) }],
       });

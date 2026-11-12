@@ -8578,6 +8578,56 @@ describe("harness MCP call gate", () => {
     });
   });
 
+  it("gates a subagent's native MCP calls under the thread that spawned it", async () => {
+    const { f, kit, plugin, hook, pre, begin } = gated({ "my.server": true });
+    await begin();
+    // Before its spawn completes, a thread is not this turn's: core has no
+    // record of it, so it denies.
+    kit.call.mockResolvedValueOnce("no record");
+    await expect(
+      pre("mcp__my_server__write", { session_id: "child-1" }),
+    ).resolves.toEqual(deny("no record"));
+    expect(kit.call.mock.calls[0]?.[1]).toMatchObject({ session: "child-1" });
+    f.emit({
+      method: "item/completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          type: "collabAgentToolCall",
+          id: "spawn-1",
+          receiverThreadIds: ["child-1"],
+        },
+      },
+    });
+    await expect(
+      pre("mcp__my_server__write", { session_id: "child-1" }),
+    ).resolves.toEqual({});
+    expect(kit.call.mock.calls[1]?.[1]).toMatchObject({
+      session: "thread-1",
+      server: "my.server",
+    });
+    expect(plugin).not.toHaveBeenCalled();
+    // Any other hook from the subagent is still refused, as before.
+    await expect(hook("Stop", { session_id: "child-1" })).rejects.toThrow(
+      "session mismatch",
+    );
+    kit.ran.mockReturnValue(true);
+    f.emit({
+      method: "item/started",
+      params: { threadId: "child-1", turnId: "child-turn", item: item() },
+    });
+    expect(kit.ran).toHaveBeenLastCalledWith(
+      { key: pubkey, protection: undefined },
+      { session: "thread-1", id: "call-1", server: "my.server", tool: "write" },
+    );
+    await vi.waitFor(() => expect(interrupts(f)).toHaveLength(1));
+    expect(interrupts(f)[0]?.params).toEqual({
+      threadId: "thread-1",
+      turnId: "turn-1",
+    });
+  });
+
   it("lets a call that ran after an allow go on, and checks each call once, at its start", async () => {
     const { f, kit, begin } = gated({ "my.server": true });
     await begin();

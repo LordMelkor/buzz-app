@@ -63,3 +63,36 @@ it("advertises supported Codex events with its native Interrupt deadline", () =>
   );
   expect(interrupt).toContain('"timeout"=3');
 });
+
+it("answers another thread's hook through `other`, and refuses it when that has no answer", async () => {
+  let handler!: McpHandler;
+  const serve: NonNullable<Host["serveMcp"]> = async (run) => {
+    handler = run;
+    return {
+      url: "http://127.0.0.1:1/mcp",
+      headers: [],
+      close: async () => {},
+      closed: new Promise(() => {}),
+    };
+  };
+  const run = vi.fn(async () => ({ own: true }));
+  const other = vi.fn(async (_bound: unknown, session: string) =>
+    session === "child" ? { child: true } : undefined,
+  );
+  const bridge = await openHookBridge(serve, run, other);
+  bridge.bind("one");
+  const call = (session: string) =>
+    handler({
+      id: 1,
+      method: "tools/call",
+      params: { name: "PreToolUse", arguments: { session_id: session } },
+    });
+  expect(await call("child")).toMatchObject({
+    result: { content: [{ text: '{"child":true}' }] },
+  });
+  expect(other).toHaveBeenCalledWith("one", "child", "PreToolUse", {
+    session_id: "child",
+  });
+  await expect(call("stranger")).rejects.toThrow("session mismatch");
+  expect(run).not.toHaveBeenCalled();
+});
