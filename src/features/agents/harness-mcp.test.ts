@@ -714,6 +714,7 @@ describe("the call gate", () => {
         trigger: {
           type: "mention",
           event: {
+            id: "m".repeat(64),
             pubkey: owner,
             tags: [
               ["h", "chan"],
@@ -738,7 +739,7 @@ describe("the call gate", () => {
       } as never,
     });
     expect(asked.mock.calls.map(([seen]) => seen.conversation)).toEqual([
-      { channel: "chan", root },
+      { channel: "chan", root, message: "m".repeat(64) },
       { channel: "c2", root },
     ]);
     expect(asked.mock.calls.map(([seen]) => seen.direct)).toEqual([

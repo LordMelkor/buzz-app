@@ -68,7 +68,12 @@ export type HarnessMcpControlCall = HarnessMcpCall &
     /** How long core waits for the answer, in milliseconds. */
     hold: number;
     direct: boolean;
-    conversation?: Readonly<{ channel: string; root?: string }>;
+    /** `message`: the event that started the turn, when one did. */
+    conversation?: Readonly<{
+      channel: string;
+      root?: string;
+      message?: string;
+    }>;
   }>;
 export type HarnessMcpControl = Readonly<{
   choose(agent: Agent): HarnessMcpChoice | undefined;
@@ -101,7 +106,10 @@ function conversationOf(trigger: Trigger) {
   if (!("event" in trigger)) return undefined;
   const channel = trigger.event.tags.find((tag) => tag[0] === "h")?.[1];
   const root = threadReference(trigger.event)?.rootId;
-  return channel ? { channel, ...(root && { root }) } : undefined;
+  const message = trigger.event.id;
+  return channel
+    ? { channel, ...(root && { root }), ...(message && { message }) }
+    : undefined;
 }
 /** Runs `fn` as a promise: a throw is a rejection. It starts at once. */
 const attempt = <T>(fn: () => T) =>
