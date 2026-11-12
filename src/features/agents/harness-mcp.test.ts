@@ -643,6 +643,27 @@ describe("the call gate", () => {
     expect(mcp.kit.ran(handle, call())).toBe(true);
   });
 
+  it("lets a server the choice leaves out run where the session loaded it as the harness's default", async () => {
+    const made = setup();
+    await made.install({ choose: () => undefined });
+    made.mcp.kit.started(
+      handle as never,
+      "s1",
+      [{ name: "alpha" }, { name: "beta" }],
+      { alpha: ["delete"] },
+    );
+    const { kit } = made.mcp;
+    await expect(
+      kit.call(handle, call("a", { server: "beta" }), options()),
+    ).resolves.toBeUndefined();
+    await expect(
+      kit.call(handle, call("b", { server: "gamma" }), options()),
+    ).resolves.toMatch(/turned off/);
+    await expect(
+      kit.call(handle, call("c", { tool: "delete" }), options()),
+    ).resolves.toMatch(/turned off/);
+  });
+
   it("denies a call of unknown tool when the server leaves any tool out", async () => {
     const { mcp } = await gated({}, { alpha: ["write"], gamma: [] });
     const { tool: _, ...unnamed } = call("u1");

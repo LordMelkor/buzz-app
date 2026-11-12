@@ -161,6 +161,18 @@ function normalize(raw: unknown): HarnessMcpChoice | "none" {
           : false;
   return Object.freeze(choice);
 }
+/** The choice as this session applied it: a server the choice leaves out
+ * keeps the harness's default, so one that loaded anyway is on. */
+function applied(
+  choice: HarnessMcpChoice | "none",
+  loaded: HarnessMcpLoaded,
+): HarnessMcpChoice | "none" {
+  if (choice === "none") return choice;
+  const resolved: Record<string, boolean | readonly string[]> =
+    Object.create(null);
+  for (const { name } of loaded) resolved[name] = true;
+  return Object.freeze(Object.assign(resolved, choice));
+}
 /** undefined: the harness keeps its default. "none": no native server. */
 export type HarnessMcpAnswer = HarnessMcpChoice | "none" | undefined;
 /** For adapters, bundled or not, through the harness kit. */
@@ -338,7 +350,10 @@ export function createHarnessMcp(
       record(
         agent.key,
         session,
-        choice && { choice, allowed: new Set<string>() },
+        choice && {
+          choice: applied(choice, loaded),
+          allowed: new Set<string>(),
+        },
       );
     },
     async call(agent, call, options) {
