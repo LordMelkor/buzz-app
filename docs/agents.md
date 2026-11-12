@@ -1278,6 +1278,17 @@ conversation indicator.
 
 ### Local plugin-agent lifecycle
 
+`session.activity` exposes local work for mentions and conversation wakes from
+plugins, watches, timers, catch-up, and sources. Synthetic requests set
+`syntheticMessage: true`; their `messageId` is local and has no relay message.
+Their optional `requestText` holds the exact wake text supplied to the harness,
+without truncation. A harness read at admission updates that text before execution.
+Mentions omit `requestText`; consumers read their published request by ID.
+The same work entry keeps the destination, lifecycle, and `publishedMessageIds`.
+Reply IDs remain after the short notification echo window, within the existing
+local activity budget. This evidence is local to the running app and is not a
+durable transcript. Standalone wakes without a conversation have no local entry.
+
 The popup resets on conversation changes and when current work ends. Idle and
 past sessions remain in the agent's profile Activity tab rather
 than lingering above the composer. Compact status labels omit raw arguments and

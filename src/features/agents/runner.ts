@@ -2501,19 +2501,23 @@ export class AgentRunners {
     if (forget && resumed.length) this.unmark(runner.key, resumed);
   }
 
-  private showWork(runner: Runner, job: Job) {
-    if (
-      job.work ||
-      (job.trigger.type !== "mention" && job.trigger.type !== "plugin")
-    )
-      return;
+  private showWork(runner: Runner, job: Job, destination?: ConversationWake) {
+    if (job.work) return;
     const trigger = job.trigger;
+    const wake =
+      destination ??
+      (trigger.type === "plugin" || trigger.type === "attention"
+        ? trigger
+        : undefined);
+    const event =
+      trigger.type === "mention" ? trigger.event : wake && wakeAnchor(wake);
+    if (!event) return;
     const agent = this.host.agent(runner.key);
     const scope = agent && this.host.scope(agent);
-    const event =
-      trigger.type === "mention" ? trigger.event : wakeAnchor(trigger);
     const channelId =
-      job.channelId ?? event.tags.find(([key]) => key === "h")?.[1];
+      wake?.channel ??
+      job.channelId ??
+      event.tags.find(([key]) => key === "h")?.[1];
     if (!scope || !channelId) return;
     const threadRootId = threadReference(event)?.rootId;
     const channel = this.host.channel(agent, event);
@@ -2533,21 +2537,28 @@ export class AgentRunners {
         agent: runner.member.pubkey,
         channelId,
         messageId: event.id,
-        ...(trigger.type === "plugin" ? { syntheticMessage: true } : {}),
+        ...(wake
+          ? {
+              syntheticMessage: true,
+              ...(wake.text ? { requestText: wake.text } : {}),
+            }
+          : {}),
         threadRootId: threadRootId ?? event.id,
         ...(thread ? { thread: true } : {}),
         ...(soloChat ? { soloChat: true } : {}),
         ...(soloChat && conversationName ? { conversationName } : {}),
       },
       // A resumed mention must not reuse its resume marker on retry.
-      () =>
-        void this.enqueue(runner, {
-          trigger:
-            trigger.type === "mention"
-              ? { type: "mention", event: trigger.event }
-              : trigger,
-          ...(job.channelId ? { channelId: job.channelId } : {}),
-        }),
+      addressed(trigger)
+        ? () =>
+            void this.enqueue(runner, {
+              trigger:
+                trigger.type === "mention"
+                  ? { type: "mention", event: trigger.event }
+                  : trigger,
+              ...(job.channelId ? { channelId: job.channelId } : {}),
+            })
+        : undefined,
     );
     if (
       !soloChat &&
@@ -2680,8 +2691,9 @@ export class AgentRunners {
       lifetime,
       AbortSignal.timeout(type.timeoutMs ?? 60_000),
     ]);
-    const handle = this.handleFor(runner, agent, true, job.work);
     const anchor = conversationWake(job.trigger, "");
+    this.showWork(runner, job, anchor);
+    const handle = this.handleFor(runner, agent, true, job.work);
     const destination = !addressed(job.trigger) ? anchor : undefined;
     const working = this.working(
       runner,
@@ -2790,13 +2802,16 @@ export class AgentRunners {
             throw new Error("The delivery root is not in its channel");
           if (!delivery.current()) return;
         }
-        const wakeText = () =>
-          wakePrompt(
+        const wakeText = async () => {
+          const text = await wakePrompt(
             handle,
             trigger,
             trigger.slug.replace(/^watch\//, ""),
             delivery.current,
           );
+          if (text !== undefined) job.work?.requestText(text);
+          return text;
+        };
         const text = await wakeText();
         if (!text || !delivery.current()) return;
         return invoke({
@@ -2863,8 +2878,14 @@ export class AgentRunners {
       );
     // Handover expiry releases the queue, never the actual work's outcome.
     void completion.then(
-      () => working.release(),
-      (error) => working.release({ ok: false, error: message(error) }),
+      () => {
+        if (!attempted) job.work?.remove();
+        working.release();
+      },
+      (error) => {
+        if (!attempted && !this.stillCurrent(runner, job)) job.work?.remove();
+        working.release({ ok: false, error: message(error) });
+      },
     );
     const aborted = new Promise<never>((_, reject) => {
       if (signal.aborted) reject(signal.reason);

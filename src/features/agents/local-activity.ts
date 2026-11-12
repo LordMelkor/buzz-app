@@ -24,6 +24,8 @@ export type LocalWork = Readonly<{
   messageId: string;
   /** The request ID has no published message to open. */
   syntheticMessage?: true;
+  /** The synthetic request text supplied to the harness, without truncation. */
+  requestText?: string;
   threadRootId: string;
   /** The request is in this thread; absent means channel-level work. */
   thread?: true;
@@ -287,6 +289,17 @@ export function createLocalAgentActivity() {
       };
       return {
         channelId: input.channelId,
+        requestText: (requestText: string) => {
+          const current = entries.get(id);
+          if (
+            !current?.syntheticMessage ||
+            settled(current.state) ||
+            current.requestText === requestText
+          )
+            return;
+          entries.set(id, Object.freeze({ ...current, requestText }));
+          publish();
+        },
         associate: (session: AgentSessionAssociation) => {
           const current = entries.get(id);
           if (!current) return;
