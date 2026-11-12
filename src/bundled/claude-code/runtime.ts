@@ -87,14 +87,10 @@ import {
 } from "./transcript";
 import { sessionPrompts } from "../../features/agents/session-prompts";
 import { ClaudeProcess } from "./claude";
-import {
-  configuredMcp,
-  MCP_NOTE,
-  nativeMcpGate,
-  type ClaudeMcpKit,
-} from "./mcp";
+import { configuredMcp, MCP_NOTE, nativeMcpGate } from "./mcp";
 import type {
   HarnessMcpAnswer,
+  HarnessMcpKit,
   HarnessMcpServer,
 } from "../../features/agents/harness-mcp";
 
@@ -203,7 +199,7 @@ const listing = (added: readonly AddedTool[]): Listing => ({
 const NOTES_WAIT_MS = 2_000;
 
 export class ClaudeRuntime {
-  mcp: ClaudeMcpKit | undefined;
+  mcp: HarnessMcpKit | undefined;
   private readonly mcpRows = new Map<AgentKey, readonly HarnessMcpServer[]>();
   private mcpWarm = 0;
   private disposed = false;

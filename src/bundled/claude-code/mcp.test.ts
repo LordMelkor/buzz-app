@@ -359,7 +359,12 @@ it("keeps a session-only server and its last tools in the report after a later s
     localStore(),
   );
   let choice = {};
-  runtime.mcp = { choice: async () => choice, started: () => {} };
+  runtime.mcp = {
+    choice: async () => choice,
+    started: () => {},
+    call: async () => undefined,
+    ran: () => false,
+  };
   const delivery = {
     agent: { ...agent } as unknown as AgentHandle,
     config: agent.config,

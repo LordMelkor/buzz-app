@@ -1,5 +1,6 @@
 import type {
   HarnessMcpAnswer,
+  HarnessMcpCall as Call,
   HarnessMcpChoice,
   HarnessMcpKit,
   HarnessMcpLoaded,
@@ -8,30 +9,6 @@ import type {
 import type { AgentHandle, Delivery } from "../../features/agents/service";
 import type { Host } from "../../features/host/service";
 
-type Call = {
-  session: string;
-  id: string;
-  server: string;
-  tool?: string;
-  arguments: unknown;
-};
-/** Kept at this adapter boundary until the gate lands in the shared kit. */
-type Gate = {
-  call(
-    agent: AgentHandle,
-    call: Call,
-    options: {
-      hold: number;
-      signal: AbortSignal;
-      turn?: Pick<Delivery, "trigger">;
-    },
-  ): Promise<string | undefined>;
-  ran(
-    agent: AgentHandle,
-    call: Omit<Call, "arguments"> & { rejected?: boolean },
-  ): boolean;
-};
-export type ClaudeMcpKit = HarnessMcpKit & Partial<Gate>;
 export type ClaudeMcpTurn = Pick<Delivery, "trigger">;
 export type ClaudeMcp = Readonly<{
   owner?: string;
@@ -158,20 +135,17 @@ export function mcpSettings(mcp: ClaudeMcp) {
 
 /** The only gate-to-core binding; execution targets never receive it. */
 export function nativeMcpGate(
-  kit: ClaudeMcpKit,
+  kit: HarnessMcpKit,
   agent: AgentHandle,
 ): Pick<ClaudeMcp, "call" | "ran" | "owner"> {
   return {
     owner: agent.owner,
-    call: (call, signal, context) => {
-      return kit.call
-        ? kit.call(agent, call, {
-            hold: 120_000,
-            signal,
-            ...(context ? { turn: context } : {}),
-          })
-        : Promise.resolve("The MCP control is unavailable");
-    },
-    ran: (call) => kit.ran?.(agent, call) ?? true,
+    call: (call, signal, context) =>
+      kit.call(agent, call, {
+        hold: 120_000,
+        signal,
+        ...(context ? { turn: context } : {}),
+      }),
+    ran: (call) => kit.ran(agent, call),
   };
 }
