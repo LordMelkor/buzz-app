@@ -625,6 +625,7 @@ export function assemblePart(
     if (note && span?.deep) return plain(false, true);
     if (!span || (span.start >= part.start && span.end <= part.end)) continue;
     prepend ||=
+      (note && span.start < part.start) ||
       localDefinitions.has(key) ||
       (span.start >= part.start && span.start < part.end);
     selected.push(span);

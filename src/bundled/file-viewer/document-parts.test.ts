@@ -1,4 +1,6 @@
-import { required } from "./markdown-limits";
+import { MAX_RENDER_CHARS, required } from "./markdown-limits";
+import { containerDefinitions } from "./markdown-container-definitions";
+import { fenceLine } from "./markdown-fences";
 import { describe, expect, it } from "vitest";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
@@ -130,6 +132,18 @@ describe("bounded document parts", () => {
       ["- ", "  "],
       ["- ", "- "],
     ] as const) {
+      const duplicate = indexDocument(
+        `[^n]: First definition.\n\n${"paragraph\n\n".repeat(1500)}${noteOwner.trim() ? noteOwner : owner}[^n]: Later definition.\n\nCall[^n].\n`,
+        "markdown",
+      );
+      const duplicateNotes = elements(
+        rendered(duplicate, duplicate.parts.length - 1),
+      )
+        .filter((node) => node.tagName === "li")
+        .map(textOf)
+        .join("");
+      expect(duplicateNotes).toContain("First definition.");
+      expect(duplicateNotes).not.toContain("Later definition.");
       const source = `${owner}[site]: https://example.org/first\n${noteOwner}[^n]: Footnote\n${owner.startsWith(">") ? ">     " : "      "}continued [site].\n\n${"paragraph\n\n".repeat(1500)}[site]: https://example.org/later\n\nRead [site] and note[^n].\n`;
       const parts = indexDocument(source, "markdown"),
         last = elements(rendered(parts, parts.parts.length - 1));
@@ -312,6 +326,71 @@ describe("bounded document parts", () => {
     expect(indexed.partOf("fnref-%C3%A9-part-1")).toBe(1);
     expect(indexed.partOf("fn-unused")).toBeUndefined();
     expect(textOf(rendered(indexed, 0))).not.toContain("Hidden.");
+  });
+
+  it("bounds container projection without accepting a synthetic end of input", () => {
+    const tail = `\n\n${"paragraph\n\n".repeat(1500)}`;
+    const owner = "> ".repeat(40),
+      label = Array.from({ length: 70 }, () => "x").join("\n");
+    const labelSource = `${owner}[${label.replace(/\n/g, `\n${owner}`)}]: https://example.org/label${tail}[${label.replace(/\n/g, " ")}]\n`;
+    const titleSource = `> [site]: https://example.org/title\n> "${"title\n> ".repeat(1000)}end"${tail}[site]\n`;
+    const shortSource = `> [site]: https://example.org/short\n> ${"plain prose ".repeat(100_000)}${tail}[site]\n`;
+    const manySource = `${Array.from({ length: 2000 }, (_, at) => `> [entry-${at}]: https://example.org/${at}\n`).join("")}${tail}[entry-1] [entry-1999]\n`;
+    for (const [source, expected, title] of [
+      [labelSource, ["https://example.org/label"], undefined],
+      [
+        titleSource,
+        ["https://example.org/title"],
+        `${"title\n".repeat(1000)}end`,
+      ],
+      [shortSource, ["https://example.org/short"], undefined],
+      [
+        manySource,
+        ["https://example.org/1", "https://example.org/1999"],
+        undefined,
+      ],
+    ] as const) {
+      const indexed = indexDocument(source, "markdown"),
+        last = indexed.parts.length - 1;
+      expect(indexed.partFallback(last)).toBeUndefined();
+      const links = elements(rendered(indexed, last)).filter(
+        (node) => node.tagName === "a",
+      );
+      expect(links.map((node) => node.properties.href)).toEqual(expected);
+      expect(links.map((node) => node.properties.title)).toEqual(
+        expected.map(() => title),
+      );
+    }
+    let charges = 0;
+    const firstLine = required(titleSource.split("\n")[0]),
+      first = fenceLine(firstLine, { owners: [] });
+    const reader = containerDefinitions(titleSource, {
+      exhausted: false,
+      charge() {
+        charges++;
+        return true;
+      },
+    });
+    expect(
+      reader.contained?.(0, first.bodyOffset, first.after, first.bodyPadding)
+        ?.label,
+    ).toBe("SITE");
+    expect(charges).toBe(1);
+    const oversized = indexDocument(
+      `> [site]: https://example.org/large\n> "${"x".repeat(MAX_RENDER_CHARS)}"${tail}[site]\n`,
+      "markdown",
+    );
+    expect(oversized.partFallback(0)).toBe("too-large");
+    const opening = '> [site]: https://example.org/invalid "';
+    const invalid = indexDocument(
+      `${opening}${"x".repeat(4096 - opening.length - 1)}" trailing${tail}[site]\n`,
+      "markdown",
+    );
+    expect(
+      elements(rendered(invalid, invalid.parts.length - 1)).filter(
+        (node) => node.tagName === "a",
+      ),
+    ).toHaveLength(0);
   });
 
   it("reports admitted-size fallback and renders literal source without a delimiter escape", () => {

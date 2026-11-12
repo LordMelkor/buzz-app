@@ -73,6 +73,9 @@ export function referenceLabelEnd(
   return undefined;
 }
 
+/** A bounded projection must not turn its edge into semantic end-of-input. */
+export type ReferenceWindow = { complete: boolean; needsMore: boolean };
+
 const processor = unified().use(remarkParse);
 const space = (char: string | undefined) => char === " " || char === "\t";
 const ending = (char: string | undefined) => char === "\n" || char === "\r";
@@ -83,9 +86,13 @@ export function referenceDefinitions(
   text: string,
   budget = definitionBudget(),
   accepted?: ReadonlyMap<number, ReferenceDefinition>,
+  window?: ReferenceWindow,
 ): (offset: number) => ReferenceDefinition | undefined {
   // Whole-file later passes consume the first pass's bounded accepted spans.
   if (accepted) return (offset) => accepted.get(offset);
+  const boundary = () => {
+    if (window && !window.complete) window.needsMore = true;
+  };
   const breaks = /[\r\n]/g;
   const lineEnd = (at: number) => {
     breaks.lastIndex = at;
@@ -130,8 +137,10 @@ export function referenceDefinitions(
   const titleClose = (start: number): number | undefined => {
     const closer = text[start] === "(" ? ")" : text.charAt(start);
     const cached = searches.get(closer);
-    if (cached && start >= cached.start && start < cached.end)
+    if (cached && start >= cached.start && start < cached.end) {
+      if (cached.end >= text.length) boundary();
       return cached.close;
+    }
     let at = start + 1;
     for (; at < text.length; at++) {
       if (text[at] === closer) {
@@ -159,21 +168,23 @@ export function referenceDefinitions(
         at = next - 1;
       }
     }
+    if (at >= text.length) boundary();
     searches.set(closer, { start, end: at });
     return undefined;
   };
   return (offset) => {
+    if (window) window.needsMore = false;
     if (budget.exhausted) return undefined;
     let at = offset;
     while (at - offset < 4 && text[at] === " ") at++;
     if (at - offset > 3 || text[at] !== "[") return undefined;
     const labelEnd = referenceLabelEnd(text, at + 1);
-    if (
-      labelEnd === undefined ||
-      text[labelEnd + 1] !== ":" ||
-      text[at + 1] === "^"
-    )
+    if (labelEnd === undefined) {
+      if (text.length - at < 3002) boundary();
       return undefined;
+    }
+    if (labelEnd + 1 >= text.length) boundary();
+    if (text[labelEnd + 1] !== ":" || text[at + 1] === "^") return undefined;
     if (!budget.charge(labelEnd + 2 - offset)) return undefined;
     at = white(labelEnd + 2);
     let destinationLine = offset;
@@ -192,6 +203,7 @@ export function referenceDefinitions(
         at++
       )
         if (text[at] === "\\" && /[<>\\]/.test(text[at + 1] ?? "")) at++;
+      if (at >= text.length) boundary();
       if (text[at] !== ">") return undefined;
       at++;
     } else {
@@ -208,6 +220,7 @@ export function referenceDefinitions(
         } else if (text.charCodeAt(at) < 32 || text.charCodeAt(at) === 127)
           return undefined;
       }
+      if (at >= text.length) boundary();
       if (at === destination || balance) return undefined;
     }
     let end = lineEnd(at),
@@ -216,11 +229,13 @@ export function referenceDefinitions(
     while (space(text[baseTail])) baseTail++;
     const validBase = baseTail === text.length || ending(text[baseTail]);
     const title = white(at);
+    if (title >= text.length) boundary();
     if (title > at && /["'(]/.test(text[title] ?? "")) {
       const close = titleClose(title);
       if (close !== undefined) {
         let tail = close + 1;
         while (space(text[tail])) tail++;
+        if (tail >= text.length) boundary();
         if (tail === text.length || ending(text[tail])) {
           end = tail;
           validTitle = true;
