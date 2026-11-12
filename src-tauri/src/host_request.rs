@@ -404,6 +404,7 @@ async fn send_byte_upload(
         bytes,
     )?;
     let client = reqwest::Client::builder()
+        .user_agent(crate::relay::user_agent())
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
         .timeout(DEADLINE)
@@ -846,7 +847,9 @@ pub(crate) fn client(protected: bool) -> Result<&'static reqwest::Client, String
     static PROTECTED: OnceLock<Result<reqwest::Client, reqwest::Error>> = OnceLock::new();
     let cell = if protected { &PROTECTED } else { &PLAIN };
     cell.get_or_init(|| {
-        let builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        let builder = reqwest::Client::builder()
+            .user_agent(crate::relay::user_agent())
+            .redirect(reqwest::redirect::Policy::none());
         if protected {
             // No idle connections, so each one-time request opens its own
             // (reqwest is built without HTTP/2, so none are shared either).
@@ -1260,3 +1263,7 @@ mod replay_tests;
 #[cfg(test)]
 #[path = "host_request/byte_tests.rs"]
 mod byte_tests;
+
+#[cfg(test)]
+#[path = "host_request/user_agent_tests.rs"]
+mod user_agent_tests;
