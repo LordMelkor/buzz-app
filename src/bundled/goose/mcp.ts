@@ -92,6 +92,7 @@ export class GooseMcp {
     });
     return {
       tools: true,
+      calls: true as const,
       servers,
       note: "Tool inspection starts only the selected server, without a model turn. Goose may refresh its provider catalog. List tools before excluding individual tools. Native preallowed tools can skip approval; their results are checked afterward.",
     };
