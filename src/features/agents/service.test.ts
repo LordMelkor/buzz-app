@@ -13,6 +13,7 @@ import { canMessageAgent, createAgentChoices } from "./choices";
 import { createAgentLibrary } from "./library";
 import type { AttentionSource } from "./attention-sources";
 import { appClient } from "../../buzz-mcp/app-client";
+import type { AgentToolAuthority, AgentToolProof } from "./tool-operation";
 import { callAttentionTool } from "../../buzz-mcp/attention";
 import { callSessionTool } from "../../buzz-mcp/session-tools";
 import { callTool } from "../../buzz-mcp/tools";
@@ -18063,4 +18064,263 @@ it("tells a transcript only of an agent's new or changed steps", async () => {
   stop();
   two.step("Read", "c.txt");
   expect(listener).toHaveBeenCalledTimes(3);
+});
+
+it("checks a provider operation and admits one exact proposal from a consumer tool", async () => {
+  const f = await setup();
+  await f.service.create({ type: "example/echo", name: "Worker" });
+  const handle = f.plugin.agents.handle(bot);
+  if (!handle) throw new Error("Expected running agent");
+  const provider = f.plugin.agents.createToolOperation("proposal");
+  const other = f.plugin.agents.createToolOperation("other");
+  const consumer = f.ctx
+    .extend({ pluginOwner: { id: "consumer", revision: "one" } })
+    .plugin(() => {});
+  await consumer.await();
+  const controller = new AbortController();
+  const client = appClient(handle, {
+    nativeCall: () => {},
+    signal: controller.signal,
+    callSignal: controller.signal,
+    read: vi.fn(),
+    memories: async () => ({ entries: [], partial: false }),
+  });
+  const entered = runnerGate<void>();
+  const release = runnerGate<void>();
+  client.protect = vi.fn(async (action) => {
+    if (
+      action.kind === "tool" &&
+      (action.content as { title: string }).title === "example/proposal"
+    ) {
+      entered.resolve(undefined);
+      await release.promise;
+    }
+  });
+  let authority: AgentToolAuthority | undefined;
+  let proof: AgentToolProof | undefined;
+  consumer.ctx.agents.addTool({
+    name: "consumer_propose",
+    description: "Propose a question.",
+    inputSchema: { type: "object" },
+    operation: provider.operation,
+    async call(_client, context, args, issued) {
+      if (!issued) throw new Error("Expected operation proof");
+      proof = issued;
+      expect(context).toEqual({ channel, root: "root" });
+      for (const input of [
+        { ...args, question: "Different" },
+        { ...args, choices: ["B", "A"] },
+        { ...args, messageId: "other" },
+        { ...args, extra: true },
+      ])
+        expect(() => provider.resolve(issued, input)).toThrow("No matching");
+      expect(() => other.resolve(issued, args)).toThrow("No matching");
+      expect(() => provider.resolve({ ...issued }, args)).toThrow(
+        "No matching",
+      );
+      authority = provider.resolve(issued, args);
+      expect(authority.client.key).toBe(handle.key);
+      expect(authority.client.pubkey).toBe(bot);
+      expect(authority.client.owner).toBe(viewer);
+      expect(authority.context).toEqual(context);
+      expect(authority.signal).toBe(controller.signal);
+      authority.check();
+      expect(() => provider.resolve(issued, args)).toThrow("No matching");
+      args.question = "Changed after resolution";
+      expect(() => authority?.check()).toThrow("arguments changed");
+      return "accepted";
+    },
+  });
+  const input = {
+    question: "Question",
+    choices: ["A", "B"],
+    messageId: "source",
+  };
+  const call = callSessionTool(
+    client,
+    { channel, root: "root" },
+    "consumer_propose",
+    input,
+    f.service.tools(),
+  );
+  try {
+    await entered.promise;
+    input.choices.reverse();
+    input.question = "Changed during review";
+    release.resolve(undefined);
+    await expect(call).resolves.toBe("accepted");
+    expect(client.protect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "tool",
+        content: {
+          title: "example/proposal",
+          arguments: {
+            question: "Question",
+            choices: ["A", "B"],
+            messageId: "source",
+          },
+        },
+      }),
+    );
+    expect(proof).toBeDefined();
+    expect(() => authority?.check()).toThrow("call has ended");
+  } finally {
+    release.resolve(undefined);
+    await call.catch(() => {});
+  }
+});
+
+it.each([
+  "cancel",
+  "session",
+  "reconnect",
+  "access",
+  "viewer-access",
+  "agent",
+  "provider",
+  "consumer",
+])(
+  "refuses journal admission after %s changes during a source read",
+  async (change) => {
+    let enabled = true;
+    const f = await setup({ pluginActive: () => enabled });
+    await f.service.create({ type: "example/echo", name: "Worker" });
+    const handle = f.plugin.agents.handle(bot);
+    if (!handle) throw new Error("Expected running agent");
+    const provider = f.plugin.agents.createToolOperation("proposal");
+    const consumer = f.ctx
+      .extend({ pluginOwner: { id: "consumer", revision: "one" } })
+      .plugin(() => {});
+    await consumer.await();
+    const controller = new AbortController();
+    const client = appClient(handle, {
+      nativeCall: () => {},
+      signal: controller.signal,
+      callSignal: controller.signal,
+      read: vi.fn(),
+      memories: async () => ({ entries: [], partial: false }),
+    });
+    const entered = runnerGate<void>();
+    const release = runnerGate<void>();
+    const saved = vi.fn();
+    consumer.ctx.agents.addTool({
+      name: "consumer_propose",
+      description: "Propose a question.",
+      inputSchema: { type: "object" },
+      operation: provider.operation,
+      async call(_client, _context, args, proof) {
+        if (!proof) throw new Error("Expected operation proof");
+        const authority = provider.resolve(proof, args);
+        entered.resolve(undefined);
+        await release.promise;
+        authority.check();
+        saved();
+        return "accepted";
+      },
+    });
+    const call = callSessionTool(
+      client,
+      { channel },
+      "consumer_propose",
+      { question: "Question" },
+      f.service.tools(),
+    );
+    const denied = expect(call).rejects.toThrow();
+    try {
+      await entered.promise;
+      if (change === "cancel") controller.abort();
+      if (change === "session") f.connect(false);
+      if (change === "reconnect") f.recover();
+      if (change === "access") {
+        f.confirm(channel, [viewer]);
+        f.confirm(channel, [viewer, bot]);
+      }
+      if (change === "viewer-access") {
+        f.confirm(channel, [bot]);
+        f.confirm(channel, [viewer, bot]);
+      }
+      if (change === "agent") await f.service.remove(bot);
+      if (change === "provider") enabled = false;
+      if (change === "consumer") {
+        // A stopped scope removes its registered tools.
+        await consumer.dispose();
+      }
+      release.resolve(undefined);
+      await denied;
+      expect(saved).not.toHaveBeenCalled();
+    } finally {
+      release.resolve(undefined);
+      await call.catch(() => {});
+    }
+  },
+);
+
+it("refuses an operation from a fabricated native client", async () => {
+  const f = await setup();
+  await f.service.create({ type: "example/echo", name: "Worker" });
+  const handle = f.plugin.agents.handle(bot);
+  if (!handle) throw new Error("Expected running agent");
+  const provider = f.plugin.agents.createToolOperation("proposal");
+  const called = vi.fn(async () => "accepted");
+  f.plugin.agents.addTool({
+    name: "example_propose",
+    description: "Propose a question.",
+    inputSchema: { type: "object" },
+    operation: provider.operation,
+    call: called,
+  });
+  const client = appClient(handle, {
+    read: vi.fn(),
+    memories: async () => ({ entries: [], partial: false }),
+  });
+  await expect(
+    callSessionTool(
+      { ...client },
+      { channel },
+      "example_propose",
+      {},
+      f.service.tools(),
+    ),
+  ).rejects.toThrow("active native agent call");
+  expect(called).not.toHaveBeenCalled();
+});
+
+it("does not call a consumer when protection denies its provider operation", async () => {
+  const f = await setup();
+  await f.service.create({ type: "example/echo", name: "Worker" });
+  const handle = f.plugin.agents.handle(bot);
+  if (!handle) throw new Error("Expected running agent");
+  const provider = f.plugin.agents.createToolOperation("proposal");
+  const called = vi.fn(async () => "accepted");
+  f.plugin.agents.addTool({
+    name: "example_propose",
+    description: "Propose a question.",
+    inputSchema: { type: "object" },
+    operation: provider.operation,
+    call: called,
+  });
+  const controller = new AbortController();
+  const client = appClient(handle, {
+    nativeCall: () => {},
+    callSignal: controller.signal,
+    read: vi.fn(),
+    memories: async () => ({ entries: [], partial: false }),
+  });
+  client.protect = vi.fn(async (action) => {
+    if (
+      action.kind === "tool" &&
+      (action.content as { title: string }).title === "example/proposal"
+    )
+      throw new Error("Provider operation denied");
+  });
+  await expect(
+    callSessionTool(
+      client,
+      { channel },
+      "example_propose",
+      {},
+      f.service.tools(),
+    ),
+  ).rejects.toThrow("Provider operation denied");
+  expect(called).not.toHaveBeenCalled();
 });

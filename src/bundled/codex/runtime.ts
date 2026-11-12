@@ -2283,6 +2283,7 @@ export class CodexRuntime {
     const { agent } = owner;
     const client = appClient(agent, {
       // Its tool registry reviews every call, Buzz's dynamic tools included.
+      ...(!this.target ? { nativeCall: check } : {}),
       nativeToolGate: true,
       protectionContext: async () => {
         const rpc =

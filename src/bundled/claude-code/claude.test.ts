@@ -962,6 +962,7 @@ it("serves the Buzz tools over the pipe and ends a turn on a final send or subth
     "chan/root",
     call,
     expect.any(AbortSignal),
+    expect.any(Function),
   );
   const responses = fake.received
     .filter((message) => message.type === "control_response")

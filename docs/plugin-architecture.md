@@ -963,6 +963,68 @@ keep it short: it is sent with every turn. `addInstructions` throws on text over
 4096 UTF-8 bytes after trimming. Context for one turn belongs in a note, which
 the agent reads as data.
 
+### Agent operation proofs
+
+A plugin can provide an operation that another installed plugin calls from a
+native agent tool. The provider calls
+`ctx.agents.createToolOperation("proposal")`. It keeps the returned `resolve`
+method private and shares only `operation` with consumers.
+
+A consumer sets `operation` on its `AddedTool`. It passes the fourth `call`
+argument, the opaque proof, and the unchanged tool arguments to the provider API.
+The provider calls `resolve(proof, args)` once. This returns the host client,
+source conversation, viewer, community origin, exact cancellation signal, and
+`check()`. The client holds
+the agent membership key and owner. It does not include device settings.
+
+```js
+// Provider activation. Share operation, never resolve.
+const proposal = ctx.agents.createToolOperation("proposal");
+const operation = proposal.operation;
+
+// Inside the provider API. Validate args before use.
+async function create(proof, args) {
+  const authority = proposal.resolve(proof, args);
+  const source = await readSource(authority.client, authority.context, args);
+  authority.check();
+  return journal.accept(() => {
+    authority.check();
+    return saveProposal(source, args);
+  });
+}
+
+// Consumer activation. The provider supplies operation and create.
+ctx.agents.addTool({
+  name: "example_propose",
+  description: "Propose a question.",
+  inputSchema: proposalSchema,
+  operation,
+  call: (_client, _context, args, proof) => create(proof, args),
+});
+```
+
+Native Claude and Codex supply proofs for these tools. Other runtimes, remote
+execution targets, external connections and ordinary UI callbacks cannot obtain
+one. A missing or fabricated descriptor fails before the consumer tool runs.
+A protected agent checks the provider operation and exact arguments in addition
+to the consumer tool. A review of another tool does not approve this operation.
+
+The proof permits one resolution for one operation and exact JSON argument
+value. Object key order does not matter. Array order, extra fields and every
+field value do matter. Keep the original args unchanged through admission;
+validate and normalize into a separate domain value. A copied proof has no
+authority. A proof cannot be saved, serialized, retried or used after `call`
+returns. A rejected local write needs a new agent call.
+
+The current check fails after cancellation, turn completion, agent retirement,
+plugin unload, a community session change, reconnection or source access loss.
+The provider must call it after awaited reads and inside the synchronous local
+admission callback. The proof does not replace source validation, membership
+refresh, consumer lifecycle checks or publication access checks in the domain.
+It authorizes local admission while the call is active. It does not grant later
+publication authority. These checks add no relay reads.
+
+
 The bundled **Plugin development** plugin (`buzz.plugin-development`, on by
 default) gives local agents three tools. `plugin_authoring_guide` returns
 [the authoring guide](plugin-authoring-guide.md), bundled with the app.

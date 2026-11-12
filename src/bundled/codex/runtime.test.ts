@@ -1,4 +1,8 @@
 import { openVoice } from "./voice";
+import {
+  createToolOperation,
+  type AgentToolAuthority,
+} from "../../features/agents/tool-operation";
 import { huddleDescription } from "../../features/huddle/lifecycle";
 import type { AgentExecution } from "../../features/agents/execution";
 import { createHash } from "node:crypto";
@@ -7370,6 +7374,38 @@ it("neither lists nor runs the retired owner-read tools, while its own reads wor
   expect(JSON.stringify((await f.tool("read", {}))?.result)).toContain(
     "OWN_CONVERSATION",
   );
+  await f.complete();
+});
+
+it("supplies an operation proof only while the native Codex call is active", async () => {
+  const f = fixture();
+  const provider = createToolOperation("example/proposal", () => ({
+    viewer: "a".repeat(64),
+    community: "https://relay.example.test",
+    check: () => {},
+    release: () => {},
+  }));
+  let authority: AgentToolAuthority | undefined;
+  f.added.push({
+    name: "consumer_propose",
+    description: "Propose a question.",
+    inputSchema: { type: "object" },
+    operation: provider.operation,
+    async call(_client, _context, args, proof) {
+      if (!proof) throw new Error("Expected operation proof");
+      authority = provider.resolve(proof, args);
+      authority.check();
+      expect(authority.context.channel).toBe("channel");
+      return "accepted";
+    },
+  });
+  await f.runtime.run(f.delivery("Propose a question"));
+  await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+  expect(
+    JSON.stringify(await f.tool("consumer_propose", { question: "Question" })),
+  ).toContain("accepted");
+  expect(authority).toBeDefined();
+  expect(() => authority?.check()).toThrow("call has ended");
   await f.complete();
 });
 

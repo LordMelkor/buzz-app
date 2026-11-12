@@ -77,6 +77,7 @@ import {
   type AgentHookDispatchOptions,
 } from "./hooks";
 import { ownerReads } from "./reads";
+import { createToolOperation, type AgentToolProvider } from "./tool-operation";
 // Agents: agents that are plugins from the start. A plugin registers an agent
 // type (its summary line, peek view, settings tabs and `run`); each agent made
 // from it has its own native-held key, an `agent-attention/v1` configuration the
@@ -1387,6 +1388,8 @@ export type Agents = {
    * the tools there are when it starts, and one that cannot take a changed
    * list is replaced when it is next used. */
   addTool(tool: AddedTool): void;
+  /** A provider keeps the resolver and shares only its operation descriptor. */
+  createToolOperation(id: string): AgentToolProvider;
   /** The tools active plugins add now. A name is only ever one plugin's. */
   tools(): readonly AddedTool[];
   /** Adds standing instructions to every turn of the agents this copy of the
@@ -1980,6 +1983,7 @@ export class AgentsService extends Service implements Agents {
   private readonly tabContributions;
   private readonly attentionControls;
   private readonly addedTools;
+  private readonly operationNames = new Set<string>();
   private readonly addedInstructions;
   /** Every added tool's name, its plugin active or still starting. */
   private readonly toolNames = new Set<string>();
@@ -2960,6 +2964,69 @@ export class AgentsService extends Service implements Agents {
     this.ctx.effect(() => {
       this.toolNames.add(tool.name);
       return () => this.toolNames.delete(tool.name);
+    });
+  }
+  createToolOperation(id: string): AgentToolProvider {
+    const ctx = this.ctx;
+    const owner = ctx.pluginOwner;
+    if (!owner || !/^[a-z][a-z0-9_-]{0,63}$/.test(id))
+      throw new Error("An installed plugin must name its agent operation");
+    const name = `${owner.id}/${id}`;
+    if (this.operationNames.has(name))
+      throw new Error(`Agent operation already registered: ${name}`);
+    let active = false;
+    ctx.effect(() => {
+      this.operationNames.add(name);
+      active = true;
+      return () => {
+        active = false;
+        this.operationNames.delete(name);
+      };
+    });
+    return createToolOperation(name, (client, context, tool) => {
+      const agent = this.ready(client.key);
+      const binding = agent && this.bindingOf(agent);
+      if (!agent || !binding)
+        throw new Error("The agent operation needs a live community");
+      const epoch = binding.connection.epoch;
+      const viewer = { ...agent, pubkey: binding.viewer };
+      let invalid = false;
+      const check = () => {
+        if (
+          invalid ||
+          !active ||
+          !ctx.pluginStatus.isActive(owner.id, owner.revision) ||
+          !this.addedTools
+            .snapshot()
+            .includes(tool as Contribution<AddedTool & { id: string }>) ||
+          binding.controller.signal.aborted ||
+          this.bindingOf(agent) !== binding ||
+          binding.connection.epoch !== epoch ||
+          binding.connection.since === undefined ||
+          this.communities.snapshot().viewer !== binding.viewer ||
+          this.ready(client.key)?.pubkey !== agent.pubkey ||
+          client.pubkey !== agent.pubkey ||
+          client.owner !== binding.viewer ||
+          !context.channel ||
+          this.reads(agent, { tags: [["h", context.channel]] }) !== true ||
+          this.reads(viewer, { tags: [["h", context.channel]] }) !== true
+        )
+          throw new Error("The agent operation binding is no longer active");
+      };
+      check();
+      const release = binding.session.channels.subscribeList(() => {
+        try {
+          check();
+        } catch {
+          invalid = true;
+        }
+      });
+      return {
+        viewer: binding.viewer,
+        community: binding.origin,
+        check,
+        release,
+      };
     });
   }
   addInstructions(instructions: AgentInstructions) {

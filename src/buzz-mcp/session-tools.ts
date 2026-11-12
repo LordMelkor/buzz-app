@@ -16,6 +16,11 @@ import {
   isAttentionTool,
 } from "./attention";
 import type { BuzzClient, Context } from "./client";
+import {
+  callToolOperation,
+  type AgentToolOperation,
+  type AgentToolProof,
+} from "../features/agents/tool-operation";
 import { callPluginTool, isPluginTool, PLUGIN_TOOLS } from "./plugins";
 import { callSettingsTool, isSettingsTool, SETTINGS_TOOLS } from "./settings";
 import {
@@ -38,12 +43,15 @@ export type AddedTool = Readonly<{
   name: string;
   description: string;
   inputSchema: Readonly<Record<string, unknown>>;
+  /** A provider operation checked with these exact tool arguments. */
+  operation?: AgentToolOperation;
   /** Runs as the agent in `context`. Use `client.signal` to cancel waits and
    * check it before external writes. A throw is a tool error for the agent. */
   call(
     client: BuzzClient,
     context: Context,
     args: Record<string, unknown>,
+    proof?: AgentToolProof,
   ): Promise<Reply>;
 }>;
 type Listed = Pick<AddedTool, "name" | "description" | "inputSchema">;
@@ -153,6 +161,17 @@ export async function callSessionTool(
   added: readonly AddedTool[] = [],
 ): Promise<Reply> {
   if (!client) throw new Error("Buzz is not ready yet. Try again.");
+  const operation = added.find((tool) => tool.name === name && tool.operation);
+  if (operation) {
+    const session = JSON.stringify(context);
+    try {
+      const reply = await callToolOperation(client, context, args, operation);
+      await client.protect?.({ kind: "tool-result", session, content: reply });
+      return reply;
+    } catch (error) {
+      return checkedToolError(client, session, error);
+    }
+  }
   // Hold the reviewed destination and arguments while the checker waits.
   if (client.protect) {
     context = structuredClone(context);

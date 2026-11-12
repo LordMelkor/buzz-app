@@ -79,6 +79,8 @@ export type ToolServer = (
   message: unknown,
   /** Aborts when the process stops, so a stopped turn's tool does not act. */
   signal: AbortSignal,
+  /** Checks the exact active work that issued a native tool request. */
+  check?: () => void,
 ) => Promise<unknown>;
 /** Its tools are `mcp__buzz__<name>`. */
 export const TOOL_SERVER = "buzz";
@@ -187,6 +189,7 @@ export class ClaudeProcess {
   /** Aborts when the owner stops the work. The next turn, sent or its own,
    * starts anew, so a stopped turn's tool calls stay stopped. */
   private workLifetime = new AbortController();
+  private callEpoch = 0;
   /** The owner's Stop awaiting Claude's answer, for the work it stopped;
    * another Stop of that work shares it. */
   private stopRequest:
@@ -717,6 +720,7 @@ export class ClaudeProcess {
     return this.readingEffort;
   }
   private settle(settled: Settled) {
+    this.callEpoch++;
     this.pending = 0;
     this.receipts.clear();
     this.activeReceipts.clear();
@@ -788,6 +792,7 @@ export class ClaudeProcess {
       const active = this.active;
       const starts = !this.working && !this.busy && message.state !== "idle";
       this.working = message.state !== "idle";
+      if (!this.working) this.callEpoch++;
       // A turn of its own, such as a background task's, is new work.
       if (starts) this.renew();
       if (!this.working && this.pending) this.done();
@@ -869,7 +874,10 @@ export class ClaudeProcess {
         typeof message.result === "string" && message.result
           ? message.result
           : `Claude stopped (${String(message.subtype)})`;
-    if (!this.reportsState && this.pending) this.done();
+    if (!this.reportsState) {
+      this.callEpoch++;
+      if (this.pending) this.done();
+    }
   }
   private done() {
     const error = this.lastError;
@@ -893,22 +901,31 @@ export class ClaudeProcess {
       response,
     });
     let response: Message;
-    if (request.subtype === "mcp_message" && this.tools)
+    if (request.subtype === "mcp_message" && this.tools) {
+      const work = this.workLifetime;
+      const epoch = this.callEpoch;
       response = success({
         mcp_response: await this.tools(
           this.conversation,
           request.message,
-          AbortSignal.any([
-            this.protectionLifetime.signal,
-            this.workLifetime.signal,
-          ]),
+          AbortSignal.any([this.protectionLifetime.signal, work.signal]),
+          () => {
+            work.signal.throwIfAborted();
+            if (
+              !this.alive ||
+              !this.active ||
+              this.workLifetime !== work ||
+              this.callEpoch !== epoch
+            )
+              throw new Error("The Claude turn has ended");
+          },
         ).catch((error) => ({
           jsonrpc: "2.0",
           id: (request.message as Message | undefined)?.id ?? 0,
           error: { code: -32603, message: String(error?.message ?? error) },
         })),
       });
-    else if (
+    } else if (
       request.subtype === "hook_callback" &&
       this.protection &&
       [
