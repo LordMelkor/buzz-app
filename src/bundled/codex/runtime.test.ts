@@ -7855,6 +7855,7 @@ describe("harness MCP choice", () => {
       expect.objectContaining({ key: pubkey }),
       "thread-1",
       [{ name: "alpha", tools: ["read", "write"] }],
+      { alpha: true },
     );
   });
 
@@ -7981,7 +7982,7 @@ describe("harness MCP choice", () => {
     });
     await vi.waitFor(() => expect(f.worker.starts()).toHaveLength(1));
     expect(threadConfig(f.worker).mcp_servers).toEqual({ alpha: off("alpha") });
-    expect(started).toHaveBeenCalledWith(f.handle, "thread-1", []);
+    expect(started).toHaveBeenCalledWith(f.handle, "thread-1", [], "none");
     const order = f.worker.sent.map((wire) => wire.method);
     expect(order.indexOf("mcpServerStatus/list")).toBeLessThan(
       order.indexOf("turn/start"),
@@ -8022,6 +8023,7 @@ describe("harness MCP choice", () => {
       expect.objectContaining({ key: pubkey }),
       "thread-1",
       [{ name: "alpha", tools: [] }],
+      { alpha: true },
     );
   });
 });

@@ -16,8 +16,8 @@ A plugin declares `host.agentMcp: true` in its manifest. Installation review tel
 - A protected agent loads no native MCP server, and the control is not asked.
 - A control that throws means no server for that launch.
 - A plugin that declares `host.agentMcp`, is enabled, and is not yet running holds a launch until plugin startup settles. If it is still not running, the launch loads no server.
-- After the harness starts a session and before its first prompt, the adapter passes what the harness lists as loaded to `agents.harness.mcp.started`. It throws when a server or tool that was turned off is listed, and the launch stops. This read-back catches a server after the harness started it; it does not prevent the start. The session cannot use it.
-- A protected session of a type that reports its servers passes no protection check until a session of it has called `started` with an empty listing, as the same protection key. Otherwise the type's `protectionUnavailable` reason applies.
+- After the harness starts a session and before its first prompt, the adapter passes what the harness lists as loaded, with the answer `choice` gave that session, to `agents.harness.mcp.started`. It throws when a server or tool that was turned off is listed, and the launch stops. This read-back catches a server after the harness started it; it does not prevent the start. The session cannot use it.
+- A protected agent of a type that reports its servers passes no protection check until one of its sessions has called `started` with an empty listing under the same protection key. Its other sessions starting do not revoke that; any of its sessions listing a server does. Without it, the type's `protectionUnavailable` reason applies.
 
 ## Adapters
 

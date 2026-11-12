@@ -72,7 +72,9 @@ it("leaves the harness's default alone while no control or declaring plugin exis
   // the key, even while other plugins are still starting.
   status.settled = false;
   await expect(mcp.kit.choice(handle)).resolves.toBeUndefined();
-  expect(() => mcp.kit.started(handle, "s", loaded("anything"))).not.toThrow();
+  expect(() =>
+    mcp.kit.started(handle, "s", loaded("anything"), undefined),
+  ).not.toThrow();
 });
 
 it("asks the registered control, and an error from it loads nothing", async () => {
@@ -128,43 +130,60 @@ it("rejects a server or tool the choice turned off when the harness lists it", a
   await install({
     choose: () => ({ off: false, partial: ["write"], on: true }),
   });
-  await mcp.kit.choice(handle);
+  const choice = await mcp.kit.choice(handle);
   expect(() =>
-    mcp.kit.started(handle, "s1", [
-      { name: "on", tools: ["write"] },
-      { name: "partial", tools: ["read"] },
-    ]),
+    mcp.kit.started(
+      handle,
+      "s1",
+      [
+        { name: "on", tools: ["write"] },
+        { name: "partial", tools: ["read"] },
+      ],
+      choice,
+    ),
   ).not.toThrow();
-  expect(() => mcp.kit.started(handle, "s2", loaded("off"))).toThrow(/s2.*off/);
-  await mcp.kit.choice(handle);
+  expect(() => mcp.kit.started(handle, "s2", loaded("off"), choice)).toThrow(
+    /s2.*off/,
+  );
   expect(() =>
-    mcp.kit.started(handle, "s3", [
-      { name: "partial", tools: ["read", "write"] },
-    ]),
+    mcp.kit.started(
+      handle,
+      "s3",
+      [{ name: "partial", tools: ["read", "write"] }],
+      choice,
+    ),
   ).toThrow(/partial/);
 });
 
 it("treats any listed server as a failure when nothing may load", async () => {
   const { mcp, status } = setup();
   status.change({ unavailable: true });
-  await mcp.kit.choice(handle);
-  expect(() => mcp.kit.started(handle, "s", [])).not.toThrow();
-  expect(() => mcp.kit.started(handle, "s", loaded("alpha"))).toThrow(/alpha/);
+  const choice = await mcp.kit.choice(handle);
+  expect(choice).toBe("none");
+  expect(() => mcp.kit.started(handle, "s", [], choice)).not.toThrow();
+  expect(() => mcp.kit.started(handle, "s", loaded("alpha"), choice)).toThrow(
+    /alpha/,
+  );
 });
 
-it("keeps a refused launch refused until the choice is asked again", async () => {
+it("checks each session against the answer it was given, not a later one", async () => {
   const { mcp, install } = setup();
-  await install({ choose: () => ({ off: false }) });
-  await mcp.kit.choice(handle);
-  expect(() => mcp.kit.started(handle, "s", loaded("off"))).toThrow(/off/);
-  expect(() => mcp.kit.started(handle, "s", [])).toThrow(/refused|turned off/);
-  await mcp.kit.choice(handle);
-  expect(() => mcp.kit.started(handle, "s", [])).not.toThrow();
-});
-
-it("refuses a start that was never preceded by a choice", () => {
-  const { mcp } = setup();
-  expect(() => mcp.kit.started(handle, "s", [])).toThrow(/not asked/);
+  let picked: Record<string, boolean> = { beta: true };
+  await install({ choose: () => picked });
+  const first = await mcp.kit.choice(handle);
+  picked = { beta: false };
+  const second = await mcp.kit.choice(handle);
+  // The first session started with beta on; the newer answer does not judge it.
+  expect(() =>
+    mcp.kit.started(handle, "s1", loaded("beta"), first),
+  ).not.toThrow();
+  expect(() => mcp.kit.started(handle, "s2", loaded("beta"), second)).toThrow(
+    /beta/,
+  );
+  // A name the choice does not own keeps the harness default.
+  expect(() =>
+    mcp.kit.started(handle, "s3", loaded("constructor"), second),
+  ).not.toThrow();
 });
 
 it("takes one control, needs the manifest key, and drops it with the plugin's scope", async () => {
@@ -211,7 +230,7 @@ const protection = (name = "p1") =>
     checkEvidence: ReturnType<typeof vi.fn>;
   };
 
-it("refuses a protected session's checks until it has shown no MCP server loaded", async () => {
+it("refuses a protected agent's checks until a session has shown no MCP server loaded", async () => {
   const { mcp } = setup({
     harnessMcp: { report: async () => undefined },
     protectionUnavailable: "No proof of unloaded MCP servers",
@@ -222,8 +241,8 @@ it("refuses a protected session's checks until it has shown no MCP server loaded
   const evidence = {} as never;
   const signal = new AbortController().signal;
   const bound = { key, protection: base } as never;
-  // asked: not yet proven
-  await mcp.kit.choice(bound);
+  // unproven
+  await expect(mcp.kit.choice(bound)).resolves.toBe("none");
   await expect(guarded.check(action, signal)).rejects.toThrow(
     "No proof of unloaded MCP servers",
   );
@@ -231,21 +250,26 @@ it("refuses a protected session's checks until it has shown no MCP server loaded
     "No proof",
   );
   expect(base.check).not.toHaveBeenCalled();
-  // refused: a listed server is no proof
-  expect(() => mcp.kit.started(bound, "s", loaded("alpha"))).toThrow();
+  // a listed server is no proof
+  expect(() => mcp.kit.started(bound, "s1", loaded("alpha"), "none")).toThrow();
   await expect(guarded.check(action, signal)).rejects.toThrow("No proof");
-  // verified: the empty listing opens the checks
-  await mcp.kit.choice(bound);
-  mcp.kit.started(bound, "s", []);
+  // proven: an empty listing opens the checks
+  mcp.kit.started(bound, "s1", [], "none");
   await guarded.check(action, signal);
   await guarded.checkEvidence(action, evidence, signal);
   expect(base.check).toHaveBeenCalledTimes(1);
   expect(base.checkEvidence).toHaveBeenCalledTimes(1);
-  // a new launch asks again, so it must prove again
+  // another session starting does not interrupt a proven one
   await mcp.kit.choice(bound);
+  await guarded.check(action, signal);
+  // any session that loads a server revokes the proof, whatever was passed
+  expect(() =>
+    mcp.kit.started(bound, "s2", loaded("alpha"), undefined),
+  ).toThrow(/alpha/);
   await expect(guarded.check(action, signal)).rejects.toThrow("No proof");
   // a proof belongs to the protection it was given under
-  mcp.kit.started(bound, "s", []);
+  mcp.kit.started(bound, "s3", [], "none");
+  await guarded.check(action, signal);
   const replaced = guard(mcp, protection("p2"));
   await expect(replaced.check(action, signal)).rejects.toThrow("No proof");
 });

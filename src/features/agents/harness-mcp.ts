@@ -47,20 +47,19 @@ export type HarnessMcpAnswer = HarnessMcpChoice | "none" | undefined;
 export type HarnessMcpKit = Readonly<{
   choice(agent: Who): Promise<HarnessMcpAnswer>;
   /** After start and before the first prompt, with what the harness lists as
-   * loaded. Throws when the choice is not in effect: stop the session. */
-  started(agent: Who, session: string, loaded: HarnessMcpLoaded): void;
+   * loaded and the answer `choice` gave this session. Throws when the choice
+   * is not in effect: stop the session. */
+  started(
+    agent: Who,
+    session: string,
+    loaded: HarnessMcpLoaded,
+    choice: HarnessMcpAnswer,
+  ): void;
 }>;
 
 /** Where plugins stand on choosing: no plugin declares it, one that does is
  * still starting, one that does is not running, or its control is there. */
 type Control = "absent" | "waiting" | "down" | "controlled";
-/** A launch's choice: asked, then checked against what the harness loaded. */
-type Launch = Readonly<{
-  answer: HarnessMcpAnswer;
-  phase: "asked" | "verified" | "refused";
-  /** The protection a protected launch was asked under. */
-  protection?: string;
-}>;
 
 export function createHarnessMcp(
   status: () => Context["pluginStatus"],
@@ -71,7 +70,10 @@ export function createHarnessMcp(
   >[],
 ) {
   let control: HarnessMcpControl | undefined;
-  const launches = new Map<AgentKey, Launch>();
+  /** A protected agent's proof: the protection key under which a session
+   * last showed nothing loaded. Absent: unproven, or a session since loaded
+   * a server. Sessions starting meanwhile do not revoke it. */
+  const proofs = new Map<AgentKey, string>();
   const seen = new Map<string, readonly HarnessMcpTool[]>();
   const state = (): Control =>
     control
@@ -125,26 +127,18 @@ export function createHarnessMcp(
   }
 
   const kit: HarnessMcpKit = Object.freeze({
-    async choice(agent) {
-      const result = await answer(agent);
-      launches.set(agent.key, {
-        answer: result,
-        phase: "asked",
-        ...(agent.protection ? { protection: agent.protection.key } : {}),
-      });
-      return result;
-    },
-    started(agent, session, loaded) {
-      const launch = launches.get(agent.key);
-      if (!launch)
-        throw new Error("The MCP choice was not asked for this agent");
-      // A refused launch stays refused until the choice is asked again.
-      if (launch.phase === "refused")
-        throw new Error("This launch loaded MCP servers that were turned off");
-      const choice = launch.answer;
+    choice: answer,
+    started(agent, session, loaded, given) {
+      // A protected session loads nothing, whatever the adapter applied.
+      const choice = agent.protection ? "none" : given;
       const extra = choice
         ? loaded.filter(({ name, tools }) => {
-            const picked = choice === "none" ? false : choice[name];
+            const picked =
+              choice === "none"
+                ? false
+                : Object.hasOwn(choice, name)
+                  ? choice[name]
+                  : undefined;
             return (
               picked === false ||
               (Array.isArray(picked) &&
@@ -153,12 +147,12 @@ export function createHarnessMcp(
           })
         : [];
       if (extra.length) {
-        launches.set(agent.key, { ...launch, phase: "refused" });
+        proofs.delete(agent.key);
         throw new Error(
           `Session ${session} loaded MCP servers that were turned off: ${extra.map(({ name }) => name).join(", ")}`,
         );
       }
-      launches.set(agent.key, { ...launch, phase: "verified" });
+      if (agent.protection) proofs.set(agent.key, agent.protection.key);
     },
   });
 
@@ -220,11 +214,7 @@ export function createHarnessMcp(
       const type = typeOf(agent);
       if (!protection || !type?.harnessMcp) return protection;
       const proven = () => {
-        const launch = launches.get(agent.key);
-        if (
-          launch?.phase !== "verified" ||
-          launch.protection !== protection.key
-        )
+        if (proofs.get(agent.key) !== protection.key)
           throw new Error(
             type.protectionUnavailable ??
               "This runtime has not shown that no MCP server loaded in the protected session",
