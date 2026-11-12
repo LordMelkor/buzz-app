@@ -21,6 +21,8 @@ import chartsManifest from "./charts/manifest.json";
 import * as charts from "./charts";
 import fileViewerManifest from "./file-viewer/manifest.json";
 import * as fileViewer from "./file-viewer";
+import mathManifest from "./math/manifest.json";
+import * as math from "./math";
 import namingManifest from "./identity-naming/manifest.json";
 import * as naming from "./identity-naming";
 import feedbackManifest from "./feedback/manifest.json";
@@ -157,6 +159,11 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     manifest: { ...fileViewerManifest, apiVersion: 1 },
     module: fileViewer,
     enabledByDefault: false,
+  },
+  {
+    manifest: { ...mathManifest, apiVersion: 1 },
+    module: math,
+    enabledByDefault: true,
   },
   {
     manifest: { ...namingManifest, apiVersion: 1 },

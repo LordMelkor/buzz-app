@@ -58,11 +58,14 @@ const nonIconDependencies = new Set([
   "highlight.js", // Code highlighting grammars; not an icon library.
   "jsdom",
   "lowlight", // Code highlighting into HTML trees; not an icon library.
+  "katex", // Math typesetting for the bundled Math plugin, not an icon library.
   "mdast", // Type-only module supplied by @types/mdast.
   "mdast-util-from-markdown",
+  "mdast-util-gfm",
   "mdast-util-gfm-strikethrough",
   "mdast-util-gfm-table",
   "mdast-util-to-markdown",
+  "micromark-extension-gfm",
   "micromark-extension-gfm-strikethrough",
   "micromark-extension-gfm-table",
   "micromark-util-decode-string", // Markdown string decoding; not an icon library.

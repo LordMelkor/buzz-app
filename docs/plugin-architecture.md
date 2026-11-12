@@ -1304,7 +1304,7 @@ contracts with their own layout and local navigation.
 **Channels is the only required bundled plugin.** Todos, Usage, Reminders,
 Workflows, Changesets, Shared compute, Charts and File viewer are off by default for fresh installs. Bestie,
 Feedback, Diff viewer, Identity Naming, Agent Activity, Terminal, Links, GitHub, Inbox,
-Repositories, Agents, Claude, Codex, Builderlab,
+Repositories, Agents, Claude, Codex, Builderlab, Math equations,
 Membership, and Moderation are on by default, but optional. Both browser and
 native catalogs declare that policy.
 
@@ -2866,6 +2866,21 @@ links and images, which load only from the same community media. PDFs use
 PDF, and draw only the pages near the viewport. Its CMaps, standard fonts and
 image decoders are bundled assets served through a `BinaryDataFactory`, so
 PDFs need no network access beyond the file.
+The bundled **Math equations** plugin (`com.squareup.math`) typesets LaTeX with
+[KaTeX](https://katex.org/): `$…$` and `\(…\)` in prose through
+`registerInline`, `$$…$$`, `\[…\]` and bare environments as display math, and
+`math`, `latex`, `tex` and `katex` fences. It also contributes the Σ composer
+tool, LaTeX completion inside open math and the agents' `math_check` tool. TeX is
+untrusted: KaTeX runs with `trust: false`, sender-defined macros are refused
+before parsing, sizes are capped at 20em in both directions
+(`patches/katex@0.16.47.patch`) and inline drawings are clipped to their own box.
+Currency such as "$5 and $10" stays text. The drawing never copies; a hidden
+source span beside it does, so a copied message keeps its LaTeX. Its engine
+replicates the host's inline segmentation, and `engine/host-segments.test.tsx`
+checks that replica against the real `MessageMarkdown`. It shipped as a
+Marketplace plugin first and keeps that id: like Claude and Codex
+(`FORMERLY_INSTALLED`), the bundled copy replaces an installed one, and a
+disabled install keeps the bundled copy off.
 
 The conversation preview exposes top-level `registerTool`, `registerCompletion` and `registerInline`
 methods and stable `conversation.ui.Composer` / `.Message` / `.Thread` / `.Conversation` /

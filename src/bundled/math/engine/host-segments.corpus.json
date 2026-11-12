@@ -1,0 +1,2082 @@
+[
+  {
+    "id": "case-01",
+    "source": "plain message without mathematics"
+  },
+  {
+    "id": "case-02",
+    "source": "The energy is $E=mc^2$ today."
+  },
+  {
+    "id": "case-03",
+    "source": "$a+b$ and $c+d$"
+  },
+  {
+    "id": "case-04",
+    "source": "$a*b*c$ is emphasized by Markdown."
+  },
+  {
+    "id": "case-05",
+    "source": "$a**b**c$"
+  },
+  {
+    "id": "case-06",
+    "source": "$a~~b~~c$"
+  },
+  {
+    "id": "case-07",
+    "source": "$a_b_c$"
+  },
+  {
+    "id": "case-08",
+    "source": "$a\\\\b$"
+  },
+  {
+    "id": "case-09",
+    "source": "$a\\,b\\;c\\!d$"
+  },
+  {
+    "id": "case-10",
+    "source": "$\\{x\\mid x>0\\}$"
+  },
+  {
+    "id": "case-11",
+    "source": "$a\\_b$"
+  },
+  {
+    "id": "case-12",
+    "source": "\\(x^2+y^2\\)"
+  },
+  {
+    "id": "case-13",
+    "source": "\\[\\frac{a}{b}\\]"
+  },
+  {
+    "id": "case-14",
+    "source": "$$x^2$$"
+  },
+  {
+    "id": "case-15",
+    "source": "Before\n$$\na+b\\\\\nc+d\n$$\nAfter"
+  },
+  {
+    "id": "case-16",
+    "source": "\\[\nx+y\\\\\nz+w\n\\]"
+  },
+  {
+    "id": "case-17",
+    "source": "\\begin{align}\na&=b\\\\\nc&=d\n\\end{align}"
+  },
+  {
+    "id": "case-18",
+    "source": "\\begin{equation*}x=y\\end{equation*}"
+  },
+  {
+    "id": "case-19",
+    "source": "# Heading $x^2$"
+  },
+  {
+    "id": "case-20",
+    "source": "## $a*b$ heading"
+  },
+  {
+    "id": "case-21",
+    "source": "- Item $a+b$\n- Item $c+d$"
+  },
+  {
+    "id": "case-22",
+    "source": "> Quote $x$\n> next $y$"
+  },
+  {
+    "id": "case-23",
+    "source": "> $$\n> x+y\n> $$"
+  },
+  {
+    "id": "case-24",
+    "source": "- $$\n  x+y\n  $$"
+  },
+  {
+    "id": "case-25",
+    "source": "| A | B |\n|---|---|\n| $x$ | $y$ |"
+  },
+  {
+    "id": "case-26",
+    "source": "| $a+b$ | value |\n|---|---|\n| $c+d$ | 3 |"
+  },
+  {
+    "id": "case-27",
+    "source": "- [x] $done$\n- [ ] $todo$"
+  },
+  {
+    "id": "case-28",
+    "source": "`$notmath$` and $real$"
+  },
+  {
+    "id": "case-29",
+    "source": "```math\nx+y\n```"
+  },
+  {
+    "id": "case-30",
+    "source": "```latex\n\\frac{a}{b}\n```"
+  },
+  {
+    "id": "case-31",
+    "source": "    $indented code$"
+  },
+  {
+    "id": "case-32",
+    "source": "[$link$](https://example.test)"
+  },
+  {
+    "id": "case-33",
+    "source": "![image $alt$](https://example.test/a.png)"
+  },
+  {
+    "id": "case-34",
+    "source": "<b>$x$</b> then $y$"
+  },
+  {
+    "id": "case-35",
+    "source": "<div>\n$x$\n</div>"
+  },
+  {
+    "id": "case-36",
+    "source": "<!-- $hidden$ --> $visible$"
+  },
+  {
+    "id": "case-37",
+    "source": "Cost $5 and $10."
+  },
+  {
+    "id": "case-38",
+    "source": "Costs $5, or $6."
+  },
+  {
+    "id": "case-39",
+    "source": "Budget $5-$10."
+  },
+  {
+    "id": "case-40",
+    "source": "Tip \\$5 and \\$10."
+  },
+  {
+    "id": "case-41",
+    "source": "Shell $HOME and ${PATH}."
+  },
+  {
+    "id": "case-42",
+    "source": "$ x$ is not math"
+  },
+  {
+    "id": "case-43",
+    "source": "$x $ is not math"
+  },
+  {
+    "id": "case-44",
+    "source": "$x$2 is not math"
+  },
+  {
+    "id": "case-45",
+    "source": "$line\nbreak$"
+  },
+  {
+    "id": "case-46",
+    "source": "$$\n\nx+y\n\n$$"
+  },
+  {
+    "id": "case-47",
+    "source": "$x$\n\n$x$"
+  },
+  {
+    "id": "case-48",
+    "source": "prefix $x$ suffix"
+  },
+  {
+    "id": "case-49",
+    "source": "**bold $x$** and *italic $y$*"
+  },
+  {
+    "id": "case-50",
+    "source": "~~delete $x$~~"
+  },
+  {
+    "id": "case-51",
+    "source": "$x &lt; y$"
+  },
+  {
+    "id": "case-52",
+    "source": "$a&amp;b$"
+  },
+  {
+    "id": "case-53",
+    "source": "Unicode $\\alpha+β=γ$ 🧮"
+  },
+  {
+    "id": "case-54",
+    "source": "$😀+x$"
+  },
+  {
+    "id": "case-55",
+    "source": "first  \nsecond $x$"
+  },
+  {
+    "id": "case-56",
+    "source": "first\\\nsecond $x$"
+  },
+  {
+    "id": "case-57",
+    "source": "  $a$  \n  $b$  "
+  },
+  {
+    "id": "case-58",
+    "source": "$$\r\nx+y\r\n$$"
+  },
+  {
+    "id": "case-59",
+    "source": "Visit https://example.test/path then $x$"
+  },
+  {
+    "id": "case-60",
+    "source": "<https://example.test/> and $y$"
+  },
+  {
+    "id": "case-61",
+    "source": "Email a@example.test then $z$"
+  },
+  {
+    "id": "case-62",
+    "source": "[label][ref] and $x$\n\n[ref]: https://example.test"
+  },
+  {
+    "id": "case-63",
+    "source": "[$link$][ref]\n\n[ref]: https://example.test"
+  },
+  {
+    "id": "case-64",
+    "source": "$$\nx\n$$\n\nx"
+  },
+  {
+    "id": "case-65",
+    "source": "$$\nx\nx\n$$"
+  },
+  {
+    "id": "case-66",
+    "source": "$$\na\n$$\n\nplain\na"
+  },
+  {
+    "id": "case-67",
+    "source": "\\begin{gather}\na\\\\\nb\n\\end{gather}"
+  },
+  {
+    "id": "case-68",
+    "source": "\\begin{alignat}{2}a&=b&c&=d\\end{alignat}"
+  },
+  {
+    "id": "case-69",
+    "source": "\\(\\ce{H2O}\\)"
+  },
+  {
+    "id": "case-70",
+    "source": "$$\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}$$"
+  },
+  {
+    "id": "case-71",
+    "source": "Value $\\sqrt[3]{x}$ and $\\overbrace{a+b}^{n}$"
+  },
+  {
+    "id": "case-72",
+    "source": "Doubled \\\\(x\\\\) literal"
+  },
+  {
+    "id": "case-73",
+    "source": "Doubled \\\\[x\\\\] literal"
+  },
+  {
+    "id": "case-74",
+    "source": "Escaped \\$x\\$ literal"
+  },
+  {
+    "id": "case-75",
+    "source": "---\n\n$x$"
+  },
+  {
+    "id": "case-76",
+    "source": "one $x$\n\n> two $y$"
+  },
+  {
+    "id": "case-77",
+    "source": "$x$ ![alt](https://example.test/a) $y$"
+  },
+  {
+    "id": "case-78",
+    "source": "$a `code` b$"
+  },
+  {
+    "id": "case-79",
+    "source": "$a [link](https://example.test) b$"
+  },
+  {
+    "id": "case-80",
+    "source": "A &amp; B\n$x$"
+  },
+  {
+    "id": "case-81",
+    "source": "> > $$\n> > a\\,b\\{c\\}\\\\d\n> > $$"
+  },
+  {
+    "id": "case-82",
+    "source": "> - $$\n>   x+y\n>   $$"
+  },
+  {
+    "id": "case-83",
+    "source": "10. $$\n    x+y\n    $$"
+  },
+  {
+    "id": "case-84",
+    "source": "$$\n\t x+y\n$$"
+  },
+  {
+    "id": "case-85",
+    "source": "$$\na&#10;b\n$$"
+  },
+  {
+    "id": "case-86",
+    "source": "> $$\n> *x*+y\n> $$"
+  },
+  {
+    "id": "case-87",
+    "source": "$$\nx\n$$\n\n$$\ny\n$$"
+  },
+  {
+    "id": "case-88",
+    "source": "First:\n$$\na+b\n$$\nthen\n$$\nc+d\n$$"
+  },
+  {
+    "id": "case-89",
+    "source": "\\[\nx\n\\]\n\n\\[\ny\n\\]"
+  },
+  {
+    "id": "case-90",
+    "source": "$\\{x\\}$ and ${x}$"
+  },
+  {
+    "id": "case-91",
+    "source": "$x$ and $x$"
+  },
+  {
+    "id": "case-92",
+    "source": "$a*b*c$\n\n$x*\\bad*c$"
+  },
+  {
+    "id": "case-93",
+    "source": "$a*b*c$\n\n$x*b\\bad*c$"
+  },
+  {
+    "id": "case-94",
+    "source": "$\\alpha $"
+  },
+  {
+    "id": "case-95",
+    "source": "$x + \\beta $ ok"
+  },
+  {
+    "id": "case-96",
+    "source": "see $\\frac{a}{b} \\cdot \\pi $."
+  },
+  {
+    "id": "case-97",
+    "source": "$\\alpha $5"
+  },
+  {
+    "id": "ref-person-leading",
+    "source": "@Ana see $E=mc^2$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-person-middle",
+    "source": "ask @Ana about $x^2$ now",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-person-trailing",
+    "source": "$x^2$ @Ana",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-agent-leading",
+    "source": "@Mira here's the result: $$\nx^2\n$$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-agent-middle",
+    "source": "see @Mira: $x^2$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-agent-trailing",
+    "source": "$x^2$ @Mira",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-person-cross",
+    "source": "$a @Ana b$ then $z$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-person-cross-emphasis",
+    "source": "$a *b @Ana c* d$ then $z$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-agent-cross",
+    "source": "$a @Mira b$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 0
+  },
+  {
+    "id": "ref-channel-leading",
+    "source": "#math-plugin $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-channel-middle",
+    "source": "see #math-plugin: $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-channel-trailing",
+    "source": "$x$ #math-plugin",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-channel-cross",
+    "source": "$a #math-plugin b$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 0
+  },
+  {
+    "id": "ref-emphasis",
+    "source": "*@Ana* see $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-code",
+    "source": "`@Ana $code$` then $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-unresolved",
+    "source": "@Uncached $x$\n\n$y$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-npub-raw-leading",
+    "source": "nostr:npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-npub-raw-middle",
+    "source": "ask nostr:npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h about $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-npub-raw-trailing",
+    "source": "$x$ nostr:npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-npub-link-leading",
+    "source": "[@Ana](nostr:npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h) $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-npub-link-middle",
+    "source": "ask [@Ana](nostr:npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h) about $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-npub-link-trailing",
+    "source": "$x$ [@Ana](nostr:npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h)",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-npub-angle-leading",
+    "source": "<nostr:npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h> $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-npub-angle-middle",
+    "source": "ask <nostr:npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h> about $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-npub-angle-trailing",
+    "source": "$x$ <nostr:npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h>",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-npub-link-cross",
+    "source": "$a [@Ana](nostr:npub1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygse4sl3h) b$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 0
+  },
+  {
+    "id": "ref-multiword",
+    "source": "@Ana Smith $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      },
+      {
+        "id": "3333333333333333333333333333333333333333333333333333333333333333",
+        "name": "Ana Smith"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "3333333333333333333333333333333333333333333333333333333333333333"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana", "Ana Smith"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-name-punctuation",
+    "source": "@Ana* $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana*"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana*", "Mira"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "ref-ambiguous-long-name",
+    "source": "@Ana Smith $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana Smith"
+      },
+      {
+        "id": "3333333333333333333333333333333333333333333333333333333333333333",
+        "name": "Ana Smith"
+      },
+      {
+        "id": "4444444444444444444444444444444444444444444444444444444444444444",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "3333333333333333333333333333333333333333333333333333333333333333",
+      "4444444444444444444444444444444444444444444444444444444444444444"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": ["Ana Smith", "Ana Smith", "Ana"],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 0
+  },
+  {
+    "id": "ref-edited",
+    "source": "@Ana $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "agents": [
+      {
+        "pubkey": "2222222222222222222222222222222222222222222222222222222222222222",
+        "name": "Mira"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    ],
+    "channels": ["math-plugin"],
+    "references": {
+      "names": [],
+      "channels": ["math-plugin"]
+    },
+    "edited": true,
+    "mathSpans": 0
+  },
+  {
+    "id": "review-spoiler-cross",
+    "source": "$$x + ||hidden|| + y$$",
+    "mathSpans": 0
+  },
+  {
+    "id": "review-spoiler-math-inside",
+    "source": "||$$\nx\\,y\n$$||",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "review-spoiler-inline-inside",
+    "source": "before ||$x$|| after",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "review-spoiler-nested-math",
+    "source": "$$x + ||hidden $z$|| + y$$",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "review-spoiler-emphasis",
+    "source": "**||$x$||**",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "review-spoiler-unclosed",
+    "source": "open || then $x$",
+    "mathSpans": 1
+  },
+  {
+    "id": "review-spoiler-empty",
+    "source": "empty |||| then $x$",
+    "mathSpans": 1
+  },
+  {
+    "id": "review-spoiler-escaped",
+    "source": "escaped \\|\\| then $x$",
+    "mathSpans": 1
+  },
+  {
+    "id": "review-spoiler-encoded",
+    "source": "encoded &#124;&#124; then $x$",
+    "mathSpans": 1
+  },
+  {
+    "id": "review-spoiler-code",
+    "source": "`||$x$||` then $y$",
+    "mathSpans": 1
+  },
+  {
+    "id": "review-copy-anchor",
+    "source": "$$\n*a\\,b* + y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "review-copy-outer-emphasis",
+    "source": "*$a\\,b$*",
+    "mathSpans": 1,
+    "renderAnchors": 1
+  },
+  {
+    "id": "review-copy-no-safe-anchor",
+    "source": "$*a\\,b*$",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "review-channel-multiline",
+    "source": "#math-plugin: $$\nx^2\n$$",
+    "channels": ["math-plugin"],
+    "references": {
+      "names": [],
+      "channels": ["math-plugin"]
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "pass2-spoiler-url",
+    "source": "https://example.test/||$x$||",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass2-spoiler-www",
+    "source": "www.example.test/||$x$||",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass2-spoiler-url-display",
+    "source": "https://example.test/||$$\nx^2\n$$||",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass2-indented-profile",
+    "source": "intro\n    @Ana $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "pass2-tabbed-profile",
+    "source": "intro\n\t@Ana $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "pass2-mixed-indent-profile",
+    "source": "intro\n   \t@Ana $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "pass2-indented-then-bound",
+    "source": "intro\n    @Ana $x$\n\n@Ana $y$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 2
+  },
+  {
+    "id": "pass2-indented-unknown",
+    "source": "intro\n    @Uncached $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "pass2-escaped-code-guard",
+    "source": "intro \\` @Ana $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "pass2-url-guard",
+    "source": "proto://host/(@Ana) $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "policy-spoiler-subscript",
+    "source": "||$x_i$||",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "policy-spoiler-backslash",
+    "source": "||\\(x\\)||",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "policy-spoiler-neighbor",
+    "source": "||secret|| then $x_i$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-at",
+    "source": "Contact a&#64;b.com: $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-colon",
+    "source": "Answer&#58; $$\na+b\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-period",
+    "source": "v1&#46;2: $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-hex-at",
+    "source": "Contact a&#x40;b.com: $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-hex-colon",
+    "source": "Answer&#X3A; $$\na+b\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-hex-period",
+    "source": "v1&#x2E;2: $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-inline-code",
+    "source": "`a&#64;b` $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-url",
+    "source": "https://example.test/&#58;x $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-crossing",
+    "source": "$a&#58;b$",
+    "mathSpans": 0
+  },
+  {
+    "id": "pass3-entity-emphasis",
+    "source": "&#64;*$a$*",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-table",
+    "source": "| A | B |\n|---|---|\n| a&#64;b | $x$ |",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-paragraph",
+    "source": "a&#64;b.com\n\n$x$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-midline-env",
+    "source": "&#58;\\begin{align}\nx=y\n\\end{align}",
+    "mathSpans": 0
+  },
+  {
+    "id": "pass3-entity-nextline-env",
+    "source": "&#58;\n\\begin{align}\nx=y\n\\end{align}",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-filler",
+    "source": "[ref]: https://example.test\n\n[ref&#58;] $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-raw-token",
+    "source": "[ref000]: https://example.test\n\n[ref&#58;] $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-encoded-token",
+    "source": "[ref&#xE100;000&#xE101;]: https://example.test\n\n[ref&#58;] $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass3-entity-folded-token",
+    "source": "[ref00ſ]: https://example.test\n\n&#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; &#58; [ref&#58;] $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass4-bare-buzz",
+    "source": "buzz://channel/general $$\nx+y\n$$",
+    "mathSpans": 1,
+    "bodyFallback": true,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass4-bare-buzz-case",
+    "source": "BUZZ://channel/general $$\nx+y\n$$",
+    "mathSpans": 1,
+    "bodyFallback": true,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass4-bare-buzz-alias",
+    "source": "buzz://channel/general $$\nx+y\n$$\n\n $$\na+b\n$$",
+    "mathSpans": 2,
+    "bodyFallback": true,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass4-bare-buzz-invalid",
+    "source": "buzz://unknown-kind $$\nx+y\n$$",
+    "mathSpans": 1,
+    "bodyFallback": true,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass4-buzz-inline-code",
+    "source": "`buzz://channel/general` $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass4-buzz-code",
+    "source": "```text\nbuzz://channel/general\n```\n\n$x$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass4-buzz-link",
+    "source": "[text](buzz://channel/general) $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass4-buzz-autolink",
+    "source": "<buzz://channel/general> $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass4-buzz-definition",
+    "source": "[ref]: buzz://channel/general\n\n$x$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass4-emoji-anchor",
+    "source": "$$\\text{:party:}\nx+y\n$$",
+    "mathSpans": 1,
+    "renderAnchors": 0,
+    "references": {
+      "names": [],
+      "channels": [],
+      "emoji": ["party"]
+    },
+    "emoji": [
+      {
+        "shortcode": "party",
+        "url": "https://example.test/party.png"
+      }
+    ]
+  },
+  {
+    "id": "pass4-emoji-outside",
+    "source": ":party: $x$",
+    "mathSpans": 1,
+    "renderAnchors": 1,
+    "references": {
+      "names": [],
+      "channels": [],
+      "emoji": ["party"]
+    },
+    "emoji": [
+      {
+        "shortcode": "party",
+        "url": "https://example.test/party.png"
+      }
+    ]
+  },
+  {
+    "id": "pass4-emoji-unknown",
+    "source": "$$\\text{:party:}\nx+y\n$$",
+    "mathSpans": 1,
+    "renderAnchors": 1,
+    "references": {
+      "names": [],
+      "channels": [],
+      "emoji": []
+    },
+    "emoji": []
+  },
+  {
+    "id": "pass4-emoji-flanking",
+    "source": ":party:*$x$*",
+    "mathSpans": 1,
+    "renderAnchors": 1,
+    "references": {
+      "names": [],
+      "channels": [],
+      "emoji": ["party"]
+    },
+    "emoji": [
+      {
+        "shortcode": "party",
+        "url": "https://example.test/party.png"
+      }
+    ]
+  },
+  {
+    "id": "pass4-emoji-before-display",
+    "source": "a*:party:*$$\nx+y\n$$",
+    "mathSpans": 1,
+    "renderAnchors": 1,
+    "references": {
+      "names": [],
+      "channels": [],
+      "emoji": ["party"]
+    },
+    "emoji": [
+      {
+        "shortcode": "party",
+        "url": "https://example.test/party.png"
+      }
+    ]
+  },
+  {
+    "id": "pass4-emoji-token-raw",
+    "source": "[ref]: https://example.test\n\n[ref:party:] $$\nx+y\n$$",
+    "mathSpans": 1,
+    "references": {
+      "names": [],
+      "channels": [],
+      "emoji": ["party"]
+    },
+    "emoji": [
+      {
+        "shortcode": "party",
+        "url": "https://example.test/party.png"
+      }
+    ]
+  },
+  {
+    "id": "pass4-emoji-token-encoded",
+    "source": "[ref&#xE000;&#xE100;&#xE200;&#xE001;&#xE001;&#xE001;&#xE001;]: https://example.test\n\n[ref:party:] $$\nx+y\n$$",
+    "mathSpans": 1,
+    "references": {
+      "names": [],
+      "channels": [],
+      "emoji": ["party"]
+    },
+    "emoji": [
+      {
+        "shortcode": "party",
+        "url": "https://example.test/party.png"
+      }
+    ]
+  },
+  {
+    "id": "pass4-emoji-short",
+    "source": "a*:a:*$$\nx+y\n$$",
+    "mathSpans": 1,
+    "references": {
+      "names": [],
+      "channels": [],
+      "emoji": ["a"]
+    },
+    "emoji": [
+      {
+        "shortcode": "a",
+        "url": "https://example.test/party.png"
+      }
+    ]
+  },
+  {
+    "id": "pass4-emoji-url",
+    "source": "https://example.test/:party: $$\nx+y\n$$",
+    "mathSpans": 1,
+    "references": {
+      "names": [],
+      "channels": [],
+      "emoji": ["party"]
+    },
+    "emoji": [
+      {
+        "shortcode": "party",
+        "url": "https://example.test/party.png"
+      }
+    ]
+  },
+  {
+    "id": "pass5-footnote-display",
+    "source": "$$x[^n]+y$$\n\n[^n]: note",
+    "mathSpans": 0
+  },
+  {
+    "id": "pass5-footnote-inline",
+    "source": "$a[^n]b$\n\n[^n]: note",
+    "mathSpans": 0
+  },
+  {
+    "id": "pass5-footnote-neighbors",
+    "source": "$a$[^n] $b$\n\n[^n]: note",
+    "mathSpans": 2
+  },
+  {
+    "id": "pass5-footnote-body",
+    "source": "Note[^n].\n\n[^n]: $z$",
+    "mathSpans": 0
+  },
+  {
+    "id": "pass5-footnote-unused",
+    "source": "Before $a$.\n\n[^unused]: $z$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass5-footnote-order",
+    "source": "Refs[^b] and[^a].\n\n[^a]: $a$\n\n[^b]: $b$",
+    "mathSpans": 0,
+    "unorderedSegments": true
+  },
+  {
+    "id": "pass5-footnote-nested",
+    "source": "Ref[^a].\n\n[^a]: a [^b]\n\n[^b]: $b$",
+    "mathSpans": 0
+  },
+  {
+    "id": "pass5-footnote-unused-chain",
+    "source": "Top $z$.\n\n[^a]: [^b]\n\n[^b]: $b$",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass5-gfm-task-list",
+    "source": "- [x] $a$\n- [ ] $b$",
+    "mathSpans": 2
+  },
+  {
+    "id": "pass5-gfm-table",
+    "source": "| A | B |\n|---|---|\n| $a$ | $b$ |",
+    "mathSpans": 2
+  },
+  {
+    "id": "pass5-gfm-strike",
+    "source": "~~$a$~~ and $b$",
+    "mathSpans": 2,
+    "renderAnchors": 2
+  },
+  {
+    "id": "pass5-footnote-alias",
+    "source": "$x$[^n]\n\n[^n]: $x$",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass5-footnote-plain-alias",
+    "source": "$$\nx\n$$[^n]\n\n[^n]: x",
+    "mathSpans": 1,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass5-footnote-before",
+    "source": "[^n]: $z$\n\nRef[^n].",
+    "mathSpans": 0,
+    "renderAnchors": 0,
+    "unorderedSegments": true
+  },
+  {
+    "id": "pass5-footnote-duplicate",
+    "source": "Ref[^n] $z$.\n\n[^n]: $a$\n\n[^n]: $b$",
+    "mathSpans": 1,
+    "renderAnchors": 1
+  },
+  {
+    "id": "pass5-footnote-cycle",
+    "source": "Ref[^a].\n\n[^a]: a[^b]\n\n[^b]: b[^a]",
+    "mathSpans": 0,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass5-footnote-undefined",
+    "source": "$a[^missing]b$",
+    "mathSpans": 1,
+    "renderAnchors": 1
+  },
+  {
+    "id": "pass5-footnote-nested-definition",
+    "source": "Ref[^b].\n\n[^a]: outer\n    [^b]: $b$",
+    "mathSpans": 0,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass5-footnote-unused-alias",
+    "source": "$x$\n\n[^unused]: $x$",
+    "mathSpans": 1,
+    "renderAnchors": 1
+  },
+  {
+    "id": "pass6-links-unfinished-labels",
+    "source": "[a[b[c @Ana $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1,
+    "renderAnchors": 1
+  },
+  {
+    "id": "pass6-links-unfinished-targets",
+    "source": "[a]([b]([c @Ana $x$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1,
+    "renderAnchors": 1
+  },
+  {
+    "id": "pass6-links-next-line",
+    "source": "[bad](\n[a @Ana](x) @Ana $y$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1,
+    "renderAnchors": 1
+  },
+  {
+    "id": "pass6-links-nested-label",
+    "source": "[a[b @Ana](x) @Ana $z$",
+    "profiles": [
+      {
+        "id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1,
+    "renderAnchors": 1
+  },
+  {
+    "id": "pass13-decoded-link-0",
+    "source": "https\\://example.test $$\nx+y\n$$\n\n $$\na+b\n$$",
+    "mathSpans": 2,
+    "bodyFallback": true,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass13-decoded-link-1",
+    "source": "http\\://example.test $$\nx+y\n$$\n\n $$\na+b\n$$",
+    "mathSpans": 2,
+    "bodyFallback": true,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass13-decoded-link-2",
+    "source": "HTTPS\\://example.test $$\nx+y\n$$\n\n $$\na+b\n$$",
+    "mathSpans": 2,
+    "bodyFallback": true,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass13-decoded-link-3",
+    "source": "https:\\/\\/example.test $$\nx+y\n$$\n\n $$\na+b\n$$",
+    "mathSpans": 2,
+    "bodyFallback": true,
+    "renderAnchors": 0
+  },
+  {
+    "id": "pass13-ordinary-bare-link",
+    "source": "see https://example.com for $x$\n$$\ny\n$$",
+    "mathSpans": 2
+  },
+  {
+    "id": "pass13-commented-environment",
+    "source": "\\begin{align}\n% \\begin{align}\na &= b\n\\end{align}",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass13-real-decoded-link-0",
+    "source": "http\\://localhost:3000 $$\nx+y\n$$\n\n $$\na+b\n$$",
+    "mathSpans": 2,
+    "renderAnchors": 0,
+    "bodyFallback": true
+  },
+  {
+    "id": "pass13-real-decoded-link-1",
+    "source": "https\\://my-host:3000 $$\nx+y\n$$\n\n $$\na+b\n$$",
+    "mathSpans": 2,
+    "renderAnchors": 0,
+    "bodyFallback": true
+  },
+  {
+    "id": "pass13-real-decoded-link-2",
+    "source": "HTTPS\\://localhost $$\nx+y\n$$\n\n $$\na+b\n$$",
+    "mathSpans": 2,
+    "renderAnchors": 0,
+    "bodyFallback": true
+  },
+  {
+    "id": "pass13-real-decoded-link-3",
+    "source": "abchttps&colon;//example.test $$\nx+y\n$$\n\n $$\na+b\n$$",
+    "mathSpans": 2,
+    "renderAnchors": 0,
+    "bodyFallback": true
+  },
+  {
+    "id": "pass14-nul-inline",
+    "source": "before\u0000 $x$ after",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass14-repeated-display",
+    "source": "$$\nx\n$$\n\n$$\nx\n$$",
+    "mathSpans": 2
+  },
+  {
+    "id": "pass14-repeated-bold-display",
+    "source": "**$$\nx\n$$**\n\n**$$\nx\n$$**",
+    "mathSpans": 2
+  },
+  {
+    "id": "pass14-verbatim-opener",
+    "source": "\\begin{align}\na&=\\verb|\\begin{align}|\n\\end{align}",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass14-star-verbatim-opener",
+    "source": "\\begin{align}\na&=\\verb*|\\begin{align}|\n\\end{align}",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass14-cr-environment",
+    "source": "\\begin{equation}x=y\\end{equation}\rAfter",
+    "mathSpans": 1
+  },
+  {
+    "id": "pass14-cr-multiline-environment",
+    "source": "\\begin{align}\ra&=b\r\\end{align}\rAfter",
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-trust-dollar",
+    "source": "$a+\\href{/docs}{b}+c$",
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-trust-explicit",
+    "source": "$$a+\\href{/docs}{b}+c$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-trust-fence",
+    "source": "```math\n\\href{https://example.com}{x=1}\n```",
+    "mathSpans": 0
+  },
+  {
+    "id": "p15-spoiler-reference-collision",
+    "source": "[ref <>]: https://example.test\n\n[ref ||] $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-spoiler-mask-control",
+    "source": "[ref <‐]: https://example.test\n\n[ref ||] $$\nx+y\n$$",
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-profile-reference-collision",
+    "source": "[ref ￼]: https://example.test\n\n[ref @Ana] $$\nx+y\n$$",
+    "profiles": [
+      {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "Ana"
+      }
+    ],
+    "mentions": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "references": {
+      "names": ["Ana"],
+      "channels": []
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-profile-punctuation-reference-collision",
+    "source": "[ref ￼￼]: https://example.test\n\n[ref @Ana!] $$\nx+y\n$$",
+    "profiles": [
+      {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "Ana!"
+      }
+    ],
+    "mentions": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "references": {
+      "names": ["Ana!"],
+      "channels": []
+    },
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-quote-escaped-body",
+    "source": "> $$\n> x\n> \\>\n> y\n> $$",
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-nested-quote-escaped-body",
+    "source": "> > $$\n> > x\n> > \\>\n> > y\n> > $$",
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-quote-list-escaped-body",
+    "source": "> - $$\n>   x\n>   \\>\n>   y\n>   $$",
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-list-escaped-body-control",
+    "source": "- $$\n  x\n  \\>\n  y\n  $$",
+    "mathSpans": 1
+  },
+  {
+    "id": "p15-url-percent-native-refusal",
+    "source": "\\begin{align}\na&=b\n\\url{a%20} \\end{align}",
+    "mathSpans": 0
+  }
+]

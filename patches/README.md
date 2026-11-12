@@ -350,3 +350,14 @@ context value, and React searched the whole sidebar subtree for consumers. The
 patch keeps the previous transform object while its four numbers are unchanged.
 A drag still publishes each new transform; only identity of an equal value is
 kept. Only the ESM entry, which the application imports, is patched.
+
+## KaTeX 0.16.47: negative sizes share the size cap
+
+The bundled Math plugin (`src/bundled/math`) renders untrusted TeX with
+`maxSize: 20`, so no sender-chosen rule or space can exceed 20em. KaTeX's
+`calculateSize` clamps only the upper bound, so a large negative size (for
+example a `\rule` depth of `-50ex`) passed through unbounded and could pull a
+drawing far outside its box. The patch clamps to `[-maxSize, maxSize]` in
+`dist/katex.js`, `dist/katex.mjs` and `src/units.ts`. Ordinary negative offsets
+below the cap are unchanged. `src/bundled/math/engine/render.test.ts` covers
+both sides; review the patch before upgrading KaTeX.

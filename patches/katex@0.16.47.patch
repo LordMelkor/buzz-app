@@ -1,0 +1,39 @@
+diff --git a/dist/katex.js b/dist/katex.js
+index 2de2003251a8e5dda149c3b707eaf28f42b459f2..3ae401a5839a7d1b5fe76f41e23c1cb3086e7205 100644
+--- a/dist/katex.js
++++ b/dist/katex.js
+@@ -1062,7 +1062,7 @@ const calculateSize = function (sizeValue, options) {
+       scale *= unitOptions.sizeMultiplier / options.sizeMultiplier;
+     }
+   }
+-  return Math.min(sizeValue.number * scale, options.maxSize);
++  return Math.max(-options.maxSize, Math.min(sizeValue.number * scale, options.maxSize));
+ };
+ 
+ /**
+diff --git a/dist/katex.mjs b/dist/katex.mjs
+index b4a83b4b7b9b31064413fa7eb5447823110d7305..8cabfcfcfd58885ef6b20dec35febc592324940b 100644
+--- a/dist/katex.mjs
++++ b/dist/katex.mjs
+@@ -948,7 +948,7 @@ var calculateSize = function calculateSize(sizeValue, options) {
+       scale *= unitOptions.sizeMultiplier / options.sizeMultiplier;
+     }
+   }
+-  return Math.min(sizeValue.number * scale, options.maxSize);
++  return Math.max(-options.maxSize, Math.min(sizeValue.number * scale, options.maxSize));
+ };
+ /**
+  * Round `n` to 4 decimal places, or to the nearest 1/10,000th em. See
+diff --git a/src/units.ts b/src/units.ts
+index d99a910a15fac3290d5a062e4af53c51ba9c4680..534806983168b6a05c0f55eeeb5f68a24cf590af 100644
+--- a/src/units.ts
++++ b/src/units.ts
+@@ -92,7 +92,7 @@ export const calculateSize = function(
+             scale *= unitOptions.sizeMultiplier / options.sizeMultiplier;
+         }
+     }
+-    return Math.min(sizeValue.number * scale, options.maxSize);
++    return Math.max(-options.maxSize, Math.min(sizeValue.number * scale, options.maxSize));
+ };
+ 
+ /**
