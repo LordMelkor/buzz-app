@@ -18,6 +18,7 @@ import { recommendedRun } from "../../features/agents/recommended";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true }));
 afterEach(() => vi.restoreAllMocks());
+const harness = { mcp: { choice: async () => undefined, started: () => {} } };
 
 it.each([true, false])(
   "contributes auth-owned settings only when supplied (settings=%s)",
@@ -33,6 +34,7 @@ it.each([true, false])(
       subscribe: () => () => {},
     });
     root.provide("agents", {
+      harness,
       register: vi.fn(),
       relay: () => undefined,
     } as never);
@@ -132,6 +134,7 @@ it("observes saved sessions with the live status of running ones", () => {
     pluginOwner: { id: "buzz.claude-code", revision: "r1" },
     host: { request: vi.fn() },
     agents: {
+      harness,
       register: (registered: AgentType) => {
         type = registered;
       },
@@ -156,6 +159,7 @@ it("shares a Claude agent's model as the claude runtime and imports it back", ()
     pluginOwner: { id: "buzz.claude-code", revision: "r1" },
     host: { request: vi.fn() },
     agents: {
+      harness,
       register: (registered: AgentType) => {
         type = registered;
       },
@@ -186,7 +190,7 @@ it("registers review models from the discovered catalog", async () => {
     agentProtection: { registerModels },
     pluginOwner: { id: "buzz.claude-code", revision: "r1" },
     host: { request: vi.fn() },
-    agents: { register: vi.fn(), relay: () => undefined },
+    agents: { harness, register: vi.fn(), relay: () => undefined },
     effect: vi.fn(),
   } as never);
   await expect(registerModels.mock.calls[0]?.[0].models()).resolves.toEqual([
@@ -219,6 +223,7 @@ it.each([true, false])(
       pluginOwner: { id: "buzz.claude-code", revision: "r1" },
       host: { request: vi.fn() },
       agents: {
+        harness,
         register: (registered: AgentType) => {
           type = registered;
         },
