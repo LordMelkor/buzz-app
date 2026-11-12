@@ -304,6 +304,7 @@ export class ClaudeRuntime {
     const path = (await this.host.resolveDirectory?.(cwd)) ?? cwd;
     return {
       tools: true,
+      ...(this.mcp && this.host.spawn && { calls: true as const }),
       note: MCP_NOTE,
       servers: await configuredMcp(
         this.host.readFile?.bind(this.host),
