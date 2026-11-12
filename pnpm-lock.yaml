@@ -89,6 +89,15 @@ importers:
       flexlayout-react:
         specifier: 0.11.0
         version: 0.11.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      github-slugger:
+        specifier: 2.0.0
+        version: 2.0.0
+      highlight.js:
+        specifier: 11.11.2
+        version: 11.11.2
+      lowlight:
+        specifier: 3.3.0
+        version: 3.3.0
       mdast-util-from-markdown:
         specifier: 2.0.3
         version: 2.0.3
@@ -107,6 +116,9 @@ importers:
       micromark-extension-gfm-table:
         specifier: 2.1.1
         version: 2.1.1
+      micromark-util-decode-string:
+        specifier: 2.0.1
+        version: 2.0.1
       motion:
         specifier: 12.40.0
         version: 12.40.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -158,9 +170,15 @@ importers:
       remark-gfm:
         specifier: 4.0.1
         version: 4.0.1
+      remark-parse:
+        specifier: 11.0.0
+        version: 11.0.0
       sonner:
         specifier: 2.0.8
         version: 2.0.8(patch_hash=5382cda2bb9248e880166099e960d33a043570b790643cf5238d60c61f7def28)(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      unified:
+        specifier: 11.0.5
+        version: 11.0.5
       virtua:
         specifier: 0.53.5
         version: 0.53.5(patch_hash=2ec4aead43edeae07a52fd481d2db8a46ac16e2a98f13d0c2f1a5e543e208ce8)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -198,6 +216,9 @@ importers:
       '@types/d3-scale':
         specifier: 4.0.9
         version: 4.0.9
+      '@types/hast':
+        specifier: 3.0.5
+        version: 3.0.5
       '@types/mdast':
         specifier: 4.0.4
         version: 4.0.4
@@ -219,6 +240,9 @@ importers:
       postcss:
         specifier: 8.5.28
         version: 8.5.28
+      remark-rehype:
+        specifier: 11.1.2
+        version: 11.1.2
       rolldown:
         specifier: 1.2.7
         version: 1.2.7
@@ -1429,6 +1453,9 @@ packages:
   gitdiff-parser@0.3.1:
     resolution: {integrity: sha512-YQJnY8aew65id8okGxKCksH3efDCJ9HzV7M9rsvd65habf39Pkh4cgYJ27AaoDMqo1X98pgNJhNMrm/kpV7UVQ==}
 
+  github-slugger@2.0.0:
+    resolution: {integrity: sha512-IaOQ9puYtjrkq7Y0Ygl9KDZnrf/aiUJYUpVf89y8kyaxbRG7Y1SrX/jaumrv81vc61+kiMempujsM3Yw7w5qcw==}
+
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
 
@@ -1437,6 +1464,10 @@ packages:
 
   hast-util-whitespace@3.0.0:
     resolution: {integrity: sha512-88JUN06ipLwsnv+dVn+OIYOvAuvBMy/Qoi6O7mQHxdPXpjy+Cd6xRkWwux7DKO+4sYILtLBRIKgsdpS2gQc7qw==}
+
+  highlight.js@11.11.2:
+    resolution: {integrity: sha512-oaXMACAU0kzOMXBjWpNcX+vlwSBCIAiZ9BHa7gA15NOTtT2L/l8OSZDuqS2XppOhZBPJ7hm4o8ep2kyuip2uEQ==}
+    engines: {node: '>=12.0.0'}
 
   html-encoding-sniffer@6.0.0:
     resolution: {integrity: sha512-CV9TW3Y3f8/wT0BRFc1/KAVQ3TUHiXmaAb6VW9vtiMFf7SLoMd1PdAc4W3KFOFETBJUb90KatHqlsZMWV+R9Gg==}
@@ -1682,6 +1713,9 @@ packages:
   loose-envify@1.4.0:
     resolution: {integrity: sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q==}
     hasBin: true
+
+  lowlight@3.3.0:
+    resolution: {integrity: sha512-0JNhgFoPvP6U6lE/UdVsSq99tn6DhjjpAj5MxG49ewd2mOBVtwWYIT8ClyABhq198aXXODMU6Ox8DrGy/CpTZQ==}
 
   lru-cache@11.5.2:
     resolution: {integrity: sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g==}
@@ -3326,6 +3360,8 @@ snapshots:
 
   gitdiff-parser@0.3.1: {}
 
+  github-slugger@2.0.0: {}
+
   graceful-fs@4.2.11: {}
 
   hast-util-to-jsx-runtime@2.3.6:
@@ -3351,6 +3387,8 @@ snapshots:
   hast-util-whitespace@3.0.0:
     dependencies:
       '@types/hast': 3.0.5
+
+  highlight.js@11.11.2: {}
 
   html-encoding-sniffer@6.0.0(@noble/hashes@2.0.1):
     dependencies:
@@ -3544,6 +3582,12 @@ snapshots:
   loose-envify@1.4.0:
     dependencies:
       js-tokens: 4.0.0
+
+  lowlight@3.3.0:
+    dependencies:
+      '@types/hast': 3.0.5
+      devlop: 1.1.0
+      highlight.js: 11.11.2
 
   lru-cache@11.5.2: {}
 

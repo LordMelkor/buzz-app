@@ -4,9 +4,11 @@ import {
   VerbosityLevel,
   type RenderTask,
 } from "pdfjs-dist/legacy/build/pdf.mjs";
+import type { TextContent } from "pdfjs-dist/types/src/display/api";
 import workerSrc from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 
 export const MAX_PDF_PAGES = 1000;
+export const MAX_PDF_TEXT_CHARS = 5_000_000;
 const MAX_CANVAS_PIXELS = 16_000_000;
 
 const DATA = {
@@ -51,6 +53,7 @@ export type PdfDocument = Readonly<{
   pages: number;
   /** The pages laid out, up to `MAX_PDF_PAGES`. */
   sizes: readonly PageSize[];
+  text(signal: AbortSignal): Promise<string>;
   render(page: number, canvas: HTMLCanvasElement, scale: number): PdfRendering;
   destroy(): Promise<void>;
 }>;
@@ -97,9 +100,125 @@ export async function openPdf(
     signal.throwIfAborted();
     const fallback = sizes.find((size) => size !== undefined);
     if (!fallback) throw new PdfError("not-pdf");
+    // The document owns all reads; each caller owns only its current stream.
+    const closed = new AbortController();
     return {
       pages: document.numPages,
       sizes: sizes.map((size) => size ?? fallback),
+      text: async (signal) => {
+        const check = () => {
+          if (signal.aborted || closed.signal.aborted)
+            throw new DOMException("PDF text extraction stopped", "AbortError");
+        };
+        check();
+        // There is one pending acquisition, read or page yield per invocation.
+        // Retire its cancellation waiter as soon as it settles: racing every
+        // chunk against one pending promise retains all earlier read results.
+        let rejectWait: ((error: DOMException) => void) | undefined;
+        const wait = <T>(operation: Promise<T>): Promise<T> =>
+          new Promise<T>((resolve, reject) => {
+            rejectWait = reject;
+            operation.then(resolve, reject);
+            check();
+          }).finally(() => {
+            rejectWait = undefined;
+          });
+        // Each invocation owns only its current page stream. pdf.js awaits
+        // backpressure; cancelling that stream stops extraction, not the PDF.
+        let reader: ReadableStreamDefaultReader<TextContent> | undefined;
+        const stopReader = () => {
+          const current = reader;
+          if (!current) return;
+          reader = undefined;
+          // pdf.js requires an Error reason. Never wait for an uncooperative
+          // cancellation acknowledgement before rejecting the caller.
+          void current
+            .cancel(new Error("PDF text extraction stopped"))
+            .catch(() => {});
+          current.releaseLock();
+        };
+        const cancel = () => {
+          stopReader();
+          rejectWait?.(
+            new DOMException("PDF text extraction stopped", "AbortError"),
+          );
+        };
+        signal.addEventListener("abort", cancel, { once: true });
+        closed.signal.addEventListener("abort", cancel, { once: true });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const chunks: string[] = [];
+          let remaining = MAX_PDF_TEXT_CHARS,
+            pages = 0,
+            hasText = false,
+            endsLine = false;
+          const append = (value: string) => {
+            const part = value.slice(0, remaining);
+            if (part) {
+              chunks.push(part);
+              remaining -= part.length;
+              endsLine = part.endsWith("\n");
+            }
+          };
+          for (let number = 1; number <= count && remaining; number++) {
+            check();
+            const saved: {
+              chunks: number;
+              remaining: number;
+              pages: number;
+              hasText: boolean;
+              endsLine: boolean;
+            } = { chunks: chunks.length, remaining, pages, hasText, endsLine };
+            try {
+              const page = await wait(document.getPage(number));
+              check();
+              reader = page.streamTextContent().getReader();
+              check();
+              if (pages++) append(endsLine ? "\n" : "\n\n");
+              endsLine = false;
+              while (remaining) {
+                const content = await wait(reader.read());
+                check();
+                if (content.done) {
+                  reader.releaseLock();
+                  reader = undefined;
+                  break;
+                }
+                for (const item of content.value.items) {
+                  if (!("str" in item)) continue;
+                  if (item.str) hasText = true;
+                  append(item.str);
+                  if (item.hasEOL) append("\n");
+                  if (!remaining) break;
+                }
+              }
+            } catch {
+              check();
+              // A stream may fail after yielding chunks. Match whole-page
+              // failure semantics, including its separator and budget usage.
+              chunks.length = saved.chunks;
+              ({ remaining, pages, hasText, endsLine } = saved);
+            } finally {
+              stopReader();
+            }
+            if (number < count && remaining) {
+              await wait(
+                new Promise<void>((resolve) => {
+                  timer = setTimeout(resolve, 0);
+                }),
+              );
+              timer = undefined;
+            }
+          }
+          check();
+          return hasText ? chunks.join("") : "";
+        } finally {
+          stopReader();
+          clearTimeout(timer);
+          signal.removeEventListener("abort", cancel);
+          closed.signal.removeEventListener("abort", cancel);
+        }
+      },
       render(number, canvas, scale) {
         let task: RenderTask | undefined;
         let cancelled = false;
@@ -130,7 +249,10 @@ export async function openPdf(
           },
         };
       },
-      destroy: () => loading.destroy(),
+      destroy: () => {
+        closed.abort();
+        return loading.destroy();
+      },
     };
   } catch (error) {
     stop();

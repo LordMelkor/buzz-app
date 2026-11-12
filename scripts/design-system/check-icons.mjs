@@ -37,6 +37,7 @@ const nonIconDependencies = new Set([
   "@testing-library/react",
   "@testing-library/user-event",
   "@types/d3-scale",
+  "@types/hast",
   "@types/mdast",
   "@types/node",
   "@types/react",
@@ -52,7 +53,11 @@ const nonIconDependencies = new Set([
   "echarts", // Chart marks; not an icon library.
   "emoji-mart",
   "flexlayout-react",
+  "github-slugger",
+  "hast",
+  "highlight.js",
   "jsdom",
+  "lowlight",
   "mdast", // Type-only module supplied by @types/mdast.
   "mdast-util-from-markdown",
   "mdast-util-gfm-strikethrough",
@@ -60,6 +65,7 @@ const nonIconDependencies = new Set([
   "mdast-util-to-markdown",
   "micromark-extension-gfm-strikethrough",
   "micromark-extension-gfm-table",
+  "micromark-util-decode-string",
   "motion",
   "nostr-tools",
   "pdfjs-dist", // PDF page rendering; not an icon library.
@@ -79,11 +85,14 @@ const nonIconDependencies = new Set([
   "react-markdown",
   "remark-breaks",
   "remark-gfm",
+  "remark-parse",
+  "remark-rehype",
   "rolldown",
   "sonner", // Headless toast behavior; Buzz supplies controls and Tabler icons.
   "tailwindcss",
   "typescript",
   "undici",
+  "unified",
   "virtua",
   "vite",
   "vitest",
