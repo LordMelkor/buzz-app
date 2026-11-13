@@ -282,7 +282,8 @@ export const PLUGIN_HOOK_MS = 25_000;
 const modelName = (text: string) => text.replace(/[^A-Za-z0-9_]/g, "_");
 /** The server, and the tool where known, behind a hook's `mcp__<server>__<tool>`
  * name, among the thread's server names. Undefined when the name matches no
- * single server (two names can read alike once sanitized). */
+ * single server (two names can read alike once sanitized); the tool is left
+ * out when it matches no single tool. */
 export function mcpCallOf(
   name: string,
   servers: readonly string[],
@@ -295,9 +296,12 @@ export function mcpCallOf(
   const [server] = hits;
   if (!server || hits.length !== 1) return undefined;
   const given = rest.slice(prefix(server).length);
-  const tool = Object.keys(row(server)?.tools ?? {}).find(
+  // Two tools that read alike name neither, so the gate treats the call as
+  // one whose tool it can't name.
+  const tools = Object.keys(row(server)?.tools ?? {}).filter(
     (own) => modelName(own).replace(/^_+/, "") === given,
   );
+  const tool = tools.length === 1 ? tools[0] : undefined;
   return { server, ...(tool && { tool }) };
 }
 export type SessionView = { key: string; status: string; detail: string };

@@ -8892,4 +8892,9 @@ describe("mcpCallOf", () => {
       server: "alpha",
     });
   });
+  it("names no tool when two of the server's tools read alike", () => {
+    expect(
+      mcpCallOf("mcp__alpha__a_b", ["alpha"], tools("a_b", "a-b")),
+    ).toEqual({ server: "alpha" });
+  });
 });
