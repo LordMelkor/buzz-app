@@ -3501,14 +3501,21 @@ export class AgentsService extends Service implements Agents {
     () => this.ctx.pluginStatus,
     (key) => this.state.running.find((agent) => agent.key === key),
     () => this.types(),
+    (agent) => this.protection.bind(agent),
   );
-  readonly harness = harnessKit({
+  private readonly harnessShared = harnessKit({
     relay: (key) => this.relay(key),
     core: (key) => this.core(key),
     added: () => this.tools(),
     repositories: repositoriesContext,
-    mcp: this.mcp.kit,
   });
+  /** The harness kit, with its MCP part bound to the plugin that asks. */
+  get harness(): HarnessKit {
+    return Object.freeze({
+      ...this.harnessShared,
+      mcp: this.mcp.kitFor(this.ctx),
+    });
+  }
   wake(key: AgentKey, wake: AgentWake) {
     const plugin = this.ctx.pluginOwner?.id;
     if (!plugin) throw new Error("Only a plugin wakes an agent");

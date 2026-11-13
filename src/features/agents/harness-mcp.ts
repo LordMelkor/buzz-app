@@ -66,7 +66,9 @@ export type HarnessMcpKit = Readonly<{
   choice(agent: Who): Promise<HarnessMcpAnswer>;
   /** After start and before the first prompt, with what the harness lists as
    * loaded and the answer `choice` gave this session. Throws when the choice
-   * is not in effect: stop the session. */
+   * is not in effect: stop the session. Only the plugin that registered the
+   * agent's type may call it, for an agent running here; the agent's
+   * protection is read from what runs, not from `agent`. */
   started(
     agent: Who,
     session: string,
@@ -84,8 +86,10 @@ export function createHarnessMcp(
   running: (key: AgentKey) => Agent | undefined,
   types: () => readonly Pick<
     RegisteredAgentType,
-    "key" | "harnessMcp" | "protectionUnavailable"
+    "key" | "pluginId" | "harnessMcp" | "protectionUnavailable"
   >[],
+  /** The protection a running agent is launched under. */
+  protectionOf: (agent: Agent) => AgentProtection | undefined,
 ) {
   /** The registered control, with the installation that registered it. */
   let control:
@@ -150,38 +154,65 @@ export function createHarnessMcp(
     return agent && mcp ? { agent, mcp } : undefined;
   }
 
-  const kit: HarnessMcpKit = Object.freeze({
-    choice: answer,
-    started(agent, session, loaded, given) {
-      // A protected session loads nothing, whatever the adapter applied.
-      const choice = agent.protection ? "none" : given;
-      const extra = choice
-        ? loaded.filter(({ name, tools }) => {
-            const picked =
-              choice === "none"
-                ? false
-                : Object.hasOwn(choice, name)
-                  ? choice[name]
-                  : undefined;
-            return (
-              picked === false ||
-              (Array.isArray(picked) &&
-                tools?.some((tool) => picked.includes(tool)))
-            );
-          })
-        : [];
-      if (extra.length) {
-        proofs.delete(agent.key);
-        throw new Error(
-          `Session ${session} loaded MCP servers that were turned off: ${extra.map(({ name }) => name).join(", ")}`,
-        );
-      }
-      if (agent.protection) proofs.set(agent.key, agent.protection.key);
-    },
-  });
+  /** The kit for the plugin `ctx` belongs to. Only the plugin that registered
+   * an agent's type says what its sessions loaded, and the agent and its
+   * protection are read from what runs here, not taken from the caller. */
+  const kitFor = (ctx: Context): HarnessMcpKit =>
+    Object.freeze({
+      choice: answer,
+      started(who, session, loaded, given) {
+        started(ctx, who.key, session, loaded, given);
+      },
+    });
+  function started(
+    ctx: Context,
+    key: AgentKey,
+    session: string,
+    loaded: HarnessMcpLoaded,
+    given: HarnessMcpAnswer,
+  ) {
+    const agent = running(key);
+    const type = agent && typeOf(agent);
+    if (!agent || !type) throw new Error("This agent is not running here");
+    if (type.pluginId !== ctx.pluginOwner?.id)
+      throw new Error(
+        "Only the plugin that runs this agent's harness says what its sessions loaded",
+      );
+    // A protection that can't be bound proves nothing, and still loads nothing.
+    let protection: AgentProtection | undefined;
+    try {
+      protection = protectionOf(agent);
+    } catch {
+      protection = undefined;
+    }
+    // A protected session loads nothing, whatever the adapter applied.
+    const choice = agent.protection ? "none" : given;
+    const extra = choice
+      ? loaded.filter(({ name, tools }) => {
+          const picked =
+            choice === "none"
+              ? false
+              : Object.hasOwn(choice, name)
+                ? choice[name]
+                : undefined;
+          return (
+            picked === false ||
+            (Array.isArray(picked) &&
+              tools?.some((tool) => picked.includes(tool)))
+          );
+        })
+      : [];
+    if (extra.length) {
+      proofs.delete(agent.key);
+      throw new Error(
+        `Session ${session} loaded MCP servers that were turned off: ${extra.map(({ name }) => name).join(", ")}`,
+      );
+    }
+    if (protection) proofs.set(agent.key, protection.key);
+  }
 
   return {
-    kit,
+    kitFor,
     /** Registers the one control, until the calling plugin's scope ends. */
     control(ctx: Context, next: HarnessMcpControl) {
       declared(ctx);

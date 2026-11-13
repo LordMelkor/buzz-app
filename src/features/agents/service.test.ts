@@ -2140,6 +2140,21 @@ describe("a plugin's wake", () => {
     },
   );
 
+  it("takes what an agent's sessions loaded only from the plugin that registered its type", async () => {
+    const { service, plugin, ctx, native } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    await held(native);
+    const other = ctx.extend({
+      pluginOwner: Object.freeze({ id: "other", revision: "1" }),
+    });
+    expect(() =>
+      other.agents.harness.mcp.started({ key: bot }, "s", [], "none"),
+    ).toThrow("Only the plugin that runs this agent's harness");
+    expect(() =>
+      plugin.agents.harness.mcp.started({ key: bot }, "s", [], "none"),
+    ).not.toThrow();
+  });
+
   it("runs like a mention in its thread, typing at the thread's root", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { service, run, plugin, native } = await setup();

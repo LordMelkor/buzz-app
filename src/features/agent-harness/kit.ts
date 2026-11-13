@@ -126,7 +126,6 @@ type Sources = Readonly<{
   added(): readonly AddedTool[];
   /** The repositories folder section for a relay's partition. */
   repositories(partition: string | undefined): string;
-  mcp: HarnessMcpKit;
 }>;
 
 /** What the kit keeps of a conversation it admitted. */
@@ -190,7 +189,9 @@ This session has no Buzz tools: the tools named above, such as send and read, do
 </buzz-tools-unavailable>`;
 const CONVERSATION_READ_TIMEOUT_MS = 4_000;
 
-export function harnessKit(sources: Sources): HarnessKit {
+/** The kit without its MCP part, which `agents.harness` binds to the plugin
+ * that asks. */
+export function harnessKit(sources: Sources): Omit<HarnessKit, "mcp"> {
   const admitted = new WeakMap<HarnessConversation, Admitted>();
   const memoryReads = new MemoryReads();
   const session = (key: AgentKey) => {
@@ -212,7 +213,6 @@ export function harnessKit(sources: Sources): HarnessKit {
   };
 
   return Object.freeze({
-    mcp: sources.mcp,
     async conversation(
       { trigger, agent, channelId, signal }: Delivery,
       scope: HarnessScope,
