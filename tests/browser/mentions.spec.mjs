@@ -390,7 +390,10 @@ test("actual composer selects namesakes by exact key, publishes channel/reply ta
   const first = await page.evaluate(
     () => window.mentionFixture.publications[0],
   );
-  expect(first.content).toBe("@Honey @Honey 😀");
+  // The sent body qualifies each namesake so readers bind it to one key.
+  expect(first.content).toBe(
+    `@Honey (${keys.first}) @Honey (${keys.second}) 😀`,
+  );
   expect(first.tags.filter(([tag]) => tag === "p")).toEqual([
     ["p", keys.first],
     ["p", keys.second],

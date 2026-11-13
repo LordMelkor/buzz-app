@@ -672,7 +672,9 @@ function PreparedMessageMarkdown({
     const clickable =
       interactive && typeof target === "string" && !!canOpenLink?.(target);
     if (typeof text === "string" && typeof target === "string") {
-      const label = key ? resolveName(key, text.slice(1)) : text.slice(1);
+      // A namesake-qualified span shows its name; its target is the key.
+      const shown = text.slice(1).replace(/ \([a-f0-9]{64}\)$/i, "");
+      const label = key ? resolveName(key, shown) : shown;
       const Mention = clickable ? "button" : "span";
       // Selection copy reads the identity and the whole label (selection-copy.ts).
       return (

@@ -7692,8 +7692,27 @@ it("serializes tool commands in one React batch and rejects malformed recipients
   h.submit();
   expect(h.messages.send).toHaveBeenCalledExactlyOnceWith(
     "channel",
-    "Hi there @Honey and @Honey ",
+    `Hi there @Honey (${first.pubkey}) and @Honey (${second.pubkey}) `,
     [first.pubkey, second.pubkey],
+    [],
+  );
+});
+
+it("counts namesake qualifiers against the message limit", () => {
+  const h = mount();
+  // Room for a second bare chip, not for both qualifiers it adds.
+  const prose = "x".repeat(16000 - 30);
+  h.fill(prose);
+  act(() => {
+    const { insertMention } = h.commands();
+    expect(insertMention(first)).toBe(true);
+    expect(insertMention(second)).toBe(false);
+  });
+  h.submit();
+  expect(h.messages.send).toHaveBeenCalledExactlyOnceWith(
+    "channel",
+    `${prose}@Honey `,
+    [first.pubkey],
     [],
   );
 });
@@ -11018,7 +11037,7 @@ it("sends a resource between mentions and keeps both after a failed send", () =>
   expect(h.input()).toHaveTextContent("Resource: Fix login");
   h.submit();
   expect(h.messages.send.mock.calls.at(-1)?.slice(1, 3)).toEqual([
-    `@Honey [Fix login](${resource.uri}) @Honey `,
+    `@Honey (${first.pubkey}) [Fix login](${resource.uri}) @Honey (${second.pubkey}) `,
     [first.pubkey, second.pubkey],
   ]);
 });

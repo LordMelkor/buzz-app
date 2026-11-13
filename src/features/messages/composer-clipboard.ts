@@ -163,7 +163,9 @@ export function composerClipboard(doc: EditorNode, document: Document) {
   const container = document.createElement("div");
   container.appendChild(fragment);
   return {
-    text: composerMarkdown(projectComposerDocument(humanised(doc)).draft),
+    text: composerMarkdown(projectComposerDocument(humanised(doc)).draft, {
+      authored: true,
+    }),
     html: `<div data-buzz-copy="composer">${container.innerHTML}</div>`,
   };
 }
