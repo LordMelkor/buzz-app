@@ -182,13 +182,12 @@ export interface UnreadCapability {
     channelId: string,
     messageId: string,
   ): Promise<ReadMutationResult>;
-  /** Explicitly read exactly these captured messages, never their subtrees or
-   * a channel prefix. Its one optional Undo restores only captured `msg:<id>`
-   * journal markers the save cleared; it never rewinds frontiers or restores
-   * forced overlays. No handle is returned unless a marker was cleared, and
-   * pending force-unread intent for a captured ID also withholds it. Later
-   * journal revisions or lost action validity expire it. Optional so older
-   * hosts remain compatible. */
+  /** Explicitly read exactly these captured messages, never subtrees or prefixes.
+   * Only results with `undoScope: "captured-action"` and `undo` offer the full
+   * receipt, saved-reminder and visit-overlay inverse. Older handles may restore
+   * saved reminders only. Synced prefixes stay monotonic.
+   * Any later journal write or lost action validity expires the inverse; pending
+   * force-unread intent also withholds it. Older hosts may omit this capability. */
   markCapturedMessagesRead?(
     messageIds: readonly string[],
   ): Promise<ReadMutationResult>;
@@ -3057,17 +3056,18 @@ export function createUnread({
         channelIds.map((channelId) => [channelId, visits.get(channelId) ?? 0]),
       );
       const generation = epoch;
-      const valid = () =>
+      const messageValid = ({
+        id,
+        channelId,
+        event,
+      }: (typeof selected)[number]) =>
         !closed &&
-        generation === epoch &&
-        selected.every(
-          ({ id, channelId, event }) =>
-            channelValid.get(channelId)?.() &&
-            (visits.get(channelId) ?? 0) === visit.get(channelId) &&
-            events.get(id) === event &&
-            !deleted(event) &&
-            channelOf(event) === channelId,
-        );
+        channelValid.get(channelId)?.() &&
+        (visits.get(channelId) ?? 0) === visit.get(channelId) &&
+        events.get(id) === event &&
+        !deleted(event) &&
+        channelOf(event) === channelId;
+      const valid = () => generation === epoch && selected.every(messageValid);
       const messageKeys = selected.map(({ id }) => `msg:${id}`);
       const capturedIdsByChannel = new Map<string, Set<string>>();
       for (const { id, channelId } of selected) {
@@ -3111,25 +3111,47 @@ export function createUnread({
         // The save succeeded; do not clear overlays from a visit that ended
         // while storage was committing.
         const changed = new Set<string>();
-        for (const { id, event, channelId } of selected) {
-          if (
-            closed ||
-            generation !== epoch ||
-            !channelValid.get(channelId)?.() ||
-            (visits.get(channelId) ?? 0) !== visit.get(channelId) ||
-            events.get(id) !== event ||
-            deleted(event) ||
-            channelOf(event) !== channelId
-          )
-            continue;
+        const clearedForced = new Map<string, Set<string>>();
+        for (const row of selected) {
+          if (generation !== epoch || !messageValid(row)) continue;
+          const { id, channelId } = row;
           const forced = forcedMessages.get(channelId);
-          forced?.delete(id);
+          if (forced?.delete(id)) {
+            const cleared = clearedForced.get(channelId) ?? new Set<string>();
+            cleared.add(id);
+            clearedForced.set(channelId, cleared);
+          }
           if (!forced?.size) forcedMessages.delete(channelId);
           changed.add(channelId);
         }
         if (changed.size) publish(changed);
         const { undo, ...savedResult } = result;
-        return undo && !undoValid() ? savedResult : result;
+        if (!undo || !undoValid()) return savedResult;
+        return {
+          ...savedResult,
+          undoScope: "captured-action",
+          undo: () =>
+            serializeChannels(channelIds, async () => {
+              const restored = await undo();
+              // After commit, changed evidence suppresses only its own overlay.
+              const changed = new Set<string>();
+              for (const row of selected) {
+                const { id, channelId } = row;
+                if (
+                  !clearedForced.get(channelId)?.has(id) ||
+                  !messageValid(row)
+                )
+                  continue;
+                const forced =
+                  forcedMessages.get(channelId) ?? new Set<string>();
+                forced.add(id);
+                forcedMessages.set(channelId, forced);
+                changed.add(channelId);
+              }
+              if (changed.size) publish(changed);
+              return restored;
+            }),
+        };
       });
     },
     leaveChannel(channelId) {

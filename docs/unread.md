@@ -517,18 +517,39 @@ same explicit set only after preserving that newer intent. Older hosts may omit
 this capability, so callers must check it before invoking it.
 
 A successful captured read returns one `ReadMutationResult` for the entire
-set. Its optional `undo` is returned only when that save cleared one or more
-saved `msg:<id>` local-unread markers belonging to the captured IDs; it restores
-exactly those markers. The handle is omitted when there was no saved marker to
-restore, even if the read advanced per-message frontiers or cleared visit-local
-overlays. Undo never rewinds a frontier or restores a visit-local forced overlay;
-the shared `message-force:` hint remains outside this inverse. Any later saved
-journal revision, or invalidation of the selected messages, access, session, or
-visit evidence, expires the handle.
+set. Offer full-action Undo only when both `result.undoScope === "captured-action"`
+and `result.undo` are present. Older hosts may return no handle or an untagged
+saved-marker-only handle: the presence of `undo` alone does not promise receipt
+or visit-overlay restoration. No host-version check is needed. The scope tag is
+omitted whenever the full-action handle is withheld and from the inverse's saved
+result; it does not promise that a returned handle will remain valid.
 
-A queued force-unread intent for any captured ID also suppresses the handle if
-it is pending when the result is returned; if it starts later, the handle's
-existing validity check rejects it.
+The tagged `undo` reverses that action's exact device-local receipt and
+retention changes, restores saved `msg:<id>` reminders it cleared, and restores
+only the visit-local forced overlays it actually removed. Already-read and own
+messages stay read unless the action cleared their existing reminder or forced
+overlay. It never rewinds a synced channel/thread prefix, creates a new manual
+reminder for ordinary unread, or changes the shared `message-force:` hint.
+Ordinary unread restored by Undo remains eligible for normal automatic reading.
+These exact receipts are local-only and do not schedule publication or an empty
+flush. Earlier pending publication still proceeds and can expire the handle.
+
+This inverse is deliberately conservative: **any later durable journal write**,
+including an unrelated read, equal-valued peer ingest, publication bookkeeping,
+or another window's startup, expires it. An opaque journal token fences writes
+that do not advance the revision. The bounded before-action receipt snapshot
+lives only in the returned handle; there is no persistent undo history or relay
+protocol change. A failed transaction leaves both receipts and visit overlays
+unchanged and can be retried; duplicate or stale attempts reject. Invalidation
+of the selected messages, access, session, or visit evidence also expires Undo.
+A queued force-unread intent for any captured ID suppresses the handle if it is
+pending when the result is returned, and rejects an existing handle if it starts
+before the inverse transaction. Overlays are restored only after that transaction
+succeeds and while the original visit still exists. If a visit ends while the
+transaction commits, the durable inverse can succeed without resurrecting the
+ended visit's overlays. Changes during commit return suppress only the affected
+IDs' overlay restoration, not overlays in unaffected captured visits. Consumers
+must tolerate omitted or expired handles.
 
 `prepareChannelRead(channelId, rootId?)` captures the channel's existing
 prefix/time cut and owned local-mark keys once. Invoke its returned function to
@@ -575,13 +596,12 @@ captured message evidence to remain valid.
 Prepared channel/thread read results may expose an optional `undo` only when
 that action cleared saved local-unread journal markers without clearing a
 covered forced overlay. The handle is also withheld if a force mark for covered
-messages is queued while the read saves. Captured-message Undo follows the
-ID-scoped rule above and may accompany clearing those IDs' visit-local overlays;
-it still restores only saved journal markers. A direct `markMessageRead()` call
-does not provide an inverse. Undo runs in a new storage transaction and never
-rewinds or publishes a read frontier. These conditional results do not make
-every read operation undoable.
-The handle is conditional on the exact saved journal revision and the
+messages is queued while the read saves. These prefix-read handles restore
+saved reminders only, unlike the exact captured-message inverse above. A direct
+`markMessageRead()` call does not provide an inverse. Undo runs in a new storage
+transaction and never rewinds or publishes a synced frontier. These conditional
+results do not make every read operation undoable.
+A prefix-read handle is conditional on the exact saved journal revision and the
 operation's access/lifecycle evidence. Its revision guard covers the whole
 journal: any later save that advances the revision, including an unrelated
 marker or quiet read-state save, makes the handle stale; bookkeeping saves that
