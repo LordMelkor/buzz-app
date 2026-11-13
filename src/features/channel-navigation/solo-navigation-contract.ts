@@ -124,6 +124,10 @@ export type SoloWorkspaceProps = Readonly<{
 /** Host conversation behavior. The source composes the presentation from its parts. */
 export type SoloConversationProps = Readonly<{
   channelId: string;
+  /** Use a source-owned destination with the native row controls. */
+  onOpen?(): void;
+  /** Selection from the source-owned destination. */
+  selected?: boolean;
   menuActions?: readonly SoloRegionAction[];
   /** Not called for a conversation outside this region. Renaming replaces it with the host editor. */
   children(conversation: SoloConversation): ReactNode;

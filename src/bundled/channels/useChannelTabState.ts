@@ -187,6 +187,7 @@ function withThread(
   intent: ThreadIntent | undefined,
   pane: TabPane,
   attention = false,
+  relocate = false,
 ): State {
   const existing = threadTab(state.tabs, channelId, rootId);
   const baseId = `thread:${channelId}:${rootId}`;
@@ -221,8 +222,8 @@ function withThread(
       intent === "reveal"
         ? (prior?.revealRequest ?? 0) + 1
         : prior?.revealRequest,
-    // An already-open thread stays wherever it was placed.
-    pane: prior ? tabPane(prior) : pane,
+    // Detail visits need the source thread in the other pane.
+    pane: prior && !relocate ? tabPane(prior) : pane,
     rootId: prior?.rootId,
     name: prior?.name,
   };
@@ -620,6 +621,8 @@ export function useChannelTabState(
             thread.rootId,
             "select",
             thread.pane ?? threadPlacementPreference(),
+            false,
+            !!detail && thread.pane === "main",
           );
         const saved = visits?.[visit];
         return saved

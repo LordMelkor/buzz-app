@@ -459,6 +459,20 @@ export type PageTabTarget = {
   threadId?: string;
   messageId?: string;
 };
+/** A page-owned conversation with the host's reader, composer, and side pane. */
+export type ConversationWorkspaceProps = {
+  id: string;
+  session: RelaySession;
+  scope: string;
+  target: PageTabTarget;
+  label: string;
+  /** Content at the start of history. It scrolls with the messages. */
+  intro?: ReactNode;
+  /** Actions in the pane's menu and the main tab's context menu. */
+  actions?: readonly { label: string; run(): void }[];
+  /** Select this panel on entry. Closing it keeps the main conversation. */
+  detail?: { target: string; rootId?: string };
+};
 /** `keep` opens a tab beside the others instead of in place of the last.
  * `markRead: false` keeps a conversation tab from marking what it shows read,
  * so the page decides; threads read as in Channels. */

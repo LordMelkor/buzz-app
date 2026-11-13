@@ -187,10 +187,12 @@ export function RegionConversation(props: SoloConversationProps) {
   );
   const state: ConversationState = {
     channel,
-    selected: current === channel.id,
+    selected: props.selected ?? current === channel.id,
     menu,
     open() {
-      if (active()) void navigator.open(conversationTarget(scope, channel.id));
+      if (!active()) return;
+      if (props.onOpen) props.onOpen();
+      else void navigator.open(conversationTarget(scope, channel.id));
     },
     canRename:
       session.channelDetails.available && !channel.readOnly && !channel.cached,

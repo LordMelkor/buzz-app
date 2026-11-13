@@ -34,6 +34,36 @@ afterEach(() => {
   localStorage.clear();
 });
 
+test("a detail visit retains the exact source thread in the main pane", () => {
+  const session = {} as RelaySession;
+  const h = renderHook(() => useChannelTabState(session, "alpha"));
+  act(() => {
+    h.result.current.openThreadTab("alpha", "reply", "root", undefined, "side");
+  });
+  const source = h.result.current.tabs.find((tab) => tab.kind === "thread");
+  if (!source) throw new Error("The source thread is missing.");
+  const id = source.id;
+  act(() => h.result.current.resolveThreadRoot(id, "root"));
+  act(() => {
+    h.result.current.enterVisit(
+      "source:detail",
+      { channelId: "alpha", messageId: "reply", rootId: "root", pane: "main" },
+      true,
+      { channelId: "alpha", target: "example:task" },
+    );
+  });
+  expect(h.result.current.tabs).toHaveLength(1);
+  expect(h.result.current.tabs[0]).toMatchObject({
+    id,
+    pane: "main",
+    messageId: "reply",
+  });
+  expect(h.result.current.mainSelected).toBe(id);
+  expect(h.result.current.detailVisits("alpha", "example:task")).toEqual([
+    "source",
+  ]);
+});
+
 test("selection readers stay stable during local updates and change with the channel", () => {
   const session = {} as RelaySession;
   const observations: unknown[] = [];

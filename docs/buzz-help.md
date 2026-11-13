@@ -779,6 +779,11 @@ for 30 days expires.
   and Linux) an HTTP(S) link in a message to open it in your default browser
   instead of a side panel. You can also right-click the link and choose
   **Open in browser**.
+- **Conversations in plugin pages**: a plugin can show a conversation as its
+  main view, with the normal message controls and a panel on the right. Its
+  header actions come from the plugin. Closing a side tab keeps the main view.
+  Plugins can also make their panels available as conversation detail links.
+  Back and Forward restore these visits. Close retires the closed panel's visits.
 - **Close tabs or the window (macOS)**: ⌘W closes the active tab. With no tab
   to close, it closes the window while Buzz and running agents stay open.
   Reopen Buzz from the Dock. ⌘⇧W clears the current channel's tabs without

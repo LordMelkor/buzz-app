@@ -94,6 +94,9 @@ bundled/inbox/          builtin Inbox page for unread conversations and mentions
 The host composes the conversation sidebar (Solo and Team inventories) beside
 independently mounted pages. Settings supplies its own modal navigation; a selected
 page can replace the conversation sidebar through its optional `sidebar` contribution.
+A page can set `conversationNavigation: true` to keep the Messages sidebar and
+dock selection. This also applies to pages with `primary: false`; it does not add
+a navigation row. Without this option, the page keeps its own navigation owner.
 The conversation sidebar reuses session-owned roster, unread, creation and
 preferences capabilities; it does not
 retain a hidden Channels page or message reader. Sidebar and page render errors
