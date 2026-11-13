@@ -50,6 +50,21 @@ License. Markdown parts are parsed with `unified` 11.0.5, `remark-parse` 11.0.0
 and `micromark-util-decode-string` 2.0.1, Copyright Titus Wormer and
 contributors, under the MIT License.
 
+Office files are read with SheetJS (`@e965/xlsx` 0.20.3), Copyright SheetJS
+LLC, under the Apache License 2.0, and unzipped with fflate (`fflate` 0.8.3),
+Copyright Arjun Barrett, under the MIT License. Their documents are cleaned with
+`rehype-sanitize` 6.0.0 and drawn with `hast-util-to-jsx-runtime` 2.3.6,
+Copyright Titus Wormer, under the MIT License. PowerPoint shape outlines in
+`src/bundled/file-viewer/office/pptx-preset-geometries.ts` are extracted from
+[Apache POI](https://github.com/apache/poi/blob/338882ac8898df5c13a7d15f533204c5dd8607d6/poi/src/main/resources/org/apache/poi/sl/draw/geom/presetShapeDefinitions.xml)
+under the Apache License 2.0 (`pptx-geometries.LICENSE`). PowerPoint table
+styles in `src/bundled/file-viewer/office/pptx-table-styles.ts` are derived
+from [LibreOffice core](https://github.com/LibreOffice/core/blob/9d83595bbc85ee972633529086ed22382abdb8d2/oox/source/drawingml/table/predefined-table-styles.cxx)
+under the Mozilla Public License 2.0 (`pptx-table-styles.LICENSE`). The legacy
+`.doc` and `.ppt` test files from Apache POI in
+`src/bundled/file-viewer/fixtures/office` keep its license and notice beside
+them (`legacy-APACHE-LICENSE.txt`, `legacy-APACHE-NOTICE.txt`).
+
 OneDrive is a trademark of Microsoft.
 
 ## Harness brand marks

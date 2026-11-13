@@ -122,43 +122,8 @@ function IndexedDocument({
   /** The file took too long to format, so it shows as text. */
   plain?: boolean;
 }) {
-  const [scroller, setScroller] = useState<HTMLElement | null>(null);
-  const scrollRef = useRef<HTMLElement | null>(null);
-  const attach = useCallback((node: HTMLElement | null) => {
-    scrollRef.current = node;
-    setScroller(node);
-  }, []);
-  const control = useRef<BufferControl | null>(null);
-
-  /** Goes to a heading or footnote by its id, with or without the
-   * `user-content-` prefix, showing its part first when it isn't on screen.
-   * A part shown as plain text has no headings, so its top stands in. Focus
-   * moves to the file, as a native `#` jump moves it, since the link or
-   * outline row that started the jump may be gone. */
-  const scrollTo = useCallback(
-    (id: string) => {
-      const root = scrollRef.current;
-      if (!root) return;
-      const find = () =>
-        root.querySelector(`[id="${CSS.escape(`user-content-${id}`)}"]`) ??
-        root.querySelector(`[id="${CSS.escape(id)}"]`);
-      const part = doc.partOf(id);
-      const reveal = () => {
-        const target =
-          find() ??
-          (part === undefined
-            ? null
-            : root.querySelector(`[data-part="${part}"]`));
-        target?.scrollIntoView({ block: "start" });
-        root.focus({ preventScroll: true });
-      };
-      const shown = find()?.closest<HTMLElement>("[data-part]")?.dataset.part;
-      if (shown !== undefined && (part === undefined || shown === String(part)))
-        return reveal();
-      if (part !== undefined) control.current?.seek(part, reveal);
-    },
-    [doc],
-  );
+  const partOf = useCallback((id: string) => doc.partOf(id), [doc]);
+  const { scroller, attach, control, scrollTo } = usePartJump(partOf);
 
   const picture = useCallback(
     ({ src, alt }: { src: string; alt: string }) => (
@@ -302,6 +267,46 @@ function IndexedDocument({
   );
 }
 
+/** A file read in parts: its scroll owner, its part buffer, and the jump to
+ * a heading or footnote by its id, with or without the `user-content-`
+ * prefix, showing its part first when it isn't on screen. A part shown as
+ * plain text has no headings, so its top stands in. Focus moves to the file,
+ * as a native `#` jump moves it, since the link or outline row that started
+ * the jump may be gone. */
+export function usePartJump(partOf: (id: string) => number | undefined) {
+  const [scroller, setScroller] = useState<HTMLElement | null>(null);
+  const scrollRef = useRef<HTMLElement | null>(null);
+  const attach = useCallback((node: HTMLElement | null) => {
+    scrollRef.current = node;
+    setScroller(node);
+  }, []);
+  const control = useRef<BufferControl | null>(null);
+
+  const scrollTo = useCallback(
+    (id: string) => {
+      const root = scrollRef.current;
+      if (!root) return;
+      const find = () => findId(root, id);
+      const part = partOf(id);
+      const reveal = () => {
+        const target =
+          find() ??
+          (part === undefined
+            ? null
+            : root.querySelector(`[data-part="${part}"]`));
+        target?.scrollIntoView({ block: "start" });
+        root.focus({ preventScroll: true });
+      };
+      const shown = find()?.closest<HTMLElement>("[data-part]")?.dataset.part;
+      if (shown !== undefined && (part === undefined || shown === String(part)))
+        return reveal();
+      if (part !== undefined) control.current?.seek(part, reveal);
+    },
+    [partOf],
+  );
+  return { scroller, attach, control, scrollTo };
+}
+
 const FALLBACK_REASONS = {
   "too-large": "This part is too large to format",
   "too-deep": "This part is too deeply nested to format",
@@ -343,7 +348,7 @@ function renderHast(nodes: readonly HastNode[]): ReactNode[] {
 
 /** A community image, drawn through the session's media source; any other
  * image, or one that fails to load, is its alt text. */
-function Picture({
+export function Picture({
   src,
   alt,
   media,
@@ -368,7 +373,7 @@ function Picture({
 
 /** The outline's button and list. The list opens at the current section: the
  * last heading at or above the top of the view. */
-function Outline({
+export function Outline({
   items,
   scroller,
   jump,
@@ -411,6 +416,14 @@ function Outline({
   );
 }
 
+/** The element with this id, as Markdown prefixes it or as written. */
+function findId(root: HTMLElement, id: string): Element | null {
+  return (
+    root.querySelector(`[id="${CSS.escape(`user-content-${id}`)}"]`) ??
+    root.querySelector(`[id="${CSS.escape(id)}"]`)
+  );
+}
+
 function currentSection(
   items: readonly PartOutlineItem[],
   root: HTMLElement,
@@ -425,9 +438,7 @@ function currentSection(
   for (const item of items) {
     if (item.part > last) break;
     if (item.part >= first) {
-      const node = root.querySelector(
-        `[id="${CSS.escape(`user-content-${item.id}`)}"]`,
-      );
+      const node = findId(root, item.id);
       // A part shown as plain text has no heading to measure.
       if (!node) continue;
       if (node.getBoundingClientRect().top > line) break;

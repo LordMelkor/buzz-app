@@ -54,39 +54,67 @@ export function SafeMarkdown({
           image && typeof src === "string"
             ? image({ src, alt: alt ?? "" })
             : (alt ?? null),
-        a: ({ children, href }) => {
-          if (!href) return children;
-          if (onAnchor && href.startsWith("#"))
-            return (
-              <a
-                href={href}
-                onClick={(event) => {
-                  event.preventDefault();
-                  onAnchor(fragment(href));
-                }}
-              >
-                {children}
-              </a>
-            );
-          // A raw autolink shows its destination's name, as in messages.
-          const label = labelText(children);
-          const raw = label === href;
-          return (
-            <MessageLink
-              url={href}
-              label={raw ? undefined : label}
-              registry={undefined}
-              session={session}
-              onOpenLink={openLink}
-            >
-              {raw ? undefined : children}
-            </MessageLink>
-          );
-        },
+        a: ({ children, href }) => (
+          <SafeLink
+            href={href}
+            openLink={openLink}
+            session={session}
+            onAnchor={onAnchor}
+          >
+            {children}
+          </SafeLink>
+        ),
       }}
     >
       {content}
     </Markdown>
+  );
+}
+
+/** A link under the same rules: a Buzz or safe link opens through
+ * `MessageLink`, a `#id` link calls `onAnchor` when given, and anything else
+ * is its text. */
+export function SafeLink({
+  href,
+  children,
+  openLink,
+  session,
+  onAnchor,
+}: {
+  href: string | undefined;
+  children?: ReactNode;
+  openLink(url: string): boolean;
+  session?: RelaySession | undefined;
+  onAnchor?: ((id: string) => void) | undefined;
+}) {
+  if (!href) return children;
+  if (onAnchor && href.startsWith("#"))
+    return (
+      <a
+        href={href}
+        onClick={(event) => {
+          event.preventDefault();
+          onAnchor(fragment(href));
+        }}
+      >
+        {children}
+      </a>
+    );
+  const url = parseBuzzLink(href) ? href : safeLinkUrl(href);
+  if (!url) return children;
+  // A raw autolink shows its destination's name, as in messages.
+  const label = labelText(children);
+  const raw = label === url;
+  return (
+    <MessageLink
+      url={url}
+      label={raw ? undefined : label}
+      registry={undefined}
+      session={session}
+      onOpenLink={openLink}
+    >
+      {raw ? undefined : children}
+    </MessageLink>
   );
 }
 

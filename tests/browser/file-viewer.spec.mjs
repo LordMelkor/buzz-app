@@ -1,7 +1,7 @@
 import { expect, test } from "./playwright-test.mjs";
 import { build, preview } from "./vite-server.mjs";
 import react from "@vitejs/plugin-react";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,6 +79,27 @@ const FILES = {
   ],
   3: ["application/pdf", pdf([], { blank: true })],
   4: ["image/png", PNG],
+  ...Object.fromEntries(
+    await Promise.all(
+      [
+        ["5", "foundation.docx"],
+        ["6", "sheets-real.xlsx"],
+        ["7", "pptx-python-pptx.pptx"],
+        ["8", "iwork-native.pages"],
+      ].map(async ([key, name]) => [
+        key,
+        [
+          "application/octet-stream",
+          await readFile(
+            new URL(
+              `../../src/bundled/file-viewer/fixtures/office/${name}`,
+              import.meta.url,
+            ),
+          ),
+        ],
+      ]),
+    ),
+  ),
 };
 
 test.beforeAll(async () => {
@@ -383,3 +404,54 @@ test("says a PDF without text has none to copy", async ({ page }) => {
   await expect(viewer.getByRole("button", { name: "Copy text" })).toBeEnabled();
   expect(unexplained()).toEqual([]);
 });
+
+test("opens Office files in their own chunk, only once one is opened", async ({
+  page,
+}) => {
+  const { unexplained } = watchPageErrors(page);
+  await serveMedia(page);
+  const scripts = [];
+  page.on("request", (request) => {
+    if (request.resourceType() === "script") scripts.push(request.url());
+  });
+  const office = () => scripts.filter((script) => /OfficeView/.test(script));
+  const viewer = await openFile(page, "word", "notes.md");
+  await expect(
+    viewer.getByRole("heading", { name: "Launch notes" }),
+  ).toBeVisible();
+  expect(office()).toEqual([]);
+  await page
+    .getByRole("main", { name: "Message" })
+    .getByRole("button", { name: /foundation\.docx/ })
+    .click();
+  await expect(viewer.getByText("Office foundation").first()).toBeVisible();
+  expect(office()).toHaveLength(1);
+  expect(unexplained()).toEqual([]);
+});
+
+for (const [extra, name, shows] of [
+  [
+    "excel",
+    "budget.xlsx",
+    (viewer) => viewer.getByRole("cell", { name: "25%" }).first(),
+  ],
+  [
+    "powerpoint",
+    "review.pptx",
+    (viewer) => viewer.getByText("Quarterly review").first(),
+  ],
+  [
+    "pages",
+    "brochure.pages",
+    (viewer) =>
+      viewer.getByRole("img", { name: "First page of brochure.pages" }),
+  ],
+]) {
+  test(`opens ${name}`, async ({ page }) => {
+    const { unexplained } = watchPageErrors(page);
+    await serveMedia(page);
+    const viewer = await openFile(page, extra, name);
+    await expect(shows(viewer)).toBeVisible();
+    expect(unexplained()).toEqual([]);
+  });
+}

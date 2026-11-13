@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { fileFormat } from "./formats";
+import { fileFormat, formatLabel, officeFormat } from "./formats";
 import { decodeText, LoadError, readBytes } from "./load";
 import { MAX_CELLS, MAX_COLUMNS, MAX_ROWS, parseTable } from "./table";
 import { fileTarget, isCommunityMedia, parseFileTarget } from "./target";
@@ -17,8 +17,46 @@ it("reads files by name first and type second", () => {
   expect(fileFormat("notes", "text/markdown; charset=utf-8")).toBe("markdown");
   expect(fileFormat(undefined, "application/pdf")).toBe("pdf");
   expect(fileFormat("photo.heic", "image/heic")).toBeUndefined();
-  expect(fileFormat("deck.pptx", undefined)).toBeUndefined();
+  expect(fileFormat("deck.pptx", undefined)).toBe("office");
+  expect(fileFormat("upload.bin", "application/vnd.ms-excel")).toBe("office");
+  expect(fileFormat("notes.rtf", "text/rtf")).toBe("office");
+  // Graphviz, gettext and PEM files share Office extensions; their type says text.
+  expect(fileFormat("graph.dot", "text/vnd.graphviz")).toBe("text");
+  expect(fileFormat("server.key", "text/plain")).toBe("text");
+  expect(fileFormat("template.dot", undefined)).toBe("office");
   expect(fileFormat(".env", undefined)).toBeUndefined();
+});
+
+it("names an Office file's app and the view it opens in, by name then type", () => {
+  expect(officeFormat("Plan.DOCX")).toEqual({
+    family: "document",
+    label: "Word",
+  });
+  expect(officeFormat("budget.xlsm")).toEqual({
+    family: "sheets",
+    label: "Excel",
+  });
+  expect(officeFormat("deck.odp")).toEqual({
+    family: "slides",
+    label: "OpenDocument",
+  });
+  // An old PowerPoint file reads as text.
+  expect(officeFormat("deck.ppt")).toEqual({
+    family: "document",
+    label: "PowerPoint",
+  });
+  expect(officeFormat("brochure.pages")).toEqual({
+    family: "preview",
+    label: "Pages",
+  });
+  expect(
+    officeFormat(
+      "upload.bin",
+      "application/vnd.oasis.opendocument.spreadsheet",
+    ),
+  ).toEqual({ family: "sheets", label: "OpenDocument" });
+  expect(officeFormat("plan.md")).toBeUndefined();
+  expect(formatLabel("office", "deck.key")).toBe("Keynote");
 });
 
 it("round-trips file targets and rejects unreadable ones", () => {

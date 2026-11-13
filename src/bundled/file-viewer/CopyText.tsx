@@ -10,10 +10,13 @@ import { useToastNotification } from "../../shared/design-system/ui/Toast";
 export function CopyText({
   read,
   limit,
+  label = "Copy text",
 }: {
   read(signal: AbortSignal): string | Promise<string>;
   /** The most characters `read` gives; text that long says it was cut. */
   limit?: number;
+  /** A sheet copies "as TSV". */
+  label?: string;
 }) {
   const notify = useToastNotification();
   const [busy, setBusy] = useState(false);
@@ -21,7 +24,8 @@ export function CopyText({
   useEffect(() => () => running.current?.abort(), []);
   return (
     <IconButton
-      aria-label="Copy text"
+      aria-label={label}
+      title={label}
       icon={<CopyIcon />}
       disabled={busy}
       onClick={() => {

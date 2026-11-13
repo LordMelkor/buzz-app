@@ -57,6 +57,7 @@ const nonIconDependencies = new Set([
   "flexlayout-react",
   "github-slugger", // Heading IDs; not an icon library.
   "hast", // Type-only module supplied by @types/hast.
+  "hast-util-to-jsx-runtime", // Office document trees to React; not an icon library.
   "highlight.js", // Code highlighting grammars; not an icon library.
   "jsdom",
   "lowlight", // Code highlighting into HTML trees; not an icon library.

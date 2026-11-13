@@ -92,7 +92,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
         attachment={attachment}
         source={source}
         onOpenLink={open}
-        {...(format ? { typeLabel: formatLabel(format) } : {})}
+        {...(format
+          ? { typeLabel: formatLabel(format, attachment.name, attachment.mime) }
+          : {})}
         {...(placement === "message"
           ? {
               onPreview: () =>

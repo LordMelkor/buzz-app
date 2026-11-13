@@ -98,6 +98,9 @@ importers:
       github-slugger:
         specifier: 2.0.0
         version: 2.0.0
+      hast-util-to-jsx-runtime:
+        specifier: 2.3.6
+        version: 2.3.6
       highlight.js:
         specifier: 11.11.2
         version: 11.11.2

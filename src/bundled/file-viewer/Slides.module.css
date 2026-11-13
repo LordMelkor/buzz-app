@@ -1,0 +1,134 @@
+.deck {
+  padding: var(--space-4);
+}
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+/* A slide is a white page in either theme: its content brings its own colors.
+   What it holds that follows the theme's roles (chart text and lines) reads on
+   white. Inside the canvas, sizes are the file's points. */
+.slide {
+  --text-standard: black;
+  --text-subtle: dimgray;
+  --text-metadata: dimgray;
+  --border-standard: lightgray;
+  --border-prominent: darkgray;
+  --surface-panel: transparent;
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: white;
+  color: black;
+  box-shadow: 0 0 0 1px var(--border-standard);
+}
+.canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  font-family: var(--font-sans);
+}
+.shape,
+.picture,
+.chart,
+.object {
+  position: absolute;
+}
+.svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+}
+.text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: break-word;
+}
+.cellText {
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: break-word;
+}
+.bullet {
+  display: inline-block;
+  text-indent: 0;
+}
+.picture {
+  overflow: hidden;
+}
+.picture img {
+  position: absolute;
+  max-width: none;
+}
+.alt,
+.object {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  border: 1px dashed var(--border-prominent);
+  color: var(--text-subtle);
+  font-size: var(--text-body-sm);
+  overflow: hidden;
+}
+.alt {
+  position: absolute;
+  inset: 0;
+}
+.object {
+  background: whitesmoke;
+}
+.table {
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.table td {
+  padding: 0;
+}
+.chart {
+  overflow: hidden;
+}
+.notes {
+  color: var(--text-subtle);
+  font-size: var(--text-body-sm);
+  line-height: var(--text-body-sm--line-height);
+}
+.notes summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-metadata);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+  list-style: none;
+  cursor: pointer;
+}
+.notes summary::-webkit-details-marker {
+  display: none;
+}
+/* A chevron in place of the browser's triangle. */
+.notes summary::before {
+  content: "";
+  width: 0.4em;
+  height: 0.4em;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
+}
+.notes[open] summary::before {
+  transform: rotate(45deg);
+}
+.notes p {
+  margin: var(--space-1) 0 0;
+  white-space: pre-wrap;
+}

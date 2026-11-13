@@ -6,13 +6,14 @@ import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import type { RelaySession } from "../../features/relay/session";
 import { CopyText } from "./CopyText";
 import { DocumentView, type MediaSource } from "./DocumentView";
-import { type FileFormat, formatLabel, maxBytes } from "./formats";
+import { formatLabel, maxBytes } from "./formats";
 import { decodeText, LoadError, readBytes } from "./load";
 import { parseTable } from "./table";
 import type { FileTarget } from "./target";
 import styles from "./FileViewer.module.css";
 
 const PdfView = lazy(() => import("./PdfView"));
+const OfficeView = lazy(() => import("./OfficeView"));
 
 export type ViewerProps = Readonly<{
   file: FileTarget;
@@ -29,17 +30,17 @@ type Loaded =
   | { state: "failed"; message: string }
   | { state: "ready"; bytes: Uint8Array };
 
-function failureMessage(error: unknown, format: FileFormat): string {
-  const limit = Math.round(maxBytes(format) / (1024 * 1024));
+function failureMessage(error: unknown, file: FileTarget): string {
+  const limit = Math.round(maxBytes(file.format) / (1024 * 1024));
   if (error instanceof LoadError && error.reason === "too-large")
-    return `${formatLabel(format)} files open up to ${limit} MB. Download it to read it.`;
+    return `${formatLabel(file.format, file.name, file.mime)} files open up to ${limit} MB. Download it to read it.`;
   if (error instanceof LoadError && error.reason === "not-text")
     return "This file isn't text. Download it to open it in another app.";
   return "This file couldn't be loaded. Check your connection and try again.";
 }
 
 function useBytes(
-  format: FileFormat,
+  file: FileTarget,
   source: string | undefined,
   fetcher: typeof fetch | undefined,
 ): Loaded {
@@ -48,18 +49,18 @@ function useBytes(
     if (!source) return;
     const controller = new AbortController();
     setLoaded({ state: "loading" });
-    readBytes(source, maxBytes(format), controller.signal, fetcher).then(
+    readBytes(source, maxBytes(file.format), controller.signal, fetcher).then(
       (bytes) => setLoaded({ state: "ready", bytes }),
       (error: unknown) => {
         if (!controller.signal.aborted)
           setLoaded({
             state: "failed",
-            message: failureMessage(error, format),
+            message: failureMessage(error, file),
           });
       },
     );
     return () => controller.abort();
-  }, [format, source, fetcher]);
+  }, [file, source, fetcher]);
   return loaded;
 }
 
@@ -79,7 +80,7 @@ export function Viewer({
   media,
   fetcher,
 }: ViewerProps) {
-  const loaded = useBytes(file.format, source, fetcher);
+  const loaded = useBytes(file, source, fetcher);
   if (!source)
     return (
       <Unavailable
@@ -121,15 +122,16 @@ function Contents({
   openLink(url: string): boolean;
   media: MediaSource | undefined;
 }) {
+  const binary = file.format === "pdf" || file.format === "office";
   const text = useMemo(() => {
-    if (file.format === "pdf") return undefined;
+    if (binary) return undefined;
     try {
       return decodeText(bytes);
     } catch {
       return null;
     }
-  }, [file.format, bytes]);
-  if (file.format === "pdf")
+  }, [binary, bytes]);
+  if (binary)
     return (
       <Suspense
         fallback={
@@ -138,7 +140,17 @@ function Contents({
           </LoadingRegion>
         }
       >
-        <PdfView bytes={bytes} name={file.name} />
+        {file.format === "pdf" ? (
+          <PdfView bytes={bytes} name={file.name} />
+        ) : (
+          <OfficeView
+            file={file}
+            bytes={bytes}
+            session={session}
+            openLink={openLink}
+            media={media}
+          />
+        )}
       </Suspense>
     );
   if (text === null || text === undefined)

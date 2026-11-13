@@ -1359,15 +1359,16 @@ lists the plotted values as text.
 ### Reading shared files beside a conversation
 
 The optional **File viewer** plugin, off until turned on in Settings → Plugins,
-opens PDFs, Markdown, code, text, CSV and TSV files shared in a conversation in a
-tab beside it. Choose the file's card to open it; the card's download button
+opens PDFs, Office files, Markdown, code, text, CSV and TSV files shared in a
+conversation in a tab beside it. Choose the file's card to open it; the card's download button
 still saves the file. PDFs show every page in one scrolling column: turn pages
 with ‹ and › or the arrow keys, and zoom with **−**, **+** or **Fit to width**.
 **Copy text** copies a file's text; for a PDF it reads the pages when pressed,
 and says when a scanned PDF has none.
 
-- Only files shared in the current community open. Text files open up to 20 MB
-  and PDFs up to 100 MB, laid out to the first 1,000 pages.
+- Only files shared in the current community open. Text files open up to 20 MB,
+  Office files up to 50 MB, and PDFs up to 100 MB, laid out to the first 1,000
+  pages.
 - Markdown, code and text files of any length read in parts, loaded as you
   scroll. In a Markdown file with three or more headings, **Outline** goes to
   any section, and `#` links do too. Code is highlighted, with line numbers.
@@ -1377,7 +1378,15 @@ and says when a scanned PDF has none.
   up to 50,000 cells.
 - Markdown follows the Notes rules: no raw HTML. Images shared in the current
   community are drawn; other images show as their alt text.
-- Office files, images, video and audio are not opened by the viewer.
+- Word, Excel, PowerPoint, OpenDocument, Numbers and RTF files open read-only,
+  and nothing in them runs. Documents show with their pictures, tables and
+  charts, and a Word file with three or more headings has an **Outline**.
+  Spreadsheets show a sheet at a time with a tab for each, and **Copy as TSV**
+  copies the open sheet; formulas show their saved values only. Presentations
+  show each slide fitted to the tab, with speaker notes; turn slides with ‹ and
+  › or the arrow keys. Older `.doc` and `.ppt` files show their text only,
+  and Pages and Keynote files the preview picture saved in them.
+- Images, video and audio are not opened by the viewer.
 
 ### Saved External apps approval
 
