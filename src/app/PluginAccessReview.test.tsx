@@ -102,7 +102,7 @@ it.each([
   },
 );
 
-it("discloses agent MCP access as a new permission", () => {
+it("discloses agent MCP access as a new permission", async () => {
   render(
     <PluginAccessReview
       manifest={{
@@ -117,14 +117,19 @@ it("discloses agent MCP access as a new permission", () => {
   const added = within(
     screen.getByRole("region", { name: "Added declarations" }),
   );
-  expect(
-    added.getByRole("button", {
-      name: /Choose which MCP servers your agents load/,
-    }),
-  ).toBeVisible();
+  const trigger = added.getByRole("button", {
+    name: /Choose which MCP servers your agents load/,
+  });
+  expect(trigger).toBeVisible();
   expect(
     added.getByText(/Can start a configured server to list its tools/),
   ).toBeVisible();
+  fireEvent.click(trigger);
+  await waitFor(() =>
+    expect(
+      added.getByText(/Only one plugin controls this at a time/),
+    ).toBeVisible(),
+  );
 });
 
 it("shows a registered harness title while keeping its exact key in details", async () => {
