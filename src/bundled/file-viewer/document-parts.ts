@@ -36,6 +36,7 @@ import type { ExplicitHtml } from "./markdown-html-explicit";
 import { assemblePart } from "./markdown-part-source";
 
 export const PART_CHARS = 12_500;
+export const SYNC_INDEX_CHARS = 64 * 1024;
 export const MAX_PART_HEADINGS = 20_000;
 export type DocumentKind = "markdown" | "code" | "text";
 export type DocumentPart = Readonly<{
@@ -1125,6 +1126,7 @@ function headingText(
     return linearHeadingText(raw, links, numbers);
   }
   budget.left -= raw.length;
+  if (/^[^\\&`*_~[\]!<#\t\n\r\0]*$/.test(raw)) return raw;
   const definitions: string[] = [];
   const seen = new Set<string>();
   for (let at = 0; at < raw.length; at++) {
@@ -1183,6 +1185,7 @@ type Index = {
   truncated: boolean;
   unclosed?: number | undefined;
   definitionAt: ReturnType<typeof referenceDefinitions>;
+  definitions: Map<number, ReferenceDefinition>;
   plain: boolean;
 };
 
@@ -1406,6 +1409,7 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
       origins,
       truncated,
       definitionAt: () => undefined,
+      definitions: new Map(),
       plain: true,
     };
   const numbers = footnoteNumbers(
@@ -1432,9 +1436,119 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
     origins,
     truncated,
     definitionAt: indexed,
+    definitions,
     plain: false,
     ...(cursor.fence?.swallowed ? { unclosed: cursor.fence.line } : {}),
   };
+}
+
+/** Same Unicode words as the Markdown metadata, without a regex match per word. */
+function wordCount(text: string): number {
+  const unicode = /[\p{L}\p{N}]/u;
+  const letter = (code: number) =>
+    code < 128
+      ? (code >= 48 && code <= 57) ||
+        (code >= 65 && code <= 90) ||
+        (code >= 97 && code <= 122)
+      : unicode.test(String.fromCodePoint(code));
+  let count = 0,
+    inside = false;
+  for (let at = 0; at < text.length; at++) {
+    const code = required(text.codePointAt(at));
+    if (letter(code)) {
+      if (!inside) count++;
+      inside = true;
+    } else {
+      const connector =
+        code === 39 || code === 0x2019 || code === 95 || code === 45;
+      const next = text.codePointAt(at + 1);
+      inside = inside && connector && next !== undefined && letter(next);
+    }
+    if (code > 0xffff) at++;
+  }
+  return count;
+}
+
+/** Plain files need only physical line boundaries, never Markdown state. */
+function plainParts(text: string): DocumentPart[] {
+  const parts: DocumentPart[] = [];
+  let cachedStart = -1,
+    cachedEnd = -1,
+    cachedNext = -1;
+  const lineAt = (start: number) => {
+    if (start >= cachedStart && start <= cachedEnd) return;
+    let end = start;
+    while (
+      end < text.length &&
+      text.charCodeAt(end) !== 13 &&
+      text.charCodeAt(end) !== 10
+    )
+      end++;
+    cachedStart = start;
+    cachedEnd = end;
+    cachedNext =
+      end < text.length
+        ? end +
+          (text.charCodeAt(end) === 13 && text.charCodeAt(end + 1) === 10
+            ? 2
+            : 1)
+        : end;
+  };
+  let start = 0,
+    line = 1,
+    midline = false;
+
+  do {
+    if (text.length - start <= PART_CHARS) {
+      parts.push({ start, end: text.length, line });
+      break;
+    }
+    const upper = start + PART_CHARS;
+    const left = Math.ceil((text.length - start) / PART_CHARS);
+    const aim = start + (text.length - start) / left;
+    const lower = start + PART_CHARS / 2;
+    let at = start,
+      number = line,
+      current = midline;
+    let chosen = -1,
+      chosenLine = line;
+    for (;;) {
+      if (
+        !current &&
+        at >= lower &&
+        at <= upper &&
+        at < text.length &&
+        at > start &&
+        (chosen < 0 || Math.abs(at - aim) < Math.abs(chosen - aim))
+      ) {
+        chosen = at;
+        chosenLine = number;
+      }
+      lineAt(at);
+      if (cachedNext > upper || cachedNext === text.length) {
+        let end: number;
+        if (chosen >= 0) {
+          end = chosen;
+          number = chosenLine;
+          midline = false;
+        } else if (!current && at > start && cachedEnd - at <= PART_CHARS) {
+          end = at;
+          midline = false;
+        } else {
+          end = safeCut(text, upper);
+          midline = true;
+        }
+        parts.push({ start, end, line });
+        start = end;
+        line = number;
+        break;
+      }
+      at = cachedNext;
+      number++;
+      current = false;
+    }
+  } while (start < text.length);
+  return parts;
 }
 
 function safeCut(text: string, offset: number): number {
@@ -1572,51 +1686,62 @@ export function preparedPart(
   return value;
 }
 
-export function indexDocument(text: string, kind: DocumentKind): DocumentParts {
+/** Data sent across the worker boundary; readers and caches stay in this realm. */
+export type IndexData = Omit<
+  DocumentParts,
+  "partSource" | "partFallback" | "partOf"
+> & {
+  kind: DocumentKind;
+  definitionAt: Map<number, ReferenceDefinition>;
+  context: Omit<PartContext, "text" | "kind" | "definitionAt" | "prepared">;
+};
+
+export function indexData(text: string, kind: DocumentKind): IndexData {
   const index = kind === "markdown" ? indexSource(text) : undefined;
   const markdown = kind === "markdown" && !index?.plain;
-  const parts: DocumentPart[] = [],
+  const parts: DocumentPart[] = kind === "markdown" ? [] : plainParts(text),
     starts: Cursor[] = [],
     ends: Cursor[] = [];
   const definitionAt = markdown ? required(index).definitionAt : undefined;
   let cursor = initialCursor(text);
-  while (cursor.offset < text.length || !parts.length) {
-    const start = cursor;
-    if (text.length - start.offset <= PART_CHARS) {
-      while (cursor.offset < text.length)
-        cursor = nextLine(cursor, sourceLine(text, cursor, definitionAt));
-    } else {
-      const left = Math.ceil((text.length - start.offset) / PART_CHARS);
-      cursor = chooseCut(
-        text,
-        start,
-        start.offset + (text.length - start.offset) / left,
-        markdown,
-        definitionAt,
-        index?.notes,
-        index?.headings,
-      );
-      if (markdown && !cursor.current && !cursor.fence && !cursor.opaque) {
-        const offset = tableStartForCut(text, cursor.offset, start.offset);
-        if (offset !== cursor.offset)
-          cursor = {
-            ...cursor,
-            offset,
-            line: cursor.line - 1,
-            previousBlank: false,
-            paragraph: false,
-          };
+  if (kind === "markdown")
+    while (cursor.offset < text.length || !parts.length) {
+      const start = cursor;
+      if (text.length - start.offset <= PART_CHARS) {
+        while (cursor.offset < text.length)
+          cursor = nextLine(cursor, sourceLine(text, cursor, definitionAt));
+      } else {
+        const left = Math.ceil((text.length - start.offset) / PART_CHARS);
+        cursor = chooseCut(
+          text,
+          start,
+          start.offset + (text.length - start.offset) / left,
+          markdown,
+          definitionAt,
+          index?.notes,
+          index?.headings,
+        );
+        if (markdown && !cursor.current && !cursor.fence && !cursor.opaque) {
+          const offset = tableStartForCut(text, cursor.offset, start.offset);
+          if (offset !== cursor.offset)
+            cursor = {
+              ...cursor,
+              offset,
+              line: cursor.line - 1,
+              previousBlank: false,
+              paragraph: false,
+            };
+        }
       }
+      parts.push({
+        start: start.offset,
+        end: cursor.offset,
+        line: start.line,
+        ...(markdown && start.fence ? { fence: start.fence.opener } : {}),
+      });
+      starts.push(start);
+      ends.push(cursor);
     }
-    parts.push({
-      start: start.offset,
-      end: cursor.offset,
-      line: start.line,
-      ...(markdown && start.fence ? { fence: start.fence.opener } : {}),
-    });
-    starts.push(start);
-    ends.push(cursor);
-  }
   const headings = new Map<string, number>(),
     outline: PartOutlineItem[] = [];
   for (const heading of index?.headings ?? []) {
@@ -1633,16 +1758,10 @@ export function indexDocument(text: string, kind: DocumentKind): DocumentParts {
   const footnoteParts = new Map<string, number>();
   for (const [label, offset] of index?.origins ?? [])
     footnoteParts.set(label, partAt(parts, offset));
-  const anchors = new Map<string, number>(headings);
-  for (const [label, part] of footnoteParts) {
-    const safe = label.toLowerCase();
-    anchors.set(`fn-${safe}`, part);
-    anchors.set(`fnref-${safe}`, part);
-  }
-  const wordPattern = /[\p{L}\p{N}]+(?:['’_-][\p{L}\p{N}]+)*/gu;
-  let words = 0;
-  while (wordPattern.exec(text)) words++;
-  const result: DocumentParts = {
+  const words = kind === "markdown" ? wordCount(text) : 0;
+  return {
+    kind,
+    definitionAt: index?.definitions ?? new Map(),
     parts,
     outline,
     headings,
@@ -1650,6 +1769,43 @@ export function indexDocument(text: string, kind: DocumentKind): DocumentParts {
     readingMinutes: Math.max(1, Math.ceil(words / 230)),
     ...(index?.truncated ? { headingsTruncated: true } : {}),
     ...(index?.unclosed ? { unclosedFence: index.unclosed } : {}),
+    context: {
+      headings: index?.headings ?? [],
+      links: index?.links ?? new Map(),
+      footnotes: index?.footnotes ?? new Map(),
+      footnoteNumbers: index?.footnoteNumbers ?? new Map(),
+      footnoteParts,
+      notes: index?.notes ?? [],
+      starts,
+      ends,
+      plain: index?.plain ?? false,
+      blocks: markdown
+        ? markdownBlocks(
+            text,
+            parts,
+            positionedReferenceDefinitions(
+              text,
+              false,
+              required(index).definitionAt,
+            ),
+          )
+        : [],
+    },
+  };
+}
+
+export function documentParts(text: string, data: IndexData): DocumentParts {
+  const { kind, context, definitionAt, ...metadata } = data;
+  const { parts, headings } = metadata;
+  const { footnoteParts } = context;
+  const anchors = new Map<string, number>(headings);
+  for (const [label, part] of footnoteParts) {
+    const safe = label.toLowerCase();
+    anchors.set(`fn-${safe}`, part);
+    anchors.set(`fnref-${safe}`, part);
+  }
+  const result: DocumentParts = {
+    ...metadata,
     partSource(part) {
       return preparedPart(result, part).source;
     },
@@ -1707,31 +1863,16 @@ export function indexDocument(text: string, kind: DocumentKind): DocumentParts {
     },
   };
   contexts.set(result, {
-    text,
+    ...context,
     kind,
-    headings: index?.headings ?? [],
-    links: index?.links ?? new Map(),
-    footnotes: index?.footnotes ?? new Map(),
-    footnoteNumbers: index?.footnoteNumbers ?? new Map(),
-    footnoteParts,
-    notes: index?.notes ?? [],
-    starts,
-    ends,
-    plain: index?.plain ?? false,
-    blocks: markdown
-      ? markdownBlocks(
-          text,
-          parts,
-          positionedReferenceDefinitions(
-            text,
-            false,
-            required(index).definitionAt,
-          ),
-        )
-      : [],
-    definitionAt: index?.definitionAt ?? (() => undefined),
+    text,
+    definitionAt: (offset) => definitionAt.get(offset),
   });
   return result;
+}
+
+export function indexDocument(text: string, kind: DocumentKind): DocumentParts {
+  return documentParts(text, indexData(text, kind));
 }
 
 /** Apply globally indexed IDs by source offset, including reconstructed parts. */

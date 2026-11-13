@@ -68,10 +68,37 @@ function whitespace(raw: string, pos: Position, limit: number): number {
 }
 const bodyAt = (raw: string, pos: Position) =>
   " ".repeat(pos.pending) + raw.slice(pos.at);
-const blank = (raw: string, pos: Position) =>
-  /^[\t ]*$/.test(raw.slice(pos.at));
-const rule = (text: string) =>
-  /^(?:(?:\*[\t ]*){3,}|(?:-[\t ]*){3,}|(?:_[\t ]*){3,})$/.test(text);
+type Tail = {
+  blank: number;
+  first: number;
+  last: number;
+  marker: string | undefined;
+};
+function lineTail(raw: string): Tail {
+  let at = raw.length;
+  while (at > 0 && space(raw[at - 1])) at--;
+  const blank = at,
+    marker = raw[at - 1];
+  let first = at,
+    last = -1,
+    count = 0;
+  if (marker === "*" || marker === "-" || marker === "_") {
+    while (at > 0) {
+      if (raw[at - 1] === marker) {
+        first = --at;
+        if (++count === 3) last = at;
+      } else if (space(raw[at - 1])) at--;
+      else break;
+    }
+  }
+  return { blank, first, last, marker };
+}
+const blank = (pos: Position, tail: Tail) => pos.at >= tail.blank;
+const rule = (raw: string, pos: Position, tail: Tail) =>
+  !pos.pending &&
+  pos.at >= tail.first &&
+  pos.at <= tail.last &&
+  raw[pos.at] === tail.marker;
 
 /** Positions retain the unconsumed cells of a tab, rather than expanding lines. */
 function quote(raw: string, start: Position): Position | undefined {
@@ -87,6 +114,7 @@ function item(
   raw: string,
   start: Position,
   paragraph: boolean,
+  tail: Tail,
 ):
   | {
       pos: Position;
@@ -99,14 +127,14 @@ function item(
   | undefined {
   const pos = { ...start };
   whitespace(raw, pos, 3);
-  if (pos.pending || rule(raw.slice(pos.at))) return undefined;
+  if (pos.pending || rule(raw, pos, tail)) return undefined;
   const markerOffset = pos.at,
     indent = pos.column;
   const match = raw.slice(pos.at).match(/^(?:[*+-]|\d{1,9}[.)])(?=[\t ]|$)/);
   if (!match) return undefined;
   const marker = required(match[0]);
   for (let at = 0; at < marker.length; at++) advance(raw, pos);
-  const empty = blank(raw, pos);
+  const empty = blank(pos, tail);
   if (
     paragraph &&
     (empty || (/^\d/.test(marker) && marker !== "1." && marker !== "1)"))
@@ -148,17 +176,17 @@ function delimiter(
     : undefined;
 }
 
-function interrupts(raw: string, start: Position): boolean {
+function interrupts(raw: string, start: Position, tail: Tail): boolean {
   const pos = { ...start };
   whitespace(raw, pos, 3);
   const text = bodyAt(raw, pos),
     fence = delimiter(raw, start);
   return (
-    blank(raw, start) ||
+    blank(start, tail) ||
     /^(?:#{1,6}(?:[\t ]|$)|>|<!--|<\?|<!\[CDATA\[|<![A-Z])/.test(text) ||
-    rule(text) ||
+    rule(raw, pos, tail) ||
     startsBlankHtmlBlock(bodyAt(raw, start)) ||
-    !!item(raw, start, true) ||
+    !!item(raw, start, true, tail) ||
     (!!fence && (fence.marker !== "`" || !fence.tail.includes("`")))
   );
 }
@@ -167,15 +195,16 @@ function paragraphAfter(
   raw: string,
   start: Position,
   previous: boolean,
+  tail: Tail,
 ): boolean {
   const pos = { ...start },
     indent = whitespace(raw, pos, 4),
     text = bodyAt(raw, pos);
   if (
-    blank(raw, pos) ||
+    blank(pos, tail) ||
     (indent === 4 && !previous) ||
     /^(?:#{1,6}(?:[\t ]|$))/.test(text) ||
-    rule(text)
+    rule(raw, pos, tail)
   )
     return false;
   if (previous && /^(?:=+|-+)[\t ]*$/.test(text)) return false;
@@ -189,6 +218,7 @@ export function fenceLine(
   state: FenceState,
   opaque = false,
 ): FenceLine {
+  const tail = lineTail(raw);
   let pos: Position = { at: 0, column: 0, pending: 0 };
   let owners: Owner[] = [],
     nextId =
@@ -198,7 +228,7 @@ export function fenceLine(
     lazy = false,
     overflow = !!state.overflow;
   for (const owner of state.owners) {
-    const empty = blank(raw, pos);
+    const empty = blank(pos, tail);
     let next = owner.kind === "quote" ? quote(raw, pos) : { ...pos };
     if (owner.kind === "list") {
       if (empty) whitespace(raw, required(next), owner.width);
@@ -209,13 +239,13 @@ export function fenceLine(
         next = undefined;
     }
     if (!next) {
-      const sibling = owner.kind === "list" && !!item(raw, pos, false);
+      const sibling = owner.kind === "list" && !!item(raw, pos, false, tail);
       lazy =
         !state.fence &&
         !opaque &&
         paragraph &&
         !sibling &&
-        !interrupts(raw, pos);
+        !interrupts(raw, pos, tail);
       if (lazy) owners = [...state.owners];
       else paragraph = false;
       break;
@@ -238,7 +268,7 @@ export function fenceLine(
       fence &&
       fence.marker === before.marker &&
       fence.size >= before.size &&
-      /^[\t ]*$/.test(fence.tail);
+      blank(fence.pos, tail);
     return {
       before,
       beforeOwners,
@@ -260,7 +290,7 @@ export function fenceLine(
     for (;;) {
       const parent = pos.column,
         quoted = quote(raw, pos),
-        listed = quoted ? undefined : item(raw, pos, paragraph);
+        listed = quoted ? undefined : item(raw, pos, paragraph, tail);
       if (!quoted && !listed) break;
       if (owners.length >= MAX_RENDER_DEPTH) {
         overflow = true;
@@ -344,7 +374,8 @@ export function fenceLine(
     bodyPadding: pos.pending,
     after: {
       owners,
-      paragraph: !opaque && !overflow && paragraphAfter(raw, pos, paragraph),
+      paragraph:
+        !opaque && !overflow && paragraphAfter(raw, pos, paragraph, tail),
       nextId,
       overflow,
     },

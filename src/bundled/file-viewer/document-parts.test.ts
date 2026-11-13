@@ -9,6 +9,8 @@ import remarkRehype from "remark-rehype";
 import type { Root, Element } from "hast";
 import {
   indexDocument,
+  indexData,
+  documentParts,
   PART_CHARS,
   remarkPartHeadings,
   rehypePartFootnotes,
@@ -429,4 +431,31 @@ describe("bounded document parts", () => {
         .map(textOf),
     ).toEqual([text.slice(part.start, part.end)]);
   });
+});
+
+it("rebuilds the worker index with distant references and whole-file anchors", () => {
+  const source =
+    "[site] Call[^n].\n\n" +
+    "paragraph\n\n".repeat(1800) +
+    "# Late\n\n[site]: https://example.org/site\n[^n]: A distant note.\n";
+  const data = structuredClone(indexData(source, "markdown"));
+  const parts = documentParts(source, data);
+  expect(parts.outline).toEqual([
+    { depth: 1, text: "Late", id: "late", part: parts.parts.length - 1 },
+  ]);
+  expect(parts.partOf("#late")).toBe(parts.parts.length - 1);
+  const first = elements(rendered(parts, 0));
+  expect(
+    first
+      .filter((node) => node.tagName === "a")
+      .map((node) => node.properties.href),
+  ).toContain("https://example.org/site");
+  expect(textOf(rendered(parts, 0))).toContain("A distant note.");
+});
+
+it("counts Unicode Markdown words while plain files skip reading metadata", () => {
+  const source = "hello-world café 你好 123 can't a--b 𐐀𐐁\n";
+  expect(indexDocument(source, "markdown").words).toBe(8);
+  for (const kind of ["code", "text"] as const)
+    expect(indexDocument(source, kind).words).toBe(0);
 });

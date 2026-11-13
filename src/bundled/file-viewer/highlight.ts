@@ -57,6 +57,39 @@ export function highlight(text: string, language?: string): Root {
   return grammars.highlight(language, text);
 }
 
+/** The screen is linear even for one unbroken source line. */
+function longToken(text: string): boolean {
+  let run = 0;
+  for (let at = 0; at < text.length; at++) {
+    const code = text.charCodeAt(at);
+    if (
+      (code >= 48 && code <= 57) ||
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      code === 95 ||
+      code === 36 ||
+      code === 46 ||
+      code === 45
+    ) {
+      if (++run > 1000) return true;
+    } else run = 0;
+  }
+  return false;
+}
+
+/** One owner per document. Once a call exceeds 50 ms, later parts stay plain. */
+export function boundedHighlight(source = ""): typeof highlight {
+  let stopped = longToken(source);
+  return (text, language) => {
+    if (stopped || longToken(text))
+      return { type: "root", children: [{ type: "text", value: text }] };
+    const start = performance.now();
+    const result = highlight(text, language);
+    if (performance.now() - start > 50) stopped = true;
+    return result;
+  };
+}
+
 const languages: Readonly<Record<string, string>> = {
   json: "json",
   jsonl: "json",
@@ -103,7 +136,10 @@ export function languageFor(name: string): string | undefined {
   return Object.hasOwn(languages, extension) ? languages[extension] : undefined;
 }
 
-export const rehypeHighlight: Plugin<[], Root> = () => (tree) => {
+export const rehypeHighlight: Plugin<
+  [{ highlight?: typeof highlight }?],
+  Root
+> = (options) => (tree) => {
   const stack: (Root | Element)[] = [tree];
   while (stack.length) {
     const parent = stack.pop();
@@ -124,7 +160,7 @@ export const rehypeHighlight: Plugin<[], Root> = () => (tree) => {
           .filter((node) => node.type === "text")
           .map((node) => node.value)
           .join("");
-        child.children = highlight(
+        child.children = (options?.highlight ?? highlight)(
           text,
           String(language).slice(9),
         ).children.filter((node) => node.type !== "doctype");
