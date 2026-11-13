@@ -7752,17 +7752,17 @@ it("keeps custom emoji text readable and sends repeated shortcodes unchanged", (
   act(() => {
     expect(h.commands().insertText(":party:")).toBe(true);
   });
-  expect(h.input()).toHaveValue(":party:");
+  expect(h.input()).toHaveValue(":party: ");
   expect(h.input()).toHaveAttribute("data-single-emoji", "true");
   act(() => {
     expect(h.commands().insertText(":party:")).toBe(true);
   });
-  expect(h.input()).toHaveValue(":party::party:");
+  expect(h.input()).toHaveValue(":party: :party: ");
   expect(h.input().querySelectorAll("img[alt=':party:']")).toHaveLength(2);
   h.submit();
   expect(h.messages.send).toHaveBeenCalledExactlyOnceWith(
     "channel",
-    ":party::party:",
+    ":party: :party: ",
     [],
     [],
   );
@@ -7835,13 +7835,13 @@ const colon = (input: ComposerInputElement) =>
   fireEvent.keyDown(input, { key: ":", shiftKey: true });
 
 it.each([
-  ["hello :-1", "hello 👎"],
-  [":+1", "👍"],
-  ["say :SMILE", "say 😄"],
+  ["hello :-1", "hello 👎 "],
+  [":+1", "👍 "],
+  ["say :SMILE", "say 😄 "],
   // The second shortcode may follow a converted emoji with no space between them.
-  ["😄:wave", "😄👋"],
+  ["😄:wave", "😄👋 "],
 ])(
-  "replaces an exact shortcode with its emoji on the closing colon: %s",
+  "replaces an exact shortcode with its emoji and a space on the closing colon: %s",
   async (typed, expected) => {
     const h = mountEmojiTypeahead();
     h.fill(typed);
@@ -7879,7 +7879,7 @@ it.each([{ altKey: true }, { altKey: true, shiftKey: true }])(
     expect(fireEvent.keyDown(h.input(), { key: ":", ...keys })).toBe(true);
     expect(h.input()).toHaveValue("hello :-1");
     expect(colon(h.input())).toBe(false);
-    expect(h.input()).toHaveValue("hello 👎");
+    expect(h.input()).toHaveValue("hello 👎 ");
   },
 );
 
@@ -7924,7 +7924,7 @@ it("waits for the community catalog before authorizing a Unicode replacement", a
   h.setEmoji([]);
   await screen.findByRole("option", { name: ":smile:" });
   expect(colon(h.input())).toBe(false);
-  expect(h.input()).toHaveValue("😄");
+  expect(h.input()).toHaveValue("😄 ");
 });
 
 it("keeps Unicode suggestions and retry without replacement after a community failure", async () => {
@@ -7962,7 +7962,7 @@ it("keeps custom suggestions and retry without replacement after a Unicode failu
     ).toBeNull(),
   );
   expect(colon(h.input())).toBe(false);
-  expect(h.input()).toHaveValue(":party:");
+  expect(h.input()).toHaveValue(":party: ");
 });
 
 it.each([
@@ -7983,20 +7983,153 @@ it.each([
   },
 );
 
+it("types on after a custom shortcode as a separate word", async () => {
+  const h = mountEmojiTypeahead();
+  h.setEmoji([{ shortcode: "party", url: "https://emoji.test/party.png" }]);
+  h.fill("go :party");
+  await screen.findByRole("option", { name: ":party:" });
+  expect(colon(h.input())).toBe(false);
+  expect(h.input()).toHaveValue("go :party: ");
+  await h.user.keyboard("hi");
+  expect(h.input()).toHaveValue("go :party: hi");
+});
+
+it.each([
+  [
+    "Tab",
+    (h: ReturnType<typeof mountEmojiTypeahead>) =>
+      fireEvent.keyDown(h.input(), { key: "Tab" }),
+  ],
+  [
+    "Enter",
+    (h: ReturnType<typeof mountEmojiTypeahead>) =>
+      fireEvent.keyDown(h.input(), { key: "Enter" }),
+  ],
+  [
+    "click",
+    (h: ReturnType<typeof mountEmojiTypeahead>) =>
+      h.user.click(screen.getByRole("option", { name: ":smile:" })),
+  ],
+])("adds a space after an emoji chosen by %s", async (_, choose) => {
+  const h = mountEmojiTypeahead();
+  h.fill("say :smil");
+  await screen.findByRole("option", { name: ":smile:" });
+  await act(async () => {
+    await choose(h);
+  });
+  expect(h.input()).toHaveValue("say 😄 ");
+  await h.user.keyboard("hi");
+  expect(h.input()).toHaveValue("say 😄 hi");
+});
+
+it.each([
+  // Text after the caret keeps its place; the caret follows the new space.
+  ["a :-1b", 5, "a 👎 b", 5],
+  // An existing space or tab is reused; the caret moves past it.
+  ["a :-1 b", 5, "a 👎 b", 5],
+  ["a :-1\tb", 5, "a 👎\tb", 5],
+  // A line break is not a word separator on the same line.
+  ["a :-1\nb", 5, "a 👎 \nb", 5],
+])(
+  "spaces an emoji completed within text: %j",
+  async (text, caret, expected, after) => {
+    const h = mountEmojiTypeahead();
+    h.fill(text);
+    act(() => h.input().setSelectionRange(caret, caret));
+    fireEvent(document, new Event("selectionchange"));
+    await screen.findByRole("option", { name: ":-1:" });
+    expect(colon(h.input())).toBe(false);
+    expect(h.input()).toHaveValue(expected);
+    expect([h.input().selectionStart, h.input().selectionEnd]).toEqual([
+      after,
+      after,
+    ]);
+    await h.user.keyboard("hi");
+    expect(h.input()).toHaveValue(
+      `${expected.slice(0, after)}hi${expected.slice(after)}`,
+    );
+  },
+);
+
+it("keeps the caret after a typed colon whose conversion exceeds the limit", async () => {
+  const h = mountEmojiTypeahead();
+  // The flag is two units longer than its shortcode: the colon fits, the
+  // conversion does not.
+  const typed = `${"x".repeat(15999 - 14)} :flag-wales `;
+  h.fill(typed);
+  const caret = typed.length - 1;
+  act(() => h.input().setSelectionRange(caret, caret));
+  fireEvent(document, new Event("selectionchange"));
+  await screen.findByRole("option", { name: ":flag-wales:" });
+  expect(colon(h.input())).toBe(false);
+  expect(h.input()).toHaveValue(`${typed.slice(0, caret)}: `);
+  expect([h.input().selectionStart, h.input().selectionEnd]).toEqual([
+    caret + 1,
+    caret + 1,
+  ]);
+});
+
+it("undoes an emoji completed before an existing space in one step", async () => {
+  const h = mountEmojiTypeahead();
+  h.fill("a :-1 b");
+  act(() => h.input().setSelectionRange(5, 5));
+  fireEvent(document, new Event("selectionchange"));
+  await screen.findByRole("option", { name: ":-1:" });
+  expect(colon(h.input())).toBe(false);
+  expect(h.input()).toHaveValue("a 👎 b");
+  act(() => h.input().undo(false));
+  expect(h.input()).toHaveValue("a :-1: b");
+  expect([h.input().selectionStart, h.input().selectionEnd]).toEqual([6, 6]);
+  act(() => h.input().undo(true));
+  expect(h.input()).toHaveValue("a 👎 b");
+});
+
+it.each([
+  ["ab", 1, 1, "😀", "a😀 b", 4],
+  ["a b", 1, 1, "😀", "a😀 b", 4],
+  ["a\tb", 1, 1, "😀", "a😀\tb", 4],
+  // A replaced selection reuses the space after it.
+  ["ax b", 1, 2, "😀", "a😀 b", 4],
+  ["ab", 1, 1, ":party:", "a:party: b", 9],
+  // Other tool text is inserted exactly as given.
+  ["ab", 1, 1, "x", "axb", 2],
+])(
+  "spaces emoji a composer tool inserts: %j",
+  async (text, start, end, inserted, expected, after) => {
+    const h = mount();
+    h.setEmoji([{ shortcode: "party", url: "https://emoji.test/party.png" }]);
+    h.fill(text);
+    act(() => h.input().setSelectionRange(start, end));
+    act(() => {
+      expect(h.commands().insertText(inserted)).toBe(true);
+    });
+    expect(h.input()).toHaveValue(expected);
+    expect([h.input().selectionStart, h.input().selectionEnd]).toEqual([
+      after,
+      after,
+    ]);
+    await h.user.keyboard("hi");
+    expect(h.input()).toHaveValue(
+      `${expected.slice(0, after)}hi${expected.slice(after)}`,
+    );
+  },
+);
+
 it("restores the typed colon and collapsed caret with one undo, and isolates subsequent typing", async () => {
   const h = mountEmojiTypeahead();
   h.fill("hello :-1");
   await screen.findByRole("option", { name: ":-1:" });
   expect(colon(h.input())).toBe(false);
-  expect(h.input()).toHaveValue("hello 👎");
+  expect(h.input()).toHaveValue("hello 👎 ");
   act(() => h.input().undo(false));
   expect(h.input()).toHaveValue("hello :-1:");
   expect([h.input().selectionStart, h.input().selectionEnd]).toEqual([10, 10]);
   act(() => h.input().undo(true));
-  expect(h.input()).toHaveValue("hello 👎");
+  expect(h.input()).toHaveValue("hello 👎 ");
   await h.user.type(h.input(), "!");
+  expect(h.input()).toHaveValue("hello 👎 !");
   act(() => h.input().undo(false));
-  expect(h.input()).toHaveValue("hello 👎");
+  expect(h.input()).toHaveValue("hello 👎 ");
   act(() => h.input().undo(false));
   expect(h.input()).toHaveValue("hello :-1:");
 });

@@ -47,7 +47,9 @@ export type ComposerToolProps = Readonly<{
         toggle(recipient: Readonly<{ pubkey: string; name: string }>): void;
       }>
     | undefined;
-  /** False after removal, destination change, read-only state or a rejected edit. */
+  /** Insert text at the caret. Emoji-only text is followed by a space unless a
+   * space or tab already follows, which the caret then moves past. False after
+   * removal, destination change, read-only state or a rejected edit. */
   insertText(text: string): boolean;
   /** Atomically insert display text and explicit notification intent at the caret.
    * Prose never resolves to identities. Membership is checked by session delivery.

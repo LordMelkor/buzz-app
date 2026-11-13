@@ -691,7 +691,8 @@ and are asked to sign in again in Buzz.
   promise support for every file type or size.
 - **Emoji suggestions** appear when you type `:` and an emoji name. If a name
   is shortened with an ellipsis, hover over it or use the arrow keys to select
-  it and see the full name in a tooltip.
+  it and see the full name in a tooltip. A chosen or picked emoji is followed
+  by a space, unless one already follows, so you can keep typing.
 - **Reminder counts** show how many reminders are due in a small capsule on the
   app tile's corner. It shows `99+` above 99; its accessible label keeps the
   exact count.

@@ -819,7 +819,7 @@ test("community picker uses keyboard, proxy thumbnails, event-local history and 
     }
     await search.fill("aonly");
     await search.press("Enter");
-    await expect(draft()).toHaveJSProperty("value", ":aonly:");
+    await expect(draft()).toHaveJSProperty("value", ":aonly: ");
     await picker.click();
     await search.fill("");
     await expect(
@@ -832,14 +832,29 @@ test("community picker uses keyboard, proxy thumbnails, event-local history and 
       page.getByRole("button", { name: ":grinning:", exact: true }),
     ).toBeVisible();
     await page.getByRole("button", { name: "😀", exact: true }).click();
-    await expect(draft()).toHaveJSProperty("value", ":aonly:😀");
+    await expect(draft()).toHaveJSProperty("value", ":aonly: 😀 ");
+    // An existing space is reused; typing continues after it.
+    await draft().fill("before after");
+    await draft().evaluate((el) => el.setSelectionRange(6, 6));
+    await picker.press("Enter");
+    await search.focus();
+    await search.fill("grinning");
+    await page.getByRole("button", { name: "😀", exact: true }).click();
+    await expect(draft()).toHaveJSProperty("value", "before😀 after");
+    await expect(draft()).toBeFocused();
+    await expect(draft()).toHaveJSProperty(
+      "selectionStart",
+      "before😀 ".length,
+    );
+    await draft().pressSequentially("hi ");
+    await expect(draft()).toHaveJSProperty("value", "before😀 hi after");
     await draft().fill("before after");
     await draft().evaluate((el) => el.setSelectionRange(7, 7));
     await picker.press("Enter");
     await search.focus();
     await search.fill("party");
     await search.press("Enter");
-    await expect(draft()).toHaveJSProperty("value", "before :party:after");
+    await expect(draft()).toHaveJSProperty("value", "before :party: after");
     await expect(draft()).toBeFocused();
     await draft().press("Enter");
     await expect
@@ -887,7 +902,7 @@ test("community picker uses keyboard, proxy thumbnails, event-local history and 
       /emoji-media\/b\/.*1.png/,
     );
     await insert.click();
-    await expect(draft()).toHaveJSProperty("value", ":party:");
+    await expect(draft()).toHaveJSProperty("value", ":party: ");
     await expect(draft()).toBeFocused();
     await draft().press("Enter");
     await expect
@@ -899,7 +914,7 @@ test("community picker uses keyboard, proxy thumbnails, event-local history and 
     await picker.click();
     await search.fill("party");
     await insert.click();
-    await expect(draft()).toHaveJSProperty("value", ":party:");
+    await expect(draft()).toHaveJSProperty("value", ":party: ");
     await expect(draft()).toBeFocused();
     await draft().press("Enter");
     await expect
@@ -942,7 +957,7 @@ test("community picker uses keyboard, proxy thumbnails, event-local history and 
     ).toHaveCount(1);
     await search.fill("grinning");
     await page.getByRole("button", { name: "😀", exact: true }).click();
-    await expect(draft()).toHaveJSProperty("value", "😀A draft");
+    await expect(draft()).toHaveJSProperty("value", "😀 A draft");
     // The shared popup retains its contents through its exit transition.
     // Finish that lifecycle before inspecting the separate composer error.
     await expect(region).toHaveCount(0);
