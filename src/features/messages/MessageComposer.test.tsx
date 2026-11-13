@@ -9748,9 +9748,9 @@ it.each([
   },
 );
 
-it.each(["cancel", "accepted"])(
+it.each(["cancel", "submitted"])(
   "restores rich draft history and mention provenance after an edit is %s",
-  (finish) => {
+  async (finish) => {
     const h = mount({}, undefined, first.pubkey);
     h.setRows([editableMessage()]);
     act(() => h.commands().insertMention(second));
@@ -9768,7 +9768,9 @@ it.each(["cancel", "accepted"])(
     if (finish === "cancel") fireEvent.keyDown(h.input(), { key: "Escape" });
     else {
       h.submit();
-      h.setDelivery("accepted");
+      await waitFor(() =>
+        expect(screen.queryByText("Editing message")).not.toBeInTheDocument(),
+      );
     }
     act(() => h.input().undo(false));
     expect(h.input().innerHTML).toBe(formatted);
@@ -9868,7 +9870,7 @@ it("saves an edited fenced message on Enter instead of opening a block from its 
   expect(h.messages.send).not.toHaveBeenCalled();
 });
 
-it("saves only once, locks until delivery, and restores the new-message composer on acceptance", () => {
+it("saves only once and restores the new-message composer without waiting for delivery", async () => {
   const h = mount({}, undefined, first.pubkey);
   const row = editableMessage();
   h.setRows([row]);
@@ -9886,8 +9888,10 @@ it("saves only once, locks until delivery, and restores the new-message composer
   expect(h.messages.send).not.toHaveBeenCalled();
   expect(h.input()).toHaveAttribute("contenteditable", "false");
   expect(screen.getByRole("button", { name: "Close edit" })).toBeDisabled();
-  h.setDelivery("accepted");
-  expect(screen.queryByText("Editing message")).not.toBeInTheDocument();
+  // The row shows the edit already; the editor closes a frame later.
+  await waitFor(() =>
+    expect(screen.queryByText("Editing message")).not.toBeInTheDocument(),
+  );
   expect(h.input()).toHaveValue("");
   expect(h.input()).toHaveFocus();
   expect(h.onSend).not.toHaveBeenCalled();
@@ -9895,12 +9899,13 @@ it("saves only once, locks until delivery, and restores the new-message composer
 
 it.each(["failed", "unknown"] as const)(
   "keeps a %s edit and retries the same operation, not a new message",
-  (delivery) => {
+  async (delivery) => {
     const h = mount({}, undefined, first.pubkey);
     h.setRows([editableMessage()]);
     fireEvent.keyDown(h.input(), { key: "ArrowUp" });
     h.fill("Revised");
     h.submit();
+    // A failure before the editor closes keeps it open with Retry.
     h.setDelivery(delivery);
     expect(h.input()).toHaveValue("Revised");
     expect(h.input()).toHaveAttribute("contenteditable", "false");
@@ -9908,7 +9913,7 @@ it.each(["failed", "unknown"] as const)(
     expect(h.session.outbox?.retry).toHaveBeenCalledExactlyOnceWith("edit-id");
     expect(h.messages.edit).toHaveBeenCalledTimes(1);
     h.setDelivery("seen");
-    expect(h.input()).toHaveValue("");
+    await waitFor(() => expect(h.input()).toHaveValue(""));
   },
 );
 
