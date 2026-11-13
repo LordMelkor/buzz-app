@@ -708,7 +708,7 @@ it("keeps the copy in use when a new release fails its test", async () => {
 
 it("says why a new release quit during its test", async () => {
   const { spawn, request, state } = releases("2.1.300", {
-    current: "2.1.200",
+    current: "2.1.280",
     quits: {
       version: "2.1.300",
       stderr: "Starting Claude\nError: bypassPermissions is disabled\n",
@@ -719,8 +719,8 @@ it("says why a new release quit during its test", async () => {
   expect(state.used).toEqual([]);
   expect(setup.snapshot()).toMatchObject({
     notice:
-      "Claude 2.1.300 failed its test: Error: bypassPermissions is disabled. Buzz keeps using 2.1.200.",
-    status: { state: "ready", version: "2.1.200" },
+      "Claude 2.1.300 failed its test: Error: bypassPermissions is disabled. Buzz keeps using 2.1.280.",
+    status: { state: "ready", version: "2.1.280" },
   });
 });
 
