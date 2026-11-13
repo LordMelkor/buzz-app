@@ -367,8 +367,11 @@ test("reads a long file in parts, and jumps into one not yet shown without movin
   const here = outline.getByRole("button", { name: "Section 45", exact: true });
   await expect(here).toHaveAttribute("aria-current", "location");
   await expect(here).toBeInViewport();
-  // The keyboard reaches rows that aren't drawn.
+  // The keyboard reaches rows that aren't drawn. A key with a modifier is
+  // left to the browser.
   await here.focus();
+  await page.keyboard.press("Shift+End");
+  await expect(here).toBeFocused();
   await page.keyboard.press("End");
   await expect(
     outline.getByRole("button", { name: `Section ${SECTIONS}`, exact: true }),
