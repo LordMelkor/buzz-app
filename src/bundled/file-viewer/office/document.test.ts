@@ -395,15 +395,15 @@ describe("rich document reader", () => {
   // These cases distinguish style toggles from absolute direct formatting;
   // ordinary hidden-origin coverage alone cannot detect the lost visible text.
   it.each([
-    { paragraph: "PDouble", character: "", visible: true },
-    { paragraph: "", character: "CDouble", visible: true },
+    { paragraph: "PDouble", character: "", visible: false },
+    { paragraph: "", character: "CDouble", visible: false },
     { paragraph: "PBase", character: "CBase", visible: true },
-    { paragraph: "PFalse", character: "", visible: false },
-    { paragraph: "", character: "CFalse", visible: false },
+    { paragraph: "PFalse", character: "", visible: true },
+    { paragraph: "", character: "CFalse", visible: true },
     { paragraph: "PBase", character: "", direct: "false", visible: true },
     { paragraph: "", character: "CDouble", direct: "true", visible: false },
-    { defaults: true, paragraph: "PBase", character: "", visible: true },
-    { defaults: true, paragraph: "", character: "CBase", visible: true },
+    { defaults: true, paragraph: "PBase", character: "", visible: false },
+    { defaults: true, paragraph: "", character: "CBase", visible: false },
   ])(
     "composes Word vanish styles $paragraph/$character with defaults=$defaults and direct=$direct",
     async ({ paragraph, character, direct, defaults, visible }) => {
@@ -449,6 +449,44 @@ describe("rich document reader", () => {
       "Nested",
     ]);
     expect(elements(doc.parsed.tree, "ul")).toHaveLength(2);
+  });
+
+  it("keeps a restart from a hidden ODT item for following visible items", async () => {
+    const item = (value: string, hidden = false) =>
+      `<text:list-item${hidden ? ' text:start-value="7"' : ""}><text:p${hidden ? ' text:style-name="Hidden"' : ""}>${value}</text:p></text:list-item>`;
+    const doc = await read(
+      odf(
+        '<text:list text:style-name="L" xml:id="first">' +
+          item("One") +
+          item("HIDDEN", true) +
+          item("Seven") +
+          item("Eight") +
+          '</text:list><text:list text:style-name="L" text:continue-list="first">' +
+          item("Nine") +
+          "</text:list>",
+        '<text:list-style style:name="L"><text:list-level-style-number text:level="1"/></text:list-style><style:style style:name="Hidden" style:family="paragraph"><style:text-properties text:display="none"/></style:style>',
+      ),
+      "odt",
+    );
+    const numbered = elements(doc.parsed.tree, "ol").flatMap((list) => {
+      let number = Number(list.properties.start ?? 1);
+      return list.children
+        .filter(
+          (node): node is HastElement =>
+            node.type === "element" && node.tagName === "li",
+        )
+        .map((entry) => {
+          if (entry.properties.value !== undefined)
+            number = Number(entry.properties.value);
+          return [string(entry), number++];
+        });
+    });
+    expect(numbered).toEqual([
+      ["One", 1],
+      ["Seven", 7],
+      ["Eight", 8],
+      ["Nine", 9],
+    ]);
   });
 
   it("applies an ODT hyperlink's own inherited text style", async () => {
