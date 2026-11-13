@@ -201,6 +201,10 @@ const NOTES_WAIT_MS = 2_000;
 export class ClaudeRuntime {
   mcp: HarnessMcpKit | undefined;
   private readonly mcpRows = new Map<AgentKey, readonly HarnessMcpServer[]>();
+  private readonly inspections = new Map<
+    AbortController,
+    { agent: AgentKey; done: Promise<unknown> }
+  >();
   private mcpWarm = 0;
   private disposed = false;
   private readonly confirmedRemote = new Set<AgentKey>();
@@ -313,16 +317,36 @@ export class ClaudeRuntime {
       ),
     };
   }
-  async inspectMcp(
+  inspectMcp(
     agent: Agent,
     server: string,
     signal = AbortSignal.timeout(15_000),
   ) {
+    if (this.disposed || this.retirements.has(agent.key))
+      return Promise.reject(
+        new Error(this.disposed ? "Claude was stopped" : "Claude is retired"),
+      );
+    const abort = new AbortController();
+    const lifetime = AbortSignal.any([abort.signal, signal]);
+    // Register before configuration or spawning can yield to retirement.
+    const done = Promise.resolve()
+      .then(() => this.inspectTools(agent, server, lifetime))
+      .finally(() => this.inspections.delete(abort));
+    this.inspections.set(abort, { agent: agent.key, done });
+    return done;
+  }
+  private async inspectTools(
+    agent: Agent,
+    server: string,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
     const report = await this.harnessMcp(agent);
+    signal.throwIfAborted();
     if (agent.protection || !report?.servers.some((row) => row.name === server))
       throw new Error("This agent cannot inspect that MCP server");
     let process: ClaudeProcess | undefined;
-    const abort = () => void process?.kill();
+    const abort = () => void process?.kill().catch(() => undefined);
     signal.addEventListener("abort", abort, { once: true });
     try {
       signal.throwIfAborted();
@@ -357,8 +381,11 @@ export class ClaudeRuntime {
     } finally {
       signal.removeEventListener("abort", abort);
       if (process) {
-        await process.kill();
-        await process.exited;
+        try {
+          await process.kill();
+        } finally {
+          await process.exited;
+        }
       }
     }
   }
@@ -542,14 +569,20 @@ export class ClaudeRuntime {
       retiring = (async () => {
         const entry = this.agents.get(pubkey);
         this.agents.delete(pubkey);
+        const inspections = [...this.inspections].filter(
+          ([, action]) => action.agent === pubkey,
+        );
+        for (const [abort] of inspections)
+          abort.abort(new Error("Claude is retired"));
         for (const pending of this.opening.values())
           if (pending.agent === pubkey)
             pending.abort.abort(new Error("Claude is retired"));
-        await Promise.allSettled(
-          [...this.opening.values()]
+        await Promise.allSettled([
+          ...inspections.map(([, action]) => action.done),
+          ...[...this.opening.values()]
             .filter((item) => item.agent === pubkey)
             .map((item) => item.ready),
-        );
+        ]);
         await entry?.sessions.shutdown();
         const cleaned = await Promise.allSettled(
           [...this.remote]
@@ -1020,6 +1053,9 @@ export class ClaudeRuntime {
 
   dispose() {
     this.disposed = true;
+    const inspections = [...this.inspections];
+    for (const [abort] of inspections)
+      abort.abort(new Error("Claude was stopped"));
     for (const pending of this.opening.values())
       pending.abort.abort(new Error("Claude was stopped"));
     for (const held of this.remote.values()) {
@@ -1033,6 +1069,9 @@ export class ClaudeRuntime {
     this.spare.dispose();
     for (const entry of this.agents.values()) entry.sessions.dispose();
     this.agents.clear();
+    return Promise.allSettled(
+      inspections.map(([, action]) => action.done),
+    ).then(() => undefined);
   }
 
   async run(delivery: Delivery): Promise<void> {
@@ -1421,7 +1460,9 @@ export class ClaudeRuntime {
     if (refused) return { ok: false, error: refused };
     // Its new process launches on the core memory read now.
     entry.memory = await this.core(agent.key);
-    const done = entry.sessions.runOnce(key, prompt, signal);
+    const done = entry.sessions.runOnce(key, prompt, signal, () => ({
+      trigger: delivery.trigger,
+    }));
     this.notify();
     return done.finally(() => this.notify());
   }

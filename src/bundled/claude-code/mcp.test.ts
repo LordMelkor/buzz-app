@@ -18,6 +18,7 @@ function native(
   admitted = ["read_echo"],
   catalog: Record<string, string[]> = {},
   context?: { name: string; serverName: string }[],
+  beforeStatus?: () => Promise<void>,
 ) {
   const fake = fakeSpawn();
   const spawn: Spawn = async (id, options) => {
@@ -30,6 +31,7 @@ function native(
         const subtype = message.request?.subtype;
         if (subtype !== "mcp_status" && subtype !== "get_context_usage")
           return process.write(data);
+        if (subtype === "mcp_status") await beforeStatus?.();
         running?.received.push(message);
         running?.emit({
           type: "control_response",
@@ -409,7 +411,7 @@ it("keeps a session-only server and its last tools in the report after a later s
 it("keeps earlier inspected names when a later inspection lists only its selected server", async () => {
   const names = ["alpha"];
   const f = native(names);
-  let definitions = { mcpServers: { alpha: {}, beta: {} } };
+  let definitions = { mcpServers: { alpha: {}, beta: {}, buzz: {} } };
   const runtime = new ClaudeRuntime(
     {
       spawn: f.spawn,
@@ -424,6 +426,12 @@ it("keeps earlier inspected names when a later inspection lists only its selecte
   );
   try {
     await runtime.inspectMcp(agent, "alpha");
+    const args = f.processes[0]?.options.args ?? [];
+    expect(
+      JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}"),
+    ).toMatchObject({
+      deniedMcpServers: [{ serverName: "beta" }, { serverName: "buzz" }],
+    });
     names[0] = "beta";
     await runtime.inspectMcp(agent, "beta");
     definitions = { mcpServers: {} } as typeof definitions;
@@ -436,6 +444,117 @@ it("keeps earlier inspected names when a later inspection lists only its selecte
     ).toBe(true);
   } finally {
     runtime.dispose();
+  }
+});
+
+it.each(["retire", "dispose"] as const)(
+  "does not start an inspection after %s while its configuration is pending",
+  async (stop) => {
+    let read!: () => void;
+    let resume!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      read = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const f = native();
+    const runtime = new ClaudeRuntime(
+      {
+        spawn: f.spawn,
+        readFile: async (path) => {
+          if (path === "~/.claude.json") {
+            read();
+            await release;
+          }
+          return new TextEncoder().encode(
+            JSON.stringify(
+              path === "~/.claude.json" ? { mcpServers: { alpha: {} } } : {},
+            ),
+          );
+        },
+      },
+      () => undefined,
+      async () => undefined,
+      localStore(),
+    );
+    const inspection = runtime.inspectMcp(agent, "alpha").then(
+      (tools) => ({ tools }),
+      (error) => ({ error }),
+    );
+    let stopping: Promise<unknown> | undefined;
+    try {
+      await reading;
+      stopping =
+        stop === "retire" ? runtime.retire(agent.key) : runtime.dispose();
+      resume();
+      await expect(inspection).resolves.toMatchObject({
+        error: expect.objectContaining({
+          message:
+            stop === "retire" ? "Claude is retired" : "Claude was stopped",
+        }),
+      });
+      await stopping;
+      expect(f.processes).toHaveLength(0);
+    } finally {
+      resume();
+      await inspection;
+      await stopping;
+      await runtime.dispose();
+    }
+  },
+);
+
+it("retires a live inspection only after its native process has exited", async () => {
+  let read!: () => void;
+  let resume!: () => void;
+  const reading = new Promise<void>((resolve) => {
+    read = resolve;
+  });
+  const release = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const f = native(["alpha"], ["read_echo"], {}, undefined, async () => {
+    read();
+    await release;
+  });
+  const runtime = new ClaudeRuntime(
+    {
+      spawn: f.spawn,
+      readFile: async (path) =>
+        new TextEncoder().encode(
+          JSON.stringify(
+            path === "~/.claude.json" ? { mcpServers: { alpha: {} } } : {},
+          ),
+        ),
+    },
+    () => undefined,
+    async () => undefined,
+    localStore(),
+  );
+  const inspection = runtime.inspectMcp(agent, "alpha").catch((error) => error);
+  let stopping: Promise<void> | undefined;
+  let retired = false;
+  try {
+    await reading;
+    const process = f.processes[0];
+    if (!process) throw new Error("The inspection did not spawn");
+    process.exitOnKill = false;
+    stopping = runtime.retire(agent.key).then(() => {
+      retired = true;
+    });
+    await vi.waitFor(() => expect(process.killed).toBe(true));
+    expect(retired).toBe(false);
+    resume();
+    process.exit(0);
+    await stopping;
+    expect(retired).toBe(true);
+  } finally {
+    resume();
+    f.processes[0]?.exit(0);
+    await inspection;
+    await stopping;
+    await runtime.dispose();
   }
 });
 
@@ -527,25 +646,28 @@ it("verifies admitted tools rather than the catalog and retains every configured
   await process.kill();
 });
 
-it("stops and awaits an inspection that reports another server before exposing tools", async () => {
-  const f = native(["alpha", "unexpected"]);
-  await expect(
-    ClaudeProcess.start(f.spawn, {
-      cwd: "/work",
-      systemPrompt: "",
-      mcp: { ...settings(), inspect: "alpha" },
-    }),
-  ).rejects.toThrow("unexpected MCP server");
-  expect(f.processes[0]?.killed).toBe(true);
-  expect(
-    f.processes[0]?.received.some(
-      (message) =>
-        (message.request as { subtype?: string })?.subtype ===
-        "get_context_usage",
-    ),
-  ).toBe(false);
-  expect(f.processes[0]?.prompts).toEqual([]);
-});
+it.each(["unexpected", "buzz"])(
+  "stops and awaits an inspection that reports %s before exposing tools",
+  async (unexpected) => {
+    const f = native(["alpha", unexpected]);
+    await expect(
+      ClaudeProcess.start(f.spawn, {
+        cwd: "/work",
+        systemPrompt: "",
+        mcp: { ...settings(), inspect: "alpha" },
+      }),
+    ).rejects.toThrow("unexpected MCP server");
+    expect(f.processes[0]?.killed).toBe(true);
+    expect(
+      f.processes[0]?.received.some(
+        (message) =>
+          (message.request as { subtype?: string })?.subtype ===
+          "get_context_usage",
+      ),
+    ).toBe(false);
+    expect(f.processes[0]?.prompts).toEqual([]);
+  },
+);
 
 it("never prompts after core rejects readback, and strict-none keeps the SDK server out of the listing", async () => {
   const f = native();

@@ -442,6 +442,7 @@ export class AgentSessions {
     label: string,
     prompt: () => string | undefined | Promise<string | undefined>,
     signal?: AbortSignal,
+    admitting?: ActivityReceipt["admitting"],
   ): Promise<Settled> {
     if (this.disposed) return { ok: false, error: "Claude was stopped" };
     if (signal?.aborted) return { ok: false, error: message(signal.reason) };
@@ -467,7 +468,10 @@ export class AgentSessions {
       this.once.set(key, live);
       const text = await abortable(Promise.resolve(prompt()), signal);
       if (text === undefined || this.disposed) return { ok: true };
-      return await abortable(live.process.send(text), signal);
+      return await abortable(
+        live.process.send(text, admitting ? { admitting } : undefined),
+        signal,
+      );
     } catch (error) {
       if (signal?.aborted) return { ok: false, error: message(signal.reason) };
       console.warn("Claude could not start a one-off session", error);
