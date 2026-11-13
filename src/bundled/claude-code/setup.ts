@@ -27,6 +27,10 @@ export type ClaudeStatus =
   | Readonly<{ state: "error"; message: string }>;
 
 const CHECK_TIMEOUT_MS = 15_000;
+/** Claude lists the models its account's flags allow, and refreshes those
+ * flags after it starts, so a list can predate a model's rollout: a picker
+ * looks for it again once it is this old. */
+const MODELS_STALE_MS = 60 * 60_000;
 export type Request = (input: HostRequest) => Promise<HostResponse>;
 
 /** Where Anthropic publishes each release with its checksums. */
@@ -246,7 +250,8 @@ export class ClaudeSetup {
   private modelRequest: AbortController | undefined;
   private modelWork: Promise<void> | undefined;
   private cataloging: Promise<SetupState["models"]> | undefined;
-  private modelsLoaded = false;
+  /** When the last discovery ended; undefined until one has. */
+  private modelsLoadedAt: number | undefined;
   /** Cancel was asked for before the running step's process was returned. */
   private cancelled = false;
   /** Releases that failed their test, not downloaded again until restart. */
@@ -320,7 +325,7 @@ export class ClaudeSetup {
     if (invalidate) {
       this.modelRequest?.abort();
       this.modelRequest = undefined;
-      this.modelsLoaded = false;
+      this.modelsLoadedAt = undefined;
     }
     this.set({
       status,
@@ -331,47 +336,64 @@ export class ClaudeSetup {
     });
   }
 
-  /** Loads optional model copy only for surfaces that display the catalog.
-   * Callers during a load wait for it. */
+  /** Loads optional model copy only for surfaces that display the catalog,
+   * and again once it is stale. Callers during a load wait for it. */
   loadModels(retry = false) {
     if (this.modelRequest) return this.modelWork;
+    const loadedAt = this.modelsLoadedAt;
     if (
       !this.spawn ||
       this.state.status?.state !== "ready" ||
       this.state.checking ||
-      (this.modelsLoaded && !retry)
+      (loadedAt !== undefined &&
+        !retry &&
+        Date.now() - loadedAt < MODELS_STALE_MS)
     )
       return Promise.resolve();
+    // Refreshing a list it has keeps that list usable, failure included.
+    const quiet = !retry && this.state.models.length > 0;
     const request = new AbortController();
     this.modelRequest = request;
-    this.set({ modelsChecking: true, modelsError: "" });
-    this.modelWork = this.discoverModels(this.spawn, request);
+    if (!quiet) this.set({ modelsChecking: true, modelsError: "" });
+    this.modelWork = this.discoverModels(this.spawn, request, quiet);
     return this.modelWork;
   }
-  private async discoverModels(spawn: Spawn, request: AbortController) {
+  private async discoverModels(
+    spawn: Spawn,
+    request: AbortController,
+    quiet: boolean,
+  ) {
     try {
       const models = await queryModels(spawn, request.signal);
       if (!models.length) throw new Error("Claude did not list its models");
-      if (this.modelRequest === request) this.set({ models });
+      // The same listing keeps the list it has, so nothing keyed on it reruns.
+      if (
+        this.modelRequest === request &&
+        JSON.stringify(models) !== JSON.stringify(this.state.models)
+      )
+        this.set({ models });
     } catch (error) {
-      if (this.modelRequest === request && !request.signal.aborted)
+      if (this.modelRequest === request && !request.signal.aborted && !quiet)
         this.set({
           modelsError: error instanceof Error ? error.message : String(error),
         });
     } finally {
       if (this.modelRequest === request) {
         this.modelRequest = undefined;
-        this.modelsLoaded = true;
+        this.modelsLoadedAt = Date.now();
         this.set({ modelsChecking: false });
       }
     }
   }
-  /** The catalog for a surface that opens without the model picker: found
-   * once, and looked for again only after a discovery that listed nothing. */
+  /** The catalog for a surface that opens without the model picker: looked
+   * for again after a discovery that listed nothing, or once it is stale. A
+   * listed catalog answers at once while its refresh finishes behind it. */
   catalog() {
     this.cataloging ??= (async () => {
       if (!this.state.status) await this.check();
-      await this.loadModels(!this.state.models.length);
+      const listed = this.state.models.length > 0;
+      const loading = this.loadModels(!listed);
+      if (!listed) await loading;
       return this.state.models;
     })().finally(() => {
       this.cataloging = undefined;

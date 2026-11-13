@@ -391,16 +391,12 @@ export function createTabs({
     useEffect(() => {
       if (enabled && !state.status && !state.checking) void setup.check();
     }, [enabled, state.status, state.checking]);
-    // Once per change of readiness: a failed load waits for Try again.
+    // On opening and each change of readiness, unless the list is fresh: a
+    // failed load waits for Try again until then.
     useEffect(() => {
-      if (
-        enabled &&
-        !state.checking &&
-        state.status?.state === "ready" &&
-        state.models.length === 0
-      )
+      if (enabled && !state.checking && state.status?.state === "ready")
         void setup.loadModels();
-    }, [enabled, state.status, state.checking, state.models.length]);
+    }, [enabled, state.status, state.checking]);
     return enabled
       ? state
       : { ...state, models: [], modelsChecking: false, modelsError: "" };

@@ -472,6 +472,78 @@ it("looks for the catalog again after a discovery that listed nothing", async ()
   expect(sessions).toHaveLength(1);
 });
 
+it("looks for a stale catalog again, keeping the listed one meanwhile", async () => {
+  const { spawn, sessions } = discoverable();
+  const setup = new ClaudeSetup(spawn);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    await setup.catalog();
+    const listed = setup.snapshot().models;
+    expect(sessions).toHaveLength(1);
+    // Within the hour, the list is current.
+    vi.setSystemTime(Date.now() + 60 * 60_000 - 1);
+    await setup.loadModels();
+    expect(sessions).toHaveLength(1);
+    // A failed refresh neither hides nor faults the listed models.
+    vi.setSystemTime(Date.now() + 1);
+    spawn.mockRejectedValueOnce(new Error("probe failed"));
+    const failing = setup.loadModels();
+    expect(setup.snapshot().modelsChecking).toBe(false);
+    await failing;
+    expect(setup.snapshot()).toMatchObject({
+      models: listed,
+      modelsChecking: false,
+      modelsError: "",
+    });
+    // It waits another hour. A surface asking then gets the listed catalog
+    // at once while the refresh runs; the same listing leaves it as it was.
+    await setup.loadModels();
+    expect(sessions).toHaveLength(1);
+    vi.setSystemTime(Date.now() + 60 * 60_000);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    spawn.mockImplementationOnce((id, options) => {
+      started = true;
+      return held.then(() => spawn(id, options));
+    });
+    try {
+      await expect(setup.catalog()).resolves.toBe(listed);
+      expect(started).toBe(true);
+      expect(sessions).toHaveLength(1);
+    } finally {
+      release();
+    }
+    await setup.loadModels();
+    expect(sessions).toHaveLength(2);
+    expect(setup.snapshot().models).toBe(listed);
+    // A changed listing replaces it once the refresh finishes.
+    vi.setSystemTime(Date.now() + 60 * 60_000);
+    spawn.mockImplementationOnce((id, options) =>
+      spawn(id, {
+        ...options,
+        onStdout: (data) =>
+          options?.onStdout?.(
+            data.replace("claude-haiku-5-5", "claude-haiku-5-6"),
+          ),
+      }),
+    );
+    await expect(setup.catalog()).resolves.toBe(listed);
+    await setup.loadModels();
+    expect(sessions).toHaveLength(3);
+    const refreshed = await setup.catalog();
+    expect(refreshed).not.toBe(listed);
+    expect(
+      refreshed.find((model) => model.value === "haiku")?.resolvedModel,
+    ).toBe("claude-haiku-5-6");
+  } finally {
+    setup.dispose();
+    vi.useRealTimers();
+  }
+});
+
 it("bounds a stalled discovery and releases it for an explicit retry", async () => {
   const checks = scripted({
     "claude --version": { stdout: "2.1.280" },
