@@ -1,4 +1,5 @@
 import { FadingLabel } from "./FadingLabel";
+import { ChannelSidebarRows } from "../../features/channel-navigation/ChannelSidebarRows";
 import { createPortal } from "react-dom";
 import type { ComposeWorkspaces } from "../../features/channel-navigation/WorkspaceComposition";
 import { prepareSoloMove } from "../../features/channel-navigation/solo-navigation";
@@ -214,7 +215,9 @@ export function SoloWorkspaces({
       ? `project-${project}`
       : rowFocus;
     document
-      .querySelector<HTMLElement>(`[data-solo-menu-id="${target}"] button`)
+      .querySelector<HTMLElement>(
+        `[data-solo-menu-id="${target}"]:not([inert] *) button`,
+      )
       ?.focus({ preventScroll: true });
     setRowFocus(undefined);
   }, [rowFocus, collapsed, snapshot.data]);
@@ -231,7 +234,8 @@ export function SoloWorkspaces({
     const panel = document.querySelector(
       `[data-solo-project="${CSS.escape(stepFocus)}"]`,
     );
-    const chats = panel?.querySelectorAll("[data-solo-menu-id]") ?? [];
+    const chats =
+      panel?.querySelectorAll("[data-solo-menu-id]:not([inert] *)") ?? [];
     const target =
       row?.querySelector<HTMLElement>("button") ??
       [...chats].at(-1)?.querySelector<HTMLElement>("button");
@@ -291,7 +295,7 @@ export function SoloWorkspaces({
     void saving.catch(() => {
       // A rollback remounts the original row. Do not steal focus if the user moved on.
       if (
-        !document.querySelector(`[data-solo-menu-id="${id}"]`) ||
+        !document.querySelector(`[data-solo-menu-id="${id}"]:not([inert] *)`) ||
         document.activeElement !== document.body
       )
         return;
@@ -307,7 +311,7 @@ export function SoloWorkspaces({
     const neighbors = handoff?.soloNeighbors.current?.(channel.id) ?? [];
     const trigger =
       document.querySelector<HTMLElement>(
-        `[data-solo-menu-id="${CSS.escape(channel.id)}"] button`,
+        `[data-solo-menu-id="${CSS.escape(channel.id)}"]:not([inert] *) button`,
       ) ?? undefined;
     const current = navigationController?.snapshot();
     const leavesOpenChat =
@@ -587,54 +591,56 @@ export function SoloWorkspaces({
             <div>{draft.content}</div>
           </ChatActionsMenu>
         )}
-        {project.listed.map((item) => {
-          const channel = channels.channels.find(
-            (channel) => channel.id === item.id,
-          );
-          if (renaming === item.id)
-            return (
-              <SoloChatName
+        <ChannelSidebarRows open={open}>
+          {project.listed.map((item) => {
+            const channel = channels.channels.find(
+              (channel) => channel.id === item.id,
+            );
+            if (renaming === item.id)
+              return (
+                <SoloChatName
+                  key={item.id}
+                  session={session}
+                  id={item.id}
+                  title={item.title}
+                  close={(focus) => {
+                    setRenaming(undefined);
+                    if (focus) setRowFocus(item.id);
+                  }}
+                />
+              );
+            const row = (
+              <SoloChatEntry
                 key={item.id}
-                session={session}
                 id={item.id}
                 title={item.title}
-                close={(focus) => {
-                  setRenaming(undefined);
-                  if (focus) setRowFocus(item.id);
-                }}
+                pinned={item.pinned}
+                projectKey={DROP + project.id}
+                sectionKey={project.id}
+                channel={channel}
+                renameable={canRename(project.id, channel)}
+                lifecycle={!!handoff}
+                session={session}
+                actions={entryActions}
+                renderChat={renderChat}
+                renderChatMenu={renderChatMenu}
+                sidebarRows={sidebarRows}
+                onHiddenChange={setRowHidden}
               />
             );
-          const row = (
-            <SoloChatEntry
-              key={item.id}
-              id={item.id}
-              title={item.title}
-              pinned={item.pinned}
-              projectKey={DROP + project.id}
-              sectionKey={project.id}
-              channel={channel}
-              renameable={canRename(project.id, channel)}
-              lifecycle={!!handoff}
-              session={session}
-              actions={entryActions}
-              renderChat={renderChat}
-              renderChatMenu={renderChatMenu}
-              sidebarRows={sidebarRows}
-              onHiddenChange={setRowHidden}
-            />
-          );
-          return compose && project.id ? (
-            <NavigationCard
-              key={item.id}
-              tone="tonal"
-              className={styles.composedChat}
-            >
-              {row}
-            </NavigationCard>
-          ) : (
-            row
-          );
-        })}
+            return compose && project.id ? (
+              <NavigationCard
+                key={item.id}
+                tone="tonal"
+                className={styles.composedChat}
+              >
+                {row}
+              </NavigationCard>
+            ) : (
+              row
+            );
+          })}
+        </ChannelSidebarRows>
         {(project.hidden > 0 || project.foldable) && (
           <div className={styles.showMore} data-solo-show-more={project.id}>
             {project.hidden > 0 && (
@@ -799,7 +805,7 @@ export function SoloWorkspaces({
           close={() => setConverting(undefined)}
           finalFocus={() =>
             document.querySelector<HTMLElement>(
-              `[data-solo-menu-id="${converting.id}"] button`,
+              `[data-solo-menu-id="${converting.id}"]:not([inert] *) button`,
             ) ?? false
           }
         />
@@ -814,10 +820,11 @@ export function SoloWorkspaces({
           trigger={{
             // Read on close: the mark is gone once the chat stops being shared.
             get current() {
-              return sharing.trigger?.isConnected
+              return sharing.trigger?.isConnected &&
+                !sharing.trigger.closest("[inert]")
                 ? sharing.trigger
                 : document.querySelector<HTMLElement>(
-                    `[data-solo-menu-id="${sharing.id}"] button`,
+                    `[data-solo-menu-id="${sharing.id}"]:not([inert] *) button`,
                   );
             },
           }}
@@ -830,7 +837,7 @@ export function SoloWorkspaces({
           signal={chatSettings.visit}
           finalFocus={() =>
             document.querySelector<HTMLElement>(
-              `[data-solo-menu-id="${chatSettings.item.id}"] button`,
+              `[data-solo-menu-id="${chatSettings.item.id}"]:not([inert] *) button`,
             ) ?? false
           }
           session={session}
@@ -1116,7 +1123,9 @@ export function ChatActionsMenu({
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<HTMLElement>();
   const restoreFocus = () => {
-    const row = document.querySelector(`[data-solo-menu-id="${id}"]`);
+    const row = document.querySelector(
+      `[data-solo-menu-id="${id}"]:not([inert] *)`,
+    );
     return (
       row?.querySelector<HTMLElement>("[data-solo-destination-id]") ??
       row?.querySelector<HTMLElement>("button") ??

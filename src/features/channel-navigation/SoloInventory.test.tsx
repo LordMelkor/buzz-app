@@ -843,3 +843,58 @@ it("shows plugin actions in the primary sidebar right-click menu", async () => {
     await screen.findByRole("menuitem", { name: "Unlink pull request" }),
   ).toBeVisible();
 });
+
+it.each([false, true])(
+  "batches Solo recency changes in the %s combined host and flushes for reduced motion",
+  async (combined) => {
+    const media = Object.assign(new EventTarget(), { matches: false });
+    vi.stubGlobal("matchMedia", () => media);
+    vi.useFakeTimers();
+    try {
+      const f = fixture(combined);
+      const rows = () => [
+        ...document.querySelectorAll<HTMLButtonElement>(
+          "button[data-solo-channel-id]:not([inert] *)",
+        ),
+      ];
+      const original = rows();
+      expect(
+        original.map((row) => row.getAttribute("data-solo-channel-id")),
+      ).toEqual([id, other]);
+      original[1]?.focus();
+      f.roster((channels) =>
+        channels.map((channel) =>
+          channel.id === other ? { ...channel, lastActivityAt: 100 } : channel,
+        ),
+      );
+      await act(() => vi.advanceTimersByTimeAsync(199));
+      expect(rows()).toEqual(original);
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(rows()).toEqual([original[1], original[0]]);
+      expect(original[1]).toHaveFocus();
+
+      // A live preference change flushes a pending batch on the mounted list.
+      f.roster((channels) =>
+        channels.map((channel) =>
+          channel.id === id ? { ...channel, lastActivityAt: 200 } : channel,
+        ),
+      );
+      act(() => {
+        media.matches = true;
+        media.dispatchEvent(new Event("change"));
+      });
+      expect(rows()).toEqual(original);
+      f.roster((channels) =>
+        channels.map((channel) =>
+          channel.id === other ? { ...channel, lastActivityAt: 300 } : channel,
+        ),
+      );
+      expect(rows()).toEqual([original[1], original[0]]);
+      expect(original[1]).toHaveFocus();
+    } finally {
+      cleanup();
+      await vi.runOnlyPendingTimersAsync();
+      vi.useRealTimers();
+    }
+  },
+);

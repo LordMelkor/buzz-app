@@ -455,6 +455,8 @@ and are asked to sign in again in Buzz.
   community and account only. It covers chats started with **New chat**; a
   chat's own settings can still choose another lifetime, and existing chats do
   not change.
+  Chats reorder by recent activity with the same short slides and fades as Team
+  channels. Reduced motion applies the new order immediately.
   Deleting or archiving the open chat keeps you in Solo and opens another chat
   or a new draft.
 - **Team** contains community channels and their threads. Use the **@** picker

@@ -259,7 +259,9 @@ it("keeps chats after project deletion and allows retry after a rejected deletio
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: "Work" })).toBeNull(),
   );
-  expect(screen.getByRole("button", { name: "Planning" })).toBeVisible();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Planning" })).toBeVisible(),
+  );
   expect(h.saved().assignments).toEqual({});
   owner.dispose();
 });
@@ -828,7 +830,15 @@ it("lists and focuses a chat moved into a full workspace", async () => {
   await owner.queries.ensure();
   for (const chat of chats.slice(0, SOLO_CHAT_CAP))
     await owner.queries.assign(chat.id, "work");
-  render(h.view(owner.queries, undefined, undefined, chats));
+  const view = render(h.view(owner.queries, undefined, undefined, chats));
+  // A leaving presence copy can precede the active destination in DOM order.
+  const leaving = document.createElement("div");
+  leaving.setAttribute("inert", "");
+  leaving.setAttribute("aria-hidden", "true");
+  const old = view.container.querySelector('[data-solo-menu-id="chat"]');
+  if (!old) throw new Error("Missing source chat row");
+  leaving.append(old.cloneNode(true));
+  view.container.prepend(leaving);
   await waitFor(() =>
     expect(
       screen.getByRole("button", { name: "Actions for Planning" }),
