@@ -151,9 +151,6 @@ export function createHarnessMcp(
     return agent && mcp ? { agent, mcp } : undefined;
   }
 
-  /** The kit for the plugin `ctx` belongs to. Only the plugin that registered
-   * an agent's type says what its sessions loaded, and the agent and its
-   * protection are read from what runs here, not taken from the caller. */
   /** The agent as it runs here, for the plugin that registered its type. */
   function owned(ctx: Context, key: AgentKey) {
     const agent = running(key);
@@ -165,6 +162,9 @@ export function createHarnessMcp(
       );
     return agent;
   }
+  /** The kit for the plugin `ctx` belongs to. Only the plugin that registered
+   * an agent's type says what its sessions loaded, and the agent and its
+   * protection are read from what runs here, not taken from the caller. */
   const kitFor = (ctx: Context): HarnessMcpKit =>
     Object.freeze({
       async choice(who) {
