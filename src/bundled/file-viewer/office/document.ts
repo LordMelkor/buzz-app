@@ -188,14 +188,22 @@ function wordRunStyle(
   return out;
 }
 
-// OOXML 17.7.3: an enabled vanish in a style toggles the inherited value;
-// false leaves it unchanged. Direct run properties remain absolute above.
-function wordStyle(inherited: RunStyle, patch: RunStyle): RunStyle {
+// ECMA-376 17.7.3: resolve basedOn by override, then XOR style levels.
+// Document-default true wins; direct run properties remain absolute above.
+function wordStyle(
+  inherited: RunStyle,
+  chain: readonly WordStyle[],
+  defaultHidden = false,
+): RunStyle {
+  let patch: RunStyle = {};
+  for (const style of chain) patch = { ...patch, ...style.r };
   const { hidden, ...properties } = patch;
   return {
     ...inherited,
     ...properties,
-    ...(hidden ? { hidden: !inherited.hidden } : {}),
+    ...(hidden === undefined
+      ? {}
+      : { hidden: defaultHidden || !!inherited.hidden !== hidden }),
   };
 }
 
@@ -562,8 +570,7 @@ class DocumentReader {
         .map((pr) => child(pr, name))
         .filter((pr): pr is Element => !!pr)
         .at(-1);
-    let runStyle = this.defaultRun;
-    for (const style of chain) runStyle = wordStyle(runStyle, style.r);
+    const runStyle = wordStyle(this.defaultRun, chain, this.defaultRun.hidden);
     const outline = attr(property("outlineLvl"), "val"),
       lastStyle = chain.at(-1);
     const heading =
@@ -891,9 +898,11 @@ class DocumentReader {
       }
       if (name === "r") {
         const pr = child(node, "rPr");
-        let inherited = style;
-        for (const item of this.styleChain(attr(child(pr, "rStyle"), "val")))
-          inherited = wordStyle(inherited, item.r);
+        const inherited = wordStyle(
+          style,
+          this.styleChain(attr(child(pr, "rStyle"), "val")),
+          this.defaultRun.hidden,
+        );
         const run = wordRunStyle(pr, inherited);
         append(
           out,
@@ -1334,12 +1343,14 @@ class DocumentReader {
         list = undefined;
         continue;
       }
-      if (this.hiddenContent !== hiddenBefore && !hasVisibleContent(content))
-        continue;
       const restart = numbered
         ? nonnegativeInteger(attr(item, "start-value"))
         : undefined;
       if (restart !== undefined) counter = restart;
+      if (this.hiddenContent !== hiddenBefore && !hasVisibleContent(content)) {
+        if (restart !== undefined) list = undefined;
+        continue;
+      }
       if (!list) {
         list = element(
           numbered ? "ol" : "ul",
