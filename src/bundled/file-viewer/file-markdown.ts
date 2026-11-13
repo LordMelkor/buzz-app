@@ -88,9 +88,13 @@ function plain(source: string): Root {
 
 /** The File viewer's HTML rules. Notes and Canvas keep their own defaults.
  * Embedded notebook fragments resolve their carried images before sanitation. */
-export const rehypeFileMarkdown: Plugin<[{ embedded?: boolean }?], Root> =
+export const rehypeFileMarkdown: Plugin<
+  [{ embedded?: boolean; highlight?: typeof highlight }?],
+  Root
+> =
   (options = {}) =>
   (input, file) => {
+    const paint = options.highlight ?? highlight;
     const source = String(file.value ?? "");
     if (tooDeep(input)) return plain(source);
     // Only converter-produced footnote list items may retain a generated value.
@@ -147,7 +151,7 @@ export const rehypeFileMarkdown: Plugin<[{ embedded?: boolean }?], Root> =
       if (node.tagName !== "code") continue;
       const language = codeLanguage(node);
       if (language) node.properties.dataLanguage = language;
-      node.children = highlight(content(node), language).children.filter(
+      node.children = paint(content(node), language).children.filter(
         (node) => node.type !== "doctype",
       );
     }

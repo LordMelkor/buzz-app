@@ -8,13 +8,14 @@ import { CopyText } from "./CopyText";
 import { DocumentView } from "./DocumentView";
 import type { MediaSource } from "./PartMarkdown";
 import { formatLabel, maxBytes } from "./formats";
-import { decodeText, LoadError, readBytes } from "./load";
+import { decodeText, isPdfBytes, LoadError, readBytes } from "./load";
 import { parseTable } from "./table";
 import type { FileTarget } from "./target";
 import styles from "./FileViewer.module.css";
 
 const PdfView = lazy(() => import("./PdfView"));
 const OfficeView = lazy(() => import("./OfficeView"));
+const PageFile = lazy(() => import("./PageFile"));
 
 export type ViewerProps = Readonly<{
   file: FileTarget;
@@ -50,7 +51,15 @@ function useBytes(
     if (!source) return;
     const controller = new AbortController();
     setLoaded({ state: "loading" });
-    readBytes(source, maxBytes(file.format), controller.signal, fetcher).then(
+    // A text file may be a renamed PDF; its first bytes say so.
+    const sniffPdf = file.format !== "pdf" && file.format !== "office";
+    readBytes(
+      source,
+      maxBytes(file.format),
+      controller.signal,
+      fetcher,
+      sniffPdf,
+    ).then(
       (bytes) => setLoaded({ state: "ready", bytes }),
       (error: unknown) => {
         if (!controller.signal.aborted)
@@ -123,7 +132,9 @@ function Contents({
   openLink(url: string): boolean;
   media: MediaSource | undefined;
 }) {
-  const binary = file.format === "pdf" || file.format === "office";
+  const pdf =
+    file.format === "pdf" || (file.format !== "office" && isPdfBytes(bytes));
+  const binary = pdf || file.format === "office";
   const text = useMemo(() => {
     if (binary) return undefined;
     try {
@@ -132,16 +143,15 @@ function Contents({
       return null;
     }
   }, [binary, bytes]);
+  const loading = (
+    <LoadingRegion pending label={`Loading ${file.name}`}>
+      {null}
+    </LoadingRegion>
+  );
   if (binary)
     return (
-      <Suspense
-        fallback={
-          <LoadingRegion pending label={`Loading ${file.name}`}>
-            {null}
-          </LoadingRegion>
-        }
-      >
-        {file.format === "pdf" ? (
+      <Suspense fallback={loading}>
+        {pdf ? (
           <PdfView bytes={bytes} name={file.name} />
         ) : (
           <OfficeView
@@ -160,6 +170,18 @@ function Contents({
         title="Can't open this file"
         message="This file isn't text. Download it to open it in another app."
       />
+    );
+  if (file.format === "page" || file.format === "image")
+    return (
+      <Suspense fallback={loading}>
+        <PageFile
+          file={file}
+          text={text}
+          session={session}
+          openLink={openLink}
+          media={media}
+        />
+      </Suspense>
     );
   if (file.format !== "csv" && file.format !== "tsv")
     return (

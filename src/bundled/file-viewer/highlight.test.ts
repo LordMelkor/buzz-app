@@ -1,6 +1,7 @@
 import type { Element, Nodes, Root } from "hast";
 import { expect, it } from "vitest";
-import { highlight, languageFor, rehypeHighlight } from "./highlight";
+import { rehypeFileMarkdown } from "./file-markdown";
+import { highlight, languageFor } from "./highlight";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -61,9 +62,9 @@ it("highlights fenced blocks and leaves unknown and inline code literal", () => 
   const parser = unified()
     .use(remarkParse)
     .use(remarkGfm)
-    .use(remarkRehype)
-    .use(rehypeHighlight);
-  const tree = parser.runSync(parser.parse(source)) as Root;
+    .use(remarkRehype, { allowDangerousHtml: true })
+    .use(rehypeFileMarkdown);
+  const tree = parser.runSync(parser.parse(source), { value: source }) as Root;
   const blocks = tree.children.filter(
     (node): node is Element =>
       node.type === "element" && node.tagName === "pre",

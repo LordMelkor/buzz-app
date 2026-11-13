@@ -21,11 +21,12 @@ import { ChartView } from "./ChartView";
 import { CopyText } from "./CopyText";
 import { Outline, usePartJump } from "./DocumentView";
 import { formatLabel } from "./formats";
+import { hostComponents } from "./host-renderers";
+import { useMediaUrls } from "./media-urls";
 import { openOffice } from "./office/load";
 import { FileLink, type MediaSource, Picture } from "./PartMarkdown";
 import { splitTree } from "./office-parts";
 import type {
-  EmbeddedMedia,
   MediaRef,
   OfficeDocument,
   OfficeResult,
@@ -64,8 +65,6 @@ const APP_NOUN = {
   Keynote: "Keynote presentation",
   Numbers: "Numbers spreadsheet",
 } as const;
-
-const NO_URLS: ReadonlyMap<MediaRef, string> = new Map();
 
 const plural = (count: number, word: string) =>
   `${count.toLocaleString()} ${word}${count === 1 ? "" : "s"}`;
@@ -131,25 +130,6 @@ export default function OfficeView({
       media={media}
     />
   );
-}
-
-/** One object URL per picture in the file, made before the file first paints
- * and all revoked when it closes, so none outlives it. */
-function useMediaUrls(media: EmbeddedMedia): ReadonlyMap<MediaRef, string> {
-  const [urls, setUrls] = useState(NO_URLS);
-  useLayoutEffect(() => {
-    if (media.size === 0) return;
-    const made = new Map(
-      [...media].map(
-        ([ref, blob]) => [ref, URL.createObjectURL(blob)] as const,
-      ),
-    );
-    setUrls(made);
-    return () => {
-      for (const url of made.values()) URL.revokeObjectURL(url);
-    };
-  }, [media]);
-  return urls;
 }
 
 type Shared = Readonly<{
@@ -319,6 +299,7 @@ function useTreeRenderer({
           text
         );
       },
+      ...hostComponents,
       figure: (props) => {
         const index = Number(
           (props as Record<string, unknown>)["data-mdv-chart"],
@@ -337,6 +318,7 @@ function useTreeRenderer({
         jsxs,
         components,
         passKeys: true,
+        passNode: true,
       }),
     [components],
   );
@@ -412,7 +394,7 @@ function DocumentFamily({
 }) {
   const split = useMemo(() => splitTree(doc.parsed.tree), [doc]);
   const partOf = useCallback((id: string) => split.ids.get(id), [split]);
-  const { scroller, attach, control, scrollTo } = usePartJump(partOf);
+  const { scroller, attach, control, scrollTo, section } = usePartJump(partOf);
   const renderTree = useTreeRenderer({
     urls,
     charts: doc.charts,
@@ -447,7 +429,11 @@ function DocumentFamily({
         actions={
           <>
             {items.length > 0 && (
-              <Outline items={items} scroller={scroller} jump={scrollTo} />
+              <Outline
+                items={items}
+                current={() => section(items)}
+                jump={scrollTo}
+              />
             )}
             <CopyText read={() => blockText(doc.parsed.tree)} />
           </>

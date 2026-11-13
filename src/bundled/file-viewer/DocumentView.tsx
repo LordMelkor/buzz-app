@@ -34,14 +34,12 @@ import {
   remarkPartHeadings,
 } from "./document-parts";
 import { formatLabel } from "./formats";
-import {
-  boundedHighlight,
-  type highlight,
-  languageFor,
-  rehypeHighlight,
-} from "./highlight";
+import { rehypeFileMarkdown } from "./file-markdown";
+import { boundedHighlight, type highlight, languageFor } from "./highlight";
+import type { OutlineItem } from "./office-types";
 import { type BufferControl, PartBuffer } from "./part-buffer";
 import { type MediaSource, PartMarkdown } from "./PartMarkdown";
+import { prepareFileText } from "./prepare-text";
 import type { FileTarget } from "./target";
 import styles from "./FileViewer.module.css";
 
@@ -75,16 +73,32 @@ type DocumentProps = {
   session: RelaySession | undefined;
   openLink(url: string): boolean;
   media: MediaSource | undefined;
+  /** Header actions before the outline and Copy. */
+  actions?: ReactNode;
+  copyLabel?: string;
+  /** Notes under the header. */
+  children?: ReactNode;
 };
 
 /** A Markdown, code or text file, read in parts so a long one opens at once.
  * A large Markdown file shows Loading while it indexes. */
 export function DocumentView(props: DocumentProps) {
   const { file, text } = props;
-  const language = file.format === "text" ? languageFor(file.name) : undefined;
-  const kind: DocumentKind =
-    file.format === "markdown" ? "markdown" : language ? "code" : "text";
-  const index = useDocumentIndex(text, kind);
+  const language =
+    file.format === "markdown" ? undefined : languageFor(file.name);
+  // What shows: JSON indented, MDX without its code. Copy keeps the saved text.
+  const prepared = useMemo(
+    () => prepareFileText(text, file.name, file.mime),
+    [text, file.name, file.mime],
+  );
+  const kind: DocumentKind = prepared.plain
+    ? "text"
+    : file.format === "markdown"
+      ? "markdown"
+      : language
+        ? "code"
+        : "text";
+  const index = useDocumentIndex(prepared.text, kind);
   if (index.state === "indexing")
     return (
       <LoadingRegion pending label={`Formatting ${file.name}`}>
@@ -92,10 +106,17 @@ export function DocumentView(props: DocumentProps) {
       </LoadingRegion>
     );
   return index.plain ? (
-    <IndexedDocument {...props} doc={index.doc} kind="text" plain />
+    <IndexedDocument
+      {...props}
+      prepared={prepared}
+      doc={index.doc}
+      kind="text"
+      plain
+    />
   ) : (
     <IndexedDocument
       {...props}
+      prepared={prepared}
       doc={index.doc}
       kind={kind}
       language={language}
@@ -109,26 +130,32 @@ function IndexedDocument({
   session,
   openLink,
   media,
+  actions,
+  copyLabel,
+  children,
+  prepared,
   doc,
   kind,
   language,
   plain = false,
 }: DocumentProps & {
+  prepared: ReturnType<typeof prepareFileText>;
   doc: DocumentParts;
   kind: DocumentKind;
   language?: string | undefined;
   /** The file took too long to format, so it shows as text. */
   plain?: boolean;
 }) {
+  const shown = prepared.text;
   const partOf = useCallback((id: string) => doc.partOf(id), [doc]);
-  const { scroller, attach, control, scrollTo } = usePartJump(partOf);
+  const { scroller, attach, control, scrollTo, section } = usePartJump(partOf);
 
   const slice = useCallback(
     (index: number) => {
       const part = doc.parts[index];
-      return part ? text.slice(part.start, part.end) : "";
+      return part ? shown.slice(part.start, part.end) : "";
     },
-    [doc, text],
+    [doc, shown],
   );
   /** One per document: once a part takes too long, the rest stay plain. */
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new document gets a new time limit.
@@ -174,7 +201,7 @@ function IndexedDocument({
           transforms={[remarkPartHeadings(doc, index)]}
           rehype={[
             rehypePartFootnotes(doc, index),
-            [rehypeHighlight, { highlight: highlighter }],
+            [rehypeFileMarkdown, { highlight: highlighter }],
           ]}
           media={media}
           onAnchor={scrollTo}
@@ -191,7 +218,7 @@ function IndexedDocument({
             `${doc.readingMinutes.toLocaleString()} min read`,
             plural(doc.words, "word"),
           ]
-        : [plural(totalLines(doc, text), "line")];
+        : [plural(totalLines(doc, shown), "line")];
     return [
       formatLabel(file.format),
       ...(file.time
@@ -199,7 +226,7 @@ function IndexedDocument({
         : []),
       ...size,
     ].join(" · ");
-  }, [doc, kind, text, file.format, file.time]);
+  }, [doc, kind, shown, file.format, file.time]);
 
   const items = doc.outline.length >= MIN_OUTLINE_ITEMS ? doc.outline : [];
   const buffer = (
@@ -218,13 +245,29 @@ function IndexedDocument({
         subtitle={meta}
         actions={
           <>
+            {actions}
             {items.length > 0 && (
-              <Outline items={items} scroller={scroller} jump={scrollTo} />
+              <Outline
+                items={items}
+                current={() => section(items)}
+                jump={scrollTo}
+              />
             )}
-            <CopyText read={() => text} />
+            <CopyText label={copyLabel} read={() => text} />
           </>
         }
       />
+      {children}
+      {prepared.formatted && (
+        <p className={styles.note} role="note">
+          Shown indented for reading. Copy text copies the file as saved.
+        </p>
+      )}
+      {prepared.plain && (
+        <p className={styles.note} role="note">
+          This file is too large to format, so it shows as plain text.
+        </p>
+      )}
       {plain && (
         <p className={styles.note} role="note">
           This file took too long to format, so it shows as plain text.
@@ -296,7 +339,13 @@ export function usePartJump(partOf: (id: string) => number | undefined) {
     },
     [partOf],
   );
-  return { scroller, attach, control, scrollTo };
+  /** The outline item of the section at the top of the view. */
+  const section = useCallback(
+    (items: readonly PartOutlineItem[]) =>
+      scrollRef.current ? currentSection(items, scrollRef.current) : undefined,
+    [],
+  );
+  return { scroller, attach, control, scrollTo, section };
 }
 
 const FALLBACK_REASONS = {
@@ -342,11 +391,11 @@ function renderHast(nodes: readonly HastNode[]): ReactNode[] {
  * last heading at or above the top of the view. */
 export function Outline({
   items,
-  scroller,
+  current: locate,
   jump,
 }: {
-  items: readonly PartOutlineItem[];
-  scroller: HTMLElement | null;
+  items: readonly OutlineItem[];
+  current(): string | undefined;
   jump(id: string): void;
 }) {
   const [open, setOpen] = useState(false);
@@ -355,8 +404,7 @@ export function Outline({
     <PopoverRoot
       open={open}
       onOpenChange={(next) => {
-        if (next)
-          setCurrent(scroller ? currentSection(items, scroller) : undefined);
+        if (next) setCurrent(locate());
         setOpen(next);
       }}
     >
@@ -424,7 +472,7 @@ function OutlineList({
   current,
   jump,
 }: {
-  items: readonly PartOutlineItem[];
+  items: readonly OutlineItem[];
   current: string | undefined;
   jump(id: string): void;
 }) {
