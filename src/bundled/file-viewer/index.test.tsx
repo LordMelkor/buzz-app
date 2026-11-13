@@ -196,6 +196,28 @@ it("renders a shared Markdown file through the host's safe Markdown", async () =
   expect(context.open).not.toHaveBeenCalled();
 });
 
+it("shows a Markdown file's front matter as properties and its alerts as notes", async () => {
+  const { panel } = setup();
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(
+        "---\nowner: Ada\nstatus: draft\n---\n# Plan\n\n> [!WARNING]\n> Ship **Friday**.\n",
+      ),
+  );
+  renderPanel(panel, fileTarget({ url: MEDIA, name: "plan.md" }));
+  await screen.findByRole("heading", { name: "Plan" });
+  const properties = screen.getByLabelText("Properties");
+  expect(
+    [...properties.querySelectorAll("dt, dd")].map((node) => node.textContent),
+  ).toEqual(["owner", "Ada", "status", "draft"]);
+  expect(
+    screen.getByText("Warning").closest('[role="note"]'),
+  ).toHaveTextContent("Warning Ship Friday.");
+  expect(screen.queryByText("[!WARNING]", { exact: false })).toBeNull();
+  expect(screen.queryByText(/owner: Ada/)).toBeNull();
+});
+
 it("refuses files from outside the community without fetching", () => {
   const { panel } = setup();
   const fetcher = vi.fn();

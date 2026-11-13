@@ -27,7 +27,7 @@ import {
   usePartJump,
 } from "./DocumentView";
 import { formatLabel } from "./formats";
-import { hostComponents } from "./host-renderers";
+import { fileComponents } from "./file-components";
 import { useMediaUrls } from "./media-urls";
 import { openOffice } from "./office/load";
 import { splitTree } from "./office-parts";
@@ -304,7 +304,7 @@ function useTreeRenderer({
           text
         );
       },
-      ...hostComponents,
+      ...fileComponents,
       figure: (props) => {
         const index = Number(
           (props as Record<string, unknown>)["data-mdv-chart"],

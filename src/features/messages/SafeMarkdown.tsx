@@ -17,8 +17,8 @@ export const safeMarkdownPlugins = [remarkGfm];
  *
  * The file viewer adds to these rules, never loosens them: plugins that only
  * annotate the tree, an image renderer that decides which images may load,
- * `#` links that move within the document, and code that a Buzz plugin
- * may draw.
+ * `#` links that move within the document, and code and blocks it draws
+ * itself.
  */
 export function SafeMarkdown({
   content,
@@ -41,8 +41,8 @@ export function SafeMarkdown({
   image?: ((props: { src: string; alt: string }) => ReactNode) | undefined;
   /** Keeps `#id` links, and calls this with the decoded id instead of opening them. */
   onAnchor?: ((id: string) => void) | undefined;
-  /** Draws code blocks and inline code; links and images keep these rules. */
-  components?: Pick<Components, "pre" | "code"> | undefined;
+  /** Draws code, and blocks such as alerts; links and images keep these rules. */
+  components?: Pick<Components, "pre" | "code" | "div"> | undefined;
 }) {
   return (
     <Markdown
