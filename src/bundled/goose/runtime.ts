@@ -221,7 +221,13 @@ export class GooseRuntime {
   }
 
   harnessMcp(agent: Agent) {
-    const entry = this.entry(agent.key, config(agent.config));
+    if (agent.protection)
+      return Promise.resolve({
+        tools: true,
+        note: "A protected agent loads no MCP server.",
+        servers: [],
+      });
+    const entry = this.entry(agent.key, this.settings(agent.config));
     const mcp = entry.mcp;
     return mcp
       ? this.nativeMcp(entry, (process) => mcp.report(process))
@@ -230,7 +236,7 @@ export class GooseRuntime {
   inspectMcp(agent: Agent, server: string) {
     if (agent.protection)
       return Promise.reject(new Error("A protected agent loads no MCP server"));
-    const entry = this.entry(agent.key, config(agent.config));
+    const entry = this.entry(agent.key, this.settings(agent.config));
     const mcp = entry.mcp;
     if (!mcp)
       return Promise.reject(new Error("Goose MCP inspection is unavailable"));
