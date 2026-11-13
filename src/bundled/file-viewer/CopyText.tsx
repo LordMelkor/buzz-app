@@ -9,8 +9,11 @@ import { useToastNotification } from "../../shared/design-system/ui/Toast";
  * file stops a read in progress, and nothing is reported for it. */
 export function CopyText({
   read,
+  limit,
 }: {
   read(signal: AbortSignal): string | Promise<string>;
+  /** The most characters `read` gives; text that long says it was cut. */
+  limit?: number;
 }) {
   const notify = useToastNotification();
   const [busy, setBusy] = useState(false);
@@ -32,7 +35,13 @@ export function CopyText({
             if (!live()) return;
             if (!/\S/.test(text)) return notify("No text to copy", "info");
             return writeClipboardText(text).then(
-              () => notify("Copied text to clipboard", "success"),
+              () =>
+                notify(
+                  limit !== undefined && text.length >= limit
+                    ? `Copied the first ${limit.toLocaleString()} characters to clipboard`
+                    : "Copied text to clipboard",
+                  "success",
+                ),
               () => notify("Failed to copy text", "error"),
             );
           })

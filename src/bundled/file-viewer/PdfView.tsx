@@ -19,7 +19,13 @@ import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import { CopyText } from "./CopyText";
 import { useNear, useSize } from "./layout";
-import { openPdf, PdfError, type PageSize, type PdfDocument } from "./pdf";
+import {
+  MAX_PDF_TEXT_CHARS,
+  openPdf,
+  PdfError,
+  type PageSize,
+  type PdfDocument,
+} from "./pdf";
 import styles from "./FileViewer.module.css";
 
 export const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
@@ -301,7 +307,10 @@ function Pages({ pdf, name }: { pdf: PdfDocument; name: string }) {
             Fit to width
           </Button>
         </span>
-        <CopyText read={(signal) => pdf.text(signal)} />
+        <CopyText
+          read={(signal) => pdf.text(signal)}
+          limit={MAX_PDF_TEXT_CHARS}
+        />
       </div>
       <section
         ref={setStage}

@@ -47,6 +47,17 @@ it("is busy while the text is read, then copies it", async () => {
   expect(signal?.aborted).toBe(false);
 });
 
+it("says when the text was cut at its limit", async () => {
+  render(<CopyText read={() => "abcd"} limit={4} />, {
+    wrapper: ToastProvider,
+  });
+  await userEvent.click(button());
+  expect(
+    await screen.findByText("Copied the first 4 characters to clipboard"),
+  ).toBeVisible();
+  expect(writeText).toHaveBeenCalledWith("abcd");
+});
+
 it.each([
   ["has no text", () => " \n ", "No text to copy"],
   [

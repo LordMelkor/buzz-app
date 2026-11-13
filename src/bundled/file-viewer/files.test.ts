@@ -37,6 +37,10 @@ it("round-trips file targets and rejects unreadable ones", () => {
     format: "markdown",
   });
   expect(parseFileTarget(`${target}x`)).not.toHaveProperty("time");
+  // A sender-set time past what dates can show is dropped, not thrown on.
+  expect(
+    parseFileTarget(fileTarget({ url: MEDIA, name: "a.md", time: 1e17 })),
+  ).not.toHaveProperty("time");
   expect(
     parseFileTarget(`buzz-file:?url=${encodeURIComponent(`${MEDIA}.pdf`)}`),
   ).toMatchObject({

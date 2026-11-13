@@ -1,6 +1,8 @@
 import { type FileFormat, fileFormat } from "./formats";
 
 const PREFIX = "buzz-file:?";
+/** The last second dates can show, 9999-12-31; a later `time` is dropped. */
+const LAST_TIME = 253_402_300_799;
 
 export type FileTarget = Readonly<{
   url: string;
@@ -47,7 +49,9 @@ export function parseFileTarget(target: string): FileTarget | undefined {
     name,
     format,
     ...(mime ? { mime } : {}),
-    ...(Number.isInteger(time) && time > 0 ? { time } : {}),
+    ...(Number.isInteger(time) && time > 0 && time <= LAST_TIME
+      ? { time }
+      : {}),
   };
 }
 
