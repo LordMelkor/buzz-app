@@ -599,6 +599,7 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
       {isTauri() && (
         <PairingPrompt
           communities={client.memberships.map((membership) => membership.id)}
+          active={client.selected}
         />
       )}
       <ChannelNavigationProvider relay={services.relay}>

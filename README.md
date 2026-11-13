@@ -83,14 +83,17 @@ edit files there.
 
 ### 6. Use the command line (optional)
 
-Buzz includes the `buzz` command line client at
-`/Applications/Buzz.app/Contents/Resources/bin/buzz`, so scripts and agents need
-no separate install. To run it as `buzz`, link it into your `PATH`:
+Buzz includes the `buzz` command line client, so scripts and agents need no
+separate install. On macOS and Linux (except the AppImage), Buzz links it to
+`~/.local/bin/buzz` each time it starts. If your shell doesn't find `buzz`, add
+that folder to your `PATH` in `~/.zshrc` or `~/.bashrc`:
 
 ```sh
-mkdir -p ~/.local/bin
-ln -sf /Applications/Buzz.app/Contents/Resources/bin/buzz ~/.local/bin/buzz
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+On Windows, the installer adds it to your `PATH`; open a new terminal after
+installing.
 
 ## Preview limitations
 

@@ -318,9 +318,11 @@ that agent in Buzz; they do not notify the external app through this connection.
 
 ## Pair a command-line tool
 
-Run `buzz --relay <community address> auth desktop pair` in a terminal while
-Buzz is open, using the **Community address** shown in that community's
-**Settings → Local settings**. Buzz asks whether to let that tool use Buzz as
+Run `buzz auth desktop pair` in a terminal while Buzz is open. It pairs for
+the community open in Buzz; to pick another, add `--relay <community address>`
+(before or after the subcommand), using the **Community address** shown in that
+community's **Settings → Local settings**. A bare host means `https://`. The
+tool skips copies of Buzz that aren't running. Buzz asks whether to let that tool use Buzz as
 you; select **Allow** only when you ran the command. Buzz pairs only for a
 community you've joined in Buzz, and otherwise tells the tool so without
 asking. Until you've finished signing in or setting up Buzz, it refuses
@@ -330,7 +332,8 @@ edit your profile, delete, or manage members, agents or moderation: do those
 in Buzz.
 **Settings → Security** lists paired tools. **Revoke** asks first, then stops one
 until you pair it again. Signing out revokes all of them, and a pairing unused
-for 30 days expires.
+for 30 days expires. If your sign-in expires, paired tools keep their pairing
+and are asked to sign in again in Buzz.
 
 ## Conversations and communities
 

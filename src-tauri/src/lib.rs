@@ -58,6 +58,8 @@ use nsec_backup::{
 };
 use nsec_backup_choice::{nsec_backup_choice, nsec_backup_set_choice};
 mod claude_key;
+#[cfg(unix)]
+mod cli_link;
 mod clipboard;
 mod jev;
 mod keep_awake;
@@ -1028,6 +1030,25 @@ pub fn run() {
             if let Some(home) = dirs::home_dir() {
                 if let Err(error) = legacy_cli_shortcut::remove_stale(&home.join(".local/bin")) {
                     eprintln!("Could not remove old Buzz's CLI shortcut: {error}");
+                }
+            }
+            #[cfg(unix)]
+            if let (Some(home), Ok(cli)) = (
+                dirs::home_dir(),
+                app.path()
+                    .resource_dir()
+                    .map_err(std::io::Error::other)
+                    .and_then(|resources| resources.join("bin/buzz").canonicalize()),
+            ) {
+                if cli_link::owns(
+                    cli_link::development(tauri::is_dev()),
+                    &app.config().identifier,
+                    std::env::var_os("APPIMAGE").is_some(),
+                    &cli,
+                ) {
+                    if let Err(error) = cli_link::ensure(&home.join(".local/bin"), &cli) {
+                        eprintln!("Could not link the buzz command: {error}");
+                    }
                 }
             }
             tauri::async_runtime::spawn(host_command::load_login_shell_path());
