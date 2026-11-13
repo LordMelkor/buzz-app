@@ -877,8 +877,11 @@ showing what the session has not seen and taking plugins' notes. Its
 `reply` posts as the agent there. `tools(agent, conversation, { read })`
 answers the Buzz tools over MCP for `ctx.host.serveMcp`, so the manifest
 declares `host.mcp`; `read` is the plugin's own file access (`host.files`),
-which uploads of local files use. The kit grants nothing `ctx.agents` and
-`ctx.host` do not already give the plugin.
+which uploads of local files use. Apart from `mcp`, the kit grants nothing
+`ctx.agents` and `ctx.host` do not already give the plugin. `mcp` lets the
+plugin that registered an agent's type ask core for that agent's MCP choice,
+report what a session loaded, and put the agent's native MCP calls to the call
+gate, only for its own agents running here ([harness MCP](harness-mcp.md)).
 
 A plugin, bundled or installed, can add a tab to the settings of agents
 running here or hosted, whatever their type, with
