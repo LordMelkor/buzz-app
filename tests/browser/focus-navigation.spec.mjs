@@ -376,7 +376,8 @@ test("covered panes and notifications preserve focus and F6 recovery", async ({
   // docked composers; pin the stack to its base offset so a covered composer's
   // focus recovery stays exercised.
   await page.addStyleTag({
-    content: ":root { --buzz-toast-clearance: 0px !important; }",
+    content:
+      '[aria-label="App notifications"] { --buzz-toast-clearance: 0px !important; }',
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await composer.fill("Toast draft");

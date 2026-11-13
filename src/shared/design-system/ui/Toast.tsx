@@ -20,11 +20,34 @@ const ToastHost = createContext("");
 
 /** How far each mounted docked surface reaches up from the window's bottom. */
 const clearances = new Map<object, number>();
-const publishClearance = () =>
-  document.documentElement.style.setProperty(
-    "--buzz-toast-clearance",
-    `${Math.max(0, ...clearances.values())}px`,
-  );
+/** Each mounted toast host's always-present Sonner section. */
+const viewports = new Set<HTMLElement>();
+// Scoped to the toast host, not the root: a root custom property restyles the
+// whole document, and the next layout read in that commit pays for it.
+let publishQueued = false;
+const writeClearance = (viewport: HTMLElement) => {
+  const value = `${Math.max(0, ...clearances.values())}px`;
+  if (viewport.style.getPropertyValue("--buzz-toast-clearance") !== value)
+    viewport.style.setProperty("--buzz-toast-clearance", value);
+};
+// Publish once a commit's effects settle, so a surface replaced by one of the
+// same height (switching channels) writes nothing.
+const publishClearance = () => {
+  if (publishQueued) return;
+  publishQueued = true;
+  queueMicrotask(() => {
+    publishQueued = false;
+    viewports.forEach(writeClearance);
+  });
+};
+const attachViewport = (viewport: HTMLElement | null) => {
+  if (!viewport) return;
+  viewports.add(viewport);
+  writeClearance(viewport);
+  return () => {
+    viewports.delete(viewport);
+  };
+};
 
 /** Keeps the toast stack above a surface docked at the bottom of the window,
  * such as a composer, while it is mounted, so notices never cover its
@@ -91,6 +114,7 @@ export function ToastProvider({
     <ToastHost value={id}>
       {createPortal(
         <Toaster
+          ref={attachViewport}
           id={id}
           position="bottom-right"
           swipeDirections={["left", "right"]}
