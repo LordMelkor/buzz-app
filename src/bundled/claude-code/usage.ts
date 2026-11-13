@@ -9,6 +9,7 @@ import type {
 } from "../../features/agents/service";
 import { limited, withRevision } from "../../features/agents/session-usage";
 import type { Host } from "../../features/host/service";
+import { READ_LIMIT, readFile } from "../../buzz-mcp/app-client";
 import type { Spawn } from "./claude";
 import { readProject } from "./history";
 import { type SessionsPlace, workspaceProject } from "./transcript";
@@ -17,6 +18,8 @@ type Json = Record<string, unknown>;
 /** Files read at once, by every agent's read together: the app refuses more
  * than 16 native reads at a time. */
 const READERS = 8;
+/** MiB per page of a file too large for the app to read whole. */
+const PAGE_MIB = 8;
 
 const object = (value: unknown): Json | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value)
@@ -93,9 +96,13 @@ export type Digest = Readonly<{
   spawned: readonly string[];
 }>;
 
-function observations(entries: readonly Json[]) {
-  const seen = new Map<string, UsageObservation>();
-  const unkeyed = new Set<string>();
+/** Adds the entries' model requests to `seen`, once each; `unkeyed` holds
+ * the keys made up for those without ids. */
+function observe(
+  entries: readonly Json[],
+  seen: Map<string, UsageObservation>,
+  unkeyed: Set<string>,
+) {
   for (const entry of entries) {
     const message = object(entry.message);
     const usage = object(message?.usage);
@@ -128,9 +135,6 @@ function observations(entries: readonly Json[]) {
       seen.set(own, observation);
     } else seen.set(key, observation);
   }
-  return [...seen].map(
-    ([key, value]) => [unkeyed.has(key) ? undefined : key, value] as const,
-  );
 }
 
 /** The transcript names, `agent-<id>`, of the subagents the entries record
@@ -141,28 +145,113 @@ const spawned = (entries: readonly Json[]) =>
     return /^[\w-]+$/.test(agentId) ? [`agent-${agentId}`] : [];
   });
 
-function digest(file: string): Digest {
-  const { entries, unreadable } = lines(file);
-  let times: { first: number; last: number } | undefined;
-  for (const entry of entries) {
-    const at = Date.parse(str(entry.timestamp));
-    if (!(at > 0)) continue;
-    times ??= { first: at, last: at };
-    times.first = Math.min(times.first, at);
-    times.last = Math.max(times.last, at);
-  }
+/** A file's digest, built from its text in order: whole, or a page of whole
+ * lines at a time. */
+function digester() {
+  let first: Json | undefined;
   let title: string | undefined;
-  for (const entry of entries)
-    if (entry.type === "ai-title" && str(entry.aiTitle).trim())
-      title = str(entry.aiTitle).trim();
+  let unreadable = 0;
+  let times: { first: number; last: number } | undefined;
+  const seen = new Map<string, UsageObservation>();
+  const unkeyed = new Set<string>();
+  const names: string[] = [];
   return {
-    start: buzzStart(entries),
-    ...(title ? { title } : {}),
-    unreadable,
-    ...(times && { times }),
-    observations: observations(entries),
-    spawned: spawned(entries),
+    add(text: string) {
+      const read = lines(text);
+      unreadable += read.unreadable;
+      for (const entry of read.entries) {
+        if (entry.type === "user" && !entry.isMeta && !entry.isSidechain)
+          first ??= entry;
+        const at = Date.parse(str(entry.timestamp));
+        if (at > 0) {
+          times ??= { first: at, last: at };
+          times.first = Math.min(times.first, at);
+          times.last = Math.max(times.last, at);
+        }
+        if (entry.type === "ai-title" && str(entry.aiTitle).trim())
+          title = str(entry.aiTitle).trim();
+      }
+      observe(read.entries, seen, unkeyed);
+      names.push(...spawned(read.entries));
+    },
+    /** Counts a line left unread. */
+    skip() {
+      unreadable += 1;
+    },
+    digest(): Digest {
+      return {
+        start: buzzStart(first ? [first] : []),
+        ...(title ? { title } : {}),
+        unreadable,
+        ...(times && { times }),
+        observations: [...seen].map(
+          ([key, value]) =>
+            [unkeyed.has(key) ? undefined : key, value] as const,
+        ),
+        spawned: names,
+      };
+    },
   };
+}
+
+function digest(file: string): Digest {
+  const digesting = digester();
+  digesting.add(file);
+  return digesting.digest();
+}
+
+/** The digest of a file in `~/.claude/projects` too large for the app to read
+ * whole, read a page at a time. A line larger than the app's read is not
+ * decoded: it counts as unreadable, so a page and a line the app could read
+ * are the most held at once. Like the app's read, it is not stopped: other
+ * reads may be waiting on it. */
+async function digestPages(spawn: Spawn, path: string) {
+  const digesting = digester();
+  // A page ends partway through a line, which the next page finishes.
+  let rest = new Uint8Array();
+  // Within a line too large to read, dropped up to its end.
+  let skipping = false;
+  for (let page = 0; ; page++) {
+    let chunk = await readFile(
+      spawn,
+      "~/.claude/projects",
+      path,
+      undefined,
+      undefined,
+      "read-page",
+      [String(page * PAGE_MIB), String(PAGE_MIB)],
+    );
+    const last = chunk.length < PAGE_MIB << 20;
+    if (skipping) {
+      const end = chunk.indexOf(10);
+      if (end < 0) {
+        if (last) return digesting.digest();
+        continue;
+      }
+      skipping = false;
+      chunk = chunk.subarray(end + 1);
+    }
+    const bytes = new Uint8Array(rest.length + chunk.length);
+    bytes.set(rest);
+    bytes.set(chunk, rest.length);
+    // Only the line carried from the page before can be too large: the
+    // lines after it are within this page.
+    const first = bytes.indexOf(10);
+    const large = (first < 0 ? bytes.length : first) > READ_LIMIT;
+    if (large) digesting.skip();
+    if (large && first < 0) {
+      if (last) return digesting.digest();
+      skipping = true;
+      rest = new Uint8Array();
+      continue;
+    }
+    const end = last ? bytes.length : bytes.lastIndexOf(10) + 1;
+    digesting.add(
+      new TextDecoder().decode(bytes.subarray(large ? first + 1 : 0, end)),
+    );
+    if (last) return digesting.digest();
+    rest = bytes.slice(end);
+  }
 }
 
 /** A session's usage from its file's digest and its subagents' by name
@@ -240,6 +329,13 @@ export type UsageHost = Readonly<{
 }>;
 
 const reader = limited(READERS);
+const message = (error: unknown) =>
+  error instanceof Error ? error.message : "";
+/** Undefined for a file that is gone; otherwise the error is thrown. */
+const gone = (error: unknown) => {
+  if (/no such file/i.test(message(error))) return undefined;
+  throw error;
+};
 
 /** The agent's Buzz sessions in its workspace's Claude Code history, active
  * since `since`. `saved` are the session ids this app saved for it. */
@@ -275,10 +371,9 @@ export async function readUsage(
           ),
         );
       } catch (error) {
-        if (/no such file/i.test(error instanceof Error ? error.message : ""))
-          return undefined;
-        throw error;
+        if (!/larger than 50 MB/.test(message(error))) return gone(error);
       }
+      return digestPages(spawn, `./${project}/${path}`).catch(gone);
     });
     current.digests.set(path, pending);
     // A failed read is tried again next time.
