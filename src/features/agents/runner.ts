@@ -2544,6 +2544,12 @@ export class AgentRunners {
             }
           : {}),
         threadRootId: threadRootId ?? event.id,
+        sourceRootId:
+          channel?.channelType === "solo" ||
+          channel?.channelType === "dm" ||
+          (wake && !wake.root)
+            ? null
+            : (threadRootId ?? event.id),
         ...(thread ? { thread: true } : {}),
         ...(soloChat ? { soloChat: true } : {}),
         ...(soloChat && conversationName ? { conversationName } : {}),
@@ -2558,6 +2564,9 @@ export class AgentRunners {
                   : trigger,
               ...(job.channelId ? { channelId: job.channelId } : {}),
             })
+        : undefined,
+      trigger.type === "mention"
+        ? { author: trigger.event.pubkey, text: trigger.event.content }
         : undefined,
     );
     if (
@@ -2768,8 +2777,9 @@ export class AgentRunners {
         ...(job.work
           ? {
               ignored: () => job.work?.remove(),
-              acknowledged: () => {
+              acknowledged: (input?: Readonly<{ steering?: true }>) => {
                 job.work?.started();
+                job.work?.acknowledged(input);
                 void admission?.then((admitted) => admitted?.acknowledged());
               },
               superseded: () => job.work?.supersede(),
@@ -2955,7 +2965,16 @@ export class AgentRunners {
           const destination = event.tags?.find((tag) => tag[0] === "h")?.[1];
           const ownReply =
             event.kind === 9 && !!work && destination === work.channelId;
-          const sent = ownReply ? work.sending() : undefined;
+          const reference = threadReference({ tags: event.tags ?? [] });
+          const inSource =
+            work &&
+            (reference
+              ? reference.rootId === work.threadRootId
+              : !event.tags?.some(([name]) => name === "e"));
+          const sent = ownReply
+            ? work.sending(inSource ? event.content : undefined)
+            : undefined;
+          let confirmed: boolean | undefined = false;
           try {
             const published = await this.publish(
               runner,
@@ -2963,6 +2982,7 @@ export class AgentRunners {
               lifetime,
               check,
             );
+            confirmed = true;
             if (workspaces && event.kind === 9007) {
               const id = published.tags.find(([key]) => key === "h")?.[1];
               if (id) {
@@ -2984,10 +3004,13 @@ export class AgentRunners {
             return published;
           } catch (error) {
             const uncertain = ownReply && unconfirmedAgentEvent(error);
-            if (uncertain) work.reply(uncertain);
+            if (uncertain) {
+              confirmed = undefined;
+              work.reply(uncertain);
+            }
             throw error;
           } finally {
-            sent?.();
+            sent?.(confirmed);
           }
         },
         query: async (filters: readonly object[]) => {

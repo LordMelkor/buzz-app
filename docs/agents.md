@@ -80,6 +80,46 @@ as the native reset. A failed reset blocks admission until New succeeds.
 Claude and Codex implement this contract. With no router and
 no saved association, the extension adds no execution or publication work.
 
+## Local lifecycle evidence
+
+`session.agentActivity.snapshot().local` can include `LocalWork.evidence`.
+It is an immutable snapshot at a runner-accepted `wake`, accepted mid-turn
+`steer`, or actual `handoff`. New hosts set `evidence: null` until acceptance;
+older hosts omit the field. Check field presence for capability, then skip null
+rows. A `working` presentation state alone does not prove acceptance. Claude Code
+and Codex report exact input acceptance. Other types must report
+`Delivery.acknowledged()` and use `{ steering: true }` for accepted steering.
+Acceptance does not prove that the model has consumed the input.
+
+The lifecycle `id` identifies one local work attempt. Its `revision` increases
+at each boundary within this activity owner. Duplicate callbacks do not create
+boundaries. Reconnect keeps these values; a restarted attempt gets a new ID.
+Use the ID, revision, source fields and logical session association to reject
+stale async results. Publication and step changes do not change this snapshot.
+
+`messages` contains ordered accepted input and attempted kind-9 output for the
+same agent, community and source conversation. When a session association is
+present, its logical session key also isolates the history. The row
+uses `sourceRootId` as the canonical source boundary: a thread root, or null
+for a flat Solo/DM conversation or rootless wake. The `thread` flag describes
+message presentation and does not group evidence. Synthetic input
+has `synthetic: true` and author `host`. Outgoing text has a local ID and a
+`delivery` state: `pending`, `published`, or `failed`. A pending or failed
+attempt is not proof of delivery. An uncertain acknowledgement stays `pending`.
+Each message has an `observedAt` epoch time in milliseconds and a monotonic local
+`order`. Each snapshot keeps at most 64 messages and
+65,536 UTF-16 characters. Oversized text keeps its suffix. `omitted` counts
+text removed within the retained work rows. The existing 512-row activity
+limit also applies. `history: "local"` explicitly excludes an archive guarantee:
+messages from before this process, other devices, and undelivered input can
+be absent. No relay read fills those gaps.
+
+No tool calls, tool targets, thinking summaries, status decisions or task policy
+enter this evidence. It adds no relay reads, subscriptions, timers or polls.
+Handoff can coexist with a background watch or a pending publication. A final
+send tool still waits for publication success before it can end a turn; the
+evidence contract adds no wait after the runner's handoff.
+
 ## Creating and changing agents from a conversation
 
 The shared tools offer `agent_types` to list installed local runtimes and

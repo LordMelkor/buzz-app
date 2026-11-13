@@ -775,7 +775,7 @@ export type Delivery<Config = unknown> = Readonly<{
   /** The plugin declined this request; no work or successful outcome is implied. */
   ignored?(): void;
   /** The harness acknowledged this exact request. Not proof of model consumption. */
-  acknowledged?(): void;
+  acknowledged?(input?: Readonly<{ steering?: true }>): void;
   /** A newer acknowledged request owns this turn's activity; hide this message's
    * bubble without claiming success or changing the execution outcome. */
   superseded?(): void;

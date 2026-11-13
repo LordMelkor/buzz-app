@@ -5265,6 +5265,8 @@ it("continues an owner's Solo chat as one channel conversation posted at the top
     expect(f.sent.filter((w) => w.method === "turn/steer")).toHaveLength(1),
   );
   await vi.waitFor(() => expect(activity.superseded).toHaveBeenCalledOnce());
+  expect(activity.acknowledged).toHaveBeenCalledWith(undefined);
+  expect(next.acknowledged).toHaveBeenCalledWith({ steering: true });
   await f.tool("send", { audience: "everyone", text: "Progress" });
   if (first.trigger.type !== "mention") throw new Error("Expected mention");
   // A stale reply into the chat is returned for correction, not posted.

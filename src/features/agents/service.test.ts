@@ -1858,6 +1858,7 @@ describe("a plugin's wake", () => {
           agent: bot,
           channelId: channel,
           threadRootId: root,
+          sourceRootId: channelType ? null : root,
           syntheticMessage: true,
           requestText: "Read the task request",
           state: "working",
@@ -1867,6 +1868,18 @@ describe("a plugin's wake", () => {
           channelType ? undefined : true,
         );
         const work = f.activity.reader.work()[0] as LocalWork;
+        expect(work.evidence).toMatchObject({
+          lifecycle: { phase: "wake" },
+          messages: [
+            {
+              role: "user",
+              author: "host",
+              synthetic: true,
+              text: "Read the task request",
+            },
+          ],
+          history: "local",
+        });
         const delivery = f.run.mock.calls[0]?.[0];
         expect(work.messageId).toBe(
           delivery?.trigger.type === "plugin" ? delivery.trigger.id : undefined,
@@ -2171,6 +2184,160 @@ it("publishes an agent's reply in a chat its owner is still starting once the st
   land();
   await vi.waitFor(() => expect(replied).toBe(true));
   expect(await published(native, 9)).toHaveLength(1);
+});
+
+it.each(["dm", "huddle"] as const)(
+  "retains supported %s reply placement in local evidence",
+  async (kind) => {
+    const f = await setup();
+    const destination = kind === "dm" ? dm : channel;
+    const root = "e".repeat(64);
+    if (kind === "huddle") {
+      const list = f.session.channels.list();
+      vi.spyOn(f.session.channels, "list").mockReturnValue({
+        ...list,
+        channels: list.channels.map((row) =>
+          row.id === channel
+            ? {
+                ...row,
+                huddle: true,
+                description: huddleDescription(crypto.randomUUID()),
+              }
+            : row,
+        ),
+      });
+    }
+    await f.service.create({ type: "example/echo", name: "Echo" });
+    f.run.mockImplementationOnce(async ({ agent, acknowledged }) => {
+      acknowledged?.();
+      await agent.publish({
+        kind: 9,
+        content: "Reply",
+        tags: [
+          ["h", destination],
+          ...(kind === "dm" ? [["e", root, "", "reply"]] : []),
+        ],
+      });
+    });
+    f.emit({
+      events: [
+        event("f".repeat(64), {
+          pubkey: viewer,
+          content: "Request",
+          tags: [
+            ["h", destination],
+            ["e", root, "", "reply"],
+            ["p", bot],
+          ],
+        }),
+      ],
+      channelId: destination,
+    });
+    try {
+      await vi.waitFor(() =>
+        expect(f.activity.reader.work()[0]?.evidence?.lifecycle.phase).toBe(
+          "handoff",
+        ),
+      );
+      expect(f.activity.reader.work()[0]?.sourceRootId).toBe(
+        kind === "dm" ? null : root,
+      );
+      expect(
+        f.activity.reader.work()[0]?.evidence?.messages.map(({ text }) => text),
+      ).toEqual(["Request", "Reply"]);
+    } finally {
+      await f.ctx.fiber.dispose();
+    }
+  },
+);
+
+it("captures runner handoff with a pending publication and a background watch", async () => {
+  const f = await setup();
+  const sourceRootId = "a".repeat(64);
+  await f.service.create({ type: "example/echo", name: "Echo" });
+  const publication = runnerGate<RelayEvent>();
+  const turn = runnerGate();
+  const original = f.native.publish.getMockImplementation();
+  if (!original) throw new Error("Missing native publisher");
+  f.native.publish.mockImplementation((member, template) =>
+    template.kind === 9 && template.content === "Choose the next scope"
+      ? publication.promise
+      : original(member, template),
+  );
+  let reply: Promise<RelayEvent> | undefined;
+  f.run.mockImplementationOnce(
+    async ({ agent, acknowledged, workingUntil }) => {
+      acknowledged?.();
+      await agent.publish({
+        kind: 9,
+        content: "Other thread content",
+        tags: [
+          ["h", channel],
+          ["e", "d".repeat(64), "", "reply"],
+        ],
+      });
+      reply = agent.publish({
+        kind: 9,
+        content: "Choose the next scope",
+        tags: [
+          ["h", channel],
+          ["e", sourceRootId, "", "reply"],
+        ],
+      });
+      workingUntil(turn.promise);
+    },
+  );
+  f.emit({
+    events: [
+      event(sourceRootId, {
+        pubkey: viewer,
+        content: "Test the change",
+        tags: [
+          ["h", channel],
+          ["p", bot],
+        ],
+      }),
+    ],
+    channelId: channel,
+  });
+  try {
+    await vi.waitFor(() =>
+      expect(f.activity.reader.work()[0]?.publishing).toBe(1),
+    );
+    const wake = f.activity.reader.work()[0]?.evidence;
+    expect(wake).toMatchObject({
+      lifecycle: { phase: "wake" },
+      messages: [{ author: viewer, text: "Test the change" }],
+    });
+    turn.resolve();
+    await vi.waitFor(() =>
+      expect(f.activity.reader.work()[0]?.evidence?.lifecycle.phase).toBe(
+        "handoff",
+      ),
+    );
+    const handoff = f.activity.reader.work()[0]?.evidence;
+    expect(f.activity.reader.work()[0]?.publishing).toBe(1);
+    expect(handoff?.messages.map(({ text }) => text)).toEqual([
+      "Test the change",
+      "Choose the next scope",
+    ]);
+    expect(handoff?.messages[1]?.delivery).toBe("pending");
+    expect(f.service.find(bot)?.attention["watch/channel"]).toBeDefined();
+    publication.resolve(
+      event("local-reply", {
+        pubkey: bot,
+        content: "Choose the next scope",
+        tags: [["h", channel]],
+      }),
+    );
+    await reply;
+    expect(f.activity.reader.work()[0]?.evidence).toBe(handoff);
+  } finally {
+    turn.resolve();
+    publication.resolve(event("local-reply"));
+    await reply;
+    await f.ctx.fiber.dispose();
+  }
 });
 
 it("confirms first-turn Solo metadata before its reply publish is acknowledged", async () => {

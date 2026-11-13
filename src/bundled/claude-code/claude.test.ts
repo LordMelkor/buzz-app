@@ -267,6 +267,7 @@ it("moves activity only when the exact follow-up is acknowledged, without ending
   });
   emit({ ...a, isReplay: true });
   expect(first.acknowledged).toHaveBeenCalledOnce();
+  expect(first.acknowledged).toHaveBeenCalledWith(undefined);
   const steered = claude.send("same text", second);
   const b = fake.received.filter((m) => m.type === "user").at(-1);
   if (!b) throw new Error("Expected follow-up");
@@ -280,6 +281,7 @@ it("moves activity only when the exact follow-up is acknowledged, without ending
   emit({ ...b, isReplay: true });
   expect(first.superseded).toHaveBeenCalledOnce();
   expect(second.acknowledged).toHaveBeenCalledOnce();
+  expect(second.acknowledged).toHaveBeenCalledWith({ steering: true });
   emit({ ...b, isReplay: true });
   const watched = claude.send("watched event");
   const watch = fake.received.filter((m) => m.type === "user").at(-1);
