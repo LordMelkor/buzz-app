@@ -130,7 +130,9 @@ export function mcpSettings(mcp: ClaudeMcp) {
           ? []
           : Object.entries(choice).flatMap(([server, tools]) =>
               Array.isArray(tools)
-                ? tools.map((tool) => `mcp__${mcpName(server)}__${tool}`)
+                ? tools.map(
+                    (tool) => `mcp__${mcpName(server)}__${mcpName(tool)}`,
+                  )
                 : [],
             ),
     },

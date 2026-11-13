@@ -60,7 +60,7 @@ A type declares `harnessMcp: { report(agent), inspect?(agent, server) }`. `repor
   without a control. It disables tools, native MCP, session persistence and
   workspace instruction loading. It retains native model and effort defaults and
   explicit agent model/effort choices; it does not send a model turn.
-- Read-back uses `mcp_status` for server metadata and `get_context_usage` for the admitted tools. The discovered catalog can still contain denied tools. An unexpected server can already have started before read-back stops the session.
+- Read-back uses `mcp_status` for server metadata and `get_context_usage` for the admitted tools. The discovered catalog can still contain denied tools. Tool choices and core callbacks keep the catalog names (such as `search.docs`); native permission rules use Claude’s normalized names (such as `search_docs`). An admitted tool with no unique catalog identity stops the session before a turn. An unexpected server can already have started before read-back stops the session.
 - Native permission requests use `permissions.ask` and the stdio `can_use_tool` callback, with a 120-second hold budget. Denial or cancellation explicitly rejects the request. Results, including child-agent results and native preallowed calls, feed the execution backstop; native permission rejections and unavailable-tool responses are distinguished from errors after execution.
 - Inspection requires the selected server to be enabled in Claude's native
   configuration, including native project approval, before starting a process.
