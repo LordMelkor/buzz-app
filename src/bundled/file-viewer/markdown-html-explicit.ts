@@ -1,4 +1,5 @@
-// CommonMark HTML blocks with explicit terminators retain their kind across cuts.
+// CommonMark's terminator and parse5's comment terminator are distinct for
+// processing instructions/CDATA. Keep both states without retaining payload.
 export type ExplicitHtml = Readonly<{
   kind: "pi" | "cdata" | "declaration";
   visible: boolean;
@@ -15,3 +16,21 @@ export function explicitHtmlStart(line: string): ExplicitHtml | undefined {
 }
 export const explicitHtmlEnd = (state: ExplicitHtml): string =>
   state.kind === "pi" ? "?>" : state.kind === "cdata" ? "]]>" : ">";
+
+export function explicitHtmlWrapper(state: ExplicitHtml | undefined): {
+  open: string;
+  close: string;
+} {
+  if (!state) return { open: "", close: "" };
+  // A completed comment admits the rest of exactly one physical HTML line.
+  // Unlike reopening a PI, it releases Markdown at the original line ending.
+  if (state.lineTail) return { open: "<!-- -->", close: "" };
+  if (state.kind === "declaration") return { open: "<!A", close: ">" };
+  if (state.kind === "pi")
+    return state.visible
+      ? { open: "<? >", close: "<??>" }
+      : { open: "<?", close: "?>" };
+  return state.visible
+    ? { open: "<![CDATA[>", close: "<!--]]>-->" }
+    : { open: "<![CDATA[", close: "]]>" };
+}

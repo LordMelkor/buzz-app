@@ -1,3 +1,6 @@
+import { openNotebook } from "./notebook";
+import { openTextDocument, textDocumentFormat } from "./text-document";
+import { formatExtension } from "../formats";
 import { CFB } from "@e965/xlsx";
 import type { OfficeDocument, OfficeResult } from "../office-types";
 import { OfficePackage } from "./package";
@@ -177,7 +180,12 @@ export async function openOffice(
   bytes: Uint8Array,
   name: string,
   signal: AbortSignal,
+  options: { mime?: string; isCommunityMedia?: (url: string) => boolean } = {},
 ): Promise<OfficeResult> {
+  if (formatExtension(name, options.mime) === "ipynb")
+    return openNotebook(bytes, signal, options.isCommunityMedia);
+  if (textDocumentFormat(name, options.mime))
+    return openTextDocument(bytes, name, signal, options);
   let state: OfficeState = { kind: "done", bytes };
   const beginInflating = () => {
     state = { kind: "inflating" };

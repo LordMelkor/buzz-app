@@ -7,68 +7,9 @@ import type { Options as SanitizeSchema } from "rehype-sanitize";
 import { MAX_RENDER_DEPTH } from "./office-types";
 import type { OutlineItem, ParsedDocument } from "./office-types";
 
-// Shared HTML admission rules for rendering and the bounded source index.
-const keptHtmlTags =
-  "a blockquote br code del details div em h1 h2 h3 h4 h5 h6 hr img input ins kbd li mark ol p pre section span strong sub summary sup table tbody td th thead tr ul".split(
-    " ",
-  );
-const strippedHtmlTags = ["script", "style", "iframe", "svg"];
-const htmlAncestors: Record<string, string[]> = {
-  tbody: ["table"],
-  thead: ["table"],
-  tr: ["table"],
-  td: ["table"],
-  th: ["table"],
-};
+import { schema } from "./markdown-schema";
 
-/** Explicit schema: do not inherit the sanitizer's broad default attributes. */
-const schema: SanitizeSchema = {
-  allowComments: false,
-  allowDoctypes: false,
-  tagNames: keptHtmlTags,
-  attributes: {
-    "*": [
-      "id",
-      [
-        "className",
-        /^hljs-[a-z0-9_-]+$/,
-        "task-list-item",
-        "contains-task-list",
-        "footnotes",
-        "mdv-continued",
-        /^data-footnote-[a-z0-9-]+$/,
-      ],
-    ],
-    a: ["href", "dataFootnoteRef", "dataFootnoteBackref"],
-    img: ["src", "alt", "title", "width", "height"],
-    code: ["dataLanguage"],
-    details: ["open"],
-    ol: ["start"],
-    li: ["value"],
-    div: [["dataAlert", "note", "tip", "important", "warning", "caution"]],
-    th: [["align", "left", "right", "center"]],
-    td: [["align", "left", "right", "center"]],
-    input: [["type", "checkbox"], "checked", ["disabled", true]],
-  },
-  protocols: {
-    href: ["https", "mailto", "buzz", "buzz-mdv", "nostr"],
-    src: ["https"],
-  },
-  clobber: [],
-  clobberPrefix: "",
-  ancestors: htmlAncestors,
-  required: { input: { type: "checkbox", disabled: true } },
-  strip: strippedHtmlTags,
-};
-
-const ALIGN_TAGS = new Set("p div h1 h2 h3 h4 h5 h6 img".split(" "));
-for (const tag of ALIGN_TAGS)
-  required(schema.attributes)[tag] = [
-    ...(required(schema.attributes)[tag] ?? []),
-    ["align", "left", "center", "right"],
-  ];
-
-const officeSanitizer = unified().use(rehypeSanitize, {
+const officeSchema: SanitizeSchema = {
   ...schema,
   tagNames: [...required(schema.tagNames), "u", "mark", "figure"],
   attributes: {
@@ -85,11 +26,35 @@ const officeSanitizer = unified().use(rehypeSanitize, {
       ["scope", "row", "col"],
     ],
     figure: [["dataMdvChart", /^\d{1,4}$/]],
+    div: [
+      ...(schema.attributes?.div ?? []),
+      ["dataAlert", "note", "tip", "important", "warning", "caution"],
+    ],
+    code: [...(schema.attributes?.code ?? []), ["dataMath", "inline"]],
+    pre: [...(schema.attributes?.pre ?? []), ["dataMath", "display"]],
   },
   protocols: { ...schema.protocols, src: ["https", "mdv-media"] },
+};
+const officeSanitizer = unified().use(rehypeSanitize, officeSchema);
+const notebookSanitizer = unified().use(rehypeSanitize, {
+  ...officeSchema,
+  attributes: {
+    ...officeSchema.attributes,
+    div: [
+      ...(officeSchema.attributes?.div ?? []),
+      [
+        "className",
+        "mdv-cell",
+        "mdv-prompt",
+        "mdv-output",
+        "mdv-stderr",
+        "mdv-error",
+      ],
+    ],
+  },
 });
 
-function cleanOfficeTree(tree: Root): Root {
+function cleanOfficeTree(tree: Root, notebook = false): Root {
   for (const node of elements(tree)) {
     if (
       node.tagName === "img" &&
@@ -105,7 +70,7 @@ function cleanOfficeTree(tree: Root): Root {
       }
     }
   }
-  return officeSanitizer.runSync(tree) as Root;
+  return (notebook ? notebookSanitizer : officeSanitizer).runSync(tree) as Root;
 }
 
 /** Generated sheet tables need sanitation but no document outline or metrics. */
@@ -116,9 +81,13 @@ export function sanitizeOfficeTree(tree: Root): Root {
 }
 
 /** Office parsers build hast directly; raw HTML is never reparsed here. */
-export function parseOfficeTree(tree: Root): ParsedDocument {
+export function parseOfficeTree(
+  tree: Root,
+  notebook = false,
+  excludedHeadings?: ReadonlySet<string>,
+): ParsedDocument {
   if (tooDeep(tree)) return plain(textContent(tree, true), "too-deep");
-  const clean = cleanOfficeTree(tree);
+  const clean = cleanOfficeTree(tree, notebook);
   const slugger = new GithubSlugger();
   // Keep bookmark and note targets, including those after the first heading.
   for (const node of elements(clean)) {
@@ -131,9 +100,13 @@ export function parseOfficeTree(tree: Root): ParsedDocument {
     if (!/^h[1-6]$/.test(node.tagName)) continue;
     const text = textContent(node),
       depth = Number(node.tagName[1]);
-    const id = slugger.slug(text);
+    const id =
+      notebook && typeof node.properties.id === "string"
+        ? node.properties.id
+        : slugger.slug(text);
     node.properties.id = id;
-    if (depth <= 3) outline.push({ depth: depth as 1 | 2 | 3, text, id });
+    if (depth <= 3 && !excludedHeadings?.has(id))
+      outline.push({ depth: depth as 1 | 2 | 3, text, id });
   }
   return {
     kind: "markdown",

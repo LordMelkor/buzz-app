@@ -5,7 +5,7 @@ import {
   definitionSource,
 } from "./markdown-container-definitions";
 import type { DefinitionReader } from "./markdown-container-definitions";
-import { MAX_RENDER_DEPTH } from "./markdown-limits";
+import { MAX_RENDER_CHARS, MAX_RENDER_DEPTH } from "./markdown-limits";
 import { decodeString } from "micromark-util-decode-string";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
@@ -34,6 +34,14 @@ import { inlineCut } from "./markdown-inline-cut";
 import { startsBlankHtmlBlock, isStandaloneHtmlTag } from "./markdown-html";
 import { explicitHtmlStart, explicitHtmlEnd } from "./markdown-html-explicit";
 import type { ExplicitHtml } from "./markdown-html-explicit";
+import { parseFragment } from "parse5";
+import { htmlLine } from "./markdown-html-context";
+import type { HtmlState, HtmlOpening } from "./markdown-html-context";
+import {
+  keptHtmlTags,
+  strippedHtmlTags,
+  htmlAncestors,
+} from "./markdown-schema";
 import { assemblePart } from "./markdown-part-source";
 
 export const PART_CHARS = 12_500;
@@ -85,7 +93,6 @@ export type PreparedPart = {
   bodyEnd: number;
   prefix: number;
   headingOffsets: ReadonlyMap<number, string>;
-  synthetic?: readonly DefinitionSpan[] | undefined;
   footnoteTargets?: ReadonlySet<string> | undefined;
   plain?: boolean | undefined;
   fallback?: "too-large" | "too-deep" | "context";
@@ -152,6 +159,9 @@ type Line = Readonly<{
   endedBefore: boolean;
   /** Hidden PI/CDATA comment payload precedes this absolute source offset. */
   htmlBlock: boolean;
+  html?: HtmlState | undefined;
+  scanHtml: boolean;
+  htmlStart?: number | undefined;
 }>;
 type Cursor = Readonly<{
   offset: number;
@@ -165,6 +175,7 @@ type Cursor = Readonly<{
   current?: Line | undefined;
   /** The forced cut splits a code span, link or emphasis. */
   inline?: true | undefined;
+  html?: HtmlState | undefined;
 }>;
 const lineEnding = /[\r\n]/g;
 
@@ -176,6 +187,7 @@ function sourceLine(
   text: string,
   cursor: Cursor,
   definitionAt?: DefinitionReader,
+  opening?: HtmlOpening,
 ): Line {
   if (cursor.current) return cursor.current;
   // One search per line: separately searching for CR on an LF-only file
@@ -297,6 +309,42 @@ function sourceLine(
   const paragraph =
     !blank && !region && !syntax.code && !!syntax.after.paragraph;
   const htmlBlock = region?.kind === "raw" || region?.kind === "html";
+  const indentedCode =
+    !htmlBlock &&
+    !cursor.paragraph &&
+    /^(?: {4}|\t)/.test(body) &&
+    !cursor.html?.pending;
+  const ordinaryHtml =
+    !syntax.code &&
+    !indentedCode &&
+    (htmlBlock ||
+      (!region && !!(cursor.html?.stack.length || cursor.html?.pending)));
+  const htmlStart = explicit
+    ? explicit.visible
+      ? cursor.offset
+      : visible < 0
+        ? undefined
+        : cursor.offset + visible + 1
+    : ordinaryHtml
+      ? cursor.offset
+      : undefined;
+  const scanHtml =
+    htmlStart !== undefined ||
+    (!syntax.code &&
+      !indentedCode &&
+      !region &&
+      (/[<`]/.test(body) || !!cursor.html?.literalEnd));
+  const html = scanHtml
+    ? htmlLine(
+        text,
+        htmlStart ?? cursor.offset,
+        next,
+        cursor.html ?? { stack: [] },
+        !htmlBlock && !explicit,
+        opening,
+      )
+    : cursor.html;
+
   return {
     end,
     next,
@@ -312,6 +360,9 @@ function sourceLine(
     paragraph,
     definition,
     htmlBlock,
+    html,
+    scanHtml,
+    htmlStart,
     code: syntax.code,
     syntax: region ? { ...syntax.after, paragraph: false } : syntax.after,
     endedBefore: syntax.endedBefore,
@@ -344,6 +395,7 @@ function nextLine(cursor: Cursor, line: Line): Cursor {
     line: cursor.line + 1,
     fence: line.after,
     syntax: line.syntax,
+    html: line.html,
     previousBlank: line.blank,
     opaque: line.afterOpaque,
     paragraph: line.paragraph,
@@ -1184,6 +1236,7 @@ type Index = {
   footnotes: Map<string, DefinitionSpan>;
   footnoteNumbers: Map<string, number>;
   origins: Map<string, number>;
+  anchors: Map<string, number>;
   notes: DefinitionSpan[];
   truncated: boolean;
   unclosed?: number | undefined;
@@ -1208,6 +1261,34 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
     footnotes = new Map<string, DefinitionSpan>();
   const notes: DefinitionSpan[] = [],
     origins = new Map<string, number>();
+  const anchors = new Map<string, number>();
+  const opening: HtmlOpening = (tag, ancestors) => {
+    if (
+      anchors.size >= MAX_PART_HEADINGS ||
+      !keptHtmlTags.includes(tag.name) ||
+      ancestors.some(
+        (parent) =>
+          strippedHtmlTags.includes(parent.name) || parent.name === "code",
+      ) ||
+      (htmlAncestors[tag.name] &&
+        !ancestors.some((parent) =>
+          required(htmlAncestors[tag.name]).includes(parent.name),
+        ))
+    )
+      return;
+    const attributes = text.slice(tag.start + 1 + tag.name.length, tag.end - 1);
+    if (attributes.length > MAX_RENDER_CHARS || !/\bid\b/i.test(attributes))
+      return;
+    const fragment = parseFragment(`<div${attributes}></div>`);
+    const element = fragment.childNodes.find(
+      (node) => "tagName" in node && node.tagName === "div",
+    );
+    const id =
+      element && "attrs" in element
+        ? element.attrs.find((attr) => attr.name === "id")?.value
+        : undefined;
+    if (id !== undefined && !anchors.has(id)) anchors.set(id, tag.start);
+  };
   const definitions = new Map<number, ReferenceDefinition>();
   const budget = definitionBudget(),
     definitionAt = containerDefinitions(text, budget);
@@ -1230,7 +1311,7 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
     else truncated = true;
   };
   while (cursor.offset < text.length) {
-    const line = sourceLine(text, cursor, definitionAt);
+    const line = sourceLine(text, cursor, definitionAt, opening);
     if (budget.exhausted) break;
     if (line.definition) definitions.set(cursor.offset, line.definition);
     const raw = text.slice(cursor.offset, line.end);
@@ -1345,6 +1426,7 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
         previousBlank: false,
         paragraph: false,
         syntax: line.syntax,
+        html: line.html,
       };
       paragraph = undefined;
       continue;
@@ -1410,6 +1492,7 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
       notes: [],
       footnoteNumbers: new Map(),
       origins,
+      anchors: new Map(),
       truncated,
       definitionAt: () => undefined,
       definitions: new Map(),
@@ -1437,6 +1520,7 @@ function indexSource(text: string, counts?: Map<string, number>): Index {
     notes,
     footnoteNumbers: numbers,
     origins,
+    anchors,
     truncated,
     definitionAt: indexed,
     definitions,
@@ -1658,8 +1742,10 @@ function chooseCut(
         if (offset > closeStart && offset < line.explicitEnd)
           offset = closeStart;
       }
+      const scanInline =
+        markdown && !line.code && !line.opaque && !cursor.fence;
       let inline = false;
-      if (markdown && !line.code && !line.opaque && !cursor.fence) {
+      if (scanInline) {
         const safe = inlineCut(
           text,
           cursor.offset,
@@ -1670,12 +1756,47 @@ function chooseCut(
         if (safe === undefined) inline = true;
         else offset = safe;
       }
+      const htmlStart = Math.max(
+        cursor.offset,
+        line.htmlStart ?? cursor.offset,
+      );
+      const htmlTo = (end: number) =>
+        line.scanHtml && htmlStart < end
+          ? htmlLine(
+              text,
+              htmlStart,
+              end,
+              cursor.html ?? { stack: [] },
+              !line.htmlBlock && !line.explicit,
+            )
+          : cursor.html;
+      let html = htmlTo(offset);
+      if (
+        html?.pending &&
+        html.pending.start > cursor.offset &&
+        html.pending.start < offset
+      ) {
+        // Inline selection can land inside an HTML token. Keep the token whole
+        // and recheck inline safety at the boundary HTML selected.
+        offset = html.pending.start;
+        html = htmlTo(offset);
+        if (scanInline)
+          inline =
+            inlineCut(
+              text,
+              cursor.offset,
+              offset,
+              offset,
+              Math.min(line.end, offset + PART_CHARS),
+            ) === undefined;
+      }
       return {
         ...cursor,
         offset,
         current: line,
         paragraph: line.paragraph,
         inline: inline ? true : undefined,
+        html,
       };
     }
     cursor = nextLine(cursor, line);
@@ -1713,6 +1834,7 @@ export type IndexData = Omit<
   "partSource" | "partFallback" | "partOf"
 > & {
   kind: DocumentKind;
+  htmlAnchors: Map<string, number>;
   definitionAt: Map<number, ReferenceDefinition>;
   context: Omit<PartContext, "text" | "kind" | "definitionAt" | "prepared">;
 };
@@ -1782,6 +1904,7 @@ export function indexData(text: string, kind: DocumentKind): IndexData {
   const words = kind === "markdown" ? wordCount(text) : 0;
   return {
     kind,
+    htmlAnchors: index?.anchors ?? new Map(),
     definitionAt: index?.definitions ?? new Map(),
     parts,
     outline,
@@ -1816,14 +1939,34 @@ export function indexData(text: string, kind: DocumentKind): IndexData {
 }
 
 export function documentParts(text: string, data: IndexData): DocumentParts {
-  const { kind, context, definitionAt, ...metadata } = data;
+  const { kind, context, definitionAt, htmlAnchors, ...metadata } = data;
   const { parts, headings } = metadata;
   const { footnoteParts } = context;
   const anchors = new Map<string, number>(headings);
+  const actualHeadings = new Map<string, IndexedHeading>();
+  for (const heading of context.headings) {
+    const id = `user-content-${heading.id}`;
+    actualHeadings.set(id, heading);
+    if (!anchors.has(id)) anchors.set(id, partAt(parts, heading.offset));
+  }
+  for (const [id, offset] of htmlAnchors) {
+    const heading = actualHeadings.get(id);
+    anchors.set(
+      id,
+      partAt(
+        parts,
+        heading && heading.offset < offset ? heading.offset : offset,
+      ),
+    );
+  }
   for (const [label, part] of footnoteParts) {
     const safe = label.toLowerCase();
-    anchors.set(`fn-${safe}`, part);
-    anchors.set(`fnref-${safe}`, part);
+    for (const id of [`fn-${safe}`, `fnref-${safe}`]) {
+      if (!anchors.has(id)) anchors.set(id, part);
+      const actual = `user-content-${id}`;
+      const previous = anchors.get(actual);
+      if (previous === undefined || part < previous) anchors.set(actual, part);
+    }
   }
   const result: DocumentParts = {
     ...metadata,
@@ -1917,25 +2060,6 @@ export function remarkPartHeadings(
           node.data.hProperties ??= {};
           node.data.hProperties.id = `user-content-${id}`;
         }
-      }
-      if (
-        node.type === "html" &&
-        node.position?.start.offset !== undefined &&
-        node.position.end.offset !== undefined
-      ) {
-        const start = node.position.start.offset,
-          end = node.position.end.offset;
-        let copied = start;
-        const chunks: string[] = [];
-        for (const range of prepared.synthetic ?? []) {
-          if (range.end <= copied || range.start >= end) continue;
-          chunks.push(
-            prepared.source.slice(copied, Math.max(copied, range.start)),
-          );
-          copied = Math.min(end, range.end);
-        }
-        if (chunks.length || copied !== start)
-          node.value = chunks.join("") + prepared.source.slice(copied, end);
       }
       if ("children" in node)
         for (let at = node.children.length - 1; at >= 0; at--)
