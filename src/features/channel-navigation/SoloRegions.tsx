@@ -98,10 +98,13 @@ export function SoloRegions({
   const snapshot = useSoloNavigation(session);
   const service = soloNavigationFor(session);
   const regions = orderContributedSidebarSections(
-    snapshot.regions.map((region) => ({
-      key: `solo-region:${region.key}`,
-      region,
-    })),
+    // A hidden region draws nothing; recovery is never hidden.
+    snapshot.regions
+      .filter((region) => !region.hidden)
+      .map((region) => ({
+        key: `solo-region:${region.key}`,
+        region,
+      })),
     sidebar.contributionOrder,
   ).map(({ region }) => region);
   const primary = regions.findIndex((region) => region.source);

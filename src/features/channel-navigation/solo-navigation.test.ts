@@ -2,6 +2,7 @@ import { createChannelDetails } from "../relay/channel-details";
 import { keypair, signed } from "../relay/testing";
 import type { RelayEvent } from "../relay/events";
 import { createRelaySession } from "../relay/session";
+import { prepareSoloMove } from "./solo-navigation";
 import { createSoloRegionFixture } from "./solo-navigation-testing";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -92,6 +93,62 @@ it.each(["bind", "subscribe", "read"] as const)(
     expect([...h.service.snapshot().excluded]).toEqual(["owned", "shared"]);
   },
 );
+
+it("marks a ready region hidden without losing its chats or ownership, and recovers it when the source is not ready", async () => {
+  const h = fixture();
+  const source = await h.register();
+  source.update({
+    status: "ready",
+    binding: source.binding(),
+    revision: 2,
+    hidden: true,
+  });
+  const hidden = h.service.snapshot().regions[0];
+  expect(hidden).toMatchObject({ hidden: true });
+  expect(hidden?.reason).toBeUndefined();
+  expect([...(hidden?.live ?? [])]).toEqual(["owned", "shared"]);
+  expect([...h.service.snapshot().excluded]).toEqual(["owned", "shared"]);
+  // Hiding is presentation only: the source still owns, files and starts its chats.
+  expect(prepareSoloMove(h.session, "owned")).toBe(
+    "This chat is managed by Work.",
+  );
+  expect(h.service.draftRegion(label)?.source.id).toBe("work");
+  source.update({
+    status: "loading",
+    binding: source.binding(),
+    revision: 3,
+    hidden: true,
+  });
+  expect(h.service.snapshot().regions[0]).toMatchObject({ reason: "loading" });
+  expect(h.service.snapshot().regions[0]?.hidden).toBeUndefined();
+  source.update({ status: "ready", binding: source.binding(), revision: 4 });
+  expect([...(h.service.snapshot().regions[0]?.live ?? [])]).toEqual([
+    "owned",
+    "shared",
+  ]);
+  source.update({
+    status: "ready",
+    binding: source.binding(),
+    revision: 5,
+    hidden: true,
+  });
+  await source.fiber.dispose();
+  expect(h.service.snapshot().regions[0]).toMatchObject({ reason: "off" });
+  expect([...h.service.snapshot().excluded]).toEqual(["owned", "shared"]);
+});
+
+it("fails a source whose snapshot has a non-boolean hidden", async () => {
+  const h = fixture();
+  const source = await h.register();
+  source.update({
+    status: "ready",
+    binding: source.binding(),
+    revision: 2,
+    hidden: "yes" as unknown as boolean,
+  });
+  expect(h.service.snapshot().regions[0]).toMatchObject({ reason: "failed" });
+  expect([...h.service.snapshot().excluded]).toEqual(["owned", "shared"]);
+});
 
 it("uses the code-point-lowest external region label and excludes no unknown or archived channel", () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});

@@ -128,7 +128,7 @@ export function SoloToolbar({
     !channel.cached && (!channel.readOnly || channel.viewerRole === "guest");
   return (
     <>
-      {region && (
+      {region && !region.hidden && (
         <Button
           size="sm"
           variant="ghost"

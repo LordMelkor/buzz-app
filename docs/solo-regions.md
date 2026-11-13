@@ -18,6 +18,15 @@ incarnation. A source must return increasing revisions with the current binding.
 Header actions remain outside the component error boundary, so a source can offer
 recovery actions while the host renders its channels.
 
+A ready snapshot with `hidden: true` keeps the region out of the sidebar: the
+host draws no heading, rows, header actions, or "In" chip for it, and it neither
+names the Solo tab nor composes its workspaces. The region stays in the shared
+projection, so its labeled chats stay out of the Solo list, its filing guard and
+workspace still apply, and its drafts still start; the chats remain reachable by
+links, notifications, and search, and the source presents them in its own UI. Any
+other state (off, loading, unavailable, failed) shows the recovery region as
+usual, so the chats never vanish when the source cannot present them.
+
 The source owns its content, presentation, and disclosure controls. It receives
 the stable `ui.Conversation` component. Conversation renders only live channels
 and calls its children with the name, preview, selected state, and bound parts:

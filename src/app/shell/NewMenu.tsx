@@ -71,7 +71,9 @@ function ReadyNewMenu({
   const composing = useSyncExternalStore(
     navigation?.subscribe ?? noSubscription,
     () =>
-      !!navigation?.snapshot().regions.find((region) => region.source)?.source
+      !!navigation
+        ?.snapshot()
+        .regions.find((region) => region.source && !region.hidden)?.source
         ?.composeWorkspaces,
   );
   const [creatingChannel, setCreatingChannel] = useState(false);

@@ -19,6 +19,8 @@ export type SoloRegion = Readonly<{
   reason?: "not-installed" | "off" | "loading" | "unavailable" | "failed";
   channels: readonly ChannelSummary[];
   live: ReadonlySet<string>;
+  /** A ready source keeps it out of the sidebar; its chats stay excluded. */
+  hidden?: true;
 }>;
 export type SoloPlacement = Readonly<{
   regions: readonly SoloRegion[];
@@ -71,6 +73,9 @@ export function projectSoloRegions(
         ...(current ? { source: current.source } : {}),
         ...(current?.snapshot ? { snapshot: current.snapshot } : {}),
         ...(reason ? { reason } : {}),
+        ...(!reason && current?.snapshot?.hidden
+          ? { hidden: true as const }
+          : {}),
       };
     })
     .sort(

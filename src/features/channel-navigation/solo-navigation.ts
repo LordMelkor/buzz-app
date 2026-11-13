@@ -357,7 +357,9 @@ export class SoloNavigationService extends Service implements SoloNavigation {
             if (
               !["loading", "ready", "unavailable"].includes(next.status) ||
               (next.notice !== undefined &&
-                (typeof next.notice !== "string" || next.notice.length > 120))
+                (typeof next.notice !== "string" ||
+                  next.notice.length > 120)) ||
+              (next.hidden !== undefined && typeof next.hidden !== "boolean")
             )
               throw new Error("Invalid region snapshot");
             if (
@@ -446,7 +448,9 @@ export class SoloNavigationService extends Service implements SoloNavigation {
       : undefined;
   }
   async openCreatedWorkspace(workspaceId: string): Promise<boolean> {
-    const region = this.value.regions.find((item) => item.source);
+    const region = this.value.regions.find(
+      (item) => item.source && !item.hidden,
+    );
     const source = region?.source;
     if (!source?.composeWorkspaces || !source.openWorkspace) return false;
     const binding = this.value.binding;

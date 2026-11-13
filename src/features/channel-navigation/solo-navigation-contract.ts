@@ -13,6 +13,8 @@ export type SoloRegionSnapshot = Readonly<{
   revision: number;
   model?: unknown;
   notice?: string;
+  /** Draws no region while ready; its chats stay out of the Solo list. */
+  hidden?: boolean;
 }>;
 export type SoloRegionAction = Readonly<{
   id: string;

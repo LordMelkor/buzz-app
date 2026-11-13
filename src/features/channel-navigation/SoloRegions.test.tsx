@@ -1376,6 +1376,26 @@ it("contains a throwing contributed menu without losing the source body", async 
   ).not.toBeInTheDocument();
 });
 
+it("draws nothing for a hidden region and restores it when the source shows it", async () => {
+  const h = fixture();
+  const source = await h.register({ component: Body });
+  source.update({
+    status: "ready",
+    binding: source.binding(),
+    revision: 2,
+    hidden: true,
+  });
+  mount(h);
+  expect(screen.queryByText("Work")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Owned" }),
+  ).not.toBeInTheDocument();
+  await act(async () =>
+    source.update({ status: "ready", binding: source.binding(), revision: 3 }),
+  );
+  expect(screen.getByRole("button", { name: "Owned" })).toBeVisible();
+});
+
 it("allows an unadorned source heading without a placeholder icon", async () => {
   const h = fixture();
   await h.register({ icon: null, component: Body });
