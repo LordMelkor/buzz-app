@@ -961,6 +961,10 @@ accepts. It is asked as sessions start, before turns and on calls, so it must
 answer at once from what the plugin already knows; only `true` admits, and a
 `when` that throws leaves out only that tool. `ctx.agents.toolsFor(agentKey)`
 is the list an agent gets now, and `toolsFor()` the tools every agent gets.
+`addTool` returns a function that removes the tool and frees its name, so a
+plugin whose tools come from elsewhere, such as an MCP server's list, replaces
+a changed tool by removing it and adding the new one. `addInstructions` returns
+one that removes its instructions.
 
 A plugin, bundled or installed, can give standing instructions to the agents
 this copy of the app runs with `ctx.agents.addInstructions({ id, text, when?

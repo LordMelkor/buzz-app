@@ -1456,8 +1456,10 @@ export type Agents = {
    * agents its `when` accepts, beside the Buzz tools. The tool acts as the
    * agent, like the rest of a trusted plugin's code acts as its owner. A
    * session lists the tools its agent gets when it starts, and one that
-   * cannot take a changed list is replaced when it is next used. */
-  addTool(tool: AddedTool): void;
+   * cannot take a changed list is replaced when it is next used. Returns a
+   * function that removes the tool, and frees its name, before the plugin
+   * stops. */
+  addTool(tool: AddedTool): () => void;
   /** A provider keeps the resolver and shares only its operation descriptor. */
   createToolOperation(id: string): AgentToolProvider;
   /** The tools active plugins add now. A name is only ever one plugin's. */
@@ -1467,8 +1469,9 @@ export type Agents = {
   toolsFor(agent?: AgentKey): readonly AddedTool[];
   /** Adds standing instructions to every turn of the agents this copy of the
    * app runs, or of those `when` accepts, while the plugin is on. Each turn
-   * shows them in a `<plugin-instructions>` section that names the plugin. */
-  addInstructions(instructions: AgentInstructions): void;
+   * shows them in a `<plugin-instructions>` section that names the plugin.
+   * Returns a function that removes them before the plugin stops. */
+  addInstructions(instructions: AgentInstructions): () => void;
   /** The Buzz side of a turn for an agent type a plugin brings: where a
    * delivery goes, the bundled harnesses' prompts, the agent's Buzz tools as
    * an MCP handler, and its replies. */
@@ -3084,11 +3087,20 @@ export class AgentsService extends Service implements Agents {
     // are not active yet, and the second to take a name must fail.
     if (this.toolNames.has(tool.name))
       throw new Error(`Another plugin adds agent tool ${tool.name}`);
-    this.addedTools.register(this.ctx, { ...tool, id: tool.name });
-    this.ctx.effect(() => {
+    const remove = this.addedTools.register(this.ctx, {
+      ...tool,
+      id: tool.name,
+    });
+    const release = this.ctx.effect(() => {
       this.toolNames.add(tool.name);
       return () => this.toolNames.delete(tool.name);
     });
+    // A plugin whose tools come from elsewhere (an MCP server's list)
+    // replaces one by removing it and adding the new one.
+    return () => {
+      remove();
+      void release();
+    };
   }
   createToolOperation(id: string): AgentToolProvider {
     const ctx = this.ctx;
@@ -3167,7 +3179,7 @@ export class AgentsService extends Service implements Agents {
       throw new Error(
         `Agent instructions are over ${INSTRUCTIONS_TEXT_LIMIT} bytes`,
       );
-    this.addedInstructions.register(
+    return this.addedInstructions.register(
       this.ctx,
       when ? { id, text, when } : { id, text },
     );

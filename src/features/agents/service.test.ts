@@ -11991,6 +11991,37 @@ it("reserves a tool name while its plugin is still starting", async () => {
   owner("buzz.other").agents.addTool(tool);
 });
 
+it("removes a plugin's tool and frees its name before the plugin stops", async () => {
+  const { service, ctx } = await setup();
+  const tool = (description: string) => ({
+    name: "notes_lookup",
+    description,
+    inputSchema: { type: "object" },
+    call: async () => description,
+  });
+  const owner = (id: string) =>
+    ctx.extend({ pluginOwner: Object.freeze({ id, revision: "bundled" }) });
+  let remove = () => {};
+  await owner("buzz.notes").plugin({
+    inject: ["agents"],
+    apply: (plugin: Context) => {
+      remove = plugin.agents.addTool(tool("Old."));
+    },
+  });
+  expect(service.tools().map(({ description }) => description)).toEqual([
+    "Old.",
+  ]);
+  remove();
+  expect(service.tools()).toEqual([]);
+  // The name is free again: for a changed tool, or for another plugin.
+  owner("buzz.other").agents.addTool(tool("New."));
+  await vi.waitFor(() =>
+    expect(service.tools().map(({ description }) => description)).toEqual([
+      "New.",
+    ]),
+  );
+});
+
 it("adds a plugin's tab to every agent's settings until the plugin goes", async () => {
   const { service, ctx } = await setup();
   const owner = (id: string) =>
