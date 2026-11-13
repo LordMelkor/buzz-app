@@ -101,6 +101,8 @@ it("finds as you type, steps with Enter and Shift+Enter, and Escape restores foc
     { text: "Buzz", in: "one" },
     { text: "buzz", in: "two" },
   ]);
+  // The highlight styles apply only under this attribute.
+  expect(document.documentElement).toHaveAttribute("data-find-on-screen");
 
   await user.keyboard("{Enter}");
   expect(screen.getByText("2 of 3")).toBeInTheDocument();
@@ -118,6 +120,7 @@ it("finds as you type, steps with Enter and Shift+Enter, and Escape restores foc
   await user.keyboard("{Escape}");
   expect(findBar()).not.toBeInTheDocument();
   expect(highlights.size).toBe(0);
+  expect(document.documentElement).not.toHaveAttribute("data-find-on-screen");
   expect(composer).toHaveFocus();
 });
 

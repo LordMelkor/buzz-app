@@ -33,11 +33,11 @@
   padding-inline-end: var(--space-2);
 }
 
-::highlight(buzz-find) {
+:root[data-find-on-screen] ::highlight(buzz-find) {
   background-color: var(--surface-find-match);
   color: var(--text-on-find-match);
 }
-::highlight(buzz-find-active) {
+:root[data-find-on-screen] ::highlight(buzz-find-active) {
   background-color: var(--surface-find-match-active);
   color: var(--text-on-find-match);
 }

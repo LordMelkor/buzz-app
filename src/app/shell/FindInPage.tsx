@@ -62,6 +62,9 @@ function paint(ranges: readonly Range[], active: number) {
   // Without the Custom Highlight API the bar still counts and scrolls.
   const highlights = globalThis.CSS?.highlights;
   if (!highlights) return;
+  // Highlight rules apply only while painting: any ::highlight rule makes
+  // Chromium compute highlight styles in every style recalc.
+  document.documentElement.dataset.findOnScreen = "";
   const matches = registered(highlights, MATCHES);
   const current = registered(highlights, ACTIVE);
   matches.clear();
@@ -73,6 +76,7 @@ function paint(ranges: readonly Range[], active: number) {
   });
 }
 function unpaint() {
+  delete document.documentElement.dataset.findOnScreen;
   globalThis.CSS?.highlights?.delete(MATCHES);
   globalThis.CSS?.highlights?.delete(ACTIVE);
 }

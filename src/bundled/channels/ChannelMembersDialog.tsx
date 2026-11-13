@@ -1104,14 +1104,20 @@ export function ChannelMembersDialog({
         .map(([key]) => key),
     [labelList],
   );
-  const accessOf = (key: string) =>
-    accessFilterLabel(administration.authority.roles[key]);
-  const accessGroups = accessFilterNames
-    .map((name) => ({
-      name,
-      count: currentMembers.filter((key) => accessOf(key) === name).length,
-    }))
-    .filter((group) => group.count > 0);
+  const roles = administration.authority.roles;
+  const accessOf = (key: string) => accessFilterLabel(roles[key]);
+  // Count once per roster or role change, not on every filter keystroke,
+  // which would label a large roster once per access level.
+  const accessGroups = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const key of currentMembers) {
+      const name = accessFilterLabel(roles[key]);
+      if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    return accessFilterNames
+      .map((name) => ({ name, count: counts.get(name) ?? 0 }))
+      .filter((group) => group.count > 0);
+  }, [currentMembers, roles]);
   const accessFilter =
     query.length === 0 &&
     (administration.status === "loading" ||
