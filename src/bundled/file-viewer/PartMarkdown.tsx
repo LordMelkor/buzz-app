@@ -20,7 +20,8 @@ import { labelText } from "../../features/messages/label-text";
 import { parseBuzzLink } from "../../features/navigation/buzz-links";
 import { safeLinkUrl } from "../../features/relay/message-content";
 import type { RelaySession } from "../../features/relay/session";
-import { HostRenderersContext, hostComponents } from "./host-renderers";
+import { fileComponents } from "./file-components";
+import { HostRenderersContext } from "./host-renderers";
 import styles from "./FileViewer.module.css";
 
 export type MediaSource = (url: string) => string | undefined;
@@ -144,12 +145,14 @@ const components: Components = {
   ...sharedComponents,
   a: PartLink,
   img: PartImage,
-  code: hostComponents.code,
+  code: fileComponents.code,
+  div: fileComponents.div,
 };
 
 /** One part of a Markdown file, with the Canvas and Notes trust rules plus the
  * viewer's own: part-aware transforms, community images, `#` links that
- * move within the file, and code and inline TeX that Buzz's plugins draw. */
+ * move within the file, alerts, and code and inline TeX that Buzz's plugins
+ * draw. */
 export function PartMarkdown({
   content,
   transforms,

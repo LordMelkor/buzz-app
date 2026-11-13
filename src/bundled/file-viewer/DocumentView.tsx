@@ -35,7 +35,9 @@ import {
 } from "./document-parts";
 import { formatLabel } from "./formats";
 import { rehypeFileMarkdown } from "./file-markdown";
+import { remarkFileMarkdown } from "./markdown-extensions";
 import { boundedHighlight, type highlight, languageFor } from "./highlight";
+import { Properties } from "./file-components";
 import type { OutlineItem } from "./office-types";
 import { type BufferControl, PartBuffer } from "./part-buffer";
 import { type MediaSource, PartMarkdown } from "./PartMarkdown";
@@ -198,7 +200,7 @@ function IndexedDocument({
           content={prepared}
           openLink={openLink}
           session={session}
-          transforms={[remarkPartHeadings(doc, index)]}
+          transforms={[remarkFileMarkdown, remarkPartHeadings(doc, index)]}
           rehype={[
             rehypePartFootnotes(doc, index),
             [rehypeFileMarkdown, { highlight: highlighter }],
@@ -293,7 +295,12 @@ function IndexedDocument({
         aria-label={file.name}
       >
         {kind === "markdown" ? (
-          <article className={styles.markdown}>{buffer}</article>
+          <article className={styles.markdown}>
+            {prepared.frontMatter && prepared.frontMatter.length > 0 && (
+              <Properties entries={prepared.frontMatter} />
+            )}
+            {buffer}
+          </article>
         ) : (
           buffer
         )}
