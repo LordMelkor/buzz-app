@@ -56,6 +56,15 @@ A type declares `harnessMcp: { report(agent), inspect?(agent, server) }`. `repor
 
 - Reports read names from the user's `.claude.json`, its entry for the agent's workspace, the workspace's `.mcp.json`, and metadata retained from that agent's sessions. Project servers that Claude has not approved are off by default. Servers from other sources appear after the agent's next session; reporting starts no server.
 - Controlled launches apply server denies and per-tool permission denies without changing native configuration. A changed choice replaces the conversation's process before its next turn; controlled sessions do not take an uncontrolled spare. With no control, ordinary launches keep their existing arguments and defaults.
+- Model discovery uses a temporary safe-mode process for every agent, including
+  without a control. It disables tools, native MCP, session persistence and
+  workspace instruction loading. It retains native model and effort defaults and
+  explicit agent model/effort choices; it does not send a model turn.
 - Read-back uses `mcp_status` for server metadata and `get_context_usage` for the admitted tools. The discovered catalog can still contain denied tools. An unexpected server can already have started before read-back stops the session.
 - Native permission requests use `permissions.ask` and the stdio `can_use_tool` callback, with a 120-second hold budget. Denial or cancellation explicitly rejects the request. Results, including child-agent results and native preallowed calls, feed the execution backstop; native permission rejections and unavailable-tool responses are distinguished from errors after execution.
-- Inspection denies every known server except the selected one, checks for unexpected servers before returning tools, and stops its process on success, error or cancellation. It makes no model turn or tool call. Protected and helper launches keep strict MCP configuration; execution targets keep their host's behavior.
+- Inspection requires the selected server to be enabled in Claude's native
+  configuration, including native project approval, before starting a process.
+  It denies every other known server, checks for unexpected servers before
+  returning tools, and stops its process on success, error or cancellation. It
+  makes no model turn or tool call. Protected and helper launches keep strict MCP
+  configuration; execution targets keep their host's behavior.

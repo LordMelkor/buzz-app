@@ -1173,6 +1173,9 @@ available rather than silently discarding it.
   running, new sessions load none until it runs. Without such a plugin nothing
   changes: each harness keeps its own default. Codex agents load none of your MCP servers, and Claude agents load
   the ones in your Claude Code configuration.
+  For Claude, **Show tools** requires the server to be enabled in Claude's own
+  configuration, including project approval. Enable it there before inspecting
+  its tools. Model discovery starts no MCP servers.
 - **Settings → Agent details → Previous versions** expands saved revisions for
   agents whose configuration syncs here. Settings and instructions appear together
   in one feed, newest first, with a label on each version. Versions are kept

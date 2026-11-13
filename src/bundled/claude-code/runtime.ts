@@ -343,8 +343,13 @@ export class ClaudeRuntime {
     signal.throwIfAborted();
     const report = await this.harnessMcp(agent);
     signal.throwIfAborted();
-    if (agent.protection || !report?.servers.some((row) => row.name === server))
+    const selectedServer = report?.servers.find((row) => row.name === server);
+    if (agent.protection || !report || !selectedServer)
       throw new Error("This agent cannot inspect that MCP server");
+    if (!selectedServer.default)
+      throw new Error(
+        "Enable this MCP server in Claude before inspecting its tools",
+      );
     let process: ClaudeProcess | undefined;
     const abort = () => void process?.kill().catch(() => undefined);
     signal.addEventListener("abort", abort, { once: true });

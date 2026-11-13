@@ -987,7 +987,22 @@ it("shares a temporary metadata lookup, releases its process, and refreshes afte
   const [first, second] = await Promise.all([pool.metadata(), pool.metadata()]);
   expect(first).toEqual(second);
   expect(first.model).toBe("claude-opus-5-5");
+  expect(first.effort).toBe("high");
   expect(claudes()).toHaveLength(1);
+  const probe = claudes()[0];
+  const args = probe?.options.args ?? [];
+  expect(args).toEqual(
+    expect.arrayContaining([
+      "--safe-mode",
+      "--strict-mcp-config",
+      "--no-session-persistence",
+    ]),
+  );
+  expect(args[args.indexOf("--tools") + 1]).toBe("");
+  expect(args[args.indexOf("--model") + 1]).toBe("opus");
+  expect(args).not.toContain("--setting-sources");
+  expect(probe?.options.agentCredential).toBe(false);
+  expect(probe?.prompts).toEqual([]);
   expect(live()).toHaveLength(0);
   await pool.metadata();
   expect(claudes()).toHaveLength(1);
