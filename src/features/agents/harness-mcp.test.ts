@@ -145,16 +145,21 @@ it("asks the registered control, and an error from it loads nothing", async () =
   // Leaving every name out keeps every default, and is still read back.
   choose.mockReturnValue(undefined);
   await expect(mcp.kit.choice(handle)).resolves.toEqual({});
-  await expect(mcp.kit.choice({ key: "gone" } as never)).resolves.toBe("none");
+  await expect(mcp.kit.choice({ key: "gone" } as never)).rejects.toThrow(
+    "not running here",
+  );
 });
 
-it("loads nothing for a protected agent and never asks the control", async () => {
-  const { mcp, install } = setup();
+it("answers only the plugin that runs the agent, and loads nothing for a protected agent", async () => {
+  const { mcp, install, live, kitOf } = setup();
   const choose = vi.fn(() => ({ alpha: true }));
   await install({ choose });
-  await expect(
-    mcp.kit.choice({ key, protection: { key: "p" } } as never),
-  ).resolves.toBe("none");
+  await expect(kitOf("other").choice(handle)).rejects.toThrow(
+    "Only the plugin that runs this agent's harness",
+  );
+  // Core reads protection from the agent as it runs, not from the caller.
+  live.agent = { ...agent, protection: { provider: "p", policy: {} } } as Agent;
+  await expect(mcp.kit.choice({ key } as never)).resolves.toBe("none");
   expect(choose).not.toHaveBeenCalled();
 });
 

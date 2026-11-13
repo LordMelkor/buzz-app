@@ -120,18 +120,15 @@ export function createHarnessMcp(
       const off = status().subscribe(done);
       done();
     });
-  async function answer(agent: Who): Promise<HarnessMcpAnswer> {
+  async function answer(agent: Agent): Promise<HarnessMcpAnswer> {
     if (agent.protection) return "none";
     if (state() === "waiting") await settle();
     switch (state()) {
       case "absent":
         return undefined;
       case "controlled": {
-        const found = running(agent.key);
         try {
-          return found && control
-            ? normalize(control.value.choose(found))
-            : "none";
+          return control ? normalize(control.value.choose(agent)) : "none";
         } catch {
           return "none";
         }
@@ -157,27 +154,32 @@ export function createHarnessMcp(
   /** The kit for the plugin `ctx` belongs to. Only the plugin that registered
    * an agent's type says what its sessions loaded, and the agent and its
    * protection are read from what runs here, not taken from the caller. */
-  const kitFor = (ctx: Context): HarnessMcpKit =>
-    Object.freeze({
-      choice: answer,
-      started(who, session, loaded, given) {
-        started(ctx, who.key, session, loaded, given);
-      },
-    });
-  function started(
-    ctx: Context,
-    key: AgentKey,
-    session: string,
-    loaded: HarnessMcpLoaded,
-    given: HarnessMcpAnswer,
-  ) {
+  /** The agent as it runs here, for the plugin that registered its type. */
+  function owned(ctx: Context, key: AgentKey) {
     const agent = running(key);
     const type = agent && typeOf(agent);
     if (!agent || !type) throw new Error("This agent is not running here");
     if (type.pluginId !== ctx.pluginOwner?.id)
       throw new Error(
-        "Only the plugin that runs this agent's harness says what its sessions loaded",
+        "Only the plugin that runs this agent's harness uses its MCP kit",
       );
+    return agent;
+  }
+  const kitFor = (ctx: Context): HarnessMcpKit =>
+    Object.freeze({
+      async choice(who) {
+        return answer(owned(ctx, who.key));
+      },
+      started(who, session, loaded, given) {
+        started(owned(ctx, who.key), session, loaded, given);
+      },
+    });
+  function started(
+    agent: Agent,
+    session: string,
+    loaded: HarnessMcpLoaded,
+    given: HarnessMcpAnswer,
+  ) {
     // A protection that can't be bound proves nothing, and still loads nothing.
     let protection: AgentProtection | undefined;
     try {

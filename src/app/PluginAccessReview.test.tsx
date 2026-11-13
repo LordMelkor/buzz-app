@@ -122,7 +122,9 @@ it("discloses agent MCP access as a new permission", () => {
       name: /Choose which MCP servers your agents load/,
     }),
   ).toBeVisible();
-  expect(added.getByText(/Cannot add or call servers/)).toBeVisible();
+  expect(
+    added.getByText(/Can start a configured server to list its tools/),
+  ).toBeVisible();
 });
 
 it("shows a registered harness title while keeping its exact key in details", async () => {
