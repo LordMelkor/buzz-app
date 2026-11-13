@@ -41,7 +41,8 @@ import {
   isLiteralMarkdownContext,
   isPlainProse,
   plainProseTree,
-  prepareMarkdown,
+  preparedMarkdown,
+  recentResults,
   type LiteralRange,
   type PreparedMarkdown,
 } from "./markdown-preparation";
@@ -508,10 +509,7 @@ export function MessageMarkdown({
   edited?: boolean | undefined;
 }) {
   const resolveName = useChannelIdentityNames(session, row.channelId);
-  const prepared = useMemo(
-    () => preparedBodies(row.content, () => prepareMarkdown(row.content)),
-    [row.content],
-  );
+  const prepared = useMemo(() => preparedMarkdown(row.content), [row.content]);
   if (prepared.kind === "plain")
     return (
       <div className={styles.plainText}>
@@ -560,7 +558,7 @@ function PreparedMessageMarkdown({
   interactive = true,
   edited = false,
 }: Parameters<typeof MessageMarkdown>[0] & {
-  prepared: Extract<ReturnType<typeof prepareMarkdown>, { kind: "markdown" }>;
+  prepared: Extract<PreparedMarkdown, { kind: "markdown" }>;
   resolveName: (pubkey: string, fallback: string) => string;
 }) {
   const row =
@@ -783,33 +781,6 @@ function PreparedMessageMarkdown({
   return largeEmoji ? markdown : <div className={styles.text}>{markdown}</div>;
 }
 
-/** Switching channels remounts every row. Keep recent results so a revisit
- * does not prepare and parse unchanged bodies again. */
-function recentResults<T>(
-  budget: number,
-  weigh: (key: string, value: T) => number,
-) {
-  const results = new Map<string, Readonly<{ value: T; weight: number }>>();
-  let total = 0;
-  return (key: string, make: () => T) => {
-    let entry = results.get(key);
-    if (entry) results.delete(key);
-    else {
-      const value = make();
-      entry = { value, weight: weigh(key, value) };
-      // Keeping a result heavier than the budget would evict all the others.
-      if (entry.weight > budget) return value;
-      total += entry.weight;
-    }
-    results.set(key, entry);
-    for (const [oldest, { weight }] of results) {
-      if (total <= budget) break;
-      results.delete(oldest);
-      total -= weight;
-    }
-    return entry.value;
-  };
-}
 function elementCount(node: ReactNode): number {
   if (Array.isArray(node))
     return node.reduce<number>((sum, child) => sum + elementCount(child), 0);
@@ -817,11 +788,6 @@ function elementCount(node: ReactNode): number {
     ? 1 + elementCount(node.props.children)
     : 0;
 }
-// A prepared body keeps its content and literal ranges: ~200k characters.
-const preparedBodies = recentResults<PreparedMarkdown>(
-  200_000,
-  (content) => 100 + content.length,
-);
 // A parsed body keeps ~2 KB, ~1 KB per element and ~2 bytes per character of
 // its key and text. Dense markup has an element every few characters, so weigh
 // both: ~4 MB in all. The elements depend only on the protected content; their
