@@ -2,7 +2,12 @@ import { expect, it } from "vitest";
 import { fileFormat, formatLabel, officeFormat } from "./formats";
 import { decodeText, isPdfBytes, LoadError, readBytes } from "./load";
 import { MAX_CELLS, MAX_COLUMNS, MAX_ROWS, parseTable } from "./table";
-import { fileTarget, isCommunityMedia, parseFileTarget } from "./target";
+import {
+  fileTarget,
+  isCommunityMedia,
+  linkedFile,
+  parseFileTarget,
+} from "./target";
 
 const ORIGIN = "https://relay.example.org";
 const MEDIA = `${ORIGIN}/media/${"a".repeat(64)}`;
@@ -89,6 +94,18 @@ it("round-trips file targets and rejects unreadable ones", () => {
     parseFileTarget("buzz-file:?url=javascript%3Aalert(1)&name=a.md"),
   ).toBeUndefined();
   expect(parseFileTarget("https://example.org/a.md")).toBeUndefined();
+});
+
+it("opens a linked shared file by the format its name gives", () => {
+  expect(linkedFile(`${MEDIA}.pdf#page=2`, ORIGIN)).toEqual({
+    url: `${MEDIA}.pdf`,
+    name: `${"a".repeat(64)}.pdf`,
+    format: "pdf",
+  });
+  expect(linkedFile(MEDIA, ORIGIN)).toBeUndefined();
+  expect(
+    linkedFile(`${MEDIA}.pdf`, "https://other.example.org"),
+  ).toBeUndefined();
 });
 
 it("opens only media shared in the current community", () => {

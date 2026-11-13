@@ -92,6 +92,10 @@ it("claims readable community files at a yielding order", () => {
   expect(panel.matches(fileTarget({ url: MEDIA, name: "a.md" }))).toBe(true);
   expect(panel.matches(fileTarget({ url: MEDIA, name: "a.zip" }))).toBe(false);
   expect(panel.matches("https://example.org/a.md")).toBe(false);
+  // A link in message text to a shared file opens it too.
+  expect(panel.matches(`${MEDIA}.md`)).toBe(true);
+  expect(panel.matches(MEDIA)).toBe(false);
+  expect(panel.matches(`${MEDIA}.zip`)).toBe(false);
   const file = { url: MEDIA, kind: "file", name: "plan.pdf" } as const;
   expect(renderer.matches(file)).toBe(true);
   expect(renderer.matches({ ...file, name: "a.zip" })).toBe(false);
@@ -194,6 +198,26 @@ it("renders a shared Markdown file through the host's safe Markdown", async () =
     screen.getByRole("heading", { name: "Risks", level: 2 }),
   );
   expect(context.open).not.toHaveBeenCalled();
+});
+
+it("opens a link in message text to a shared file, waiting while the relay reconnects", async () => {
+  const { panel, snapshot } = setup();
+  const fetcher = vi.fn(async () => new Response("# Linked\n"));
+  vi.stubGlobal("fetch", fetcher);
+  const link = `${MEDIA}.md`;
+  renderPanel(panel, link);
+  expect(
+    await screen.findByRole("heading", { name: "Linked", level: 1 }),
+  ).toBeInTheDocument();
+  expect(fetcher).toHaveBeenCalledWith(proxied(link), expect.anything());
+
+  cleanup();
+  Object.assign(snapshot, { status: "connecting", origin: undefined });
+  renderPanel(panel, link);
+  // Shown after the loading region's one-second delay, instead of a blank tab.
+  expect(
+    await screen.findByText("Loading file", undefined, { timeout: 2000 }),
+  ).toBeInTheDocument();
 });
 
 it("shows a Markdown file's front matter as properties and its alerts as notes", async () => {
