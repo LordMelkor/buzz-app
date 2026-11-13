@@ -350,7 +350,7 @@ describe("rich document reader", () => {
                 ),
               )
               .join("") +
-            run("Styled|", '<w:rStyle w:val="VisibleRun"/>') +
+            run("Styled|", '<w:rStyle w:val="VisibleRun"/>' + visible("0")) +
             run(
               "Web only",
               "<w:webHidden/>" +
@@ -359,7 +359,7 @@ describe("rich document reader", () => {
                   : ""),
             ) +
             '</w:p><w:p><w:pPr><w:pStyle w:val="VisibleParagraph"/></w:pPr>' +
-            run("Paragraph visible") +
+            run("Paragraph visible", visible("0")) +
             '</w:p><w:p/><w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:p>',
           {
             "word/styles.xml":
@@ -388,6 +388,117 @@ describe("rich document reader", () => {
       ]);
       expect(elements(doc.parsed.tree, "h1").map(string)).toEqual([""]);
       expect(doc.parsed.outline).toHaveLength(1); // The genuinely empty heading keeps its existing outline entry.
+    },
+  );
+
+  // readDocument owns source style inheritance and the resulting visible tree.
+  // These cases distinguish style toggles from absolute direct formatting;
+  // ordinary hidden-origin coverage alone cannot detect the lost visible text.
+  it.each([
+    { paragraph: "PDouble", character: "", visible: true },
+    { paragraph: "", character: "CDouble", visible: true },
+    { paragraph: "PBase", character: "CBase", visible: true },
+    { paragraph: "PFalse", character: "", visible: false },
+    { paragraph: "", character: "CFalse", visible: false },
+    { paragraph: "PBase", character: "", direct: "false", visible: true },
+    { paragraph: "", character: "CDouble", direct: "true", visible: false },
+    { defaults: true, paragraph: "PBase", character: "", visible: true },
+    { defaults: true, paragraph: "", character: "CBase", visible: true },
+  ])(
+    "composes Word vanish styles $paragraph/$character with defaults=$defaults and direct=$direct",
+    async ({ paragraph, character, direct, defaults, visible }) => {
+      const style = (id: string, type: string, value: string, base = "") =>
+        `<w:style w:type="${type}" w:styleId="${id}">${base ? `<w:basedOn w:val="${base}"/>` : ""}<w:rPr><w:vanish w:val="${value}"/></w:rPr></w:style>`;
+      const doc = await read(
+        word(
+          `<w:p>${paragraph ? `<w:pPr><w:pStyle w:val="${paragraph}"/></w:pPr>` : ""}<w:r><w:rPr>${character ? `<w:rStyle w:val="${character}"/>` : ""}${direct ? `<w:vanish w:val="${direct}"/>` : ""}</w:rPr><w:t>Label</w:t></w:r></w:p><w:p><w:r><w:rPr><w:vanish w:val="0"/></w:rPr><w:t>After</w:t></w:r></w:p>`,
+          {
+            "word/styles.xml":
+              '<w:styles xmlns:w="urn:w">' +
+              (defaults
+                ? "<w:docDefaults><w:rPrDefault><w:rPr><w:vanish/></w:rPr></w:rPrDefault></w:docDefaults>"
+                : "") +
+              style("PBase", "paragraph", "true") +
+              style("PDouble", "paragraph", "true", "PBase") +
+              style("PFalse", "paragraph", "false", "PBase") +
+              style("CBase", "character", "true") +
+              style("CDouble", "character", "true", "CBase") +
+              style("CFalse", "character", "false", "CBase") +
+              "</w:styles>",
+          },
+        ),
+      );
+      expect(elements(doc.parsed.tree, "p").map(string)).toEqual(
+        visible ? ["Label", "After"] : ["After"],
+      );
+    },
+  );
+
+  it("omits hidden-only ODT list items while retaining empty and nested visible items", async () => {
+    const hidden = '<text:p text:style-name="Hidden">HIDDEN</text:p>';
+    const doc = await read(
+      odf(
+        `<text:list><text:list-item>${hidden}</text:list-item><text:list-item><text:p/></text:list-item><text:list-item>${hidden}<text:list><text:list-item><text:p>Nested</text:p></text:list-item></text:list></text:list-item></text:list><text:list><text:list-item>${hidden}</text:list-item></text:list>`,
+        '<style:style style:name="Hidden" style:family="paragraph"><style:text-properties text:display="none"/></style:style>',
+      ),
+      "odt",
+    );
+    expect(elements(doc.parsed.tree, "li").map(string)).toEqual([
+      "",
+      "Nested",
+      "Nested",
+    ]);
+    expect(elements(doc.parsed.tree, "ul")).toHaveLength(2);
+  });
+
+  it("applies an ODT hyperlink's own inherited text style", async () => {
+    const doc = await read(
+      odf(
+        '<text:p text:style-name="HiddenParagraph" xmlns:xlink="http://www.w3.org/1999/xlink"><text:a text:style-name="VisibleLink" xlink:href="https://example.test/visible">Visible</text:a></text:p><text:p xmlns:xlink="http://www.w3.org/1999/xlink"><text:a text:style-name="HiddenLink" xlink:href="https://example.test/HIDDEN">HIDDEN</text:a></text:p>',
+        '<style:style style:name="VisibleLink" style:family="text" style:parent-style-name="VisibleBase"/><style:style style:name="HiddenLink" style:family="text"><style:text-properties text:display="none"/></style:style><style:style style:name="HiddenParagraph" style:family="paragraph"><style:text-properties text:display="none"/></style:style>',
+        '<style:style style:name="VisibleBase" style:family="text"><style:text-properties text:display="true" fo:font-weight="bold"/></style:style>',
+      ),
+      "odt",
+    );
+    expect(
+      elements(doc.parsed.tree, "a").map((node) => [
+        node.properties.href,
+        string(node),
+      ]),
+    ).toEqual([["https://example.test/visible", "Visible"]]);
+    expect(elements(doc.parsed.tree, "strong").map(string)).toEqual([
+      "Visible",
+    ]);
+  });
+
+  it.each(["Word hyperlink", "Word simple field", "ODT"])(
+    "retains bookmark-only visible targets in %s",
+    async (kind) => {
+      const body = '<w:bookmarkStart w:name="kept"/>';
+      const bytes =
+        kind === "ODT"
+          ? odf(
+              '<text:p xmlns:xlink="http://www.w3.org/1999/xlink"><text:a xlink:href="https://example.test/target"><text:bookmark text:name="kept"/></text:a></text:p>',
+            )
+          : word(
+              "<w:p>" +
+                (kind === "Word simple field"
+                  ? `<w:fldSimple w:instr='HYPERLINK &quot;https://example.test/target&quot;'>${body}</w:fldSimple>`
+                  : `<w:hyperlink r:id="target">${body}</w:hyperlink>`) +
+                "</w:p>",
+              {
+                "word/_rels/document.xml.rels":
+                  '<Relationships><Relationship Id="target" Target="https://example.test/target" Type="hyperlink" TargetMode="External"/></Relationships>',
+              },
+            );
+      const doc = await read(bytes, kind === "ODT" ? "odt" : "docx");
+      const links = elements(doc.parsed.tree, "a");
+      expect(links.map((node) => node.properties.href)).toEqual([
+        "https://example.test/target",
+      ]);
+      expect(
+        elements(required(links[0]), "span").map((node) => node.properties.id),
+      ).toEqual(["kept"]);
     },
   );
 

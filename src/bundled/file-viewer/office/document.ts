@@ -188,6 +188,17 @@ function wordRunStyle(
   return out;
 }
 
+// OOXML 17.7.3: an enabled vanish in a style toggles the inherited value;
+// false leaves it unchanged. Direct run properties remain absolute above.
+function wordStyle(inherited: RunStyle, patch: RunStyle): RunStyle {
+  const { hidden, ...properties } = patch;
+  return {
+    ...inherited,
+    ...properties,
+    ...(hidden ? { hidden: !inherited.hidden } : {}),
+  };
+}
+
 function odfRunStyle(
   pr: Element | undefined,
   inherited: RunStyle,
@@ -552,7 +563,7 @@ class DocumentReader {
         .filter((pr): pr is Element => !!pr)
         .at(-1);
     let runStyle = this.defaultRun;
-    for (const style of chain) runStyle = { ...runStyle, ...style.r };
+    for (const style of chain) runStyle = wordStyle(runStyle, style.r);
     const outline = attr(property("outlineLvl"), "val"),
       lastStyle = chain.at(-1);
     const heading =
@@ -882,7 +893,7 @@ class DocumentReader {
         const pr = child(node, "rPr");
         let inherited = style;
         for (const item of this.styleChain(attr(child(pr, "rStyle"), "val")))
-          inherited = { ...inherited, ...item.r };
+          inherited = wordStyle(inherited, item.r);
         const run = wordRunStyle(pr, inherited);
         append(
           out,
@@ -928,6 +939,7 @@ class DocumentReader {
               : anchor
                 ? `#${anchor}`
                 : undefined;
+        const hiddenBefore = this.hiddenContent;
         const content = this.wordInline(
           node,
           part,
@@ -935,7 +947,11 @@ class DocumentReader {
           fields,
           depth + 1,
         ).filter((value): value is Node => value.type !== "pageBreak");
-        if (!hasVisibleContent(content)) continue;
+        if (
+          (style.hidden || this.hiddenContent !== hiddenBefore) &&
+          !hasVisibleContent(content)
+        )
+          continue;
         if (href) this.guard(depth, href.length);
         nodes = href ? [element("a", content, { href })] : content;
       } else if (name === "footnoteReference" || name === "endnoteReference")
@@ -1267,6 +1283,7 @@ class DocumentReader {
     inheritedName?: string,
   ): Node[] {
     this.guard(depth);
+    const listHiddenBefore = this.hiddenContent;
     const name = attr(node, "style-name") ?? inheritedName ?? "";
     let definitions = this.odfListDefinitions.get(name);
     if (!definitions) {
@@ -1302,7 +1319,8 @@ class DocumentReader {
       this.guard(depth);
       // Headers have the same block content as items, including nested lists
       // that inherit this list's style and advance to the next nesting level.
-      const content: Node[] = [];
+      const hiddenBefore = this.hiddenContent,
+        content: Node[] = [];
       for (const block of Array.from(item.children)) {
         if (block.localName === "list")
           append(
@@ -1316,6 +1334,8 @@ class DocumentReader {
         list = undefined;
         continue;
       }
+      if (this.hiddenContent !== hiddenBefore && !hasVisibleContent(content))
+        continue;
       const restart = numbered
         ? nonnegativeInteger(attr(item, "start-value"))
         : undefined;
@@ -1343,7 +1363,7 @@ class DocumentReader {
     if (id) this.odfListEnds.set(id, counter);
     // An empty ordinary list retains its representation. A header is a
     // sibling block, so it never acquires an item marker or increments it.
-    return out.length
+    return out.length || this.hiddenContent !== listHiddenBefore
       ? out
       : [element(numbered ? "ol" : "ul", [], numbered ? { start } : {})];
   }
@@ -1480,10 +1500,20 @@ class DocumentReader {
           out.push(element("span", [], { id }));
         }
       } else if (name === "a") {
-        const values = this.odfInline(item, part, style, depth + 1).filter(
+        const linkStyle = this.odfStyle(
+            attr(item, "style-name"),
+            "text",
+            style,
+          ),
+          hiddenBefore = this.hiddenContent;
+        const values = this.odfInline(item, part, linkStyle, depth + 1).filter(
           (value): value is Node => value.type !== "pageBreak",
         );
-        if (!hasVisibleContent(values)) continue;
+        if (
+          (linkStyle.hidden || this.hiddenContent !== hiddenBefore) &&
+          !hasVisibleContent(values)
+        )
+          continue;
         const href = attr(item, "href") ?? "";
         this.guard(depth, href.length);
         out.push(element("a", values, { href }));
