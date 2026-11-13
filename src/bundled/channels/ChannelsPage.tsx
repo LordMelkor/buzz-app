@@ -35,6 +35,7 @@ import {
 import { ChannelMembersDialog } from "./ChannelMembersDialog";
 import { ChannelHeaderIdentity, memberAccess } from "./ChannelHeaderIdentity";
 import {
+  matchesConversation,
   soloDraft,
   soloDraftTarget,
 } from "../../features/channel-navigation/routes";
@@ -820,10 +821,18 @@ function ChannelWorkspace({
       close() {
         if (trigger?.isConnected) trigger.focus({ preventScroll: true });
       },
-      completed() {
+      depart(visit) {
         const shown = new Set(handoff?.soloNeighbors.current?.(channel.id));
+        const active =
+          visit === "current"
+            ? matchesConversation(
+                navigator?.snapshot().entry.target,
+                scope,
+                channel.id,
+              )
+            : !origin?.aborted;
         // Unarchive restores the open chat; every other action leaves it.
-        if (action !== "unarchive" && !origin?.aborted && navigator)
+        if (action !== "unarchive" && active && navigator)
           void navigator.open(
             soloSuccessor(
               scope,

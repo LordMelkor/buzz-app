@@ -671,9 +671,14 @@ and are asked to sign in again in Buzz.
   or are removed in People.
 - In a channel, typing `/leave` by itself opens the same **Leave channel**
   confirmation. The command is not posted as a message.
+- Deleting the open Solo chat opens a neighboring Solo chat or a new draft while
+  deletion finishes. The chat stays listed until deletion is confirmed. If it
+  fails, a notice names the chat; you can reopen it from the sidebar.
 - If **Delete chat** or **Delete channel** fails because relay requests are
   paused, nothing was deleted and the confirmation stays open. **Retry** becomes
   available when the pause ends; it checks your permission again before deleting.
+  For an open Solo chat, the confirmation reappears over the new destination.
+  **Cancel** keeps the chat; you can reopen it from the sidebar.
 - **Pasted web links** keep their labels when the clipboard's HTML and plain
   text agree, including image alt text. Use ordinary paste; plain-text paste
   uses only the clipboard's plain text.

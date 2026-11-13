@@ -61,7 +61,9 @@ function mount(
   wrap: (children: ReactNode) => ReactNode = (children) => children,
   fallback?: ReactNode,
 ) {
-  const open = vi.fn(async () => ({ status: "opened" as const }));
+  const open = vi.fn<Navigation["open"]>(async () => ({
+    status: "opened" as const,
+  }));
   const retryReveal = vi.fn();
   const revealAgain = vi.fn();
   const navigator = { ...h.navigator, open } as Navigation;
@@ -196,6 +198,8 @@ it.each([
   ["archive", "selected"],
   ["delete", "other chat"],
   ["delete", "navigated away"],
+  ["delete", "reopened"],
+  ["delete", "other community"],
   ["delete", "failed"],
 ] as const)(
   "%s of a plugin-owned chat preserves Solo and newer navigation (%s)",
@@ -255,6 +259,7 @@ it.each([
         {children}
       </ChannelNavigationProvider>
     ));
+    view.open.mockImplementation((next) => h.navigate(next));
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Actions for Owned" }));
     const actionName = action === "delete" ? "Delete chat" : "Archive chat";
@@ -276,8 +281,27 @@ it.each([
     }
     try {
       await waitFor(() => expect(run).toHaveBeenCalledOnce());
+      if (action === "delete" && outcome !== "other chat")
+        expect(view.open).toHaveBeenCalledExactlyOnceWith(
+          soloDraftTarget(h.scope),
+        );
+      else expect(view.open).not.toHaveBeenCalled();
       if (outcome === "navigated away")
         act(() => view.navigate(conversationTarget(h.scope, "chat")));
+      if (outcome === "reopened")
+        act(() => view.navigate(conversationTarget(h.scope, owned)));
+      if (outcome === "other community")
+        act(() =>
+          view.navigate(
+            conversationTarget(
+              h.scope.replace(
+                "https://fixture.invalid",
+                "https://other.invalid",
+              ),
+              owned,
+            ),
+          ),
+        );
       if (outcome === "failed")
         await act(async () => fail(new Error("Deletion unavailable")));
       else {
@@ -298,7 +322,13 @@ it.each([
             ? "Delete chat failed"
             : `${action === "delete" ? "Chat deleted" : "Chat archived"}: Owned`,
       });
-      if (outcome === "selected")
+      if (outcome === "reopened") {
+        expect(view.open).toHaveBeenCalledTimes(2);
+        expect(view.open).toHaveBeenLastCalledWith(soloDraftTarget(h.scope));
+      } else if (
+        outcome === "selected" ||
+        (action === "delete" && outcome !== "other chat")
+      )
         expect(view.open).toHaveBeenCalledExactlyOnceWith(
           soloDraftTarget(h.scope),
         );

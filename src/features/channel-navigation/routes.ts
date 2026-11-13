@@ -122,3 +122,18 @@ export function conversationTarget(
   if (!parts) throw new Error("Invalid conversation destination");
   return { version: 1, kind: "conversation", scope: parts, channelId };
 }
+
+/** A reopened conversation must still belong to this community and viewer. */
+export function matchesConversation(
+  target: OpenTarget | undefined,
+  scope: string,
+  channelId: string,
+): boolean {
+  const parts = splitPartition(scope);
+  return (
+    target?.kind === "conversation" &&
+    target.channelId === channelId &&
+    target.scope.communityOrigin === parts?.communityOrigin &&
+    target.scope.viewer === parts?.viewer
+  );
+}

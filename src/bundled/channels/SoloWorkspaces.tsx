@@ -9,6 +9,7 @@ import { ChannelMembersDialog } from "./ChannelMembersDialog";
 import { SoloChatName } from "./SoloChatName";
 import { canEditLifetime } from "../../features/solo/Lifetime";
 import { useChannelNavigation } from "../../features/channel-navigation/ChannelNavigationState";
+import { matchesConversation } from "../../features/channel-navigation/routes";
 import {
   soloNeighbors,
   soloSuccessor,
@@ -319,9 +320,17 @@ export function SoloWorkspaces({
         close() {
           if (trigger?.isConnected) trigger.focus({ preventScroll: true });
         },
-        completed() {
+        depart(visit) {
           const shown = new Set(handoff?.soloNeighbors.current?.(channel.id));
-          if (leavesOpenChat && !current.attempt.signal.aborted)
+          const active =
+            visit === "current"
+              ? matchesConversation(
+                  navigationController?.snapshot().entry.target,
+                  scope,
+                  channel.id,
+                )
+              : leavesOpenChat && !current.attempt.signal.aborted;
+          if (active)
             void navigationController?.open(
               soloSuccessor(
                 scope,

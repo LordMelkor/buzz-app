@@ -1,11 +1,32 @@
 import { expect, it } from "vitest";
 import type { JsonValue, OpenTarget } from "../navigation/targets";
-import { isChannelRoute, soloDraft, soloDraftTarget } from "./routes";
+import {
+  conversationTarget,
+  isChannelRoute,
+  matchesConversation,
+  soloDraft,
+  soloDraftTarget,
+} from "./routes";
 
 const viewer = "c".repeat(64);
 const scope = { viewer, communityOrigin: "https://relay.test" };
 const partition = `https://relay.test:${viewer}`;
 const agent = "a".repeat(64);
+it("matches reopened conversations only in the original community and viewer", () => {
+  const target = conversationTarget(partition, "chat");
+  expect(matchesConversation(target, partition, "chat")).toBe(true);
+  expect(matchesConversation(target, partition, "other")).toBe(false);
+  expect(
+    matchesConversation(target, `https://other.test:${viewer}`, "chat"),
+  ).toBe(false);
+  expect(
+    matchesConversation(target, `https://relay.test:${"d".repeat(64)}`, "chat"),
+  ).toBe(false);
+  expect(
+    matchesConversation(soloDraftTarget(partition), partition, "chat"),
+  ).toBe(false);
+  expect(matchesConversation(undefined, partition, "chat")).toBe(false);
+});
 const page = (
   pluginId: string,
   pageId: string,
