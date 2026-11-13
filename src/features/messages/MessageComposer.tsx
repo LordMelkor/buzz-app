@@ -13,6 +13,7 @@ import {
 } from "../../bundled/emoji/GifDraftPreview";
 import { accentButtonStyle } from "../../shared/theme/accent";
 import { stageChatCards } from "./composer-chat-cards";
+import { pastedFiles } from "./composer-clipboard";
 import { chatCardIds } from "./chat-cards";
 import { ComposerChatCards } from "./ComposerChatCards";
 import { useConversationPresentation } from "../conversation/ConversationPresentation";
@@ -3411,10 +3412,7 @@ function Composer({
           }
         }}
         onPasteCapture={(event) => {
-          const files = Array.from(event.clipboardData.items)
-            .filter((item) => item.kind === "file")
-            .map((item) => item.getAsFile())
-            .filter((file): file is File => file !== null);
+          const files = pastedFiles(event.clipboardData);
           if (!files.length) return;
           event.preventDefault();
           event.stopPropagation();

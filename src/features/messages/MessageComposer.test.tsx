@@ -1862,7 +1862,10 @@ function attachmentFile(name = "notes.txt", bytes = "notes") {
 }
 function attachByPaste(target: HTMLElement, file = attachmentFile()) {
   fireEvent.paste(target, {
-    clipboardData: { items: [{ kind: "file", getAsFile: () => file }] },
+    clipboardData: {
+      items: [{ kind: "file", getAsFile: () => file }],
+      getData: () => "",
+    },
   });
 }
 function attachByDrop(target: HTMLElement, file = attachmentFile()) {
