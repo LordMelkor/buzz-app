@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { watchPageErrors } from "./page-errors.mjs";
+import { entityDecoderAlias } from "../../scripts/entity-decoder-alias.mjs";
 
 let server;
 let directory;
@@ -89,6 +90,7 @@ test.beforeAll(async () => {
     envFile: false,
     logLevel: "error",
     plugins: [react()],
+    resolve: { alias: [entityDecoderAlias] },
     build: {
       rollupOptions: { input: join(root, "tests/browser/file-viewer.html") },
       outDir: join(directory, "dist"),

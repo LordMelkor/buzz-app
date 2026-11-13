@@ -17,6 +17,7 @@ import { formatItemTimestamp } from "../../shared/datetime";
 import { ListBulletsIcon } from "../../shared/design-system/icons";
 import { InlineHeader } from "../../shared/design-system/ui/Header";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
+import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import {
   PopoverPopup,
@@ -24,16 +25,22 @@ import {
   PopoverTrigger,
 } from "../../shared/design-system/ui/Popover";
 import { CopyText } from "./CopyText";
+import { useDocumentIndex } from "./document-index";
 import {
+  type DocumentKind,
   type DocumentParts,
-  indexDocument,
   MAX_PART_HEADINGS,
   type PartOutlineItem,
   rehypePartFootnotes,
   remarkPartHeadings,
 } from "./document-parts";
 import { formatLabel } from "./formats";
-import { highlight, languageFor, rehypeHighlight } from "./highlight";
+import {
+  boundedHighlight,
+  type highlight,
+  languageFor,
+  rehypeHighlight,
+} from "./highlight";
 import { type BufferControl, PartBuffer } from "./part-buffer";
 import type { FileTarget } from "./target";
 import styles from "./FileViewer.module.css";
@@ -64,24 +71,57 @@ function lineCount(text: string): number {
   return text.endsWith("\n") ? lines - 1 : lines;
 }
 
-/** A Markdown, code or text file, read in parts so a long one opens at once. */
-export function DocumentView({
-  file,
-  text,
-  session,
-  openLink,
-  media,
-}: {
+type DocumentProps = {
   file: FileTarget;
   text: string;
   session: RelaySession | undefined;
   openLink(url: string): boolean;
   media: MediaSource | undefined;
-}) {
+};
+
+/** A Markdown, code or text file, read in parts so a long one opens at once.
+ * A large Markdown file shows Loading while it indexes. */
+export function DocumentView(props: DocumentProps) {
+  const { file, text } = props;
   const language = file.format === "text" ? languageFor(file.name) : undefined;
-  const kind =
+  const kind: DocumentKind =
     file.format === "markdown" ? "markdown" : language ? "code" : "text";
-  const doc = useMemo(() => indexDocument(text, kind), [text, kind]);
+  const index = useDocumentIndex(text, kind);
+  if (index.state === "indexing")
+    return (
+      <LoadingRegion pending label={`Formatting ${file.name}`}>
+        {null}
+      </LoadingRegion>
+    );
+  return index.plain ? (
+    <IndexedDocument {...props} doc={index.doc} kind="text" plain />
+  ) : (
+    <IndexedDocument
+      {...props}
+      doc={index.doc}
+      kind={kind}
+      language={language}
+    />
+  );
+}
+
+function IndexedDocument({
+  file,
+  text,
+  session,
+  openLink,
+  media,
+  doc,
+  kind,
+  language,
+  plain = false,
+}: DocumentProps & {
+  doc: DocumentParts;
+  kind: DocumentKind;
+  language?: string | undefined;
+  /** The file took too long to format, so it shows as text. */
+  plain?: boolean;
+}) {
   const [scroller, setScroller] = useState<HTMLElement | null>(null);
   const scrollRef = useRef<HTMLElement | null>(null);
   const attach = useCallback((node: HTMLElement | null) => {
@@ -133,14 +173,17 @@ export function DocumentView({
     },
     [doc, text],
   );
+  /** One per document: once a part takes too long, the rest stay plain. */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new document gets a new time limit.
+  const highlighter = useMemo(() => boundedHighlight(), [doc]);
   const prepare = useCallback(
     (index: number): string | Highlighted =>
       kind === "markdown"
         ? doc.partSource(index)
         : kind === "code"
-          ? highlight(slice(index), language)
+          ? highlighter(slice(index), language)
           : slice(index),
-    [doc, kind, language, slice],
+    [doc, kind, language, slice, highlighter],
   );
   const render = useCallback(
     (index: number, prepared: string | Highlighted): ReactNode => {
@@ -172,13 +215,16 @@ export function DocumentView({
           openLink={openLink}
           session={session}
           remarkPlugins={[remarkPartHeadings(doc, index)]}
-          rehypePlugins={[rehypePartFootnotes(doc, index), rehypeHighlight]}
+          rehypePlugins={[
+            rehypePartFootnotes(doc, index),
+            [rehypeHighlight, { highlight: highlighter }],
+          ]}
           image={picture}
           onAnchor={scrollTo}
         />
       );
     },
-    [doc, kind, slice, openLink, session, picture, scrollTo],
+    [doc, kind, slice, openLink, session, picture, scrollTo, highlighter],
   );
 
   const meta = useMemo(() => {
@@ -222,6 +268,11 @@ export function DocumentView({
           </>
         }
       />
+      {plain && (
+        <p className={styles.note} role="note">
+          This file took too long to format, so it shows as plain text.
+        </p>
+      )}
       {doc.unclosedFence !== undefined && (
         <p className={styles.note} role="note">
           From line {doc.unclosedFence.toLocaleString()} on, the file shows as

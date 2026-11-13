@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { defineConfig, loadEnv, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
+import { entityDecoderAlias } from "./scripts/entity-decoder-alias.mjs";
 import { worktreePort } from "./scripts/worktree-port.mjs";
 import {
   parseCommunityAliases,
@@ -202,6 +203,7 @@ export default defineConfig(async ({ command, mode }) => {
     });
   return {
     plugins,
+    resolve: { alias: [entityDecoderAlias] },
     define: {
       "import.meta.env.VITE_BUZZ_LIVE": JSON.stringify(live ? "1" : "0"),
       "import.meta.env.VITE_BUZZ_NOTIFICATIONS_PAUSED": JSON.stringify(
