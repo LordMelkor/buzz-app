@@ -2,10 +2,12 @@ import {
   type ComponentProps,
   createContext,
   type ReactElement,
+  type ReactNode,
   useContext,
   useState,
 } from "react";
 import type { Components, ExtraProps } from "react-markdown";
+import { MessageLink } from "../../features/conversation/MessageLink";
 import { DOCUMENT_PROFILE } from "../../features/markdown/document-profile";
 import {
   MarkdownDocument,
@@ -14,6 +16,9 @@ import {
 } from "../../features/markdown/MarkdownDocument";
 import markdownStyles from "../../features/markdown/Markdown.module.css";
 import type { MarkdownProfile } from "../../features/markdown/profiles";
+import { labelText } from "../../features/messages/label-text";
+import { parseBuzzLink } from "../../features/navigation/buzz-links";
+import { safeLinkUrl } from "../../features/relay/message-content";
 import type { RelaySession } from "../../features/relay/session";
 import styles from "./FileViewer.module.css";
 
@@ -53,11 +58,19 @@ function PartLink(props: ComponentProps<"a"> & ExtraProps) {
   );
 }
 
-/** Community media draws; anything else, such as a remote image that could
- * act as a tracking beacon, stays as its alt text. */
-function PartImage({ src, alt }: ComponentProps<"img"> & ExtraProps) {
-  const { media } = useContext(PartContext);
-  const source = typeof src === "string" ? media?.(src) : undefined;
+/** Community media draws through the session's media source; anything else,
+ * such as a remote image that could act as a tracking beacon, or one that
+ * fails to load, stays as its alt text. */
+export function Picture({
+  src,
+  alt,
+  media,
+}: {
+  src: string;
+  alt: string;
+  media: MediaSource | undefined;
+}) {
+  const source = media?.(src);
   const [failed, setFailed] = useState(false);
   if (!source || failed)
     return alt ? <span className={markdownStyles.imageAlt}>{alt}</span> : null;
@@ -65,10 +78,64 @@ function PartImage({ src, alt }: ComponentProps<"img"> & ExtraProps) {
     <img
       className={styles.picture}
       src={source}
-      alt={alt ?? ""}
+      alt={alt}
       loading="lazy"
       onError={() => setFailed(true)}
     />
+  );
+}
+
+function PartImage({ src, alt }: ComponentProps<"img"> & ExtraProps) {
+  const { media } = useContext(PartContext);
+  if (typeof src !== "string")
+    return alt ? <span className={markdownStyles.imageAlt}>{alt}</span> : null;
+  return <Picture src={src} alt={alt ?? ""} media={media} />;
+}
+
+/** A link in an Office file, under the Markdown parts' rules: a `#` link moves
+ * within the file, a Buzz or safe link opens through `MessageLink`, and
+ * anything else is its text. */
+export function FileLink({
+  href,
+  children,
+  openLink,
+  session,
+  onAnchor,
+}: {
+  href: string | undefined;
+  children?: ReactNode;
+  openLink(url: string): boolean;
+  session: RelaySession | undefined;
+  onAnchor?: ((id: string) => void) | undefined;
+}) {
+  if (!href) return children;
+  if (onAnchor && href.startsWith("#"))
+    return (
+      <a
+        href={href}
+        onClick={(event) => {
+          event.preventDefault();
+          onAnchor(fragment(href));
+        }}
+      >
+        {children}
+      </a>
+    );
+  const url = parseBuzzLink(href) ? href : safeLinkUrl(href);
+  if (!url) return children;
+  // A raw autolink shows its destination's name, as in messages.
+  const label = labelText(children);
+  const raw = label === url;
+  return (
+    <MessageLink
+      url={url}
+      label={raw ? undefined : label}
+      registry={undefined}
+      session={session}
+      onOpenLink={openLink}
+    >
+      {raw ? undefined : children}
+    </MessageLink>
   );
 }
 

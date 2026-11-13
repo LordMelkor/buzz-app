@@ -1,0 +1,145 @@
+/* A chart: colors come from the file, text and lines from the theme. The
+   chart is its own container so a side legend can stack under the plot when
+   the panel is narrow. */
+.chart {
+  position: relative;
+  container-type: inline-size;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-chip);
+  color: var(--text-standard);
+  font-family: var(--font-sans);
+}
+.title {
+  margin: 0 0 var(--space-2);
+  font-weight: var(--type-weight-medium);
+  text-align: center;
+}
+.empty {
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+}
+.empty p {
+  margin: 0;
+}
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.body[data-legend="top"] {
+  flex-direction: column-reverse;
+}
+.body:is([data-legend="left"], [data-legend="right"]) {
+  flex-direction: row;
+  align-items: center;
+}
+.body[data-legend="left"] {
+  flex-direction: row-reverse;
+}
+.plot {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.svg {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  overflow: visible;
+}
+.pie {
+  max-width: 20rem;
+  margin: 0 auto;
+}
+/* The size is the drawing's own: 11 user units, set on the svg. */
+.svg text {
+  fill: var(--text-subtle);
+  font-family: var(--font-sans);
+}
+.grid line {
+  stroke: var(--border-standard);
+  stroke-width: 1;
+}
+.grid line[data-zero] {
+  stroke: var(--border-prominent);
+}
+.slice {
+  stroke: var(--surface-panel);
+  stroke-width: 1.5;
+}
+/* `.chart` outranks a Word document's own list padding. */
+.chart .legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+}
+.body:is([data-legend="left"], [data-legend="right"]) .legend {
+  flex-direction: column;
+  flex: 0 1 12rem;
+}
+/* A narrow panel stacks a side legend under the plot, so the plot keeps the
+   width; a slide's chart keeps the author's layout. */
+@container (max-width: 36rem) {
+  .chart:not([data-scaled])
+    .body:is([data-legend="left"], [data-legend="right"]) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .chart:not([data-scaled])
+    .body:is([data-legend="left"], [data-legend="right"])
+    .legend {
+    flex-direction: row;
+    flex: none;
+  }
+}
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-chip);
+}
+
+/* On a slide the chart fills its box, whatever the box's shape. A shallow box
+   shrinks the drawing to fit beside its title and legend instead of clipping
+   it; a box with room draws it as before. */
+.chart[data-scaled] {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: var(--space-1);
+  border: 0;
+}
+.chart[data-scaled] :is(.body, .plot) {
+  min-height: 0;
+}
+.chart[data-scaled] .plot {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+}
+.chart[data-scaled]
+  .body:not([data-legend="left"], [data-legend="right"])
+  .plot {
+  flex: 0 1 auto;
+}
+.chart[data-scaled] .svg {
+  max-height: 100%;
+}

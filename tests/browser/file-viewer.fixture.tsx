@@ -67,6 +67,10 @@ const EXTRA: Record<string, Attachment> = {
   long: { url: media("1"), kind: "file", name: "long.md" },
   pictures: { url: media("2"), kind: "file", name: "pictures.md" },
   blank: { url: media("3"), kind: "file", name: "blank.pdf" },
+  word: { url: media("5"), kind: "file", name: "foundation.docx" },
+  excel: { url: media("6"), kind: "file", name: "budget.xlsx" },
+  powerpoint: { url: media("7"), kind: "file", name: "review.pptx" },
+  pages: { url: media("8"), kind: "file", name: "brochure.pages" },
 };
 for (const name of params.getAll("extra")) {
   const extra = EXTRA[name];
