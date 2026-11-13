@@ -5,6 +5,7 @@ import { ActivityGroupPreview } from "./ActivityGroupPreview";
 import { ActivityExpansion } from "./ActivityExpansion";
 import { useChannelIdentityNames } from "../identity-names/react";
 import { useMessageSelectionCopy } from "./selection-copy";
+import { SelectionQuote } from "./SelectionQuote";
 import { Button } from "../../shared/design-system/ui/Button";
 import { EmptyState } from "../../shared/design-system/ui/EmptyState";
 import { ChatCircleIcon } from "../../shared/design-system/icons";
@@ -2328,6 +2329,7 @@ function Timeline({
             />
           </div>
         )}
+      <SelectionQuote list={scroller} />
     </section>
   );
   return <MessageContextMenus>{feed}</MessageContextMenus>;

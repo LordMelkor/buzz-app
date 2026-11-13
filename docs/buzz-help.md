@@ -396,6 +396,11 @@ and are asked to sign in again in Buzz.
   message in that DM. The link previews the original message; the
   recipient still needs access to its conversation. Forwarding is unavailable
   when the connection cannot start DMs or the message has no link yet.
+- Select text in a message, such as by double-clicking a word, and choose
+  **Quote** (or press Q) to add it to the end of that conversation's draft as a
+  quote, ready for your reply below it. A selection in a thread quotes into the
+  thread's reply box. Quoting keeps formatting and links but does not notify
+  anyone mentioned in the quoted text.
 
 - Only explicit additions by another member and removals appear as centered
   channel notices; self-joins and voluntary leaves are hidden.
@@ -742,6 +747,7 @@ and are asked to sign in again in Buzz.
   an empty composer, Up selects a message unless **Edit last message with Up Arrow**
   is on. With a message selected, E edits it, R reacts, T or → replies in thread,
   U marks it unread, and Delete deletes your own message.
+  With message text selected, Q quotes it into the draft.
   ⌘1–9 switch communities, and ⇧Esc marks everything read. If a plugin uses
   the same key as another shortcut, Settings → Shortcuts marks it "Also used
   by"; change one of them to choose which fires. In the Mac app, **Buzz →

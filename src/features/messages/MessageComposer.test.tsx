@@ -9703,6 +9703,8 @@ it.each([
       canMarkUnread: () => false,
       markUnread: () => {},
       composer: () => null,
+      canQuote: () => false,
+      quote: () => false,
     });
     try {
       render(

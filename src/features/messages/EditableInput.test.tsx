@@ -4922,3 +4922,53 @@ describe("oversized paste feedback", () => {
     expect(onPasteTooLong).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("quoting timeline content", () => {
+  it("replaces an empty draft's line and continues below the quote", async () => {
+    const h = mount();
+    act(() =>
+      expect(
+        h.input.insertQuote(timelineHtml("Hello <strong>world</strong>")),
+      ).toBe(true),
+    );
+    await h.user.keyboard("reply");
+    expect(h.markdown()).toBe("> Hello **world**\n\nreply");
+  });
+
+  it("appends after the draft wherever its caret is", async () => {
+    const h = mount("Draft");
+    act(() => h.input.setSelectionRange(0, 0));
+    act(() => expect(h.input.insertQuote(timelineHtml("quoted"))).toBe(true));
+    await h.user.keyboard("reply");
+    expect(h.markdown()).toBe("Draft\n\n> quoted\n\nreply");
+    // The reply typed straight after quoting is its own undo step.
+    act(() => h.input.undo(false));
+    expect(h.markdown()).toBe("Draft\n\n> quoted\n\n");
+    act(() => h.input.undo(false));
+    expect(h.markdown()).toBe("Draft");
+  });
+
+  it("keeps quoted mentions as references without notifying them", () => {
+    const h = mount();
+    act(() =>
+      h.input.insertQuote(
+        timelineHtml(
+          `<a href="${profileTarget(honey.pubkey)}">@Honey</a> said hi`,
+        ),
+      ),
+    );
+    expect(h.markdown()).toBe(`> ${honeyLink} said hi\n\n`);
+    expect(h.draft().recipients).toEqual([]);
+  });
+
+  it("refuses blank content and quotes over the length limit", () => {
+    const onPasteTooLong = vi.fn();
+    const h = mount("keep", { maxLength: 12, onPasteTooLong });
+    act(() => {
+      expect(h.input.insertQuote(timelineHtml("  "))).toBe(false);
+      expect(h.input.insertQuote(timelineHtml("far too long"))).toBe(false);
+    });
+    expect(onPasteTooLong).toHaveBeenCalledOnce();
+    expect(h.markdown()).toBe("keep");
+  });
+});
