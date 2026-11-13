@@ -88,6 +88,7 @@ export function SoloWorkspaces({
   navigator: navigationController,
   scope,
   chats,
+  dormantAssignments,
   renderChat,
   renderChatMenu,
   onNew,
@@ -105,6 +106,8 @@ export function SoloWorkspaces({
   navigator?: Navigation | undefined;
   scope: string;
   chats: readonly ChatListItem[];
+  /** Existing assignments stay stored but do not place source-managed chats. */
+  dormantAssignments?: ReadonlySet<string> | undefined;
   sidebarRows?: readonly RegisteredSidebarRows[] | undefined;
   renderChatMenu?: ((channelId: string) => ReactNode) | undefined;
   /** A stable function lets a chat's row skip renders when nothing it shows changed. */
@@ -240,6 +243,8 @@ export function SoloWorkspaces({
   }>();
   const groups = snapshot.data?.sections ?? [];
   const assigned = snapshot.data?.assignments ?? {};
+  const assignmentFor = (item: ChatListItem) =>
+    dormantAssignments?.has(item.id) ? undefined : assigned[item.id];
   const ids = new Set(groups.map((group) => group.id));
   const draftProject = draft
     ? ids.has(draft.projectId ?? "")
@@ -258,12 +263,12 @@ export function SoloWorkspaces({
   const projects = [
     ...groups.map((group) => ({
       ...group,
-      rows: chats.filter((item) => assigned[item.id] === group.id),
+      rows: chats.filter((item) => assignmentFor(item) === group.id),
     })),
     {
       id: "",
       name: "Chats",
-      rows: chats.filter((item) => !ids.has(assigned[item.id] ?? "")),
+      rows: chats.filter((item) => !ids.has(assignmentFor(item) ?? "")),
     },
   ];
   // A collapse request takes effect after the editor closes. Keep its draft and
@@ -272,7 +277,12 @@ export function SoloWorkspaces({
     project.rows.some((item) => item.id === renaming),
   )?.id;
   const move = (id: string, projectId?: string) => {
-    if (prepareSoloMove(session, id)) return;
+    const refusal = prepareSoloMove(session, id);
+    if (refusal) {
+      setProjectError(refusal);
+      return;
+    }
+    setProjectError("");
     const saving = preferences.assign(id, projectId);
     toggle(projectId ?? "", true);
     hold([id]);

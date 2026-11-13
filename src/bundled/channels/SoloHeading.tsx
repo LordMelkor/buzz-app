@@ -110,8 +110,10 @@ export function SoloToolbar({
     () => chatMenus?.snapshot(),
   );
   const regions = useSoloNavigation(session);
-  const region = regions.regions.find((region) =>
-    region.channels.some((item) => item.id === channel.id),
+  const region = regions.regions.find(
+    (region) =>
+      region.reason !== "disabled" &&
+      region.channels.some((item) => item.id === channel.id),
   );
   const actionsTrigger = useRef<HTMLButtonElement>(null);
   // Each dialog returns focus to the control that opened it.

@@ -5,12 +5,17 @@ implementation. The public types are exported from `@buzz/author`. The service i
 created with the relay in `src/app/services.ts`; plugins register sources through
 their tracked Cordis context.
 
-The host derives `buzz.region:<pluginId>:<sourceId>` from the caller. Labels own
-placement, even when a plugin is off, loading, unavailable, or failed. The host
-uses one projection for the live list, recovery list, inventory exclusion, header
-chip, and personal filing guards. Unknown channel types do not imply Solo.
-Existing personal workspace assignments remain stored while they are dormant.
-Label edits preserve region labels. There is no public remove operation.
+The host derives `buzz.region:<pluginId>:<sourceId>` from the caller. A ready
+catalog that explicitly disables a plugin shows its eligible labeled chats in
+the ordinary Solo inventory while retaining their labels and filing guards.
+Their region associations stay dormant and are reclaimed if the plugin is
+enabled again. A missing source alone does not imply that a plugin is disabled:
+loading, unavailable, failed, not-installed, and unknown states remain in the
+recovery placement. The host uses one projection for region presentation,
+inventory exclusion, and personal filing guards. Unknown channel types do not
+imply Solo. Existing personal workspace assignments remain stored while those
+assignments are dormant. Label edits preserve region labels. There is no public
+remove operation.
 
 Each bind has a fresh incarnation. Reconnect and Retry abort the previous bind;
 old handles, menus, state writes, and reveal subscribers cannot act in the new
@@ -23,9 +28,10 @@ host draws no heading, rows, header actions, or "In" chip for it, and it neither
 names the Solo tab nor composes its workspaces. The region stays in the shared
 projection, so its labeled chats stay out of the Solo list, its filing guard and
 workspace still apply, and its drafts still start; the chats remain reachable by
-links, notifications, and search, and the source presents them in its own UI. Any
-other state (off, loading, unavailable, failed) shows the recovery region as
-usual, so the chats never vanish when the source cannot present them.
+links, notifications, and search, and the source presents them in its own UI. If the
+plugin is explicitly disabled, its chats appear in ordinary Solo instead. Other
+non-ready states (off, loading, unavailable, failed) show the recovery region,
+so the chats remain reachable when the source cannot present them.
 
 The source owns its content, presentation, and disclosure controls. It receives
 the stable `ui.Conversation` component. Conversation renders only live channels

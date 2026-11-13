@@ -65,11 +65,12 @@ export function useRegionWorkspace(
       return last;
     };
   }, [reader, channelId]);
-  const { binding, source } = useSyncExternalStore(
+  const { binding, source, reason } = useSyncExternalStore(
     reader?.subscribe ?? noSubscription,
     owner,
   );
-  if (!channelId || !binding || !source?.workspace) return undefined;
+  if (!channelId || !binding || reason === "disabled" || !source?.workspace)
+    return undefined;
   try {
     return source.workspace(binding, channelId);
   } catch {

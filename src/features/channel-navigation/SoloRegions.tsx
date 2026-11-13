@@ -98,9 +98,9 @@ export function SoloRegions({
   const snapshot = useSoloNavigation(session);
   const service = soloNavigationFor(session);
   const regions = orderContributedSidebarSections(
-    // A hidden region draws nothing; recovery is never hidden.
+    // Hidden sources draw nothing; explicitly disabled chats use ordinary Solo.
     snapshot.regions
-      .filter((region) => !region.hidden)
+      .filter((region) => !region.hidden && region.reason !== "disabled")
       .map((region) => ({
         key: `solo-region:${region.key}`,
         region,

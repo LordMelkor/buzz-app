@@ -12,7 +12,11 @@ import { parseOpenTarget, type JsonValue } from "../navigation/targets";
 import type { PluginManager } from "../../plugins/manager";
 import { relayPartition } from "../relay/partition";
 import { ownSolo, soloLabels } from "../solo/labels";
-import { regionLabels, soloRegionLabel } from "../solo/region-labels";
+import {
+  REGION_PREFIX,
+  regionLabels,
+  soloRegionLabel,
+} from "../solo/region-labels";
 import { soloDraft, soloDraftTarget } from "./routes";
 import { createSoloWorkspaces } from "./solo-workspaces";
 import {
@@ -67,7 +71,11 @@ export class SoloNavigationService extends Service implements SoloNavigation {
   private session: RelaySession | undefined;
   private connection: RelaySnapshot | undefined;
   private stopChannels: (() => void) | undefined;
-  private value: SoloNavigationSnapshot = { regions: [], excluded: new Set() };
+  private value: SoloNavigationSnapshot = {
+    regions: [],
+    excluded: new Set(),
+    managed: new Set(),
+  };
   private readonly titles = new Map<string, string>();
   private readonly states = new Map<string, JsonValue>();
   private pendingReveal: string | undefined;
@@ -322,7 +330,11 @@ export class SoloNavigationService extends Service implements SoloNavigation {
         const binding = this.binding;
         const connection = this.relay.snapshot();
         if (!this.session) {
-          this.value = { regions: [], excluded: new Set() };
+          this.value = {
+            regions: [],
+            excluded: new Set(),
+            managed: new Set(),
+          };
           continue;
         }
         for (const source of entries) {
@@ -381,6 +393,14 @@ export class SoloNavigationService extends Service implements SoloNavigation {
             runtime.failed = true;
           }
         }
+        const plugins = this.plugins?.snapshot();
+        const configuration = plugins?.configuration;
+        const pluginForRegionLabel = (label: string) =>
+          configuration?.status === "ready"
+            ? configuration.catalog.plugins.find((plugin) =>
+                label.startsWith(`${REGION_PREFIX}${plugin.manifest.id}:`),
+              )
+            : undefined;
         const placement = projectSoloRegions(
           this.session.channels.list().channels,
           connection.viewer ?? this.session.viewer ?? "",
@@ -400,24 +420,20 @@ export class SoloNavigationService extends Service implements SoloNavigation {
               this.titles.get(cacheKey) ?? readView(scope, key, "Plugin chats");
             return typeof saved === "string" ? saved : "Plugin chats";
           },
+          (label) => pluginForRegionLabel(label)?.enabled === false,
         );
-        const plugins = this.plugins?.snapshot();
-        const configuration = plugins?.configuration;
-        this.value = {
+        const next: SoloNavigationSnapshot = {
           ...placement,
           regions: placement.regions.map((region) => {
             if (region.reason !== "off") return region;
             if (configuration?.status === "loading")
               return { ...region, reason: "loading" as const };
             if (configuration?.status !== "ready") return region;
-            const plugin = configuration.catalog.plugins.find((plugin) =>
-              region.key.startsWith(`${plugin.manifest.id}/`),
-            );
+            const plugin = pluginForRegionLabel(region.label);
             if (!plugin) return { ...region, reason: "not-installed" as const };
             if (
-              !plugin.enabled ||
-              (plugin.source === "external" &&
-                configuration.externalPluginsPaused)
+              plugin.source === "external" &&
+              configuration.externalPluginsPaused
             )
               return region;
             const activation = plugins?.activation[plugin.manifest.id];
@@ -433,6 +449,17 @@ export class SoloNavigationService extends Service implements SoloNavigation {
           }),
           ...(binding ? { binding } : {}),
         };
+        this.value = next;
+        const isDisabledChat = (id: string | undefined) =>
+          id !== undefined &&
+          next.regions.some(
+            (region) =>
+              region.reason === "disabled" &&
+              region.channels.some((channel) => channel.id === id),
+          );
+        if (isDisabledChat(this.pendingReveal)) this.pendingReveal = undefined;
+        if (isDisabledChat(this.pendingHostReveal?.id))
+          this.pendingHostReveal = undefined;
       } while (this.refreshAgain);
     } finally {
       this.refreshing = false;
@@ -449,7 +476,7 @@ export class SoloNavigationService extends Service implements SoloNavigation {
   }
   async openCreatedWorkspace(workspaceId: string): Promise<boolean> {
     const region = this.value.regions.find(
-      (item) => item.source && !item.hidden,
+      (item) => item.source && !item.hidden && item.reason !== "disabled",
     );
     const source = region?.source;
     if (!source?.composeWorkspaces || !source.openWorkspace) return false;

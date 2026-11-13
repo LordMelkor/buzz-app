@@ -905,7 +905,9 @@ and are asked to sign in again in Buzz.
   starred channel in Starred until you unstar it.
 - **Plugin channel rows**: a plugin can open a channel from its Solo row and keep
   that row selected. The sidebar then keeps its scope, scroll position, and open
-  sections. Opening the channel from Team follows the usual Team navigation.
+  sections. When a plugin is explicitly disabled, its existing chats appear as
+  ordinary Solo chats; enabling it again returns them to the plugin's rows when
+  available. Opening the channel from Team follows the usual Team navigation.
 - **Side panels stay with their conversation**: a tab or panel you open beside a
   conversation, such as a thread, **Canvas**, a huddle, or Todos, stays open for
   that conversation when you go to another conversation or page and come back,

@@ -254,7 +254,7 @@ export function SoloInventory({
     JSON.stringify(conversations.map((item) => item.id)),
   );
   const composing = !!regions.regions.find(
-    (region) => region.source && !region.hidden,
+    (region) => region.source && !region.hidden && region.reason !== "disabled",
   )?.source?.composeWorkspaces;
   const empty =
     list.status === "ready" &&
@@ -347,6 +347,7 @@ export function SoloInventory({
       )}
       <SoloWorkspaces
         sidebarRows={rowEntries}
+        dormantAssignments={regions.managed}
         compose={compose}
         renderChatMenu={renderChatMenu}
         navigator={navigator}
