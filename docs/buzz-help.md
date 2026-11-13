@@ -269,6 +269,18 @@ mention anyone. Explicit agent watches on that room can still receive them.
 - Set or clear your status from the profile menu, or with **Update status** /
   **Set a status** on your own profile. On a profile or in the profile menu,
   hover the status emoji to see its `:name:`.
+- Your profile shares your local time by default: joining a community, or
+  opening one whose profile has never had a time zone, publishes this device's
+  time zone name, such as `America/Los_Angeles`. Each device does this at most
+  once per community. To stop, open Settings → **Profile** in that community,
+  uncheck **Show my local time on my profile** and save. That opt-out is kept in
+  your profile; if another app rewrites your profile without it, a device that
+  has never shared there can share once more. Check it again to pick a time
+  zone. People who share a time zone show their local time on their profile and
+  its preview, with "tomorrow" or "yesterday" when their date differs from
+  yours. With **Show time zone details on profiles** on in Settings →
+  **Appearance**, it also shows how far ahead or behind you they are and their
+  time zone name.
 - Where a community verifies names, the profile check appears beside the verified
   full name, or the verified username when no full name is supplied. The profile
   shows the issuer and verification time; cached verification has no check.
