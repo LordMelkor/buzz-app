@@ -17,6 +17,14 @@ const agent = {
 } as Agent;
 const handle = { key } as never;
 
+/** Triggers core delivered to the agent, as its runner records them. */
+const sent = new WeakSet<object>();
+/** `turn`, as one core delivered. */
+const delivered = <T extends { trigger: object }>(turn: T) => {
+  sent.add(turn.trigger);
+  return turn;
+};
+
 function setup(
   options: { harnessMcp?: unknown; protectionUnavailable?: string } = {},
 ) {
@@ -63,6 +71,7 @@ function setup(
       } as never,
     ],
     () => live.protection,
+    (found, trigger) => found === key && sent.has(trigger),
   );
   /** A plugin's view of the kit; by default the plugin that registered the type. */
   const kitOf = (id = "third") =>
@@ -538,6 +547,7 @@ it("checks again after the report, before a server starts", async () => {
     () => current,
     types,
     () => undefined,
+    () => false,
   );
   const { scope } = setup();
   await expect(mcp.inspect(scope(), key, "alpha")).rejects.toThrow("protected");
@@ -574,6 +584,7 @@ it("never lists tools for a protected agent or a type that cannot", async () => 
       } as never,
     ],
     () => undefined,
+    () => false,
   );
   await expect(guarded.inspect(scope(), key, "alpha")).rejects.toThrow(
     "protected",
@@ -604,7 +615,7 @@ describe("the call gate", () => {
     ...extra,
   });
   const mention = (pubkey: string) =>
-    ({
+    delivered({
       trigger: {
         type: "mention",
         event: { pubkey, tags: [["h", "chan"]] },
@@ -761,7 +772,7 @@ describe("the call gate", () => {
     const root = "e".repeat(64);
     await mcp.kit.call(handle, call("c1"), {
       ...options(),
-      turn: {
+      turn: delivered({
         trigger: {
           type: "mention",
           event: {
@@ -773,11 +784,11 @@ describe("the call gate", () => {
             ],
           },
         },
-      } as never,
+      }) as never,
     });
     await mcp.kit.call(handle, call("c2"), {
       ...options(),
-      turn: {
+      turn: delivered({
         trigger: {
           type: "plugin",
           plugin: "p",
@@ -787,7 +798,7 @@ describe("the call gate", () => {
           id: "w",
           at: 1,
         },
-      } as never,
+      }) as never,
     });
     expect(asked.mock.calls.map(([seen]) => seen.conversation)).toEqual([
       { channel: "chan", root, message: "m".repeat(64) },

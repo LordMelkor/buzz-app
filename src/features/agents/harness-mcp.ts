@@ -228,6 +228,8 @@ export function createHarnessMcp(
   >[],
   /** The protection a running agent is launched under. */
   protectionOf: (agent: Agent) => AgentProtection | undefined,
+  /** Whether core delivered `trigger` to agent `key`. */
+  delivered: (key: AgentKey, trigger: object) => boolean,
 ) {
   /** The registered control, with the installation that registered it. */
   let control:
@@ -409,7 +411,12 @@ export function createHarnessMcp(
       options: Parameters<HarnessMcpKit["call"]>[2],
     ) {
       try {
-        const { hold, signal, turn } = options;
+        const { hold, signal } = options;
+        // Only a turn core delivered to this agent says who started it.
+        const turn =
+          options.turn && delivered(agent.key, options.turn.trigger)
+            ? options.turn
+            : undefined;
         if (agent.protection) return "A protected agent loads no MCP server";
         if (signal.aborted) return "The turn ended before the call was checked";
         const session = recorded(agent.key, call.session);

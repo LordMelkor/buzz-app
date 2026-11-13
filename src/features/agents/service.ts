@@ -3502,6 +3502,7 @@ export class AgentsService extends Service implements Agents {
     (key) => this.state.running.find((agent) => agent.key === key),
     () => this.types(),
     (agent) => this.protection.bind(agent),
+    (key, trigger) => this.runners.delivered(key, trigger),
   );
   private readonly harnessShared = harnessKit({
     relay: (key) => this.relay(key),
