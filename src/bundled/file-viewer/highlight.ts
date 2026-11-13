@@ -77,15 +77,15 @@ function longToken(text: string): boolean {
   return false;
 }
 
-/** One owner per document. Once a call exceeds 50 ms, later parts stay plain. */
-export function boundedHighlight(source = ""): typeof highlight {
-  let stopped = longToken(source);
+/** One owner per document. After two calls exceed 50 ms, later parts stay plain. */
+export function boundedHighlight(): typeof highlight {
+  let slowCalls = 0;
   return (text, language) => {
-    if (stopped || longToken(text))
+    if (slowCalls >= 2 || longToken(text))
       return { type: "root", children: [{ type: "text", value: text }] };
     const start = performance.now();
     const result = highlight(text, language);
-    if (performance.now() - start > 50) stopped = true;
+    if (performance.now() - start > 50) slowCalls++;
     return result;
   };
 }

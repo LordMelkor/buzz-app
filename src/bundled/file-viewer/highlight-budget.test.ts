@@ -19,14 +19,7 @@ it("keeps the 1000-character boundary and skips longer identifier runs", () => {
   );
 });
 
-it("screens the whole document before highlighting its first part", () => {
-  const bounded = boundedHighlight(`const answer = 42;\n${"x".repeat(1001)}`);
-  expect(bounded("const answer = 42;", "javascript")).toEqual(
-    plain("const answer = 42;"),
-  );
-});
-
-it("latches after a call over 50 ms and starts fresh for a new document", () => {
+it("latches after two calls over 50 ms and starts fresh for a new document", () => {
   const clock = vi.spyOn(performance, "now");
   clock.mockReturnValueOnce(0).mockReturnValueOnce(50);
   const bounded = boundedHighlight();
@@ -35,6 +28,10 @@ it("latches after a call over 50 ms and starts fresh for a new document", () => 
   clock.mockReturnValueOnce(100).mockReturnValueOnce(151);
   expect(bounded(source, "javascript")).not.toEqual(plain(source));
   clock.mockReturnValue(200);
+  expect(bounded(source, "javascript")).not.toEqual(plain(source));
+  clock.mockReturnValueOnce(300).mockReturnValueOnce(351);
+  expect(bounded(source, "javascript")).not.toEqual(plain(source));
+  clock.mockReturnValue(400);
   expect(bounded(source, "javascript")).toEqual(plain(source));
   expect(boundedHighlight()(source, "javascript")).not.toEqual(plain(source));
 });
@@ -47,10 +44,9 @@ it("uses the supplied document highlighter for Markdown fences", async () => {
   const processor = unified()
     .use(remarkParse)
     .use(remarkRehype)
-    .use(rehypeHighlight, { highlight: boundedHighlight("x".repeat(1001)) });
-  const tree = processor.runSync(
-    processor.parse("```js\nconst answer = 42;\n```"),
-  );
+    .use(rehypeHighlight, { highlight: boundedHighlight() });
+  const body = `${"0".repeat(1001)}\n`;
+  const tree = processor.runSync(processor.parse(`\`\`\`js\n${body}\`\`\``));
   expect(tree).toMatchObject({
     children: [
       {
@@ -58,7 +54,7 @@ it("uses the supplied document highlighter for Markdown fences", async () => {
         children: [
           {
             tagName: "code",
-            children: [{ type: "text", value: "const answer = 42;\n" }],
+            children: [{ type: "text", value: body }],
           },
         ],
       },
