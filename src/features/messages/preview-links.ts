@@ -38,8 +38,9 @@ export function previewLinks(
   content: string,
   exclude: readonly string[] = [],
 ): readonly string[] {
+  if (!/https:\/\//i.test(content)) return [];
   const prepared = prepareMarkdown(content);
-  if (prepared.kind === "plain" || !/https:\/\//i.test(content)) return [];
+  if (prepared.kind === "plain") return [];
   const scan = scanMarkdown(prepared.content);
   if (scan.tooDeep) return [];
   const source = prepared.content;
