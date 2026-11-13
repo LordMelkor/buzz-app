@@ -408,6 +408,45 @@ it("keeps a session-only server and its last tools in the report after a later s
   }
 });
 
+it("requires native project approval before inspection can start a process", async () => {
+  const f = native();
+  let approved = false;
+  const runtime = new ClaudeRuntime(
+    {
+      spawn: f.spawn,
+      readFile: async (path) =>
+        new TextEncoder().encode(
+          JSON.stringify(
+            path === ".mcp.json"
+              ? { mcpServers: { alpha: {} } }
+              : path === "~/.claude.json" && approved
+                ? {
+                    projects: { "/work": { enabledMcpjsonServers: ["alpha"] } },
+                  }
+                : {},
+          ),
+        ),
+    },
+    () => undefined,
+    async () => undefined,
+  );
+  try {
+    await expect(runtime.inspectMcp(agent, "alpha")).rejects.toThrow(
+      "Enable this MCP server in Claude before inspecting its tools",
+    );
+    expect(f.processes).toHaveLength(0);
+    approved = true;
+    expect(await runtime.inspectMcp(agent, "alpha")).toEqual([
+      { name: "read_echo" },
+      { name: "write_marker" },
+    ]);
+    expect(f.processes).toHaveLength(1);
+    expect(f.processes[0]?.killed).toBe(true);
+  } finally {
+    await runtime.dispose();
+  }
+});
+
 it("keeps earlier inspected names when a later inspection lists only its selected server", async () => {
   const names = ["alpha"];
   const f = native(names);
