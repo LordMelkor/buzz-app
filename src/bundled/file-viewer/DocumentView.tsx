@@ -520,6 +520,14 @@ function OutlineList({
         if (at) setFocused(Number(at) - 1);
       }}
       onKeyDown={(event) => {
+        if (
+          event.defaultPrevented ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.shiftKey
+        )
+          return;
         const step = OUTLINE_STEPS[event.key];
         const to =
           event.key === "Home"
@@ -532,6 +540,9 @@ function OutlineList({
         if (to === undefined) return;
         event.preventDefault();
         const next = Math.min(items.length - 1, Math.max(0, to));
+        // At either end the row keeps focus; a request left waiting would
+        // take focus back whenever that row is drawn again.
+        if (next === focused) return;
         target.current = next;
         list.current?.scrollToIndex(next, { align: "nearest" });
         setFocused(next);
