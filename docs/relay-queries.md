@@ -870,8 +870,10 @@ a fresh hash of signed fields and the exact previously verified signature. It
 still returns newly owned frozen data and performs every HTTP read and access
 check. It is not an event/query cache or authorization proof. Live subscriptions
 retain up to 16,384 proofs across reconnects; direct `eventDto` calls are uncached.
-Desktop finite reads and live events send signature batches to the existing Rust
-libsecp256k1 verifier off the renderer thread. JavaScript still checks wire shape
+Desktop finite reads, live events, and cached channel discovery/history/profile
+restoration send signature checks to the existing Rust libsecp256k1 verifier off
+the renderer thread. Cached restoration retains JavaScript verification as a
+fallback if the host is unavailable or rejects the cached batch. JavaScript still checks wire shape
 and content hashes. Live EVENT/EOSE/CLOSED delivery stays ordered, with bounded
 pending work; overflow or host failure reconnects from before unprocessed frames.
 Browser and broker callers retain JavaScript signature verification.

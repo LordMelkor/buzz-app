@@ -16,7 +16,7 @@ import {
   profile,
   signed,
 } from "./testing";
-import { connectSignedTransport } from "./transport";
+import { connectSignedTransport, type ReadTransport } from "./transport";
 import { eventDto, type RelayEvent } from "./events";
 import type { SidebarPreferences } from "./sidebar-preferences";
 import { readJournal, type ReadJournal } from "./read-state-storage";
@@ -103,6 +103,7 @@ function setup(
   initialChannelId?: string,
   readIntent = false,
   maxDiscoveryBytes?: number,
+  verifyStored?: ReadTransport["verifyStored"],
 ) {
   let journal: ReadJournal | undefined;
   const membership = deferred<RelayEvent[]>();
@@ -122,6 +123,7 @@ function setup(
       relayAuthor: relay.pubkey,
       query,
       media: () => undefined,
+      ...(verifyStored ? { verifyStored } : {}),
       ...(readIntent
         ? {
             readState: {
@@ -880,8 +882,11 @@ describe("device-local startup", () => {
     owners.push(owner);
     await owner.restore();
     const names = owner.session.profiles.snapshot();
-    expect(check).toHaveBeenCalledTimes(1);
-    expect(check.mock.calls[0]?.[0]).toHaveLength(3);
+    const profileChecks = check.mock.calls.filter(([claims]) =>
+      claims.some(({ sig }) => sig === first.sig),
+    );
+    expect(profileChecks).toHaveLength(1);
+    expect(profileChecks[0]?.[0]).toHaveLength(3);
     expect(names.get(first.pubkey)?.name).toBe("Saved 0");
     // A host that accepts the record is trusted: the JS check never ran.
     expect(names.get(second.pubkey)?.name).toBe(
@@ -1314,34 +1319,101 @@ describe("device-local startup", () => {
       );
     },
   );
-  it("fresh authority wins over a late disk read", async () => {
-    const storage = disk();
-    const saved = await storage.readStartup?.();
-    const delayed = deferred<SavedStartup | undefined>();
-    storage.readStartup = () => delayed.promise;
-    const { owner, channels } = setup(storage);
-    const restoring = owner.restore();
-    await owner.session.read([{ kinds: [39000], "#d": ["alpha"], limit: 1 }]);
-    delayed.resolve(saved);
-    await restoring;
-    expect(channels.list().channels).toEqual([]);
-  });
-  it("clear cache fences a pending restore and prevents saved roster resurrection", async () => {
-    const storage = disk();
-    const saved = await storage.readStartup?.();
-    const delayed = deferred<SavedStartup | undefined>();
-    storage.readStartup = () => delayed.promise;
-    const { owner, channels } = setup(storage, true);
-    const restoring = owner.restore();
-    await owner.clearCache();
-    delayed.resolve(saved);
-    await restoring;
-    channels.ensure("alpha");
-    await owner.restore();
-    expect(channels.list().channels).toEqual([]);
-    expect(channels.window("alpha").rows).toEqual([]);
-    expect(await storage.read()).toEqual([]);
-  });
+  it.each(["disk read", "host verification"])(
+    "fresh authority wins over a late %s",
+    async (stage) => {
+      const storage = disk();
+      const saved = await storage.readStartup?.();
+      const delayed = deferred<void>();
+      let started = false;
+      const wait = async () => {
+        started = true;
+        await delayed.promise;
+      };
+      if (stage === "disk read")
+        storage.readStartup = async () => {
+          await wait();
+          return saved;
+        };
+      const verifyStored =
+        stage === "host verification"
+          ? async (values: readonly unknown[]) => {
+              if (values.length) await wait();
+              return values.map(eventDto);
+            }
+          : undefined;
+      const { owner, channels } = setup(
+        storage,
+        false,
+        undefined,
+        false,
+        undefined,
+        verifyStored,
+      );
+      const restoring = owner.restore();
+      try {
+        await vi.waitFor(() => expect(started).toBe(true));
+        await owner.session.read([
+          { kinds: [39000], "#d": ["alpha"], limit: 1 },
+        ]);
+      } finally {
+        delayed.resolve();
+        await restoring;
+      }
+      expect(channels.list().channels).toEqual([]);
+    },
+  );
+  it.each([
+    ["disk read", "cache clear"],
+    ["host verification", "cache clear"],
+    ["host verification", "disposal"],
+  ])(
+    "a pending %s cannot restore saved rosters after %s",
+    async (stage, action) => {
+      const storage = disk();
+      const saved = await storage.readStartup?.();
+      const delayed = deferred<void>();
+      let started = false;
+      const wait = async () => {
+        started = true;
+        await delayed.promise;
+      };
+      if (stage === "disk read")
+        storage.readStartup = async () => {
+          await wait();
+          return saved;
+        };
+      const verifyStored =
+        stage === "host verification"
+          ? async (values: readonly unknown[]) => {
+              if (values.length) await wait();
+              return values.map(eventDto);
+            }
+          : undefined;
+      const { owner, channels } = setup(
+        storage,
+        true,
+        undefined,
+        false,
+        undefined,
+        verifyStored,
+      );
+      const restoring = owner.restore();
+      try {
+        await vi.waitFor(() => expect(started).toBe(true));
+        if (action === "cache clear") await owner.clearCache();
+        else owner.dispose();
+      } finally {
+        delayed.resolve();
+        await restoring;
+      }
+      channels.ensure("alpha");
+      await owner.restore();
+      expect(channels.list().channels).toEqual([]);
+      expect(channels.window("alpha").rows).toEqual([]);
+      if (action === "cache clear") expect(await storage.read()).toEqual([]);
+    },
+  );
   it("clearing an already restored owner removes its cached discovery", async () => {
     const { owner, channels } = setup(disk(), true);
     await owner.restore();
