@@ -22,7 +22,7 @@ A plugin declares `host.agentMcp: true` in its manifest. Installation review tel
 
 ## Call gate
 
-Where a harness can stop a call before it runs, its adapter puts each native MCP call to core (`agents.harness.mcp.call`) and core asks the control.
+Where a harness can stop a call before it runs, its adapter puts each native MCP call to core (`agents.harness.mcp.call`) and core asks the control. As with `started`, only the plugin that registered the agent's type can call `call` and `ran`, for an agent running here, and core reads the agent and its protection from what runs.
 
 - `call(call)` sees `agent`, `session`, `id`, `server`, `tool` (absent when the adapter cannot tell), `arguments`, `hold` (how long core waits, in milliseconds), `direct` and `conversation?: { channel, root?, message? }`. It returns `{ deny: reason }` to stop the call, or `undefined` to allow it. An error, a rejection, a late answer and any other value deny. Without `call`, a call the choice allows is allowed.
 - `direct` is true only when the owner's own signed message started the turn and nothing else steered it. A wake, a watch, a timer, an attested sibling's message and a relay workflow are not. `conversation` is where the trigger came from, when it names one: the thread's root only when the message is already in a thread, and `message`, the id of the event that started the turn, when an event did.

@@ -95,12 +95,6 @@ function setup(
     core: async () => options.core,
     added: () => [],
     repositories: (partition) => `<repos for="${partition}"/>`,
-    mcp: {
-      choice: async () => undefined,
-      started: () => undefined,
-      call: async () => undefined,
-      ran: () => false,
-    },
   });
   const published: { kind: number; content: string; tags: string[][] }[] = [];
   const restored: unknown[][] = [];

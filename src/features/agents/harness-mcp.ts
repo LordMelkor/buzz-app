@@ -319,9 +319,56 @@ export function createHarnessMcp(
     return agent && mcp ? { agent, mcp } : undefined;
   }
 
-  const kit: HarnessMcpKit = Object.freeze({
-    choice: answer,
-    started(agent, session, loaded, given) {
+  /** The running agent `key` names, when the plugin `ctx` belongs to registered its type. */
+  function owned(ctx: Context, key: AgentKey) {
+    const agent = running(key);
+    const type = agent && typeOf(agent);
+    if (!agent || !type) throw new Error("This agent is not running here");
+    if (type.pluginId !== ctx.pluginOwner?.id)
+      throw new Error(
+        "Only the plugin that runs this agent's harness reports its sessions and calls",
+      );
+    return agent;
+  }
+
+  /** The kit for the plugin `ctx` belongs to. Only the plugin that registered
+   * an agent's type reports its sessions and calls, and the agent and its
+   * protection are read from what runs here, not taken from the caller. */
+  const kitFor = (ctx: Context): HarnessMcpKit =>
+    Object.freeze({
+      choice: answer,
+      started(who, session, loaded, given) {
+        live.started(owned(ctx, who.key), session, loaded, given);
+      },
+      async call(who, call, options) {
+        let agent: Agent;
+        try {
+          agent = owned(ctx, who.key);
+        } catch (cause) {
+          return cause instanceof Error ? cause.message : String(cause);
+        }
+        return live.call(agent, call, options);
+      },
+      ran(who, call) {
+        return live.ran(owned(ctx, who.key), call);
+      },
+    });
+
+  /** The kit's work, for an agent as it runs here. */
+  const live = {
+    started(
+      agent: Agent,
+      session: string,
+      loaded: HarnessMcpLoaded,
+      given: HarnessMcpAnswer,
+    ) {
+      // A protection that can't be bound proves nothing, and still loads nothing.
+      let protection: AgentProtection | undefined;
+      try {
+        protection = protectionOf(agent);
+      } catch {
+        protection = undefined;
+      }
       // A protected session loads nothing, whatever the adapter applied.
       const choice = agent.protection ? "none" : given;
       const extra = choice
@@ -346,7 +393,7 @@ export function createHarnessMcp(
           `Session ${session} loaded MCP servers that were turned off: ${extra.map(({ name }) => name).join(", ")}`,
         );
       }
-      if (agent.protection) proofs.set(agent.key, agent.protection.key);
+      if (protection) proofs.set(agent.key, protection.key);
       record(
         agent.key,
         session,
@@ -356,7 +403,11 @@ export function createHarnessMcp(
         },
       );
     },
-    async call(agent, call, options) {
+    async call(
+      agent: Agent,
+      call: Parameters<HarnessMcpKit["call"]>[1],
+      options: Parameters<HarnessMcpKit["call"]>[2],
+    ) {
       try {
         const { hold, signal, turn } = options;
         if (agent.protection) return "A protected agent loads no MCP server";
@@ -368,7 +419,7 @@ export function createHarnessMcp(
         const live = control;
         if (!live || state() !== "controlled")
           return "The plugin that controls MCP servers is not running";
-        const owner = running(agent.key)?.owner;
+        const owner = agent.owner;
         const conversation = turn && conversationOf(turn.trigger);
         const answer = live.value.call
           ? await held(
@@ -414,7 +465,7 @@ export function createHarnessMcp(
         return "The MCP call could not be checked";
       }
     },
-    ran(agent, call) {
+    ran(agent: Agent, call: Parameters<HarnessMcpKit["ran"]>[1]) {
       if (call.rejected) return false;
       const session = recorded(agent.key, call.session);
       if (session?.allowed.delete(call.id)) return false;
@@ -442,7 +493,7 @@ export function createHarnessMcp(
         ).catch(() => undefined);
       return true;
     },
-  });
+  };
 
   return {
     kitFor,

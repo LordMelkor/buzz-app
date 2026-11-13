@@ -617,6 +617,12 @@ describe("the call gate", () => {
     who: object = handle,
   ) {
     const made = setup();
+    // Core reads protection from the agent as it runs, not from the caller.
+    if ((who as { protection?: unknown }).protection)
+      made.live.agent = {
+        ...made.live.agent,
+        protection: { provider: "p", policy: {} },
+      } as Agent;
     await made.install({ choose: () => undefined, ...control });
     made.mcp.kit.started(who as never, "s1", [], choice);
     return made;
@@ -818,7 +824,9 @@ describe("the call gate", () => {
       /constructor/,
     );
     await expect(deny({ session: "other" })).resolves.toMatch(/no record/);
-    await expect(deny({}, { key: "elsewhere" })).resolves.toMatch(/no record/);
+    await expect(deny({}, { key: "elsewhere" })).resolves.toMatch(
+      /not running here/,
+    );
     asked.mockClear();
     status.change({ active: false, unavailable: true });
     await expect(deny({})).resolves.toMatch(/not running/);
@@ -1008,6 +1016,21 @@ describe("the call gate", () => {
     expect(mcp.kit.ran(handle, call())).toBe(true);
     skipped.mockRejectedValue(new Error("boom") as never);
     expect(mcp.kit.ran(handle, call())).toBe(true);
+  });
+
+  it("takes calls only from the plugin that runs the agent's harness", async () => {
+    const asked = vi.fn<NonNullable<HarnessMcpControl["call"]>>(
+      () => undefined,
+    );
+    const { kitOf } = await gated({ call: asked });
+    const other = kitOf("other");
+    await expect(other.call(handle, call(), options())).resolves.toMatch(
+      /Only the plugin that runs this agent's harness/,
+    );
+    expect(() => other.ran(handle, call())).toThrow(
+      /Only the plugin that runs this agent's harness/,
+    );
+    expect(asked).not.toHaveBeenCalled();
   });
 
   it("never tells the control about a protected agent's call", async () => {
