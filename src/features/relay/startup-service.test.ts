@@ -27,19 +27,25 @@ function setup({
   saved = true,
   profiles = [],
   verifyStored,
+  relay = keypair(),
+  verifiedProfiles,
 }: {
   saved?: boolean;
   profiles?: unknown[];
   verifyStored?: ReadTransport["verifyStored"];
+  relay?: ReturnType<typeof keypair>;
+  verifiedProfiles?: unknown;
 } = {}) {
-  const viewer = keypair(),
-    relay = keypair();
+  const viewer = keypair();
   const events = [
     roster(relay, "alpha", [viewer.pubkey]),
     metadata(relay, "alpha", "Alpha"),
   ];
   let startup: SavedStartup | undefined = saved
-    ? { discovery: { savedAt: Date.now(), relayAuthor: relay.pubkey, events } }
+    ? {
+        discovery: { savedAt: Date.now(), relayAuthor: relay.pubkey, events },
+        ...(verifiedProfiles ? { verifiedProfiles } : {}),
+      }
     : undefined;
   let heads: SavedHead[] = !saved
     ? []
@@ -161,6 +167,49 @@ it.each([false, true])(
     if (verifyStored) expect(verifyStored).toHaveBeenCalledTimes(1);
   },
 );
+it.each([
+  ["the saved authority", true],
+  ["no saved authority", false],
+])("shows saved verified names while offline with %s", async (_, saved) => {
+  const relay = keypair(),
+    alice = keypair();
+  const head = signed(relay, {
+    kind: 30382,
+    content: "",
+    tags: [
+      ["d", alice.pubkey],
+      ["p", alice.pubkey],
+      ["active", "true"],
+      ["display_name", "Alice"],
+      ["username", "alice"],
+      ["issuer_label", "Example"],
+      ["verified_at", "1700000000"],
+    ],
+  });
+  const self = signed(alice, {
+    kind: 0,
+    tags: [],
+    content: JSON.stringify({ name: "Self-chosen" }),
+  });
+  const { restored } = setup({
+    relay,
+    profiles: [self, head],
+    ...(saved
+      ? {
+          verifiedProfiles: {
+            pubkey: relay.pubkey,
+            multipleIssuers: false,
+          },
+        }
+      : {}),
+  });
+  const snapshot = await restored();
+  expect(snapshot.session.profiles.snapshot().get(alice.pubkey)).toMatchObject(
+    saved
+      ? { name: "Alice", verified: { status: "cached" } }
+      : { name: "Self-chosen" },
+  );
+});
 it("resumes and connects one partition: heads keep `viewer:origin`, snapshots `origin:viewer`", async () => {
   const { data, connections, source, restored } = setup();
   const viewer = source.viewer;

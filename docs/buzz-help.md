@@ -272,6 +272,8 @@ mention anyone. Explicit agent watches on that room can still receive them.
 - Where a community verifies names, the profile check appears beside the verified
   full name, or the verified username when no full name is supplied. The profile
   shows the issuer and verification time; cached verification has no check.
+  Verified names seen before show at once after a restart, as cached, until
+  the community checks them again.
   When you search for people (search, @mentions, adding channel members and new
   direct messages), a verified person shows their verified name with the full
   name beside it. Search finds people by their profile names; once found, a
