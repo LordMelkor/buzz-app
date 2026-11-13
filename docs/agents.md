@@ -464,16 +464,28 @@ the same `buzz` server. Names are shared by every plugin, so a plugin's tools
 should start with its name (`notes_get`); `addTool` refuses one that a Buzz tool
 or another plugin has, and any starting with `owner_`, the prefix of retired
 owner-access tools, so a call to one never reaches plugin code. The standalone server in
-`src/buzz-mcp/main.ts` stays without them. A harness reads `agents.tools()`
-and passes it to `respond` or `callSessionTool`. A session keeps the list it
-started with, so `addedKey` goes in what decides when one is replaced: the
-Claude and goose session fingerprints, Claude's spare, and each saved Codex
-binding, since `thread/resume` keeps a thread's tools. Claude and goose resume
+`src/buzz-mcp/main.ts` stays without them. A tool with `when(agent)` goes only
+to the agents it accepts (only `true` admits; a `when` that throws leaves out
+that tool), so a harness reads `agents.toolsFor(agentKey)` and passes it to
+`respond` or `callSessionTool`; calls are answered from the agent's list as it
+is now. A session keeps the list it started with, so the agent's `addedKey`
+goes in what decides when one is replaced: the Claude and goose session
+fingerprints, each saved Codex binding, since `thread/resume` keeps a thread's
+tools, and Pi's extension, installed again when its list changes. Claude's
+spare lists `toolsFor()`, the tools with no `when`, and goes only to an agent
+whose list matches it. Claude and goose resume
 their sessions when replaced, but a Codex agent starts a new thread and loses its
 context. That happens once when a plugin with tools ships, and again whenever a
 tool's name, description or schema changes, so edit those deliberately.
 `addedKey` covers only plugins' tools, so a resumed Codex thread keeps the Buzz
 tools, and their `load`, that it started with.
+
+A tool's `context` names where the agent is working. Pi and the harness kit
+(when its harness passes them) also give `direct`, true while the owner's own
+message started the run and nothing else joined it, and `folder`, where the
+conversation works, as the agent's settings give it. A harness that does not
+tell leaves them out, and a tool treats a missing `direct` as false. Neither is
+part of the protection checker's session, which stays the destination.
 
 The GitHub plugin keeps one store of pull request data (`pull-states.ts`), and
 it is the only place the plugin reads pull requests from GitHub. Links, the Solo

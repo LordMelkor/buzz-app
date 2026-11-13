@@ -9,7 +9,7 @@ A plugin declares `host.agentMcp: true` in its manifest. Installation review tel
 - `ctx.agents.controlHarnessMcp({ choose(agent) })` registers the one control. The first plugin to register holds it; the owner does not pick which plugin that is. A second registration throws. The control ends with the plugin's scope, and then any other running plugin with the grant can register. Any plugin with the grant can call `harnessMcp` and `inspectHarnessMcp`, whether or not it holds the control.
 - `choose` returns an object of overrides by server name: `false` is off, `true` is on, and a list of tool names is on without those tools. A name left out keeps the harness's default, and `undefined` leaves every name out. Any other value for a name means off; an answer that is not a plain object means no server. The control is asked only while its plugin is running.
 - The control may also have `call(call)` and `skipped(call)`; see [Call gate](#call-gate).
-- `ctx.agents.harnessMcp(agentKey)` returns what the agent's type reports: `tools` (whether single tools can be left out), `inspect` (whether `inspectHarnessMcp` works), `calls: true` when the harness puts this agent's native MCP calls to `call` before they run (never for a protected agent; without it no call can be held, so a call the choice allows runs and `ran` stops the turn), an optional `note`, and `servers` (`name`, `default`, optional `state` and last-seen `tools`; a tool is `name`, an optional `description` and an optional `ungated: true`, kept only when exactly `true`). It is `undefined` when the type does not report.
+- `ctx.agents.harnessMcp(agentKey)` returns what the agent's type reports: `tools` (whether single tools can be left out), `inspect` (whether `inspectHarnessMcp` works), `calls: true` when the harness puts this agent's native MCP calls to `call` before they run (never for a protected agent; without it no call can be held, so a call the choice allows runs and `ran` stops the turn), an optional `note`, and `servers` (`name`, `default`, optional `state` and last-seen `tools`; a tool is `name`, an optional `description` and an optional `ungated: true`, kept only when exactly `true`). It is `undefined` when the type does not report. A type with no MCP client reports `{ client: false, tools: false, inspect: false, servers: [] }`: it loads no server, so there is nothing to choose, hold or prove. A plugin can give its agents tools of its own with `addTool`'s `when` instead.
 - `ctx.agents.inspectHarnessMcp(agentKey, server)` lists one server's tools without a model turn and keeps them as the agent's last-seen tools. It rejects protected agents and names the report lacks.
 
 ## What core keeps
@@ -18,7 +18,7 @@ A plugin declares `host.agentMcp: true` in its manifest. Installation review tel
 - A control that throws means no server for that launch.
 - A plugin that declares `host.agentMcp`, is enabled, and is not yet running holds a launch until plugin startup settles. If it is still not running, the launch loads no server.
 - After the harness starts a session and before its first prompt, the adapter passes what the harness lists as loaded, with the answer `choice` gave that session, to `agents.harness.mcp.started`. Only the plugin that registered the agent's type can call `choice` or `started`, and only for an agent running here. Core reads the agent and its protection from what runs, not from the caller. It throws when a server or tool that was turned off is listed, and the launch stops. This read-back catches a server after the harness started it; it does not prevent the start. The session cannot use it.
-- A protected agent of a type that reports its servers passes no protection check until one of its sessions has called `started` with an empty listing under the same protection key. Its other sessions starting do not revoke that; any of its sessions listing a server does. Without it, the type's `protectionUnavailable` reason applies.
+- A protected agent of a type that reports its servers passes no protection check until one of its sessions has called `started` with an empty listing under the same protection key. A type with no MCP client is not asked for this. Its other sessions starting do not revoke that; any of its sessions listing a server does. Without it, the type's `protectionUnavailable` reason applies.
 
 ## Call gate
 
@@ -37,7 +37,7 @@ A gated call is asked, held, and then allowed, denied or timed out, once. After 
 
 ## Adapters
 
-A type declares `harnessMcp: { report(agent), inspect?(agent, server) }`. `report` names servers from the harness's own configuration without starting any. An adapter asks `agents.harness.mcp.choice(agent)` when it launches a session and applies the answer; execution targets report and apply nothing.
+A type declares `harnessMcp: { report(agent), inspect?(agent, server) }`, or `harnessMcp: { client: false }` when its harness has no MCP client (Pi). `report` names servers from the harness's own configuration without starting any. An adapter asks `agents.harness.mcp.choice(agent)` when it launches a session and applies the answer; execution targets report and apply nothing.
 
 ### Codex
 

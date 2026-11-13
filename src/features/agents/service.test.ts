@@ -11898,6 +11898,7 @@ it("adds plugins' tools to every session, each name once", async () => {
     { ...tool, inputSchema: { type: "object", default: 1n } },
     { ...tool, name: "owner_channel_list" },
     { ...tool, name: "owner_message_list" },
+    { ...tool, when: true as never },
   ])
     expect(() => tasks.agents.addTool(bad)).toThrow(/Agent tools need/);
   expect(service.tools()).toHaveLength(1);
@@ -11912,6 +11913,48 @@ it("adds plugins' tools to every session, each name once", async () => {
     { name: "notes_add", pluginId: "example" },
     { name: "tasks_create", pluginId: "buzz.tasks" },
   ]);
+});
+
+it("gives a plugin's tool to the agents its when accepts, asked each time", async () => {
+  const { service, plugin } = await setup();
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const tool = (name: string, when?: (agent: Agent) => boolean) => ({
+    name,
+    description: "A tool.",
+    inputSchema: { type: "object" },
+    call: async () => name,
+    ...(when && { when }),
+  });
+  let echo = "Echo";
+  plugin.agents.addTool(tool("notes_every"));
+  plugin.agents.addTool(tool("notes_echo", (agent) => agent.name === echo));
+  plugin.agents.addTool(tool("notes_async", (async () => true) as never));
+  plugin.agents.addTool(
+    tool("notes_broken", () => {
+      throw new Error("no");
+    }),
+  );
+  await service.create({ type: "example/echo", name: "Echo" });
+  const names = (tools: readonly { name: string }[]) =>
+    tools.map(({ name }) => name);
+  await vi.waitFor(() =>
+    expect(names(service.toolsFor(bot))).toEqual(["notes_every", "notes_echo"]),
+  );
+  expect(warn).toHaveBeenCalledWith(
+    "Agent tool failed to match",
+    "notes_broken",
+    expect.any(Error),
+  );
+  // Without an agent, only what every agent gets; an agent not running here
+  // gets nothing a `when` chooses.
+  expect(names(service.toolsFor())).toEqual(["notes_every"]);
+  expect(names(service.toolsFor(`${bot}@elsewhere.example`))).toEqual([
+    "notes_every",
+  ]);
+  echo = "Other";
+  expect(names(service.toolsFor(bot))).toEqual(["notes_every"]);
+  expect(service.tools()).toHaveLength(4);
+  warn.mockRestore();
 });
 
 it("reserves a tool name while its plugin is still starting", async () => {

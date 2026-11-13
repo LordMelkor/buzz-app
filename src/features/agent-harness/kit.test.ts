@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { RESUMED_PROMPT } from "../../buzz-mcp/prompt";
 import { fromOwner } from "../agents/owner-attestation";
+import type { AddedTool } from "../../buzz-mcp/session-tools";
+import type { AgentKey } from "../agents/membership";
 import type { AgentHandle, Delivery } from "../agents/service";
 import { eventDto, type EventData, type RelayEvent } from "../relay/events";
 import type { RelayData } from "../relay/service";
@@ -47,6 +49,7 @@ function setup(
     thread?: readonly EventData[];
     core?: string | null;
     notes?: readonly string[];
+    added?: (agent?: AgentKey) => readonly AddedTool[];
   }> = {},
 ) {
   const read = vi.fn(
@@ -93,7 +96,7 @@ function setup(
   const kit = harnessKit({
     relay: () => relay,
     core: async () => options.core,
-    added: () => [],
+    added: options.added ?? (() => []),
     repositories: (partition) => `<repos for="${partition}"/>`,
   });
   const published: { kind: number; content: string; tags: string[][] }[] = [];
@@ -499,6 +502,55 @@ describe("harnessKit.tools", () => {
     expect(JSON.stringify(without)).toContain("cannot read ./a.txt");
     await call(kit.tools(agent, conversation, { read }));
     expect(read).toHaveBeenCalledWith("./a.txt");
+  });
+
+  it("lists the agent's own plugin tools and tells them the run's direct and folder", async () => {
+    const call = vi.fn<AddedTool["call"]>(async () => "noted");
+    const { kit, agent, delivery } = setup({
+      added: (key) =>
+        key === self
+          ? [
+              {
+                name: "notes_add",
+                description: "Add a note.",
+                inputSchema: { type: "object" },
+                call,
+              },
+            ]
+          : [],
+    });
+    const event = reply("2", "1", "@Ampy go");
+    const conversation = await kit.conversation(
+      delivery({ type: "mention", event }),
+      "thread",
+    );
+    if (!conversation) throw new Error("not admitted");
+    const handler = kit.tools(agent, conversation, {
+      direct: true,
+      folder: "~/work",
+    });
+    const listed = (await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+    })) as { result: { tools: { name: string }[] } };
+    expect(listed.result.tools.map((tool) => tool.name)).toContain("notes_add");
+    await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "notes_add", arguments: {} },
+    });
+    expect(call).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        channel,
+        root: conversation.root,
+        direct: true,
+        folder: "~/work",
+      },
+      {},
+    );
   });
 
   it("standalone prompts carry the agent's routing context", () => {

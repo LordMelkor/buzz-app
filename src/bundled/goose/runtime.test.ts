@@ -191,7 +191,8 @@ function setup(
     () => relay,
     core,
     storage,
-    () => options.added ?? [],
+    // Each given to the agent, so none without one.
+    (agent) => (agent === undefined ? [] : (options.added ?? [])),
     options.repositories,
   );
   const published: { kind: number; content: string; tags: string[][] }[] = [];

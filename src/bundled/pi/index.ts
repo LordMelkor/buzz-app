@@ -27,7 +27,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     host,
     (key) => ownerReads(agents.relay(key), pubkeyOf(key)),
     (key, signal) => agents.core(key, signal),
-    () => agents.tools(),
+    (agent) => agents.toolsFor(agent),
     repositoriesContext,
     (key) => agents.handle(key),
     async (agent, session, event, input) => {
@@ -90,6 +90,8 @@ export const apply: PluginModule["apply"] = (ctx) => {
   agents.register<Config>({
     id: TYPE_ID,
     hooks: { events: ["beforeTool", "afterTool"] },
+    // Pi has no MCP client: it loads no server of its own.
+    harnessMcp: { client: false },
     retire: (pubkey) => runtime.retire(pubkey),
     protection: true,
     title: "Pi",

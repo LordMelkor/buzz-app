@@ -100,11 +100,18 @@ export type HarnessKit = Readonly<{
   standalonePrompt(agent: AgentHandle, text: string): string;
   /** Answers the agent's Buzz tools over MCP, for `Host.serveMcp`, acting in
    * `conversation`, or nowhere by default for a standalone turn. `read` gives
-   * the file an upload names; without it, uploads of local files fail. */
+   * the file an upload names; without it, uploads of local files fail.
+   * `direct` and `folder` go to plugins' tools as `Context.direct` (the
+   * owner's own message started the run and nothing else joined it) and
+   * `Context.folder` (where the conversation works). */
   tools(
     agent: AgentHandle,
     conversation?: HarnessConversation,
-    options?: Readonly<{ read?(path: string): Promise<Uint8Array> }>,
+    options?: Readonly<{
+      read?(path: string): Promise<Uint8Array>;
+      direct?: boolean;
+      folder?: string;
+    }>,
   ): McpHandler;
   /** Posts `text` as the agent in the conversation: in the event's thread, or
    * at the top level. `notifyOwner` tags the owner, as for a failed turn. */
@@ -122,8 +129,9 @@ export type HarnessKit = Readonly<{
 type Sources = Readonly<{
   relay(key: AgentKey): RelayData | undefined;
   core(key: AgentKey): Promise<string | null | undefined>;
-  /** The tools plugins add to every session now. */
-  added(): readonly AddedTool[];
+  /** The tools plugins add to this agent's sessions now; without an agent,
+   * those every agent gets. */
+  added(agent?: AgentKey): readonly AddedTool[];
   /** The repositories folder section for a relay's partition. */
   repositories(partition: string | undefined): string;
 }>;
@@ -421,7 +429,7 @@ export function harnessKit(sources: Sources): Omit<HarnessKit, "mcp"> {
 
     tools(agent, conversation, options = {}) {
       const solo = conversation && known(conversation).solo;
-      const context: Context = !conversation
+      const destination: Context = !conversation
         ? {}
         : conversation.topLevel
           ? {
@@ -431,6 +439,11 @@ export function harnessKit(sources: Sources): Omit<HarnessKit, "mcp"> {
           : conversation.root
             ? { channel: conversation.channel, root: conversation.root }
             : { channel: conversation.channel };
+      const context: Context = {
+        ...destination,
+        ...(options.direct !== undefined && { direct: options.direct }),
+        ...(options.folder !== undefined && { folder: options.folder }),
+      };
       const pubkey = agent.pubkey;
       const reads = () => ownerReads(sources.relay(agent.key), pubkey);
       return async (message) => {
@@ -458,7 +471,7 @@ export function harnessKit(sources: Sources): Omit<HarnessKit, "mcp"> {
             if (found) memoryReads.forget(found.connection, pubkey);
           },
         });
-        const added = sources.added();
+        const added = sources.added(agent.key);
         return respond(client, context, message, added, {
           instructions: sessionHint(added),
         });

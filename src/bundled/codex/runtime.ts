@@ -434,8 +434,10 @@ export class CodexRuntime {
       raw: unknown,
       remote?: boolean,
     ) => Config = config,
-    /** The tools plugins add to every thread now. */
-    private readonly added: () => readonly AddedTool[] = () => [],
+    /** The tools plugins add to the agent's threads now. */
+    private readonly added: (
+      agent?: AgentKey,
+    ) => readonly AddedTool[] = () => [],
     /** Desktop-local repository instructions; standalone hosts keep their own layout. */
     private readonly repositories: (scope: string | undefined) => string = () =>
       "",
@@ -2309,7 +2311,7 @@ export class CodexRuntime {
         {
           ...params,
           ephemeral: true,
-          dynamicTools: dynamicTools(this.added()),
+          dynamicTools: dynamicTools(this.added(agent.key)),
         },
       );
       once.threadId = started.thread.id;
@@ -2568,10 +2570,11 @@ export class CodexRuntime {
       ? undefined
       : entries.flatMap((entry) => [...entry.onces]).find(matches);
     const turn = active ?? once;
+    const added = this.added((active?.reply ?? once)?.agent.key);
     if (
       !turn ||
       call.namespace !== "buzz" ||
-      !sessionTools(this.added()).some((tool) => tool.name === call.tool)
+      !sessionTools(added).some((tool) => tool.name === call.tool)
     )
       throw new Error("No active Buzz tool for this thread and turn");
     const signal = active
@@ -2664,7 +2667,7 @@ export class CodexRuntime {
       context,
       call.tool,
       args,
-      this.added(),
+      added,
     ).catch((error) => {
       if (final)
         for (const taken of answering)
@@ -3249,7 +3252,7 @@ export class CodexRuntime {
     try {
       // Resume restores the thread's tools, so one started with other added
       // tools starts fresh.
-      const added = this.added();
+      const added = this.added(agent.key);
       const tools = addedKey(added);
       const resuming =
         existing?.workspace === workspace && (existing.tools ?? "") === tools;

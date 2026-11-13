@@ -73,7 +73,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     (key, signal) => agents.core(key, signal),
     agents.storage,
     (raw, remote) => (remote ? config(raw) : providerDefaults.resolve(raw)),
-    () => agents.tools(),
+    (agent) => agents.toolsFor(agent),
     repositoriesContext,
     async (agent, session, event, input) => {
       return ((await agents.dispatchHook(

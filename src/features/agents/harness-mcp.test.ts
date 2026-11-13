@@ -400,6 +400,27 @@ it("leaves protection alone for a type that does not report MCP servers", () => 
   expect(mcp.require(undefined, agent)).toBeUndefined();
 });
 
+it("reports a type with no MCP client as loading none, and asks its protected agents no proof", async () => {
+  const { mcp, scope } = setup({ harnessMcp: { client: false } });
+  await expect(mcp.report(scope(false), key)).rejects.toThrow(
+    "Declare host.agentMcp",
+  );
+  await expect(mcp.report(scope(), key)).resolves.toEqual({
+    client: false,
+    tools: false,
+    inspect: false,
+    servers: [],
+  });
+  await expect(
+    mcp.report(scope(), "unknown" as never),
+  ).resolves.toBeUndefined();
+  await expect(mcp.inspect(scope(), key, "alpha")).rejects.toThrow(
+    "cannot list",
+  );
+  const base = protection();
+  expect(mcp.require(base, agent)).toBe(base);
+});
+
 const report = (overrides: Partial<HarnessMcpReport> = {}) => ({
   tools: true,
   servers: [

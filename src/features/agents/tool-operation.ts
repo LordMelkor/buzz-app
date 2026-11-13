@@ -1,4 +1,8 @@
-import type { BuzzClient, Context } from "../../buzz-mcp/client";
+import {
+  type BuzzClient,
+  type Context,
+  protectionSession,
+} from "../../buzz-mcp/client";
 import type { AddedTool } from "../../buzz-mcp/session-tools";
 
 declare const operationBrand: unique symbol;
@@ -136,14 +140,14 @@ export async function callToolOperation(
     if (!client.nativeToolGate)
       await client.protect?.({
         kind: "tool",
-        session: JSON.stringify(context),
+        session: protectionSession(context),
         content: { title: tool.name, arguments: JSON.parse(input) },
       });
     check();
     // A consumer tool's review does not approve the provider operation.
     await client.protect?.({
       kind: "tool",
-      session: JSON.stringify(context),
+      session: protectionSession(context),
       content: { title: registered.name, arguments: JSON.parse(input) },
     });
     check();

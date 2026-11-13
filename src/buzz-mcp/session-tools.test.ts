@@ -182,6 +182,24 @@ it("withholds a denied tool result and checks thrown tool errors before exposing
   ).rejects.toThrow("denied result");
 });
 
+it("reviews a conversation's calls as one session, whatever its run's direct and folder", async () => {
+  const protect = vi.fn(async (_action: ProtectionAction) => {});
+  const client = { protect } as unknown as import("./client").BuzzClient;
+  const destination = { channel: "chan", root: "root" };
+  for (const context of [
+    destination,
+    { ...destination, direct: true, folder: "~/a" },
+    { ...destination, direct: false, folder: "~/b" },
+  ])
+    await callSessionTool(client, context, "plugin_write", {}, [
+      tool("plugin_write"),
+    ]);
+  // The session it had before runs said either.
+  expect(new Set(protect.mock.calls.map(([action]) => action.session))).toEqual(
+    new Set([JSON.stringify(destination)]),
+  );
+});
+
 it("leaves a plugin tool's path and files semantics with that plugin", async () => {
   const read = vi.fn();
   const client = {

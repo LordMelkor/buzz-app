@@ -874,10 +874,12 @@ it goes. `systemPrompt` and `turnPrompt` give Buzz's prompts, `turnPrompt`
 showing what the session has not seen and taking plugins' notes. Its
 `cursor` is opaque: save it with the session and give it to the next
 `turnPrompt`, which keeps a mark for each thread of a channel conversation.
-`reply` posts as the agent there. `tools(agent, conversation, { read })`
+`reply` posts as the agent there. `tools(agent, conversation, { read, direct, folder })`
 answers the Buzz tools over MCP for `ctx.host.serveMcp`, so the manifest
 declares `host.mcp`; `read` is the plugin's own file access (`host.files`),
-which uploads of local files use. The kit grants nothing `ctx.agents` and
+which uploads of local files use. `direct` and `folder` reach plugins' tools
+in their call context: whether the owner's own message started the run, and
+the agent's working folder. The kit grants nothing `ctx.agents` and
 `ctx.host` do not already give the plugin.
 
 A plugin, bundled or installed, can add a tab to the settings of agents
@@ -951,7 +953,14 @@ Hosts without a cancellation signal omit it; a tool that requires one must
 refuse the call when it is absent. Do not infer cancellation from conversation
 activity. The signal is a live object, not part of saved tool arguments or
 session archives. `BuzzClient` from `@buzz/author` declares this property;
-`AddedToolContext` keeps only the conversation destination.
+`AddedToolContext` keeps the conversation destination, plus `direct` and
+`folder` where the harness tells them ([Agents](agents.md)).
+
+`addTool({ …, when(agent) })` gives the tool only to the agents `when`
+accepts. It is asked as sessions start, before turns and on calls, so it must
+answer at once from what the plugin already knows; only `true` admits, and a
+`when` that throws leaves out only that tool. `ctx.agents.toolsFor(agentKey)`
+is the list an agent gets now, and `toolsFor()` the tools every agent gets.
 
 A plugin, bundled or installed, can give standing instructions to the agents
 this copy of the app runs with `ctx.agents.addInstructions({ id, text, when?

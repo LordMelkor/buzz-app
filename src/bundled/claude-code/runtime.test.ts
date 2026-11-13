@@ -10,7 +10,7 @@ import {
   promptMessage,
   promptSections,
 } from "../../features/agents/activity-transcript";
-import { pubkeyOf } from "../../features/agents/membership";
+import { type AgentKey, pubkeyOf } from "../../features/agents/membership";
 import { ownerReads } from "../../features/agents/reads";
 import { localStore } from "../../features/agents/state";
 import type {
@@ -99,6 +99,8 @@ function setup(
     /** Raw text after the history, as a line Claude is still writing. */
     nativeTail?: string;
     resolveDirectory?: Host["resolveDirectory"];
+    /** Each agent's added tools, instead of `added` for every agent. */
+    given?: (agent?: AgentKey) => readonly AddedTool[];
   }> = {},
 ) {
   const fake = fakeSpawn();
@@ -244,7 +246,7 @@ function setup(
     core,
     storage,
     config,
-    () => added,
+    options.given ?? (() => added),
     options.repositories,
   );
   const published: { kind: number; content: string; tags: string[][] }[] = [];
@@ -2636,6 +2638,53 @@ it("offers the tools plugins add, runs them as the agent, and replaces an idle s
   expect(first?.killed).toBe(true);
   expect(second).not.toBe(first);
   expect(await names(second, 3)).not.toContain("tasks_create");
+});
+
+it("hands the spare only to an agent given the tools every agent gets", async () => {
+  const given = { tasks: true };
+  const tasks: AddedTool = {
+    name: "tasks_create",
+    description: "Create a task.",
+    inputSchema: { type: "object" },
+    call: async () => "created",
+  };
+  const { runtime, claudes, deliver } = setup([], {
+    given: (agent) => (agent === self && given.tasks ? [tasks] : []),
+  });
+  // Each a new thread, so each starts a new session.
+  const mention = (id: string) =>
+    deliver({
+      type: "mention",
+      event: message(id, `@Claude ${id}`, {
+        tags: [
+          ["h", channel],
+          ["p", self],
+        ],
+      }),
+    });
+  const asked = (id: string) =>
+    claudes().find((process) =>
+      process.prompts.some(
+        (prompt) => promptContent(prompt) === `@Claude ${id}`,
+      ),
+    );
+  runtime.sync([{ key: self, pubkey: self, config: DEFAULT_CONFIG } as Agent]);
+  await flush(10);
+  const [spare] = claudes();
+  await mention("6");
+  await flush(10);
+  const own = asked("6");
+  expect(own).toBeDefined();
+  expect(own).not.toBe(spare);
+  expect(spare?.killed).toBe(false);
+  const listed = (await mcp(own, 1, "tools/list")) as unknown as {
+    tools: { name: string }[];
+  };
+  expect(listed.tools.map((tool) => tool.name)).toContain("tasks_create");
+  given.tasks = false;
+  await mention("7");
+  await flush(10);
+  expect(asked("7")).toBe(spare);
 });
 
 it("keeps one spare for all its agents, and none once they are gone", async () => {

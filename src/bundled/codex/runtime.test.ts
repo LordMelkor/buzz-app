@@ -409,7 +409,8 @@ function fixture(
     ): Promise<string | null | undefined> =>
       memories.find((memory) => memory.slug === "core")?.body ?? null,
   );
-  /** The tools plugins add, as the runtime reads them at each use. */
+  /** The tools plugins add, as the runtime reads them at each use: each
+   * given to the agent, so none without one. */
   const added: AddedTool[] = [];
   const runtime = new CodexRuntime(
     spawn,
@@ -417,7 +418,7 @@ function fixture(
     core,
     persisted ?? store,
     config,
-    () => added,
+    (agent) => (agent === undefined ? [] : added),
     repositories,
     hooks,
     execution,
@@ -558,7 +559,7 @@ function fixture(
         snapshot: () => ({ status: "ready", agents: [], running }),
         relay: () => relay,
         core,
-        tools: () => added,
+        toolsFor: (agent?: string) => (agent === undefined ? [] : added),
         subscribe: (listener: () => void) => {
           listeners.push(listener);
           return () => {};

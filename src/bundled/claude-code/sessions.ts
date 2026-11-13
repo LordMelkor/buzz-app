@@ -45,7 +45,7 @@ export type SessionsOptions = Readonly<{
   spawn: Spawn;
   strictResume?: boolean;
   /** Where a new conversation looks for a process already started. */
-  spare?: Spare;
+  spare?: Pick<Spare, "take">;
   store: SessionStore;
   /** How to start a process with the agent's current settings, for the
    * conversation `key` when given. */

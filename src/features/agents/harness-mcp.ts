@@ -37,6 +37,10 @@ export type HarnessMcpServer = Readonly<{
   tools?: readonly HarnessMcpTool[];
 }>;
 export type HarnessMcpReport = Readonly<{
+  /** `false`: the harness has no MCP client. It loads no server, so
+   * `servers` is empty and nothing is chosen, held or proven. A plugin may
+   * give such an agent tools of its own with `addTool`'s `when`. */
+  client?: false;
   /** Whether a choice may leave out single tools. */
   tools: boolean;
   /** Whether `inspectHarnessMcp` can list a server's tools. */
@@ -318,7 +322,13 @@ export function createHarnessMcp(
   function reporter(key: AgentKey) {
     const agent = running(key);
     const mcp = agent && typeOf(agent)?.harnessMcp;
-    return agent && mcp ? { agent, mcp } : undefined;
+    return agent && mcp && "report" in mcp ? { agent, mcp } : undefined;
+  }
+  /** Whether the agent runs here and its type has no MCP client. */
+  function clientless(key: AgentKey) {
+    const agent = running(key);
+    const mcp = agent && typeOf(agent)?.harnessMcp;
+    return !!mcp && !("report" in mcp);
   }
 
   /** The running agent `key` names, when the plugin `ctx` belongs to registered its type. */
@@ -531,6 +541,8 @@ export function createHarnessMcp(
       key: AgentKey,
     ): Promise<HarnessMcpReport | undefined> {
       declared(ctx);
+      if (clientless(key))
+        return { client: false, tools: false, inspect: false, servers: [] };
       const found = reporter(key);
       const report = found && (await found.mcp.report(found.agent));
       if (!found || !report) return undefined;
@@ -571,13 +583,15 @@ export function createHarnessMcp(
     },
     /** A protected agent of a type that reports its MCP servers passes no check
      * until a session of it has shown none loaded. The type's own
-     * unavailability text says so, as for any protection it lacks. */
+     * unavailability text says so, as for any protection it lacks. A type
+     * with no MCP client has nothing to show. */
     require(
       protection: AgentProtection | undefined,
       agent: Pick<Agent, "key" | "type">,
     ): AgentProtection | undefined {
       const type = typeOf(agent);
-      if (!protection || !type?.harnessMcp) return protection;
+      if (!protection || !type?.harnessMcp || !("report" in type.harnessMcp))
+        return protection;
       const proven = () => {
         if (proofs.get(agent.key) !== protection.key)
           throw new Error(

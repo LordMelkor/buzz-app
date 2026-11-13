@@ -925,16 +925,19 @@ export type AgentType<Config = unknown> = {
    * configuration without starting a server; `undefined` when it cannot tell.
    * `inspect` lists one server's tools in a session with no model turn and no
    * other server, and never calls a tool. Adapters read the choice through
-   * `agents.harness.mcp`. */
-  harnessMcp?: Readonly<{
-    report(
-      agent: Agent<Config>,
-    ): Promise<Omit<HarnessMcpReport, "inspect"> | undefined>;
-    inspect?(
-      agent: Agent<Config>,
-      server: string,
-    ): Promise<readonly HarnessMcpTool[]>;
-  }>;
+   * `agents.harness.mcp`. `{ client: false }` says the harness has no MCP
+   * client: it loads no server, so core reports none and asks no proof. */
+  harnessMcp?:
+    | Readonly<{
+        report(
+          agent: Agent<Config>,
+        ): Promise<Omit<HarnessMcpReport, "inspect" | "client"> | undefined>;
+        inspect?(
+          agent: Agent<Config>,
+          server: string,
+        ): Promise<readonly HarnessMcpTool[]>;
+      }>
+    | Readonly<{ client: false }>;
   id: string;
   title: string;
   description?: string;
@@ -1449,16 +1452,19 @@ export type Agents = {
    * device only while such a plugin is on; with none, it is off for every
    * agent. */
   controlAttention(): void;
-  /** Adds a tool to every agent session in the app, beside the Buzz tools.
-   * The tool acts as the agent, like the rest of a trusted plugin's code
-   * acts as its owner. A session lists
-   * the tools there are when it starts, and one that cannot take a changed
-   * list is replaced when it is next used. */
+  /** Adds a tool to every agent session in the app, or to those of the
+   * agents its `when` accepts, beside the Buzz tools. The tool acts as the
+   * agent, like the rest of a trusted plugin's code acts as its owner. A
+   * session lists the tools its agent gets when it starts, and one that
+   * cannot take a changed list is replaced when it is next used. */
   addTool(tool: AddedTool): void;
   /** A provider keeps the resolver and shares only its operation descriptor. */
   createToolOperation(id: string): AgentToolProvider;
   /** The tools active plugins add now. A name is only ever one plugin's. */
   tools(): readonly AddedTool[];
+  /** The tools the agent's sessions get now: those whose `when` accepts it.
+   * Without an agent, those every agent gets: the ones with no `when`. */
+  toolsFor(agent?: AgentKey): readonly AddedTool[];
   /** Adds standing instructions to every turn of the agents this copy of the
    * app runs, or of those `when` accepts, while the plugin is on. Each turn
    * shows them in a `<plugin-instructions>` section that names the plugin. */
@@ -3068,7 +3074,8 @@ export class AgentsService extends Service implements Agents {
       !tool.description ||
       tool.inputSchema?.type !== "object" ||
       !serializable(tool.inputSchema) ||
-      typeof tool.call !== "function"
+      typeof tool.call !== "function" ||
+      (tool.when !== undefined && typeof tool.when !== "function")
     )
       throw new Error(
         "Agent tools need a lowercase name no Buzz tool has, a description, a JSON object inputSchema and call",
@@ -3113,9 +3120,9 @@ export class AgentsService extends Service implements Agents {
           invalid ||
           !active ||
           !ctx.pluginStatus.isActive(owner.id, owner.revision) ||
-          !this.addedTools
-            .snapshot()
-            .includes(tool as Contribution<AddedTool & { id: string }>) ||
+          !this.toolsFor(client.key).includes(
+            tool as Contribution<AddedTool & { id: string }>,
+          ) ||
           binding.controller.signal.aborted ||
           this.bindingOf(agent) !== binding ||
           binding.connection.epoch !== epoch ||
@@ -3497,6 +3504,20 @@ export class AgentsService extends Service implements Agents {
     };
   }
   tools = () => this.addedTools.snapshot();
+  toolsFor = (key?: AgentKey): readonly AddedTool[] => {
+    const agent = key === undefined ? undefined : this.agent(key);
+    return this.addedTools.snapshot().filter((tool) => {
+      if (!tool.when) return true;
+      if (!agent) return false;
+      try {
+        // Only true admits it: an async `when` gives a Promise.
+        return tool.when(agent) === true;
+      } catch (error) {
+        console.warn("Agent tool failed to match", tool.name, error);
+        return false;
+      }
+    });
+  };
   private readonly mcp = createHarnessMcp(
     () => this.ctx.pluginStatus,
     (key) => this.state.running.find((agent) => agent.key === key),
@@ -3507,7 +3528,7 @@ export class AgentsService extends Service implements Agents {
   private readonly harnessShared = harnessKit({
     relay: (key) => this.relay(key),
     core: (key) => this.core(key),
-    added: () => this.tools(),
+    added: (key) => this.toolsFor(key),
     repositories: repositoriesContext,
   });
   /** The harness kit, with its MCP part bound to the plugin that asks. */
@@ -3721,7 +3742,7 @@ export class AgentsService extends Service implements Agents {
           return (message) => {
             check();
             return respondExternal(client, message, connected, scopes, () =>
-              this.addedTools.snapshot(),
+              this.toolsFor(key),
             );
           };
         },

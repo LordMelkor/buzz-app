@@ -41,7 +41,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     (key, signal) => ctx.agents.core(key, signal),
     ctx.agents.storage,
     (raw, remote) => providerController.resolve(raw, remote),
-    () => ctx.agents.tools(),
+    (agent) => ctx.agents.toolsFor(agent),
     repositoriesContext,
     ctx.host.serveMcp
       ? {

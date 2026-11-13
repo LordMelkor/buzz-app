@@ -224,7 +224,8 @@ export class ClaudeRuntime {
   private readonly titled = new Set<string>();
   /** Counts changes of credentials, which start processes again. */
   private credentials = 0;
-  /** One process started ahead of need, for any agent's next new conversation. */
+  /** One process started ahead of need, for any agent's next new conversation.
+   * It lists the tools every agent gets. */
   private readonly spare = new Spare(
     (id, options) => this.spawn(id, options),
     (_conversation, message) =>
@@ -245,8 +246,11 @@ export class ClaudeRuntime {
       raw: unknown,
       remote?: boolean,
     ) => Config = config,
-    /** The tools plugins add to every session now. */
-    private readonly added: () => readonly AddedTool[] = () => [],
+    /** The tools plugins add to the agent's sessions now; without an agent,
+     * those every agent gets. */
+    private readonly added: (
+      agent?: AgentKey,
+    ) => readonly AddedTool[] = () => [],
     /** Desktop-local repository instructions; standalone hosts keep their own layout. */
     private readonly repositories: (scope: string | undefined) => string = () =>
       "",
@@ -1588,18 +1592,24 @@ export class ClaudeRuntime {
           });
         const context =
           (conversation && entry.contexts.get(conversation)) || {};
-        return respond(
-          client,
-          context,
-          message,
-          this.added(),
-          listing(this.added()),
-        );
+        const added = this.added(agent);
+        return respond(client, context, message, added, listing(added));
       };
     const saved = this.savedSessions(agent);
     entry.sessions = new AgentSessions({
       spawn: (id, options) => this.spawn(id, options),
-      ...(!this.target ? { spare: this.spare } : {}),
+      ...(!this.target
+        ? {
+            spare: {
+              // An agent whose plugins' `when` gives it other tools than the
+              // spare lists starts its own process, and leaves the spare.
+              take: (where) =>
+                addedKey(this.added(agent)) === addedKey(this.added())
+                  ? this.spare.take(where)
+                  : Promise.resolve(undefined),
+            },
+          }
+        : {}),
       strictResume: !!this.target,
       store: {
         get: (key) => {
@@ -1634,7 +1644,7 @@ export class ClaudeRuntime {
           entry.team,
           entry.name,
           entry.memory,
-          addedKey(this.added()),
+          addedKey(this.added(agent)),
           this.credentials,
         ]),
       launch: async (key) => {

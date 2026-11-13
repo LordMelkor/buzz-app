@@ -4,7 +4,7 @@ import {
   promptSections,
 } from "../../features/agents/activity-transcript";
 import type { AddedTool } from "../../buzz-mcp/session-tools";
-import { pubkeyOf } from "../../features/agents/membership";
+import { type AgentKey, pubkeyOf } from "../../features/agents/membership";
 import { ownerReads } from "../../features/agents/reads";
 import type { MemoryEntry } from "../../features/agents/memory";
 import type {
@@ -55,7 +55,10 @@ const reply = (id: string, content: string, created_at = 110) =>
 
 function setup(
   handlers: Readonly<Record<string, Handler>> = {},
-  added: readonly AddedTool[] = [],
+  /** The tools plugins add, or each agent's. */
+  added:
+    | readonly AddedTool[]
+    | ((agent?: AgentKey) => readonly AddedTool[]) = [],
   /** The channel's Canvas, as it reads now. */
   canvas?: { content: string; pubkey?: string },
   repositories?: (scope: string | undefined) => string,
@@ -129,7 +132,7 @@ function setup(
     desktop,
     (key) => ownerReads(relay, pubkeyOf(key)),
     core,
-    () => added,
+    typeof added === "function" ? added : () => added,
     repositories,
     (key) =>
       connection.live && key === self
@@ -691,6 +694,118 @@ it("lists the tools plugins add, and runs them for Pi", async () => {
     isError: true,
   });
 });
+
+it("lists and runs a plugin's tool only for the agents it is given to now", async () => {
+  const given = new Set<string>();
+  const { host, deliver } = setup({}, (agent) =>
+    agent !== undefined && given.has(agent)
+      ? [
+          {
+            name: "lookup",
+            description: "Look it up",
+            inputSchema: { type: "object" },
+            call: async () => "found",
+          },
+        ]
+      : [],
+  );
+  const listed = (index: number) =>
+    (
+      (host.requests("open")[index]?.params.tools ?? []) as { name: string }[]
+    ).map((tool) => tool.name);
+  const call = async () =>
+    (
+      await host.processes[0]?.tool({
+        agent: self,
+        conversation: CONVERSATION,
+        context: { channel, root: root.id },
+        name: "lookup",
+        arguments: {},
+      })
+    )?.result;
+  await deliver({ type: "mention", event: reply("2", "@Pi look") }).run;
+  expect(listed(0)).not.toContain("lookup");
+  await expect(call()).resolves.toMatchObject({ isError: true });
+  given.add(self);
+  await expect(call()).resolves.toEqual({
+    content: [{ type: "text", text: "found" }],
+  });
+  // Handed over after the first, once Pi has that one.
+  await deliver({ type: "mention", event: reply("3", "@Pi again") }).run;
+  await vi.waitFor(() => expect(host.requests("open")).toHaveLength(2));
+  expect(listed(1)).toContain("lookup");
+});
+
+it("tells plugins' tools a run is direct only while each request it took is the owner's own", async () => {
+  const waits: ReturnType<typeof deferred<unknown>>[] = [];
+  const { host, deliver, settled } = setup({
+    wait: () => {
+      const wait = deferred<unknown>();
+      waits.push(wait);
+      return wait.promise;
+    },
+  });
+  const contexts = () =>
+    host.requests("deliver").map((sent) => sent.params.context);
+  // Each later one is handed over once Pi has the one before.
+  const handed = (count: number) =>
+    vi.waitFor(() => expect(contexts()).toHaveLength(count));
+  const first = deliver({ type: "mention", event: reply("2", "@Pi look") });
+  await first.run;
+  const wake = deliver({
+    type: "attention",
+    channel,
+    root: root.id,
+    id: "f".repeat(64),
+    at: 200_000,
+    text: "CI changed",
+  });
+  await wake.run;
+  await handed(2);
+  const steer = deliver({ type: "mention", event: reply("3", "@Pi also") });
+  await steer.run;
+  await handed(3);
+  expect(contexts()).toEqual([
+    { channel, root: root.id, direct: true, folder: "~/.buzz" },
+    { channel, root: root.id, direct: false, folder: "~/.buzz" },
+    { channel, root: root.id, direct: false, folder: "~/.buzz" },
+  ]);
+  await vi.waitFor(() => expect(waits).toHaveLength(3));
+  for (const wait of waits)
+    wait.resolve({ status: "done", answer: 5, text: "" });
+  await Promise.all([first, wake, steer].map(settled));
+  await deliver({ type: "mention", event: reply("4", "@Pi next") }).run;
+  await handed(4);
+  expect(contexts()[3]).toMatchObject({ direct: true });
+});
+
+it.each([
+  [true, true],
+  [undefined, false],
+])(
+  "takes a left run's saved direct (%s) into a request that joins it",
+  async (saved, direct) => {
+    const left = { submission: 41, conversation: 5, request: "d".repeat(64) };
+    const { host, deliver } = setup({
+      unfinished: () => ({
+        submissions: [
+          {
+            ...left,
+            context: {
+              channel,
+              root: root.id,
+              ...(saved !== undefined && { direct: saved }),
+            },
+          },
+        ],
+      }),
+    });
+    await deliver({ type: "mention", event: reply("2", "@Pi look") }).run;
+    expect(host.requests("deliver")[0]?.params.context).toMatchObject({
+      direct,
+    });
+  },
+);
 
 it("reports a turn Pi left unanswered to the owner, in its thread", async () => {
   const { deliver, settled, published } = setup({
@@ -2003,7 +2118,12 @@ it.each([undefined, root.id])(
       expect(receipt.ignored).not.toHaveBeenCalled();
       await expect(settled(receipt)).resolves.toMatchObject({ ok: false });
       const delivered = host.requests("deliver")[0]?.params;
-      expect(delivered?.context).toEqual(
+      const {
+        direct: _,
+        folder: __,
+        ...destination
+      } = (delivered?.context ?? {}) as Record<string, unknown>;
+      expect(destination).toEqual(
         destinationRoot ? { channel, root: destinationRoot } : { channel },
       );
       expect(delivered?.text).not.toContain("<plugin-wake");

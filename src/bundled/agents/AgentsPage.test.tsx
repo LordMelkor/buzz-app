@@ -333,6 +333,7 @@ function setup(
     }),
     addInstructions: vi.fn(),
     tools: () => [],
+    toolsFor: () => [],
     create: vi.fn(async () => {
       // `shown: false`: it was made for a community no longer selected.
       if (!shown) return created;

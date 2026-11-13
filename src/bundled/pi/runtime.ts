@@ -31,6 +31,7 @@ import { readAuthorNames } from "../../features/agent-harness/author-names";
 import { readProject } from "../../features/agent-harness/project";
 import { fromOwner, workflowOf } from "../../features/agents/owner-attestation";
 import { type AgentKey, pubkeyOf } from "../../features/agents/membership";
+import { directTrigger } from "../../features/agents/harness-mcp";
 import { sessionPrompts } from "../../features/agents/session-prompts";
 import { localStore, type AgentStore } from "../../features/agents/store";
 import type { AgentReads } from "../../features/agents/reads";
@@ -131,6 +132,9 @@ type Waited =
 type Receipt = Pick<Delivery, "step" | "acknowledged" | "superseded"> & {
   /** Its conversation key, which session controls act on. */
   key: string;
+  /** The owner's own message, with every request the conversation's run
+   * took before it: what its tools get as `Context.direct`. */
+  direct: boolean;
   /** Where its activity shows: a thread, or a Solo chat's channel. */
   scope: string;
   /** Where a run's failure for it is reported. */
@@ -214,8 +218,10 @@ export class PiRuntime {
     private readonly reads: (key: AgentKey) => AgentReads | undefined,
     /** The agent's `core` memory as the host keeps it (`Agents.core`). */
     private readonly core: Agents["core"],
-    /** The tools plugins add to every conversation now. */
-    private readonly added: () => readonly AddedTool[] = () => [],
+    /** The tools plugins add to the agent's conversations now. */
+    private readonly added: (
+      agent?: AgentKey,
+    ) => readonly AddedTool[] = () => [],
     /** Desktop-local repository instructions; standalone hosts keep their own layout. */
     private readonly repositories: (scope: string | undefined) => string = () =>
       "",
@@ -625,16 +631,28 @@ export class PiRuntime {
           channel,
           key === channel ? undefined : root,
         );
+      // A request that joins a run can only take `direct` away: the run is
+      // direct while every request it took is the owner's own message.
+      const direct =
+        directTrigger(trigger, agent.owner) &&
+        [...entry.receipts.values()].every(
+          (receipt) => receipt.key !== key || receipt.direct,
+        );
       // A conversation's tools default to its thread; a conversation shared
       // by several threads is told which to reply in instead.
-      const context: Context = topLevel
-        ? { channel, ...(solo ? { topLevel } : {}) }
-        : key === channel
-          ? { channel }
-          : { channel, root };
+      const context: Context = {
+        ...(topLevel
+          ? { channel, ...(solo ? { topLevel } : {}) }
+          : key === channel
+            ? { channel }
+            : { channel, root }),
+        direct,
+        folder: entry.config.workspace,
+      };
       // Known before Pi has it, as it can say it joined a run first.
       entry.receipts.set(request, {
         key,
+        direct,
         scope: topLevel ? channel : root,
         where,
         ...(attention
@@ -842,7 +860,7 @@ export class PiRuntime {
         call.context,
         call.name,
         call.arguments,
-        this.added(),
+        this.added(call.agent),
       );
       return {
         content: content(reply),
@@ -983,7 +1001,7 @@ export class PiRuntime {
         submission: number;
         conversation: number;
         request: string;
-        context?: { channel: string; root?: string; topLevel?: boolean };
+        context?: Context & { channel: string };
         reply?: Where;
       }[];
     }>("unfinished", { agent });
@@ -1057,6 +1075,8 @@ export class PiRuntime {
         key: context.root
           ? `${context.channel}/${context.root}`
           : context.channel,
+        // A run saved before Buzz said so is not known to be direct.
+        direct: context.direct === true,
         scope: where.topLevel ? context.channel : root,
         where,
       };
@@ -1144,8 +1164,8 @@ export class PiRuntime {
       agent,
       // Whichever host runs the agent fills in its tools' credential.
       ...(handle && { as: { pubkey: handle.pubkey, relay: handle.relay } }),
-      tools: sessionTools(this.added()),
-      hint: sessionHint(this.added()),
+      tools: sessionTools(this.added(agent)),
+      hint: sessionHint(this.added(agent)),
     });
   }
 
