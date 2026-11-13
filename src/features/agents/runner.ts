@@ -614,6 +614,9 @@ export class AgentRunners {
   private readonly readAddressable = new WeakMap<RelayEvent, boolean>();
   private readonly sourceJobs = new Map<Job, string>();
   private readonly failedSources = new WeakSet<AttentionObject>();
+  /** Wakes whose failure to start was reported, until one of their turns
+   * starts again, so a failing repeat reports once. */
+  private readonly reportedWakes = new Set<string>();
   /** A terminal producer retains its registration until every queued turn settles. */
   async completeSource(key: AgentKey, object: AttentionObject) {
     await this.host.change(key, (record) => {
@@ -2728,6 +2731,7 @@ export class AgentRunners {
         ? (title: string) => this.host.named(agent, trigger.event, title)
         : undefined;
     let attempted = false;
+    let rootRefused = false;
     const woke = () => {
       attempted = true;
       if (!addressed(trigger) && job.matched)
@@ -2821,8 +2825,10 @@ export class AgentRunners {
       if (anchor) {
         if (!delivery.current()) return;
         if (anchor.root) {
-          if (!(await this.rootInChannel(agent, anchor.channel, anchor.root)))
+          if (!(await this.rootInChannel(agent, anchor.channel, anchor.root))) {
+            rootRefused = true;
             throw new Error("The delivery root is not in its channel");
+          }
           if (!delivery.current()) return;
         }
         const wakeText = async () => {
@@ -2899,15 +2905,53 @@ export class AgentRunners {
       .catch((error) =>
         console.warn("Completed subscription was not removed", error),
       );
+    // Set only for a wake that delivers to a conversation.
+    const reported =
+      destination &&
+      trigger.type !== "mention" &&
+      trigger.type !== "plugin" &&
+      trigger.type !== "attention"
+        ? { key: `${agent.key}\0${trigger.slug}`, trigger, destination }
+        : undefined;
     // Handover expiry releases the queue, never the actual work's outcome.
     void completion.then(
       () => {
         if (!attempted) job.work?.remove();
         working.release();
+        if (reported) this.reportedWakes.delete(reported.key);
       },
       (error) => {
         if (!attempted && !this.stillCurrent(runner, job)) job.work?.remove();
         working.release({ ok: false, error: message(error) });
+        // A wake that fails before its turn is handed over has no harness to
+        // report it, so it says so where its turn would have been, once until
+        // one of its turns starts again.
+        if (
+          !reported ||
+          lifetime.aborted ||
+          this.reportedWakes.has(reported.key) ||
+          !this.stillCurrent(runner, job) ||
+          this.host.member(agent, wakeAnchor(reported.destination)) !== true
+        )
+          return;
+        this.reportedWakes.add(reported.key);
+        const what = reported.trigger.type === "timer" ? "timer" : "watch";
+        const slug = reported.trigger.slug.replace(/^watch\//, "");
+        // A root refused as not in its channel is not replied to.
+        const root = rootRefused ? undefined : reported.destination.root;
+        void handle
+          .publish({
+            kind: 9,
+            content: `⚠️ My ${what} ${slug} woke me but its turn couldn't start: ${message(error).slice(0, 500)}`,
+            tags: [
+              ["h", reported.destination.channel],
+              ...(root ? [["e", root, "", "reply"]] : []),
+              ["p", agent.owner],
+            ],
+          })
+          .catch((failure) =>
+            console.warn("A failed wake could not be reported", failure),
+          );
       },
     );
     const aborted = new Promise<never>((_, reject) => {

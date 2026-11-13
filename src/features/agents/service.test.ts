@@ -14180,6 +14180,110 @@ it.each(
   },
 );
 
+describe("a timer turn that fails before it starts", () => {
+  const timer = (max: number, root?: string) => ({
+    type: "timer" as const,
+    interest_id: "default",
+    prompt: "Draft the digest",
+    enabled: true,
+    interval_secs: 60,
+    armed_at: 1_000,
+    max_occurrences: max,
+    expires_at: null,
+    channel,
+    ...(root ? { root } : {}),
+  });
+  let error: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    error = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => error.mockRestore());
+
+  it.each([undefined, "e".repeat(64)])(
+    "is reported once in its conversation (root: %s)",
+    async (root) => {
+      const { service, run, native } = await setup();
+      run.mockRejectedValue(new Error("no session key"));
+      await service.create({ type: "example/echo", name: "Echo" });
+      if (root)
+        native.query.mockResolvedValue([
+          event(root, { tags: [["h", channel]] }),
+        ]);
+      await service.save(bot, {
+        attentionEnabled: true,
+        attention: { "watch/weekly": timer(1, root) },
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+      await vi.waitFor(async () =>
+        expect(await published(native, 9)).toHaveLength(1),
+      );
+      const [notice] = await published(native, 9);
+      expect(notice.content).toBe(
+        "⚠️ My timer weekly woke me but its turn couldn't start: no session key",
+      );
+      expect(notice.tags).toEqual([
+        ["h", channel],
+        ...(root ? [["e", root, "", "reply"]] : []),
+        ["p", viewer],
+      ]);
+      // The failed occurrence stays spent; nothing retries it.
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(await published(native, 9)).toHaveLength(1);
+      expect(service.find(bot)?.timers["watch/weekly"]?.used).toBe(1);
+    },
+  );
+
+  it("reports a repeat again only after one of its turns started", async () => {
+    const { service, run, native } = await setup();
+    run
+      .mockRejectedValueOnce(new Error("first"))
+      .mockRejectedValueOnce(new Error("second"))
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("fourth"));
+    await service.create({ type: "example/echo", name: "Echo" });
+    await service.save(bot, {
+      attentionEnabled: true,
+      attention: { "watch/weekly": timer(4) },
+    });
+    for (let occurrence = 1; occurrence <= 4; occurrence++) {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(occurrence));
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+    const notices = (await published(native, 9)).map(({ content }) => content);
+    expect(notices).toEqual([
+      "⚠️ My timer weekly woke me but its turn couldn't start: first",
+      "⚠️ My timer weekly woke me but its turn couldn't start: fourth",
+    ]);
+  });
+
+  it("is reported at the channel level when its root is not in the channel", async () => {
+    const { service, run, native } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    native.query.mockResolvedValue([]);
+    await service.save(bot, {
+      attentionEnabled: true,
+      attention: { "watch/weekly": timer(1, "e".repeat(64)) },
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.waitFor(async () =>
+      expect(await published(native, 9)).toHaveLength(1),
+    );
+    expect(run).not.toHaveBeenCalled();
+    const [notice] = await published(native, 9);
+    expect(notice.content).toBe(
+      "⚠️ My timer weekly woke me but its turn couldn't start: The delivery root is not in its channel",
+    );
+    expect(notice.tags).toEqual([
+      ["h", channel],
+      ["p", viewer],
+    ]);
+  });
+});
+
 it("delivers matched events to their configured address rather than the listening channel", async () => {
   const runOnce = vi.fn(async () => ({ ok: true }));
   const { service, run, emit, native, session, activity } = await setup({

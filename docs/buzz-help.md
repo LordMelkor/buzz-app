@@ -1572,6 +1572,10 @@ tab, asks **Discard changes?** first; **Keep editing** keeps them.
   watched commands stop when their Buzz process exits.
   During a handoff between Buzz builds, the new copy waits for the previous
   command to stop, then continues the watch.
+  When a timer or watch that delivers to a conversation wakes the agent but its
+  turn can't start, the agent posts a ⚠️ notice there that mentions its owner.
+  That occurrence is used, not retried, and a wake that keeps failing is
+  reported again only after one of its turns starts.
 - **Shared compute** is off by default; enable it in Settings → Plugins, then
   turn on sharing separately. **Mesh agents**, when it is enabled, use saved Interest
   instructions for watched turns in both Chat and Agent mode. Watched messages
