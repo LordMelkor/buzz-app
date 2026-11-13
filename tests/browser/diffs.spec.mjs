@@ -1,5 +1,5 @@
 import { test, expect } from "./playwright-test.mjs";
-import { createServer } from "./vite-server.mjs";
+import { createServer, warmUp } from "./vite-server.mjs";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import { watchPageErrors } from "./page-errors.mjs";
@@ -26,6 +26,7 @@ test("diff preview expands in both layouts and keeps focus and scroll containmen
   });
   try {
     await server.listen();
+    await warmUp(server, "/tests/fixtures/diffs.html");
     const errors = watchPageErrors(page);
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/diffs.html`,
