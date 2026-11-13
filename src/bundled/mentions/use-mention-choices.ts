@@ -211,7 +211,10 @@ export function namedCandidates(
 export type SpaceEvidence = {
   /** Members or offered agents are still loading. */
   pending: boolean;
-  /** A member's name is neither known nor known to be absent. */
+  /**
+   * A member's name is neither known nor known to be absent, or the member
+   * list is still loading.
+   */
   missingNames: boolean | undefined;
   /** The directory search for this query settled with no more pages. */
   complete: boolean;
@@ -456,9 +459,13 @@ export function useMentionChoices(
       ? rank(matches.filter((c) => !local.has(c.recipient.pubkey)))
       : []);
   // A member a completed read found no profile for has no name to be a namesake.
+  // While the member list loads, no member's name is known.
   const missingNames =
     open &&
-    channel?.members?.some((key) => !profiles.has(key) && !unnamed?.has(key));
+    (membersPending ||
+      channel?.members?.some(
+        (key) => !profiles.has(key) && !unnamed?.has(key),
+      ));
   if (open && !rows && !membersPending) {
     const ranked = rank(matches.filter((c) => local.has(c.recipient.pubkey)));
     if (
@@ -534,6 +541,7 @@ export function useMentionChoices(
       roster,
       candidates,
       pending,
+      missingNames,
       archives,
       spaceId: spaceMention(candidates, local, query, evidence),
       canSelect: (pubkey: string, space = false) => {

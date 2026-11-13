@@ -14993,12 +14993,12 @@ it("keeps the separator typed after the words a pending chip extends over, so la
   expect(h.messages.send.mock.calls[0]?.at(-1)).toEqual([mira.pubkey]);
 });
 
-it("extends a chip held on punctuation over the rest of the longer directory name it starts", async () => {
+it("extends a chip held on punctuation over the rest of the longer member name it starts", async () => {
   // A member name still loading keeps `Pat O` from selecting, so `'` holds
-  // it. The search then finds `Pat O'Brien`; the words typed after the chip
-  // start with the `'` that held it and complete that name.
+  // it. The search then finds that member, `Pat O'Brien`; the words typed
+  // after the chip start with the `'` that held it and complete that name.
   const h = mountDirectoryMention();
-  const pat = { pubkey: "f".repeat(64), name: "Pat O'Brien" };
+  const pat = { pubkey: second.pubkey, name: "Pat O'Brien" };
   h.setProfiles(new Map([[first.pubkey, { name: "Pat O" }]]));
   await h.user.type(h.input(), "@Pat O");
   await screen.findByText("Searching community…");
@@ -15013,20 +15013,41 @@ it("extends a chip held on punctuation over the rest of the longer directory nam
   expect(h.chip("Pat O'Brien")).toBeNull();
   expect(h.recipients()).toHaveLength(1);
   h.submit();
-  expect(screen.getByRole("dialog")).toHaveTextContent(
-    "Pat O'Brien is not in this channel.",
-  );
-  fireEvent.click(
-    screen.getByRole("button", { name: /^(Do nothing|Send anyway)$/ }),
-  );
   await act(async () => {});
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(h.messages.send).toHaveBeenCalledOnce();
   expect(h.messages.send.mock.calls[0]?.slice(0, 3)).toEqual([
     "channel",
     "@Pat O'Brien",
-    [],
+    [pat.pubkey],
   ]);
-  expect(h.messages.send.mock.calls[0]?.at(-1)).toEqual([pat.pubkey]);
+});
+
+it("resolves a chip held on punctuation to the member's name when only a longer outside name continues it", async () => {
+  // As above, but `Pat O'Brien` is outside the channel: an outside name
+  // never makes a member's exact name ambiguous, so the chip mentions the
+  // member and the rest stays prose.
+  const h = mountDirectoryMention();
+  const outside = { pubkey: "f".repeat(64), name: "Pat O'Brien" };
+  h.setProfiles(new Map([[first.pubkey, { name: "Pat O" }]]));
+  await h.user.type(h.input(), "@Pat O");
+  await screen.findByText("Searching community…");
+  await h.user.keyboard("'s here");
+  expect(h.chip("Pat O")).toHaveAttribute("aria-busy", "true");
+  await waitFor(() => expect(h.people).toHaveBeenCalled());
+  await h.release({ people: [outside], hasMore: false });
+  await waitFor(() => expect(h.chip("Pat O")).toBeNull());
+  expect(h.input()).toHaveValue("@Pat O's here");
+  expect(h.recipients()).toHaveLength(1);
+  h.submit();
+  await act(async () => {});
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(h.messages.send).toHaveBeenCalledOnce();
+  expect(h.messages.send.mock.calls[0]?.slice(0, 3)).toEqual([
+    "channel",
+    "@Pat O's here",
+    [first.pubkey],
+  ]);
 });
 
 it("selects a longer directory name on the Space that completes it when its page arrived before the first Space", async () => {
@@ -15098,6 +15119,204 @@ it.each([
     );
   },
 );
+
+it.each([
+  ["Wes", "Wes Smith"],
+  ["Pat O", "Pat O'Brien"],
+])(
+  "mentions the member %j when the listed outside %j is typed out in full",
+  async (member, outside) => {
+    // An outside longer name never blocks a member's exact name, so the Space
+    // or punctuation inside it selects the member and the rest stays text.
+    // Only the list can choose the outside name (README section 5).
+    const h = mountDirectoryMention();
+    h.setProfiles(
+      new Map([
+        [first.pubkey, { name: member }],
+        [second.pubkey, { name: "Another Member" }],
+      ]),
+    );
+    await h.user.type(h.input(), `@${member}`);
+    await waitFor(() => expect(h.people).toHaveBeenCalled());
+    await h.release({
+      people: [{ pubkey: "f".repeat(64), name: outside }],
+      hasMore: false,
+    });
+    await screen.findByRole("option", { name: new RegExp(outside) });
+    await h.user.keyboard(`${outside.slice(member.length)} hi`);
+    expect(h.input()).toHaveValue(`@${outside} hi`);
+    expect(h.recipients()).toHaveLength(1);
+    h.submit();
+    expect(h.messages.send).toHaveBeenCalledExactlyOnceWith(
+      "channel",
+      `@${outside} hi`,
+      [first.pubkey],
+      [],
+    );
+  },
+);
+
+/** A saved Solo chat as the app mounts it: the personal composer's roster
+ * over the real chooser. The chat's signed member list has the viewer and
+ * `Claude`; the viewer also owns `Claude Code`, which the roster offers from
+ * outside the chat. */
+function mountSavedSoloMention() {
+  const viewer = "e".repeat(64);
+  const claude = { pubkey: first.pubkey, name: "Claude" };
+  const code = { pubkey: second.pubkey, name: "Claude Code" };
+  const completions: readonly Contribution<ComposerCompletion>[] = [
+    {
+      id: "mentions",
+      key: "buzz.mentions/mentions",
+      pluginId: "buzz.mentions",
+      revision: "1",
+      title: "Mention",
+      match: ({ text, start }) => mentionQuery(text, start),
+      component: MentionCompletion,
+    },
+  ];
+  const empty: [] = [];
+  const none = { snapshot: () => empty, subscribe: () => () => {} };
+  const h = mount(
+    {
+      extensions: {
+        tools: none,
+        inline: none,
+        completions: {
+          snapshot: () => completions,
+          subscribe: () => () => {},
+        },
+      },
+      soloConversation: true,
+      ownSoloConversation: true,
+      requireMention: true,
+    },
+    undefined,
+    viewer,
+  );
+  const saved = {
+    id: "channel",
+    channelType: "solo" as const,
+    members: [viewer, claude.pubkey],
+  };
+  const list = { status: "ready" as const, channels: [saved] };
+  const addAgents = vi.fn(async () => {});
+  h.retarget({
+    session: {
+      ...h.session,
+      channels: {
+        ...h.session.channels,
+        list: () => list,
+        ensureList: () => {},
+      },
+      channelWrites: { refreshMembership: async () => saved, addAgents },
+    } as unknown as RelaySession,
+  });
+  h.setProfiles(
+    new Map([
+      [viewer, { name: "Viewer" }],
+      [claude.pubkey, { name: claude.name, isAgent: true }],
+      [code.pubkey, { name: code.name, isAgent: true }],
+    ]),
+  );
+  return {
+    ...h,
+    claude,
+    code,
+    addAgents,
+    /** The mention chips in the draft, by their text. */
+    chips: () =>
+      [...h.input().querySelectorAll("[data-source]")].map(
+        (chip) => chip.textContent,
+      ),
+  };
+}
+
+it("selects a saved Solo chat's member on Space beside the owner's longer-named agent outside it", async () => {
+  // The roster offers every available agent, but only the chat's own member
+  // list makes a name a member's (README section 5).
+  const h = mountSavedSoloMention();
+  h.setLibrary([h.claude, h.code]);
+  await h.user.type(h.input(), "@Claude");
+  // The agent outside the chat stays listed.
+  await screen.findByRole("option", { name: /^Claude Code/ });
+  await h.user.keyboard(" ");
+  expect(h.input()).toHaveValue("@Claude ");
+  expect(h.chips()).toEqual(["@Claude"]);
+  h.submit();
+  await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+  expect(h.messages.send.mock.calls[0]?.slice(0, 3)).toEqual([
+    "channel",
+    "@Claude ",
+    [h.claude.pubkey],
+  ]);
+  expect(h.addAgents).not.toHaveBeenCalled();
+});
+
+it("mentions a saved Solo chat's member when the owner's longer-named agent outside it is typed out in full", async () => {
+  const h = mountSavedSoloMention();
+  h.setLibrary([h.claude, h.code]);
+  await h.user.type(h.input(), "@Claude");
+  await screen.findByRole("option", { name: /^Claude Code/ });
+  await h.user.keyboard(" Code hi");
+  expect(h.input()).toHaveValue("@Claude Code hi");
+  expect(h.chips()).toEqual(["@Claude"]);
+  h.submit();
+  await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+  expect(h.messages.send.mock.calls[0]?.slice(0, 3)).toEqual([
+    "channel",
+    "@Claude Code hi",
+    [h.claude.pubkey],
+  ]);
+  expect(h.addAgents).not.toHaveBeenCalled();
+});
+
+it("resolves a saved Solo chat member's name held while the owner's agents load, beside the longer-named agent outside it", async () => {
+  // No agent is listed until the library loads, so Space holds the name. The
+  // resolver then applies the same rule over the settled roster.
+  const h = mountSavedSoloMention();
+  h.setLibrary([], "loading");
+  await h.user.type(h.input(), "@Claude");
+  await screen.findByText("Loading recipients…");
+  await h.user.keyboard(" ");
+  expect(h.input()).toHaveValue("@Claude ");
+  expect(
+    within(h.input()).getByRole("img", { name: "Resolving mention Claude" }),
+  ).toHaveAttribute("aria-busy", "true");
+  h.setLibrary([h.claude, h.code]);
+  await waitFor(() =>
+    expect(
+      within(h.input()).queryByRole("img", { name: /^Resolving mention / }),
+    ).toBeNull(),
+  );
+  expect(h.chips()).toEqual(["@Claude"]);
+  expect(h.input()).toHaveValue("@Claude ");
+});
+
+it("still picks the owner's agent outside a saved Solo chat from the list, and sending adds it", async () => {
+  const h = mountSavedSoloMention();
+  h.setLibrary([h.claude, h.code]);
+  await h.user.type(h.input(), "@Claude");
+  const outside = await screen.findByRole("option", { name: /^Claude Code/ });
+  // Listed as before: the roster's rows carry no "Adds to chat" detail.
+  expect(outside).not.toHaveTextContent("Adds to chat");
+  await h.user.keyboard("{ArrowDown}{Enter}");
+  expect(h.input()).toHaveValue("@Claude Code ");
+  expect(h.chips()).toEqual(["@Claude Code"]);
+  await h.user.keyboard("hi");
+  h.submit();
+  await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+  expect(h.messages.send.mock.calls[0]?.slice(0, 3)).toEqual([
+    "channel",
+    "@Claude Code hi",
+    [h.code.pubkey],
+  ]);
+  expect(h.addAgents).toHaveBeenCalledOnce();
+  expect(h.addAgents.mock.calls[0]?.slice(0, 2)).toEqual([
+    "channel",
+    [h.code.pubkey],
+  ]);
+});
 
 it("extends a pending chip to the one longer name the typed words complete when several continue it", async () => {
   const h = mountDirectoryMention();
