@@ -863,6 +863,33 @@ it("ends every turn's prompt with plugins' instructions, before the attention no
   );
 });
 
+it("ends a turn's prompt with its conversation's instructions, after plugins'", async () => {
+  const mention = message("2", "@Claude go on", {
+    tags: [
+      ["h", channel],
+      ["p", self],
+    ],
+  });
+  const { deliver, claudes, agent } = setup([mention]);
+  const conversationInstructions = vi.fn(() => ({
+    plugin: "acme.tasks",
+    text: "Review only.",
+  }));
+  Object.assign(agent, {
+    instructions: () => [{ plugin: "acme.dibs", text: "Run dibs." }],
+    conversationInstructions,
+  });
+  await deliver({ type: "mention", event: mention });
+  await flush(10);
+  const prompt =
+    claudes().find((process) => process.prompts.length)?.prompts[0] ?? "";
+  expect(prompt).toMatch(
+    /<\/plugin-instructions>\n\n<owner-instructions source="acme\.tasks">\n[\s\S]*\n\nReview only\.\n<\/owner-instructions>\n\n<attention>/,
+  );
+  // Keyed as its notes are: this thread's session.
+  expect(conversationInstructions).toHaveBeenCalledWith(channel, mention.id);
+});
+
 it("gives each turn of a kept session the plugins' instructions as they are now", async () => {
   // Replies in one thread, so one session takes all three turns.
   const mention = (id: string) =>

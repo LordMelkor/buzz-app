@@ -622,6 +622,8 @@ export class PiRuntime {
               ? { wake: { ...wake, text: (await wakeText?.()) ?? wake.text } }
               : {}),
           }),
+          channel,
+          key === channel ? undefined : root,
         );
       // A conversation's tools default to its thread; a conversation shared
       // by several threads is told which to reply in instead.
@@ -1218,9 +1220,15 @@ export class PiRuntime {
     };
   }
 
-  /** `text` with the Buzz tools' end-of-turn note, when they have one. */
-  private review(entry: Entry, text: string) {
-    const note = turnNote(entry.handle);
+  /** `text` with the Buzz tools' end-of-turn note for its conversation, when
+   * they have one. */
+  private review(
+    entry: Entry,
+    text: string,
+    channelId: string,
+    root: string | undefined,
+  ) {
+    const note = turnNote(entry.handle, channelId, root);
     return note ? `${text}\n\n${note}` : text;
   }
 

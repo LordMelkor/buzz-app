@@ -8,7 +8,10 @@ import {
   ATTENTION_OFF,
   ATTENTION_REVIEW,
 } from "../features/agent-harness/attention-prompt";
-import { pluginInstructions } from "../features/agent-harness/plugin-instructions";
+import {
+  ownerInstructions,
+  pluginInstructions,
+} from "../features/agent-harness/plugin-instructions";
 import type { AgentHandle } from "../features/agents/service";
 import {
   ATTENTION_TOOLS,
@@ -130,11 +133,15 @@ export function addedKey(added: readonly AddedTool[]) {
 }
 
 /** Text for the end of a turn's prompt: the instructions plugins give the
- * agent now, then its attention as it is now. An agent with no Interests has
- * nothing to review, so it need not load the attention tools to find that
- * out. */
+ * agent now, then those for its conversation, which a harness names as it
+ * names its notes', then its attention as it is now. An agent with no
+ * Interests has nothing to review, so it need not load the attention tools to
+ * find that out. */
 export function turnNote(
-  client?: Pick<BuzzClient, "attention"> & Pick<AgentHandle, "instructions">,
+  client?: Pick<BuzzClient, "attention"> &
+    Pick<AgentHandle, "instructions" | "conversationInstructions">,
+  channelId?: string,
+  root?: string,
 ) {
   const attention = client?.attention;
   const review = !attention
@@ -144,9 +151,12 @@ export function turnNote(
       : attention.interests().length
         ? ATTENTION_REVIEW
         : ATTENTION_NONE;
-  const notes = [pluginInstructions(client?.instructions?.()), review].filter(
-    Boolean,
-  );
+  const notes = [
+    pluginInstructions(client?.instructions?.()),
+    channelId &&
+      ownerInstructions(client?.conversationInstructions?.(channelId, root)),
+    review,
+  ].filter(Boolean);
   return notes.length ? notes.join("\n\n") : undefined;
 }
 

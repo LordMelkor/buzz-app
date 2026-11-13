@@ -1813,6 +1813,203 @@ describe("a conversation folder", () => {
   });
 });
 
+describe("a conversation's instructions", () => {
+  const root = "e".repeat(64);
+  const thread = { channelId: channel, root };
+  const ready = async (options: Parameters<typeof setup>[0] = {}) => {
+    const f = await setup(options);
+    const agent = await f.service.create({
+      type: "example/echo",
+      name: "Echo",
+    });
+    await vi.waitFor(() => expect(f.native.claim).toHaveBeenCalledWith(bot, 0));
+    await settle();
+    return { ...f, agent };
+  };
+  /** The handle of the agent's first run. */
+  const handle = async (f: Awaited<ReturnType<typeof ready>>) => {
+    f.emit({
+      events: [
+        event("1", {
+          tags: [
+            ["h", channel],
+            ["p", bot],
+          ],
+        }),
+      ],
+    });
+    await vi.waitFor(() => expect(f.run).toHaveBeenCalledTimes(1));
+    const [delivery] = f.run.mock.calls[0] ?? [];
+    if (!delivery) throw new Error("no run");
+    return delivery.agent;
+  };
+
+  it("are set, replaced and cleared by a plugin, and shown to the agent's turns there", async () => {
+    const f = await ready();
+    const { agents } = f.plugin;
+    await expect(
+      f.service.setConversationInstructions(f.agent.key, thread, "x"),
+    ).rejects.toThrow("Only a plugin");
+    await agents.setConversationInstructions(f.agent.key, thread, "  Review. ");
+    await expect(
+      agents.conversationInstructions(f.agent.key, thread),
+    ).resolves.toBe("Review.");
+    await expect(
+      agents.conversationInstructions(f.agent.key, { channelId: channel }),
+    ).resolves.toBeUndefined();
+    const agent = await handle(f);
+    // Read as each turn's prompt is built, keyed as the session is.
+    expect(agent.conversationInstructions?.(channel, root)).toEqual({
+      plugin: "example",
+      text: "Review.",
+    });
+    expect(agent.conversationInstructions?.(channel)).toBeUndefined();
+    await agents.setConversationInstructions(f.agent.key, thread, "Build.");
+    expect(agent.conversationInstructions?.(channel, root)?.text).toBe(
+      "Build.",
+    );
+    // Cleared, the turns say none apply now.
+    await agents.setConversationInstructions(f.agent.key, thread, " ");
+    await expect(
+      agents.conversationInstructions(f.agent.key, thread),
+    ).resolves.toBeUndefined();
+    expect(agent.conversationInstructions?.(channel, root)).toEqual({
+      plugin: "example",
+      text: "",
+    });
+    // Kept on this device, never published.
+    expect(JSON.stringify(f.native.publish.mock.calls)).not.toContain(
+      "Review.",
+    );
+  });
+
+  it("take at most 8 KiB of UTF-8 text, after trimming", async () => {
+    const f = await ready();
+    const { agents } = f.plugin;
+    for (const text of ["x".repeat(8193), "é".repeat(4097)])
+      await expect(
+        agents.setConversationInstructions(f.agent.key, thread, text),
+      ).rejects.toThrow(/over 8192 bytes/);
+    await expect(
+      agents.setConversationInstructions(f.agent.key, thread, null as never),
+    ).rejects.toThrow("need text");
+    await agents.setConversationInstructions(
+      f.agent.key,
+      thread,
+      ` ${"é".repeat(4096)} `,
+    );
+    await expect(
+      agents.conversationInstructions(f.agent.key, thread),
+    ).resolves.toHaveLength(4096);
+  });
+
+  it.each(["solo", "dm"] as const)(
+    "are given to a %s conversation whole, refusing a root",
+    async (channelType) => {
+      const f = await ready();
+      const list = f.session.channels.list();
+      vi.spyOn(f.session.channels, "list").mockReturnValue({
+        ...list,
+        channels: list.channels.map((row) =>
+          row.id === channel ? { ...row, channelType } : row,
+        ),
+      });
+      const { agents } = f.plugin;
+      await expect(
+        agents.setConversationInstructions(f.agent.key, thread, "x"),
+      ).rejects.toThrow("runs the channel as one conversation");
+      await agents.setConversationInstructions(
+        f.agent.key,
+        { channelId: channel },
+        "Whole.",
+      );
+      await expect(
+        agents.conversationInstructions(f.agent.key, { channelId: channel }),
+      ).resolves.toBe("Whole.");
+    },
+  );
+
+  it("refuse a root for a channel-scoped agent", async () => {
+    const f = await ready({
+      sessionControls: {
+        state: () => "idle",
+        run: async () => {},
+        scope: () => "channel",
+      } as never,
+    });
+    await expect(
+      f.plugin.agents.setConversationInstructions(f.agent.key, thread, "x"),
+    ).rejects.toThrow("runs the channel as one conversation");
+  });
+
+  it("are refused for an agent not here", async () => {
+    const f = await ready();
+    await expect(
+      f.plugin.agents.setConversationInstructions(sibling, thread, "x"),
+    ).rejects.toThrow("No such local agent on this device");
+    await expect(
+      f.plugin.agents.conversationInstructions(sibling, thread),
+    ).resolves.toBeUndefined();
+  });
+
+  it("are refused in a huddle room", async () => {
+    const f = await ready();
+    const list = f.session.channels.list();
+    vi.spyOn(f.session.channels, "list").mockReturnValue({
+      ...list,
+      channels: list.channels.map((row) =>
+        row.id === channel
+          ? { ...row, description: huddleDescription(crypto.randomUUID()) }
+          : row,
+      ),
+    });
+    for (const place of [thread, { channelId: channel }])
+      await expect(
+        f.plugin.agents.setConversationInstructions(f.agent.key, place, "Do."),
+      ).rejects.toThrow(
+        "Conversation instructions are unavailable in a huddle",
+      );
+  });
+
+  it("say none apply while the agent is not in the channel", async () => {
+    const f = await ready();
+    await f.plugin.agents.setConversationInstructions(
+      f.agent.key,
+      thread,
+      "Review.",
+    );
+    const agent = await handle(f);
+    f.confirm(channel, [viewer]);
+    // Any it was shown there no longer apply.
+    expect(agent.conversationInstructions?.(channel, root)).toEqual({
+      plugin: "example",
+      text: "",
+    });
+    f.confirm(channel, [viewer, bot]);
+    expect(agent.conversationInstructions?.(channel, root)?.text).toBe(
+      "Review.",
+    );
+  });
+
+  it("are dropped when the agent is deleted", async () => {
+    const f = await ready();
+    await f.plugin.agents.setConversationInstructions(
+      f.agent.key,
+      thread,
+      "Review.",
+    );
+    const saved = () =>
+      f.storage
+        .keys()
+        .filter((key) =>
+          key.startsWith("buzz.agents.conversation-instructions"),
+        );
+    expect(saved()).toHaveLength(1);
+    await f.service.remove(bot);
+    expect(saved()).toEqual([]);
+  });
+});
+
 describe("a plugin's wake", () => {
   const root = "e".repeat(64);
   /** Once this copy holds the agent. */
@@ -4642,12 +4839,14 @@ describe("an agent in several communities", () => {
   });
 
   it("leaves one community and stays in its others, never its last, and comes back with its key", async () => {
-    const { service, native, second, agent } = await joined();
+    const { service, native, second, agent, plugin } = await joined();
     await service.save(agent.key, {
       attention: {
         "interest/here": { type: "interest", instructions: "Only here." },
       },
     });
+    const thread = { channelId: channel, root: "e".repeat(64) };
+    await plugin.agents.setConversationInstructions(away, thread, "Here.");
     steps.length = 0;
     await service.leave(away);
     // Its share there goes with it: nothing there lists it to unshare after.
@@ -4678,6 +4877,10 @@ describe("an agent in several communities", () => {
     // attention to here is gone.
     const back = await service.join(bot);
     expect(back.agent.key).toBe(away);
+    // Its conversations' instructions stayed here with them.
+    await expect(
+      plugin.agents.conversationInstructions(away, thread),
+    ).resolves.toBe("Here.");
     expect(second.archives.request).toHaveBeenCalledWith(
       "unarchive",
       bot,

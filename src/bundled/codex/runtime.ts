@@ -278,7 +278,11 @@ function noteOf(request: Request) {
     request.sessionContext,
     request.resumed ? RESUMED_PROMPT : undefined,
     ...request.notes,
-    turnNote(request.agent),
+    turnNote(
+      request.agent,
+      request.conversation.channelId,
+      request.conversation.root,
+    ),
   ].filter(Boolean);
   return notes.length ? notes.join("\n\n") : undefined;
 }

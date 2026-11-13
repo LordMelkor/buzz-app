@@ -615,6 +615,24 @@ used up: every turn of the agents this copy runs (Mesh agents excepted), or
 of those `when` accepts,
 shows them while the plugin is on, and each turn's set replaces the last.
 
+A plugin gives the owner's local agent standing instructions in one
+conversation with
+`ctx.agents.setConversationInstructions(pubkey, { channelId, root? }, text)`.
+Every turn of that agent there then ends with an `<owner-instructions>`
+section naming the plugin, after any `<plugin-instructions>`; Mesh agents get
+none. The base prompt ranks the section with the agent's instructions: the
+owner's messages override it, and it overrides a Solo chat's Canvas. New text
+replaces the old; empty text clears it, and later turns there say no such
+instructions apply now. While the agent is not in the channel, its turns there
+say so too. Text is at most 8192 UTF-8 bytes after trimming and is sent with
+every turn. `place` names the conversation as session controls do: a root for
+a DM, a Solo chat or a channel-scoped agent rejects, and a huddle room rejects
+any instructions. The text is kept on this device for now. It survives a
+restart and the agent leaving the community, and is dropped when the agent is
+deleted; another program that does not share this device's agent state does
+not see it. `ctx.agents.conversationInstructions(pubkey, place)` resolves
+with the text, or undefined. Plugins feature-detect the methods.
+
 A plugin leaves context for a later turn with
 `ctx.agents.note(pubkey, channelId, text, root?)`, without waking the agent
 or publishing a message. Pass the thread root for a thread conversation.

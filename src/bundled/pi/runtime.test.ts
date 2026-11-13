@@ -440,6 +440,21 @@ it("hands Pi the core memory apart from the instructions, and none it could not 
   expect(await turn(undefined)).not.toHaveProperty("core");
 });
 
+it("ends a turn's prompt with its conversation's instructions", async () => {
+  const { host, deliver, agent } = setup();
+  const conversationInstructions = vi.fn(() => ({
+    plugin: "acme.tasks",
+    text: "Review only.",
+  }));
+  Object.assign(agent, { conversationInstructions });
+  await deliver({ type: "mention", event: reply("2", "@Pi look") }).run;
+  expect(String(host.requests("deliver")[0]?.params.text)).toMatch(
+    /<owner-instructions source="acme\.tasks">\n[\s\S]*\n\nReview only\.\n<\/owner-instructions>/,
+  );
+  // Keyed as its session is: the reply's thread.
+  expect(conversationInstructions).toHaveBeenCalledWith(channel, root.id);
+});
+
 it("shows a conversation only the messages it was not shown, nor its own replies", async () => {
   const { host, deliver, session } = setup({ place: () => ({ seen: 105 }) });
   const later = (id: string, content: string, pubkey: string, at: number) => ({
