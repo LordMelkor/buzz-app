@@ -32,6 +32,7 @@ vi.mock("./TypingIndicator", () => ({
 vi.mock("./use-reading", () => ({
   useReading: vi.fn(),
   readingPositioned: vi.fn(),
+  readingDocumentActive: () => true,
 }));
 const hooks = vi.hoisted(() => ({
   refs: [] as { current: unknown }[],

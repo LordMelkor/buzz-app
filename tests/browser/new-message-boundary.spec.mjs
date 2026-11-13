@@ -655,6 +655,58 @@ appTest.describe("history longer than one page", () => {
       ).toBeVisible();
     },
   );
+
+  appTest(
+    "marks messages that arrive while the window is away from an open channel",
+    async ({ page, app }) => {
+      const seeded = app.histories.get("primary/alpha");
+      await open(page, app);
+      await reachEdge(page, 1);
+      await composer(page).focus();
+      await expect
+        .poll(
+          async () =>
+            (await readJournal(page))?.state.frontiers["activity:alpha"] ?? 0,
+        )
+        .toBeGreaterThanOrEqual(seeded.at(-1).created_at);
+      await expect(separator(page)).toHaveCount(0);
+
+      // The app stays on Alpha while another app has the window's focus.
+      const away = (active) =>
+        page.evaluate((active) => {
+          document.hasFocus = () => active;
+          window.dispatchEvent(new FocusEvent(active ? "focus" : "blur"));
+        }, active);
+      await away(false);
+      const arrivals = [1, 2].map((index) =>
+        app.append("primary", "alpha", `Away message ${index}`, true, false),
+      );
+      const unread = () =>
+        page.evaluate(
+          (ids) =>
+            ids.map(
+              (id) =>
+                window.fixtureRelay
+                  .snapshot()
+                  .session.unread.attention("alpha", id).unread,
+            ),
+          arrivals.map((event) => event.id),
+        );
+      await expect(
+        history(page).locator(`[data-message-id="${arrivals[1].id}"]`),
+      ).toBeVisible();
+      await expect.poll(unread).toEqual([true, true]);
+      await expect(separator(page)).toHaveCount(0);
+
+      await away(true);
+      await expect(separator(page)).toHaveCount(1);
+      expect(await messageAfter(separator(page))).toBe(arrivals[0].id);
+      // Reading resumes once the line is placed, and the line stays.
+      await composer(page).focus();
+      await expect.poll(unread).toEqual([false, false]);
+      expect(await messageAfter(separator(page))).toBe(arrivals[0].id);
+    },
+  );
 });
 
 const fiveChannels = {

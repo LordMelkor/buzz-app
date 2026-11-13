@@ -171,6 +171,19 @@ viewport):
   can hide an unread one of those above the window, and the divider then lands
   below it. Rows above read only by their own `msg:` or `thread:` marks, as
   dwell short of the bottom leaves them, place no divider.
+  A visit that settled with no divider can place one later, once: rows that
+  arrive while the window is blurred or hidden stay unread, so when attention
+  returns the divider goes above the first unread row that is newer than every
+  row the reader had when attention left (the entry rows while entry was still
+  settling or the visit began away, else the loaded rows; an older page or a
+  backdated delivery is history, not an arrival). That row must be
+  `oldestUnreadId`, with `sampled` when entry history was incomplete, and sit
+  below a row a channel-wide read reaches. Once entry settles, the timeline
+  holds its reading from blur until it decides, waiting only while the head
+  read the window is owed is in flight or queued. Unread history, unresolved row attention (`unknown` or
+  `pending`), a read revision changed since attention left, or evidence that is
+  not observed and complete settles it with no divider and reading resumes at
+  once. A placed divider never moves.
 - Both keys use verified event timestamps, never wall time. Neither enters generic
   channel/thread inheritance or remote override baselines. Channel catch-up ends
   a local manual unread on the channel itself; message and thread manual-unread

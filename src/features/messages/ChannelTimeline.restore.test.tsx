@@ -3750,3 +3750,575 @@ it("records a link's place only once its visit was presented", async () => {
   h.unmount();
   expect(h.places.has("pending:timeline")).toBe(false);
 });
+
+function setDocumentActive(active: boolean) {
+  vi.spyOn(document, "hasFocus").mockReturnValue(active);
+  act(() => {
+    window.dispatchEvent(new FocusEvent(active ? "focus" : "blur"));
+  });
+}
+
+/** A focused reader whose visit settled with no line, everything read. */
+async function settledReader() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const h = boundaryFixture({ reading: true });
+  const read = h.row(message(h.peer, "c", "Read before blur", 10));
+  h.completeReadStateSnapshot();
+  h.publish();
+  const mounted = render(h.tree("c", [read]));
+  await h.completeEntry();
+  await h.focusReader();
+  await h.dwell();
+  expect(screen.queryByRole("separator", { name: "New messages" })).toBeNull();
+  h.catchUp.mockClear();
+  h.observe.mockClear();
+  return { h, mounted, read };
+}
+
+async function arriveWhileAway(
+  h: ReturnType<typeof boundaryFixture>,
+  mounted: ReturnType<typeof render>,
+  rows: ChannelMessage[],
+  arrivals: { content: string; at: number; unread?: boolean }[],
+) {
+  const added = arrivals.map(({ content, at, unread = true }) => {
+    const row = h.row(message(h.peer, "c", content, at));
+    if (unread) h.unreadIds.add(row.id);
+    return row;
+  });
+  const next = [...rows, ...added].sort((a, b) => a.createdAt - b.createdAt);
+  h.publish();
+  mounted.rerender(h.tree("c", next));
+  await h.dwell();
+  return { rows: next, added };
+}
+
+it("places the line above the first arrival when attention returns to a visit that settled with none, before reading it", async () => {
+  const { h, mounted, read } = await settledReader();
+  try {
+    setDocumentActive(false);
+    await arriveWhileAway(
+      h,
+      mounted,
+      [read],
+      [
+        { content: "First while away", at: 11 },
+        { content: "Second while away", at: 12 },
+      ],
+    );
+    expect(h.catchUp).not.toHaveBeenCalled();
+    expect(h.observe).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("separator", { name: "New messages" }),
+    ).toBeNull();
+
+    setDocumentActive(true);
+    expect(precedes(divider(), screen.getByText("First while away"))).toBe(
+      true,
+    );
+    expect(precedes(screen.getByText("Read before blur"), divider())).toBe(
+      true,
+    );
+    // The line is placed before anything reads the arrivals.
+    expect(h.catchUp).not.toHaveBeenCalled();
+    expect(h.observe).not.toHaveBeenCalled();
+    await h.dwell();
+    expect(h.catchUp).toHaveBeenCalled();
+    expect(precedes(divider(), screen.getByText("First while away"))).toBe(
+      true,
+    );
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("keeps an entry line in place through blur, arrivals and refocus", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const h = boundaryFixture({ reading: true });
+  const read = h.row(message(h.peer, "c", "Already read", 1));
+  const first = h.row(message(h.peer, "c", "Unread at entry", 2));
+  h.unreadIds.add(first.id);
+  h.completeReadStateSnapshot();
+  h.publish();
+  const mounted = render(h.tree("c", [read, first]));
+  try {
+    await h.completeEntry();
+    await h.focusReader();
+    await h.dwell();
+    expect(precedes(divider(), screen.getByText("Unread at entry"))).toBe(true);
+    setDocumentActive(false);
+    await arriveWhileAway(
+      h,
+      mounted,
+      [read, first],
+      [{ content: "Arrived while away", at: 3 }],
+    );
+    setDocumentActive(true);
+    await h.dwell();
+    expect(
+      screen.getAllByRole("separator", { name: "New messages" }),
+    ).toHaveLength(1);
+    expect(precedes(divider(), screen.getByText("Unread at entry"))).toBe(true);
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("decides each away period once: a return with nothing new leaves the next one free, and a placed line stays", async () => {
+  const { h, mounted, read } = await settledReader();
+  try {
+    setDocumentActive(false);
+    await h.dwell();
+    setDocumentActive(true);
+    await h.dwell();
+    expect(
+      screen.queryByRole("separator", { name: "New messages" }),
+    ).toBeNull();
+
+    setDocumentActive(false);
+    const { rows } = await arriveWhileAway(
+      h,
+      mounted,
+      [read],
+      [{ content: "Second away arrival", at: 11 }],
+    );
+    setDocumentActive(true);
+    expect(precedes(divider(), screen.getByText("Second away arrival"))).toBe(
+      true,
+    );
+    await h.dwell();
+    h.unreadIds.clear();
+    h.advanceReadRevision();
+    h.publish();
+
+    setDocumentActive(false);
+    await arriveWhileAway(h, mounted, rows, [
+      { content: "Third away arrival", at: 12 },
+    ]);
+    setDocumentActive(true);
+    await h.dwell();
+    expect(
+      screen.getAllByRole("separator", { name: "New messages" }),
+    ).toHaveLength(1);
+    expect(precedes(divider(), screen.getByText("Second away arrival"))).toBe(
+      true,
+    );
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it.each([
+  { name: "an unread older page", older: true, olderUnread: true, line: false },
+  { name: "a read older page", older: true, olderUnread: false, line: true },
+])(
+  "loaded while away, $name above new arrivals: line=$line",
+  async ({ olderUnread, line }) => {
+    const { h, mounted, read } = await settledReader();
+    try {
+      setDocumentActive(false);
+      await arriveWhileAway(
+        h,
+        mounted,
+        [read],
+        [
+          { content: "Older history", at: 5, unread: olderUnread },
+          { content: "New while away", at: 11 },
+        ],
+      );
+      setDocumentActive(true);
+      if (line)
+        expect(precedes(divider(), screen.getByText("New while away"))).toBe(
+          true,
+        );
+      else
+        expect(
+          screen.queryByRole("separator", { name: "New messages" }),
+        ).toBeNull();
+      await h.dwell();
+      expect(h.catchUp).toHaveBeenCalled();
+    } finally {
+      mounted.unmount();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("a backdated delivery while away is history, not an arrival: no line", async () => {
+  const { h, mounted, read } = await settledReader();
+  try {
+    setDocumentActive(false);
+    await arriveWhileAway(
+      h,
+      mounted,
+      [read],
+      [{ content: "Backdated", at: 10 }],
+    );
+    setDocumentActive(true);
+    expect(
+      screen.queryByRole("separator", { name: "New messages" }),
+    ).toBeNull();
+    await h.dwell();
+    expect(h.catchUp).toHaveBeenCalled();
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it.each([
+  {
+    name: "nothing new is unread",
+    change: (h: ReturnType<typeof boundaryFixture>) => {
+      void h;
+    },
+    unread: false,
+  },
+  {
+    name: "a read elsewhere on this device moved the revision",
+    change: (h: ReturnType<typeof boundaryFixture>) => h.advanceReadRevision(),
+    unread: true,
+  },
+  {
+    name: "the evidence went stale",
+    change: (h: ReturnType<typeof boundaryFixture>) =>
+      h.setFreshness("stale", "Unread observation failed"),
+    unread: true,
+  },
+])(
+  "settles with no line and reads at once when $name",
+  async ({ change, unread }) => {
+    const { h, mounted, read } = await settledReader();
+    try {
+      setDocumentActive(false);
+      await arriveWhileAway(
+        h,
+        mounted,
+        [read],
+        [{ content: "Arrived while away", at: 11, unread }],
+      );
+      change(h);
+      h.publish();
+      setDocumentActive(true);
+      expect(
+        screen.queryByRole("separator", { name: "New messages" }),
+      ).toBeNull();
+      await h.dwell();
+      expect(h.catchUp).toHaveBeenCalled();
+    } finally {
+      mounted.unmount();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it.each([
+  { state: "pending", row: "arrival" },
+  { state: "unknown", row: "arrival" },
+  { state: "unknown", row: "read row above it" },
+])(
+  "settles with no line and reads at once when the $row has $state attention",
+  async ({ state, row }) => {
+    const { h, mounted, read } = await settledReader();
+    try {
+      setDocumentActive(false);
+      const {
+        added: [arrival],
+      } = await arriveWhileAway(
+        h,
+        mounted,
+        [read],
+        [{ content: "Unresolved arrival", at: 11 }],
+      );
+      const id = row === "arrival" ? arrival?.id : read.id;
+      if (id) (state === "pending" ? h.pendingIds : h.unknownIds).add(id);
+      h.publish();
+      setDocumentActive(true);
+      expect(
+        screen.queryByRole("separator", { name: "New messages" }),
+      ).toBeNull();
+      await h.dwell();
+      expect(h.catchUp).toHaveBeenCalled();
+    } finally {
+      mounted.unmount();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("places no line on an arrival while older unloaded history is unread", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const h = boundaryFixture({ reading: true });
+  const older = h.row(message(h.peer, "c", "Unloaded and unread", 1));
+  const read = h.row(message(h.peer, "c", "Read before blur", 10));
+  h.completeReadStateSnapshot();
+  h.publish();
+  const mounted = render(h.tree("c", [read], true));
+  try {
+    await h.completeEntry();
+    await h.focusReader();
+    await h.dwell();
+    h.catchUp.mockClear();
+    // Marked unread elsewhere; catch-up's activity mark never reads it.
+    h.forcedIds.add(older.id);
+    h.publish();
+    setDocumentActive(false);
+    const arrival = h.row(message(h.peer, "c", "Arrived while away", 11));
+    h.unreadIds.add(arrival.id);
+    h.publish();
+    mounted.rerender(h.tree("c", [read, arrival], true));
+    await h.dwell();
+    setDocumentActive(true);
+    expect(
+      screen.queryByRole("separator", { name: "New messages" }),
+    ).toBeNull();
+    await h.dwell();
+    expect(h.catchUp).toHaveBeenCalled();
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("counts arrivals while away before the entry boundary settles", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  const h = boundaryFixture({ reading: true });
+  h.setSampled(false);
+  const read = h.row(message(h.peer, "c", "Read before entry", 10));
+  h.completeReadStateSnapshot();
+  h.publish();
+  const mounted = render(h.tree("c", [read], true));
+  try {
+    await h.completeEntry();
+    // Entry waits for the repair; a message arrives meanwhile.
+    const arrival = h.row(message(h.peer, "c", "Arrived during entry", 11));
+    h.unreadIds.add(arrival.id);
+    h.publish();
+    mounted.rerender(h.tree("c", [read, arrival], true));
+    h.setSampled(true);
+    h.publish();
+    await h.focusReader();
+    setDocumentActive(true);
+    expect(precedes(divider(), screen.getByText("Arrived during entry"))).toBe(
+      true,
+    );
+    expect(h.catchUp).not.toHaveBeenCalled();
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("a visit entered while the window is away places the line above arrivals on first focus", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  const h = boundaryFixture({ reading: true });
+  const read = h.row(message(h.peer, "c", "Read before entry", 10));
+  h.completeReadStateSnapshot();
+  h.publish();
+  const mounted = render(h.tree("c", [read]));
+  try {
+    await h.completeEntry();
+    expect(
+      screen.queryByRole("separator", { name: "New messages" }),
+    ).toBeNull();
+    await arriveWhileAway(
+      h,
+      mounted,
+      [read],
+      [{ content: "Arrived before focus", at: 11 }],
+    );
+    await h.focusReader();
+    setDocumentActive(true);
+    expect(precedes(divider(), screen.getByText("Arrived before focus"))).toBe(
+      true,
+    );
+    expect(h.catchUp).not.toHaveBeenCalled();
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("holds reading on return while the window refreshes, then places the line before reading", async () => {
+  const { h, mounted, read } = await settledReader();
+  try {
+    setDocumentActive(false);
+    const { rows } = await arriveWhileAway(
+      h,
+      mounted,
+      [read],
+      [{ content: "Arrived during refresh", at: 11 }],
+    );
+    mounted.rerender(
+      h.tree("c", rows, false, true, true, { refreshing: true }),
+    );
+    setDocumentActive(true);
+    await h.dwell();
+    expect(h.catchUp).not.toHaveBeenCalled();
+    expect(h.observe).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("separator", { name: "New messages" }),
+    ).toBeNull();
+
+    mounted.rerender(h.tree("c", rows));
+    expect(
+      precedes(divider(), screen.getByText("Arrived during refresh")),
+    ).toBe(true);
+    expect(h.catchUp).not.toHaveBeenCalled();
+    await h.dwell();
+    expect(h.catchUp).toHaveBeenCalled();
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("marks a reply sent in the same second as the viewer's last post", async () => {
+  const { h, mounted, read } = await settledReader();
+  try {
+    const own = h.row(message(h.viewer, "c", "Own post before blur", 11));
+    h.publish();
+    mounted.rerender(h.tree("c", [read, own]));
+    await h.dwell();
+    setDocumentActive(false);
+    await arriveWhileAway(
+      h,
+      mounted,
+      [read, own],
+      [{ content: "Reply in the same second", at: 11 }],
+    );
+    setDocumentActive(true);
+    expect(
+      precedes(divider(), screen.getByText("Reply in the same second")),
+    ).toBe(true);
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("places the line above arrivals while the document was hidden", async () => {
+  const { h, mounted, read } = await settledReader();
+  const visibility = vi.spyOn(document, "visibilityState", "get");
+  const setVisible = (visible: boolean) => {
+    visibility.mockReturnValue(visible ? "visible" : "hidden");
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+  };
+  try {
+    setVisible(false);
+    await arriveWhileAway(
+      h,
+      mounted,
+      [read],
+      [{ content: "Arrived while hidden", at: 11 }],
+    );
+    expect(h.catchUp).not.toHaveBeenCalled();
+    setVisible(true);
+    expect(precedes(divider(), screen.getByText("Arrived while hidden"))).toBe(
+      true,
+    );
+    await h.dwell();
+    expect(h.catchUp).toHaveBeenCalled();
+  } finally {
+    visibility.mockRestore();
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("does not hold reading on return behind an older-page read that never finishes", async () => {
+  const { h, mounted, read } = await settledReader();
+  try {
+    setDocumentActive(false);
+    const { rows } = await arriveWhileAway(
+      h,
+      mounted,
+      [read],
+      [{ content: "Arrived while paging", at: 11 }],
+    );
+    // A cancelled older-page read can leave its flag set after a resume.
+    mounted.rerender(
+      h.tree("c", rows, false, true, true, { loadingOlder: true }),
+    );
+    setDocumentActive(true);
+    expect(precedes(divider(), screen.getByText("Arrived while paging"))).toBe(
+      true,
+    );
+    await h.dwell();
+    expect(h.catchUp).toHaveBeenCalled();
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("holds reading on return while a reconnect head read is owed, then places the line above what it delivers", async () => {
+  const { h, mounted, read } = await settledReader();
+  try {
+    setDocumentActive(false);
+    // Reconnect queues the head read and marks the rows cached, not refreshing.
+    h.headRead("pending");
+    mounted.rerender(
+      h.tree("c", [read], false, true, true, { freshness: "cached" }),
+    );
+    setDocumentActive(true);
+    await h.dwell();
+    expect(h.catchUp).not.toHaveBeenCalled();
+    expect(h.observe).not.toHaveBeenCalled();
+
+    const arrival = h.row(message(h.peer, "c", "Missed while offline", 11));
+    h.unreadIds.add(arrival.id);
+    h.publish();
+    mounted.rerender(h.tree("c", [read, arrival]));
+    h.headRead("verified");
+    expect(precedes(divider(), screen.getByText("Missed while offline"))).toBe(
+      true,
+    );
+    expect(h.catchUp).not.toHaveBeenCalled();
+    await h.dwell();
+    expect(h.catchUp).toHaveBeenCalled();
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});
+
+it("counts arrivals after a blur while a focused entry awaits its repair", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const h = boundaryFixture({ reading: true });
+  h.setSampled(false);
+  const read = h.row(message(h.peer, "c", "Read before entry", 10));
+  h.completeReadStateSnapshot();
+  h.publish();
+  const mounted = render(h.tree("c", [read], true));
+  try {
+    await h.completeEntry();
+    await h.focusReader();
+    await h.dwell();
+    expect(h.catchUp).not.toHaveBeenCalled();
+    setDocumentActive(false);
+    const arrival = h.row(message(h.peer, "c", "Arrived during repair", 11));
+    h.unreadIds.add(arrival.id);
+    h.publish();
+    mounted.rerender(h.tree("c", [read, arrival], true));
+    h.setSampled(true);
+    h.publish();
+    setDocumentActive(true);
+    expect(precedes(divider(), screen.getByText("Arrived during repair"))).toBe(
+      true,
+    );
+    expect(h.catchUp).not.toHaveBeenCalled();
+    await h.dwell();
+    expect(h.catchUp).toHaveBeenCalled();
+  } finally {
+    mounted.unmount();
+    vi.useRealTimers();
+  }
+});

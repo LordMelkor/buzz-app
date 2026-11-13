@@ -512,7 +512,11 @@ and are asked to sign in again in Buzz.
   slow the connection; if that fails, reading resumes. It may also be absent when
   unread evidence is incomplete, or when
   read intent or the read evidence needed to locate the boundary changes
-  elsewhere before it is established.
+  elsewhere before it is established. If a visit has no divider and Buzz loses
+  focus or is hidden while the channel stays open, messages that arrive
+  meanwhile get a divider above the first of them when you come back, before
+  anything is marked read; older unread messages, or a read elsewhere on this
+  device while you were away, leave that visit without one.
 - **Marking a channel read** keeps the cut from your click when retried. If a newer
   manual unread choice was saved in another window while it waited, the read fails
   rather than clearing that choice. Mark the channel read again to clear it.
