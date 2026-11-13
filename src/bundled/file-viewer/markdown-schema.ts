@@ -3,6 +3,14 @@ import type { Element } from "hast";
 import { defaultTreeAdapter, html, parseFragment } from "parse5";
 import type { Options as SanitizeSchema } from "rehype-sanitize";
 
+export const ALERT_TYPES = [
+  "note",
+  "tip",
+  "important",
+  "warning",
+  "caution",
+] as const;
+
 // Shared HTML admission rules for rendering and the bounded source index.
 export const keptHtmlTags =
   "a abbr b bdo blockquote caption cite col colgroup dd dfn dl dt figcaption figure i q rp rt ruby s samp small strike tfoot time tt var wbr br code del details div em h1 h2 h3 h4 h5 h6 hr img input ins kbd li mark ol p pre section span strong sub summary sup table tbody td th thead tr ul".split(
@@ -42,6 +50,8 @@ export const schema: SanitizeSchema = {
     a: ["href", "title", "dataFootnoteRef", "dataFootnoteBackref"],
     img: ["src", "alt", "title", "width", "height"],
     code: ["dataLanguage", ["className", /^language-[a-z0-9_-]+$/]],
+    pre: [["dataMath", "display"]],
+    div: [["dataAlert", ...ALERT_TYPES]],
     details: ["open"],
     ol: ["start", "reversed", ["type", "1", "a", "A", "i", "I"]],
     table: ["width", "height"],

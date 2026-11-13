@@ -22,6 +22,7 @@ import {
 import { fenceLine } from "./markdown-fences";
 import type { FenceState } from "./markdown-fences";
 import { explicitHtmlStart, explicitHtmlEnd } from "./markdown-html-explicit";
+import { leadingYamlEnd, mathOpening, mathClosing } from "./markdown-regions";
 import { htmlLine, htmlWrapper } from "./markdown-html-context";
 import { explicitHtmlWrapper } from "./markdown-html-explicit";
 import { startsBlankHtmlBlock, isStandaloneHtmlTag } from "./markdown-html";
@@ -167,9 +168,10 @@ const literalCursor = (ranges: readonly LiteralRange[]) => {
 
 /** Fenced blocks, comments and paired inline backticks never request definitions.
  * Pair runs only inside one leaf paragraph or table cell, in linear passes. */
-function codeRanges(source: string): LiteralRange[] {
+function codeRanges(source: string, frontMatter = false): LiteralRange[] {
   const blocks: LiteralRange[] = [];
   const ticks: (LiteralRange & {
+    marker: string;
     size: number;
     paragraph: number;
     next?: number | undefined;
@@ -178,6 +180,9 @@ function codeRanges(source: string): LiteralRange[] {
   let state: FenceState = { owners: [] },
     start = 0;
   let comment = false;
+  let math: number | undefined;
+  const yamlEnd = frontMatter ? leadingYamlEnd(source) : 0;
+  if (yamlEnd) blocks.push({ start: 0, end: yamlEnd });
   let table = false;
   let previous:
     | {
@@ -191,6 +196,7 @@ function codeRanges(source: string): LiteralRange[] {
   let htmlClose: string | RegExp | undefined,
     blankHtml = false;
   for (const line of lines(source)) {
+    if (line.start < yamlEnd) continue;
     const content = source.slice(line.start, line.end);
     if (blankHtml && /^[\t ]*$/.test(content)) {
       blocks.push({ start, end: line.start });
@@ -198,10 +204,10 @@ function codeRanges(source: string): LiteralRange[] {
     }
     const before = state,
       paragraph = state.paragraph;
-    const syntax = fenceLine(
+    let syntax = fenceLine(
       content,
       state,
-      comment || !!htmlClose || blankHtml,
+      comment || !!htmlClose || blankHtml || math !== undefined,
     );
     state = syntax.after;
     if (syntax.endedBefore) blocks.push({ start, end: line.start });
@@ -210,6 +216,33 @@ function codeRanges(source: string): LiteralRange[] {
       before.owners.every(
         (owner, index) => owner.id === required(state.owners[index]).id,
       );
+    if (math !== undefined && !sameOwners) {
+      blocks.push({ start, end: line.start });
+      math = undefined;
+      syntax = fenceLine(content, before, comment || !!htmlClose || blankHtml);
+      state = syntax.after;
+    }
+    const openingMath =
+      !syntax.code && !comment && !htmlClose && !blankHtml && math === undefined
+        ? mathOpening(syntax.body)
+        : undefined;
+    if (openingMath !== undefined) {
+      math = openingMath;
+      start = line.start;
+    }
+    if (math !== undefined) {
+      state = { ...state, paragraph: false };
+      previous = undefined;
+      table = false;
+      if (
+        openingMath === undefined &&
+        mathClosing(syntax.body, math) !== undefined
+      ) {
+        blocks.push({ start, end: line.next });
+        math = undefined;
+      }
+      continue;
+    }
     if (!syntax.code && !comment && !htmlClose && !blankHtml) {
       const tag = content.match(
         /^ {0,3}<(script|pre|style|textarea)(?:[\t >]|$)/i,
@@ -287,7 +320,7 @@ function codeRanges(source: string): LiteralRange[] {
       if (!before.paragraph || !state.paragraph || !sameOwners) paragraphId++;
       const firstTick = ticks.length;
       let cell = 0;
-      for (const match of content.matchAll(/`+/g)) {
+      for (const match of content.matchAll(/`+|\$+/g)) {
         if (table)
           while (
             cell < cells.length &&
@@ -299,6 +332,7 @@ function codeRanges(source: string): LiteralRange[] {
         ticks.push({
           start: line.start + match.index,
           end: line.start + match.index + required(match[0]).length,
+          marker: required(match[0])[0] ?? "",
           size: required(match[0]).length,
           paragraph: paragraphId,
         });
@@ -313,17 +347,19 @@ function codeRanges(source: string): LiteralRange[] {
       table = false;
     }
   }
-  if (state.fence || comment || htmlClose || blankHtml)
+  if (state.fence || comment || htmlClose || blankHtml || math !== undefined)
     blocks.push({ start, end: source.length });
-  const next = new Map<number, number>();
+  const next = new Map<string, number>();
   let paragraph = -1;
   for (let i = ticks.length - 1; i >= 0; i--) {
     if (required(ticks[i]).paragraph !== paragraph) {
       next.clear();
       paragraph = required(ticks[i]).paragraph;
     }
-    required(ticks[i]).next = next.get(required(ticks[i]).size);
-    next.set(required(ticks[i]).size, i);
+    required(ticks[i]).next = next.get(
+      `${required(ticks[i]).marker}${required(ticks[i]).size}`,
+    );
+    next.set(`${required(ticks[i]).marker}${required(ticks[i]).size}`, i);
   }
   const inline: LiteralRange[] = [];
   for (let i = 0; i < ticks.length; i++) {
@@ -412,6 +448,7 @@ export function assemblePart(
     };
   };
   if (context.plain) return plain(true);
+  if (context.literalParts.has(index)) return plain(false);
   let slice = originalSlice;
   // A forced cut may bisect a footnote. Its body is never ordinary source:
   // hide only crossing definitions, then import the full span if cited below.
@@ -596,7 +633,11 @@ export function assemblePart(
     if (!start.current)
       ownedPrefix = ownedPrefix.slice(0, -startContinuation.length);
   }
-  const prefix =
+  // Only the file's original beginning may acquire frontmatter grammar.
+  const grammarPrefix =
+    part.start > 0 && leadingYamlEnd(slice) ? "<!-- -->\n\n" : "";
+  let prefix =
+    grammarPrefix +
     (ownedHtml ? ownedPrefix : startExplicit.open + htmlOpen + blockPrefix) +
     (!ownedHtml && paragraphPrefix ? "\uE000" : "") +
     (startFence
@@ -606,6 +647,41 @@ export function assemblePart(
         : startComment && !ownedHtml
           ? "<!--\n"
           : "");
+  if (block.alert) {
+    const owners = start.current?.syntax.owners ?? start.syntax?.owners ?? [];
+    const quote = owners.findIndex((owner) => owner.id === block.alert?.owner);
+    if (quote >= 0) {
+      const opening = (owner: (typeof owners)[number]) =>
+        " ".repeat(owner.relativeIndent) +
+        owner.marker +
+        " ".repeat(owner.padding);
+      const full = owners.map(opening).join("");
+      const marker = owners
+        .slice(0, quote + 1)
+        .map(opening)
+        .join("");
+      const continued = owners
+        .map((owner, index) =>
+          index < quote && owner.kind === "list"
+            ? " ".repeat(owner.width)
+            : opening(owner),
+        )
+        .join("");
+      const blank = owners
+        .slice(0, quote + 1)
+        .map((owner) =>
+          owner.kind === "list" ? " ".repeat(owner.width) : opening(owner),
+        )
+        .join("");
+      // Keep the restored header separate from the inherited paragraph marker;
+      // removing the header must not invalidate that marker's source position.
+      prefix =
+        `${marker}[!${block.alert.type}]\n${blank}\n` +
+        (prefix.startsWith(full)
+          ? continued + prefix.slice(full.length)
+          : prefix);
+    }
+  }
   const commentClose = endComment ? `\n${endContinuation}-->\n` : "";
   const endFence = required(context.ends[index]).fence;
   const closer = endFence
@@ -625,7 +701,7 @@ export function assemblePart(
   // Scan the actual reconstructed containers, then translate ranges back to
   // source offsets. A raw continuation slice alone has no owning list/quote.
   const body = prefix + slice + closer + commentClose + opaqueClose;
-  const literals = codeRanges(body)
+  const literals = codeRanges(body, part.start === 0)
     .map((range) => ({
       start: Math.max(0, range.start - prefix.length),
       end: Math.min(slice.length, range.end - prefix.length),
@@ -703,7 +779,7 @@ export function assemblePart(
   if (selected.length && openHtmlTail(body)) return plain(false);
 
   let source = body;
-  const insertion = 0;
+  const insertion = part.start === 0 ? leadingYamlEnd(slice) : 0;
   let added = 0;
   if (selected.length) {
     const definitions = selected

@@ -31,6 +31,7 @@ export type HtmlState = Readonly<{
   deep?: boolean;
   literalEnd?: number;
   ticks?: Ticks;
+  dollars?: Ticks;
   flow?: Flow;
 }>;
 const voids = new Set(
@@ -95,6 +96,7 @@ function codeEnd(
   text: string,
   from: number,
   size: number,
+  marker: string,
   flow: Flow,
   cached?: Ticks,
 ): { end?: number | undefined; ticks?: Ticks | undefined } {
@@ -129,9 +131,9 @@ function codeEnd(
       }
       state = step.after;
       at = start - 1;
-    } else if (text[at] === "`") {
+    } else if (text[at] === marker) {
       let end = at + 1;
-      while (text[end] === "`") end++;
+      while (text[end] === marker) end++;
       const length = end - at;
       if (length === size) return { end, ticks: cached };
       last.set(length, at);
@@ -159,6 +161,7 @@ export function htmlLine(
     deep = false;
   let literalEnd = markdown ? state.literalEnd : undefined,
     ticks = state.ticks,
+    dollars = state.dollars,
     flow = state.flow;
   function optional(
     names: readonly string[],
@@ -222,11 +225,19 @@ export function htmlLine(
           at = Math.min(end, literalEnd) - 1;
           continue;
         }
-        if (char === "`") {
+        if (char === "`" || char === "$") {
           let after = at + 1;
-          while (text[after] === "`") after++;
-          const code = codeEnd(text, after, after - at, flow, ticks);
-          ticks = code.ticks;
+          while (text[after] === char) after++;
+          const code = codeEnd(
+            text,
+            after,
+            after - at,
+            char,
+            flow,
+            char === "$" ? dollars : ticks,
+          );
+          if (char === "$") dollars = code.ticks;
+          else ticks = code.ticks;
           literalEnd = code.end ?? after;
           at = Math.min(end, literalEnd) - 1;
           continue;
@@ -315,6 +326,7 @@ export function htmlLine(
     ...(deep ? { deep: true } : {}),
     ...(literalEnd === undefined ? {} : { literalEnd }),
     ...(ticks ? { ticks } : {}),
+    ...(dollars ? { dollars } : {}),
     ...(flow ? { flow } : {}),
   };
 }

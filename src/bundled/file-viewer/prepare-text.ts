@@ -1,5 +1,7 @@
 import { formatExtension } from "./formats";
 import { formattedJson } from "./json";
+import { prepareMarkdownText } from "./markdown-extensions";
+import type { FrontMatterEntry } from "./markdown-extensions";
 import { prepareMdx } from "./mdx";
 
 /** Run once on the saved text, then index and slice this display text together.
@@ -11,6 +13,7 @@ export function prepareFileText(
 ): Readonly<{
   text: string;
   formatted?: true;
+  frontMatter?: readonly FrontMatterEntry[];
   plain?: "too-large";
 }> {
   const ext = formatExtension(name, mime);
@@ -18,8 +21,10 @@ export function prepareFileText(
     const prepared = prepareMdx(text);
     return prepared === undefined
       ? { text, plain: "too-large" }
-      : { text: prepared };
+      : prepareMarkdownText(prepared);
   }
+  if (ext && ["md", "markdown", "mdown", "mkd"].includes(ext))
+    return prepareMarkdownText(text);
   const formatted =
     ext === "json" ? formattedJson(text, "display.json") : undefined;
   return formatted === undefined

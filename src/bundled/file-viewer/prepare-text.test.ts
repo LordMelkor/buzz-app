@@ -11,6 +11,7 @@ import {
 } from "./document-parts";
 import { rehypeFileMarkdown } from "./file-markdown";
 import { prepareFileText } from "./prepare-text";
+import { remarkFileMarkdown } from "./markdown-extensions";
 
 function nodes(root: Nodes): Nodes[] {
   const found: Nodes[] = [],
@@ -48,6 +49,7 @@ it("prepares MDX once, preserving line numbers and global headings across parts"
     const parser = unified()
       .use(remarkParse)
       .use(remarkGfm)
+      .use(remarkFileMarkdown)
       .use(remarkPartHeadings(parts, at))
       .use(remarkRehype, { allowDangerousHtml: true })
       .use(rehypePartFootnotes(parts, at))
@@ -69,6 +71,57 @@ it("prepares MDX once, preserving line numbers and global headings across parts"
       .map((node) => node.properties.id),
   ).toEqual(["user-content-repeat", "user-content-repeat-1"]);
 });
+
+it.each(["guide.md", "guide.mdx"])(
+  "prepares Properties before indexing and renders math and alerts for %s",
+  (name) => {
+    const original = `---\r\nowner: 'Reader'\r\nsummary: ${"metadata".repeat(2000)}\r\n---\r\n\r\n# Body\r\n\r\n> [!TIP]\r\n> Read this.\r\n\r\n$$x_1 + x_2$$\r\n\r\nInline $a_b$ stays literal.`;
+    const prepared = prepareFileText(original, name);
+    expect(prepared.frontMatter).toEqual([
+      { key: "owner", value: "Reader" },
+      { key: "summary", value: "metadata".repeat(2000) },
+    ]);
+    expect(prepared.text.length).toBe(original.length);
+    expect(prepared.text.match(/\r\n|\r|\n/g)).toEqual(
+      original.match(/\r\n|\r|\n/g),
+    );
+    const parts = indexDocument(prepared.text, "markdown");
+    expect(parts.outline.map((item) => item.text)).toEqual(["Body"]);
+    const rendered = parts.parts.map((_, at) => {
+      const parser = unified()
+        .use(remarkParse)
+        .use(remarkGfm)
+        .use(remarkFileMarkdown)
+        .use(remarkPartHeadings(parts, at))
+        .use(remarkRehype, { allowDangerousHtml: true })
+        .use(rehypePartFootnotes(parts, at))
+        .use(rehypeFileMarkdown);
+      const source = parts.partSource(at);
+      return parser.runSync(parser.parse(source), { value: source }) as Root;
+    });
+    const all = rendered.flatMap(nodes);
+    expect(
+      all
+        .filter(
+          (node): node is Element =>
+            node.type === "element" && node.tagName === "pre",
+        )
+        .map((node) => node.properties.dataMath),
+    ).toContain("display");
+    expect(
+      all
+        .filter(
+          (node): node is Element =>
+            node.type === "element" && node.tagName === "div",
+        )
+        .map((node) => node.properties.dataAlert),
+    ).toContain("tip");
+    const body = rendered.map(textOf).join("");
+    expect(body).toContain("x_1 + x_2");
+    expect(body).toContain("Inline $a_b$ stays literal.");
+    expect(body).not.toContain("metadata");
+  },
+);
 
 it.each([
   "import this is prose",

@@ -26,10 +26,6 @@ const officeSchema: SanitizeSchema = {
       ["scope", "row", "col"],
     ],
     figure: [["dataMdvChart", /^\d{1,4}$/]],
-    div: [
-      ...(schema.attributes?.div ?? []),
-      ["dataAlert", "note", "tip", "important", "warning", "caution"],
-    ],
     code: [...(schema.attributes?.code ?? []), ["dataMath", "inline"]],
     pre: [...(schema.attributes?.pre ?? []), ["dataMath", "display"]],
   },

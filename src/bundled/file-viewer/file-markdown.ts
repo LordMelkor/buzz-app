@@ -5,7 +5,8 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { highlight } from "./highlight";
 import { MAX_RENDER_DEPTH } from "./markdown-limits";
-import { fidelityNumbers, schema } from "./markdown-schema";
+import { generatedMarkdownMarker } from "./markdown-extensions";
+import { ALERT_TYPES, fidelityNumbers, schema } from "./markdown-schema";
 
 const raw = unified().use(rehypeRaw);
 const sanitizer = unified().use(rehypeSanitize, schema);
@@ -51,6 +52,17 @@ function tooDeep(root: Root): boolean {
         stack.push({ node, depth: item.depth + 1 });
   }
   return false;
+}
+
+function codeLanguage(node: Element): string {
+  if (typeof node.properties.dataLanguage === "string")
+    return node.properties.dataLanguage;
+  const classes = node.properties.className;
+  return Array.isArray(classes)
+    ? String(classes.find((name) => String(name).startsWith("language-")) ?? "")
+        .slice(9)
+        .toLowerCase()
+    : "";
 }
 
 function plain(source: string): Root {
@@ -99,7 +111,29 @@ export const rehypeFileMarkdown: Plugin<[{ embedded?: boolean }?], Root> =
       throw error;
     }
     if (tooDeep(tree)) return plain(source);
+    const alertMarker = generatedMarkdownMarker(source);
     for (const node of elements(tree)) {
+      const generated = node.properties[alertMarker];
+      delete node.properties.dataAlert;
+      delete node.properties[alertMarker];
+      if (
+        node.tagName === "div" &&
+        typeof generated === "string" &&
+        generated.startsWith("alert:") &&
+        ALERT_TYPES.some((type) => type === generated.slice(6))
+      )
+        node.properties.dataAlert = generated.slice(6);
+      if (node.tagName === "pre") {
+        const code = node.children.find(
+          (child): child is Element =>
+            child.type === "element" && child.tagName === "code",
+        );
+        if (
+          code &&
+          ["math", "latex", "tex", "katex"].includes(codeLanguage(code))
+        )
+          node.properties.dataMath = "display";
+      }
       if (typeof node.properties.align === "string")
         node.properties.align = node.properties.align.toLowerCase();
       if (typeof node.properties.vAlign === "string")
@@ -111,18 +145,7 @@ export const rehypeFileMarkdown: Plugin<[{ embedded?: boolean }?], Root> =
         delete node.properties.value;
       delete node.properties[marker];
       if (node.tagName !== "code") continue;
-      const classes = node.properties.className;
-      const language =
-        typeof node.properties.dataLanguage === "string"
-          ? node.properties.dataLanguage
-          : Array.isArray(classes)
-            ? String(
-                classes.find((name) => String(name).startsWith("language-")) ??
-                  "",
-              )
-                .slice(9)
-                .toLowerCase()
-            : "";
+      const language = codeLanguage(node);
       if (language) node.properties.dataLanguage = language;
       node.children = highlight(content(node), language).children.filter(
         (node) => node.type !== "doctype",

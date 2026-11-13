@@ -10,6 +10,13 @@ import { decodeString } from "micromark-util-decode-string";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import {
+  leadingYamlEnd,
+  mathOpening,
+  mathClosing,
+  standaloneMath,
+} from "./markdown-regions";
 import type { Plugin } from "unified";
 import type { Root as MdRoot, RootContent as MdContent } from "mdast";
 import type { Root as HastRoot, Element } from "hast";
@@ -109,6 +116,7 @@ export type PartContext = {
   starts: readonly Cursor[];
   ends: readonly Cursor[];
   plain: boolean;
+  literalParts: ReadonlySet<number>;
   definitionAt: ReturnType<typeof referenceDefinitions>;
   prepared?: { index: number; value: PreparedPart };
 };
@@ -128,6 +136,8 @@ export const normalizeLabel = (label: string): string =>
     .toUpperCase();
 type Fence = CodeFence & Readonly<{ line: number; swallowed: boolean }>;
 type Opaque = (
+  | Readonly<{ kind: "yaml"; end: number }>
+  | Readonly<{ kind: "math"; size: number }>
   | Readonly<{ kind: "comment" }>
   | Readonly<{ kind: "raw"; tag: string }>
   | Readonly<{ kind: "html" }>
@@ -142,6 +152,9 @@ type Line = Readonly<{
   bodyPadding: number;
   blank: boolean;
   heading?: RegExpMatchArray | undefined;
+  mathOpen?: number | undefined;
+  mathClose?: number | undefined;
+  mathSingle?: boolean | undefined;
   after?: Fence | undefined;
   region?: Opaque | undefined;
   opaque: boolean;
@@ -173,11 +186,18 @@ type Cursor = Readonly<{
   /** Present only when a forced cut continues the same original source line. */
   current?: Line | undefined;
   html?: HtmlState | undefined;
+  literalPart?: boolean | undefined;
 }>;
 const lineEnding = /[\r\n]/g;
 
-function initialCursor(_text: string): Cursor {
-  return { offset: 0, line: 1, previousBlank: false };
+function initialCursor(text: string): Cursor {
+  const end = leadingYamlEnd(text);
+  return {
+    offset: 0,
+    line: 1,
+    previousBlank: false,
+    ...(end ? { opaque: { kind: "yaml", end } as const } : {}),
+  };
 }
 
 function sourceLine(
@@ -226,6 +246,11 @@ function sourceLine(
     );
   }
   const body = syntax.body;
+  const math = !region && !syntax.code ? mathOpening(body) : undefined;
+  const singleMath =
+    math === undefined && !region && !syntax.code && standaloneMath(body);
+  if (math !== undefined || singleMath)
+    region = { kind: "math", size: math ?? 2 };
   if (!region && !syntax.code && /^ {0,3}</.test(body)) {
     if (/^ {0,3}<!--/.test(body)) region = { kind: "comment" };
     else if (explicitHtmlStart(body))
@@ -266,13 +291,20 @@ function sourceLine(
       : undefined;
   if (definition) region = { kind: "definition", end: definition.end };
   let afterOpaque = region;
+  const closedMath =
+    region?.kind === "math" && math === undefined
+      ? mathClosing(body, region.size)
+      : undefined;
   const commentClose = region?.kind === "comment" ? content.indexOf("-->") : -1;
   const explicit = region?.kind === "explicit" ? region.html : undefined;
   const explicitClose = explicit
     ? content.indexOf(explicitHtmlEnd(explicit))
     : -1;
   const visible = explicit && !explicit.visible ? content.indexOf(">") : -1;
-  if (region?.kind === "definition" && next >= region.end)
+  if (singleMath || (region?.kind === "yaml" && next >= region.end))
+    afterOpaque = undefined;
+  else if (closedMath !== undefined) afterOpaque = undefined;
+  else if (region?.kind === "definition" && next >= region.end)
     afterOpaque = undefined;
   else if (region?.kind === "comment" && commentClose >= 0)
     afterOpaque = undefined;
@@ -350,6 +382,9 @@ function sourceLine(
     bodyPadding: syntax.bodyPadding,
     blank,
     heading,
+    mathOpen: math ?? (singleMath ? 2 : undefined),
+    mathClose: closedMath,
+    mathSingle: singleMath,
     after,
     region,
     opaque: region !== undefined,
@@ -619,7 +654,7 @@ function scanFootnotes(
       const char = text.charAt(at);
       if (change > 0 && char === "[" && text[at + 1] === "^")
         hasNoteSyntax = true;
-      if (char !== "`") continue;
+      if (char !== "`" && char !== "$") continue;
       let next = at + 1;
       while (next < to && text[next] === char) next++;
       const key = `${char}${next - at}`;
@@ -636,7 +671,7 @@ function scanFootnotes(
     lastNoteEnd = -1;
   for (let at = start; at < end; at++) {
     const char = text.charAt(at);
-    if (char === "`") {
+    if (char === "`" || char === "$") {
       let next = at + 1;
       while (next < end && text[next] === char) next++;
       const size = next - at,
@@ -653,7 +688,7 @@ function scanFootnotes(
     if (literal) continue;
     if (char === "\\" && at + 1 < end) {
       const escaped = text.charAt(at + 1);
-      if (escaped === "`") {
+      if (escaped === "`" || escaped === "$") {
         let next = at + 1;
         while (next < end && text[next] === escaped) next++;
         const size = next - at - 1,
@@ -922,14 +957,15 @@ function linearAttention(text: string): Uint8Array | undefined {
   const code = new Uint8Array(text.length);
   const runs: { start: number; end: number; closer?: number | undefined }[] =
     [];
-  const ticks = /`+/g;
+  const ticks = /`+|\$+/g;
   for (let match = ticks.exec(text); match; match = ticks.exec(text))
     runs.push({ start: match.index, end: ticks.lastIndex });
-  const next = new Map<number, number>();
+  const next = new Map<string, number>();
   for (let at = runs.length - 1; at >= 0; at--) {
     const size = required(runs[at]).end - required(runs[at]).start;
-    const closer = next.get(size);
-    next.set(size, at);
+    const key = `${text[required(runs[at]).start]}${size}`;
+    const closer = next.get(key);
+    next.set(key, at);
     let escaped = 0;
     for (
       let before = required(runs[at]).start - 1;
@@ -1088,16 +1124,21 @@ function linearHeadingText(
   while (claimed.has(String.fromCodePoint(point))) point++;
   const marker = String.fromCodePoint(point);
   const attention = linearAttention(raw);
-  const ticks = [...raw.matchAll(/`+/g)].map((match) => ({
+  const ticks = [...raw.matchAll(/`+|\$+/g)].map((match) => ({
     start: match.index,
     end: match.index + match[0].length,
     size: match[0].length,
     next: undefined as number | undefined,
   }));
-  const next = new Map<number, number>();
+  const next = new Map<string, number>();
   for (let at = ticks.length - 1; at >= 0; at--) {
-    required(ticks[at]).next = next.get(required(ticks[at]).size);
-    next.set(required(ticks[at]).size, at);
+    required(ticks[at]).next = next.get(
+      `${raw[required(ticks[at]).start]}${required(ticks[at]).size}`,
+    );
+    next.set(
+      `${raw[required(ticks[at]).start]}${required(ticks[at]).size}`,
+      at,
+    );
   }
   const code: { source: string; value: string }[] = [];
   const chunks: string[] = [];
@@ -1122,8 +1163,16 @@ function linearHeadingText(
     if (slashes % 2 || open.next === undefined) continue;
     const close = required(ticks[open.next]);
     chunks.push(prose(copied, open.start));
-    let value = raw.slice(open.end, close.start).replace(/[\r\n]/g, " ");
-    if (value.startsWith(" ") && value.endsWith(" ") && /[^ ]/.test(value))
+    const math = raw[open.start] === "$";
+    let value = math
+      ? raw.slice(open.start, close.end)
+      : raw.slice(open.end, close.start).replace(/[\r\n]/g, " ");
+    if (
+      !math &&
+      value.startsWith(" ") &&
+      value.endsWith(" ") &&
+      /[^ ]/.test(value)
+    )
       value = value.slice(1, -1);
     chunks.push(`${marker}C${code.length};`);
     code.push({ source: raw.slice(open.start, close.end), value });
@@ -1161,7 +1210,7 @@ function linearHeadingText(
   );
 }
 
-const headingParser = unified().use(remarkParse).use(remarkGfm);
+const headingParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
 const MAX_PARSED_TITLE_CHARS = 500;
 const HEADING_PARSE_BUDGET = 100_000;
 
@@ -1178,7 +1227,7 @@ function headingText(
     return linearHeadingText(raw, links, numbers);
   }
   budget.left -= raw.length;
-  if (/^[^\\&`*_~[\]!<#\t\n\r\0]*$/.test(raw)) return raw;
+  if (/^[^\\&`*_~[\]!<#$\t\n\r\0]*$/.test(raw)) return raw;
   const definitions: string[] = [];
   const seen = new Set<string>();
   for (let at = 0; at < raw.length; at++) {
@@ -1204,16 +1253,18 @@ function headingText(
     }
     at = end;
   }
-  const node = required(
-    headingParser.parse(
-      `${raw.includes("\n") ? `${raw}\n===` : `# ${raw}`}\n\n${definitions.join("\n")}`,
-    ).children[0],
-  );
+  const source = `${raw.includes("\n") ? `${raw}\n===` : `# ${raw}`}\n\n${definitions.join("\n")}`;
+  const node = required(headingParser.parse(source).children[0]);
   let result = "";
   const pending: MdContent[] = node ? [node] : [];
   while (pending.length) {
     const item = required(pending.pop());
-    if (item.type === "footnoteReference")
+    if (item.type === "inlineMath")
+      result += source.slice(
+        item.position?.start.offset,
+        item.position?.end.offset,
+      );
+    else if (item.type === "footnoteReference")
       result +=
         numbers.get(normalizeLabel(item.identifier)) ??
         `[^${item.label ?? item.identifier}]`;
@@ -1647,6 +1698,41 @@ function safeCut(text: string, offset: number): number {
     : offset;
 }
 
+const MAX_ATOMIC_MATH_CHARS = 150_000;
+function closedMathEnd(
+  text: string,
+  start: Cursor,
+  opening: Line,
+): Cursor | undefined {
+  if (opening.mathOpen !== 2) return undefined;
+  if (opening.mathSingle)
+    return opening.next - start.offset <= MAX_ATOMIC_MATH_CHARS
+      ? nextLine(start, opening)
+      : undefined;
+  const bounded = text.slice(
+    start.offset,
+    start.offset + MAX_ATOMIC_MATH_CHARS + 1,
+  );
+  let cursor = {
+    ...nextLine(start, opening),
+    offset: opening.next - start.offset,
+  };
+  while (
+    cursor.offset < bounded.length &&
+    cursor.offset < MAX_ATOMIC_MATH_CHARS
+  ) {
+    const line = sourceLine(bounded, cursor);
+    if (line.next > MAX_ATOMIC_MATH_CHARS) return undefined;
+    if (line.mathClose !== undefined)
+      return line.mathClose === 2
+        ? { ...nextLine(cursor, line), offset: start.offset + line.next }
+        : undefined;
+    if (line.region?.kind !== "math") return undefined;
+    cursor = nextLine(cursor, line);
+  }
+  return undefined;
+}
+
 function chooseCut(
   text: string,
   start: Cursor,
@@ -1690,8 +1776,42 @@ function chooseCut(
       candidates[kind] = cursor;
   };
   let cursor = start;
+  const inherited = start.current?.region ?? start.opaque;
+  let literal: "yaml" | "math" | undefined =
+    markdown && inherited?.kind === "math"
+      ? "math"
+      : markdown && inherited?.kind === "yaml" && inherited.end > PART_CHARS
+        ? "yaml"
+        : undefined;
+  const finish = (value: Cursor): Cursor => ({
+    ...value,
+    literalPart: !!literal,
+  });
   while (cursor.offset < text.length && cursor.offset <= upper) {
     const line = sourceLine(text, cursor, definitionAt);
+    if (
+      literal === "math" &&
+      (line.region?.kind !== "math" ||
+        (line.mathOpen !== undefined && cursor.opaque?.kind === "math"))
+    ) {
+      cursor = { ...cursor, opaque: undefined };
+      if (cursor.offset > start.offset) return finish(cursor);
+      literal = undefined;
+    }
+    if (markdown && !cursor.current && line.mathOpen !== undefined) {
+      const end = closedMathEnd(text, cursor, line);
+      if (end) {
+        if (end.offset > upper)
+          return cursor.offset > start.offset ? cursor : end;
+        consider(2, cursor);
+        cursor = end;
+        continue;
+      }
+      if (cursor.offset > start.offset) return cursor;
+      literal = "math";
+    }
+    if (literal && !line.afterOpaque && line.next <= upper)
+      return finish(nextLine(cursor, line));
     if (!cursor.current && line.endedBefore)
       cursor = { ...cursor, fence: undefined };
     let low = 0,
@@ -1705,7 +1825,7 @@ function chooseCut(
       !!notes[low] &&
       required(notes[low]).start < cursor.offset &&
       cursor.offset < required(notes[low]).end;
-    if (!cursor.current && !insideNote) {
+    if (!literal && !cursor.current && !insideNote) {
       consider(2, cursor);
       if (markdown && !line.code && !line.opaque) {
         if (line.heading) consider(0, cursor);
@@ -1718,14 +1838,16 @@ function chooseCut(
       }
     }
     if (line.next > upper || line.next === text.length) {
+      if (line.next === text.length && upper === text.length)
+        return finish(nextLine(cursor, line));
       const chosen = candidates[0] ?? candidates[1] ?? candidates[2];
-      if (chosen) return chosen;
+      if (chosen) return finish(chosen);
       if (
         !cursor.current &&
         cursor.offset > start.offset &&
         line.end - cursor.offset <= PART_CHARS
       )
-        return cursor;
+        return finish(cursor);
       let offset = safeCut(text, upper);
       if (
         line.commentEnd !== undefined &&
@@ -1762,17 +1884,21 @@ function chooseCut(
         offset = html.pending.start;
         html = htmlTo(offset);
       }
-      return {
+      return finish({
         ...cursor,
         offset,
         current: line,
         paragraph: line.paragraph,
         html,
-      };
+      });
     }
     cursor = nextLine(cursor, line);
   }
-  return candidates[0] ?? candidates[1] ?? candidates[2] ?? cursor;
+  return finish(
+    cursor.offset === text.length
+      ? cursor
+      : (candidates[0] ?? candidates[1] ?? candidates[2] ?? cursor),
+  );
 }
 
 function partAt(parts: readonly DocumentPart[], offset: number): number {
@@ -1817,11 +1943,12 @@ export function indexData(text: string, kind: DocumentKind): IndexData {
     starts: Cursor[] = [],
     ends: Cursor[] = [];
   const definitionAt = markdown ? required(index).definitionAt : undefined;
+  const literalParts = new Set<number>();
   let cursor = initialCursor(text);
   if (kind === "markdown")
     while (cursor.offset < text.length || !parts.length) {
       const start = cursor;
-      if (text.length - start.offset <= PART_CHARS) {
+      if (!markdown && text.length - start.offset <= PART_CHARS) {
         while (cursor.offset < text.length)
           cursor = nextLine(cursor, sourceLine(text, cursor, definitionAt));
       } else {
@@ -1847,6 +1974,8 @@ export function indexData(text: string, kind: DocumentKind): IndexData {
             };
         }
       }
+      if (cursor.literalPart) literalParts.add(parts.length);
+      cursor = { ...cursor, literalPart: undefined };
       parts.push({
         start: start.offset,
         end: cursor.offset,
@@ -1894,6 +2023,7 @@ export function indexData(text: string, kind: DocumentKind): IndexData {
       starts,
       ends,
       plain: index?.plain ?? false,
+      literalParts,
       blocks: markdown
         ? markdownBlocks(
             text,

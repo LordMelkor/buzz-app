@@ -690,3 +690,62 @@ it.each([
     });
   },
 );
+
+it("shares File Markdown metadata, display math and alert grammar in notebook cells and saved outputs", async () => {
+  const saved = notebook([
+    markdown(
+      "---\ntitle: Cell metadata\n# Hidden heading\n---\n\n# Cell\n\nInline $a*b*$ remains.\r\r$$x^2$$\r\r> [!NOTE]\n> Cell alert",
+    ),
+    markdown("---\ntags: [nested, yaml]\n---\n\n# Second"),
+    code([
+      {
+        output_type: "display_data",
+        data: {
+          "text/markdown":
+            "---\n# Hidden output heading\ntitle: Output metadata\n---\n\n$$\ry^2\r$$\n\n> [!TIP]\n> Output alert",
+        },
+      },
+    ]),
+  ]);
+  const loaded = await openOffice(
+    new TextEncoder().encode(JSON.stringify(saved)),
+    "analysis.ipynb",
+    signal(),
+  );
+  expect(loaded.ok).toBe(true);
+  if (!loaded.ok || loaded.office.doc.family !== "document")
+    throw new Error("Expected notebook document");
+  const document = loaded.office.doc,
+    root = document.parsed.tree;
+  expect(document.parsed.outline.map((item) => item.text)).toEqual([
+    "Cell",
+    "Second",
+  ]);
+  expect(text(root)).not.toMatch(
+    /Hidden heading|Hidden output heading|Cell metadata|Output metadata/,
+  );
+  expect(text(root)).toContain("Inline $a*b*$ remains.");
+  expect(
+    elements(root, "code")
+      .filter((node) => node.properties.dataLanguage === "math")
+      .map(text),
+  ).toEqual(["x^2\n", "y^2\n"]);
+  expect(
+    elements(root, "pre").filter(
+      (node) => node.properties.dataMath === "display",
+    ),
+  ).toHaveLength(2);
+  expect(
+    elements(root, "code")
+      .filter((node) => node.properties.dataLanguage === "yaml")
+      .map(text),
+  ).toEqual(["tags: [nested, yaml]\n"]);
+  expect(
+    elements(root, "div")
+      .filter((node) => node.properties.dataAlert)
+      .map((node) => [node.properties.dataAlert, text(node).trim()]),
+  ).toEqual([
+    ["note", "Cell alert"],
+    ["tip", "Output alert"],
+  ]);
+});

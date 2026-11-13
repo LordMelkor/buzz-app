@@ -6,12 +6,16 @@ import remarkGfm from "remark-gfm";
 import remarkRehype from "remark-rehype";
 import rehypeSanitize from "rehype-sanitize";
 import { rehypeFileMarkdown } from "./file-markdown";
+import { prepareMarkdownText, remarkFileMarkdown } from "./markdown-extensions";
 import { htmlWithinDepth } from "./html-depth";
 import { schema } from "./markdown-schema";
 import { MAX_RENDER_CHARS, MAX_RENDER_DEPTH } from "./office-types";
 import { required } from "./office/required";
 
-const parser = unified().use(remarkParse).use(remarkGfm);
+const parser = unified()
+  .use(remarkParse)
+  .use(remarkGfm)
+  .use(remarkFileMarkdown);
 const converter = unified().use(remarkRehype, {
   allowDangerousHtml: true,
   clobberPrefix: "",
@@ -86,13 +90,14 @@ export function notebookMarkdownPrefix(
   text: string,
   remaining: number,
 ): Readonly<{ text: string; truncated: boolean }> {
+  text = prepareMarkdownText(text).text;
   const limit = Math.min(MAX_RENDER_CHARS, Math.max(0, remaining) + 1024);
   if (text.length <= limit) return { text, truncated: false };
   const prefix = text.slice(0, limit),
     parsed = parser.parse(prefix);
   if (
     /^(?:\ufeff)?---[ \t]*(?:\r?\n|$)/.test(prefix) &&
-    !/\n---[ \t]*(?:\r?\n|$)/.test(prefix)
+    parsed.children[0]?.type !== "yaml"
   )
     return { text: "", truncated: true };
   const cut = parsed.children.at(-1)?.position?.start.offset ?? 0;
@@ -108,12 +113,14 @@ export function parseNotebookFragment(
   html = false,
   isCommunityMedia: (url: string) => boolean = () => false,
 ): Readonly<{ tree: Root; footnoteLabels: ReadonlySet<string> }> {
+  if (!html) text = prepareMarkdownText(text).text;
   const footnoteLabels = new Set<string>();
   const fallback = () => ({ tree: plain(text), footnoteLabels });
   if (text.length > MAX_RENDER_CHARS || (html && !htmlWithinDepth(text)))
     return fallback();
   const mdast = parser.parse(html ? "" : text);
   if (tooDeep(mdast)) return fallback();
+  parser.runSync(mdast, { value: text });
   let tree = html
     ? ({
         type: "root",

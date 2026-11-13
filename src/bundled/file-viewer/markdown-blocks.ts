@@ -1,3 +1,4 @@
+import { leadingYamlEnd, mathOpening, mathClosing } from "./markdown-regions";
 import { required } from "./markdown-limits";
 // Bounded block context at part cuts; no whole-document syntax tree is retained.
 import type { Root, Element } from "hast";
@@ -25,6 +26,7 @@ type Frame = {
 type Entry = Frame & { continued: boolean };
 export type BlockPart = {
   prefix: string;
+  alert?: { owner: number; type: string } | undefined;
   overflow?: boolean | undefined;
   deep?: boolean | undefined;
   codeEnd?: { offset: number; ending: string };
@@ -169,6 +171,9 @@ export function markdownBlocks(
     raw: string | undefined,
     html = false;
   let explicit: ExplicitHtml | undefined;
+  let math: { size: number; owners: readonly number[] } | undefined;
+  let alert: BlockPart["alert"];
+  const yamlEnd = leadingYamlEnd(text);
   let definitionEnd = 0;
   const breaks = /\r\n|\r|\n/g;
   function snapshot(offset: number): Entry[] {
@@ -256,6 +261,10 @@ export function markdownBlocks(
         entry.deep = true;
         continue;
       }
+      entry.alert =
+        alert && owners.some((owner) => owner.id === alert?.owner)
+          ? alert
+          : undefined;
       entry.first = snapshot(cut);
       required(result[part - 1]).last = snapshot(cut);
       let prefix = "";
@@ -361,15 +370,41 @@ export function markdownBlocks(
     indentation = required(required(content.match(/^ */))[0]).length;
     if (html && empty) html = false;
     const otherOpaque =
+      start < yamlEnd ||
       comment ||
       raw !== undefined ||
       html ||
       explicit !== undefined ||
       start < definitionEnd;
-    let opaque = otherOpaque;
+    let opaque = otherOpaque || math !== undefined;
     const wasOpaque = opaque || fences.fence !== undefined;
     const previousOwners = fences.owners;
     let step = fenceLine(source, fences, opaque);
+    if (
+      math &&
+      (math.owners.length !== step.after.owners.length ||
+        math.owners.some((id, index) => id !== step.after.owners[index]?.id))
+    ) {
+      math = undefined;
+      opaque = otherOpaque;
+      step = fenceLine(source, fences, opaque);
+    }
+    const openingMath =
+      !opaque && !step.code ? mathOpening(step.body) : undefined;
+    if (openingMath !== undefined) {
+      math = {
+        size: openingMath,
+        owners: step.after.owners.map((owner) => owner.id),
+      };
+      opaque = true;
+    }
+    if (
+      math &&
+      openingMath === undefined &&
+      mathClosing(step.body, math.size) !== undefined
+    )
+      math = undefined;
+
     if (!opaque && !step.code && !table)
       definitionEnd = Math.max(definitionEnd, definitionAt(start)?.end ?? 0);
     const definition = start < definitionEnd;
@@ -402,6 +437,25 @@ export function markdownBlocks(
     if (opaque) step = fenceLine(source, fences, true);
     beforeOwners = step.beforeOwners;
     fences = step.after;
+    if (alert && !fences.owners.some((owner) => owner.id === alert?.owner))
+      alert = undefined;
+    const quotes = fences.owners.filter((owner) => owner.kind === "quote");
+    if (
+      !opaque &&
+      !step.code &&
+      quotes.length === 1 &&
+      !previousOwners.some((owner) => owner.id === quotes[0]?.id)
+    ) {
+      const marker =
+        /^ {0,3}\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][\t ]*(?:\\)?$/i.exec(
+          step.body,
+        );
+      if (marker)
+        alert = {
+          owner: required(quotes[0]).id,
+          type: required(marker[1]).toUpperCase(),
+        };
+    }
     indentedCode =
       !opaque &&
       !step.code &&
@@ -417,6 +471,7 @@ export function markdownBlocks(
     // sibling advances its list only within the same quote scope. Fence
     // payload/closers never enter ordinary list/table recognition.
     const owned =
+      openingMath !== undefined ||
       step.opened ||
       (!opaque &&
         !step.code &&
@@ -438,6 +493,7 @@ export function markdownBlocks(
       !wasOpaque &&
       opaque &&
       !step.opened &&
+      openingMath === undefined &&
       !definition &&
       frames.length &&
       indentation < required(frames[0]).content
