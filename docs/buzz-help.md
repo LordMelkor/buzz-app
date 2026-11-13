@@ -936,6 +936,9 @@ available rather than silently discarding it.
   its type. Where offered, **Create agent** also lets people choose Thinking
   before the first config is saved; **Default** follows the provider's setting.
   Do not assume someone can edit another person's agent.
+- In the agent avatar picker, drag the avatar strip with a mouse or scroll it
+  to browse more choices. Click an avatar to select it; keyboard users can Tab
+  through the choices and press Enter or Space.
 - A desktop plugin can run native Codex or Claude on another computer. The plugin manages the target, workspace, credentials, and expiry. A saved
   remote choice stays remote after an app restart. If the target cannot be
   restored, Buzz shows an error and requires a new session.
