@@ -22,6 +22,8 @@ import {
 import { fenceLine } from "./markdown-fences";
 import type { FenceState } from "./markdown-fences";
 import { explicitHtmlStart, explicitHtmlEnd } from "./markdown-html-explicit";
+import { htmlLine, htmlWrapper } from "./markdown-html-context";
+import { explicitHtmlWrapper } from "./markdown-html-explicit";
 import { startsBlankHtmlBlock, isStandaloneHtmlTag } from "./markdown-html";
 /** Candidate labels, including shortcut/collapsed references and footnotes.
  * Definitions themselves are not uses; inline links need no external context. */
@@ -474,10 +476,57 @@ export function assemblePart(
   const block = required(context.blocks[index]);
   const startFence = start.fence;
   const region = start.current?.region ?? start.opaque;
-  // These wrappers supply CommonMark block context only. remarkPartHeadings
-  // clips their bytes from raw HTML nodes before ReactMarkdown sees them.
-  const htmlOwners = start.syntax?.owners ?? [];
-  const ownerOpen = htmlOwners
+  const explicitAt = (cursor: typeof start) => {
+    const line = cursor.current;
+    if (!line)
+      return cursor.opaque?.kind === "explicit"
+        ? cursor.opaque.html
+        : undefined;
+    if (!line.explicit) return undefined;
+    if (cursor.offset >= (line.explicitEnd ?? Infinity))
+      return { kind: "pi" as const, visible: true, lineTail: true };
+    return line.explicitVisible !== undefined &&
+      cursor.offset >= line.explicitVisible
+      ? { ...line.explicit, visible: true }
+      : line.explicit;
+  };
+  const explicitStart = explicitAt(start);
+  const startExplicit = explicitHtmlWrapper(explicitStart);
+  const endExplicit = explicitHtmlWrapper(explicitAt(end));
+  let startState = start.html ?? { stack: [] };
+  if (!startState.pending && !startState.deep && startState.stack.length) {
+    // Closing tags and optional sibling openers at the beginning of a part
+    // must not reopen an empty item, row or cell from the preceding part.
+    const closing =
+      slice.match(/^(?:[\t \r\n]*<\/[a-z][a-z\d-]*[\t ]*>)+/i)?.[0].length ?? 0;
+    if (closing)
+      startState = htmlLine(text, part.start, part.start + closing, startState);
+    if (/^[\t \r\n]*<[a-z]/i.test(slice.slice(closing))) {
+      let ancestors: typeof startState.stack | undefined;
+      htmlLine(
+        text,
+        part.start + closing,
+        part.end,
+        startState,
+        false,
+        (_tag, stack) => {
+          ancestors ??= stack;
+        },
+      );
+      if (ancestors) startState = { ...startState, stack: ancestors };
+    }
+  }
+  const startHtml = htmlWrapper(text, startState, !!explicitStart?.lineTail);
+  const endHtml = htmlWrapper(text, end.html ?? { stack: [] });
+  if (startHtml.deep || endHtml.deep) return plain(false, true);
+  if (startHtml.unfinished || endHtml.unfinished) return plain(false);
+  const htmlBlock =
+    start.current?.htmlBlock ??
+    (region?.kind === "raw" || region?.kind === "html");
+  const htmlOpen =
+    startHtml.open +
+    (startHtml.open && !startExplicit.open && !htmlBlock ? "\n\n" : "");
+  const ownerOpening = (start.syntax?.owners ?? [])
     .map(
       (owner) =>
         " ".repeat(owner.relativeIndent) +
@@ -485,35 +534,23 @@ export function assemblePart(
         " ".repeat(owner.padding),
     )
     .join("");
-  const ownerContinue = htmlOwners
-    .map((owner) =>
-      owner.kind === "list"
-        ? " ".repeat(owner.width)
-        : `${" ".repeat(owner.relativeIndent)}>${" ".repeat(owner.padding)}`,
-    )
-    .join("");
-  const htmlOpen = startComment
-    ? "<!--"
-    : region?.kind === "raw"
-      ? `<${region.tag}>`
-      : region?.kind === "html" || start.current?.htmlBlock
-        ? "<div>"
-        : region?.kind === "explicit"
-          ? region.html.kind === "pi"
-            ? "<?"
-            : region.html.kind === "cdata"
-              ? "<![CDATA["
-              : "<!A"
-          : "";
-  const explicitTail =
-    start.current?.explicit &&
-    start.offset >= (start.current.explicitEnd ?? Infinity);
-  const opaquePrefix = explicitTail
-    ? `${ownerOpen}<!-- -->`
-    : htmlOpen
-      ? `${ownerOpen}${htmlOpen}\n${start.current ? ownerContinue : ""}`
-      : "";
-  const opaqueClose = "";
+  const ownerContinuation = (cursor: typeof start) =>
+    (cursor.syntax?.owners ?? [])
+      .map((owner) =>
+        owner.kind === "list"
+          ? " ".repeat(owner.width)
+          : `${" ".repeat(owner.relativeIndent)}>${" ".repeat(owner.padding)}`,
+      )
+      .join("");
+  const startContinuation = ownerContinuation(start);
+  const endContinuation = ownerContinuation(end);
+  const opaqueClose =
+    ((endHtml.close || endExplicit.close) &&
+    (/[\r\n]$/.test(slice) || endComment)
+      ? endContinuation
+      : "") +
+    endHtml.close +
+    endExplicit.close;
   if (block?.deep) return plain(false, true);
   const blockLength =
     (startFence ? 0 : (block?.prefix.length ?? 0)) +
@@ -544,15 +581,32 @@ export function assemblePart(
   // A blank line already ended a condition-6/7 HTML block in the source;
   // reconstructed ancestors must allow Markdown to resume at the same point.
 
+  const htmlContext =
+    startExplicit.open + htmlOpen + (startComment ? "<!--\n" : "");
+  const ownedHtml = !!htmlContext && !!ownerOpening;
+  let ownedPrefix = "";
+  if (ownedHtml) {
+    // HTML must open inside the same Markdown owners as the original tag.
+    // Preserve owner stripping on following physical lines and on midline tails.
+    const opening = /[\r\n]$/.test(htmlContext)
+      ? htmlContext
+      : `${htmlContext}\n`;
+    ownedPrefix =
+      ownerOpening + opening.replace(/\r\n|\r|\n/g, `\n${startContinuation}`);
+    if (!start.current)
+      ownedPrefix = ownedPrefix.slice(0, -startContinuation.length);
+  }
   const prefix =
-    (opaquePrefix || blockPrefix) +
-    (paragraphPrefix ? "\uE000" : "") +
+    (ownedHtml ? ownedPrefix : startExplicit.open + htmlOpen + blockPrefix) +
+    (!ownedHtml && paragraphPrefix ? "\uE000" : "") +
     (startFence
       ? `${startFence.reopen}\n${required(context.starts[index]).current ? startFence.continuation : ""}`
       : part.fence
         ? `${part.fence}\n`
-        : "");
-  const commentClose = endComment ? "\n-->\n" : "";
+        : startComment && !ownedHtml
+          ? "<!--\n"
+          : "");
+  const commentClose = endComment ? `\n${endContinuation}-->\n` : "";
   const endFence = required(context.ends[index]).fence;
   const closer = endFence
     ? `${/[\r\n]$/.test(slice) ? "" : "\n"}${endFence.close}\n`
@@ -651,7 +705,6 @@ export function assemblePart(
   let source = body;
   const insertion = 0;
   let added = 0;
-  const synthetic: DefinitionSpan[] = [];
   if (selected.length) {
     const definitions = selected
       .map((span) => definitionSource(text, span))
@@ -659,7 +712,6 @@ export function assemblePart(
     if (prepend) {
       const block = `${definitions}\n\n<!-- -->\n\n`;
       added = block.length;
-      synthetic.push({ start: definitions.length + 2, end: added });
       if (source.length + added > MAX_RENDER_CHARS) return plain(true);
       source = source.slice(0, insertion) + block + source.slice(insertion);
     } else source += `\n\n${definitions}\n`;
@@ -687,14 +739,8 @@ export function assemblePart(
       offset = prefix.length + heading.offset - part.start;
     headings.set(offset + (offset >= insertion ? added : 0), heading.id);
   }
-  synthetic.push(
-    { start: added, end: added + prefix.length },
-    { start: added + prefix.length + slice.length, end: added + body.length },
-  );
-  synthetic.sort((left, right) => left.start - right.start);
   return {
     source,
-    synthetic,
     prefix: prefix.length + added,
     bodyStart: prefix.length + added,
     bodyEnd: prefix.length + added + slice.length,

@@ -308,7 +308,9 @@ export type OfficeResult =
     }>
   | Readonly<{
       ok: false;
-      error: Readonly<{ code: "unreadable" | "password" | "too-large" }>;
+      error: Readonly<{
+        code: "unreadable" | "password" | "too-large" | "not-text";
+      }>;
     }>;
 
 export type OutlineItem = Readonly<{

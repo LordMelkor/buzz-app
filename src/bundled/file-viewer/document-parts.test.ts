@@ -2,6 +2,7 @@ import { MAX_RENDER_CHARS, required } from "./markdown-limits";
 import { containerDefinitions } from "./markdown-container-definitions";
 import { fenceLine } from "./markdown-fences";
 import { describe, expect, it } from "vitest";
+import { rehypeFileMarkdown } from "./file-markdown";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -25,8 +26,10 @@ function rendered(
     .use(remarkGfm)
     .use(remarkPartHeadings(parts, index))
     .use(remarkRehype, { allowDangerousHtml: true })
-    .use(rehypePartFootnotes(parts, index));
-  return processor.runSync(processor.parse(parts.partSource(index))) as Root;
+    .use(rehypePartFootnotes(parts, index))
+    .use(rehypeFileMarkdown);
+  const source = parts.partSource(index);
+  return processor.runSync(processor.parse(source), { value: source }) as Root;
 }
 function elements(tree: Root): Element[] {
   const found: Element[] = [];
@@ -221,7 +224,7 @@ describe("bounded document parts", () => {
     expect(indexed.partFallback(lastIndex)).toBeUndefined();
   });
 
-  it("keeps CommonMark HTML suppression and removes synthetic context bytes", () => {
+  it("keeps CommonMark HTML suppression and hides comment continuations", () => {
     const text =
       "<div>\n" +
       "# hidden\n".repeat(2000) +
@@ -233,18 +236,233 @@ describe("bounded document parts", () => {
       "Visible",
       "End",
     ]);
-    for (let i = 1; i < indexed.parts.length; i++) {
-      const output = textOf(rendered(indexed, i));
-      const part = required(indexed.parts[i]);
-      const original = text.slice(part.start, part.end);
-      expect([...output.matchAll(/<div>/g)].length).toBe(
-        [...original.matchAll(/<div>/g)].length,
-      );
-      expect([...output.matchAll(/<!--\n/g)].length).toBe(
-        [...original.matchAll(/<!--\n/g)].length,
+    const outputs = indexed.parts.map((_, index) =>
+      textOf(rendered(indexed, index)),
+    );
+    expect(outputs.join("")).toContain("# hidden");
+    expect(outputs.join("")).not.toContain("# comment");
+    expect(outputs.join("")).not.toContain("<div>");
+    expect(outputs.join("")).toContain("Visible");
+    expect(outputs.join("")).toContain("End");
+  });
+
+  it("preserves raw table structure and attributes through line and token cuts", () => {
+    const text =
+      '<table id="inventory" align="center"><tbody>\n' +
+      Array.from(
+        { length: 700 },
+        (_, index) =>
+          `<tr><td colspan="2">row-${index}</td><td>value</td></tr>\n`,
+      ).join("") +
+      "</tbody></table>\n\n# End\n";
+    const indexed = indexDocument(text, "markdown");
+    const rows: string[] = [];
+    for (let part = 0; part < indexed.parts.length; part++) {
+      expect(indexed.partFallback(part)).toBeUndefined();
+      expect(
+        required(indexed.parts[part]).end - required(indexed.parts[part]).start,
+      ).toBeLessThanOrEqual(PART_CHARS);
+      const nodes = elements(rendered(indexed, part));
+      const table = nodes.find((node) => node.tagName === "table");
+      if (table) expect(table.properties.align).toBe("center");
+      rows.push(...nodes.filter((node) => node.tagName === "tr").map(textOf));
+      for (const cell of nodes.filter(
+        (node) => node.tagName === "td" && textOf(node).startsWith("row-"),
+      ))
+        expect(cell.properties.colSpan).toBe("2");
+    }
+    expect(rows.sort()).toEqual(
+      Array.from({ length: 700 }, (_, index) => `row-${index}value`).sort(),
+    );
+    expect(indexed.partOf("inventory")).toBe(0);
+    expect(
+      indexed.parts
+        .flatMap((_, part) => elements(rendered(indexed, part)))
+        .filter((node) => node.properties.id === "inventory"),
+    ).toHaveLength(1);
+
+    const inline = indexDocument(
+      '<table><tr><td id="long-cell">' +
+        "x".repeat(PART_CHARS * 2) +
+        "</td></tr></table>",
+      "markdown",
+    );
+    for (let part = 0; part < inline.parts.length; part++) {
+      expect(inline.partFallback(part)).toBeUndefined();
+      expect(
+        elements(rendered(inline, part)).some((node) => node.tagName === "td"),
+      ).toBe(true);
+    }
+    expect(
+      inline.parts.map((_, part) => textOf(rendered(inline, part))).join(""),
+    ).toBe("x".repeat(PART_CHARS * 2));
+  });
+
+  it("continues details and optional list items while letting Markdown resume after blanks", () => {
+    const text =
+      '<details id="more" open><summary>More</summary>\n\n' +
+      "paragraph with **bold**.\n\n".repeat(900) +
+      "</details>\n\n" +
+      '<ol reversed type="A">\n' +
+      Array.from({ length: 600 }, (_, index) => `<li>item-${index}\n`).join(
+        "",
+      ) +
+      "</ol>\n";
+    const indexed = indexDocument(text, "markdown");
+    const trees = indexed.parts.map((_, part) => rendered(indexed, part));
+    expect(
+      trees
+        .map(textOf)
+        .join("")
+        .match(/paragraph with bold\./g),
+    ).toHaveLength(900);
+    expect(
+      trees.flatMap(elements).filter((node) => node.tagName === "li"),
+    ).toHaveLength(600);
+    expect(
+      trees
+        .flatMap(elements)
+        .filter((node) => node.tagName === "li")
+        .map(textOf)
+        .join("")
+        .match(/item-\d+/g),
+    ).toHaveLength(600);
+    for (const list of trees
+      .flatMap(elements)
+      .filter((node) => node.tagName === "ol"))
+      expect(list.properties).toMatchObject({ reversed: true, type: "A" });
+    expect(
+      trees.flatMap(elements).filter((node) => node.properties.id === "more"),
+    ).toHaveLength(1);
+  });
+
+  it("routes kept raw IDs to their first actual owner and ignores literal or removed IDs", () => {
+    const text =
+      '# Earlier\n\nCall[^n].\n\n[^n]: note\n\n<div id="raw&amp;id">first</div>\n\n' +
+      '`<b id="code-span">literal</b>`\n\n\\<b id="escaped">literal\n\n' +
+      '    <b id="indented-code">literal</b>\n\n' +
+      '```html\n<div id="fenced">literal</div>\n```\n\n' +
+      '<!-- <b id="comment">hidden</b> -->\n\n<script id="script">hidden</script>\n\n' +
+      '<b name="named">name</b>\n\n' +
+      "paragraph\n\n".repeat(1500) +
+      '<div id="raw&amp;id">duplicate</div>\n\n<h2 id="raw-heading">Raw heading</h2>\n\n' +
+      '<div id="user-content-earlier">later duplicate</div>\n\n<div id="fn-n">raw target</div>\n\n# Later\n';
+    const indexed = indexDocument(text, "markdown");
+    expect(indexed.partOf("#raw%26id")).toBe(0);
+    expect(indexed.partOf("user-content-earlier")).toBe(0);
+    expect(indexed.partOf("raw-heading")).toBe(indexed.parts.length - 1);
+    expect(indexed.partOf("fn-n")).toBe(indexed.parts.length - 1);
+    expect(indexed.partOf("user-content-fn-n")).toBe(0);
+    expect(indexed.outline.map((item) => item.text)).toEqual([
+      "Earlier",
+      "Later",
+    ]);
+    for (const id of [
+      "code-span",
+      "escaped",
+      "indented-code",
+      "fenced",
+      "comment",
+      "script",
+      "named",
+    ])
+      expect(indexed.partOf(id), id).toBeUndefined();
+  });
+
+  it("uses literal context fallbacks for oversized HTML tokens and deep ancestors", () => {
+    const longToken = `<div title="${"x".repeat(PART_CHARS * 2)}">body</div>`;
+    const indexed = indexDocument(longToken, "markdown");
+    expect(
+      indexed.parts.some((_, part) => indexed.partFallback(part) === "context"),
+    ).toBe(true);
+    for (let part = 0; part < indexed.parts.length; part++) {
+      const range = required(indexed.parts[part]);
+      expect(textOf(rendered(indexed, part))).toContain(
+        longToken.slice(range.start, range.end),
       );
     }
+    const deep = indexDocument(
+      "<div>".repeat(101) + "text".repeat(PART_CHARS) + "</div>".repeat(101),
+      "markdown",
+    );
+    expect(deep.partFallback(0)).toBe("too-deep");
+    expect(textOf(rendered(deep, 0))).toContain("<div>");
   });
+
+  it.each([
+    ["PI", "<?target", "?>", false],
+    ["CDATA", "<![CDATA[", "]]>", false],
+    ["declaration", "<!DOCTYPE", ">", false],
+    ["visible PI", "<?target >", "?>", true],
+    ["visible CDATA", "<![CDATA[>", "]]>", true],
+  ] as const)(
+    "preserves explicit %s HTML through part boundaries",
+    (_kind, opening, closing, visible) => {
+      const payload = "# hidden\n\n~~~\n1. literal item\n\n".repeat(600);
+      const indexed = indexDocument(
+        `${opening}\n${payload}${closing}\n\n# After\n`,
+        "markdown",
+      );
+      expect(indexed.outline.map((item) => item.text)).toEqual(["After"]);
+      const trees = indexed.parts.map((_, part) => {
+        expect(indexed.partFallback(part)).toBeUndefined();
+        return rendered(indexed, part);
+      });
+      expect(
+        trees
+          .flatMap(elements)
+          .filter((node) => ["li", "pre"].includes(node.tagName)),
+      ).toHaveLength(0);
+      const output = trees.map(textOf).join("");
+      if (visible) expect(output).toContain(payload);
+      else expect(output).not.toContain("literal item");
+      expect(output).toContain("After");
+    },
+  );
+
+  it.each([
+    ["quote", "> ", "> ", "blockquote", "div"],
+    ["quote pre", "> ", "> ", "blockquote", "pre"],
+    ["list", "- ", "  ", "li", "div"],
+    ["list pre", "- ", "  ", "li", "pre"],
+  ] as const)(
+    "keeps raw HTML inside its reconstructed %s owner",
+    (_label, opening, continuation, owner, tag) => {
+      for (const midline of [false, true]) {
+        const payload = midline
+          ? `${continuation}${"token ".repeat(6000)}\n`
+          : `${continuation}token\n`.repeat(4000);
+        const text = `${opening}<${tag}>\n${payload}${continuation}</${tag}>\n\n# End`;
+        const indexed = indexDocument(text, "markdown");
+        const outputs: string[] = [];
+        for (let part = 0; part < indexed.parts.length; part++) {
+          expect(indexed.partFallback(part)).toBeUndefined();
+          const tree = rendered(indexed, part);
+          const output = textOf(tree);
+          outputs.push(output);
+          expect(output).not.toMatch(/[>\uE000]/);
+          if (output.includes("token")) {
+            const container = elements(tree).find(
+              (node) => node.tagName === owner,
+            );
+            expect(
+              container,
+              `${_label}, midline=${midline}, part=${part}`,
+            ).toBeDefined();
+            expect(
+              elements({ type: "root", children: [required(container)] }).some(
+                (node) => node.tagName === tag,
+              ),
+            ).toBe(true);
+            expect(textOf(required(container))).toContain("token");
+          }
+        }
+        expect(outputs.join("").replace(/\s/g, "")).toBe(
+          `${"token".repeat(midline ? 6000 : 4000)}End`,
+        );
+      }
+    },
+  );
 
   it("treats frontmatter, math and emoji with the installed SafeMarkdown semantics", () => {
     const indexed = indexDocument(
@@ -296,7 +514,7 @@ describe("bounded document parts", () => {
     const caller = indexed.parts.findIndex((part) =>
       text.slice(part.start, part.end).includes("Call[^n]"),
     );
-    expect(textOf(rendered(indexed, caller))).toContain("Literal <b>HTML</b>.");
+    expect(textOf(rendered(indexed, caller))).toContain("Literal HTML.");
     for (let at = 1; at < indexed.parts.length; at++)
       expect(
         elements(rendered(indexed, at))
@@ -437,13 +655,14 @@ it("rebuilds the worker index with distant references and whole-file anchors", (
   const source =
     "[site] Call[^n].\n\n" +
     "paragraph\n\n".repeat(1800) +
-    "# Late\n\n[site]: https://example.org/site\n[^n]: A distant note.\n";
+    '<span id="raw-target">Raw</span>\n\n# Late\n\n[site]: https://example.org/site\n[^n]: A distant note.\n';
   const data = structuredClone(indexData(source, "markdown"));
   const parts = documentParts(source, data);
   expect(parts.outline).toEqual([
     { depth: 1, text: "Late", id: "late", part: parts.parts.length - 1 },
   ]);
   expect(parts.partOf("#late")).toBe(parts.parts.length - 1);
+  expect(parts.partOf("#raw-target")).toBe(parts.parts.length - 1);
   const first = elements(rendered(parts, 0));
   expect(
     first

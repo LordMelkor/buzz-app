@@ -54,6 +54,8 @@ type Opened =
   | { state: "ready"; office: Office };
 
 const FAILURES = {
+  "not-text":
+    "This file could not be read as text. Download it to open it in another app.",
   password:
     "This file is protected with a password. Download it to open it with its password.",
   "too-large":
