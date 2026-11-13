@@ -8479,6 +8479,47 @@ describe("a turn closing or reloading the app stopped", () => {
     expect(third.run).not.toHaveBeenCalled();
   });
 
+  it("previews its saved turns with Resume's fresh read, changing nothing", async () => {
+    const asked = mention();
+    const second = await setup({
+      storage: await stopped(asked),
+      identities: [echo],
+      resumes: true,
+      history: [asked],
+    });
+    await settle();
+    const [agent] = second.service.snapshot().interrupted;
+    if (!agent) throw new Error("Echo is not interrupted");
+    expect(second.service.interruptedTurns(agent)).toMatchObject([
+      { id: asked.id, channelId: channel },
+    ]);
+    const read = vi.mocked(second.session.readRemote);
+    const original = read.getMockImplementation() as NonNullable<
+      ReturnType<typeof read.getMockImplementation>
+    >;
+    // An event the relay did not prove is never previewed.
+    const unproven = { ...asked, id: "f".repeat(64) } as RelayEvent;
+    read.mockImplementationOnce(async (filters, options) => [
+      ...(await original(filters, options)),
+      unproven,
+    ]);
+    const events = await second.service.readInterrupted(
+      agent,
+      new AbortController().signal,
+    );
+    expect(events.map((event) => event.id)).toEqual([asked.id]);
+    expect(read).toHaveBeenLastCalledWith(
+      [{ ids: [asked.id], limit: 1 }],
+      expect.objectContaining({ fresh: true }),
+    );
+    await settle();
+    expect(second.run).not.toHaveBeenCalled();
+    expect(names(second.service.snapshot().interrupted)).toEqual(["Echo"]);
+    expect(readInterrupted(second.storage)).toEqual({
+      [bot]: { [asked.id]: channel },
+    });
+  });
+
   it("is forgotten when the owner does not resume it", async () => {
     const asked = mention();
     const second = await setup({

@@ -962,6 +962,12 @@ After restart, saved messages stay paused. **Send** sends a selected row, and
 and unpauses saved follow-ups in those chats, sending them in order as turns finish.
 **Don’t resume** leaves them paused. Chats outside that recovery stay paused too.
 
+Before choosing, open the notice's mention count to see where each interrupted
+agent was working: the channel, whether the mention is in a thread, and its text.
+Mentions in one conversation share a row. A mention Buzz cannot find shows
+**Details unavailable**; Resume reads it again and may still find it. If the
+details could not load, close and reopen them to try again.
+
 If another window may be sending a message, check the conversation before sending
 again. Remove is unavailable once delivery owns the message; use its delivery
 recovery controls instead. A save or recovery error keeps the draft or queued row

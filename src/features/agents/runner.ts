@@ -718,6 +718,11 @@ export class AgentRunners {
       Object.keys(this.left).filter((key) => !this.resuming.has(key)),
     );
   }
+  /** The mentions the app left `key` working on, each with its channel or
+   * "" without one. */
+  interruptedTurns(key: AgentKey): Readonly<Record<string, string>> {
+    return this.left[key] ?? {};
+  }
   /** Gives each of `keys` again the turns it was left working on, once
    * its community is connected. */
   resumeInterrupted(keys: readonly AgentKey[]) {

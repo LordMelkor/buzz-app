@@ -434,6 +434,8 @@ function setup(
     storage: localStore(),
     resumeInterrupted: vi.fn(),
     dismissInterrupted: vi.fn(),
+    interruptedTurns: () => [],
+    readInterrupted: async () => [],
     wake: vi.fn(),
     memberships: vi.fn(
       (_pubkey: string): ReturnType<Agents["memberships"]> => [],

@@ -837,7 +837,11 @@ those agents as `interrupted` and `InterruptedNotice` asks the owner: **Resume**
 reads each mention again and gives it to `run` marked `resumed`, which tells the
 agent to carry on in its saved session; **Don’t resume** forgets them. Either
 answer covers only the agents the notice names, and only Resume gives those
-mentions again: a replay or live delivery of one never does. A turn
+mentions again: a replay or live delivery of one never does. Opening the
+notice's mention count reads each agent's mentions once, the way Resume does
+(`readInterrupted`), and lists them by channel and thread root; one that read
+does not return shows "Details unavailable", and a read that fails is read again
+when the count is next opened. It is a preview: Resume reads them again. A turn
 stays saved until its resumed turn settles, so closing again first loses none.
 goose sessions end with the app, so a resumed goose turn opens a new one and is
 shown the mention's thread, including what it already posted there.
