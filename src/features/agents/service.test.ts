@@ -1959,6 +1959,23 @@ describe("a plugin's wake", () => {
     }
   });
 
+  it("wakes at a channel's top level when asked", async () => {
+    const { service, run, plugin, native } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    await held(native);
+    plugin.agents.wake(bot, { channel, topLevel: true, text: "New work" });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    const { trigger } = run.mock.calls[0]?.[0] ?? {};
+    expect(trigger).toMatchObject({
+      type: "plugin",
+      plugin: "example",
+      channel,
+      topLevel: true,
+      text: "New work",
+    });
+    expect(trigger && "root" in trigger).toBe(false);
+  });
+
   it("never publishes its own id, even when its turn fails", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { service, run, plugin, native } = await setup();
@@ -2007,6 +2024,9 @@ describe("a plugin's wake", () => {
       expect(() =>
         plugin.agents.wake(bot, { channel, root: bad, text: "hi" }),
       ).toThrow(/64-hex event id/);
+    expect(() =>
+      plugin.agents.wake(bot, { channel, root, topLevel: true, text: "hi" }),
+    ).toThrow(/not both/);
     expect(() => plugin.agents.wake(sibling, { channel, text: "hi" })).toThrow(
       /does not run that agent/,
     );

@@ -1046,10 +1046,11 @@ plugin's folder can replace that plugin's code, though not its host access,
 without a new review. Plugin code is trusted and unsandboxed, so only load folders
 that the agents you run may change.
 
-`ctx.agents.wake(pubkey, { channel, root?, text })` wakes an agent this copy of
+`ctx.agents.wake(pubkey, { channel, root?, topLevel?, text })` wakes an agent this copy of
 the app runs in one of its conversations, as a mention there would, with no
 message. `root` is the thread's root event id (64 hex); leave it out for a Solo
-chat. The agent is told
+chat. `topLevel: true`, without `root`, wakes it at the top level of a channel
+that is not a Solo chat, for example to start a new thread there. The agent is told
 the text comes from the plugin, not its owner, and is data, so quote what others
 wrote (comments, check output) rather than phrasing it as instructions. It
 throws when this copy does not run the agent or its queue is full. Claude, Codex and Goose accept plugin wakes; Pi ignores them. Attention delivery uses a separate internal `attention` trigger in the Interest lane, accepted by all four harnesses. Its Interest instructions retain their instruction framing, while observed messages remain data. A channel-only Attention address supplies a default posting destination and allows explicit thread replies outside Solo chats.

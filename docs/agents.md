@@ -534,9 +534,10 @@ one-off process; Codex: an ephemeral thread). Its signal aborts
 `STANDALONE_DEADLINE_MS` after it starts, including any wait for the harness to
 be ready. The prompt text lives in `attention-prompt.ts`.
 
-A plugin wakes an agent with `ctx.agents.wake(pubkey, { channel, root?, text })`,
+A plugin wakes an agent with `ctx.agents.wake(pubkey, { channel, root?, topLevel?, text })`,
 in the conversation of that channel and thread, or of a Solo chat when it leaves
-out `root`. It throws when this copy of the app does not run the agent or its
+out `root`. `topLevel: true` wakes it at the top level of any other channel, the
+conversation a whole-channel watch wakes it in, so it can start a thread there. It throws when this copy of the app does not run the agent or its
 mention lane is full. The wake is a `plugin` trigger in the mention lane, with
 the mention's rate limit, and is dropped like a queued mention when the agent
 stops running here. Nothing goes to the relay. Claude, Codex, goose and Pi take

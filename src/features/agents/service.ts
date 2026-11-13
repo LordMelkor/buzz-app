@@ -474,10 +474,13 @@ export type SessionUsage = Readonly<{
   observations: readonly UsageObservation[];
 }>;
 /** A conversation to wake an agent in, and what to tell it there. `root` is
- * the thread's root event id; leave it out for a Solo chat. */
+ * the thread's root event id; leave it out for a Solo chat. `topLevel` wakes
+ * it at the top level of a channel that is not a Solo chat, as a watch on the
+ * whole channel does; without it, such a wake has no conversation. */
 export type AgentWake = Readonly<{
   channel: string;
   root?: string;
+  topLevel?: true;
   text: string;
 }>;
 /** The conversation a self-handoff came from: no channel for a watch's or
@@ -3423,7 +3426,7 @@ export class AgentsService extends Service implements Agents {
   }
   private wakeIn(
     key: AgentKey,
-    { channel, root, text }: AgentWake,
+    { channel, root, topLevel, text }: AgentWake,
     source: Readonly<{ plugin: string } | { from: HandoffSource }>,
   ) {
     if (!channel || !text.trim())
@@ -3432,11 +3435,14 @@ export class AgentsService extends Service implements Agents {
     // them answering at the wake's own id.
     if (root !== undefined && !/^[0-9a-f]{64}$/i.test(root))
       throw new Error("A wake's root must be the thread's 64-hex event id");
+    if (topLevel !== undefined && (topLevel !== true || root !== undefined))
+      throw new Error("A wake is in a thread or at the top level, not both");
     this.runners.wakeIn(key, {
       type: "plugin",
       ...source,
       channel,
       ...(root ? { root: root.toLowerCase() } : {}),
+      ...(topLevel ? { topLevel } : {}),
       text,
       id: bytesToHex(crypto.getRandomValues(new Uint8Array(32))),
       at: Date.now(),
