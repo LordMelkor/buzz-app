@@ -87,6 +87,16 @@ export function createPluginManager(
     () =>
       configuration.status === "loading" ||
       (configuration.status === "recovery" && !configuration.canReset),
+    // A catalog error keeps it from starting, but it still controls MCP.
+    () =>
+      configuration.status === "ready" &&
+      configuration.catalog.plugins.some(
+        (plugin) =>
+          plugin.enabled &&
+          !!plugin.error &&
+          !!plugin.manifest.host?.agentMcp &&
+          !builtInIds.has(plugin.manifest.id),
+      ),
   );
   let busy = false;
   let catalogPending = false;

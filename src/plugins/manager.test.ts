@@ -167,6 +167,18 @@ it("reports an enabled agent MCP plugin that is not running, until it runs or is
   await vi.advanceTimersByTimeAsync(0);
   expect(unavailable()).toBe(false);
 });
+it("reports an enabled agent MCP plugin that a catalog error keeps from starting", async () => {
+  const catalog = ready(true);
+  if (catalog.status !== "ready") throw new Error("not ready");
+  const [plugin] = catalog.catalog.plugins;
+  if (!plugin) throw new Error("no plugin");
+  plugin.manifest = { ...plugin.manifest, host: { agentMcp: true } };
+  plugin.error = "Its files are missing";
+  const { root } = harness({ getCatalog: vi.fn(async () => catalog) });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(root.pluginStatus.agentMcpUnavailable?.()).toBe(true);
+  expect(root.pluginStatus.settled?.()).toBe(true);
+});
 it("does not report a plugin that does not declare agent MCP access", async () => {
   const { root } = harness({}, true);
   await vi.advanceTimersByTimeAsync(0);

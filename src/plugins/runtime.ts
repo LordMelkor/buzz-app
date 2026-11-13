@@ -42,6 +42,9 @@ export class PluginRuntime {
     timeoutMs = 10_000,
     /** Whether the manager is still reading which plugins to run. */
     configuring = () => false,
+    /** Whether an enabled plugin that may choose harness MCP servers can't
+     * start, so it never reaches this adapter. */
+    blocked = () => false,
   ) {
     this.root = root;
     this.load = load;
@@ -49,6 +52,7 @@ export class PluginRuntime {
       isActive: this.isActive,
       subscribe: this.subscribe,
       agentMcpUnavailable: () =>
+        blocked() ||
         [...this.entries.values()].some(
           ({ plugin, cancelled }) =>
             !cancelled &&
