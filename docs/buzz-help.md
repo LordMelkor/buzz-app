@@ -874,6 +874,9 @@ and are asked to sign in again in Buzz.
   **Open Activity** opens the page. The card's **Unread only** switch is
   separate from the Activity page's filters and hides reactions when on. The preview is not shown on touch
   devices or while the Activity page is open.
+- **Live message alerts** still follow your notification settings when a channel
+  read loads the message before its live delivery arrives. Loading history alone
+  does not send alerts.
 - **Sidebar width**: drag the sidebar's right edge, or focus its resize handle
   and use the Left/Right arrow keys. Double-click the handle to reset the width.
   Messages and plugin pages share the saved width within the same community

@@ -3710,8 +3710,7 @@ export function createRelaySession(
                   event.pubkey !== transport.viewer &&
                   destinations.length === 1 &&
                   destinations[0]?.[1] === provenance.channelId &&
-                  (recent.peek(event.id)?.incoming === "replay" ||
-                    (!recent.peek(event.id) && !unread.event(event.id))) &&
+                  recent.peek(event.id)?.incoming !== "live" &&
                   !rawLocal().some((item) => item.event.id === event.id)
                 );
               })

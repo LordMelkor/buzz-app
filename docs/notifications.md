@@ -85,6 +85,9 @@ checks, not that an OS banner was displayed or read.
   complete snapshot); local-only hosts wait only for local storage. Failed or
   cancelled observation does not release alerts. Visibility is checked after UI
   presentation, without publishing read intent.
+- A fresh live arrival can still alert when a channel read or replay cached the
+  message first. Content caching does not count as live alert delivery; duplicate
+  live copies do not produce additional alerts.
 - Channel Mute/Unmute uses the session's confirmed, encrypted `channel-mutes`
   preference, independently of whether Channels is mounted. Muted channels suppress
   DM and participating-thread alerts; explicit mentions still pass the channel-mute
