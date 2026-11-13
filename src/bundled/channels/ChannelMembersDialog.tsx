@@ -5,6 +5,7 @@ import {
   withVerifiedNames,
 } from "../../features/profiles/useVerifiedNames";
 import { useProfileGeneration } from "../../features/relay/react";
+import { agentUnavailable } from "../../features/agents/choices";
 import { archiveHides } from "../../features/relay/identity-archives";
 import { Button as BaseButton } from "@base-ui/react/button";
 import referenceStyles from "../../shared/InlineReference.module.css";
@@ -1367,7 +1368,7 @@ export function ChannelMembersDialog({
   const available = [...candidates.values()].filter(
     (person) =>
       !members.has(person.pubkey) &&
-      !archiveHides(session.archives, person.pubkey, session.viewer) &&
+      !agentUnavailable(session, person.pubkey) &&
       // A Solo chat offers only the agents its owner can add directly.
       !(
         solo &&
@@ -1472,7 +1473,7 @@ export function ChannelMembersDialog({
   if (
     selection &&
     (selection.expectedRole !== "absent" ||
-      !archiveHides(session.archives, selection.pubkey, session.viewer)) &&
+      !agentUnavailable(session, selection.pubkey)) &&
     administration.status === "ready" &&
     administration.operation?.status !== "pending" &&
     administration.operation?.status !== "uncertain"

@@ -10,7 +10,12 @@ import {
 import type { LocalAgents } from "../agents/local";
 import type { GitRead } from "../repos/git";
 import { repoDestinations } from "../repos/destinations";
-import { createAgentChoices, templateAgentChoices } from "../agents/choices";
+import {
+  agentUnavailable,
+  createAgentChoices,
+  deletingAgent,
+  templateAgentChoices,
+} from "../agents/choices";
 import { parseLineup } from "../channel-templates/model";
 import { createChannelKit } from "../channel-templates/capability";
 import {
@@ -54,7 +59,7 @@ import {
   readRelayLibrary,
 } from "../agents/relay-library";
 import { createAgentLibrary } from "../agents/library";
-import { archiveHides, createIdentityArchives } from "./identity-archives";
+import { createIdentityArchives } from "./identity-archives";
 import {
   createReadState,
   browserReadPublisherLock,
@@ -329,6 +334,7 @@ export function createRelaySession(
             async sign(template, signal) {
               validateChannelWrite(template);
               validateMentionEvent(template);
+              validateNewRecipients(template);
               validateCanvasWrite(template);
               workflows.validate({
                 ...template,
@@ -1643,6 +1649,21 @@ export function createRelaySession(
       return;
     throw new Error("You have read-only access to this channel.");
   }
+  /** Only a new publication is signed, so a retry that confirms an event
+   * already published is never refused here. Admission owns the archive half
+   * of the rule: bringing an agent back takes it out of its archive. */
+  function validateNewRecipients(event: Pick<EventData, "kind" | "tags">) {
+    if (event.kind !== 9) return;
+    const choices = agentChoices.snapshot();
+    if (
+      event.tags.some(
+        ([name, key]) => name === "p" && deletingAgent(choices, key ?? ""),
+      )
+    )
+      throw new Error(
+        "A selected agent is being deleted. Remove it before sending.",
+      );
+  }
   function validateMentionEvent(event: Pick<EventData, "kind" | "tags">) {
     if (event.kind !== 9) return;
     const recipients = event.tags.filter(([name]) => name === "p");
@@ -1794,7 +1815,14 @@ export function createRelaySession(
       selectable: () =>
         agentChoices.snapshot().selectable.map((agent) => agent.pubkey),
       archived: (pubkey) =>
-        archiveHides(archives.queries, pubkey, transport?.viewer),
+        agentUnavailable(
+          {
+            agentChoices,
+            archives: archives.queries,
+            viewer: transport?.viewer,
+          },
+          pubkey,
+        ),
     },
     transport?.relayAuthor,
     { read: (filters, settings) => readVerified(filters, settings, false) },

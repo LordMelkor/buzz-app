@@ -1179,8 +1179,21 @@ helpers in `features/agents/relay-removal.ts`) then runs:
    the agent. The relay refuses membership changes in an archived channel, so its
    roster keeps the deleted agent.
 2. A fresh archive read runs; unless it already lists the identity, it is archived
-   through the request path above when a consent path exists. An agent that never
-   published an owner-attested profile has nothing to hide and is not archived.
+   through the request path above, and the relay must confirm it. When the agent's
+   profile carries no owner proof usable now (none, or one outside its time bounds)
+   and the viewer is not relay admin, the owner issues a fresh NIP-OA proof for the
+   request; only an agent whose saved owner is the viewer gets one. The relay
+   archives for an ordinary owner only when the request's proof and the target's
+   latest profile both name that owner, so when the profile has no matching proof
+   the app first force-republishes the agent's own profile
+   (`AgentsNative.publishProfile(member, true)`): the app's standard profile —
+   `name`, `bot`, `picture` and `about` — with the saved owner proof. It replaces
+   any other fields or tags on the relay's latest profile; that is intended, since
+   the agent is being deleted and the app owns its profile. A re-read must show
+   the live profile now names the viewer before the archive request, carrying the
+   issued proof, goes. A connection that
+   can't write archives can't finish Delete. A community that advertises no
+   archive authority skips this step: nothing is hidden by an archive there.
 3. The owner's agent record is deleted.
 4. Only after every step is confirmed is the key erased and the row dropped.
 
@@ -1188,7 +1201,28 @@ If a step fails or the app quits partway, nothing is erased and nothing retries 
 the background. The agent stays listed and stopped, including after a relaunch, with
 a note in its settings that Delete didn't finish; pressing Delete again reruns the
 whole cleanup. Rows deleted by older builds, whose key is already erased, only have
-the owner's agent record deleted and the row dropped.
+the owner's agent record deleted and the row dropped. Delete, that cleanup and
+Forget each end by rereading the community's agent choices.
+
+Every forward-looking route asks one rule, `agentUnavailable` in
+`features/agents/choices.ts`, by key: the identity is archived here
+(`archiveHides`) or its Delete started. Profile flags such as `is_agent` don't
+decide it. Mention admission, the composer's send, every new kind 9 signed by the
+session, New message (suggestions, selection, selected chips, shown as
+unavailable, and send), Forward, Command-K People and its new-DM action, stream
+member search and additions, and template lineups all ask it; bringing back an
+owner's agent from another community lifts only the archive half. Message history,
+author search and the Agents page's recovery view still read `identities`. An
+event signed before the Delete started is still confirmed on retry.
+
+A hosted agent is archived before its provider is asked to remove it, which can't
+be undone. If the archive isn't confirmed, the provider is not called and the agent
+is as it was. If the provider then fails, the agent stays archived and listed, and
+may still be running; Delete again finds it archived and asks the provider again.
+Its key is its provider's, so a hosted agent whose profile names no owner can't be
+archived by an ordinary owner: Delete stops unfinished and says so. Where the
+community advertises no archive authority, the archive is skipped, and a provider
+failure says the agent wasn't archived.
 
 An agent in several communities leaves each of them this way, one at a time,
 and its key is erased once none is left. Delete marks every row `deleting` with

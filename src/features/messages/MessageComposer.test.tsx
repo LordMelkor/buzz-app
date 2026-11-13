@@ -10974,7 +10974,31 @@ it("rejects a known archived recipient at send entry without clearing the draft"
   expect(h.input()).toHaveValue(`@${first.name} `);
   expect(
     screen.getByText(
-      "A selected recipient is archived. Remove it before sending.",
+      "A selected recipient is archived or being deleted. Remove it before sending.",
+    ),
+  ).toBeVisible();
+});
+
+it("refuses a recipient selected before its Delete started, at send", () => {
+  const viewer = localAgent.owner;
+  const control = localAgentsFixture();
+  const agent = { ...localAgent, ...first };
+  control.set({ agents: [agent] });
+  const h = mount(
+    { scope: `https://relay.example.test:${viewer}` },
+    control,
+    viewer,
+  );
+  act(() => {
+    expect(h.commands().insertMention(first)).toBe(true);
+  });
+  act(() => control.set({ agents: [{ ...agent, deleting: true }] }));
+  h.submit();
+  expect(h.messages.send).not.toHaveBeenCalled();
+  expect(h.input()).toHaveValue(`@${first.name} `);
+  expect(
+    screen.getByText(
+      "A selected recipient is archived or being deleted. Remove it before sending.",
     ),
   ).toBeVisible();
 });
@@ -13374,7 +13398,7 @@ it("an archived agent in the pill blocks the send and asks for another agent", (
   expect(h.input()).toHaveValue("hello");
   expect(
     screen.getByText(
-      "An agent you're sending to is archived. Choose another agent to send.",
+      "An agent you're sending to is archived or being deleted. Choose another agent to send.",
     ),
   ).toBeVisible();
 });

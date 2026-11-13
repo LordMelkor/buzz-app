@@ -36,7 +36,6 @@ import {
 import { DraftMentionRoster } from "./draft-mention-roster";
 import {
   allowsOutsideMentions,
-  archivedMention,
   mentionAdmission,
   pastedMentionRecipient,
 } from "./mention-admission";
@@ -76,6 +75,7 @@ import { useEditWithUpArrowPreference } from "./edit-key-preference";
 import { matches } from "../shortcuts/bindings";
 import { isApplePlatform } from "../shortcuts/format";
 import { useChosenAgent } from "../solo/default-agent";
+import { agentUnavailable } from "../agents/choices";
 import { useAgentChoices } from "../agents/use-choices";
 import {
   soloAgentsOnly,
@@ -2789,14 +2789,14 @@ function Composer({
         (agents?.joinable() ?? []).map((agent) => agent.pubkey),
       );
       if (
-        capturedRecipients.some(
-          (p) => archivedMention(session, p.pubkey) && !bringable.has(p.pubkey),
+        capturedRecipients.some((p) =>
+          agentUnavailable(session, p.pubkey, bringable),
         )
       )
         throw new Error(
           routing && !captured.recipients.length
-            ? "An agent you're sending to is archived. Choose another agent to send."
-            : "A selected recipient is archived. Remove it before sending.",
+            ? "An agent you're sending to is archived or being deleted. Choose another agent to send."
+            : "A selected recipient is archived or being deleted. Remove it before sending.",
         );
       if (
         ownSoloConversation &&

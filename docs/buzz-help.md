@@ -1086,6 +1086,19 @@ available rather than silently discarding it.
   Bestie whose provider holds its instructions (Builderlab does) shows a
   **Bestie** tab where **Remembers you** edits them through the provider;
   check-ins stay unavailable for hosted agents.
+- **Delete** on an agent's page stops it, takes it out of its channels, archives
+  it in its community so nothing offers it again (pickers, mentions, New
+  message, Forward, Search, member search, templates), then deletes it. Its key
+  stays until the archive is confirmed. If its profile doesn't name you as its
+  owner, Buzz republishes its profile naming you as its owner first. If any step fails,
+  Delete says it didn't finish: the agent stays stopped and keeps its key, and
+  **Delete** again finishes it. For a hosted agent, Buzz archives it before its
+  provider removes it; if the archive fails, nothing changes. If the provider
+  then fails, the agent may still be running: delete it again. A hosted agent
+  whose profile doesn't name you as its owner can't be archived, so Delete says
+  why and stops. In a community that advertises no archive authority, Delete
+  skips the archive. **Forget** drops an agent that can't reach its community
+  from this device only; it may stay in that community's channels.
 - **Settings → Agent setup → Harness defaults** is where supported agent types
   offer installation, sign-in, and default-model controls. Available controls
   depend on the type. Do not assume a provider is configured or signed in.
