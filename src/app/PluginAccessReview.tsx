@@ -86,7 +86,9 @@ function hostDeclarations(
               <p className="m-0">
                 Sees each agent's MCP server names, state and tools, and the
                 arguments of an MCP tool call before it runs. Never receives a
-                server's command, address or sign-in.
+                server's command, address or sign-in. Only one plugin controls
+                this at a time: the first one to start. When it stops, another
+                plugin with this access can take over.
               </p>
             ),
           },
