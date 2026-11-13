@@ -341,9 +341,12 @@ function setup({
       });
     }
     key = scoped.key;
-    section = (scoped.type as (props: typeof scoped.props) => Section)(
-      scoped.props,
-    );
+    // The feed renders inside the list's message context menu host.
+    section = (
+      scoped.type as (
+        props: typeof scoped.props,
+      ) => ReactElement<{ children: Section }>
+    )(scoped.props).props.children;
     section.props.ref.current = element;
     const edge = section.props.children[0] as ReactElement<{
       ref: { current: unknown };

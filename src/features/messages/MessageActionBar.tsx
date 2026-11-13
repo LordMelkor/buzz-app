@@ -1,8 +1,11 @@
 import { useConversationPresentation } from "../conversation/ConversationPresentation";
 import {
+  cloneElement,
   createContext,
   useContext,
+  useEffect,
   useLayoutEffect,
+  useReducer,
   useRef,
   useState,
   type ReactNode,
@@ -80,8 +83,76 @@ type Props = {
   overflowItems?: ReactNode;
 };
 
+// A Base UI context menu on every message row made list renders and scrolling
+// measurably slower, so a list hosts one for its toolbar rows. Each registers
+// its actions by message ID, unique within the list; the menu opens with the
+// row under the press.
+type RowMenus = { rows: Map<string, Props>; changed: (id: string) => void };
+const RowMenus = createContext<RowMenus | undefined>(undefined);
+
+/** The context menu of the toolbar message rows rendered inside `children`. */
+export function MessageContextMenus({ children }: { children: ReactElement }) {
+  const [target, setTarget] = useState<string>();
+  const [, refresh] = useReducer((count: number) => count + 1, 0);
+  const shown = useRef(target);
+  useLayoutEffect(() => {
+    shown.current = target;
+  });
+  // The open menu follows its row's actions and closes when the row goes.
+  const [menus] = useState<RowMenus>(() => ({
+    rows: new Map(),
+    changed: (id) => {
+      if (id === shown.current) refresh();
+    },
+  }));
+  const { rows } = menus;
+  const rowAt = (element: Element) => {
+    for (
+      let row = element.closest<HTMLElement>("[data-message-id]");
+      row;
+      row = row.parentElement?.closest<HTMLElement>("[data-message-id]") ?? null
+    ) {
+      const id = row.dataset.messageId;
+      if (id && rows.has(id)) return id;
+    }
+  };
+  return (
+    <RowMenus value={menus}>
+      <MessageActionBarControls
+        copyText={() => ""}
+        {...(target && rows.get(target))}
+        withToolbar
+        host={{
+          select: (element) => {
+            const id = rowAt(element);
+            if (id) setTarget(id);
+            return !!id;
+          },
+          release: () => setTarget(undefined),
+        }}
+      >
+        {children}
+      </MessageActionBarControls>
+    </RowMenus>
+  );
+}
+
 export function MessageActionBar(props: Props) {
   const active = useConversationPresentation();
+  const menus = useContext(RowMenus);
+  const hosted =
+    menus && props.children && props.withToolbar ? props.messageId : undefined;
+  useEffect(() => {
+    if (!menus || !hosted) return;
+    menus.rows.set(hosted, props);
+    menus.changed(hosted);
+    return () => {
+      if (menus.rows.get(hosted) !== props) return;
+      menus.rows.delete(hosted);
+      menus.changed(hosted);
+    };
+  }, [menus, hosted, props]);
+  if (hosted) return props.children;
   // A target keeps its tree while hidden, so its content is not remounted.
   return props.children ? (
     <MessageActionBarControls {...props} />
@@ -122,11 +193,15 @@ function MessageActionBarControls({
   messageId,
   menuTriggerRef,
   rowRef,
-}: Props) {
+  host,
+}: Props & {
+  /** A list's menu: selects the row under a press and releases it on close. */
+  host?: { select: (element: Element) => boolean; release: () => void };
+}) {
   const active = useConversationPresentation();
   const [open, setOpen] = useState(false);
-  // A hidden conversation retires its open context menu.
-  if (open && !active) setOpen(false);
+  // A hidden conversation, or a list's removed row, retires its open menu.
+  if (open && (!active || (host && !messageId))) setOpen(false);
   const barRef = useRef<HTMLDivElement>(null);
   const slotRef = useRef<HTMLDivElement>(null);
   const floating = useFloatingActionBar(
@@ -139,6 +214,11 @@ function MessageActionBarControls({
   const [notice, setNotice] = useState<{ text: string; error: boolean }>();
   const busy = useRef(false);
   const afterClose = useRef<(() => void) | undefined>(undefined);
+  // A list's removed row also drops the item it queued for after close.
+  const removed = !!host && !messageId;
+  useLayoutEffect(() => {
+    if (removed) afterClose.current = undefined;
+  }, [removed]);
   const live = useRef(true);
   useLayoutEffect(() => {
     live.current = true;
@@ -282,6 +362,7 @@ function MessageActionBarControls({
   );
   const closed = (opened: boolean) => {
     if (!opened) {
+      host?.release();
       const action = afterClose.current;
       afterClose.current = undefined;
       action?.();
@@ -294,13 +375,28 @@ function MessageActionBarControls({
           open={open}
           disabled={!active}
           onOpenChange={(next) => {
-            if (next) setHandingOffFocus(false);
+            if (next) {
+              setHandingOffFocus(false);
+              // A reopen cancels the closing menu's completion, and its item.
+              afterClose.current = undefined;
+            }
             setOpen(next);
           }}
           onOpenChangeComplete={closed}
         >
           <ContextMenuTrigger
-            render={children}
+            render={
+              // A list's popup stays in the list's tree, so its focus and key
+              // events reach the list as a row's did.
+              host
+                ? cloneElement(
+                    children as ReactElement<{ children?: ReactNode }>,
+                    undefined,
+                    (children.props as { children?: ReactNode }).children,
+                    popup,
+                  )
+                : children
+            }
             onPointerDown={(event) => {
               selectedAtPress.current = selectionHolds(event.nativeEvent);
             }}
@@ -315,7 +411,10 @@ function MessageActionBarControls({
                 event.preventBaseUIHandler();
                 return;
               }
-              if (keepsNativeMenu(event.target, selected)) {
+              if (
+                keepsNativeMenu(event.target, selected) ||
+                (host && !host.select(event.target as Element))
+              ) {
                 event.preventBaseUIHandler();
                 // Base UI's document listener would cancel the native menu.
                 event.stopPropagation();
@@ -352,6 +451,7 @@ function MessageActionBarControls({
                 event.key === "ContextMenu" ||
                 (event.shiftKey && event.key === "F10")
               ) {
+                if (host && !host.select(event.target as Element)) return;
                 event.preventDefault();
                 contextFocus.current = event.target as HTMLElement;
                 setContextAnchor(contextFocus.current);
@@ -360,7 +460,7 @@ function MessageActionBarControls({
               }
             }}
           />
-          {popup}
+          {!host && popup}
         </ContextMenuRoot>
       ) : (
         <div ref={slotRef} className={styles.messageActionsSlot}>

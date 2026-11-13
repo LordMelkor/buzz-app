@@ -36,6 +36,7 @@ import {
 } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import { MessageRow, type MessageLinkOrigin } from "./MessageRow";
+import { MessageContextMenus } from "./MessageActionBar";
 import {
   continuesMessageGroup,
   publicMessageNeighbor,
@@ -1962,7 +1963,7 @@ function Timeline({
     if (scroller.current && scroller.current.scrollTop <= 0)
       loadNearTop(scroller.current);
   };
-  return (
+  const feed = (
     <section
       ref={scroller}
       data-message-scroller
@@ -2329,4 +2330,5 @@ function Timeline({
         )}
     </section>
   );
+  return <MessageContextMenus>{feed}</MessageContextMenus>;
 }
