@@ -11,8 +11,6 @@ on:
         description: Promote a validated version (e.g. 0.7.0-preview.22.1) to the preview updater feed; no build
         type: string
         default: ""
-  schedule:
-    - cron: "17 */6 * * *"
 
 permissions:
   contents: read
