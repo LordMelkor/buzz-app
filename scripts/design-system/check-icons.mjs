@@ -90,7 +90,9 @@ const nonIconDependencies = new Set([
   "rehype-raw", // File viewer raw HTML parsing; not an icon library.
   "rehype-sanitize",
   "remark-breaks",
+  "remark-frontmatter", // File Markdown metadata syntax; not an icon library.
   "remark-gfm",
+  "remark-math", // File Markdown math syntax; not an icon library.
   "remark-parse", // Markdown parsing; not an icon library.
   "remark-rehype", // Markdown to HTML trees; not an icon library.
   "rolldown",

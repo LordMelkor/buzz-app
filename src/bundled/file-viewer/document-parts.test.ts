@@ -2,6 +2,7 @@ import { MAX_RENDER_CHARS, required } from "./markdown-limits";
 import { containerDefinitions } from "./markdown-container-definitions";
 import { fenceLine } from "./markdown-fences";
 import { describe, expect, it } from "vitest";
+import { remarkFileMarkdown } from "./markdown-extensions";
 import { rehypeFileMarkdown } from "./file-markdown";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
@@ -24,6 +25,7 @@ function rendered(
   const processor = unified()
     .use(remarkParse)
     .use(remarkGfm)
+    .use(remarkFileMarkdown)
     .use(remarkPartHeadings(parts, index))
     .use(remarkRehype, { allowDangerousHtml: true })
     .use(rehypePartFootnotes(parts, index))
@@ -464,17 +466,279 @@ describe("bounded document parts", () => {
     },
   );
 
-  it("treats frontmatter, math and emoji with the installed SafeMarkdown semantics", () => {
+  it("uses the shared file grammar for opaque frontmatter and math", () => {
     const indexed = indexDocument(
       "---\n# YAML heading\n---\n\n$$\n# Math heading\n$$\n\n# :sparkles:\n",
       "markdown",
     );
-    expect(indexed.outline.map((item) => item.text)).toEqual([
-      "YAML heading",
-      "Math heading",
-      ":sparkles:",
-    ]);
+    expect(indexed.outline.map((item) => item.text)).toEqual([":sparkles:"]);
   });
+  it.each(["", "> ", "  "])(
+    "keeps admitted display math atomic in its %j container",
+    (owner) => {
+      const opening = owner === "  " ? "- " : owner;
+      const formula = `${owner}x + y\n`.repeat(3000);
+      const text = `# Before\n\n${opening}$$\n${formula}${owner}$$\n\n# After\n`;
+      const indexed = indexDocument(text, "markdown");
+      const larger = indexed.parts.filter(
+        (part) => part.end - part.start > PART_CHARS,
+      );
+      expect(larger).toHaveLength(1);
+      expect(
+        text.slice(required(larger[0]).start, required(larger[0]).end),
+      ).toContain(formula);
+      expect(
+        required(larger[0]).end - required(larger[0]).start,
+      ).toBeLessThanOrEqual(150_000);
+      const trees = indexed.parts.map((_, part) => {
+        expect(indexed.partFallback(part)).toBeUndefined();
+        return rendered(indexed, part);
+      });
+      const math = trees
+        .flatMap(elements)
+        .filter(
+          (node) =>
+            node.tagName === "code" && node.properties.dataLanguage === "math",
+        );
+      expect(math).toHaveLength(1);
+      expect(textOf(required(math[0])).match(/x \+ y/g)).toHaveLength(3000);
+      expect(indexed.outline.map((item) => item.text)).toEqual([
+        "Before",
+        "After",
+      ]);
+      expect(
+        trees
+          .flatMap(elements)
+          .filter((node) => node.properties.id === "user-content-after"),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(["", "> ", "  "])(
+    "keeps standalone one-line display math atomic in its %j owner",
+    (owner) => {
+      const opening = owner === "  " ? "- " : owner;
+      const text = `${opening}$$${"x + y ".repeat(6000)}$$\n\n# End`;
+      const indexed = indexDocument(text, "markdown");
+      expect(
+        indexed.parts.filter((part) => part.end - part.start > PART_CHARS),
+      ).toHaveLength(1);
+      const math = indexed.parts
+        .flatMap((_, part) => elements(rendered(indexed, part)))
+        .filter(
+          (node) =>
+            node.tagName === "code" && node.properties.dataLanguage === "math",
+        );
+      expect(math).toHaveLength(1);
+      expect(textOf(required(math[0])).match(/x \+ y/g)).toHaveLength(6000);
+      expect(indexed.outline.map((item) => item.text)).toEqual(["End"]);
+      const over = indexDocument(
+        `$$${"x".repeat(150_000)}$$\n\n# End`,
+        "markdown",
+      );
+      for (let part = 0; part < over.parts.length - 1; part++) {
+        const range = required(over.parts[part]);
+        expect(range.end - range.start).toBeLessThanOrEqual(PART_CHARS);
+        expect(over.partFallback(part)).toBe("context");
+      }
+    },
+  );
+
+  it.each([
+    ["> ", "> "],
+    ["- > ", "  > "],
+  ] as const)(
+    "keeps warning metadata on every continuation in its %j owner",
+    (opening, continuation) => {
+      for (const midline of [false, true]) {
+        const payload = midline
+          ? `${continuation}${"warn ".repeat(6000)}\n`
+          : `${continuation}warn\n`.repeat(4000);
+        const indexed = indexDocument(
+          `${opening}[!WARNING]\n${payload}\n# End`,
+          "markdown",
+        );
+        const outputs: string[] = [];
+        for (let part = 0; part < indexed.parts.length; part++) {
+          const tree = rendered(indexed, part);
+          const output = textOf(tree);
+          outputs.push(output);
+          expect(output).not.toMatch(/[>\uE000]|\[!WARNING\]/);
+          if (output.includes("warn")) {
+            const alert = elements(tree).find(
+              (node) => node.properties.dataAlert === "warning",
+            );
+            expect(alert, `midline=${midline}, part=${part}`).toBeDefined();
+            expect(textOf(required(alert))).toContain("warn");
+            if (opening.startsWith("-"))
+              expect(elements(tree).some((node) => node.tagName === "li")).toBe(
+                true,
+              );
+          }
+        }
+        expect(outputs.join("").replace(/\s/g, "")).toBe(
+          `${"warn".repeat(midline ? 6000 : 4000)}End`,
+        );
+      }
+      const nested = indexDocument(
+        "> outer\n> > [!WARNING]\n" +
+          "> > warn\n".repeat(4000) +
+          '\n<div data-alert="warning">raw</div>\n',
+        "markdown",
+      );
+      expect(
+        nested.parts
+          .flatMap((_, part) => elements(rendered(nested, part)))
+          .some((node) => node.properties.dataAlert !== undefined),
+      ).toBe(false);
+    },
+  );
+
+  it("keeps oversized retained YAML in dedicated literal slices and resumes body Markdown", () => {
+    const yaml =
+      "---\r\ninvalid: [nested]\r\n" +
+      "# hidden\r\n[^n]: hidden\r\n".repeat(1800) +
+      "---\r\n";
+    const text = `${yaml}\r\n# After\r\n\r\nVisible body.\r\n`;
+    const indexed = indexDocument(text, "markdown");
+    expect(indexed.outline.map((item) => item.text)).toEqual(["After"]);
+    for (let part = 0; part < indexed.parts.length; part++) {
+      const range = required(indexed.parts[part]);
+      expect(range.end - range.start).toBeLessThanOrEqual(PART_CHARS);
+      if (range.start < yaml.length) {
+        expect(range.end).toBeLessThanOrEqual(yaml.length);
+        expect(indexed.partFallback(part)).toBe("context");
+        expect(
+          textOf(rendered(indexed, part)).replace(/\r\n?/g, "\n"),
+        ).toContain(text.slice(range.start, range.end).replace(/\r\n?/g, "\n"));
+      }
+    }
+    const after = required(indexed.partOf("after"));
+    expect(indexed.partFallback(after)).toBeUndefined();
+    expect(
+      elements(rendered(indexed, after)).some(
+        (node) => node.properties.id === "user-content-after",
+      ),
+    ).toBe(true);
+  });
+
+  it.each([false, true])(
+    "keeps non-atomic math literal and resumes at its closing boundary (closed=%s)",
+    (closed) => {
+      const owner = closed ? "" : "> ";
+      const math =
+        `${owner}$$\n` +
+        `${owner}# literal [site] <b>source</b>\n`.repeat(closed ? 6000 : 800) +
+        (closed ? "$$\n" : "");
+      const text = `${math}\n# After\n\n[go][site]\n\n[site]: https://example.org/real\n`;
+      const indexed = indexDocument(text, "markdown");
+      expect(indexed.outline.map((item) => item.text)).toEqual(["After"]);
+      for (let part = 0; part < indexed.parts.length; part++) {
+        const range = required(indexed.parts[part]);
+        expect(range.end - range.start).toBeLessThanOrEqual(PART_CHARS);
+        if (range.start < math.length) {
+          expect(range.end).toBeLessThanOrEqual(math.length + (closed ? 0 : 1));
+          expect(indexed.partFallback(part)).toBe("context");
+          expect(textOf(rendered(indexed, part))).toContain(
+            text.slice(range.start, range.end),
+          );
+        }
+      }
+      const after = required(indexed.partOf("after"));
+      expect(indexed.partFallback(after)).toBeUndefined();
+      expect(
+        elements(rendered(indexed, after)).some(
+          (node) => node.properties.id === "user-content-after",
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("does not invent frontmatter when a later part begins with a thematic fence", () => {
+    const text = `${"x".repeat(PART_CHARS - 25)}\n\n---\nkey: value\n---\n\n# End\n`;
+    const indexed = indexDocument(text, "markdown");
+    expect(indexed.outline.map((item) => item.text)).toEqual([
+      "key: value",
+      "End",
+    ]);
+    const renderedHeadings = indexed.parts
+      .flatMap((_, part) => elements(rendered(indexed, part)))
+      .filter((node) => /^h[1-6]$/.test(node.tagName));
+    expect(renderedHeadings.map(textOf)).toEqual(["key: value", "End"]);
+    for (const heading of indexed.outline)
+      expect(
+        renderedHeadings.some(
+          (node) => node.properties.id === `user-content-${heading.id}`,
+        ),
+      ).toBe(true);
+  });
+
+  it("keeps short retained YAML at offset zero when importing a crossing footnote", () => {
+    const text =
+      "---\ninvalid: [nested]\n---\n\n# After\n\nCall[^n].\n\n[^n]: note\n" +
+      "    continuation\n".repeat(1400);
+    const indexed = indexDocument(text, "markdown");
+    expect(indexed.partSource(0)).toMatch(/^---\ninvalid: \[nested\]\n---\n/);
+    expect(indexed.partFallback(0)).toBeUndefined();
+    const nodes = elements(rendered(indexed, 0));
+    expect(
+      nodes.some((node) => node.properties.id === "user-content-after"),
+    ).toBe(true);
+    expect(
+      nodes
+        .filter(
+          (node) =>
+            node.tagName === "code" && node.properties.dataLanguage === "yaml",
+        )
+        .map(textOf)
+        .join(""),
+    ).toContain("invalid: [nested]");
+    expect(
+      nodes.some((node) => node.properties.id === "user-content-fn-n"),
+    ).toBe(true);
+  });
+
+  it("admits exactly the 150k math budget and retains long opening-line continuations literally", () => {
+    const atLimit = `$$\n${"x".repeat(149_993)}\n$$\n`;
+    const atomic = indexDocument(atLimit, "markdown");
+    expect(atomic.parts).toHaveLength(1);
+    expect(required(atomic.parts[0]).end).toBe(150_000);
+    expect(atomic.partFallback(0)).toBeUndefined();
+    const longOpening = `$$${" meta".repeat(6000)}\nbody\n$$\n\n# After\n`;
+    const literal = indexDocument(longOpening, "markdown");
+    // A closed, bounded equation still owns one atomic part even when its
+    // opening physical line alone exceeds the normal part size.
+    expect(required(literal.parts[0]).end).toBeGreaterThan(PART_CHARS);
+    expect(literal.partFallback(0)).toBeUndefined();
+    const unclosed = indexDocument(
+      longOpening.replace("\n$$\n", "\n"),
+      "markdown",
+    );
+    for (let part = 0; part < unclosed.parts.length; part++) {
+      const range = required(unclosed.parts[part]);
+      expect(range.end - range.start).toBeLessThanOrEqual(PART_CHARS);
+      expect(unclosed.partFallback(part)).toBe("context");
+    }
+  });
+
+  it("keeps inline math literal in short and linear heading titles and definition scans", () => {
+    const literal = "$*literal* [site] [^n] &amp; <b id=ghost> \\alpha$";
+    for (const prefix of ["", "word ".repeat(110)]) {
+      const indexed = indexDocument(
+        `# ${prefix}${literal}\n\n[site]: https://example.org/unused\n[^n]: unused note\n`,
+        "markdown",
+      );
+      expect(indexed.outline[0]?.text).toBe(prefix + literal);
+      const nodes = elements(rendered(indexed, 0));
+      expect(
+        nodes.find((node) => node.tagName === "h1") &&
+          textOf(required(nodes.find((node) => node.tagName === "h1"))),
+      ).toBe(prefix + literal);
+      expect(nodes.filter((node) => node.tagName === "a")).toHaveLength(0);
+      expect(indexed.partOf("ghost")).toBeUndefined();
+    }
+  });
+
   it("keeps setext headings with their underline at a part seam", () => {
     const text =
       "paragraph\n\n".repeat(600) +
