@@ -128,7 +128,7 @@ export function SoloInventory({
   // A lead draft leads only while it still targets the workspace it opened in.
   const leadKey =
     draft?.lead && draft.region && draft.project
-      ? `${regionDraftKey(draft.region, draft.project)}:new-project`
+      ? `${regionDraftKey(draft.region, draft.project, draft.draft?.key)}:new-project`
       : undefined;
   const subscribeDraft = useCallback(
     (listener: () => void) => subscribeView(scope, listener),

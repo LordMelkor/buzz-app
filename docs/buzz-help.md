@@ -410,6 +410,8 @@ and are asked to sign in again in Buzz.
   message, attachments, and choices while this window stays open. Retry never
   replaces a newer New chat draft or a later Reset. Reloading or dismissing that
   notice ends this recovery option.
+  Plugins can keep separate unsent drafts in the same workspace. Where supported,
+  each draft keeps its text, files, settings, model, and effort when you return.
   A locally hosted agent can list your personal workspace IDs with
   `solo_workspace_list` and explicitly choose one when creating a Solo chat,
   provided it includes you in the chat’s members. This only files the new chat;

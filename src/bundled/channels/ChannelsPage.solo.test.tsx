@@ -836,6 +836,38 @@ it("gives a new chat that could not be started its draft's place in Back history
   );
 });
 
+it("routes between keyed region drafts without reusing the other editor", async () => {
+  const region = "buzz.region:example:work";
+  const destination = (scope: string, key: string) =>
+    soloDraftTarget(scope, {
+      region,
+      draft: { key, context: { item: key } },
+    });
+  const f = fixture({ target: (scope) => destination(scope, "first") });
+  writeView(
+    f.scope,
+    `solo:region:${region}:draft:first:new-draft`,
+    "First intent",
+  );
+  writeView(
+    f.scope,
+    `solo:region:${region}:draft:second:new-draft`,
+    "Second intent",
+  );
+  f.mountWithToasts();
+  expect(
+    await screen.findByRole("textbox", { name: "Message your agents" }),
+  ).toHaveTextContent("First intent");
+  f.show(destination(f.scope, "second"));
+  expect(
+    await screen.findByRole("textbox", { name: "Message your agents" }),
+  ).toHaveTextContent("Second intent");
+  f.show(JSON.parse(JSON.stringify(destination(f.scope, "first"))));
+  expect(
+    await screen.findByRole("textbox", { name: "Message your agents" }),
+  ).toHaveTextContent("First intent");
+});
+
 it("keeps a written new chat in Back history when its draft cannot be saved", async () => {
   const f = fixture({ target: (scope) => soloDraftTarget(scope, { agent }) });
   const draftStorageKey = `buzz-view.v1:${JSON.stringify([f.scope, "solo:new-draft"])}`;

@@ -8,12 +8,12 @@ import {
 } from "../../shared/view-state";
 import type { RelayData, RelaySnapshot } from "../relay/service";
 import type { RelaySession } from "../relay/session";
-import type { JsonValue } from "../navigation/targets";
+import { parseOpenTarget, type JsonValue } from "../navigation/targets";
 import type { PluginManager } from "../../plugins/manager";
 import { relayPartition } from "../relay/partition";
 import { ownSolo, soloLabels } from "../solo/labels";
 import { regionLabels, soloRegionLabel } from "../solo/region-labels";
-import { soloDraftTarget } from "./routes";
+import { soloDraft, soloDraftTarget } from "./routes";
 import { createSoloWorkspaces } from "./solo-workspaces";
 import {
   projectSoloRegions,
@@ -40,9 +40,13 @@ export type SoloNavigationSnapshot = SoloPlacement &
 const readers = new WeakMap<RelaySession, SoloNavigationService>();
 export const soloNavigationFor = (session: RelaySession) =>
   readers.get(session);
-/** A region's New chat draft, one per workspace as for ordinary New chat. */
-export const regionDraftKey = (label: string, workspace?: string) =>
-  `solo:region:${label}${workspace ? `:project:${workspace}` : ""}`;
+/** Region drafts share a workspace slot unless the source supplies a stable key. */
+export const regionDraftKey = (
+  label: string,
+  workspace?: string,
+  key?: string,
+) =>
+  `solo:region:${label}${key ? `:draft:${encodeURIComponent(key)}` : workspace ? `:project:${workspace}` : ""}`;
 /** View state linking a chat to the region draft it was started from. */
 export const regionStartKey = (channelId: string) =>
   `solo-region-start:${channelId}`;
@@ -495,18 +499,32 @@ export class SoloNavigationService extends Service implements SoloNavigation {
         saved.region !== label
       )
         return;
-      return "workspace" in saved && typeof saved.workspace === "string"
-        ? {
-            workspace: saved.workspace,
-            ...("lead" in saved && saved.lead === true
-              ? { lead: true as const }
-              : {}),
-          }
-        : {};
+      const draft =
+        "draft" in saved
+          ? soloDraft({
+              kind: "solo-draft",
+              region: label,
+              draft: saved.draft as JsonValue,
+            })?.draft
+          : undefined;
+      if ("draft" in saved && !draft)
+        throw new Error("This chat's saved draft context is invalid");
+      return {
+        ...("workspace" in saved && typeof saved.workspace === "string"
+          ? {
+              workspace: saved.workspace,
+              ...("lead" in saved && saved.lead === true
+                ? { lead: true as const }
+                : {}),
+            }
+          : {}),
+        ...(draft ? { draft } : {}),
+      };
     };
     this.contributions.register(this.ctx, { ...source, identity });
     return Object.freeze({
       label,
+      draftContext: true,
       state(binding) {
         current(binding);
         const registered = host
@@ -526,7 +544,16 @@ export class SoloNavigationService extends Service implements SoloNavigation {
           (input.lead && !workspace)
         )
           throw new Error("Invalid workspace");
-        if (workspace) {
+        // The navigation parser bounds and copies source-owned JSON before retention.
+        const target = parseOpenTarget(
+          soloDraftTarget(binding.scope, {
+            region: label,
+            ...(workspace ? { project: workspace } : {}),
+            ...(workspace && input.lead ? { lead: true } : {}),
+            ...(input.draft !== undefined ? { draft: input.draft } : {}),
+          }),
+        );
+        if (workspace && !input.draft?.key) {
           // As New chat in a workspace: it starts there, and instructions
           // chosen for another workspace do not carry over.
           const key = regionDraftKey(label, workspace);
@@ -547,13 +574,7 @@ export class SoloNavigationService extends Service implements SoloNavigation {
             });
           writeView(binding.scope, `${key}:new-project`, null);
         }
-        void host.ctx.navigation?.open(
-          soloDraftTarget(binding.scope, {
-            region: label,
-            ...(workspace ? { project: workspace } : {}),
-            ...(workspace && input.lead ? { lead: true } : {}),
-          }),
-        );
+        void host.ctx.navigation?.open(target);
       },
       started,
       forget(binding, channelId) {

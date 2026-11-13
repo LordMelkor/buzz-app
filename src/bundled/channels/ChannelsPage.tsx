@@ -2309,11 +2309,13 @@ function ChannelWorkspace({
                 draft.agent,
                 draft.linked,
                 draft.region,
+                draft.draft,
                 retiredSoloDraft.generation,
               ])}
               linkedId={draft.linked}
               region={draft.region}
               lead={draft.lead}
+              draft={draft.draft}
               source={linkedSource}
               visit={navigation}
               focusRequest={

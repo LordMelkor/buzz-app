@@ -82,6 +82,64 @@ it("names a region's draft owner only while its source is running and ready", as
   expect(h.service.draftRegion(label)).toBeUndefined();
 });
 
+it("copies bounded source context and returns it only to its source across rebind", async () => {
+  const h = fixture();
+  const source = await h.register();
+  const other = await h.register({ id: "other" });
+  const draft = { key: "item:42", context: { item: "42", mode: "example" } };
+  source.handle.openDraft(source.binding(), { workspace: "work", draft });
+  const target = h.navigator.snapshot().attempt.entry.target;
+  expect(target).toMatchObject({ route: { params: { draft } } });
+  draft.context.item = "changed";
+  expect(target).toMatchObject({
+    route: { params: { draft: { context: { item: "42" } } } },
+  });
+  const savedDraft = {
+    key: "item:42",
+    context: { item: "42", mode: "example" },
+  };
+  writeView(h.scope, regionStartKey("chat"), {
+    region: label,
+    workspace: "work",
+    draft: savedDraft,
+  });
+  expect(other.handle.started(other.binding(), "chat")).toBeUndefined();
+  h.reconnect();
+  expect(source.handle.started(source.binding(), "chat")).toEqual({
+    workspace: "work",
+    draft: savedDraft,
+  });
+  source.handle.forget(source.binding(), "chat");
+  expect(source.handle.started(source.binding(), "chat")).toBeUndefined();
+
+  const opened = h.navigator.snapshot().attempt.entry.target;
+  for (const context of ["x".repeat(8192), () => {}, undefined, Number.NaN]) {
+    expect(() =>
+      source.handle.openDraft(source.binding(), {
+        draft: { context } as never,
+      }),
+    ).toThrow();
+    expect(h.navigator.snapshot().attempt.entry.target).toEqual(opened);
+  }
+});
+
+it("reopens a keyed slot without resetting its chosen workspace or settings", async () => {
+  const h = fixture();
+  const source = await h.register();
+  const key = regionDraftKey(label, "work", "item:42");
+  writeView(h.scope, `${key}:new-project`, "elsewhere");
+  writeView(h.scope, `${key}:settings`, { name: "Kept", canvas: "Chosen" });
+  source.handle.openDraft(source.binding(), {
+    workspace: "work",
+    draft: { key: "item:42", context: null },
+  });
+  expect(readView(h.scope, `${key}:new-project`, null)).toBe("elsewhere");
+  expect(readView(h.scope, `${key}:settings`, null)).toEqual({
+    name: "Kept",
+    canvas: "Chosen",
+  });
+});
+
 it("opens a workspace's lead draft only in that workspace and returns the lead with its start", async () => {
   const h = fixture();
   const source = await h.register();

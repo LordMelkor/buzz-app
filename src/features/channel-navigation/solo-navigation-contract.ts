@@ -60,7 +60,14 @@ export type SoloChatWorkspace = Readonly<{
   file(workspaceId: string | undefined): Promise<void>;
 }>;
 /** How a chat this device sent from `openDraft` was started. */
-export type SoloDraftStart = Readonly<{ workspace?: string; lead?: true }>;
+export type SoloDraftStart = Readonly<{
+  workspace?: string;
+  /** @deprecated Source-owned roles belong in draft.context. Kept during migration. */
+  lead?: true;
+  /** Opaque JSON, retained in navigation history and the device's start record.
+   * Keep secrets out of context. A key isolates this draft from workspace drafts. */
+  draft?: Readonly<{ key?: string; context: JsonValue }>;
+}>;
 export type SoloChatInput = Readonly<{
   channelId: string;
   title: string;
@@ -70,15 +77,14 @@ export type SoloChatInput = Readonly<{
 }>;
 export type SoloRegionHandle = Readonly<{
   label: string;
+  /** Keyed draft context is retained in navigation and the saved start record. */
+  draftContext: true;
   /** The same device state as component props, available before mount. */
   state(binding: SoloRegionBinding): SoloRegionProps["state"];
   /** Open New chat for this region. Its first send creates the chat with this
    * region's label; until then it is only a draft. With `lead`, the chat starts
    * as the workspace's lead while the draft still targets that workspace. */
-  openDraft(
-    binding: SoloRegionBinding,
-    input?: Readonly<{ workspace?: string; lead?: true }>,
-  ): void;
+  openDraft(binding: SoloRegionBinding, input?: SoloDraftStart): void;
   /** This device's record of a chat started from `openDraft`, kept until `forget`. */
   started(
     binding: SoloRegionBinding,
@@ -111,7 +117,7 @@ export type SoloRegionProps = Readonly<{
 }>;
 export type SoloWorkspaceProps = Readonly<{
   id: string;
-  /** The workspace whose lead draft, from `openDraft` with `lead`, selects this row. */
+  /** @deprecated Sources select workspace rows with selected. Kept during migration. */
   leadWorkspaceId?: string;
   selected?: boolean;
   onSelect?(): void;

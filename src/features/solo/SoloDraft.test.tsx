@@ -3613,6 +3613,105 @@ it("a region's New chat starts a labeled chat its source can find, without filin
   // An ordinary New chat keeps its own draft and its unlabeled start.
   expect(readView("test", "solo:project:work:new-draft", null)).toBeNull();
 });
+it("keeps keyed region drafts separate across remount, workspace edits and a refused start", async () => {
+  const test = await projectSetup(),
+    user = userEvent.setup();
+  const onStarted = vi.fn(),
+    onFailed = vi.fn();
+  const modelAgents = soloModelAgents();
+  Object.assign(test.session, {
+    attachments: { uploadForNewChat: vi.fn(async () => notes) },
+  });
+  regionNavigation.set({ source: {}, binding: regionBinding });
+  const draft = { key: "item:42", context: { item: "42" } };
+  const key = regionDraftKey(REGION, "work", draft.key);
+  const otherKey = regionDraftKey(REGION, "work", "item:43");
+  const picks = {
+    ["a".repeat(64)]: { model: "deep", effort: "high", type: "test/agent" },
+  };
+  writeView("test", `${key}:new-draft`, taggedDraft("First intent"));
+  writeView("test", `${key}:settings`, { name: "First title", named: true });
+  writeView("test", `solo:model-picks:${key}:new-draft`, picks);
+  writeView("test", `${otherKey}:new-draft`, taggedDraft("Other intent"));
+  const view = (data = draft) => (
+    <AgentsContext.Provider value={modelAgents}>
+      <SoloDraft
+        session={test.session}
+        scope="test"
+        projectId="work"
+        region={REGION}
+        draft={data}
+        onStarted={onStarted}
+        onFailed={onFailed}
+      />
+    </AgentsContext.Provider>
+  );
+  const first = render(view());
+  await user.upload(
+    screen.getByLabelText("Choose attachments"),
+    new File(["notes"], "notes.txt", { type: "text/plain" }),
+  );
+  await user.click(screen.getByRole("button", { name: "Workspace: Work" }));
+  await user.click(await screen.findByRole("menuitemradio", { name: "Other" }));
+  first.unmount();
+  const second = render(view({ key: "item:43", context: { item: "43" } }));
+  expect(screen.getByRole("textbox")).toHaveTextContent("Other intent");
+  expect(screen.queryByRole("button", { name: "Remove notes.txt" })).toBeNull();
+  second.unmount();
+  render(view());
+  expect(screen.getByRole("textbox")).toHaveTextContent("First intent");
+  expect(
+    screen.getByRole("button", { name: "Remove notes.txt" }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Workspace: Other" }),
+  ).toBeVisible();
+  const refuse = refusedStart(test);
+  const start = test.channelWrites.start.getMockImplementation();
+  assert(start);
+  test.channelWrites.start.mockImplementationOnce((...args) => {
+    expect(readView("test", regionStartKey(args[0]), null)).toEqual({
+      region: REGION,
+      workspace: "other",
+      draft,
+    });
+    expect(test.messages.send).not.toHaveBeenCalled();
+    return start(...args);
+  });
+  await user.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(onStarted).toHaveBeenCalledOnce());
+  expect(test.channelWrites.create.mock.calls[0]?.[1]).toBe("First title");
+  expect(test.messages.send.mock.calls[0]?.at(-1)).toEqual({
+    ["a".repeat(64)]: { model: "deep", effort: "high" },
+  });
+  await refuse();
+  await waitFor(() => expect(onFailed).toHaveBeenCalledOnce());
+  const id = test.channelWrites.create.mock.calls[0]?.[0] ?? "";
+  expect(readView("test", regionStartKey(id), null)).toBeNull();
+  expect(screen.getByRole("textbox")).toHaveTextContent("First intent");
+  expect(
+    screen.getByRole("button", { name: "Remove notes.txt" }),
+  ).toBeVisible();
+  expect(readView("test", `solo:model-picks:${key}:new-draft`, null)).toEqual(
+    picks,
+  );
+  expect(readView("test", `${otherKey}:new-draft`, null)).toEqual(
+    taggedDraft("Other intent"),
+  );
+  test.channelWrites.ready = Promise.resolve();
+  await user.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(onStarted).toHaveBeenCalledTimes(2));
+  const retry = test.channelWrites.create.mock.calls[1]?.[0] ?? "";
+  expect(readView("test", regionStartKey(retry), null)).toEqual({
+    region: REGION,
+    workspace: "other",
+    draft,
+  });
+  expect(test.messages.send.mock.calls[1]?.at(-1)).toEqual({
+    ["a".repeat(64)]: { model: "deep", effort: "high" },
+  });
+});
+
 it("a region draft whose link can't be saved starts nothing and keeps its prompt and files", async () => {
   const test = setup(),
     onStarted = vi.fn(),
