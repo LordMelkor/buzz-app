@@ -208,6 +208,7 @@ function ClaudeSignIn({
       <Dialog
         open={open}
         title={missing || outdated ? "Claude integration" : "Set up Claude"}
+        headerGap={missing || outdated ? "default" : "compact"}
         onOpenChange={(next) => {
           setOpen(next);
           if (!next) void setup.cancel();
@@ -618,6 +619,7 @@ export function createTabs({
         <Dialog
           open={open && signedOut}
           title="Set up Claude"
+          headerGap="compact"
           actions={
             signingIn && (
               <Button variant="ghost" onClick={() => void setup.cancel()}>

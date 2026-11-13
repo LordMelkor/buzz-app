@@ -1233,10 +1233,16 @@ available rather than silently discarding it.
   again; a failed check keeps the previous permissions.
   Claude runs with an Anthropic API key pasted under **Anthropic API key**
   there, once for every local Claude agent. With the Claude plugin enabled,
-  **Settings → Claude** starts with a masked, read-only saved key. The
-  field opens its **Replace / Remove** menu when focused or clicked;
-  the chevron also opens it. **Replace** opens a blank, masked field with small
-  **Cancel / Save** buttons inside it. **Save** stores a non-empty replacement
+  **Settings → Claude → Set** opens **Connect Claude** to add a key. Back hides
+  setup and Forward restores its draft while the Claude page remains open.
+  The input keeps focus but is read-only while secure storage is checked. If the
+  check fails, the dialog keeps its draft and offers **Retry**; saving waits for
+  a successful check. Closing the dialog discards its draft; saving returns to
+  the masked, read-only saved key. The field opens its **Replace / Remove** menu
+  when focused or clicked; the chevron also opens it. **Replace** opens a blank,
+  masked field with small **Cancel / Save** buttons inside it. When adding or replacing a key, **Save**
+  stays visible inside the field and is disabled until you enter a key.
+  **Save** stores a non-empty replacement
   and returns to the masked view; **Cancel** discards the draft. Settings cannot
   reveal or copy the saved key. The small inline **Save** stays visible and is
   disabled until you enter a key; **Cancel** stays available during replacement.
@@ -1441,7 +1447,8 @@ tab, asks **Discard changes?** first; **Keep editing** keeps them.
   sidebar currently shows are linked. Back from one returns to those details.
 - When Builderlab and TypeSafe are available in **Settings → Decisions API**,
   the **Decision provider** dropdown chooses Builderlab or TypeSafe. Each choice
-  uses that provider for requests. Choosing TypeSafe without a key opens a setup dialog.
+  uses that provider for requests. Choosing TypeSafe without a key opens
+  **Connect TypeSafe**, with a link to create a key in the TypeSafe console.
   Saving the key completes the switch; closing setup keeps the current provider.
   If a selected Builderlab account lacks Decisions API access, the pane explains
   that you can use your own TypeSafe key or contact your account administrator.
@@ -1660,4 +1667,3 @@ occurs. It contains operation metadata, with no draft text or secrets. See
 ## Plugin account actions
 
 Plugins can add actions to your avatar menu. Profile-related actions may appear just above Settings; other plugin actions appear below it.
-
