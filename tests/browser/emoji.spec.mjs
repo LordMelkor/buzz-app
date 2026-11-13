@@ -1157,3 +1157,84 @@ test("community picker uses keyboard, proxy thumbnails, event-local history and 
     await server?.close();
   }
 });
+
+test("emoji picker recovers from repeated catalog timeouts in place and across reopening", async ({
+  page,
+}) => {
+  let server;
+  try {
+    server = await createServer({
+      root: fileURLToPath(new URL("../../", import.meta.url)),
+      configFile: false,
+      envFile: false,
+      plugins: [react()],
+      logLevel: "error",
+      server: { host: "127.0.0.1", port: 0, strictPort: false },
+    });
+    const errors = watchPageErrors(page);
+    await page.route("**/emoji-media/**", (route) =>
+      route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22"><circle cx="11" cy="11" r="10" fill="purple"/></svg>',
+      }),
+    );
+    await server.listen();
+    // The passive read and its foreground promotion are held, then time out;
+    // the automatic retry is held until the close/reopen assertions finish.
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/emoji.html?catalog-timeouts=2&hold-catalog`,
+    );
+    await page.evaluate(() => {
+      window.sawTimeout = false;
+      new MutationObserver(() => {
+        if (document.body.textContent?.includes("timed out"))
+          window.sawTimeout = true;
+      }).observe(document.body, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
+    });
+    const picker = page.getByRole("button", {
+      name: "Emoji and GIFS",
+      exact: true,
+    });
+    const region = page.getByRole("dialog", { name: "Emoji picker" });
+    const loading = region.getByRole("status").filter({
+      hasText: "Loading community emoji…",
+    });
+    const reads = () =>
+      page.evaluate(() => window.emojiFixture.report.reads.length);
+    try {
+      await picker.click();
+      await expect.poll(reads).toBe(2);
+      await expect(loading).toBeVisible();
+      // Time out the held reads and hold the automatic retry.
+      await page.evaluate(() => {
+        window.emojiFixture.releaseCatalog();
+        window.emojiFixture.holdCatalog();
+      });
+      await expect.poll(reads).toBe(3);
+      await expect(loading).toBeVisible();
+      await expect(region.getByRole("alert")).toHaveCount(0);
+      // Closing and reopening mid-recovery neither shows the error nor stops recovery.
+      await page.keyboard.press("Escape");
+      await expect(region).toHaveCount(0);
+      await picker.click();
+      await expect(loading).toBeVisible();
+      await expect(region.getByRole("alert")).toHaveCount(0);
+    } finally {
+      await page.evaluate(() => window.emojiFixture.releaseCatalog());
+    }
+    await expect(
+      page.locator('em-emoji-picker [data-id="buzz-custom"]'),
+    ).toHaveCount(1);
+    await expect(loading).toHaveCount(0);
+    await expect(region.getByRole("alert")).toHaveCount(0);
+    expect(await reads()).toBe(3);
+    expect(await page.evaluate(() => window.sawTimeout)).toBe(false);
+    expect(errors.unexplained()).toEqual([]);
+  } finally {
+    await server?.close();
+  }
+});
