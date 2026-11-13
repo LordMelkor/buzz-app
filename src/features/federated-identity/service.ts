@@ -74,6 +74,8 @@ export interface FederatedIdentity {
   /** Checks a session whose restore failed again, keeping its stored record:
    * native retries the restore; a signed-in session answers as it is. */
   recheck?(): Promise<SessionSnapshot>;
+  /** The page the pending sign-in opened, to paste into a browser by hand. */
+  signInLink(): Promise<string | null>;
   /** With `revision`, only while that session is current: native leaves a
    * newer one signed in. Answers with native's own snapshot. */
   signOut(options?: { revision?: string }): Promise<SessionSnapshot>;
@@ -225,6 +227,9 @@ export class FederatedIdentityService
   }
   communityRequiresSignIn = communityRequiresSignIn;
   askAgain = askAgain;
+  signInLink() {
+    return invoke<string | null>("federated_identity_sign_in_link");
+  }
   forCommunity = (relay: string): FederatedIdentity => {
     let session = this.shared.communities.get(relay);
     if (!session) {
@@ -432,6 +437,12 @@ class CommunitySession implements FederatedIdentity {
   }
   recheck() {
     return this.operation("federated_identity_snapshot");
+  }
+  signInLink() {
+    return invoke<string | null>(
+      "federated_identity_sign_in_link",
+      this.target,
+    );
   }
   request(): Promise<HostResponse> {
     return Promise.reject(

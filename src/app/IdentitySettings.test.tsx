@@ -243,6 +243,10 @@ function bound(service: FederatedIdentity): FederatedIdentity {
       expect(this).toBe(self);
       return service.cancelSignIn();
     },
+    signInLink() {
+      expect(this).toBe(self);
+      return service.signInLink();
+    },
     signOut() {
       expect(this).toBe(self);
       return service.signOut();

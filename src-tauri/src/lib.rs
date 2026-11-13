@@ -747,6 +747,7 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         federated_identity::federated_identity_ask_again,
         federated_identity::federated_identity_sign_in,
         federated_identity::federated_identity_cancel_sign_in,
+        federated_identity::federated_identity_sign_in_link,
         federated_identity::federated_identity_sign_out,
         federated_identity::access::federated_identity_register,
         federated_identity::access::federated_identity_unregister,

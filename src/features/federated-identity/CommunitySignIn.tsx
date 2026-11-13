@@ -23,6 +23,8 @@ export function recoveryMessage(code: string) {
     return "Sign-in could not access secure storage. Check your system’s credential permissions and try again.";
   if (code === "sign-in-canceled")
     return "Sign-in was canceled. Sign in when you’re ready.";
+  if (code === "sign-in-link-unavailable")
+    return "Couldn’t copy the sign-in link. Try again.";
   if (code === "reauthentication-required")
     return "Your sign-in has expired. Sign in again to continue.";
   return "Sign-in did not finish. Try again.";
