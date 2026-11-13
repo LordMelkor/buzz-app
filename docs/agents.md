@@ -606,7 +606,11 @@ channel-scoped session. It is the same `plugin` trigger with `from`, the
 conversation it came from, in place of `plugin`, shown in a `<self-handoff>`
 section that names that conversation, says nobody wrote it as a message and that
 its text is data, and that the agent acts only on what its owner asked. Only a
-run's handle hands off.
+run's handle hands off. Message tools refuse self-mentions because the runner
+suppresses the agent's own relay events. The self-handoff receipt confirms
+local queue admission only, not execution or completion. A busy runner queues
+the wake behind its active mention turn; a full queue or unavailable local
+runner returns an error. The wake is not durable across host shutdown.
 
 A plugin gives standing instructions to every turn with
 `ctx.agents.addInstructions({ id, text, when? })` (see

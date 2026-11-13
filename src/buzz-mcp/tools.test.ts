@@ -4510,6 +4510,35 @@ it("nests a reply under a message inside a thread, naming the root and the paren
   expect(published[0]?.tags[4]?.[0]).toBe("imeta");
 });
 
+it.each(["send", "reply_in_subthread"])(
+  "%s refuses a self-mention instead of reporting a post as a wake",
+  async (name) => {
+    const { client, published } = fake([...community, profile(me, "Echo")]);
+    for (const mention of [
+      { text: "@Echo carry on" },
+      { text: `nostr:${npubEncode(me)} carry on` },
+      { text: "carry on", mentions: [me] },
+    ]) {
+      await expect(
+        callTool(client, { channel: "elsewhere" }, name, {
+          channel: "chan",
+          parent: root,
+          audience: "agents",
+          ...mention,
+        }),
+      ).rejects.toThrow("self_handoff");
+    }
+    expect(published).toEqual([]);
+    await callTool(client, { channel: "elsewhere" }, name, {
+      channel: "chan",
+      parent: root,
+      audience: "everyone",
+      text: "An ordinary update",
+    });
+    expect(published).toHaveLength(1);
+  },
+);
+
 it.each(["everyone", "agents"])(
   "replies under a thread's root as send does, for audience %s",
   async (audience) => {

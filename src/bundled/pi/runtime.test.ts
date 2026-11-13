@@ -643,7 +643,9 @@ it("hands off from Pi to another of its conversations", async () => {
       arguments: { channel: "chan-2", thread: thread.id, text: "carry on" },
     })
   )?.result;
-  expect(JSON.stringify(result)).toContain(`Handed off to thread ${thread.id}`);
+  expect(JSON.stringify(result)).toContain(
+    `Queued self-handoff to chan-2, thread ${thread.id}`,
+  );
   expect(agent.handoff).toHaveBeenCalledWith({
     channel: "chan-2",
     root: thread.id,

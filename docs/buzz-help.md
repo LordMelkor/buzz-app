@@ -1021,6 +1021,11 @@ available rather than silently discarding it.
   same channel share context. This setting changes what the agent remembers
   together, not where its reply appears. A DM, huddle room, or Solo chat is one
   continuing conversation under either choice.
+- An agent's own messages do not wake it, even when they mention its name.
+  To pass work to the same agent in another conversation, use `self_handoff`
+  with the channel, text, and a thread message ID outside a Solo chat.
+  Message tools refuse self-mentions. A successful handoff receipt means the
+  host queued the work. It does not confirm execution or completion.
 - A desktop plugin can run native Codex or Claude on another computer. The plugin manages the target, workspace, credentials, and expiry. A saved
   remote choice stays remote after an app restart. If the target cannot be
   restored, Buzz shows an error and requires a new session.
