@@ -555,6 +555,8 @@ export type RunnerHost = {
   tabs(agent: Agent): ReturnType<AgentHandle["tabs"]>;
   /** Buzz settings on this device, where there are any. */
   settings?(): DeviceSettings | undefined;
+  /** The owner's Bestie as the agent's run handle offers it. */
+  bestie(agent: Agent): ReturnType<NonNullable<AgentHandle["bestie"]>>;
   /** Whether watch classifiers can run here. */
   classifier(): ClassifierAvailability;
   /** The decisions service that runs classifiers, where there is one. */
@@ -3072,13 +3074,33 @@ export class AgentRunners {
           lifetime.throwIfAborted();
           return this.host.updateTeam(agent, input);
         },
-        // Only a run hands off or manages plugins: through `Agents.handle` a
-        // plugin's call would read as the agent's own.
+        // Only a run hands off, manages plugins or changes the Bestie: through
+        // `Agents.handle` a plugin's call would read as the agent's own.
         ...(run && {
           plugins: this.host.plugins?.(agent),
           handoff: (handoff: AgentHandoff) => {
             lifetime.throwIfAborted();
             this.host.handoff(agent, handoff);
+          },
+          // The control outlives this call, so each of its calls checks the
+          // run's lifetime, and set again once it has read the agents.
+          bestie: () => {
+            const control = this.host.bestie(agent);
+            const live = () => lifetime.throwIfAborted();
+            return (
+              control &&
+              guarded(
+                {
+                  ...control,
+                  set: async (pubkey: string, check?: () => void) =>
+                    control.set(pubkey, () => {
+                      live();
+                      check?.();
+                    }),
+                },
+                live,
+              )
+            );
           },
         }),
         ...(workspaces && {

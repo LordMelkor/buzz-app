@@ -18,6 +18,7 @@ import {
   callAttentionTool,
   isAttentionTool,
 } from "./attention";
+import { BESTIE_TOOLS, callBestieTool, isBestieTool } from "./bestie";
 import type { BuzzClient, Context } from "./client";
 import {
   callToolOperation,
@@ -78,6 +79,7 @@ export const BUZZ_SESSION: BuzzSession = Object.freeze({
     ...SOLO_WORKER_TOOLS,
     ...PLUGIN_TOOLS,
     ...SETTINGS_TOOLS,
+    ...BESTIE_TOOLS,
   ],
 });
 
@@ -103,6 +105,7 @@ export const sessionTools = (
   ...SOLO_WORKER_TOOLS.map((tool) => ({ ...tool, load: "search" as const })),
   ...PLUGIN_TOOLS.map((tool) => ({ ...tool, load: "search" as const })),
   ...SETTINGS_TOOLS.map((tool) => ({ ...tool, load: "search" as const })),
+  ...BESTIE_TOOLS.map((tool) => ({ ...tool, load: "search" as const })),
   ...added.map((tool) => ({ ...listed(tool), load: "search" as const })),
 ];
 
@@ -235,13 +238,14 @@ async function dispatchSessionTool(
 ): Promise<Reply> {
   const tool = added.find((tool) => tool.name === name);
   if (tool) {
-    // A plugin's tool doesn't get the agent's device settings.
-    const { settings: _, ...plugin } = client;
+    // A plugin's tool doesn't get the agent's device settings or Bestie.
+    const { settings: _, bestie: __, ...plugin } = client;
     return tool.call(plugin, context, args);
   }
   if (isSoloWorkerTool(name)) return callSoloWorkerTool(client, name, args);
   if (isPluginTool(name)) return callPluginTool(client, context, name, args);
   if (isSettingsTool(name)) return callSettingsTool(client, name, args);
+  if (isBestieTool(name)) return callBestieTool(client, name, args);
   if (!isAttentionTool(name)) return callTool(client, context, name, args);
   const { attention } = client;
   if (!attention) throw new Error(`No tool ${name}`);

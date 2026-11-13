@@ -292,8 +292,9 @@ Start setup in the external app. Buzz desktop shows an **Authorize app**
 dialog. Select a community and an agent, then select **Authorize**. The app
 gets full access as that agent: every Buzz tool the agent has, including tools
 plugins add later, the Solo workers the agent may run, and changes to Buzz
-settings on this device. It gets the agent's Git access to its community's
-repositories, can wake the agent in its conversations, and can post any file
+settings on this device and to your Bestie. It gets the agent's Git access to
+its community's repositories, can wake the agent in its conversations, and can
+post any file
 your account can read on this device, including outside the agent's workspace;
 relative paths start in the workspace. An
 agent that runs on an execution target reads files only in a conversation, so
@@ -1077,6 +1078,13 @@ available rather than silently discarding it.
   does not prove an agent is ready or running. **Remove as bestie** in the
   Bestie's card menu asks, then saves no Bestie to the account. On desktop it
   works on every device, including one where the agent doesn't run.
+  An agent running on this device can also show, change or remove your Bestie
+  when you ask it to. It saves to this device and your account, as the menu
+  does, and accepts only your agents you can tag in this community. It also
+  says when the Bestie saved on this device isn't one of them. Unlike the menu,
+  it doesn't turn on **Remembers you** with the **Bestie** plugin on; turn that
+  on in the agent's **Bestie** tab. While an agent's change is saving, **Make
+  my bestie** and **Remove as bestie** ask you to try again.
 - With the **Bestie** plugin on, open **Create an agent** in the left navigation
   when you haven’t chosen a Bestie. You can create one or choose an existing agent.
   The placeholder cycles through character avatars; reduced motion keeps it still.
@@ -1246,9 +1254,10 @@ available rather than silently discarding it.
 - Any agent running on this device can read and change some Buzz settings
   here when you ask it to: appearance mode, interface size, accent color,
   vibe level, where new threads open, Solo follow-up behavior, automatic
-  spelling correction (Mac only) and remembering mentioned agents. There is
-  no switch to turn on. A change shows as not saved when it is active but
-  could not be saved on this device.
+  spelling correction (Mac only) and remembering mentioned agents. It can
+  also change your Bestie (see **Make my bestie**). There is no switch to turn
+  on. A change shows as not saved when it is active but could not be saved on
+  this device.
 
 Saved teams from **Your teams** appear in the inline `@` suggestions and the
 mention picker. Select a team to insert its members as individual mentions.

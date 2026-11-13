@@ -53,6 +53,12 @@ export function appClient(
     if (!found) throw new Error("Your community is not connected.");
     return found;
   };
+  const bestie = () => {
+    check();
+    const found = agent.bestie?.();
+    if (!found) throw new Error("Your community is not connected.");
+    return found;
+  };
   const handoff = agent.handoff;
   const plugins = agent.plugins;
   const { settings, soloWorkspaces } = agent;
@@ -348,6 +354,13 @@ export function appClient(
           },
         }
       : {}),
+    ...(agent.bestie && {
+      bestie: {
+        read: () => bestie().read(),
+        set: (pubkey: string) => bestie().set(pubkey, check),
+        clear: () => bestie().clear(),
+      },
+    }),
   };
   if (options.nativeCall && options.callSignal) {
     nativeToolClient(client, {
