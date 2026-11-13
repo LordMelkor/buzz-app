@@ -379,7 +379,8 @@ export function createHarnessMcp(
                   id: call.id,
                   server: call.server,
                   ...(call.tool && { tool: call.tool }),
-                  arguments: call.arguments,
+                  // A copy: a harness may run the call with the object it gave.
+                  arguments: structuredClone(call.arguments),
                   hold,
                   direct: !!turn && directTrigger(turn.trigger, owner),
                   ...(conversation && { conversation }),

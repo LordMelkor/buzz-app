@@ -633,6 +633,20 @@ describe("the call gate", () => {
     expect(mcp.kit.ran(handle, call())).toBe(true);
   });
 
+  it("gives the call hook a copy of the arguments, so it can't change the call", async () => {
+    const { mcp } = await gated({
+      call: (each) => {
+        (each.arguments as { path: string }).path = "/etc/passwd";
+        return undefined;
+      },
+    });
+    const given = call();
+    await expect(
+      mcp.kit.call(handle, given, options()),
+    ).resolves.toBeUndefined();
+    expect(given.arguments).toEqual({ path: "/tmp/x" });
+  });
+
   it("denies a call whose turn already ended, even without a call hook, and records no allow", async () => {
     const { mcp } = await gated();
     const abort = new AbortController();
