@@ -99,6 +99,7 @@ function setup(
     /** Raw text after the history, as a line Claude is still writing. */
     nativeTail?: string;
     resolveDirectory?: Host["resolveDirectory"];
+    readFile?: Host["readFile"];
     mcp?: boolean;
   }> = {},
 ) {
@@ -196,6 +197,7 @@ function setup(
     spawn,
     request: vi.fn(),
     resolveDirectory: options.resolveDirectory,
+    readFile: options.readFile,
   } as unknown as Host;
   const read = vi.fn(async (_filters: readonly ReadFilter[]) => thread);
   const memoryRead = vi.fn(
@@ -4048,6 +4050,54 @@ describe("a conversation given its own folder", () => {
       "Your persistent workspace is at `/Users/me/.buzz`, not in your working directory",
     );
     expect(published).toEqual([]);
+  });
+
+  it("keeps the assigned folder's approved MCP defaults in a controlled session", async () => {
+    const { runtime, data, deliver, claudes } = setup([root, mention], {
+      mcp: true,
+      resolveDirectory: folders(),
+      readFile: async (path) => {
+        const value =
+          path === "~/.claude.json"
+            ? {
+                projects: {
+                  "/repos/worktree": { enabledMcpjsonServers: ["alpha"] },
+                },
+              }
+            : path === ".mcp.json"
+              ? { mcpServers: { alpha: { command: "fixture-mcp" } } }
+              : {};
+        return new TextEncoder().encode(JSON.stringify(value));
+      },
+    });
+    const started = vi.fn();
+    runtime.mcp = {
+      choice: async () => ({}),
+      started,
+      call: async () => undefined,
+      ran: () => false,
+    };
+    try {
+      await assign(data, "/repos/worktree");
+      await deliver({ type: "mention", event: mention });
+      await vi.waitFor(() => expect(started).toHaveBeenCalledTimes(1));
+      expect(started.mock.calls[0]?.[3]).toEqual({ alpha: true });
+      await vi.waitFor(() =>
+        expect(claudes().some((process) => process.prompts.length > 0)).toBe(
+          true,
+        ),
+      );
+      const claude = claudes().find((process) => process.prompts.length);
+      expect(claude?.options.cwd).toBe("/repos/worktree");
+      const args = claude?.options.args ?? [];
+      expect(
+        JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}"),
+      ).toMatchObject({
+        deniedMcpServers: [],
+      });
+    } finally {
+      runtime.dispose();
+    }
   });
 
   it("starts a protected agent there, contained as in its workspace", async () => {
