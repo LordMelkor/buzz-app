@@ -130,6 +130,54 @@ it("leaves portalled message content outside its context-menu target", () => {
   expect(screen.queryByRole("menu")).toBeNull();
 });
 
+it("leaves a message's links, media, fields, selection and touch native", () => {
+  vi.useFakeTimers();
+  try {
+    render(
+      <MessageActionBar withToolbar copyText={() => "Message"}>
+        <div>
+          <p>Plain text</p>
+          <a href="https://example.com/">Plain link</a>
+          <img alt="Sunset" src="data:," />
+          <textarea aria-label="Draft" />
+        </div>
+      </MessageActionBar>,
+    );
+    const text = screen.getByText("Plain text");
+    for (const target of [
+      screen.getByRole("link", { name: "Plain link" }),
+      screen.getByRole("img", { name: "Sunset" }),
+      screen.getByRole("textbox", { name: "Draft" }),
+    ])
+      expect(fireEvent.contextMenu(target, { button: 2 })).toBe(true);
+    fireEvent.touchStart(text, { touches: [{ clientX: 5, clientY: 5 }] });
+    act(() => vi.advanceTimersByTime(1000));
+    fireEvent.touchEnd(text);
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    // jsdom has no layout: the selected text occupies 0–10 on both axes.
+    Range.prototype.getClientRects = () =>
+      [new DOMRect(0, 0, 10, 10)] as unknown as DOMRectList;
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+    fireEvent.pointerDown(text, { button: 2, clientX: 5, clientY: 5 });
+    expect(fireEvent.contextMenu(text, { button: 2 })).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    // A press beside the selection opens the message's menu.
+    fireEvent.pointerDown(text, { button: 2, clientX: 20, clientY: 5 });
+    expect(fireEvent.contextMenu(text, { button: 2 })).toBe(false);
+    act(() => vi.runOnlyPendingTimers());
+    expect(screen.getByRole("menuitem", { name: "Copy link" })).toBeDefined();
+  } finally {
+    document.getSelection()?.removeAllRanges();
+    delete (Range.prototype as Partial<Range>).getClientRects;
+    vi.useRealTimers();
+  }
+});
+
 it.each([
   ["external", "{Shift>}{F10}{/Shift}"],
   ["external", "{ContextMenu}"],

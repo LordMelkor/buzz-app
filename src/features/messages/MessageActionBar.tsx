@@ -40,9 +40,30 @@ const AfterMenuClose = createContext<
 >(undefined);
 export const useAfterMessageMenuClose = () => useContext(AfterMenuClose);
 
+// Links, media, editable content and text the reader had already selected
+// keep the browser's own menu.
+const nativeMenuTarget =
+  "a[href], img, video, audio, input, textarea, select, [contenteditable]:not([contenteditable='false'])";
+// Read at the press: macOS selects the word under a secondary click before
+// its contextmenu event.
+const selectionHolds = ({ target, clientX: x, clientY: y }: MouseEvent) => {
+  const selection = (target as Node).ownerDocument?.getSelection();
+  if (!selection || selection.isCollapsed) return false;
+  for (let index = 0; index < selection.rangeCount; index++)
+    for (const box of selection.getRangeAt(index).getClientRects())
+      if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom)
+        return true;
+  return false;
+};
+const keepsNativeMenu = (target: EventTarget, selected?: boolean) =>
+  selected || (target instanceof Element && !!target.closest(nativeMenuTarget));
+
 type Props = {
   /** A coordination row is the context-menu target instead of a toolbar. */
   children?: ReactElement | undefined;
+  /** The target also shows the toolbar. A pointer open then leaves focus in
+   * place, as ⋯ does, and Forward returns to ⋯. */
+  withToolbar?: boolean | undefined;
   rowRef?: RefObject<HTMLDivElement | null>;
   messageId?: string;
   menuTriggerRef?: RefObject<HTMLButtonElement | null>;
@@ -61,15 +82,12 @@ type Props = {
 
 export function MessageActionBar(props: Props) {
   const active = useConversationPresentation();
-  return active ? (
-    props.children ? (
-      <MessageActionBarControls {...props} />
-    ) : (
-      <ActiveMessageActionBar {...props} />
-    )
-  ) : (
-    (props.children ?? null)
-  );
+  // A target keeps its tree while hidden, so its content is not remounted.
+  return props.children ? (
+    <MessageActionBarControls {...props} />
+  ) : active ? (
+    <ActiveMessageActionBar {...props} />
+  ) : null;
 }
 
 function ActiveMessageActionBar(props: Props) {
@@ -90,6 +108,7 @@ function ActiveMessageActionBar(props: Props) {
 
 function MessageActionBarControls({
   children,
+  withToolbar,
   onSendToChannel,
   onReply,
   onForward,
@@ -104,7 +123,10 @@ function MessageActionBarControls({
   menuTriggerRef,
   rowRef,
 }: Props) {
+  const active = useConversationPresentation();
   const [open, setOpen] = useState(false);
+  // A hidden conversation retires its open context menu.
+  if (open && !active) setOpen(false);
   const barRef = useRef<HTMLDivElement>(null);
   const slotRef = useRef<HTMLDivElement>(null);
   const floating = useFloatingActionBar(
@@ -129,6 +151,7 @@ function MessageActionBarControls({
   const [openedByPointer, setOpenedByPointer] = useState(false);
   const [contextAnchor, setContextAnchor] = useState<HTMLElement>();
   const contextFocus = useRef<HTMLElement | null>(null);
+  const selectedAtPress = useRef<boolean>(undefined);
   const ownTrigger = useRef<HTMLButtonElement>(null);
   const trigger = menuTriggerRef ?? ownTrigger;
   const copy = async (text: () => string, label: string) => {
@@ -240,9 +263,8 @@ function MessageActionBarControls({
               // focus this menu's target first (⋯, however it opened, or the
               // context menu's target); a press need not have focused ⋯.
               afterClose.current = () => {
-                const target = children
-                  ? contextFocus.current
-                  : trigger.current;
+                const target =
+                  (children && contextFocus.current) || trigger.current;
                 if (target?.isConnected) target.focus({ preventScroll: true });
                 onForward();
               };
@@ -270,6 +292,7 @@ function MessageActionBarControls({
       {children ? (
         <ContextMenuRoot
           open={open}
+          disabled={!active}
           onOpenChange={(next) => {
             if (next) setHandingOffFocus(false);
             setOpen(next);
@@ -278,17 +301,39 @@ function MessageActionBarControls({
         >
           <ContextMenuTrigger
             render={children}
+            onPointerDown={(event) => {
+              selectedAtPress.current = selectionHolds(event.nativeEvent);
+            }}
             onContextMenu={(event) => {
-              if (!event.currentTarget.contains(event.target as Node)) {
+              const selected = selectedAtPress.current;
+              selectedAtPress.current = undefined;
+              if (
+                !event.currentTarget.contains(event.target as Node) ||
+                // The toolbar's ⋯ owns its own menu.
+                (event.target as Element).closest?.("[data-message-actions]")
+              ) {
                 event.preventBaseUIHandler();
                 return;
               }
+              if (keepsNativeMenu(event.target, selected)) {
+                event.preventBaseUIHandler();
+                // Base UI's document listener would cancel the native menu.
+                event.stopPropagation();
+                return;
+              }
               setContextAnchor(undefined);
-              contextFocus.current =
-                event.currentTarget.querySelector("button");
+              contextFocus.current = withToolbar
+                ? null
+                : event.currentTarget.querySelector("button");
             }}
+            // A message's long press stays the browser's: text selection and
+            // link and image callouts. Touch reaches its actions through ⋯.
+            style={withToolbar ? { WebkitTouchCallout: "default" } : undefined}
             onTouchStart={(event) => {
-              if (!event.currentTarget.contains(event.target as Node)) {
+              if (
+                withToolbar ||
+                !event.currentTarget.contains(event.target as Node)
+              ) {
                 event.preventBaseUIHandler();
                 return;
               }
@@ -299,7 +344,8 @@ function MessageActionBarControls({
             onKeyDown={(event) => {
               if (
                 event.defaultPrevented ||
-                !event.currentTarget.contains(event.target as Node)
+                !event.currentTarget.contains(event.target as Node) ||
+                keepsNativeMenu(event.target)
               )
                 return;
               if (
@@ -308,7 +354,7 @@ function MessageActionBarControls({
               ) {
                 event.preventDefault();
                 contextFocus.current = event.target as HTMLElement;
-                setContextAnchor(event.currentTarget);
+                setContextAnchor(contextFocus.current);
                 setHandingOffFocus(false);
                 setOpen(true);
               }
