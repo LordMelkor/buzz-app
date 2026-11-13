@@ -74,8 +74,106 @@ const settings = (): ClaudeMcp => ({
   started: vi.fn(),
 });
 
+it.each([undefined, { name: "alpha" }])(
+  "uses catalog names for sanitized tools with native server metadata %j",
+  async (mcp_server) => {
+    const f = native(["alpha"], ["search_docs"], {
+      alpha: ["search.docs"],
+    });
+    const started = vi.fn();
+    const call = vi.fn(async (_call: unknown) => "policy denied");
+    const ran = vi.fn((_call: unknown) => false);
+    const process = await ClaudeProcess.start(f.spawn, {
+      cwd: "/work",
+      systemPrompt: "",
+      mcp: {
+        ...settings(),
+        choice: { alpha: true },
+        servers: [{ name: "alpha", default: true }],
+        started,
+        call,
+        ran,
+      },
+    });
+    const fake = f.processes[0];
+    expect(started).toHaveBeenCalledWith(
+      "initial",
+      [{ name: "alpha", tools: ["search.docs"] }],
+      { alpha: true },
+      [expect.objectContaining({ tools: [{ name: "search.docs" }] })],
+    );
+    fake?.emit({
+      type: "control_request",
+      request_id: "dotted",
+      request: {
+        subtype: "can_use_tool",
+        tool_name: "mcp__alpha__search_docs",
+        tool_use_id: "dotted",
+        ...(mcp_server ? { mcp_server } : {}),
+        input: {},
+      },
+    });
+    await flush();
+    expect(call).toHaveBeenCalledWith(
+      {
+        session: "initial",
+        id: "dotted",
+        server: "alpha",
+        tool: "search.docs",
+        arguments: {},
+      },
+      expect.any(AbortSignal),
+    );
+    expect(
+      fake?.received.find(
+        (message) =>
+          (message.response as { request_id?: string })?.request_id ===
+          "dotted",
+      ),
+    ).toMatchObject({
+      response: { response: { behavior: "deny", message: "policy denied" } },
+    });
+    fake?.emit({
+      type: "user",
+      tool_result_meta: [
+        { id: "dotted", permission_decision: { decision: "reject" } },
+      ],
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "dotted", content: "denied" },
+        ],
+      },
+    });
+    expect(ran).toHaveBeenCalledWith({
+      session: "initial",
+      id: "dotted",
+      server: "alpha",
+      tool: "search.docs",
+      rejected: true,
+    });
+    await process.kill();
+  },
+);
+
+it("refuses admitted tool names that collide after native normalization", async () => {
+  const f = native(["alpha"], ["search_docs"], {
+    alpha: ["search.docs", "search_docs"],
+  });
+  await expect(
+    ClaudeProcess.start(f.spawn, {
+      cwd: "/work",
+      systemPrompt: "",
+      mcp: settings(),
+    }),
+  ).rejects.toThrow("Claude could not verify an admitted MCP tool");
+  expect(f.processes[0]?.killed).toBe(true);
+  expect(f.processes[0]?.prompts).toEqual([]);
+});
+
 it("resolves preallowed child results by exact native tool identity despite overlapping server prefixes", async () => {
-  const f = native(["alpha", "alpha__beta"], []);
+  const f = native(["alpha", "alpha__beta"], [], {
+    alpha__beta: ["write.marker"],
+  });
   const ran = vi.fn((_call: unknown) => false);
   const process = await ClaudeProcess.start(f.spawn, {
     cwd: "/work",
@@ -110,7 +208,7 @@ it("resolves preallowed child results by exact native tool identity despite over
     session: "initial",
     id: "overlap",
     server: "alpha__beta",
-    tool: "write_marker",
+    tool: "write.marker",
   });
   await process.kill();
 });
@@ -159,7 +257,9 @@ it("uses an admitted tool's authoritative context server when catalog full names
 });
 
 it("denies unresolved or ambiguous external callbacks and preserves authoritative native server metadata", async () => {
-  const f = native(["alpha.beta", "alpha_beta"], []);
+  const f = native(["alpha.beta", "alpha_beta"], [], {
+    alpha_beta: ["read.echo", "read_echo"],
+  });
   const call = vi.fn(async (_call: unknown) => undefined);
   const ran = vi.fn((_call: unknown) => false);
   const process = await ClaudeProcess.start(f.spawn, {
@@ -171,6 +271,7 @@ it("denies unresolved or ambiguous external callbacks and preserves authoritativ
   for (const [id, tool_name, mcp_server] of [
     ["unknown", "mcp__unknown__read", undefined],
     ["ambiguous", "mcp__alpha_beta__read_echo", undefined],
+    ["tool-ambiguous", "mcp__alpha_beta__read_echo", { name: "alpha_beta" }],
     ["malformed", "mcp__elsewhere__read", { name: "alpha.beta" }],
     ["wrong-sdk-identity", "mcp__alpha_beta__read_echo", { name: "buzz" }],
   ] as const)
@@ -187,7 +288,13 @@ it("denies unresolved or ambiguous external callbacks and preserves authoritativ
     });
   await flush();
   expect(call).not.toHaveBeenCalled();
-  for (const id of ["unknown", "ambiguous", "malformed", "wrong-sdk-identity"])
+  for (const id of [
+    "unknown",
+    "ambiguous",
+    "tool-ambiguous",
+    "malformed",
+    "wrong-sdk-identity",
+  ])
     expect(
       fake?.received.find(
         (message) =>
@@ -449,7 +556,8 @@ it("requires native project approval before inspection can start a process", asy
 
 it("keeps earlier inspected names when a later inspection lists only its selected server", async () => {
   const names = ["alpha"];
-  const f = native(names);
+  const context = [{ name: "mcp__alpha__read_echo", serverName: "alpha" }];
+  const f = native(names, [], {}, context);
   let definitions = { mcpServers: { alpha: {}, beta: {}, buzz: {} } };
   const runtime = new ClaudeRuntime(
     {
@@ -472,6 +580,7 @@ it("keeps earlier inspected names when a later inspection lists only its selecte
       deniedMcpServers: [{ serverName: "beta" }, { serverName: "buzz" }],
     });
     names[0] = "beta";
+    context[0] = { name: "mcp__beta__read_echo", serverName: "beta" };
     await runtime.inspectMcp(agent, "beta");
     definitions = { mcpServers: {} } as typeof definitions;
     expect(await runtime.harnessMcp(agent)).not.toHaveProperty("calls");
@@ -656,8 +765,13 @@ it("honors enable-all without overriding an explicit project rejection", async (
 });
 
 it("verifies admitted tools rather than the catalog and retains every configured applied choice", async () => {
-  const f = native();
-  const mcp = settings();
+  const f = native(["alpha"], ["read_echo"], {
+    alpha: ["read_echo", "write.marker"],
+  });
+  const mcp = {
+    ...settings(),
+    choice: { alpha: ["write.marker"], beta: false },
+  };
   const process = await ClaudeProcess.start(f.spawn, {
     cwd: "/work",
     systemPrompt: "",
@@ -666,13 +780,13 @@ it("verifies admitted tools rather than the catalog and retains every configured
   expect(mcp.started).toHaveBeenCalledWith(
     "initial",
     [{ name: "alpha", tools: ["read_echo"] }],
-    { alpha: ["write_marker"], beta: false },
+    { alpha: ["write.marker"], beta: false },
     [
       {
         name: "alpha",
         default: true,
         state: "connected",
-        tools: [{ name: "read_echo" }, { name: "write_marker" }],
+        tools: [{ name: "read_echo" }, { name: "write.marker" }],
       },
     ],
   );

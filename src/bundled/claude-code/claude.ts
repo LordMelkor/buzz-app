@@ -152,6 +152,7 @@ export class ClaudeProcess {
   private mcp: ClaudeMcp | undefined;
   private mcpTurn: ClaudeMcpTurn | undefined;
   private mcpServers: readonly HarnessMcpServer[] = [];
+  private mcpToolCatalog = new Map<string, readonly string[]>();
   private mcpToolNames = new Map<
     string,
     { server: string; tool: string } | null
@@ -673,42 +674,48 @@ export class ClaudeProcess {
             : { server, tool },
         );
       };
+      this.mcpToolCatalog = new Map(
+        rows
+          .filter(
+            (row) => typeof row?.name === "string" && Array.isArray(row.tools),
+          )
+          .map((row) => [
+            row.name,
+            row.tools
+              .filter((tool: Message) => typeof tool?.name === "string")
+              .map((tool: Message) => tool.name),
+          ]),
+      );
       for (const row of rows)
         if (typeof row?.name === "string" && Array.isArray(row.tools))
           for (const tool of row.tools)
             if (typeof tool?.name === "string") {
-              const name = `mcp__${mcpName(row.name)}__${tool.name}`;
+              const name = `mcp__${mcpName(row.name)}__${mcpName(tool.name)}`;
               add(catalog, name, row.name, tool.name);
               if (row.name === TOOL_SERVER) this.buzzMcpTools.add(name);
             }
+      const admittedTools: { server: string; tool: string }[] = [];
       for (const tool of tools)
         if (
           typeof tool?.name === "string" &&
           typeof tool.serverName === "string"
         ) {
-          const prefix = `mcp__${mcpName(tool.serverName)}__`;
-          if (tool.name.startsWith(prefix))
-            add(
-              admitted,
-              tool.name,
-              tool.serverName,
-              tool.name.slice(prefix.length),
-            );
+          const native = this.catalogCall(tool.name, tool.serverName);
+          if (!native) {
+            if (tool.serverName === TOOL_SERVER) continue;
+            throw new Error("Claude could not verify an admitted MCP tool");
+          }
+          add(admitted, tool.name, native.server, native.tool);
+          admittedTools.push(native);
         }
       this.mcpToolNames = new Map([...catalog, ...admitted]);
       const loaded = servers
         .filter((row) => row.state !== "disabled")
         .map(({ name }) => ({
           name,
-          tools: tools
-            .filter(
-              (tool) =>
-                tool?.serverName === name && typeof tool.name === "string",
-            )
-            .map(
-              (tool) =>
-                tool.name.slice(`mcp__${mcpName(name)}__`.length) as string,
-            ),
+          tools: admittedTools
+            .filter((tool) => tool.server === name)
+            .map((tool) => tool.tool),
         }));
       return { servers, loaded };
     }
@@ -1068,18 +1075,20 @@ export class ClaudeProcess {
       if (this.pending) this.done();
     }
   }
+  /** Native names are lossy; only a unique catalog name can identify a tool. */
+  private catalogCall(name: string, server: string) {
+    const tools = this.mcpToolCatalog
+      .get(server)
+      ?.filter((tool) => `mcp__${mcpName(server)}__${mcpName(tool)}` === name);
+    const tool = tools?.length === 1 ? tools[0] : undefined;
+    return tool === undefined ? undefined : { server, tool };
+  }
   private nativeCall(name: unknown, server?: unknown) {
     if (typeof name !== "string" || !name.startsWith("mcp__")) return;
-    if (typeof server === "string") {
-      const prefix = `mcp__${mcpName(server)}__`;
-      if (
-        server !== TOOL_SERVER &&
-        name.startsWith(prefix) &&
-        name.length > prefix.length
-      )
-        return { server, tool: name.slice(prefix.length) };
-      return;
-    }
+    if (typeof server === "string")
+      return server !== TOOL_SERVER
+        ? this.catalogCall(name, server)
+        : undefined;
     const found = this.mcpToolNames.get(name);
     return found?.server !== TOOL_SERVER ? (found ?? undefined) : undefined;
   }
@@ -1123,7 +1132,7 @@ export class ClaudeProcess {
           !meta &&
           block.is_error === true &&
           block.content ===
-            `<tool_use_error>Error: No such tool available: ${unknown ?? (call && `mcp__${mcpName(call.server)}__${call.tool}`)}</tool_use_error>`
+            `<tool_use_error>Error: No such tool available: ${unknown ?? (call && `mcp__${mcpName(call.server)}__${mcpName(call.tool ?? "")}`)}</tool_use_error>`
         )
           continue;
         const rejected = meta?.permission_decision?.decision === "reject";
