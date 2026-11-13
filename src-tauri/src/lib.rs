@@ -61,6 +61,8 @@ mod claude_key;
 #[cfg(unix)]
 mod cli_link;
 mod clipboard;
+#[cfg(any(target_os = "macos", test))]
+mod gpu_reaper;
 mod jev;
 mod keep_awake;
 #[cfg(target_os = "macos")]
@@ -1019,6 +1021,10 @@ pub fn run() {
                 if let Err(error) = window_state::restore(&window.as_ref().window()) {
                     eprintln!("Could not restore Buzz window: {error}");
                 }
+                #[cfg(target_os = "macos")]
+                if let Err(error) = window_state::opaque_background(&window) {
+                    eprintln!("Could not set the Buzz window background: {error}");
+                }
             }
             #[cfg(target_os = "macos")]
             notifications::macos::init();
@@ -1026,6 +1032,8 @@ pub fn run() {
             mouse_nav::install(app.handle());
             #[cfg(target_os = "macos")]
             reshow::install(app.handle());
+            #[cfg(target_os = "macos")]
+            gpu_reaper::install(app.handle());
             #[cfg(target_os = "macos")]
             if let Some(home) = dirs::home_dir() {
                 if let Err(error) = legacy_cli_shortcut::remove_stale(&home.join(".local/bin")) {
