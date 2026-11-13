@@ -55,6 +55,7 @@ import type { Mode } from "./agent-start";
 import { channelTemplates } from "../channel-templates/local";
 import { eventDto, type ReadFilter, type RelayEvent } from "../relay/events";
 import { keypair, message, signed } from "../relay/testing";
+import { createRelayReader } from "../relay/reader";
 import type { LiveBatch } from "../relay/incoming";
 import type { RelaySession } from "../relay/session";
 import { huddleDescription } from "../huddle/lifecycle";
@@ -10711,6 +10712,51 @@ it("shows the owner's agents on other devices without running them, and leaves e
   expect(native.claim).not.toHaveBeenCalledWith(sibling, 0);
   await expect(service.remove(sibling)).rejects.toThrow(/device that runs it/);
   await expect(service.save(sibling, { name: "Near" })).rejects.toThrow();
+});
+
+it("shows hosted agents while a slow background read holds the relay's background slot", async () => {
+  const { service, plugin, session, connect } = await setup();
+  plugin.agents.register(cloud().type);
+  const listing = record(hostedKey, {
+    content: JSON.stringify({ name: "Sky" }),
+    tags: [
+      ["d", hostedKey],
+      ["runtime", "example/cloud"],
+    ],
+  });
+  let release: ((events: RelayEvent[]) => void) | undefined;
+  // The session's actual reader, which admits one background read at a time.
+  const { reader } = createRelayReader({
+    viewer,
+    relayAuthor: other,
+    media: () => undefined,
+    query: async (filters) =>
+      filters[0]?.kinds?.includes(30078)
+        ? new Promise<RelayEvent[]>((resolve) => (release = resolve))
+        : filters[0]?.kinds?.includes(30177)
+          ? [listing]
+          : [],
+  });
+  const background = reader.read(
+    [{ kinds: [30078], authors: [viewer], limit: 1 }],
+    { priority: "background", deadlineMs: 30_000 },
+  );
+  try {
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    Object.assign(session, { read: reader.read });
+    // A new session reads the community's agent records again.
+    connect(false);
+    connect(true);
+    await vi.waitFor(() =>
+      expect(service.find(hostedKey)).toMatchObject({
+        name: "Sky",
+        place: "hosted",
+      }),
+    );
+  } finally {
+    release?.([]);
+    await background;
+  }
 });
 
 it("creates a hosted agent through its provider, attesting the key it returns", async () => {

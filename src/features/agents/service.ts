@@ -6031,7 +6031,9 @@ export class AgentsService extends Service implements Agents {
 
   /** Reads the viewer's agent records in the community, then lists each of
    * its agents here that they lack. A sync asks again until one succeeds.
-   * Without the desktop app there are no agents to show. */
+   * Without the desktop app there are no agents to show. Agents shows its
+   * hosted agents from these records alone, so the read uses foreground
+   * capacity: a slow background read must not run out its deadline. */
   private async readListings(origin: string, binding: Binding) {
     if (!this.native || this.reading.get(origin) === binding) return;
     this.reading.set(origin, binding);
@@ -6039,7 +6041,7 @@ export class AgentsService extends Service implements Agents {
     try {
       const events = await session.read(
         [{ kinds: [30177], authors: [viewer], limit: 500 }],
-        { signal: controller.signal, priority: "background", fresh: true },
+        { signal: controller.signal, priority: "foreground", fresh: true },
       );
       if (this.bound.get(origin)?.binding !== binding) return;
       const edits = this.edits.get(origin);
