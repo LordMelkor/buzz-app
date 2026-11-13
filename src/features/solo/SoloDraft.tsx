@@ -185,12 +185,9 @@ export function SoloDraft({
   source,
   visit,
   region,
-  lead,
   draft: regionDraft,
 }: {
   draft?: SoloDraftStart["draft"];
-  /** This region draft starts its workspace's lead. */
-  lead?: boolean | undefined;
   /** The Solo region whose source opened this draft; its chat gets that label. */
   region?: string | undefined;
   /** The visit presenting this draft, a Back stop only once drafted. */
@@ -460,8 +457,6 @@ export function SoloDraft({
           region,
           ...(regionDraft ? { draft: regionDraft } : {}),
           ...(project ? { workspace: project } : {}),
-          // Only while it still targets the workspace it leads.
-          ...(lead && project === projectId ? { lead: true } : {}),
         })
       )
         throw new Error(

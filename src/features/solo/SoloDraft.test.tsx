@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { soloDraft } from "../channel-navigation/routes";
 import {
   MESSAGE_TOKENS_TAG,
   signedMessageTokenTags,
@@ -3879,31 +3880,38 @@ it("a refused region start forgets its link and gives its prompt and files back 
   expect(screen.getByRole("button", { name: "Remove notes.txt" })).toBeTruthy();
   expect(readView("test", "solo:new-draft", null)).toBeNull();
 });
-it("a region lead draft starts its workspace's lead only while it still targets that workspace", async () => {
+it("retains an old region route unchanged through Send and a workspace change", async () => {
   const test = await projectSetup(),
     onStarted = vi.fn(),
     user = userEvent.setup();
   regionNavigation.set({ source: {}, binding: regionBinding });
   const key = regionDraftKey(REGION, "work");
+  const saved = {
+    kind: "solo-draft",
+    region: REGION,
+    project: "work",
+    mode: "example",
+  };
+  const draft = soloDraft(saved)?.draft;
   const view = () => (
     <SoloDraft
       session={test.session}
       scope="test"
       projectId="work"
       region={REGION}
-      lead
+      draft={draft}
       onStarted={onStarted}
     />
   );
-  writeView("test", `${key}:new-draft`, taggedDraft("Lead the launch"));
+  writeView("test", `${key}:new-draft`, taggedDraft("Plan the launch"));
   const first = render(view());
   await user.click(screen.getByRole("button", { name: "Send message" }));
   await waitFor(() => expect(onStarted).toHaveBeenCalledOnce());
-  const lead = test.channelWrites.create.mock.calls[0]?.[0] ?? "";
-  expect(readView("test", regionStartKey(lead), null)).toEqual({
+  const firstChat = test.channelWrites.create.mock.calls[0]?.[0] ?? "";
+  expect(readView("test", regionStartKey(firstChat), null)).toEqual({
     region: REGION,
     workspace: "work",
-    lead: true,
+    draft: { context: { saved } },
   });
   first.unmount();
   writeView("test", `${key}:new-draft`, taggedDraft("Just a task"));
@@ -3916,6 +3924,7 @@ it("a region lead draft starts its workspace's lead only while it still targets 
   expect(readView("test", regionStartKey(task), null)).toEqual({
     region: REGION,
     workspace: "other",
+    draft: { context: { saved } },
   });
 });
 it("starts a New chat from a saved folder chip and signs the chip into its first message", async () => {

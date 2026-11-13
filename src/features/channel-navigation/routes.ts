@@ -10,8 +10,6 @@ export type SoloDraft = Readonly<{
   linked?: string;
   /** The Solo region label whose source opened this draft. */
   region?: string;
-  /** The region draft starts its workspace's lead. */
-  lead?: true;
   /** Source-owned context and identity for this unsent region draft. */
   draft?: NonNullable<SoloDraftStart["draft"]>;
 }>;
@@ -25,6 +23,7 @@ export function soloDraft(
   const value = params as { readonly [key: string]: JsonValue };
   if (value.kind !== "solo-draft") return;
   if (
+    !value.region &&
     Object.keys(value).some(
       (key) =>
         key !== "kind" &&
@@ -32,22 +31,20 @@ export function soloDraft(
         key !== "agent" &&
         key !== "linked" &&
         key !== "region" &&
-        key !== "lead" &&
         key !== "draft",
     )
   )
     return;
-  const { project, agent, linked, region, lead, draft } = value;
+  const { project, agent, linked, region, draft } = value;
   if (
-    (region !== undefined &&
-      (typeof region !== "string" ||
-        !regionLabels([region]).length ||
-        linked !== undefined)) ||
-    (lead !== undefined && (lead !== true || !region || !project))
+    region !== undefined &&
+    (typeof region !== "string" ||
+      !regionLabels([region]).length ||
+      linked !== undefined)
   )
     return;
   if (
-    draft !== undefined &&
+    "draft" in value &&
     (!region ||
       !draft ||
       typeof draft !== "object" ||
@@ -82,8 +79,12 @@ export function soloDraft(
     ...(agent ? { agent } : {}),
     ...(linked ? { linked } : {}),
     ...(region ? { region } : {}),
-    ...(lead ? { lead: true as const } : {}),
-    ...(draft ? { draft: draft as NonNullable<SoloDraftStart["draft"]> } : {}),
+    ...(draft
+      ? { draft: draft as NonNullable<SoloDraftStart["draft"]> }
+      : region
+        ? // Preserve prior source fields without interpreting their meaning.
+          { draft: { context: { saved: value } } }
+        : {}),
   };
 }
 

@@ -97,13 +97,16 @@ The navigation parser copies JSON and limits the complete target to 8 KiB.
 Missing or invalid required context must be handled by the source. A failed
 start returns the prompt and files to the same draft slot as before.
 
-The existing `lead` and `leadWorkspaceId` fields remain during migration.
-Sources can move role intent into JSON and select workspace rows with
-`selected` when the capability is present. They must retain their old path on
-older hosts. Remove the old host fields only after consumers have migrated.
-With `lead`, a workspace draft's start also records that the chat leads that
-workspace, but only while the draft still targets it. The host does not store
-Leads; the source saves the Lead in its own records.
+The host does not interpret source-owned roles or select their workspace rows.
+Sources use `draft.context` for their own meaning and `Workspace.selected` for
+selection. For a region route or saved start with no explicit `draft`, the host
+returns an unkeyed `draft.context` containing `{ saved: <original source> }`.
+It retains that source unchanged through workspace changes, Send, reload, and
+retry. A route source contains its original `kind`, `region`, and optional
+`project`; a start source contains `region` and optional `workspace`. The plugin
+interprets any other saved fields. Explicit `draft` metadata takes precedence;
+invalid metadata fails instead of falling back. Existing workspace draft slots
+stay in place.
 
 Host reveal listeners receive live intent only. A pending request is kept only
 for a late source subscriber and ends when navigation leaves or the connection

@@ -2314,7 +2314,6 @@ function ChannelWorkspace({
               ])}
               linkedId={draft.linked}
               region={draft.region}
-              lead={draft.lead}
               draft={draft.draft}
               source={linkedSource}
               visit={navigation}

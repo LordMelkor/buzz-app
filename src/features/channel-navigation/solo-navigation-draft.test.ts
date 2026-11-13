@@ -49,8 +49,11 @@ it("opens New chat for its region, and only that region reads and forgets how it
   writeView(h.scope, regionStartKey("chat-2"), { region: label });
   expect(source.handle.started(binding, "chat-1")).toEqual({
     workspace: "work",
+    draft: { context: { saved: { region: label, workspace: "work" } } },
   });
-  expect(source.handle.started(binding, "chat-2")).toEqual({});
+  expect(source.handle.started(binding, "chat-2")).toEqual({
+    draft: { context: { saved: { region: label } } },
+  });
   expect(source.handle.started(binding, "chat-3")).toBeUndefined();
   // Another region's source neither reads nor clears it.
   expect(other.handle.started(other.binding(), "chat-1")).toBeUndefined();
@@ -60,10 +63,15 @@ it("opens New chat for its region, and only that region reads and forgets how it
   const next = source.binding();
   expect(next.incarnation).not.toBe(binding.incarnation);
   expect(() => source.handle.started(binding, "chat-1")).toThrow("ended");
-  expect(source.handle.started(next, "chat-1")).toEqual({ workspace: "work" });
+  expect(source.handle.started(next, "chat-1")).toEqual({
+    workspace: "work",
+    draft: { context: { saved: { region: label, workspace: "work" } } },
+  });
   source.handle.forget(next, "chat-1");
   expect(source.handle.started(next, "chat-1")).toBeUndefined();
-  expect(source.handle.started(next, "chat-2")).toEqual({});
+  expect(source.handle.started(next, "chat-2")).toEqual({
+    draft: { context: { saved: { region: label } } },
+  });
 });
 
 it("names a region's draft owner only while its source is running and ready", async () => {
@@ -140,31 +148,21 @@ it("reopens a keyed slot without resetting its chosen workspace or settings", as
   });
 });
 
-it("opens a workspace's lead draft only in that workspace and returns the lead with its start", async () => {
+it("returns prior start fields as opaque context without rewriting saved bytes", async () => {
   const h = fixture();
   const source = await h.register();
-  const binding = source.binding();
-  source.handle.openDraft(binding, { workspace: "work", lead: true });
-  expect(h.navigator.snapshot().attempt.entry.target).toMatchObject({
-    route: {
-      params: {
-        kind: "solo-draft",
-        region: label,
-        project: "work",
-        lead: true,
-      },
-    },
-  });
-  expect(() => source.handle.openDraft(binding, { lead: true })).toThrow(
-    "Invalid workspace",
-  );
-  writeView(h.scope, regionStartKey("chat"), {
-    region: label,
+  const saved = { region: label, workspace: "work", mode: "example" };
+  writeView(h.scope, regionStartKey("chat"), saved);
+  h.reconnect();
+  expect(source.handle.started(source.binding(), "chat")).toEqual({
     workspace: "work",
-    lead: true,
+    draft: { context: { saved } },
   });
-  expect(source.handle.started(binding, "chat")).toEqual({
-    workspace: "work",
-    lead: true,
-  });
+  expect(readView(h.scope, regionStartKey("chat"), null)).toEqual(saved);
+  for (const draft of [null, {}, { key: "", context: null }]) {
+    writeView(h.scope, regionStartKey("chat"), { ...saved, draft });
+    expect(() => source.handle.started(source.binding(), "chat")).toThrow(
+      "invalid",
+    );
+  }
 });

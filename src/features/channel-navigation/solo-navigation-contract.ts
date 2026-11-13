@@ -62,8 +62,6 @@ export type SoloChatWorkspace = Readonly<{
 /** How a chat this device sent from `openDraft` was started. */
 export type SoloDraftStart = Readonly<{
   workspace?: string;
-  /** @deprecated Source-owned roles belong in draft.context. Kept during migration. */
-  lead?: true;
   /** Opaque JSON, retained in navigation history and the device's start record.
    * Keep secrets out of context. A key isolates this draft from workspace drafts. */
   draft?: Readonly<{ key?: string; context: JsonValue }>;
@@ -82,8 +80,7 @@ export type SoloRegionHandle = Readonly<{
   /** The same device state as component props, available before mount. */
   state(binding: SoloRegionBinding): SoloRegionProps["state"];
   /** Open New chat for this region. Its first send creates the chat with this
-   * region's label; until then it is only a draft. With `lead`, the chat starts
-   * as the workspace's lead while the draft still targets that workspace. */
+   * region's label; until then it is only a draft. */
   openDraft(binding: SoloRegionBinding, input?: SoloDraftStart): void;
   /** This device's record of a chat started from `openDraft`, kept until `forget`. */
   started(
@@ -117,12 +114,10 @@ export type SoloRegionProps = Readonly<{
 }>;
 export type SoloWorkspaceProps = Readonly<{
   id: string;
-  /** @deprecated Sources select workspace rows with selected. Kept during migration. */
-  leadWorkspaceId?: string;
   selected?: boolean;
   onSelect?(): void;
   onNewTask?(): void;
-  /** Reveal a moved or externally opened child; selecting the lead does not expand. */
+  /** Reveal a moved or externally opened child; selection alone does not expand. */
   reveal?: string;
   dropTarget?: boolean;
   children?: ReactNode;

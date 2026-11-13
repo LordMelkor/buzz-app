@@ -96,6 +96,7 @@ it("keeps a region draft's label and refuses a malformed or linked one", () => {
   expect(soloDraft({ kind: "solo-draft", region, project: "p" })).toEqual({
     region,
     project: "p",
+    draft: { context: { saved: { kind: "solo-draft", region, project: "p" } } },
   });
   for (const params of [
     { kind: "solo-draft", region: "buzz.solo" },
@@ -109,15 +110,22 @@ it("keeps a region draft's label and refuses a malformed or linked one", () => {
   ])
     expect(soloDraft(params)).toBeUndefined();
 });
-it("keeps a region lead draft only with its region and workspace", () => {
+it("retains prior region source fields as opaque unkeyed context", () => {
   const region = "buzz.region:example:tasks";
+  const saved = { kind: "solo-draft", region, project: "p", mode: "example" };
+  expect(soloDraft(saved)).toEqual({
+    region,
+    project: "p",
+    draft: { context: { saved } },
+  });
+  expect(soloDraft({ ...saved, draft: { context: null } })).toEqual({
+    region,
+    project: "p",
+    draft: { context: null },
+  });
+  for (const draft of [null, {}, { key: "", context: null }])
+    expect(soloDraft({ ...saved, draft })).toBeUndefined();
   expect(
-    soloDraft({ kind: "solo-draft", region, project: "p", lead: true }),
-  ).toEqual({ region, project: "p", lead: true });
-  for (const params of [
-    { kind: "solo-draft", region, lead: true },
-    { kind: "solo-draft", project: "p", lead: true },
-    { kind: "solo-draft", region, project: "p", lead: false },
-  ])
-    expect(soloDraft(params)).toBeUndefined();
+    soloDraft({ kind: "solo-draft", project: "p", mode: "example" }),
+  ).toBeUndefined();
 });

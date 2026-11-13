@@ -506,16 +506,13 @@ export class SoloNavigationService extends Service implements SoloNavigation {
               region: label,
               draft: saved.draft as JsonValue,
             })?.draft
-          : undefined;
+          : { context: { saved: saved as JsonValue } };
       if ("draft" in saved && !draft)
         throw new Error("This chat's saved draft context is invalid");
       return {
         ...("workspace" in saved && typeof saved.workspace === "string"
           ? {
               workspace: saved.workspace,
-              ...("lead" in saved && saved.lead === true
-                ? { lead: true as const }
-                : {}),
             }
           : {}),
         ...(draft ? { draft } : {}),
@@ -537,11 +534,10 @@ export class SoloNavigationService extends Service implements SoloNavigation {
         current(binding);
         const { workspace } = input;
         if (
-          (workspace !== undefined &&
-            (typeof workspace !== "string" ||
-              !workspace ||
-              workspace.length > 256)) ||
-          (input.lead && !workspace)
+          workspace !== undefined &&
+          (typeof workspace !== "string" ||
+            !workspace ||
+            workspace.length > 256)
         )
           throw new Error("Invalid workspace");
         // The navigation parser bounds and copies source-owned JSON before retention.
@@ -549,7 +545,6 @@ export class SoloNavigationService extends Service implements SoloNavigation {
           soloDraftTarget(binding.scope, {
             region: label,
             ...(workspace ? { project: workspace } : {}),
-            ...(workspace && input.lead ? { lead: true } : {}),
             ...(input.draft !== undefined ? { draft: input.draft } : {}),
           }),
         );
