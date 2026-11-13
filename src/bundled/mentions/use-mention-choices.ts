@@ -251,6 +251,8 @@ export function useMentionChoices(
   /** One chooser opening; see useMentionDirectory. */
   lifetime: string,
   open = true,
+  /** Toolbar audience at opening; toggles must not reorder installed rows. */
+  addressed?: ReadonlySet<string>,
 ) {
   const draft = useContext(DraftMentionRoster);
   const roster = draft?.recipients;
@@ -444,7 +446,7 @@ export function useMentionChoices(
   );
   const matches = matchingMentions(candidates, query);
   // Ranking needs only the rows that can show.
-  const rank = (choices: readonly MentionChoice[]) =>
+  const normalRank = (choices: readonly MentionChoice[]) =>
     rankMentions(
       choices,
       query,
@@ -452,6 +454,18 @@ export function useMentionChoices(
       (key) => session.presence?.status(key) ?? "unknown",
       MENTION_ROWS,
     );
+  // Browse addressed agents before the cap; typed searches keep match quality first.
+  const rank = (choices: readonly MentionChoice[]) =>
+    addressed?.size && !query.trim()
+      ? [
+          ...normalRank(
+            choices.filter((c) => addressed.has(c.recipient.pubkey)),
+          ),
+          ...normalRank(
+            choices.filter((c) => !addressed.has(c.recipient.pubkey)),
+          ),
+        ].slice(0, MENTION_ROWS)
+      : normalRank(choices);
   // Ranked only when read: a full set of installed rows never needs outside choices.
   let outsideRows: readonly MentionChoice[] | undefined;
   const outside = () =>

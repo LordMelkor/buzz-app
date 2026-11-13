@@ -411,6 +411,11 @@ and are asked to sign in again in Buzz.
   message, attachments, and choices while this window stays open. Retry never
   replaces a newer New chat draft or a later Reset. Reloading or dismissing that
   notice ends this recovery option.
+  Open the composer’s agent chooser to change who you’re sending to. Already
+  selected agents appear first with checkmarks when browsing; click one to remove
+  it (the last agent stays selected). Rows stay in place while you toggle; reopen
+  to refresh their order. Search ranks matching choices by relevance, including
+  exact names.
   Plugins can keep separate unsent drafts in the same workspace. Where supported,
   each draft keeps its text, files, settings, model, and effort when you return.
   A locally hosted agent can list your personal workspace IDs with

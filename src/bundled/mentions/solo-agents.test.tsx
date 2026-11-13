@@ -541,6 +541,244 @@ it("picking an addressed row while several agents are addressed toggles it", asy
   test.library.dispose();
 });
 
+it.each([1, 2])(
+  "typed exact-name Enter chooses Al with %i agents addressed",
+  async (count) => {
+    const test = setup(false),
+      user = userEvent.setup();
+    const alexandra = { pubkey: "c".repeat(64), name: "Alexandra" },
+      bob = { pubkey: "d".repeat(64), name: "Bob" },
+      al = { pubkey: "e".repeat(64), name: "Al" };
+    const identities = [alexandra, bob, al];
+    const library = createAgentLibrary(async () => ({
+      definitions: [],
+      identities,
+    }));
+    // Load all three choices before opening: this tests ranking, not arrival order.
+    await library.queries.refresh();
+    const session = {
+      ...test.session,
+      agentLibrary: library.queries,
+      agentChoices: createAgentChoices({
+        scope: "exact-name",
+        library: library.queries,
+        signal: new AbortController().signal,
+      }),
+    };
+    const { view, toggle } = renderAudiencePicker(
+      { ...test, session },
+      [alexandra, bob].slice(0, count),
+    );
+    try {
+      await user.click(screen.getByRole("button", { name: /Change agents/ }));
+      await screen.findByRole("button", {
+        name: rowName("Al", "Adds to chat when you send"),
+      });
+      const search = screen.getByRole("searchbox");
+      await user.type(search, "Al");
+      // Assert the action first: wrong ordering used to remove Alexandra,
+      // or hit the composer's last-agent guard when she was addressed alone.
+      await user.keyboard("{Enter}");
+      expect(toggle).toHaveBeenCalledExactlyOnceWith(al);
+      expect(
+        [...document.querySelectorAll("[data-mention-choice]")].map((row) =>
+          row.getAttribute("data-mention-choice"),
+        ),
+      ).toEqual([al.pubkey, alexandra.pubkey]);
+      expect(search).toHaveFocus();
+      expect(search).toBeVisible();
+    } finally {
+      view.unmount();
+      library.dispose();
+      test.library.dispose();
+    }
+  },
+);
+
+it("installs addressed exact keys before the cap and keeps toggle order until reopening", async () => {
+  const test = setup(false),
+    user = userEvent.setup();
+  // More than 50 choices is intentional: sorting a capped list loses Zulu.
+  const identities = Array.from({ length: 52 }, (_, i) => ({
+    pubkey: (i + 16).toString(16).padStart(64, "0"),
+    name: i === 51 ? "Zulu" : `Agent ${String(i).padStart(2, "0")}`,
+  }));
+  const library = createAgentLibrary(async () => ({
+    definitions: [],
+    identities,
+  }));
+  const list = {
+    status: "ready" as const,
+    channels: [
+      {
+        id: "parent",
+        name: "Chat",
+        channelType: "solo" as const,
+        members: [] as string[],
+      },
+    ],
+  };
+  const session = {
+    ...test.session,
+    channels: {
+      ...test.session.channels,
+      list: () => list,
+    },
+    agentLibrary: library.queries,
+    agentChoices: createAgentChoices({
+      scope: "cap",
+      library: library.queries,
+      signal: new AbortController().signal,
+    }),
+  };
+  const zulu = identities[51],
+    alpha = identities[0];
+  if (!zulu || !alpha) throw new Error("Missing cap fixture");
+  let recipients = [zulu];
+  const toggle = vi.fn((person: MentionRecipient) => {
+    recipients = recipients.some((p) => p.pubkey === person.pubkey)
+      ? recipients.filter((p) => p.pubkey !== person.pubkey)
+      : [...recipients, person];
+    view.rerender(picker());
+  });
+  const picker = () => (
+    <MentionPicker
+      session={session}
+      scope="test"
+      channelId="parent"
+      disabled={false}
+      inviteAgents
+      audience={{ recipients, named: false, only: vi.fn(), toggle }}
+      select={() => true}
+    />
+  );
+  const view = render(picker());
+  const open = () =>
+    user.click(
+      screen.getByRole("button", { name: /Change agents|Choose agent/ }),
+    );
+  const labels = identities.map((p) => p.name);
+  const shown = () =>
+    [...document.querySelectorAll("[data-mention-choice]")].map(
+      (row) =>
+        identities.find(
+          (p) => p.pubkey === row.getAttribute("data-mention-choice"),
+        )?.name,
+    );
+  try {
+    await open();
+    const zuluRow = await screen.findByRole("button", {
+      name: rowName("Zulu", "Adds to chat when you send"),
+    });
+    expect(shown()).toEqual(["Zulu", ...labels.slice(0, 49)]);
+    expect(zuluRow).toHaveAttribute("aria-pressed", "true");
+    expect(new Set(shown()).size).toBe(50);
+    await user.click(
+      screen.getByRole("button", {
+        name: rowName(alpha.name, "Adds to chat when you send"),
+      }),
+    );
+    zuluRow.focus();
+    await user.keyboard("{Enter}");
+    expect(toggle.mock.calls.map(([p]) => p.pubkey)).toEqual([
+      alpha.pubkey,
+      zulu.pubkey,
+    ]);
+    expect(zuluRow).toHaveAttribute("aria-pressed", "false");
+    expect(shown()[0]).toBe("Zulu");
+    expect(screen.getByRole("searchbox")).toBeVisible();
+    await user.keyboard("{Escape}");
+    await open();
+    await screen.findByRole("button", {
+      name: rowName(alpha.name, "Adds to chat when you send"),
+    });
+    expect(shown()).toEqual(labels.slice(0, 50));
+    await user.type(screen.getByRole("searchbox"), "Zulu");
+    await screen.findByRole("button", {
+      name: rowName("Zulu", "Adds to chat when you send"),
+    });
+    expect(shown()).toEqual(["Zulu"]);
+    act(() => test.setArchived([zulu.pubkey]));
+    expect(
+      screen.getByRole("button", { name: /^Zulu.*Archived/ }),
+    ).toBeDisabled();
+  } finally {
+    view.unmount();
+    library.dispose();
+    test.library.dispose();
+  }
+});
+
+it("checks only the addressed namesake and appends late choices without moving it", async () => {
+  const test = setup(false),
+    user = userEvent.setup();
+  let identities = [
+    { pubkey: "c".repeat(64), name: "Twin" },
+    { pubkey: "d".repeat(64), name: "Twin" },
+  ];
+  const library = createAgentLibrary(async () => ({
+    definitions: [],
+    identities,
+  }));
+  const list = {
+    status: "ready" as const,
+    channels: [
+      {
+        id: "parent",
+        name: "Chat",
+        channelType: "solo" as const,
+        members: [] as string[],
+      },
+    ],
+  };
+  const session = {
+    ...test.session,
+    channels: {
+      ...test.session.channels,
+      list: () => list,
+    },
+    agentLibrary: library.queries,
+    agentChoices: createAgentChoices({
+      scope: "twins",
+      library: library.queries,
+      signal: new AbortController().signal,
+    }),
+  };
+  const addressed = identities[1];
+  if (!addressed) throw new Error("Missing namesake fixture");
+  const view = renderAudiencePicker({ ...test, session }, [addressed]);
+  try {
+    await user.click(screen.getByRole("button", { name: /Change agents/ }));
+    const twins = await screen.findAllByRole("button", {
+      name: /Twin.*Adds to chat when you send/,
+    });
+    expect(twins).toHaveLength(2);
+    expect(twins.map((row) => row.getAttribute("aria-pressed"))).toEqual([
+      "true",
+      "false",
+    ]);
+    identities = [...identities, { pubkey: "e".repeat(64), name: "Aaron" }];
+    await act(() => library.queries.refresh());
+    await screen.findByRole("button", {
+      name: rowName("Aaron", "Adds to chat when you send"),
+    });
+    expect(
+      [...document.querySelectorAll("[data-mention-choice]")].map((row) =>
+        row.getAttribute("data-mention-choice"),
+      ),
+    ).toEqual([addressed.pubkey, "c".repeat(64), "e".repeat(64)]);
+    expect(
+      screen.getAllByRole("button", {
+        name: /Twin.*Adds to chat when you send/,
+      })[0],
+    ).toBe(twins[0]);
+  } finally {
+    view.view.unmount();
+    library.dispose();
+    test.library.dispose();
+  }
+});
+
 it("closing the pill menu resumes typing in the draft, unless the click went elsewhere", async () => {
   const test = setup(),
     user = userEvent.setup();

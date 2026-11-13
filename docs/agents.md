@@ -1064,6 +1064,11 @@ Recency stays in memory per session/destination and is bounded to 100 destinatio
 and 100 recipients each. Neither ownership nor recency overrides membership or
 match quality.
 
+The Solo audience toolbar picker puts agents addressed at opening first when
+browsing without a query, before the 50-row limit. Typed searches keep normal
+match-quality ranking. Checks stay live as you toggle; rows do not move until a
+new query or reopening. Inline `@` order is unchanged.
+
 An open query installs at most 50 keys. Their order and membership stay fixed until
 the query changes or the chooser reopens. Labels, insertion names and availability
 remain live. A removed/archived row stays disabled in place; Enter/Tab cannot fall
