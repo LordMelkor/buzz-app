@@ -636,14 +636,14 @@ impl AgentTokens {
                             .grants += 1;
                         return Err(STOPPED.into());
                     }
-                    Err(failure) => return Err(refused(failure.code)),
+                    Err(failure) => return Err(refused(failure)),
                 }
             }
             Ok(cached) if grant.replacement => {
                 self.settle(agent, grant, retirements).await?;
                 cached
             }
-            minted => minted.map_err(|failure| refused(failure.code))?,
+            minted => minted.map_err(refused)?,
         };
         if !self.live(&agent.pubkey, incarnation) {
             return Err(DELETED.into());
@@ -1263,7 +1263,7 @@ impl From<&str> for Error {
 impl From<Failure> for Error {
     fn from(failure: Failure) -> Self {
         Self {
-            message: refused(failure.code),
+            message: refused(failure),
             refused: matches!(
                 failure.code,
                 "adapter-refused"
@@ -1277,8 +1277,13 @@ impl From<Failure> for Error {
 }
 
 /// What the agent's owner sees when the identity issuer turns it away.
-fn refused(code: &'static str) -> String {
-    match code {
+fn refused(failure: Failure) -> String {
+    if failure.rate_limited {
+        return "Your organization is limiting this agent's requests; try again later. \
+            If it keeps failing, you may have reached your organization's agent limit"
+            .into();
+    }
+    match failure.code {
         "network-unavailable" | "network-timeout" => {
             "Your organization's identity service is unreachable".into()
         }

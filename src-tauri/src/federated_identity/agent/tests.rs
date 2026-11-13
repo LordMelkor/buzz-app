@@ -2153,3 +2153,34 @@ async fn a_server_added_once_the_first_has_a_supplier_follows_the_account() {
     tokens.watch(|| Ok(Vec::new()));
     assert!(tokens.for_server(&added).unwrap().0.agents.get().is_some());
 }
+
+#[tokio::test]
+async fn an_issuer_that_keeps_rate_limiting_is_not_reported_as_unreachable() {
+    let limited = || (429, serde_json::json!({ "error": "rate_limited" }));
+    let unavailable = || (503, serde_json::json!({ "error": "issuance_unavailable" }));
+    let (base, served) = issuer(vec![
+        limited(),
+        limited(),
+        limited(),
+        limited(),
+        limited(),
+        unavailable(),
+        (200, enrolled(&"b".repeat(64))),
+        limited(),
+        limited(),
+        limited(),
+    ])
+    .await;
+    let f = fixture(base);
+    let limit = |error: String| assert!(error.contains("limiting this agent"), "{error}");
+    // Enrollment: throttling is transient, so the next request enrolls again.
+    limit(f.tokens.evidence(&f.agent, &f.key, 0).await.unwrap_err());
+    // Only the last attempt's answer decides.
+    assert_eq!(
+        f.tokens.evidence(&f.agent, &f.key, 0).await.unwrap_err(),
+        "Your organization's identity service is unreachable"
+    );
+    // Assertion minting.
+    limit(f.tokens.evidence(&f.agent, &f.key, 0).await.unwrap_err());
+    assert_eq!(settled(served).await.len(), 10);
+}

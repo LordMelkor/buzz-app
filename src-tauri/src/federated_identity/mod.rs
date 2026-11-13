@@ -760,6 +760,7 @@ impl FederatedIdentity {
             return Err(Failure {
                 code: "reauthentication-required",
                 session_denied: true,
+                rate_limited: false,
             });
         }
         #[derive(Deserialize)]

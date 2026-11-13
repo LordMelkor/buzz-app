@@ -1264,6 +1264,8 @@ issuance cannot silently start another enrollment. A new sign-in revision or
 explicit agent deletion permits a reset; ordinary restore of the same session does
 not. Failure to persist the reservation prevents dispatch. A known transient
 outcome releases it only if that storage write succeeds.
+An issuer still answering 429 when retries or the deadline run out is reported
+to the owner as a limit rather than an unreachable service; it stays transient.
 
 The `/v1/nip-fi/agent-grant` and `/v1/nip-fi/agent-assertion` routes and
 `Nostr-Agent-Proof` header are this configured adapter's wire contract, not
