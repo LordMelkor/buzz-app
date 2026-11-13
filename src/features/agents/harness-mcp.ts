@@ -328,17 +328,20 @@ export function createHarnessMcp(
     if (!agent || !type) throw new Error("This agent is not running here");
     if (type.pluginId !== ctx.pluginOwner?.id)
       throw new Error(
-        "Only the plugin that runs this agent's harness reports its sessions and calls",
+        "Only the plugin that runs this agent's harness uses its MCP kit",
       );
     return agent;
   }
 
   /** The kit for the plugin `ctx` belongs to. Only the plugin that registered
-   * an agent's type reports its sessions and calls, and the agent and its
-   * protection are read from what runs here, not taken from the caller. */
+   * an agent's type asks its choice and reports its sessions and calls, and
+   * the agent and its protection are read from what runs here, not taken
+   * from the caller. */
   const kitFor = (ctx: Context): HarnessMcpKit =>
     Object.freeze({
-      choice: answer,
+      async choice(who) {
+        return answer(owned(ctx, who.key));
+      },
       started(who, session, loaded, given) {
         live.started(owned(ctx, who.key), session, loaded, given);
       },

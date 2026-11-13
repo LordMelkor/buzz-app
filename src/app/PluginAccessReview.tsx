@@ -80,7 +80,7 @@ function hostDeclarations(
             signature: "Agent MCP servers: choose which load, review calls",
             title: "Agent MCP servers:",
             label: "Choose which MCP servers your agents load",
-            hint: "Choose which of your harnesses' MCP servers your agents load, including servers Buzz leaves off, and see and block their MCP tool calls. Cannot add or call servers.",
+            hint: "Choose which of your harnesses' MCP servers your agents load, including servers Buzz leaves off, and see and block their MCP tool calls. Can start a configured server to list its tools. Cannot add servers or call their tools.",
             icon: PlugIcon,
             details: (
               <p className="m-0">
