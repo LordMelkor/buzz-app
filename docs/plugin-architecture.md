@@ -2726,6 +2726,13 @@ links and images, which load only from the same community media. PDFs use
 PDF, and draw only the pages near the viewport. Its CMaps, standard fonts and
 image decoders are bundled assets served through a `BinaryDataFactory`, so
 PDFs need no network access beyond the file.
+HTML files show in an `iframe` whose `srcdoc` is the sanitized page with a
+Content Security Policy first in its head: no script, no forms, and images only
+from `blob:` and the community media the page names. The viewer sets image
+sources and takes link clicks itself, and shows the source if the frame leaves
+its page. SVG files show as an `img` from a `blob:` URL, so they run nothing.
+Fenced code and inline TeX in a file go to the same `conversation.codeBlocks`
+and `conversation.inline` renderers as messages; without one, the code shows.
 
 The conversation preview exposes top-level `registerTool`, `registerCompletion` and `registerInline`
 methods and stable `conversation.ui.Composer` / `.Message` / `.Thread` / `.Conversation` /

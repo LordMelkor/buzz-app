@@ -24,7 +24,8 @@ document.documentElement.dataset.colorMode =
 if (params.has("large")) document.documentElement.style.fontSize = "150%";
 
 const ORIGIN = "https://relay.example.org";
-const media = (hash: string) => `${ORIGIN}/media/${hash.repeat(64)}`;
+// A key of one or two characters, repeated into a 64-character hash.
+const media = (key: string) => `${ORIGIN}/media/${key.repeat(64 / key.length)}`;
 const snapshot = {
   status: "ready",
   generation: 1,
@@ -71,6 +72,10 @@ const EXTRA: Record<string, Attachment> = {
   excel: { url: media("6"), kind: "file", name: "budget.xlsx" },
   powerpoint: { url: media("7"), kind: "file", name: "review.pptx" },
   pages: { url: media("8"), kind: "file", name: "brochure.pages" },
+  page: { url: media("9a"), kind: "file", name: "report.html" },
+  picture: { url: media("9b"), kind: "file", name: "logo.svg" },
+  notebook: { url: media("9c"), kind: "file", name: "analysis.ipynb" },
+  renamed: { url: media("9d"), kind: "file", name: "scan.txt" },
 };
 for (const name of params.getAll("extra")) {
   const extra = EXTRA[name];

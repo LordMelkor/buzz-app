@@ -16,7 +16,7 @@ export function CopyText({
   /** The most characters `read` gives; text that long says it was cut. */
   limit?: number;
   /** A sheet copies "as TSV". */
-  label?: string;
+  label?: string | undefined;
 }) {
   const notify = useToastNotification();
   const [busy, setBusy] = useState(false);

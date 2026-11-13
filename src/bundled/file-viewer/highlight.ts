@@ -1,5 +1,4 @@
-import type { Element, Root } from "hast";
-import type { Plugin } from "unified";
+import type { Root } from "hast";
 import { createLowlight } from "lowlight";
 import javascript from "highlight.js/lib/languages/javascript";
 import typescript from "highlight.js/lib/languages/typescript";
@@ -135,36 +134,3 @@ export function languageFor(name: string): string | undefined {
   const extension = base.includes(".") ? (base.split(".").pop() ?? "") : "";
   return Object.hasOwn(languages, extension) ? languages[extension] : undefined;
 }
-
-export const rehypeHighlight: Plugin<
-  [{ highlight?: typeof highlight }?],
-  Root
-> = (options) => (tree) => {
-  const stack: (Root | Element)[] = [tree];
-  while (stack.length) {
-    const parent = stack.pop();
-    if (!parent) break;
-    for (const child of parent.children) {
-      if (child.type !== "element") continue;
-      if (
-        parent.type === "element" &&
-        parent.tagName === "pre" &&
-        child.tagName === "code"
-      ) {
-        const classes = child.properties.className;
-        const language = Array.isArray(classes)
-          ? classes.find((name) => String(name).startsWith("language-"))
-          : undefined;
-        if (!language) continue;
-        const text = child.children
-          .filter((node) => node.type === "text")
-          .map((node) => node.value)
-          .join("");
-        child.children = (options?.highlight ?? highlight)(
-          text,
-          String(language).slice(9),
-        ).children.filter((node) => node.type !== "doctype");
-      } else stack.push(child);
-    }
-  }
-};

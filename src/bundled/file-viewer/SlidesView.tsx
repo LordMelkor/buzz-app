@@ -679,7 +679,6 @@ export function SlidesView({ doc, name, ...env }: Props) {
                 depth: 1 as const,
                 text: slide.title.trim(),
                 id: slideId(slide.number),
-                part: 0,
               },
             ]
           : [],
@@ -742,7 +741,17 @@ export function SlidesView({ doc, name, ...env }: Props) {
             </span>
           )}
           {showOutline && (
-            <Outline items={outline} scroller={stage} jump={jump} />
+            <Outline
+              items={outline}
+              current={() => {
+                const titled = doc.slides
+                  .slice(0, current)
+                  .filter((slide) => slide.title.trim());
+                const slide = titled.at(-1);
+                return slide && slideId(slide.number);
+              }}
+              jump={jump}
+            />
           )}
         </div>
       )}

@@ -1376,8 +1376,21 @@ and says when a scanned PDF has none.
   and words, or a code or text file's lines.
 - CSV and TSV files show as a table of the first 5,000 rows and 200 columns,
   up to 50,000 cells.
-- Markdown follows the Notes rules: no raw HTML. Images shared in the current
-  community are drawn; other images show as their alt text.
+- Markdown and MDX files keep the HTML written in them, with anything that
+  could run or send data taken out. Images shared in the current community are
+  drawn; other images show as their alt text.
+- A code block or math that a Buzz plugin draws in messages, such as Math
+  equations or Mermaid, is drawn in a file too; without one it shows as code.
+- HTML files show as a page, with an **Outline** when the page has three or
+  more headings. Nothing on the page runs, and only images shared in the
+  current community load. Links open as they do in messages. **Source** shows
+  the HTML; a page that can't be drawn safely shows only its source.
+- SVG files show as a picture, with **Source** for the SVG.
+- JSON with lines too long to read shows indented; **Copy text** copies the
+  file as saved.
+- Jupyter notebooks show their cells and saved outputs. reStructuredText,
+  AsciiDoc and LaTeX files open as documents.
+- A PDF saved under another name opens as a PDF.
 - Word, Excel, PowerPoint, OpenDocument, Numbers and RTF files open read-only,
   and nothing in them runs. Documents show with their pictures, tables and
   charts, and a Word file with three or more headings has an **Outline**.
@@ -1386,7 +1399,7 @@ and says when a scanned PDF has none.
   show each slide fitted to the tab, with speaker notes; turn slides with ‹ and
   › or the arrow keys. Older `.doc` and `.ppt` files show their text only,
   and Pages and Keynote files the preview picture saved in them.
-- Images, video and audio are not opened by the viewer.
+- Images other than SVG, video and audio are not opened by the viewer.
 
 ### Saved External apps approval
 

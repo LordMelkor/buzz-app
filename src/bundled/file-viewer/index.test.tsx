@@ -6,15 +6,23 @@ import type { ComponentType } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type {
   AttachmentRenderer,
+  CodeBlockRenderer,
   FileCardProps,
+  InlineRenderer,
 } from "../../features/conversation/contracts";
 import type { Panel, PanelProps } from "../../features/panels/service";
 import type { ChannelMessage } from "../../features/relay/contracts";
 import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { bundledPlugins } from "..";
+import { fileFormat } from "./formats";
 import { apply } from "./index";
 import { fileTarget } from "./target";
 import { Viewer } from "./Viewer";
+
+// pdf.js doesn't run in jsdom; the PDF view's own tests are in the browser.
+vi.mock("./PdfView", () => ({
+  default: ({ name }: { name: string }) => <p>PDF view of {name}</p>,
+}));
 
 /** jsdom lays nothing out, so nothing is ever in view or resized. */
 class Unobserved {
@@ -40,7 +48,18 @@ const MEDIA = `${ORIGIN}/media/${"b".repeat(64)}`;
 const proxied = (url: string) =>
   `/api/relay/media?url=${encodeURIComponent(url)}`;
 
-function setup() {
+/** A reader over fixed contributions, as the host's registries offer them. */
+const reader = <T,>(entries: readonly T[]) => {
+  const snapshot = entries.map((entry, n) => ({
+    ...entry,
+    key: `test:${n}`,
+    pluginId: "test",
+    revision: "1",
+  }));
+  return { snapshot: () => snapshot, subscribe: () => () => {} };
+};
+
+function setup(conversation: Record<string, unknown> = {}) {
   const snapshot = {
     status: "ready",
     generation: 1,
@@ -49,7 +68,7 @@ function setup() {
   };
   const ctx = {
     relay: { snapshot: () => snapshot, subscribe: () => () => {} },
-    conversation: { registerAttachment: vi.fn() },
+    conversation: { registerAttachment: vi.fn(), ...conversation },
     panels: { register: vi.fn() },
   };
   apply(ctx as unknown as Parameters<typeof apply>[0]);
@@ -234,4 +253,90 @@ it("explains a file that is too large or fails to load", async () => {
     { wrapper: ToastProvider },
   );
   expect(await screen.findByText(/couldn't be loaded/)).toBeInTheDocument();
+});
+
+it("opens HTML as a page, SVG as a picture, JSON indented and a renamed PDF as a PDF", async () => {
+  URL.createObjectURL = vi.fn(() => "blob:picture");
+  URL.revokeObjectURL = vi.fn();
+  const open = (name: string, body: string) => {
+    cleanup();
+    const format = fileFormat(name, undefined);
+    if (!format) throw new Error(`${name} doesn't open`);
+    render(
+      <Viewer
+        file={{ url: MEDIA, name, format }}
+        source="/media"
+        openLink={() => false}
+        fetcher={async () => new Response(body)}
+      />,
+      { wrapper: ToastProvider },
+    );
+  };
+  open("report.html", "<h1>Results</h1>");
+  expect(await screen.findByTitle("report.html")).toHaveProperty(
+    "tagName",
+    "IFRAME",
+  );
+  open("logo.svg", '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  expect(await screen.findByRole("img", { name: "logo.svg" })).toHaveAttribute(
+    "src",
+    "blob:picture",
+  );
+  // Minified: one line longer than a reader can follow.
+  open("data.json", `{"a":[1,2],"b":"${"x".repeat(1000)}"}`);
+  expect(
+    await screen.findByText(
+      "Shown indented for reading. Copy text copies the file as saved.",
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "data.json" })).toHaveTextContent(
+    /"a": \[\s*1,\s*2\s*\]/,
+  );
+  open("notes.txt", "%PDF-1.7\n%binary");
+  expect(await screen.findByText("PDF view of notes.txt")).toBeInTheDocument();
+});
+
+it("draws math and a claimed fence through Buzz's plugins, and the code without them", async () => {
+  const inline: InlineRenderer = {
+    id: "math",
+    title: "Math",
+    matches: ({ text }) =>
+      /^\$[^$]+\$$/.test(text) ? [{ start: 0, end: text.length }] : [],
+    component: ({ text }) => <span>drawn {text}</span>,
+  };
+  const block: CodeBlockRenderer = {
+    id: "math-block",
+    title: "Math",
+    matches: (language) => language === "math",
+    component: ({ code }) => <figure>display {code}</figure>,
+  };
+  const latex =
+    "\\section{Area}\n\nThe area is $\\pi r^2$.\n\n\\[ a^2 + b^2 \\]\n";
+  vi.stubGlobal("fetch", async () => new Response(latex));
+  const target = fileTarget({ url: MEDIA, name: "area.tex" });
+  renderPanel(
+    setup({ inline: reader([inline]), codeBlocks: reader([block]) }).panel,
+    target,
+  );
+  expect(await screen.findByText("drawn $\\pi r^2$")).toBeInTheDocument();
+  expect(screen.getByText("display a^2 + b^2")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
+  cleanup();
+  vi.stubGlobal("fetch", async () => new Response("```math\nE = mc^2\n```\n"));
+  renderPanel(
+    setup({ inline: reader([inline]), codeBlocks: reader([block]) }).panel,
+    fileTarget({ url: MEDIA, name: "notes.md" }),
+  );
+  expect(await screen.findByText("display E = mc^2")).toBeInTheDocument();
+
+  // Without them, the TeX shows as the file's own code.
+  cleanup();
+  vi.stubGlobal("fetch", async () => new Response(latex));
+  renderPanel(setup().panel, target);
+  expect(
+    await screen.findByText("\\pi r^2", { selector: "code" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText("a^2 + b^2", { exact: false, selector: "pre *" }),
+  ).toBeInTheDocument();
 });

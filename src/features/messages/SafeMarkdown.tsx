@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import Markdown, { type Options } from "react-markdown";
+import Markdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MessageLink } from "../conversation/MessageLink";
 import { parseBuzzLink } from "../navigation/buzz-links";
@@ -17,7 +17,8 @@ export const safeMarkdownPlugins = [remarkGfm];
  *
  * The file viewer adds to these rules, never loosens them: plugins that only
  * annotate the tree, an image renderer that decides which images may load,
- * and `#` links that move within the document.
+ * `#` links that move within the document, and code that a Buzz plugin
+ * may draw.
  */
 export function SafeMarkdown({
   content,
@@ -27,6 +28,7 @@ export function SafeMarkdown({
   rehypePlugins,
   image,
   onAnchor,
+  components,
 }: {
   content: string;
   openLink(url: string): boolean;
@@ -39,6 +41,8 @@ export function SafeMarkdown({
   image?: ((props: { src: string; alt: string }) => ReactNode) | undefined;
   /** Keeps `#id` links, and calls this with the decoded id instead of opening them. */
   onAnchor?: ((id: string) => void) | undefined;
+  /** Draws code blocks and inline code; links and images keep these rules. */
+  components?: Pick<Components, "pre" | "code"> | undefined;
 }) {
   return (
     <Markdown
@@ -50,6 +54,7 @@ export function SafeMarkdown({
           : (safeLinkUrl(url) ?? null)
       }
       components={{
+        ...components,
         img: ({ alt, src }) =>
           image && typeof src === "string"
             ? image({ src, alt: alt ?? "" })

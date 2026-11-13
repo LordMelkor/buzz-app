@@ -78,6 +78,44 @@ const FILES = {
     `# Pictures\n\n![Team photo](${PHOTO})\n\n![Remote chart](https://example.org/chart.png)\n`,
   ],
   3: ["application/pdf", pdf([], { blank: true })],
+  "9a": [
+    "text/html",
+    `<!DOCTYPE html><html><head><title>Report</title><style>h1{color:rgb(200, 0, 0)}</style></head><body><h1>Quarterly report</h1><p><a href="#notes">Notes</a></p><img alt="Team photo" src="${PHOTO}"><img alt="Remote chart" src="https://example.org/chart.png"><div style="height:3000px"></div><h2 id="notes">Notes</h2><p>Signed off.</p></body></html>`,
+  ],
+  "9b": [
+    "image/svg+xml",
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="teal"/></svg>',
+  ],
+  "9c": [
+    "application/x-ipynb+json",
+    JSON.stringify({
+      cells: [
+        {
+          cell_type: "markdown",
+          metadata: {},
+          source: ["# Analysis\n", "The answer follows."],
+        },
+        {
+          cell_type: "code",
+          execution_count: 1,
+          metadata: {},
+          source: ["6 * 7"],
+          outputs: [
+            {
+              output_type: "execute_result",
+              execution_count: 1,
+              metadata: {},
+              data: { "text/plain": ["4242"] },
+            },
+          ],
+        },
+      ],
+      metadata: { language_info: { name: "python" } },
+      nbformat: 4,
+      nbformat_minor: 5,
+    }),
+  ],
+  "9d": ["text/plain", pdf(["Renamed page"])],
   4: ["image/png", PNG],
   ...Object.fromEntries(
     await Promise.all(
@@ -136,7 +174,8 @@ async function serveMedia(page) {
   await page.route("**/api/relay/media?**", (route) => {
     const media = new URL(route.request().url()).searchParams.get("url") ?? "";
     requests.push(media);
-    const file = FILES[media.split("/").pop()?.[0] ?? ""];
+    const hash = media.split("/").pop() ?? "";
+    const file = FILES[hash.slice(0, 2)] ?? FILES[hash.slice(0, 1)];
     if (!file) return route.fulfill({ status: 404, body: "" });
     return route.fulfill({
       status: 200,
@@ -446,6 +485,74 @@ for (const [extra, name, shows] of [
     (viewer) =>
       viewer.getByRole("img", { name: "First page of brochure.pages" }),
   ],
+]) {
+  test(`opens ${name}`, async ({ page }) => {
+    const { unexplained } = watchPageErrors(page);
+    await serveMedia(page);
+    const viewer = await openFile(page, extra, name);
+    await expect(shows(viewer)).toBeVisible();
+    expect(unexplained()).toEqual([]);
+  });
+}
+
+test("draws an HTML page with community images only, its links and its source", async ({
+  page,
+}) => {
+  const { unexplained } = watchPageErrors(page);
+  const requests = await serveMedia(page);
+  const remote = [];
+  await page.route("https://example.org/**", (route) => {
+    remote.push(route.request().url());
+    return route.abort();
+  });
+  const viewer = await openFile(page, "page", "report.html");
+  await expect(
+    viewer.getByText(/^HTML · \d+ min read · \d+ words$/),
+  ).toBeVisible();
+  const frame = viewer.frameLocator('iframe[title="report.html"]');
+  const heading = frame.getByRole("heading", { name: "Quarterly report" });
+  await expect(heading).toHaveCSS("color", "rgb(200, 0, 0)");
+  const photo = frame.getByRole("img", { name: "Team photo" });
+  await expect
+    .poll(() => photo.evaluate((img) => img.complete && img.naturalWidth))
+    .toBe(8);
+  expect(requests).toContain(PHOTO);
+  await frame.getByRole("link", { name: "Notes" }).click();
+  await expect(frame.getByRole("heading", { name: "Notes" })).toBeInViewport();
+  expect(remote).toEqual([]);
+
+  await viewer.getByRole("tab", { name: "Source" }).click();
+  await expect(viewer.locator("iframe")).toHaveCount(0);
+  await expect(
+    viewer.getByText("<h1>Quarterly report</h1>", { exact: false }),
+  ).toBeVisible();
+  await viewer.getByRole("tab", { name: "Page" }).click();
+  await expect(heading).toBeVisible();
+  expect(unexplained()).toEqual([]);
+});
+
+test("draws an SVG file as a picture, with its source a tab away", async ({
+  page,
+}) => {
+  const { unexplained } = watchPageErrors(page);
+  await serveMedia(page);
+  const viewer = await openFile(page, "picture", "logo.svg");
+  const picture = viewer.getByRole("img", { name: "logo.svg" });
+  await expect
+    .poll(() => picture.evaluate((img) => img.complete && img.naturalWidth))
+    .toBe(40);
+  await viewer.getByRole("tab", { name: "Source" }).click();
+  await expect(viewer.getByText("<rect", { exact: false })).toBeVisible();
+  expect(unexplained()).toEqual([]);
+});
+
+for (const [extra, name, shows] of [
+  [
+    "notebook",
+    "analysis.ipynb",
+    (viewer) => viewer.getByText("4242", { exact: true }),
+  ],
+  ["renamed", "scan.txt", (viewer) => viewer.getByText("Page 1 of 1")],
 ]) {
   test(`opens ${name}`, async ({ page }) => {
     const { unexplained } = watchPageErrors(page);

@@ -11,6 +11,7 @@ import type { RelaySession } from "../../features/relay/session";
 import type { PluginModule } from "../../plugins/api";
 import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import { fileFormat, formatLabel } from "./formats";
+import { type HostRenderers, HostRenderersContext } from "./host-renderers";
 import { fileTarget, isCommunityMedia, parseFileTarget } from "./target";
 import { Viewer } from "./Viewer";
 
@@ -35,6 +36,10 @@ function readableSource(
 export const inject = ["panels", "conversation", "relay"];
 export const apply: PluginModule["apply"] = (ctx) => {
   const relay: RelayData = ctx.relay;
+  const renderers: HostRenderers = {
+    inline: ctx.conversation.inline,
+    codeBlocks: ctx.conversation.codeBlocks,
+  };
 
   ctx.panels.register({
     id: "file-viewer",
@@ -64,15 +69,17 @@ export const apply: PluginModule["apply"] = (ctx) => {
           </LoadingRegion>
         );
       return (
-        // A new file starts afresh, never showing the last one's contents under its name.
-        <Viewer
-          key={target}
-          file={file}
-          source={readableSource(file.url, origin, session)}
-          session={session}
-          openLink={openLink}
-          media={media}
-        />
+        <HostRenderersContext value={renderers}>
+          {/* A new file starts afresh, never showing the last one's contents under its name. */}
+          <Viewer
+            key={target}
+            file={file}
+            source={readableSource(file.url, origin, session)}
+            session={session}
+            openLink={openLink}
+            media={media}
+          />
+        </HostRenderersContext>
       );
     },
   });

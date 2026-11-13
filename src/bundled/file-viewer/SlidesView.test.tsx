@@ -50,6 +50,8 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", Unobserved);
   // The column is 360 px wide: a 720 pt slide draws at half size.
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(360);
+  // jsdom has no scrollTo; the outline's list scrolls to a row with it.
+  HTMLElement.prototype.scrollTo = vi.fn();
 });
 afterEach(() => {
   cleanup();
@@ -498,12 +500,12 @@ it("goes to a slide from the outline of slide titles, when there are three or mo
   open([slide(1, "Intro"), slide(2, "Plan"), slide(3, "Risks"), slide(4, "")]);
   const stage = screen.getByLabelText("Deck.pptx slides");
   await userEvent.click(screen.getByRole("button", { name: "Outline" }));
-  // jsdom measures no rows, so the list draws its one row hidden.
-  await userEvent.click(
-    within(
-      await screen.findByRole("navigation", { name: "Outline" }),
-    ).getByText("Risks"),
-  );
+  // The list opens at the slide shown. jsdom measures no rows, so the list
+  // draws only the row it opens at, and the one End moves focus to.
+  const list = await screen.findByRole("navigation", { name: "Outline" });
+  expect(within(list).getByText("Intro")).toBeInTheDocument();
+  fireEvent.keyDown(list, { key: "End" });
+  await userEvent.click(within(list).getByText("Risks"));
   expect(screen.getByText("Slide 3 of 4")).toBeVisible();
   expect(stage.scrollTop).toBe(1000);
   expect(stage).toHaveFocus();

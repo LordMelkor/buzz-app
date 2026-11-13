@@ -302,6 +302,14 @@
   border: 1px solid var(--border-standard);
   border-radius: var(--radius-control);
 }
+/* An HTML file's page fills the viewer; its frame scrolls itself. */
+.page {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-control);
+}
 /* A sheet's grid: column letters and row numbers stay in view as it scrolls. */
 .sheet table {
   border-collapse: separate;
@@ -351,4 +359,21 @@
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-4);
+}
+.math {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  vertical-align: middle;
+}
+.hostBlock {
+  position: relative;
+  overflow: auto;
+}
+.hostActions {
+  position: absolute;
+  inset-block-start: var(--space-1);
+  inset-inline-end: var(--space-1);
+  display: flex;
+  gap: var(--space-1);
 }

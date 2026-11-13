@@ -35,29 +35,3 @@ it("latches after two calls over 50 ms and starts fresh for a new document", () 
   expect(bounded(source, "javascript")).toEqual(plain(source));
   expect(boundedHighlight()(source, "javascript")).not.toEqual(plain(source));
 });
-
-it("uses the supplied document highlighter for Markdown fences", async () => {
-  const { unified } = await import("unified");
-  const { default: remarkParse } = await import("remark-parse");
-  const { default: remarkRehype } = await import("remark-rehype");
-  const { rehypeHighlight } = await import("./highlight");
-  const processor = unified()
-    .use(remarkParse)
-    .use(remarkRehype)
-    .use(rehypeHighlight, { highlight: boundedHighlight() });
-  const body = `${"0".repeat(1001)}\n`;
-  const tree = processor.runSync(processor.parse(`\`\`\`js\n${body}\`\`\``));
-  expect(tree).toMatchObject({
-    children: [
-      {
-        tagName: "pre",
-        children: [
-          {
-            tagName: "code",
-            children: [{ type: "text", value: body }],
-          },
-        ],
-      },
-    ],
-  });
-});
