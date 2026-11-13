@@ -12,7 +12,12 @@ import type { PluginModule } from "../../plugins/api";
 import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
 import { fileFormat, formatLabel } from "./formats";
 import { type HostRenderers, HostRenderersContext } from "./host-renderers";
-import { fileTarget, isCommunityMedia, parseFileTarget } from "./target";
+import {
+  fileTarget,
+  isCommunityMedia,
+  linkedFile,
+  parseFileTarget,
+} from "./target";
 import { Viewer } from "./Viewer";
 
 /** A basic default: a plugin made for one format, claiming at the host's
@@ -33,6 +38,11 @@ function readableSource(
     : undefined;
 }
 
+/** The file a target opens: a file card's target, or a link in message text
+ * to a file shared in this community. */
+const fileOf = (target: string, origin: string | undefined) =>
+  parseFileTarget(target) ?? linkedFile(target, origin);
+
 export const inject = ["panels", "conversation", "relay"];
 export const apply: PluginModule["apply"] = (ctx) => {
   const relay: RelayData = ctx.relay;
@@ -47,10 +57,13 @@ export const apply: PluginModule["apply"] = (ctx) => {
     keepOpen: true,
     deferUntilShown: true,
     order: ORDER,
-    matches: (target) => parseFileTarget(target) !== undefined,
+    matches: (target) => fileOf(target, relay.snapshot().origin) !== undefined,
     component: function FileViewerPanel({ target, context }) {
       const connection = useRelayConnection(relay);
-      const file = useMemo(() => parseFileTarget(target), [target]);
+      const file = useMemo(
+        () => fileOf(target, connection.origin),
+        [target, connection.origin],
+      );
       usePanelTabTitle(file?.name ?? "File viewer");
       const { origin, session } = connection;
       const media = useCallback(
@@ -61,13 +74,14 @@ export const apply: PluginModule["apply"] = (ctx) => {
         (url: string) => context?.open(url) ?? false,
         [context],
       );
-      if (!file) return null;
+      // Before `file`: a linked file is known only once the origin is.
       if (!connection.origin && connection.status !== "ready")
         return (
-          <LoadingRegion pending label={`Loading ${file.name}`}>
+          <LoadingRegion pending label={`Loading ${file?.name ?? "file"}`}>
             {null}
           </LoadingRegion>
         );
+      if (!file) return null;
       return (
         <HostRenderersContext value={renderers}>
           {/* A new file starts afresh, never showing the last one's contents under its name. */}

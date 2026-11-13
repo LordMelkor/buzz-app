@@ -55,6 +55,20 @@ export function parseFileTarget(target: string): FileTarget | undefined {
   };
 }
 
+/** A shared file that message text links to: a community media address
+ * whose name says its format. Other addresses stay with the browser. */
+export function linkedFile(
+  url: string,
+  origin: string | undefined,
+): FileTarget | undefined {
+  if (!isCommunityMedia(url, origin)) return undefined;
+  const parsed = new URL(url);
+  parsed.hash = "";
+  const name = nameFromUrl(parsed.href);
+  const format = fileFormat(name, undefined);
+  return format ? { url: parsed.href, name, format } : undefined;
+}
+
 /** Only files shared in the current community open; anything else could
  * make the viewer fetch an address the sender chose. */
 export function isCommunityMedia(
