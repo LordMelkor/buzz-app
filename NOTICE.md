@@ -50,6 +50,11 @@ License. Markdown parts are parsed with `unified` 11.0.5, `remark-parse` 11.0.0
 and `micromark-util-decode-string` 2.0.1, Copyright Titus Wormer and
 contributors, under the MIT License.
 
+HTML files and raw HTML in Markdown are parsed with `parse5` 7.3.0,
+Copyright Ivan Nikulin, under the MIT License, through `rehype-raw` 7.0.0,
+Copyright Titus Wormer, under the MIT License. Notebook Markdown is converted
+with `remark-rehype` 11.1.2, Copyright Titus Wormer, under the MIT License.
+
 Office files are read with SheetJS (`@e965/xlsx` 0.20.3), Copyright SheetJS
 LLC, under the Apache License 2.0, and unzipped with fflate (`fflate` 0.8.3),
 Copyright Arjun Barrett, under the MIT License. Their documents are cleaned with

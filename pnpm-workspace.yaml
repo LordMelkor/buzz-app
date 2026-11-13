@@ -3,3 +3,5 @@ patchedDependencies:
   '@dnd-kit/core@6.3.1': patches/@dnd-kit__core@6.3.1.patch
   sonner@2.0.8: patches/sonner@2.0.8.patch
   virtua@0.53.5: patches/virtua@0.53.5.patch
+overrides:
+  rehype-raw>hast-util-raw: 9.1.0

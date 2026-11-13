@@ -71,6 +71,7 @@ const nonIconDependencies = new Set([
   "micromark-util-decode-string", // Markdown string decoding; not an icon library.
   "motion",
   "nostr-tools",
+  "parse5", // HTML parsing for file documents; not an icon library.
   "pdfjs-dist", // PDF page rendering; not an icon library.
   "pele",
   "postcss",
@@ -86,11 +87,12 @@ const nonIconDependencies = new Set([
   "react-diff-view", // Patch tables/parser, not an icon library.
   "react-dom",
   "react-markdown",
+  "rehype-raw", // File viewer raw HTML parsing; not an icon library.
   "rehype-sanitize",
   "remark-breaks",
   "remark-gfm",
   "remark-parse", // Markdown parsing; not an icon library.
-  "remark-rehype", // Test-only Markdown to HTML trees; not an icon library.
+  "remark-rehype", // Markdown to HTML trees; not an icon library.
   "rolldown",
   "sonner", // Headless toast behavior; Buzz supplies controls and Tabler icons.
   "tailwindcss",
