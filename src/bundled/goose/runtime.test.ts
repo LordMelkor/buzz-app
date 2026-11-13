@@ -1,3 +1,5 @@
+import { Context } from "@deepseek-ai/cordis";
+import { createHarnessMcp } from "../../features/agents/harness-mcp";
 import { localStore } from "../../features/agents/store";
 import type { HarnessMcpKit } from "../../features/agents/harness-mcp";
 import { transport as mcpTransport } from "./mcp-testing";
@@ -260,6 +262,116 @@ function setup(
     },
   };
 }
+
+it("reports no native MCP servers for a protected agent without spawning Goose", async () => {
+  const wire = mcpTransport();
+  const f = setup({ mcpKit: provenanceKit(), wrap: wire.wrap });
+  const agent = {
+    ...f.agent,
+    config: DEFAULT_CONFIG,
+    protection: { provider: "fixture", policy: {} },
+  } as unknown as Agent;
+  try {
+    expect(await f.runtime.harnessMcp(agent)).toMatchObject({
+      tools: true,
+      servers: [],
+    });
+    await expect(f.runtime.inspectMcp(agent, "fixture")).rejects.toThrow(
+      "A protected agent loads no MCP server",
+    );
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.fake.processes).toEqual([]);
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it("proves a protected Goose protocol session empty before admitting protection checks", async () => {
+  // Protocol integration only: fakeSpawn advertises security hooks; this does
+  // not establish support in the packaged Goose executable.
+  const wire = mcpTransport();
+  const held = gated("_goose/unstable/session/extensions/list");
+  const root = new Context();
+  const base = {
+    ...protection("policy", () => f),
+    check: vi.fn<AgentProtection["check"]>().mockResolvedValue(),
+    checkEvidence: vi
+      .fn<AgentProtection["checkEvidence"]>()
+      .mockResolvedValue(),
+    spawn: (options: Parameters<AgentProtection["spawn"]>[0]) =>
+      held.wrap(wire.wrap(f.fake.spawn))("goose", options),
+  };
+  const running = {
+    key: self,
+    type: "buzz.goose/goose",
+    protection: { provider: "fixture", policy: {} },
+  } as Agent;
+  const mcp = createHarnessMcp(
+    () => ({}) as Context["pluginStatus"],
+    (key) => (key === self ? running : undefined),
+    () => [
+      {
+        key: running.type,
+        pluginId: "buzz.goose",
+        harnessMcp: { report: async () => undefined },
+      },
+    ],
+    () => base,
+    () => false,
+  );
+  const guarded = mcp.require(base, running);
+  if (!guarded) throw new Error("Expected guarded protection");
+  const f = setup({
+    hold: true,
+    protection: guarded,
+    mcpKit: mcp.kitFor(
+      root.extend({
+        pluginOwner: { id: "buzz.goose", revision: "1" },
+      } as never),
+    ),
+  });
+  const signal = new AbortController().signal;
+  const action = {
+    kind: "context",
+    session: "session-1",
+    content: {},
+  } as const;
+  const evidence = {} as Parameters<AgentProtection["checkEvidence"]>[1];
+  try {
+    await expect(guarded.check(action, signal)).rejects.toThrow("not shown");
+    await f.deliver(message("1", "Protected protocol turn"));
+    // Both the pre-update listing and final readback precede the real kit's
+    // proof. Neither a new session nor an outstanding read grants admission.
+    for (let readback = 0; readback < 2; readback++) {
+      await vi.waitFor(() => expect(held.waiting()).toEqual(["session-1"]));
+      await expect(guarded.check(action, signal)).rejects.toThrow("not shown");
+      await expect(
+        guarded.checkEvidence(action, evidence, signal),
+      ).rejects.toThrow("not shown");
+      expect(base.check).not.toHaveBeenCalled();
+      expect(base.checkEvidence).not.toHaveBeenCalled();
+      expect(f.goose()).toBeUndefined();
+      held.release();
+    }
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+    await guarded.check(action, signal);
+    await guarded.checkEvidence(action, evidence, signal);
+    expect(base.check).toHaveBeenCalledExactlyOnceWith(action, signal);
+    expect(base.checkEvidence).toHaveBeenCalledExactlyOnceWith(
+      action,
+      evidence,
+      signal,
+    );
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(wire.requests.some((r) => r.method.endsWith("extensions/add"))).toBe(
+      false,
+    );
+    f.goose()?.turns[0]?.finish();
+  } finally {
+    held.release();
+    f.runtime.dispose();
+  }
+});
 
 it("reads a protected Goose file under containment and reviews the captured text before sending", async () => {
   const check = vi.fn<AgentProtection["check"]>().mockResolvedValue();

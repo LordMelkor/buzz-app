@@ -191,6 +191,12 @@ export class GooseRuntime {
   ) {}
 
   harnessMcp(agent: Agent) {
+    if (agent.protection)
+      return Promise.resolve({
+        tools: true,
+        note: "A protected agent loads no MCP server.",
+        servers: [],
+      });
     const entry = this.entry(agent.key, config(agent.config));
     const mcp = entry.mcp;
     return mcp
