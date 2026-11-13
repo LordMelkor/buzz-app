@@ -617,7 +617,9 @@ export class ClaudeProcess {
       const rows = (status.response as Message | undefined)?.mcpServers;
       if (status.subtype !== "success" || !Array.isArray(rows))
         throw new Error("Claude could not verify its MCP servers");
-      const native = rows.filter((row) => row?.name !== TOOL_SERVER);
+      const native = this.mcp?.inspect
+        ? rows
+        : rows.filter((row) => row?.name !== TOOL_SERVER);
       if (
         native.some(
           (row) =>

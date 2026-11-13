@@ -116,9 +116,13 @@ export function mcpChoice(
 export function mcpSettings(mcp: ClaudeMcp) {
   const choice = mcpChoice(mcp);
   return {
-    deniedMcpServers: mcp.servers
-      .filter(({ name }) => choice === "none" || choice[name] === false)
-      .map(({ name }) => ({ serverName: name })),
+    deniedMcpServers: [
+      ...mcp.servers
+        .filter(({ name }) => choice === "none" || choice[name] === false)
+        .map(({ name }) => ({ serverName: name })),
+      // Inspection installs no SDK server to shadow a native definition.
+      ...(mcp.inspect ? [{ serverName: "buzz" }] : []),
+    ],
     permissions: {
       ask: choice === "none" ? [] : ["mcp__*"],
       deny:

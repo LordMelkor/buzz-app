@@ -173,8 +173,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
       unsubscribe();
       unsubscribeDefaults();
       unsubscribeAuth();
-      runtime.dispose();
+      const stopped = runtime.dispose();
       setup.dispose();
+      return stopped;
     });
   }
 
