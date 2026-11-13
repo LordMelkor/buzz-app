@@ -1816,7 +1816,7 @@ export class ClaudeRuntime {
           choice !== undefined && choice !== "none"
             ? await configuredMcp(
                 this.host.readFile?.bind(this.host),
-                (await this.host.resolveDirectory?.(workspace)) ?? workspace,
+                (await this.host.resolveDirectory?.(cwd)) ?? cwd,
                 this.mcpRows.get(agent),
               )
             : [];
