@@ -15,6 +15,8 @@ export type SavedHead = {
   channelId: string;
   savedAt: number;
   events: unknown[];
+  /** Membership notices among the events, read apart from them. */
+  notices?: unknown[];
   profiles: unknown[];
 };
 export interface HeadPersistence {
