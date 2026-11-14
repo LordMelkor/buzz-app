@@ -476,6 +476,9 @@ and are asked to sign in again in Buzz.
   channel does not grant access; inviting them requires an explicit decision
   from someone with permission.
 - **Workspaces** group Solo chats and provide starting folders and instructions.
+  Plugins can also group tasks under joined channels. On supported hosts, each
+  channel group keeps the native channel actions and details. New task appears
+  only when the channel permits starting a chat.
   With Nexus enabled, each workspace also contains its tasks and can have a Lead
   task. Nexus saves and chooses Leads, so they exist only while Nexus is enabled.
   Creating a workspace selects it so you can start a conversation with its Lead.

@@ -1977,13 +1977,16 @@ function ChannelWorkspace({
   }, [routedTab, navigation?.signal, currentId, split.ref]);
   useEffect(() => {
     // Only an explicit settings click moves focus; restoring a visit does not.
-    if (settingsFocus)
+    if (
+      settingsFocus ||
+      settings?.focusRequest === navigator.snapshot().attempt.id
+    )
       split.ref.current
         ?.querySelector<HTMLElement>(
           '[data-panel-workspace] [data-tab-value="settings"]',
         )
         ?.focus({ preventScroll: true });
-  }, [settingsFocus, split.ref]);
+  }, [settingsFocus, settings?.focusRequest, split.ref, navigator]);
   const settingsContent = (
     <ChannelSettingsPanel
       scope={scope}

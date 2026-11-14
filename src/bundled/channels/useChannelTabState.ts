@@ -82,7 +82,9 @@ type State = {
   left?: boolean;
   paneOpen: boolean;
   thread: { channelId: string; messageId: string } | undefined;
-  settings: { id: string; channelId: string | undefined } | undefined;
+  settings:
+    | { id: string; channelId: string | undefined; focusRequest?: string }
+    | undefined;
   /** A launcher's side panel shows in the pane; the page owns that panel. */
   sidePanel?: boolean;
   /** The launcher side panel left open here, shown again on return until closed. */
@@ -483,6 +485,18 @@ export function channelTabs(session: RelaySession, navigation?: Navigation) {
   return {
     list: (channelId: string) =>
       threads(channelId).map(({ tab: _, ...thread }) => thread),
+    /** The channel's existing details tab, opened after navigation permits entry. */
+    openSettings(channelId: string, focusRequest: string) {
+      store.update(keyOf("messages", channelId), (state) => ({
+        ...state,
+        settings: {
+          ...(state.settings ?? { id: crypto.randomUUID(), channelId }),
+          focusRequest,
+        },
+        selected: "settings",
+        paneOpen: true,
+      }));
+    },
     /** Opens thread `rootId` of `channelId` in its workspace; false when it
      * already has a tab there. */
     open(channelId: string, rootId: string) {

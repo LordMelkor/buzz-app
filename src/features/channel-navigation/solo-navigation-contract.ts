@@ -111,8 +111,22 @@ export type SoloRegionProps = Readonly<{
     Card: ComponentType<SoloCardProps>;
     Disclosure: ComponentType<SoloDisclosureProps>;
     Workspace?: ComponentType<SoloWorkspaceProps>;
+    /** A joined channel's native heading and actions around source-owned content. */
+    ChannelGroup?: ComponentType<SoloChannelGroupProps>;
     Chats?: ComponentType<Readonly<{ all?: boolean }>>;
   }>;
+}>;
+export type SoloChannelGroupProps = Readonly<{
+  channelId: string;
+  selected?: boolean;
+  onSelect(): void;
+  expanded: boolean;
+  controls: string;
+  disclosureLabel: string;
+  onToggle(): void;
+  /** Offered only while the host permits starting a chat from this channel. */
+  onNewTask?(): void;
+  children?: ReactNode;
 }>;
 export type SoloWorkspaceProps = Readonly<{
   id: string;

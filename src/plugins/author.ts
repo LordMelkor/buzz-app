@@ -201,6 +201,7 @@ export type {
   SoloWorkspaces,
   SoloWorkspaceSnapshot,
   SoloWorkspaceProps,
+  SoloChannelGroupProps,
   SoloRegionBinding,
   SoloRegionSnapshot,
   SoloRegionAction,

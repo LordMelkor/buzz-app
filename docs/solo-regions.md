@@ -139,6 +139,22 @@ Focused tests live beside `solo-navigation.ts` and `SoloRegions.tsx`. Browser an
 native app checks must still cover geometry, both themes, enlarged text, keyboard
 focus, hidden sections, and relay signing. DOM checks do not establish those facts.
 
+## Channel groups
+
+Check `ui.ChannelGroup` before using it. Older hosts omit this optional component.
+It frames a joined stream or forum channel with its current name, icon, native
+channel menu, and details entry. Sources supply selection, disclosure state and
+label, and their task content. The title calls `onSelect`; only the caret calls
+`onToggle`. `controls` identifies the body, which stays mounted while collapsed.
+Missing channels and channels without the viewer's membership render nothing.
+
+The host offers `onNewTask` only when the current channel permits starting a chat.
+Cached, archived, and read-only channels cannot offer it. The host rechecks access
+when an action runs. Native channel actions retain their existing authorization
+and mutation owners. Groups reuse the local roster and closed menus start no
+relay reads. The component does not discover channels, file tasks, or change their
+audience. Keep the previous presentation as a fallback when the component is absent.
+
 ## Personal workspaces
 
 `ctx.soloNavigation.workspaces` exposes the bound user's Solo workspace catalog.
