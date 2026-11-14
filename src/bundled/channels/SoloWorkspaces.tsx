@@ -96,12 +96,17 @@ export function SoloWorkspaces({
   onNew,
   onConverted,
   visit,
-  draft,
+  drafts = [],
   sidebarRows = emptyRows,
   compose,
 }: {
   compose?: ComposeWorkspaces | undefined;
-  draft?: { projectId?: string | undefined; content: ReactNode } | undefined;
+  drafts?: readonly {
+    id: string;
+    projectId?: string | undefined;
+    selected: boolean;
+    content: ReactNode;
+  }[];
   onConverted?: ((id: string) => void) | undefined;
   visit?: AbortSignal;
   session: RelaySession;
@@ -251,9 +256,10 @@ export function SoloWorkspaces({
   const assignmentFor = (item: ChatListItem) =>
     dormantAssignments?.has(item.id) ? undefined : assigned[item.id];
   const ids = new Set(groups.map((group) => group.id));
-  const draftProject = draft
-    ? ids.has(draft.projectId ?? "")
-      ? (draft.projectId ?? "")
+  const activeDraft = drafts.find((draft) => draft.selected);
+  const draftProject = activeDraft
+    ? ids.has(activeDraft.projectId ?? "")
+      ? (activeDraft.projectId ?? "")
       : ""
     : undefined;
   useEffect(() => {
@@ -380,7 +386,11 @@ export function SoloWorkspaces({
         compose ||
         project.id ||
         project.rows.length ||
-        draftProject === project.id,
+        drafts.some(
+          (draft) =>
+            (ids.has(draft.projectId ?? "") ? draft.projectId : "") ===
+            project.id,
+        ),
     )
     .map((project) => {
       // A list that shrank back under the cap has nothing to fold.
@@ -580,17 +590,24 @@ export function SoloWorkspaces({
     }
     const rows = (
       <>
-        {draftProject === project.id && draft && (
-          <ChatActionsMenu
-            id="new-chat-draft"
-            title="New chat"
-            className={styles.organizedRow}
-            content={null}
-            enabled={false}
-          >
-            <div>{draft.content}</div>
-          </ChatActionsMenu>
-        )}
+        {drafts
+          .filter(
+            (draft) =>
+              (ids.has(draft.projectId ?? "") ? draft.projectId : "") ===
+              project.id,
+          )
+          .map((draft) => (
+            <ChatActionsMenu
+              key={draft.id}
+              id={`new-chat-draft:${draft.id}`}
+              title="New chat"
+              className={styles.organizedRow}
+              content={null}
+              enabled={false}
+            >
+              <div>{draft.content}</div>
+            </ChatActionsMenu>
+          ))}
         <ChannelSidebarRows open={open}>
           {project.listed.map((item) => {
             const channel = channels.channels.find(

@@ -806,7 +806,7 @@ it("a second refused start finds the first's prompt in New chat and says so", as
   expect(screen.getByRole("textbox")).toHaveTextContent("First idea");
   expect(screen.getByRole("textbox")).not.toHaveTextContent("Second idea");
 });
-it("a refused start gives the pill's chosen agent back with its prompt", async () => {
+it("keeps the chosen agent through draft remount, first send, refused-start recovery and retry", async () => {
   const test = setup(),
     onStarted = vi.fn(),
     onFailed = vi.fn(),
@@ -828,13 +828,18 @@ it("a refused start gives the pill's chosen agent back with its prompt", async (
   );
   expect(sendingTo("Outside agent")).toBeInTheDocument();
   await user.type(screen.getByRole("textbox"), "Hello");
+  first.unmount();
+  const resumed = render(view());
+  expect(screen.getByRole("textbox")).toHaveTextContent("Hello");
+  await waitFor(() => expect(sendingTo("Outside agent")).toBeInTheDocument());
   await user.click(screen.getByRole("button", { name: "Send message" }));
   await waitFor(() => expect(onStarted).toHaveBeenCalledOnce());
   const id = test.channelWrites.create.mock.calls[0]?.[0];
-  expect(test.messages.send).toHaveBeenLastCalledWith(id, "Hello", [
+  expect(test.messages.send).toHaveBeenCalledExactlyOnceWith(id, "Hello", [
     "b".repeat(64),
   ]);
-  first.unmount();
+  expect(readView("test", "solo:new-draft:agents", null)).toBeNull();
+  resumed.unmount();
   // New chat opens again from the default agent, as always.
   render(view());
   await waitFor(() => expect(sendingTo("Member agent")).toBeInTheDocument());
@@ -867,7 +872,7 @@ it("a refused start gives the pill's chosen agent back with its prompt", async (
   // The pick was for that prompt: the next New chat starts from the default.
   expect(readView("test", "solo:new-draft:agents", null)).toBeNull();
 });
-it("a pick after a refused start's agent comes back replaces it, unsaved", async () => {
+it("a pick after a refused start's agent comes back replaces it across remounts", async () => {
   const test = setup(),
     onStarted = vi.fn(),
     onFailed = vi.fn(),
@@ -905,7 +910,7 @@ it("a pick after a refused start's agent comes back replaces it, unsaved", async
   );
   expect(sendingTo("Member agent")).toBeInTheDocument();
   restored.unmount();
-  // Shown again, New chat starts from the default, not the refused pick.
+  // Shown again, New chat keeps the viewer's replacement of the refused pick.
   render(view());
   expect(screen.getByRole("textbox")).toHaveTextContent("Hello");
   await waitFor(() => expect(sendingTo("Member agent")).toBeInTheDocument());
@@ -1225,11 +1230,24 @@ it("a new Solo chat starts with the default lifetime unless its settings chose a
   expect(f.channelWrites.create.mock.calls[1]?.[2]).toBeUndefined();
 });
 
-it("a new Solo chat for a named agent starts with it in the pill, not the default", async () => {
+it("a named agent route replaces an empty draft's saved pill and sends to that agent", async () => {
   const f = setup();
   const user = userEvent.setup();
   const started = vi.fn();
   const agent = "b".repeat(64);
+  const first = render(
+    <SoloDraft
+      session={f.session}
+      scope="me-route-agent"
+      extensions={withPill}
+      onStarted={started}
+    />,
+  );
+  await waitFor(() => expect(sendingTo("Member agent")).toBeInTheDocument());
+  await user.click(
+    screen.getByRole("button", { name: "Send to Member agent" }),
+  );
+  first.unmount();
   render(
     <SoloDraft
       agent={agent}

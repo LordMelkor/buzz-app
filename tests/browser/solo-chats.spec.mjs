@@ -103,6 +103,47 @@ test("chat row menus open Share with the chat's people and restore focus", async
 
 test.describe("Berd-style Solo project organization", () => {
   test.use({ soloAgentNames: ["Owned Honey"] });
+  // Native editor identity and focus after menu dismissal require the real app.
+  test("New focuses its open draft and the saved row returns after leaving", async ({
+    page,
+    app,
+  }) => {
+    await page.goto(app.origin);
+    await newChat(page);
+    const editor = page.locator('#new-chat-prompt [role="textbox"]');
+    await editor.fill("Keep this unsent idea");
+    const original = await editor.elementHandle();
+    await page.getByRole("button", { name: "New", exact: true }).click();
+    await page.getByRole("menuitem", { name: "New chat", exact: true }).click();
+    await expect(editor).toBeFocused();
+    expect(
+      await editor.evaluate((node, before) => node === before, original),
+    ).toBe(true);
+    await expect(editor).toHaveText("Keep this unsent idea");
+    const sidebar = page.getByRole("navigation", {
+      name: "Solo conversations",
+    });
+    await sidebar.getByRole("button", { name: "Alpha", exact: true }).click();
+    const saved = sidebar.getByRole("button", {
+      name: "New chat",
+      exact: true,
+    });
+    await expect(saved).toBeVisible();
+    await expect(saved).not.toHaveAttribute("aria-current");
+    await saved.click();
+    await expect(editor).toHaveText("Keep this unsent idea");
+    await expect(editor).toBeFocused();
+    await expect(saved).toHaveAttribute("aria-current", "page");
+    await editor.fill("");
+    await sidebar.getByRole("button", { name: "Alpha", exact: true }).click();
+    await expect(editor).toHaveCount(0);
+    await expect(
+      sidebar.getByRole("button", { name: "Alpha", exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+    await expect(saved).toHaveCount(0);
+    await original.dispose();
+  });
+
   test("a project retains two chats and their exact tagged drafts", async ({
     page,
     app,

@@ -114,6 +114,28 @@ export function soloDraftTarget(
   };
 }
 
+/** New focuses an already open ordinary draft, including its route context. */
+export function resumeSoloDraftTarget(
+  scope: string,
+  current: OpenTarget | undefined,
+  project?: string,
+): OpenTarget {
+  const parts = splitPartition(scope);
+  if (
+    current?.kind === "page" &&
+    current.pluginId === "buzz.channels" &&
+    current.pageId === "channels" &&
+    parts &&
+    current.scope?.communityOrigin === parts.communityOrigin &&
+    current.scope?.viewer === parts.viewer
+  ) {
+    const draft = soloDraft(current.route?.params);
+    if (draft && !draft.region && (!project || draft.project === project))
+      return current;
+  }
+  return soloDraftTarget(scope, project ? { project } : {});
+}
+
 export function conversationTarget(
   scope: string,
   channelId: string,

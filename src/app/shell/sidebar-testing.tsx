@@ -222,6 +222,7 @@ export function fixture(
     open,
     subscribe,
     snapshot: () => ({
+      entry: { target },
       attempt: {
         id: String(attempt),
         signal: new AbortController().signal,

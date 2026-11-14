@@ -10,7 +10,8 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { stubAvatarBrowserApis } from "../agents/avatar-testing";
-import { writeView } from "../../shared/view-state";
+import { readView, writeView } from "../../shared/view-state";
+import { attachmentDraft } from "../messages/attachment-draft";
 import { conversationTarget, soloDraftTarget } from "./routes";
 import type { Contribution } from "../../plugins/contributions";
 import type { ChatIcon, ChatMenu } from "../conversation/service";
@@ -706,6 +707,92 @@ it.each(["new", "linked", "agent", "region"])(
       "aria-current",
       "page",
     );
+  },
+);
+
+it.each([false, true])(
+  "resumes workspace drafts and retains unsent text/files across sidebar remount (%s combined)",
+  async (combined) => {
+    const f = fixture(combined);
+    const user = userEvent.setup();
+    const before = f.session.soloPreferences.snapshot();
+    vi.spyOn(f.session.soloPreferences, "snapshot").mockReturnValue({
+      ...before,
+      data: {
+        sections: [{ id: "work", name: "Work", order: 0 }],
+        assignments: {},
+        starred: [],
+        muted: [],
+      },
+    });
+    const target = soloDraftTarget(scope, { project: "work", agent });
+    const settings = { name: "Keep my title", canvas: "Keep instructions" };
+    act(() => {
+      writeView(scope, "solo:new-draft", "An independent unfiled idea");
+      writeView(scope, "solo:project:work:new-draft", "Workspace idea");
+      writeView(scope, "solo:project:work:new-project", "another");
+      writeView(scope, "solo:project:work:settings", settings);
+      f.navigate(target);
+    });
+    expect(screen.getAllByRole("button", { name: "New chat" })).toHaveLength(2);
+    await user.click(
+      screen.getByRole("button", {
+        name: combined ? "New" : "New chat or workspace",
+      }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "New chat" }));
+    expect(f.open).toHaveBeenLastCalledWith(target);
+    expect(readView(scope, "solo:project:work:settings", null)).toEqual(
+      settings,
+    );
+    await user.click(screen.getByRole("button", { name: /^Planning/ }));
+    const choices = screen.getAllByRole("button", {
+      name: "New chat in Work",
+    });
+    const create =
+      choices.find((choice) => choice.textContent === "New chat") ?? choices[0];
+    if (!create) throw new Error("Missing workspace New chat action");
+    await user.click(create);
+    expect(f.open).toHaveBeenLastCalledWith(
+      soloDraftTarget(scope, { project: "work" }),
+    );
+    expect(readView(scope, "solo:project:work:new-project", null)).toBe(
+      "another",
+    );
+    expect(readView(scope, "solo:project:work:settings", null)).toEqual(
+      settings,
+    );
+    const unfiled = soloDraftTarget(scope);
+    act(() => {
+      writeView(scope, "solo:project:work:new-draft", "");
+      f.navigate(unfiled);
+    });
+    await user.click(screen.getByRole("button", { name: /^Planning/ }));
+    const row = screen.getByRole("button", { name: "New chat" });
+    expect(row).toHaveAccessibleDescription("Unsent draft");
+    expect(row).not.toHaveAttribute("aria-current");
+    act(() => f.sidebar(false));
+    act(() => f.sidebar(true));
+    await user.click(screen.getByRole("button", { name: "New chat" }));
+    expect(f.open).toHaveBeenLastCalledWith(unfiled);
+    await user.click(screen.getByRole("button", { name: /^Planning/ }));
+    const files = attachmentDraft(
+      f.session,
+      `${scope}:solo:new-draft`,
+      "",
+      true,
+    );
+    act(() => {
+      files.adopt([
+        { id: "held", file: new File(["idea"], "idea.txt"), status: "error" },
+      ]);
+      writeView(scope, "solo:new-draft", "");
+    });
+    expect(
+      screen.getByRole("button", { name: "New chat" }),
+    ).toBeInTheDocument();
+    act(() => files.clear());
+    expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
   },
 );
 

@@ -1206,13 +1206,12 @@ function Composer({
   const addressedKeys = sessionTargets(addressed.map((item) => item.pubkey));
   const sessionState = useSessionState(agents, addressedKeys, sessionPlace);
   const compacting = sessionState === "compacting";
-  // In a saved chat, the viewer's own pick outlives a remount until the next
-  // send, which the chat's history then seeds from. A new chat always starts
-  // from the main agent, unless a refused start gave its pick back (SoloDraft
-  // saves that one) and the viewer has not picked since.
+  // An explicit pick stays with its draft across remounts. Saved chats clear
+  // it on send and then seed from history; SoloDraft consumes it when a new
+  // chat starts.
   const pillKey = `${draftKey}:agents`;
   const keepPick = (people: readonly MentionRecipient[] | null) => {
-    writeView(scope, pillKey, !submission && people?.length ? people : null);
+    writeView(scope, pillKey, people?.length ? people : null);
   };
   const choose = (people: readonly MentionRecipient[]) => {
     seededRoute.current = undefined;

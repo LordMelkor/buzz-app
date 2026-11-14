@@ -104,10 +104,18 @@ export function resetNewChatProject(scope: string, projectId: string) {
   writeView(scope, `${key}:new-project`, null);
 }
 
-/** New chats share one saved draft. When it holds only tags for agents
- * other than the named one, it has no text of the person's to keep. */
-function dropOtherAgentTag(scope: string, key: string, agent?: string) {
+/** New can return typing to an open draft without replacing its editor. */
+export function soloDraftInput() {
+  return document.querySelector<HTMLElement>(
+    '#new-chat-prompt textarea, #new-chat-prompt [role="textbox"]',
+  );
+}
+
+/** A named route replaces earlier toolbar picks and legacy tag-only defaults,
+ * while authored inline mentions remain part of the person's draft. */
+function prepareNamedAgentDraft(scope: string, key: string, agent?: string) {
   if (!agent) return;
+  writeView(scope, `${key}:agents`, null);
   const saved = mentionDraft(readView<unknown>(scope, key, ""));
   if (
     addressingOnly(saved) &&
@@ -218,9 +226,8 @@ export function SoloDraft({
         ? `solo:project:${projectId}`
         : "solo";
   const notify = useToastNotification();
-  // Before the composer reads it: a named agent replaces a saved draft that
-  // only tags another agent, since that tag was the earlier default.
-  useState(() => dropOtherAgentTag(scope, `${draftKey}:new-draft`, agent));
+  // Reconcile explicit route intent before the composer restores its pick.
+  useState(() => prepareNamedAgentDraft(scope, `${draftKey}:new-draft`, agent));
   // Read the source live: starting the chat consumes it.
   const linkedSource = useCallback(
     () => (source ? readLinkedChat(scope, draftKey)?.link : undefined),

@@ -9386,7 +9386,7 @@ it("puts the default agent in a new chat's pill, never the text or a saved draft
   expect(readView("scope", "new-chat", null)).toBeNull();
 });
 
-it("keeps an agent the viewer picked in a new chat's pill across showing again, but a new mount starts from the main agent", async () => {
+it("keeps an agent the viewer picked in a new chat's pill across showing again and remounting", async () => {
   const h = mountNewSoloChat("Cached", first.pubkey);
   await waitFor(() => expect(pillSendingTo("Cached")).toBeInTheDocument());
   act(() =>
@@ -9400,7 +9400,7 @@ it("keeps an agent the viewer picked in a new chat's pill across showing again, 
   expect(h.input()).toHaveValue("");
   h.unmount();
   mountNewSoloChat("Cached", first.pubkey);
-  await waitFor(() => expect(pillSendingTo("Cached")).toBeInTheDocument());
+  await waitFor(() => expect(pillSendingTo("Saved")).toBeInTheDocument());
 });
 
 it("an untouched new chat's pill holds the current default after a remount", async () => {
