@@ -2044,7 +2044,7 @@ it.each([
   ["ellipsis", "pointer"],
   ["ellipsis", "keyboard"],
 ] as const)(
-  "hands the %s destination action focus after %s menu close completes",
+  "hands the seventh %s destination action focus after %s menu close completes",
   async (surface, input) => {
     const h = fixture();
     const pending: readonly never[] = [];
@@ -2067,6 +2067,12 @@ it.each([
             ui={ui}
             channelId="owned"
             menuActions={[
+              ...Array.from({ length: 6 }, (_, index) => ({
+                id: `action-${index}`,
+                label: `Action ${index + 1}`,
+                icon: <span />,
+                onSelect: () => {},
+              })),
               {
                 id: "new-task",
                 label: "New task",
