@@ -8,9 +8,10 @@
 // The build config parses candidates too, so this module imports nothing.
 //
 // What the agent UI uses (it owns none of the logic below):
-// - The list: `recommendedCandidates()`, and `candidatesFor(harness)` to
+// - The setup: `recommendedSetup()` carries its optional attribution;
+//   `recommendedCandidates()` and `candidatesFor(harness)` read its list to
 //   tell whether a harness's settings offer Automatic at all. It is the
-//   build's, unless `setRuntimeCandidates(list)` replaced it for the launch.
+//   build's, unless `setRuntimeRecommendation(setup)` replaced it for the launch.
 // - The mark on a config: `onRecommended(config)` reads it,
 //   `withRecommended(config)` sets it (dropping model, provider and effort),
 //   `offRecommended(config)` clears it; a manual model or thinking choice
@@ -48,6 +49,14 @@ export type RecommendedCandidate = Readonly<{
   label: string;
 }>;
 
+/** A distributor's recommendation and its optional display attribution. */
+export type RecommendedSetup = Readonly<{
+  recommendedBy?: string;
+  /** Optional distributor-supplied explanation, shown as plain text. */
+  description?: string;
+  candidates: readonly RecommendedCandidate[];
+}>;
+
 export const PRESET = "recommended";
 /** The agent types that follow a candidate, and whether each needs a provider. */
 const HARNESSES: Readonly<Record<string, boolean>> = {
@@ -59,27 +68,49 @@ const HARNESSES: Readonly<Record<string, boolean>> = {
 const filled = (value: unknown): value is string =>
   typeof value === "string" && value.trim() === value && value !== "";
 
-/** The candidates in `value`, a JSON array; empty for an empty value. Throws
- * on anything else, naming the setting, and the candidate and field at fault,
- * but never echoing a value. */
+/** Parse a recommendation object or a legacy candidates array. An empty value
+ * recommends nothing. Errors name the field at fault without echoing values. */
 export function parseRecommended(
   value: string,
-): readonly RecommendedCandidate[] {
-  if (!value.trim()) return [];
+  allowEmpty = false,
+): RecommendedSetup {
+  if (!value.trim()) return Object.freeze({ candidates: Object.freeze([]) });
   const invalid = (problem: string) =>
     new Error(`BUZZ_RECOMMENDED_AGENT${problem}`);
-  let list: unknown;
+  let parsed: unknown;
   try {
-    list = JSON.parse(value);
+    parsed = JSON.parse(value);
   } catch {
-    list = undefined;
+    parsed = undefined;
   }
-  if (!Array.isArray(list) || !list.length)
+  let list = parsed;
+  let recommendedBy: string | undefined;
+  let description: string | undefined;
+  let prefix = "";
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const {
+      recommendedBy: name,
+      description: explanation,
+      candidates,
+      ...rest
+    } = parsed as Record<string, unknown>;
+    if (Object.keys(rest).length)
+      throw invalid(" has an unknown recommendation field.");
+    if (name !== undefined && !filled(name))
+      throw invalid(".recommendedBy must be text without surrounding spaces.");
+    if (explanation !== undefined && !filled(explanation))
+      throw invalid(".description must be text without surrounding spaces.");
+    recommendedBy = name as string | undefined;
+    description = explanation as string | undefined;
+    list = candidates;
+    prefix = ".candidates";
+  }
+  if (!Array.isArray(list) || (!list.length && !allowEmpty))
     throw invalid(
-      " must be a JSON array of {harness, provider, model, effort, label} candidates.",
+      `${prefix} must be a ${prefix ? "nonempty candidates array" : "JSON array or an object with a nonempty candidates array"}.`,
     );
-  return list.map((item: unknown, index) => {
-    const at = `[${index}]`;
+  const candidates = list.map((item: unknown, index) => {
+    const at = `${prefix}[${index}]`;
     if (!item || typeof item !== "object" || Array.isArray(item))
       throw invalid(`${at} must be an object.`);
     const { harness, provider, model, effort, label, ...rest } = item as Record<
@@ -112,46 +143,50 @@ export function parseRecommended(
       label: label as string,
     });
   });
+  return Object.freeze({
+    ...(recommendedBy !== undefined ? { recommendedBy } : {}),
+    ...(description !== undefined ? { description } : {}),
+    candidates: Object.freeze(candidates),
+  });
 }
 
-/** A list supplied at run time, which replaces this build's. */
-let runtimeCandidates: readonly RecommendedCandidate[] | undefined;
+/** A setup supplied at run time, which replaces this build's. */
+let runtimeRecommendation: RecommendedSetup | undefined;
 
-/** Replaces this build's candidates with `list` for the rest of the launch,
+/** Replaces this build's recommendation, including attribution, for the launch,
  * as a source read at start-up may; `undefined` goes back to the build's.
- * `list` is checked as the build's is, since a source read at run time is
- * untrusted: an invalid one is ignored, keeping the last good list, and this
- * returns false. Set it before agents run or views read the list: nothing
- * already found is found again. */
-export function setRuntimeCandidates(
-  list: readonly RecommendedCandidate[] | undefined,
+ * Runtime input is validated; invalid input keeps the last good setup.
+ * Set before agents run: previously resolved picks are not rechecked. */
+export function setRuntimeRecommendation(
+  setup: RecommendedSetup | undefined,
 ): boolean {
-  if (list === undefined) {
-    runtimeCandidates = undefined;
+  if (setup === undefined) {
+    runtimeRecommendation = undefined;
     return true;
   }
   try {
-    runtimeCandidates = Object.freeze(
-      list.length ? [...parseRecommended(JSON.stringify(list))] : [],
-    );
+    runtimeRecommendation = parseRecommended(JSON.stringify(setup), true);
     return true;
   } catch {
     return false;
   }
 }
 
-/** The candidates, in priority order: those set at run time, else this
- * build's, which the build checked. */
-export function recommendedCandidates(): readonly RecommendedCandidate[] {
-  if (runtimeCandidates) return runtimeCandidates;
+/** The current recommendation and attribution, supplied by runtime or build. */
+export function recommendedSetup(): RecommendedSetup {
+  if (runtimeRecommendation) return runtimeRecommendation;
   try {
     return parseRecommended(
       String(import.meta.env.VITE_BUZZ_RECOMMENDED_AGENT ?? ""),
     );
   } catch {
-    return [];
+    return { candidates: [] };
   }
 }
+
+/** The current candidates, in priority order. */
+export const recommendedCandidates = (): readonly RecommendedCandidate[] =>
+  recommendedSetup().candidates;
 
 /** `harness`'s candidates, in priority order. */
 export const candidatesFor = (harness: string) =>

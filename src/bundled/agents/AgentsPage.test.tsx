@@ -7552,3 +7552,53 @@ describe("a team Save that finishes after its editor is gone", () => {
     }
   });
 });
+
+it("shows Automatic as a read-only detail on a recommended agent card", async () => {
+  vi.stubEnv(
+    "VITE_BUZZ_RECOMMENDED_AGENT",
+    JSON.stringify([
+      { harness: "codex", model: "model-a", label: "Model A", effort: "high" },
+    ]),
+  );
+  try {
+    const saved = {
+      ...agent("Ada", 1),
+      type: "test/codex",
+      config: { preset: "recommended" },
+    };
+    const { agents } = setup([saved], {
+      more: [
+        {
+          key: "test/codex",
+          pluginId: "test",
+          revision: "1",
+          id: "codex",
+          title: "Codex",
+          summary: () => "model-a",
+          icon: RobotIcon,
+          defaults: () => ({ config: {} }),
+          CreateModel: () => <button type="button">Manual model</button>,
+          tabs: [
+            {
+              id: "settings",
+              title: "Settings",
+              role: "settings",
+              component: () => <p>Model settings</p>,
+            },
+          ],
+        } as RegisteredAgentType,
+      ],
+    });
+    const card = screen.getByRole("gridcell", { name: "Ada" });
+    expect(
+      within(card).queryByRole("button", { name: "Manual model" }),
+    ).not.toBeInTheDocument();
+    expect(within(card).getByText("Model A (Automatic)")).toBeVisible();
+    expect(
+      within(card).queryByRole("button", { name: "Automatic" }),
+    ).not.toBeInTheDocument();
+    expect(agents.save).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});

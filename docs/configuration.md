@@ -18,7 +18,7 @@ Build defaults are readable binary data, **never secret storage**.
 | `BUZZ_BUILD_MANAGED_PLUGINS_URL` | Native build: `https` URL of a version 1 [managed plugin policy](managed-plugins.md#packaged-policy). The desktop app fetches it and keeps the last good copy, used when no `managed-plugins.json` exists. It only recommends. Unset in OSS builds. |
 | `BUZZ_DATABRICKS_HOST` | Frontend build and dev server: `https://` Databricks workspace URL passed as `DATABRICKS_HOST` to every bundled `goose-acp`, which then prefers it to the host in goose's config. Unset in OSS builds. See [Databricks host](#databricks-host). |
 | `BUZZ_MOBILE_APP_IOS_URL`, `BUZZ_MOBILE_APP_ANDROID_URL` | Frontend build: `https://` store listings for the build's mobile app, shown with QR codes on the mobile Settings card to people whose Builderlab account holds this device's backed-up key. Unset in OSS builds. See [Mobile app links](#mobile-app-links). |
-| `BUZZ_RECOMMENDED_AGENT` | Frontend build and dev server: JSON array of candidates for a recommended agent setup, best first, behind **Automatic (Recommended)** for new agents. Unset in OSS builds, which don't offer the choice. See [Recommended agent](#recommended-agent). |
+| `BUZZ_RECOMMENDED_AGENT` | Frontend build and dev server: JSON recommendation with optional `recommendedBy` attribution and candidates ordered best first, behind **Automatic** for new agents. Legacy candidate arrays also work. Unset in OSS builds, which don't offer the choice. See [Recommended agent](#recommended-agent). |
 | `BUZZ_RELAY_URL` | Live development broker's default community, not an agent relay override or a packaged default. |
 | `BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY` | Presence-only alias for fresh-viewer community selection in live development only. Saved viewer choice wins. |
 | `BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG` | Native and frontend build: sign-in servers added to the built-in one, each with its adapter prefix and community hosts; empty opts out. See below. |
@@ -104,42 +104,57 @@ builds.
 ## Recommended agent
 
 Packagers can offer a recommended agent setup, which picks a harness, model and
-thinking level for new agents and keeps them current. `BUZZ_RECOMMENDED_AGENT`
-is a JSON array of candidates, best first; a harness may have several. Each
-one has `harness` (`goose`, `codex` or `claude-code`), `model`, `effort`, `label` (the model's
-display name) and, for goose only, `provider`. For example, with placeholder
-values:
+thinking level for new agents. `BUZZ_RECOMMENDED_AGENT` is a JSON object with a
+`candidates` array, best first, an optional `recommendedBy` display name, and an
+optional `description` explaining the recommendation. The description is plain
+text shown in the Automatic option; any rationale or update promise comes from
+the distributor. Beneath the description, one compact line shows the selected model and
+thinking level. “Recommended by [source].” precedes the description when supplied. Without a source or description, the option says “Use recommended settings.”
+A harness may have several candidates. Each one has `harness` (`goose`, `codex`
+or `claude-code`), `model`, `effort`, `label` (the model's display name) and, for
+goose only, `provider`. For example, with placeholder values:
 
 ```sh
-BUZZ_RECOMMENDED_AGENT='[{"harness":"goose","provider":"example","model":"model-b","effort":"high","label":"Model B"},{"harness":"codex","model":"model-a","effort":"high","label":"Model A"},{"harness":"claude-code","model":"model-c","effort":"high","label":"Model C"}]' bin/pnpm tauri build
+BUZZ_RECOMMENDED_AGENT='{"recommendedBy":"Example Co","candidates":[{"harness":"goose","provider":"example","model":"model-b","effort":"high","label":"Model B"},{"harness":"codex","model":"model-a","effort":"high","label":"Model A"},{"harness":"claude-code","model":"model-c","effort":"high","label":"Model C"}]}' bin/pnpm tauri build
 ```
 
 The frontend reads it from repository-root `.env.local` or the process
 environment (process wins) and compiles it in; invalid values fail the build,
 naming the candidate and field at fault, such as
-`BUZZ_RECOMMENDED_AGENT[1].model`, without echoing values.
+`BUZZ_RECOMMENDED_AGENT.candidates[1].model`, without echoing values.
+The original array-only format remains supported as an unnamed recommendation.
+Omitting `recommendedBy` keeps Automatic with generic copy; omitting the whole
+setting retains the existing creation form. Attribution, description and candidates
+are replaced together when a runtime recommendation is supplied. Neither attribution
+nor description is copied into an agent's saved settings.
 Set it in `.env.local` to try the feature in `just web` or `just desktop`.
 Leave it unset for OSS builds: the create form then works as before.
 
 With it set:
 
-- **Create agent** gains an **AI settings** row: **Automatic (Recommended)**,
-  the default, or **Manual**. Automatic uses the first candidate whose harness
+- **Create agent** gains an **AI setup** row: **Automatic**,
+  the default, or **Custom**. Automatic uses the first candidate whose harness
   is installed here and ready and whose model it lists now (Codex: installed,
   signed in, model in its catalog; Claude Code: installed, signed in, model or
   the model an alias stands for in its catalog, with the candidate's thinking
   level; goose: provider set up, model in its live list with the candidate's
-  thinking level), and shows it as **Uses** with the model and thinking level.
-  When a harness ahead of it isn't set up, an info button after it says so in
-  a tooltip. Each check may
-  take up to 8 seconds; one that fails or takes longer skips that candidate.
+  thinking level), and shows the model and thinking level in **Automatic**'s
+  description in the menu.
+  When a harness ahead of it isn't set up, the same option explains why the
+  fallback was chosen. The configured description wraps naturally. Beneath it,
+  “Recommended by [name].” precedes the description when a source is supplied;
+  the compact model details remain beneath it.
+  In Automatic, the row's byline shows “Currently set to” and the selected model, on one line with
+  an ellipsis when needed; hovering reveals the full name. Checking and setup
+  feedback stays visible while the recommended model is being resolved.
+  Each check may take up to 8 seconds; one that fails or takes longer skips that candidate.
   Codex and Claude Code are not offered on Windows. When nothing is ready, a
   row asks to set up Goose, Codex or Claude first, with a **Set up** button
-  that opens agent setup, and Create waits. **Manual** opens the
+  that opens agent setup, and Create waits. **Custom** opens the
   Harness, Model and Thinking rows in place, starting
   from what Automatic picked, and works while the check runs. Automatic is
   only for local harnesses: a hosted type such as Builderlab is chosen under
-  Manual's Harness and keeps its own model choices.
+  Custom's Harness and keeps its own model choices.
 - The agent saves only `preset: "recommended"` in its config, with its own
   model, provider and thinking level cleared. Its harness is never changed for
   it.
@@ -148,12 +163,12 @@ With it set:
   on the harness's own default instead of failing, and it asks again at a run
   a minute or more later, so a harness set up or signed in since then is
   picked up. A later build's recommendation reaches it the same way.
-- The agent's **Identity** tab shows the same **AI settings** row. Automatic shows what it runs on, or that it fell back
-  to the harness default; it keeps the agent's harness even when another is
-  recommended first. **Manual** opens the Harness row and the harness's model
+- The agent's **Identity** tab shows the same **AI setup** row. Automatic shows
+  what it runs on, or that it fell back to the harness default; it keeps the agent's harness even when another is
+  recommended first. **Custom** opens the Harness row and the harness's model
   rows; changing the harness there is the usual harness change. Any model,
   provider or thinking change, on the agent's card or in Settings, takes it
-  off Recommended.
+  off Automatic.
 
 On a config channel, the mark syncs with the agent's settings: its
 `buzz.agent.settings` revision (kind 45010) carries `"preset": "recommended"`

@@ -422,14 +422,29 @@ export const COMPONENTS: readonly ComponentDefinition[] = [
     slug: "settings-group",
     name: "SettingsGroup",
     purpose:
-      "A subtle bordered container for related settings rows or form fields, or a stack of individually bordered cards.",
+      "A subtle bordered container for related settings rows or form fields, or a stack of individually bordered cards. SettingsGroupExpand reveals rows in place under a choice.",
     behavior:
-      "Presentation only; children retain their labels, state, and interactions.",
-    variants: ["rows", "form", "cards"],
+      "Presentation only; children retain their labels, state, and interactions. Expanded rows mount when first opened; closed again, they are inert and keep their state.",
+    variants: ["rows", "form", "cards", "expand"],
     status: "proposed",
     collection: "components",
     owner: "Buzz Settings",
     source: "shared/design-system/ui/SettingsGroup.tsx",
+    baseUi: [],
+    composes: [],
+  },
+  {
+    slug: "value-chip",
+    name: "ValueChip",
+    purpose:
+      "A short read-only value in running text, such as the model a setting chose, with an optional mark.",
+    behavior:
+      "Presentation only; long values ellipsize, and an optional label names the value for assistive technology.",
+    variants: ["text", "icon"],
+    status: "proposed",
+    collection: "components",
+    owner: "Buzz Settings",
+    source: "shared/design-system/ui/ValueChip.tsx",
     baseUi: [],
     composes: [],
   },

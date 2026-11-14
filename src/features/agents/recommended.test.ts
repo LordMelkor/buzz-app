@@ -8,10 +8,11 @@ import {
   candidatesFor,
   pickRecommended,
   recommendedCandidates,
+  recommendedSetup,
   RETRY_MS,
   recommendedRun,
   recommendedNote,
-  setRuntimeCandidates,
+  setRuntimeRecommendation,
   withRecommended,
 } from "./recommended";
 
@@ -60,15 +61,15 @@ it("has no recommendation when the build sets none", async () => {
 
 it("parses candidates in order, several per harness, and rejects anything else", () => {
   const backup = { ...CODEX, model: "model-c", label: "Model C" };
-  expect(parseRecommended(JSON.stringify([CODEX, GOOSE, backup]))).toEqual([
-    CODEX,
-    GOOSE,
-    backup,
-  ]);
-  expect(parseRecommended("  ")).toEqual([]);
+  expect(parseRecommended(JSON.stringify([CODEX, GOOSE, backup]))).toEqual({
+    candidates: [CODEX, GOOSE, backup],
+  });
+  expect(parseRecommended("  ")).toEqual({ candidates: [] });
   // Claude Code takes a candidate too, without a provider.
   const claude = { ...CODEX, harness: "claude-code", label: "Model D" };
-  expect(parseRecommended(JSON.stringify([claude]))).toEqual([claude]);
+  expect(parseRecommended(JSON.stringify([claude]))).toEqual({
+    candidates: [claude],
+  });
   for (const invalid of [
     "[]",
     "{}",
@@ -81,6 +82,49 @@ it("parses candidates in order, several per harness, and rejects anything else",
     JSON.stringify([{ ...CODEX, harness: "claude-code", provider: "p" }]),
   ])
     expect(() => parseRecommended(invalid)).toThrow(/BUZZ_RECOMMENDED_AGENT/);
+});
+
+it("keeps optional distributor attribution with the configured candidates", () => {
+  const setup = {
+    recommendedBy: "Example Co",
+    description: "Prioritizes compatibility.",
+    candidates: [CODEX, GOOSE],
+  };
+  expect(parseRecommended(JSON.stringify(setup))).toEqual(setup);
+  vi.stubEnv("VITE_BUZZ_RECOMMENDED_AGENT", JSON.stringify(setup));
+  expect(recommendedSetup()).toEqual(setup);
+  expect(recommendedCandidates()).toEqual([CODEX, GOOSE]);
+  expect(parseRecommended(JSON.stringify({ candidates: [CODEX] }))).toEqual({
+    candidates: [CODEX],
+  });
+});
+
+it("rejects malformed recommendation metadata without exposing its values", () => {
+  for (const input of [
+    { recommendedBy: "", candidates: [CODEX] },
+    { recommendedBy: " secret-name ", candidates: [CODEX] },
+    { recommendedBy: 42, candidates: [CODEX] },
+    { description: "", candidates: [CODEX] },
+    { description: " secret-description ", candidates: [CODEX] },
+    { description: 42, candidates: [CODEX] },
+    { recommendedBy: "secret-name", candidates: [] },
+    { recommendedBy: "secret-name" },
+    {
+      recommendedBy: "secret-name",
+      candidates: [CODEX],
+      extra: "secret-value",
+    },
+    { recommendedBy: "secret-name", candidates: [{ ...CODEX, model: "" }] },
+  ]) {
+    expect(() => parseRecommended(JSON.stringify(input))).toThrow(
+      /BUZZ_RECOMMENDED_AGENT/,
+    );
+    try {
+      parseRecommended(JSON.stringify(input));
+    } catch (error) {
+      expect(String(error)).not.toContain("secret");
+    }
+  }
 });
 
 it("runs an agent on Recommended on the candidate found for its own harness", () => {
@@ -329,19 +373,39 @@ it("names the candidate and field a build rejects, never their values", () => {
   }
 });
 
-it("lets a list set at run time replace the build's, until cleared", () => {
-  vi.stubEnv("VITE_BUZZ_RECOMMENDED_AGENT", JSON.stringify([CODEX]));
+it("replaces candidates and attribution together at runtime, until cleared", () => {
+  const build = {
+    recommendedBy: "Example Co",
+    description: "Prioritizes compatibility.",
+    candidates: [CODEX],
+  };
+  vi.stubEnv("VITE_BUZZ_RECOMMENDED_AGENT", JSON.stringify(build));
   try {
-    setRuntimeCandidates(parseRecommended(JSON.stringify([GOOSE])));
+    setRuntimeRecommendation(
+      parseRecommended(
+        JSON.stringify({
+          recommendedBy: "Example Team",
+          description: "For short tasks.",
+          candidates: [GOOSE],
+        }),
+      ),
+    );
+    expect(recommendedSetup().recommendedBy).toBe("Example Team");
+    expect(recommendedSetup().description).toBe("For short tasks.");
     expect(recommendedCandidates()).toEqual([GOOSE]);
     expect(candidatesFor("codex")).toEqual([]);
+    setRuntimeRecommendation(parseRecommended(JSON.stringify([GOOSE])));
+    expect(recommendedSetup().recommendedBy).toBeUndefined();
+    expect(recommendedSetup().description).toBeUndefined();
     // An empty list recommends nothing, over the build's.
-    setRuntimeCandidates([]);
+    setRuntimeRecommendation({ candidates: [] });
     expect(recommendedCandidates()).toEqual([]);
-    setRuntimeCandidates(undefined);
+    expect(recommendedSetup().recommendedBy).toBeUndefined();
+    setRuntimeRecommendation(undefined);
     expect(recommendedCandidates()).toEqual([CODEX]);
+    expect(recommendedSetup()).toEqual(build);
   } finally {
-    setRuntimeCandidates(undefined);
+    setRuntimeRecommendation(undefined);
     vi.unstubAllEnvs();
   }
 });
@@ -349,17 +413,19 @@ it("lets a list set at run time replace the build's, until cleared", () => {
 it("ignores an invalid list set at run time, keeping the last good one", () => {
   vi.stubEnv("VITE_BUZZ_RECOMMENDED_AGENT", JSON.stringify([CODEX]));
   try {
-    expect(setRuntimeCandidates([GOOSE])).toBe(true);
+    expect(setRuntimeRecommendation({ candidates: [GOOSE] })).toBe(true);
     // A harness outside the closed set, and an unknown field, as a fetched
     // list might carry.
     const bad = [{ ...GOOSE, harness: "other" }] as never;
-    expect(setRuntimeCandidates(bad)).toBe(false);
-    expect(setRuntimeCandidates([{ ...CODEX, sandbox: "off" }] as never)).toBe(
-      false,
-    );
+    expect(setRuntimeRecommendation({ candidates: bad })).toBe(false);
+    expect(
+      setRuntimeRecommendation({
+        candidates: [{ ...CODEX, sandbox: "off" }],
+      } as never),
+    ).toBe(false);
     expect(recommendedCandidates()).toEqual([GOOSE]);
   } finally {
-    setRuntimeCandidates(undefined);
+    setRuntimeRecommendation(undefined);
     vi.unstubAllEnvs();
   }
 });

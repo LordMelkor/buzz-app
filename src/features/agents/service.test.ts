@@ -120,7 +120,7 @@ import {
   pastedMentionRecipient,
 } from "../messages/mention-admission";
 import type { ComposerSession } from "../messages/composer-session";
-import { setRuntimeCandidates } from "./recommended";
+import { setRuntimeRecommendation } from "./recommended";
 
 /** The tag that the echo type's default watch matches. */
 const DEPLOY = ["t", "deploy"];
@@ -2980,11 +2980,12 @@ it("passes the model and effort its owner asked for, and no other", async () => 
 });
 
 it("ignores the model and effort asked of an agent on Automatic", async () => {
-  // A synthetic recommendation for the example type, under a real harness's
-  // id, since a runtime list only names harnesses Buzz knows.
-  setRuntimeCandidates([
-    { harness: "codex", model: "deep", effort: "max", label: "Deep" },
-  ]);
+  // A synthetic recommendation for the example type.
+  setRuntimeRecommendation({
+    candidates: [
+      { harness: "codex", model: "deep", effort: "max", label: "Deep" },
+    ],
+  });
   try {
     const { service, run, emit } = await setup({ typeId: "codex" });
     await service.create({
@@ -3012,7 +3013,7 @@ it("ignores the model and effort asked of an agent on Automatic", async () => {
     expect(delivery?.model).toBeUndefined();
     expect(delivery?.effort).toBeUndefined();
   } finally {
-    setRuntimeCandidates(undefined);
+    setRuntimeRecommendation(undefined);
   }
 });
 

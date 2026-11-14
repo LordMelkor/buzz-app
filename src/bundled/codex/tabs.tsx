@@ -4,7 +4,10 @@ import activityStyles from "../../features/agents/ActivityLayout.module.css";
 import { formatItemTimestamp } from "../../shared/datetime";
 import { useClockFormat } from "../../shared/clock-preference";
 import { InlineHeader } from "../../shared/design-system/ui/Header";
-import { CaretRightIcon } from "../../shared/design-system/icons";
+import {
+  CaretRightIcon,
+  CodexLogoIcon,
+} from "../../shared/design-system/icons";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
 import { ProviderDialogActions } from "../../features/agents/ProviderDialogActions";
 import { AgentSaveButton } from "../../features/agents/AgentSaveButton";
@@ -21,10 +24,14 @@ import { TranscriptPanel } from "../../features/agents/TranscriptPanel";
 import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
 import { ModelPicker } from "../../features/agents/ModelPicker";
+import { AISettings, runsOnDetails } from "../../features/agents/AISettings";
 import {
   candidatesFor,
   followRecommended,
+  offRecommended,
+  onRecommended,
   type RecommendedCandidate,
+  withRecommended,
 } from "../../features/agents/recommended";
 import {
   ConversationName,
@@ -604,7 +611,6 @@ export function createTabs(
     onReadyChange,
     ...props
   }: AgentCreateProps<Config>) {
-    const current = readConfig(config);
     const {
       data,
       checking,
@@ -614,6 +620,14 @@ export function createTabs(
       local,
       check,
     } = useProvider(agent);
+    // A pick here takes the agent off Recommended, from what it runs on.
+    const current = offRecommended(
+      followRecommended(
+        config,
+        readConfig(config),
+        bound ? null : provider.recommended(),
+      ),
+    );
     // The setup's status holds through the provider's next check, so the
     // button, and its focus, stays put as Install integration becomes Sign in.
     const { status } = useSyncExternalStore(
@@ -1255,6 +1269,10 @@ export function createTabs(
     useEffect(() => {
       setDraft(readConfig(agent.config));
     }, [agent.config]);
+    // Inert in a build that recommends nothing for Codex.
+    const following = onRecommended(draft) && candidatesFor("codex").length > 0;
+    // A remote target runs Recommended on its own default.
+    const resolved = bound ? null : provider.recommended();
     const effective = provider.resolve({ ...draft, effort: "" }, !!bound);
     const selected = catalogModel(effective.model, data);
     const efforts = thinkingOptions(
@@ -1276,7 +1294,11 @@ export function createTabs(
         });
         if (!validWorkspace(settings.workspace))
           throw new Error("Enter an absolute or ~/… workspace path.");
-        await save(settings);
+        // A Custom agent's save drops a mark left from before, which a later
+        // blank synced model would otherwise turn back on.
+        await save(
+          onRecommended(settings) ? settings : offRecommended(settings),
+        );
       } catch (reason) {
         setError(message(reason));
       } finally {
@@ -1317,8 +1339,9 @@ export function createTabs(
           }
           loading={checking}
           disabled={saving}
+          // A manual choice, even of the default, is never Recommended.
           onChange={(model) =>
-            setDraft({ ...draft, ...modelChange(model, data) })
+            setDraft(offRecommended({ ...draft, ...modelChange(model, data) }))
           }
         />
         <Select
@@ -1333,7 +1356,9 @@ export function createTabs(
           value={draft.effort}
           groups={[{ label: "", options: efforts }]}
           disabled={checking || saving || !selected}
-          onValueChange={(effort) => setDraft({ ...draft, effort })}
+          onValueChange={(effort) =>
+            setDraft(offRecommended({ ...draft, effort }))
+          }
         />
       </>
     );
@@ -1359,8 +1384,35 @@ export function createTabs(
         {settingsSection !== "runtime" && (
           <>
             <SettingsGroup>
-              {settingsHost?.typeControl?.(configChanged)}
-              {customization}
+              {candidatesFor("codex").length ? (
+                <AISettings
+                  automatic={following}
+                  harnessIcon={CodexLogoIcon}
+                  disabled={saving}
+                  {...runsOnDetails(
+                    { title: "Codex", icon: CodexLogoIcon },
+                    resolved,
+                  )}
+                  onChange={(on) =>
+                    // Manual starts from the recommendation it ran on.
+                    setDraft(
+                      on
+                        ? readConfig(withRecommended(draft))
+                        : offRecommended(
+                            followRecommended(draft, draft, resolved),
+                          ),
+                    )
+                  }
+                >
+                  {settingsHost?.typeControl?.(configChanged)}
+                  {customization}
+                </AISettings>
+              ) : (
+                <>
+                  {settingsHost?.typeControl?.(configChanged)}
+                  {customization}
+                </>
+              )}
             </SettingsGroup>
             <AgentInstructions
               value={draft.instructions}

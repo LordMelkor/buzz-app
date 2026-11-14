@@ -96,6 +96,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     setup,
     runtime,
     history,
+    recommended,
   });
   const sync = () => {
     const snapshot = agents.snapshot();

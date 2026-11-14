@@ -1085,6 +1085,31 @@ available rather than silently discarding it.
   when that account holds this Buzz identity's backup, Buzz restores it instead
   of asking for QR pairing. The remote agent can answer while the desktop is off,
   but it cannot open files on that desktop.
+- Some builds offer **AI setup → Automatic** when creating an
+  agent. AI setup covers the harness, model, and thinking level. Buzz picks
+  the first recommended harness that is set up on this
+  computer. The row shows **Set to [model] (recommended)** on one line, truncating only the model name;
+  hover to see the full name. On an agent card, the model name and **(Automatic)** appear as a status label; use the card’s
+  settings action to edit it. Custom agents retain their model picker. In Automatic, the row crossfades between the AI
+  settings icon and active harness logo; reduced motion keeps the logo static.
+  Open the **AI setup** dropdown to see the model and thinking
+  level under **Automatic**. Later versions can change the recommended model
+  and level. An optional explanation supplied by the distributor appears above
+  the model details. When the build names who recommends the setup,
+  **Recommended by [name].** precedes the supplied description.
+  The agent keeps its harness afterwards. If no recommended model is offered
+  when the agent runs, it uses the harness's default. If nothing recommended is
+  set up on this computer, a row asks you to set up Goose, Codex or Claude first, with a
+  **Set up** button, and Create waits in Automatic. You can still choose Custom and a hosted harness. **Custom** opens
+  Harness, Model and Thinking in place, starting from what Automatic picked. An
+  agent's **Identity** tab shows the same **AI setup** row; changing the
+  model, provider or thinking level there turns Automatic off. Automatic is
+  for local harnesses; a remote agent such as Builderlab is chosen under
+  Custom's **Harness** and keeps its own model choices. Beside Send, an agent
+  on Automatic has no model or thinking choice, only its session controls
+  where they apply; to choose per message, switch it to **Custom**. A pick
+  saved in a Solo chat before it switched is ignored. Builds without a
+  recommendation show none of this.
 - Desktop's **Harness** menu groups agent types under **Remote** and **Local**.
   Creating a remote agent on desktop opens an introduction with its chosen name
   and avatar, explaining its online workspace and file access (Builderlab
