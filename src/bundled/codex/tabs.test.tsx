@@ -2636,3 +2636,101 @@ it("reports Codex connection readiness only after resolving a model", async () =
     screen.queryByText(/This model isn’t available/),
   ).not.toBeInTheDocument();
 });
+
+describe("Recommended", () => {
+  // A synthetic candidate the fake Codex offers.
+  const candidate = {
+    harness: "codex",
+    model: "model-b",
+    effort: "medium",
+    label: "Model B",
+  };
+  beforeEach(() =>
+    vi.stubEnv("VITE_BUZZ_RECOMMENDED_AGENT", JSON.stringify([candidate])),
+  );
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("recommends a candidate only when Codex is signed in and offers its model", async () => {
+    await expect(fixture().provider.recommends(candidate)).resolves.toBe(true);
+    await expect(
+      fixture().provider.recommends({ ...candidate, model: "model-z" }),
+    ).resolves.toBe(false);
+    // Its model, on a thinking level that model doesn't offer.
+    await expect(
+      fixture().provider.recommends({ ...candidate, effort: "xhigh" }),
+    ).resolves.toBe(false);
+    await expect(
+      fixture({ signedIn: false }).provider.recommends(candidate),
+    ).resolves.toBe(false);
+    await expect(
+      fixture({ installed: false }).provider.recommends(candidate),
+    ).resolves.toBe(false);
+  });
+
+  it("runs an agent on Recommended on the first candidate its catalog offers", async () => {
+    vi.stubEnv(
+      "VITE_BUZZ_RECOMMENDED_AGENT",
+      JSON.stringify([
+        { ...candidate, model: "model-z" },
+        { ...candidate, effort: "xhigh" },
+        candidate,
+      ]),
+    );
+    const f = fixture();
+    await f.provider.saveDefaults({ model: "model-a", effort: "low" });
+    const saved = { ...defaults, preset: "recommended" as const };
+    // Until the catalog is read it runs on the device's default.
+    expect(f.provider.recommended()).toBeUndefined();
+    await f.provider.check();
+    // Model Z isn't offered, nor Model B on Extra high, so the next
+    // candidate, over device defaults.
+    expect(f.provider.recommended()).toEqual(candidate);
+    // Kept for the launch: a later failed check doesn't move it to the default.
+    f.disk.signedIn = false;
+    await f.provider.check();
+    expect(f.provider.snapshot().readiness).toBe("attention");
+    expect(f.provider.recommended()).toEqual(candidate);
+    f.disk.signedIn = true;
+    expect(f.provider.resolve(saved)).toMatchObject({
+      model: "model-b",
+      effort: "medium",
+      preset: "recommended",
+    });
+    expect(f.provider.resolve(defaults).model).toBe("model-a");
+    // A remote target's catalog isn't this computer's: it runs on the
+    // target's own Codex default.
+    expect(f.provider.resolve(saved, true)).toMatchObject({
+      model: "",
+      effort: "",
+    });
+  });
+
+  it("runs on Codex's own default when no candidate is offered", async () => {
+    vi.stubEnv(
+      "VITE_BUZZ_RECOMMENDED_AGENT",
+      JSON.stringify([{ ...candidate, model: "model-z" }]),
+    );
+    const f = fixture();
+    await f.provider.saveDefaults({ model: "model-a", effort: "" });
+    await f.provider.check();
+    expect(f.provider.recommended()).toBeNull();
+    expect(
+      f.provider.resolve({ ...defaults, preset: "recommended" }).model,
+    ).toBe("model-a");
+    // A catalog that can't be read is the same.
+    const signedOut = fixture({ signedIn: false });
+    await signedOut.provider.check();
+    expect(signedOut.provider.recommended()).toBeNull();
+  });
+
+  it("takes up a candidate a later catalog offers after none was offered", async () => {
+    // Model B on Medium, which this catalog doesn't offer yet.
+    const levels = ["low"];
+    const f = fixture({ modelBReasoningEfforts: levels });
+    await f.provider.check();
+    expect(f.provider.recommended()).toBeNull();
+    levels.push("medium");
+    await f.provider.check();
+    expect(f.provider.recommended()).toEqual(candidate);
+  });
+});

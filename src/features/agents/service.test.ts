@@ -120,6 +120,7 @@ import {
   pastedMentionRecipient,
 } from "../messages/mention-admission";
 import type { ComposerSession } from "../messages/composer-session";
+import { setRuntimeCandidates } from "./recommended";
 
 /** The tag that the echo type's default watch matches. */
 const DEPLOY = ["t", "deploy"];
@@ -230,6 +231,8 @@ async function setup({
   deviceSettings = undefined as DeviceSettings | undefined,
   /** The echo type's plugin revision: "bundled" for a bundled harness. */
   revision = "one",
+  /** The example type's id, "echo" unless a test needs a real harness's. */
+  typeId = "echo",
   conversationFolders = undefined as true | undefined,
   sessions = undefined as AgentType<Config>["sessions"],
 } = {}) {
@@ -281,7 +284,7 @@ async function setup({
   const run =
     vi.fn<(delivery: Delivery<Config>) => void | Promise<void>>(answer);
   const type: AgentType<Config> = {
-    id: "echo",
+    id: typeId,
     title: "Echo",
     timeoutMs,
     adopt: (carry, saved) => ({ reply: carry.instructions ?? saved.reply }),
@@ -2974,6 +2977,43 @@ it("passes the model and effort its owner asked for, and no other", async () => 
     { model: "deep", effort: undefined },
     { model: undefined, effort: "low" },
   ]);
+});
+
+it("ignores the model and effort asked of an agent on Automatic", async () => {
+  // A synthetic recommendation for the example type, under a real harness's
+  // id, since a runtime list only names harnesses Buzz knows.
+  setRuntimeCandidates([
+    { harness: "codex", model: "deep", effort: "max", label: "Deep" },
+  ]);
+  try {
+    const { service, run, emit } = await setup({ typeId: "codex" });
+    await service.create({
+      type: "example/codex",
+      name: "Echo",
+      config: { preset: "recommended" },
+    });
+    // As a Solo chat's pick saved before the agent switched to Automatic.
+    emit({
+      events: [
+        event("picked", {
+          pubkey: viewer,
+          tags: [
+            ["h", channel],
+            ["p", bot],
+            ["model", bot, "deep"],
+            ["effort", bot, "max"],
+          ],
+        }),
+      ],
+    });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    const [delivery] = run.mock.calls[0] ?? [];
+    expect(delivery?.config).toMatchObject({ preset: "recommended" });
+    expect(delivery?.model).toBeUndefined();
+    expect(delivery?.effort).toBeUndefined();
+  } finally {
+    setRuntimeCandidates(undefined);
+  }
 });
 
 it("ignores session tags even for a type with immediate session controls", async () => {

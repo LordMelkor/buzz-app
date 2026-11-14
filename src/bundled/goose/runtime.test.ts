@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddedTool } from "../../buzz-mcp/session-tools";
+import {
+  type RecommendedRun,
+  recommendedRun,
+} from "../../features/agents/recommended";
 import type { BuzzClient, Memories } from "../../buzz-mcp/client";
 import { callTool, memoryVersion } from "../../buzz-mcp/tools";
 import { createAgentMemories } from "../../features/agents/memory";
@@ -20,6 +24,7 @@ import { AgentSessions, AgentProcess } from "./sessions";
 import {
   DEFAULT_CONFIG,
   GooseRuntime,
+  running,
   sessionTitle,
   standalonePrompt,
 } from "./runtime";
@@ -87,6 +92,8 @@ function setup(
     thinking?: NonNullable<Parameters<typeof fakeSpawn>[0]>["thinking"];
     /** Wraps the fake's `spawn`, as `gated(…).wrap` does. */
     wrap?: (spawn: ReturnType<typeof fakeSpawn>["spawn"]) => Host["spawn"];
+    /** What agents on Recommended run on. */
+    recommended?: RecommendedRun;
   }> = {},
 ) {
   const fake = fakeSpawn({
@@ -193,6 +200,8 @@ function setup(
     storage,
     () => options.added ?? [],
     options.repositories,
+    undefined,
+    options.recommended,
   );
   const published: { kind: number; content: string; tags: string[][] }[] = [];
   const agent = {
@@ -1310,6 +1319,86 @@ describe("GooseRuntime", () => {
       ]);
     },
   );
+
+  describe("on Recommended", () => {
+    // Synthetic candidates, best first, both for goose.
+    const candidates = ["model-a", "model-b"].map((model) => ({
+      harness: "goose",
+      provider: "openai",
+      model,
+      effort: "max",
+      label: model,
+    }));
+    beforeEach(() =>
+      vi.stubEnv("VITE_BUZZ_RECOMMENDED_AGENT", JSON.stringify(candidates)),
+    );
+    afterEach(() => vi.unstubAllEnvs());
+    const onIt = { ...DEFAULT_CONFIG, preset: "recommended" };
+
+    it("runs on the first candidate still offered, found once per launch", async () => {
+      const offered = vi.fn(async ({ model }: { model: string }) => {
+        return model === "model-b";
+      });
+      const { deliver, fake } = setup({
+        recommended: recommendedRun("goose", offered),
+      });
+      const first = message("1", "@Gander hi");
+      await deliver(first, { config: onIt });
+      await flush(100);
+      expect(fake.geese[0]?.opened[0]?._meta).toMatchObject({
+        provider: "openai",
+      });
+      expect(fake.geese[0]?.configured).toEqual([
+        "session-1 model=model-b",
+        "session-1 thinking_effort=max",
+      ]);
+      await deliver(
+        message("2", "@Gander again", {
+          tags: [
+            ["h", channel],
+            ["e", first.id, "", "reply"],
+            ["p", self],
+          ],
+        }),
+        { config: onIt },
+      );
+      await flush(100);
+      // Model A was not offered; neither is asked about again.
+      expect(offered.mock.calls.map(([{ model }]) => model)).toEqual([
+        "model-a",
+        "model-b",
+      ]);
+    });
+
+    it("looks for nothing for a delivery it drops", async () => {
+      const offered = vi.fn(async () => true);
+      const { run } = setup({ recommended: recommendedRun("goose", offered) });
+      const ignored = vi.fn();
+      // A watch without an address comes as a standalone turn, so is dropped.
+      await run({ type: "watch" } as unknown as Delivery["trigger"], {
+        config: onIt,
+        ignored,
+      });
+      expect(ignored).toHaveBeenCalledOnce();
+      expect(offered).not.toHaveBeenCalled();
+    });
+
+    it("runs on goose's own default when no candidate is offered or the check fails", async () => {
+      const offered = vi.fn(async ({ model }: { model: string }) => {
+        if (model === "model-a") throw new Error("discovery failed");
+        return false;
+      });
+      const { deliver, fake } = setup({
+        recommended: recommendedRun("goose", offered),
+      });
+      await deliver(message("1", "@Gander hi"), { config: onIt });
+      await flush(100);
+      expect(offered).toHaveBeenCalledTimes(2);
+      expect(fake.geese[0]?.turns).toHaveLength(1);
+      expect(fake.geese[0]?.opened[0]?._meta).not.toHaveProperty("provider");
+      expect(fake.geese[0]?.configured).toEqual([]);
+    });
+  });
 
   it("runs a mention on the agent's thinking level", async () => {
     const { deliver, fake } = setup();
@@ -2499,4 +2588,24 @@ it("keeps foreign-channel roots out of conversation context", async () => {
     ],
     expect.anything(),
   );
+});
+
+it("runs an agent on Recommended on the current candidate", () => {
+  // A synthetic candidate.
+  const candidate = {
+    harness: "goose",
+    provider: "databricks",
+    model: "goose-model-b",
+    effort: "high",
+    label: "Model B",
+  };
+  const saved = { ...DEFAULT_CONFIG, preset: "recommended" };
+  expect(running(saved, candidate)).toMatchObject({
+    provider: "databricks",
+    model: "goose-model-b",
+    effort: "high",
+  });
+  // With none offered it runs on goose's own default.
+  expect(running(saved, null)).toEqual(saved);
+  expect(running(DEFAULT_CONFIG, candidate)).toEqual(DEFAULT_CONFIG);
 });

@@ -13,6 +13,7 @@ import { CodexSetup, explainTurn, reviewHome, withScript } from "./setup";
 import { CodexProvider, createTabs } from "./tabs";
 import { readUsage } from "./usage";
 import { reviewModel } from "./security-review";
+import { followRecommended } from "../../features/agents/recommended";
 import { AppServer, listModels } from "./rpc";
 /** How often Buzz's copy of Codex looks for a new release. */
 const UPDATE_MS = 6 * 60 * 60_000;
@@ -189,7 +190,14 @@ export const apply: PluginModule["apply"] = (ctx) => {
       (!source.provider || source.provider === "openai")
         ? { ...defaults, model: source.model }
         : undefined,
-    exportShared: (saved) => ({ runtime: "codex", model: config(saved).model }),
+    exportShared: (saved) => ({
+      runtime: "codex",
+      model: followRecommended(
+        saved,
+        config(saved),
+        providerController.recommended(),
+      ).model,
+    }),
     adopt: (carry, saved) => ({
       ...saved,
       instructions: carry.instructions ?? saved.instructions,
@@ -224,7 +232,13 @@ export const apply: PluginModule["apply"] = (ctx) => {
       ];
     },
     migrationWarning: "Any commands Codex left running will stop.",
-    summary: (agent) => config(agent.config).model || "Codex",
+    summary: (agent) =>
+      followRecommended(
+        agent.config,
+        config(agent.config),
+        providerController.recommended(),
+      ).model || "Codex",
+    recommends: (candidate) => providerController.recommends(candidate),
     ...(spawn &&
       readFile && {
         usage: async (agent, { since, signal }) => {

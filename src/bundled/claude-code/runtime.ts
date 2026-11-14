@@ -1,4 +1,5 @@
 import { protectionTranscript } from "./protection-transcript";
+import type { PRESET } from "../../features/agents/recommended";
 import { fileStore } from "../../features/agents/state";
 import type { AgentExecution } from "../../features/agents/execution";
 import { executionSpawn } from "./execution";
@@ -111,6 +112,8 @@ export type Config = Readonly<{
   workspace: string;
   /** Whether each thread is its own session, or the whole channel is one. */
   scope: Scope;
+  /** On Recommended, whose model and thinking level runs replace these. */
+  preset?: typeof PRESET;
 }>;
 export const DEFAULT_CONFIG: Config = Object.freeze({
   model: "",

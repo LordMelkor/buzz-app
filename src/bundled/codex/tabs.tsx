@@ -22,6 +22,11 @@ import { AgentInstructions } from "../../features/agents/AgentInstructions";
 import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
 import { ModelPicker } from "../../features/agents/ModelPicker";
 import {
+  candidatesFor,
+  followRecommended,
+  type RecommendedCandidate,
+} from "../../features/agents/recommended";
+import {
   ConversationName,
   OpenedConversation,
   useOpenedSession,
@@ -204,9 +209,43 @@ export class CodexProvider {
     );
     this.set({ defaults });
   }
+  /** Whether Codex is installed, signed in and offers the candidate's model
+   * on its thinking level. */
+  async recommends(candidate: RecommendedCandidate) {
+    if (this.state.readiness !== "ready") await this.check();
+    return (
+      this.state.readiness === "ready" &&
+      !!this.state.data &&
+      offers(this.state.data, candidate)
+    );
+  }
+  /** What its agents on Recommended run on: the first Codex candidate its
+   * catalog offers. Undefined until the catalog is read; `null`, for Codex's
+   * own default, when none is offered or the catalog can't be read. */
+  recommended(): RecommendedCandidate | null | undefined {
+    if (this.found) return this.found;
+    const { data, readiness } = this.state;
+    if (!data) return readiness === "attention" ? null : undefined;
+    // A pick is kept for the launch, as goose keeps its own: a later failed
+    // check doesn't move agents to the default mid-session. "None offered"
+    // isn't kept, so a later catalog that offers one is taken up.
+    const found =
+      candidatesFor("codex").find((candidate) => offers(data, candidate)) ??
+      null;
+    if (found) this.found = found;
+    return found;
+  }
+  private found: RecommendedCandidate | undefined;
   resolve(raw: unknown, remote = false): Config {
-    const explicit = readConfig(raw);
-    if (remote) return explicit;
+    // A remote target's catalog isn't this computer's: an agent on
+    // Recommended there runs on its Codex default.
+    if (remote) return readConfig(raw);
+    // Recommended picks the model and level, as an explicit choice would.
+    const explicit = followRecommended(
+      raw,
+      readConfig(raw),
+      this.recommended(),
+    );
     const data = this.state.data;
     const inheritedModel = this.state.defaults.model;
     const unavailable = Boolean(
@@ -284,6 +323,16 @@ const catalogModel = (model: string, data?: Catalog) => {
   const resolved = resolveModel(model, data.models);
   return data.models.find((choice) => choice.model === resolved);
 };
+/** Whether the catalog lists a candidate's model on its thinking level, so
+ * a run never swaps in another level than the one shown. */
+const offers = (data: Catalog, { model, effort }: RecommendedCandidate) =>
+  data.models.some(
+    (row) =>
+      row.model === model &&
+      row.supportedReasoningEfforts.some(
+        (choice) => choice.reasoningEffort === effort,
+      ),
+  );
 const providerDefaultLabel = (model: string, data?: Catalog) => {
   const selected = catalogModel(model, data);
   const name = selected?.displayName || selected?.model;

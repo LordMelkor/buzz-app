@@ -18,6 +18,7 @@ Build defaults are readable binary data, **never secret storage**.
 | `BUZZ_BUILD_MANAGED_PLUGINS_URL` | Native build: `https` URL of a version 1 [managed plugin policy](managed-plugins.md#packaged-policy). The desktop app fetches it and keeps the last good copy, used when no `managed-plugins.json` exists. It only recommends. Unset in OSS builds. |
 | `BUZZ_DATABRICKS_HOST` | Frontend build and dev server: `https://` Databricks workspace URL passed as `DATABRICKS_HOST` to every bundled `goose-acp`, which then prefers it to the host in goose's config. Unset in OSS builds. See [Databricks host](#databricks-host). |
 | `BUZZ_MOBILE_APP_IOS_URL`, `BUZZ_MOBILE_APP_ANDROID_URL` | Frontend build: `https://` store listings for the build's mobile app, shown with QR codes on the mobile Settings card to people whose Builderlab account holds this device's backed-up key. Unset in OSS builds. See [Mobile app links](#mobile-app-links). |
+| `BUZZ_RECOMMENDED_AGENT` | Frontend build and dev server: JSON array of candidates for a recommended agent setup, best first, behind **Automatic (Recommended)** for new agents. Unset in OSS builds, which don't offer the choice. See [Recommended agent](#recommended-agent). |
 | `BUZZ_RELAY_URL` | Live development broker's default community, not an agent relay override or a packaged default. |
 | `BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY` | Presence-only alias for fresh-viewer community selection in live development only. Saved viewer choice wins. |
 | `BUZZ_BUILD_FEDERATED_IDENTITY_CONFIG` | Native and frontend build: sign-in servers added to the built-in one, each with its adapter prefix and community hosts; empty opts out. See below. |
@@ -99,6 +100,72 @@ plugin starts receives it as `DATABRICKS_HOST`, so goose reports Databricks as
 configured and ignores a host saved in goose's config. Only the host is set:
 the model, thinking level and sign-in stay goose's own. Leave it unset for OSS
 builds.
+
+## Recommended agent
+
+Packagers can offer a recommended agent setup, which picks a harness, model and
+thinking level for new agents and keeps them current. `BUZZ_RECOMMENDED_AGENT`
+is a JSON array of candidates, best first; a harness may have several. Each
+one has `harness` (`goose`, `codex` or `claude-code`), `model`, `effort`, `label` (the model's
+display name) and, for goose only, `provider`. For example, with placeholder
+values:
+
+```sh
+BUZZ_RECOMMENDED_AGENT='[{"harness":"goose","provider":"example","model":"model-b","effort":"high","label":"Model B"},{"harness":"codex","model":"model-a","effort":"high","label":"Model A"},{"harness":"claude-code","model":"model-c","effort":"high","label":"Model C"}]' bin/pnpm tauri build
+```
+
+The frontend reads it from repository-root `.env.local` or the process
+environment (process wins) and compiles it in; invalid values fail the build,
+naming the candidate and field at fault, such as
+`BUZZ_RECOMMENDED_AGENT[1].model`, without echoing values.
+Set it in `.env.local` to try the feature in `just web` or `just desktop`.
+Leave it unset for OSS builds: the create form then works as before.
+
+With it set:
+
+- **Create agent** gains an **AI settings** row: **Automatic (Recommended)**,
+  the default, or **Manual**. Automatic uses the first candidate whose harness
+  is installed here and ready and whose model it lists now (Codex: installed,
+  signed in, model in its catalog; Claude Code: installed, signed in, model or
+  the model an alias stands for in its catalog, with the candidate's thinking
+  level; goose: provider set up, model in its live list with the candidate's
+  thinking level), and shows it as **Uses** with the model and thinking level.
+  When a harness ahead of it isn't set up, an info button after it says so in
+  a tooltip. Each check may
+  take up to 8 seconds; one that fails or takes longer skips that candidate.
+  Codex and Claude Code are not offered on Windows. When nothing is ready, a
+  row asks to set up Goose, Codex or Claude first, with a **Set up** button
+  that opens agent setup, and Create waits. **Manual** opens the
+  Harness, Model and Thinking rows in place, starting
+  from what Automatic picked, and works while the check runs. Automatic is
+  only for local harnesses: a hosted type such as Builderlab is chosen under
+  Manual's Harness and keeps its own model choices.
+- The agent saves only `preset: "recommended"` in its config, with its own
+  model, provider and thinking level cleared. Its harness is never changed for
+  it.
+- At run time it uses the first candidate for its own harness whose model is
+  still offered, checked the same way once per app launch. If none is, it runs
+  on the harness's own default instead of failing, and it asks again at a run
+  a minute or more later, so a harness set up or signed in since then is
+  picked up. A later build's recommendation reaches it the same way.
+- The agent's **Identity** tab shows the same **AI settings** row. Automatic shows what it runs on, or that it fell back
+  to the harness default; it keeps the agent's harness even when another is
+  recommended first. **Manual** opens the Harness row and the harness's model
+  rows; changing the harness there is the usual harness change. Any model,
+  provider or thinking change, on the agent's card or in Settings, takes it
+  off Recommended.
+
+On a config channel, the mark syncs with the agent's settings: its
+`buzz.agent.settings` revision (kind 45010) carries `"preset": "recommended"`
+beside `settings`, not inside it, and leaves it out otherwise. The revision also carries a matching `["preset", "recommended"]` tag, so agents on Automatic can be counted from tags alone. Versions without
+this feature ignore it there and keep it when they edit (NIP-AP "Editing"), so
+their strict settings check never rejects it. The synced revision decides on
+every device: one without the mark takes the agent off Recommended, and one
+that names a model, provider or thinking level keeps it off even with the
+mark. Synced settings carry the agent's own model settings blank or not at all
+while it is on Recommended. Without a config channel, the mark is kept in the
+agent's local settings. Which harness an agent runs on is the `runtime` tag of
+its kind 30177 record.
 
 ## Mobile app links
 

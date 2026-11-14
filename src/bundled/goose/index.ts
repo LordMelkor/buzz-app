@@ -6,7 +6,17 @@ import { repositoriesContext } from "../../features/communities/repositories";
 import { isTauri } from "@tauri-apps/api/core";
 import type { PluginModule } from "../../plugins/api";
 import { GooseLogoIcon } from "../../shared/design-system/icons";
-import { type Config, config, DEFAULT_CONFIG, GooseRuntime } from "./runtime";
+import {
+  type Config,
+  config,
+  DEFAULT_CONFIG,
+  GooseRuntime,
+  running,
+} from "./runtime";
+import {
+  type RecommendedCandidate,
+  recommendedRun,
+} from "../../features/agents/recommended";
 import { gooseRun } from "./run";
 import { explainTurn, GooseSetup, REVIEW_REFUSED } from "./setup";
 import { createTabs } from "./tabs";
@@ -21,6 +31,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
   if (!isTauri()) return;
   const { agents, host } = ctx;
   const typeKey = `${ctx.pluginOwner?.id ?? "buzz.goose"}/${TYPE_ID}`;
+  // goose is bundled: a candidate needs only its provider and model offered.
+  const offered = (candidate: RecommendedCandidate) => setup.offers(candidate);
+  const recommended = recommendedRun(TYPE_ID, offered);
   const runtime = new GooseRuntime(
     host,
     agents.relay,
@@ -29,6 +42,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     () => agents.tools(),
     repositoriesContext,
     agents.storage,
+    recommended,
   );
   const desktop =
     host.spawn && host.resolveDirectory
@@ -115,7 +129,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
           }
         : undefined,
     exportShared: (saved) => {
-      const { provider, model } = config(saved);
+      const { provider, model } = running(saved, recommended.current());
       return { runtime: "goose", ...(provider && { provider }), model };
     },
     Create,
@@ -142,7 +156,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
       };
     },
     summary: (agent) => {
-      const { model, provider } = config(agent.config);
+      const { model, provider } = running(agent.config, recommended.current());
       return [provider, model].filter(Boolean).join(" · ") || "Goose";
     },
     sessions: {
@@ -198,6 +212,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
       },
     ],
     models: (agent) => setup.picks(config(agent.config)),
+    recommends: offered,
     ...gooseRun(runtime),
   });
 };
