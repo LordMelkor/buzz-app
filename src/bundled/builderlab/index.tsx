@@ -70,8 +70,22 @@ export const apply: PluginModule["apply"] = (ctx) => {
   // An FI build signs out where its shared organization sign-in is managed.
   const openIdentity = !nativeBuilderlab()
     ? undefined
-    : () => openSettings("identity");
-  applyApps(ctx, session, loginAvailable, dev?.apps);
+    : () =>
+        void ctx.navigation.open({
+          version: 1,
+          kind: "settings",
+          section: "identity",
+          part: "organization-sign-in",
+        });
+  // An app that refuses the sign-in sends you where it is renewed: Identity in
+  // an FI build, this card in live development.
+  applyApps(
+    ctx,
+    session,
+    loginAvailable,
+    dev?.apps,
+    openIdentity ?? (() => openSettings("block.builderlab/login")),
+  );
   const handoff = (signedIn: boolean) =>
     handoffFederatedBackupSession(
       signedIn ? ctx.federatedIdentity.snapshot().revision : null,

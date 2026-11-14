@@ -879,6 +879,9 @@ and are asked to sign in again in Buzz.
   reloads. Buzz opens one such page by itself until you next click Back,
   Forward or Reload or use the address bar; if the app asks again, click
   **Open in browser** in the bar above it.
+- **Sign in again to open this app**: when a Builderlab app refuses your
+  sign-in, its panel offers **Try again** and **Open settings**, which
+  opens the settings where you sign out and back in.
 - **Drafts & sent** is an optional plugin, off by default. Turn it on in
   **Settings → Plugins**, and it appears in the Messages sidebar. Opening it keeps
   the conversation sidebar available, so you can switch straight back to a chat.

@@ -53,6 +53,27 @@ describe("open target boundary", () => {
     ])
       expect(() => parseOpenTarget(invalid)).toThrow();
   });
+  it("lands on Organization sign-in only within Identity settings", () => {
+    const target = {
+      version: 1,
+      kind: "settings",
+      section: "identity",
+      part: "organization-sign-in",
+    } as const;
+    expect(parseOpenTarget(target)).toEqual(target);
+    // A visit that lands on the part is its own place in history.
+    expect(targetKey(target)).not.toBe(
+      targetKey({ version: 1, kind: "settings", section: "identity" }),
+    );
+    const { section: _section, ...sectionless } = target;
+    for (const invalid of [
+      sectionless,
+      { ...target, section: "agents" },
+      { ...target, part: "private-key" },
+      { ...target, part: "" },
+    ])
+      expect(() => parseOpenTarget(invalid)).toThrow();
+  });
   it("canonicalizes and freezes a detached, bounded identity-scoped target", () => {
     const input = {
       ...conversation,

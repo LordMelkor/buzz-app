@@ -103,6 +103,7 @@ import {
 import { SettingsSectionLink } from "../features/navigation/SettingsSectionLink";
 
 import { pluginCategoryDefinitions } from "./plugin-categories";
+import { scrollport } from "./scrollport";
 
 // Exit animations retain DOM briefly; retired results must stop accepting focus.
 const PluginListEntry = forwardRef<HTMLDivElement, HTMLMotionProps<"div">>(
@@ -289,12 +290,6 @@ function accessMessage(plugin: PluginInfo, state: AdminAccessState) {
 /** Narrow containers cover the catalog with details (Settings.module.css). */
 function covered(element: Element | null) {
   return !!element && getComputedStyle(element).visibility === "hidden";
-}
-
-function scrollport(element: Element) {
-  for (let node = element.parentElement; node; node = node.parentElement)
-    if (/auto|scroll/.test(getComputedStyle(node).overflowY)) return node;
-  return null;
 }
 
 /** Whether any scrollport around `element` has scrolled past its start. */
@@ -820,6 +815,13 @@ export function Settings({
   const requestedSection =
     navigation?.target.kind === "settings"
       ? (navigation.target.section ?? defaultSection)
+      : undefined;
+  // A visit naming a part lands on it as its section mounts. That wins over
+  // any scroll place Settings restores for the section, so a restore must
+  // skip such a visit.
+  const landing =
+    navigation?.target.kind === "settings" && navigation.target.part
+      ? navigation.entryId
       : undefined;
   useEffect(() => {
     if (
@@ -1544,6 +1546,7 @@ export function Settings({
                   )
                 : undefined
             }
+            landing={landing}
           />
         )}
         {selected === "security" && (

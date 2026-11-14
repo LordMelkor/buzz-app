@@ -34,6 +34,8 @@ export type OpenTarget =
       route?: Readonly<{ version: number; params: JsonValue }>;
       /** Nested provider controls within Agent setup; presentation only. */
       provider?: string;
+      /** Where Identity opens, in view and focused; presentation only. */
+      part?: "organization-sign-in";
       scope?: NavigationScope | null;
       pluginImport?: PluginLinkSource;
       pluginId?: string;
@@ -299,11 +301,18 @@ export function parseOpenTarget(input: unknown): OpenTarget {
           "section",
           "route",
           "provider",
+          "part",
           "scope",
           "pluginImport",
           "pluginId",
         ]);
         if (value.provider !== undefined && value.section !== "agents")
+          throw invalid();
+        if (
+          value.part !== undefined &&
+          (value.section !== "identity" ||
+            value.part !== "organization-sign-in")
+        )
           throw invalid();
         if (value.pluginImport !== undefined && value.section !== "plugins")
           throw invalid();
@@ -322,6 +331,9 @@ export function parseOpenTarget(input: unknown): OpenTarget {
             : {}),
           ...(value.provider !== undefined
             ? { provider: text(value.provider, provider) }
+            : {}),
+          ...(value.part === "organization-sign-in"
+            ? { part: value.part }
             : {}),
           ...(value.scope !== undefined
             ? { scope: value.scope === null ? null : boundScope(value.scope) }
