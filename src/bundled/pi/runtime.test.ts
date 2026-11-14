@@ -695,8 +695,9 @@ it("lists the tools plugins add, and runs them for Pi", async () => {
   });
 });
 
-it("lists and runs a plugin's tool only for the agents it is given to now", async () => {
+it("lists and runs a plugin's tool only for the agents it is given to now, with the call's cancel", async () => {
   const given = new Set<string>();
+  let seen: AbortSignal | undefined;
   const { host, deliver } = setup({}, (agent) =>
     agent !== undefined && given.has(agent)
       ? [
@@ -704,7 +705,10 @@ it("lists and runs a plugin's tool only for the agents it is given to now", asyn
             name: "lookup",
             description: "Look it up",
             inputSchema: { type: "object" },
-            call: async () => "found",
+            call: async (client) => {
+              seen = client.signal;
+              return "found";
+            },
           },
         ]
       : [],
@@ -730,6 +734,8 @@ it("lists and runs a plugin's tool only for the agents it is given to now", asyn
   await expect(call()).resolves.toEqual({
     content: [{ type: "text", text: "found" }],
   });
+  // The call's cancel, so the plugin can stop work the owner canceled.
+  expect(seen).toBeInstanceOf(AbortSignal);
   // Handed over after the first, once Pi has that one.
   await deliver({ type: "mention", event: reply("3", "@Pi again") }).run;
   await vi.waitFor(() => expect(host.requests("open")).toHaveLength(2));
