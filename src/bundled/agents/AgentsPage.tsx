@@ -41,6 +41,7 @@ import styles from "./AgentsPage.module.css";
 import cardStyles from "./AgentCard.module.css";
 import {
   AgentBrowse,
+  NoImportTypes,
   SharedAgentPanel,
   type SharedAgentSelection,
   SharedImportDialog,
@@ -926,6 +927,7 @@ export function AgentsPage({
                         onImported={leaveListing}
                         // Stays on the listing if an unsaved draft is kept.
                         onOpen={(agent) => browse(agent.pubkey, leaveListing)}
+                        openSettings={openSettings}
                       />
                     ),
                   },
@@ -988,6 +990,16 @@ export function AgentsPage({
               flow === "import" ? () => changeTab("yours") : returnTo("teams")
             }
             onPendingChange={setImporting}
+            // Settings opens in place of the dialog, not over it, so while
+            // an import keeps the dialog open the link is plain text.
+            openSettings={
+              openSettings && !importing
+                ? (section) => {
+                    setFlow(undefined);
+                    openSettings(section);
+                  }
+                : undefined
+            }
           />
         </Dialog>
       )}
@@ -1788,6 +1800,7 @@ function ImportAgents({
   only,
   onImported,
   onPendingChange,
+  openSettings,
 }: {
   agents: Agents;
   community: string | undefined;
@@ -1798,6 +1811,7 @@ function ImportAgents({
   only: "agents" | "teams";
   onImported(): void;
   onPendingChange(pending: boolean): void;
+  openSettings: ((section: string) => void) | undefined;
 }) {
   const [found, setFound] = useState<FoundAgents>();
   const [confirming, setConfirming] = useState<SharedImport>();
@@ -1990,11 +2004,7 @@ function ImportAgents({
     });
   }, [agents, snapshot]);
   if (!types.length)
-    return (
-      <p className="m-0 text-body-sm text-secondary">
-        Enable an agent type plugin to import agents.
-      </p>
-    );
+    return <NoImportTypes agents={agents} openSettings={openSettings} />;
   const elsewhere = only === "agents" ? offered : [];
   const teamsElsewhere =
     only === "teams" ? teamsToJoin(snapshot.teams, agents.joinable()) : [];

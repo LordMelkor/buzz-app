@@ -516,8 +516,12 @@ it("turns memory on and off as a marked section of the instructions", async () =
   const { rerender } = render(<Tab agent={agent} />);
   const remembers = screen.getByRole("switch", { name: "Remembers you" });
   expect(remembers).not.toBeChecked();
+  // The Memory tab only reads, so the row says how to clear a memory instead.
+  expect(remembers).toHaveAccessibleDescription(
+    "Adds memory rules to Bestie's instructions. Off removes them. Nothing Bestie remembered is deleted, and its core memory still goes into every prompt. To clear a memory, ask Bestie to forget it.",
+  );
   expect(
-    screen.getByText(/Nothing Bestie remembered is deleted/),
+    screen.getByText(/To clear a memory, ask Bestie to forget it\./),
   ).toBeVisible();
 
   await user.click(remembers);

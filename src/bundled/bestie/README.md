@@ -93,8 +93,8 @@ markers, the row says the section was edited instead of showing a switch, so
 it never adds a second one. **Restore** puts back the original section in
 place of its two markers and what lies between them, when they still show
 where it starts and ends; otherwise fix its markers in Instructions. Off
-deletes no memory, and the agent's core memory is still in every prompt;
-clear memory in the Memory tab.
+deletes no memory, and the agent's core memory is still in every prompt; to
+clear a memory, ask Bestie to forget it.
 
 **Private channels Bestie can read** lists the private channels you share with
 Bestie, each with **Remove**, which asks first, as the Members dialog does.
