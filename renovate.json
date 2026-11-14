@@ -15,6 +15,12 @@
       "allowedVersions": "<0.11"
     },
     {
+      "description": "mesh-llm's log store requires rusqlite 0.40, and only one libsqlite3-sys may link sqlite3.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["rusqlite"],
+      "allowedVersions": "<0.41"
+    },
+    {
       "description": "Upgrade virtua only with a reviewed port of its WebKit scroll patch.",
       "matchManagers": ["npm"],
       "matchPackageNames": ["virtua"],
