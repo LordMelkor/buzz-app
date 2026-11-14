@@ -847,6 +847,11 @@ test.describe("fractional row geometry", () => {
 readTest(
   "exact reveal uses ordinary dwell rather than marking read at open",
   async ({ page, app }) => {
+    // The revealed target starts its 300 ms dwell as navigation completes, so
+    // only a paused clock keeps "nothing read at open" from racing that dwell.
+    // Pause at a fixed offset, not the page's already-ticking clock.
+    const base = Date.now();
+    await page.clock.install({ time: base });
     await open(page, app);
     await page.evaluate(() =>
       window.fixtureRelay.snapshot().session.unread.ensure(),
@@ -872,23 +877,42 @@ readTest(
       await route.continue().catch(() => {});
     });
     const before = app.report.readPublications.length;
+    const frontiers = async () =>
+      (await readJournal(page))?.state.frontiers ?? {};
+    await page.clock.pauseAt(base + 20_000);
     try {
-      expect(await openTarget(page, target(app))).toEqual({ status: "opened" });
+      const opening = openTarget(page, target(app));
+      // Exact reveal requires real focus for two animation frames. Advance one
+      // frame at a time until its owner completes, without earning reading dwell.
+      await expect
+        .poll(async () => {
+          await page.clock.runFor(16);
+          return status(page);
+        })
+        .toBe("opened");
+      expect(await opening).toEqual({ status: "opened" });
       await seen;
+      // Opening marks nothing read locally, so nothing can have been published.
+      expect(await frontiers()).toEqual({});
       expect(app.report.readPublications.length).toBe(before);
       await expect(
         thread(page).locator(`[data-message-id="${app.exact.target.id}"]`),
       ).toBeFocused();
+      // Dwell then marks the target, the only row shown while its context is
+      // held, read locally before the publish debounce even starts; the
+      // debounced, signed publication itself is covered by unread.spec.mjs.
+      await page.clock.runFor(300);
+      await expect.poll(frontiers).toEqual({
+        [`msg:${app.exact.target.id}`]: app.exact.target.created_at,
+      });
     } finally {
       release();
     }
+    await page.clock.resume();
     await expect(thread(page).locator("[data-message-id]")).toHaveCount(81);
     await expect(
       thread(page).locator(`[data-message-id="${app.exact.target.id}"]`),
     ).toBeFocused();
-    await expect
-      .poll(() => app.report.readPublications.length)
-      .toBeGreaterThan(before);
   },
 );
 
