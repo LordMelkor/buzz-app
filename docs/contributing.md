@@ -812,7 +812,9 @@ the complete correctness suite still runs with `pnpm test` / `just scan`:
   tests build Rust and install scaffold dependencies; they are intentionally CI-only
   rather than part of pre-push.
 - **Browser measurements:** Chromium then WebKit, serially on an isolated runner.
-  It also runs all [perf scenarios](performance.md) once in Chromium.
+  It also runs all [perf scenarios](performance.md) once in Chromium, and the
+  broker's 100,000-channel scale check in `browser-host/relay-broker-live.test.mjs`
+  alone, with `BUZZ_BROKER_SCALE` set; the JavaScript shards skip that test.
 - **Browser journeys:** twenty-seven runners (nine Chromium and eighteen WebKit
   file-level shards), each with two workers. They start alongside measurements on separate
   runners; `CI required` still requires both lanes. A separate required Ubuntu

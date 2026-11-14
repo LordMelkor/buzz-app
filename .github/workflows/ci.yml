@@ -225,6 +225,18 @@ jobs:
       # separate. Keep its Chromium workload serial with the measurements above.
       - name: Perf suite smoke check
         run: ./bin/pnpm perf --scenario all --repeat 1 --cpu 4
+      # The 100,000-channel broker scale check asserts wall-clock time: about
+      # 20 s of single-threaded CPU inside a 30 s budget. A shared Vitest
+      # shard's two workers timed it out under load, so it runs alone here on
+      # the isolated runner with the same budget; the shards skip it. A title
+      # filter that matches nothing is a green run of zero tests, so require
+      # the one pass.
+      - name: Broker scale check
+        env:
+          BUZZ_BROKER_SCALE: "true"
+        run: |
+          ./bin/node scripts/ci-test-report.mjs kind=vitest report=test-results/broker-scale/vitest.json evidence=test-results/broker-scale/timing.json title="Broker scale" -- ./bin/pnpm exec vitest run browser-host/relay-broker-live.test.mjs -t "100,000" --reporter=default --reporter=json --outputFile=test-results/broker-scale/vitest.json
+          ./bin/node -e 'if (require("./test-results/broker-scale/vitest.json").numPassedTests !== 1) { console.error("The 100,000-channel scale check did not run"); process.exit(1); }'
       - name: Measurement evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -234,6 +246,7 @@ jobs:
             test-results/browser
             test-results/browser-classic-scrollbars
             test-results/perf
+            test-results/broker-scale
           retention-days: 7
 
   browser_fixture:
