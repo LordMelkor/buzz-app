@@ -1,4 +1,4 @@
-// The only coupling between ui/ + index.tsx and engine/.
+// The only coupling between ui/ + plugin.tsx and engine/.
 
 /** Remove delimiter/editor padding without deleting a terminal TeX control
  * space. An odd terminal slash run consumes one following whitespace token. */

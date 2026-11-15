@@ -9,7 +9,8 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { engine as realEngine } from "./engine";
-import { setup } from "./index";
+import { apply } from "./index";
+import { setup } from "./plugin";
 import { fakeEngine } from "./ui/fakeEngine";
 import "./ui/jsdomDialog";
 
@@ -58,6 +59,15 @@ it("installs fonts and styles for the plugin's lifetime, then removes them", () 
   expect(
     document.querySelector('style[data-plugin="com.squareup.math:ui"]'),
   ).toBeNull();
+});
+
+it("loads the plugin chunk on activation and contributes once it has loaded", async () => {
+  const { ctx, registered } = fakeContext();
+  const activation = apply(ctx as never);
+  expect(registered.inline).toHaveLength(0);
+  await activation;
+  expect(registered.inline).toHaveLength(1);
+  expect(registered.agentTool[0]).toBe(realEngine.tool);
 });
 
 it("contributes the fence, prose, composer tool, completion and agent tool", () => {

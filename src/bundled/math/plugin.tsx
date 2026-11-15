@@ -1,4 +1,5 @@
-// Wires the engine (engine/) into host contributions (ui/).
+// Wires the engine (engine/) into host contributions (ui/). Loaded on
+// activation by index.ts, so KaTeX and its fonts stay out of the main bundle.
 import type { Context } from "../../plugins/author";
 import { writeClipboardText } from "../../shared/clipboard";
 import type { Engine } from "./contract";
@@ -10,10 +11,6 @@ import { createExpand } from "./ui/expand";
 import { createIcons } from "./ui/icons";
 import { createInline, trackSelection } from "./ui/inline";
 import { installStyles } from "./ui/styles";
-
-export const inject = ["react", "conversation", "agents", "relay"];
-
-export const PLUGIN_ID = "com.squareup.math";
 
 /** Copy goes through the app's clipboard: on macOS the host writes it, since
  * WebKit refuses a web clipboard write once host traffic has cleared the

@@ -2867,7 +2867,8 @@ PDF, and draw only the pages near the viewport. Its CMaps, standard fonts and
 image decoders are bundled assets served through a `BinaryDataFactory`, so
 PDFs need no network access beyond the file.
 The bundled **Math equations** plugin (`com.squareup.math`) typesets LaTeX with
-[KaTeX](https://katex.org/): `$…$` and `\(…\)` in prose through
+[KaTeX](https://katex.org/), loaded with its fonts and stylesheet when the
+plugin activates: `$…$` and `\(…\)` in prose through
 `registerInline`, `$$…$$`, `\[…\]` and bare environments as display math, and
 `math`, `latex`, `tex` and `katex` fences. It also contributes the Σ composer
 tool, LaTeX completion inside open math and the agents' `math_check` tool. TeX is
