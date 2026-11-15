@@ -52,6 +52,14 @@ contributors, under the MIT License.
 
 OneDrive is a trademark of Microsoft.
 
+The Math equations plugin in `src/bundled/math` is adapted for bundling from
+Block's Math equations Marketplace plugin (`com.squareup.math`), authored by
+Block. Equations are typeset with KaTeX (`katex` 0.16.47, patched in
+`patches/katex@0.16.47.patch`), including its embedded fonts and stylesheet,
+Copyright Khan Academy and other contributors, under the MIT License. Its
+mhchem extension is adapted from MathJax's mhchem, Copyright The MathJax
+Consortium and Martin Hensel, under the Apache License 2.0.
+
 ## Harness brand marks
 
 The Goose and Pi marks in `src/shared/design-system/icons/HarnessLogos.tsx`
