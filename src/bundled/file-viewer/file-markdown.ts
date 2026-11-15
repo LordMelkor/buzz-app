@@ -150,7 +150,13 @@ export const rehypeFileMarkdown: Plugin<
       delete node.properties[marker];
       if (node.tagName !== "code") continue;
       const language = codeLanguage(node);
-      if (language) node.properties.dataLanguage = language;
+      if (language) {
+        node.properties.dataLanguage = language;
+        // The shared code fence reads the class; keep it lowercase so the
+        // sanitizer keeps it and a plugin still claims ```Mermaid.
+        if (/^[a-z0-9_-]+$/.test(language))
+          node.properties.className = [`language-${language}`];
+      }
       node.children = paint(content(node), language).children.filter(
         (node) => node.type !== "doctype",
       );

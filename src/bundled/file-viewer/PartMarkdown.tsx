@@ -145,14 +145,12 @@ const components: Components = {
   ...sharedComponents,
   a: PartLink,
   img: PartImage,
-  code: fileComponents.code,
   div: fileComponents.div,
 };
 
 /** One part of a Markdown file, with the Canvas and Notes trust rules plus the
  * viewer's own: part-aware transforms, community images, `#` links that
- * move within the file, alerts, and code and inline TeX that Buzz's plugins
- * draw. */
+ * move within the file, alerts, and code blocks that Buzz's plugins draw. */
 export function PartMarkdown({
   content,
   transforms,

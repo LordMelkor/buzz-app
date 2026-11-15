@@ -370,12 +370,18 @@ it("draws math and a claimed fence through Buzz's plugins, and the code without 
     screen.getByRole("button", { name: "Copy code block" }),
   ).toBeInTheDocument();
   cleanup();
-  vi.stubGlobal("fetch", async () => new Response("```math\nE = mc^2\n```\n"));
+  // A capitalized fence language still reaches the plugin.
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response("```math\nE = mc^2\n```\n\n```Math\nF = ma\n```\n"),
+  );
   renderPanel(
     setup({ inline: reader([inline]), codeBlocks: reader([block]) }).panel,
     fileTarget({ url: MEDIA, name: "notes.md" }),
   );
   expect(await screen.findByText("display E = mc^2")).toBeInTheDocument();
+  expect(screen.getByText("display F = ma")).toBeInTheDocument();
 
   // Without them, the TeX shows as the file's own code.
   cleanup();
