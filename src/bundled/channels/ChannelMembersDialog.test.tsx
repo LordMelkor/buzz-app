@@ -124,6 +124,11 @@ async function setup(
     verifiedProfiles?: VerifiedProfileAuthority;
     visibility?: "private" | "public";
     joinRole?: "member" | "guest";
+    /** Community mention groups the relay serves: name to member keys. */
+    mentionGroups?: Record<
+      string,
+      (people: { person: string; viewer: string }) => string[]
+    >;
   } = {},
 ) {
   const viewer = keypair(),
@@ -196,6 +201,22 @@ async function setup(
       ],
     }),
     ...(options.memberProfiles ?? []),
+    ...Object.entries(options.mentionGroups ?? {}).map(([name, keys], index) =>
+      signed(relay, {
+        kind: 39010,
+        content: "",
+        tags: [
+          ["-"],
+          ["d", `6f1d6c1e-8a4b-4c55-9b0e-2f3a4b5c6d7${index}`],
+          ["version", "1"],
+          ["command", `${index}`.repeat(64)],
+          ["name", name],
+          ...keys({ person: person.pubkey, viewer: viewer.pubkey }).map(
+            (key) => ["p", key],
+          ),
+        ],
+      }),
+    ),
     profile(viewer, { name: "Carl" }),
     personProfile,
   ];
@@ -254,6 +275,14 @@ async function setup(
         ? { verifiedProfiles: options.verifiedProfiles }
         : {}),
       readAgentLibrary,
+      ...(options.mentionGroups
+        ? {
+            mentionGroups: {
+              membership: "open" as const,
+              defaultManage: "everyone" as const,
+            },
+          }
+        : {}),
       writer: {
         kinds: [
           9,
@@ -2697,6 +2726,40 @@ it("adds a team's members not in the channel with one button", async () => {
   await t.user.type(screen.getByRole("searchbox"), "Far");
   expect(
     screen.queryByRole("button", { name: "Add team Far" }),
+  ).not.toBeInTheDocument();
+});
+
+it("adds a community group's members not in the channel with one button", async () => {
+  const t = await setup("stream", false, false, undefined, undefined, {
+    mentionGroups: {
+      Reviewers: ({ person, viewer }) => [viewer, person],
+      Everyone: ({ viewer }) => [viewer],
+    },
+  });
+  expect(screen.queryByRole("list", { name: "Groups" })).toBeNull();
+  await t.user.type(screen.getByRole("searchbox"), "Rev");
+  const groups = await screen.findByRole("list", { name: "Groups" });
+  // Only the members not here yet are listed and added.
+  expect(within(groups).getByText("Morgan")).toBeInTheDocument();
+  await t.user.click(
+    screen.getByRole("button", { name: "Add group Reviewers" }),
+  );
+  await screen.findByText("Reviewers is in the channel.");
+  const added = t.publish.mock.calls
+    .map(([event]) => event)
+    .filter((event) => event.kind === 9000)
+    .map((event) => event.tags.find((tag) => tag[0] === "p")?.[1]);
+  expect(added).toEqual([t.person.pubkey]);
+  await vi.waitFor(() =>
+    expect(
+      screen.queryByRole("list", { name: "Groups" }),
+    ).not.toBeInTheDocument(),
+  );
+  // A group whose members are all here is never offered.
+  await t.user.clear(screen.getByRole("searchbox"));
+  await t.user.type(screen.getByRole("searchbox"), "Every");
+  expect(
+    screen.queryByRole("button", { name: "Add group Everyone" }),
   ).not.toBeInTheDocument();
 });
 

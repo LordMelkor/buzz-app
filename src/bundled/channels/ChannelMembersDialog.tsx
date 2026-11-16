@@ -521,15 +521,18 @@ export function ChannelMembersButton({
 const noTeams = () => () => {};
 const noSnapshot = () => undefined;
 
-/** A team of the owner's agents, added to the channel with one button. */
+/** A team of the owner's agents, or a community mention group, added to the
+ * channel with one button. */
 function TeamRow({
   team,
+  kind = "team",
   names,
   busy,
   disabled,
   onAdd,
 }: {
-  team: Team;
+  team: Pick<Team, "name">;
+  kind?: "team" | "group";
   /** The members not yet in the channel. */
   names: readonly string[];
   busy: boolean;
@@ -540,7 +543,12 @@ function TeamRow({
     <li className={styles.member}>
       <div className={styles.profileContent}>
         <div className={styles.staticProfile}>
-          <Avatar alt="" fallback={team.name} size="small" shape="squircle" />
+          <Avatar
+            alt=""
+            fallback={team.name}
+            size="small"
+            shape={kind === "group" ? "circle" : "squircle"}
+          />
           <span className="min-w-0 flex-1">
             <span className={`${styles.name} text-body-sm`}>{team.name}</span>
             <span className="block truncate text-caption text-subtle">
@@ -553,14 +561,14 @@ function TeamRow({
         <Button
           variant="prominent"
           size="xs"
-          aria-label={`Add team ${team.name}`}
+          aria-label={`Add ${kind} ${team.name}`}
           aria-disabled={busy || undefined}
           disabled={disabled}
           onClick={() => {
             if (!busy) onAdd();
           }}
         >
-          {busy ? "Adding…" : "Add team"}
+          {busy ? "Adding…" : `Add ${kind}`}
         </Button>
       </span>
     </li>
@@ -838,6 +846,14 @@ export function ChannelMembersDialog({
     agents?.subscribe ?? noTeams,
     agents?.snapshot ?? noSnapshot,
     agents?.snapshot ?? noSnapshot,
+  );
+  const groupFeed = session.mentionGroups.supported
+    ? session.mentionGroups.directory
+    : undefined;
+  const groupDirectory = useSyncExternalStore(
+    groupFeed?.subscribe ?? noTeams,
+    groupFeed?.snapshot ?? noSnapshot,
+    groupFeed?.snapshot ?? noSnapshot,
   );
   const resolveName = useIdentityNames(session.names);
   const channel =
@@ -1613,6 +1629,27 @@ export function ChannelMembersDialog({
       ? [{ team, missing }]
       : [];
   });
+  // Community mention groups match by name too; each adds its current
+  // community members not here yet. A group still loading its members waits.
+  const mentionGroups = (
+    solo || !text ? [] : (groupDirectory?.groups ?? [])
+  ).flatMap((group) => {
+    const missing = group.members?.filter((key) => !members.has(key)) ?? [];
+    return missing.length && matchPerson(group.name, query)
+      ? [{ group, missing }]
+      : [];
+  });
+  const groupKeys = [
+    ...new Set(mentionGroups.flatMap(({ missing }) => missing)),
+  ]
+    .sort()
+    .join(":");
+  useEffect(() => {
+    if (groupKeys)
+      void session.profiles
+        .ensure(groupKeys.split(":"), "background")
+        .catch(() => {});
+  }, [session, groupKeys]);
   // Names refused people in a stable order: up to three, then a count.
   const listNames = (keys: readonly string[]) => {
     const names = keys
@@ -2460,6 +2497,26 @@ export function ChannelMembersDialog({
                           void addAll(
                             missing,
                             `${team.name} is in the channel.`,
+                          )
+                        }
+                      />
+                    ))}
+                  </ul>
+                )}
+                {mentionGroups.length > 0 && (
+                  <ul aria-label="Groups" aria-busy={refreshing}>
+                    {mentionGroups.map(({ group, missing }) => (
+                      <TeamRow
+                        key={group.id}
+                        team={group}
+                        kind="group"
+                        names={missing.map((key) => label(key))}
+                        busy={missing.some((key) => busy.has(key))}
+                        disabled={rosterBusy || !!rosterError}
+                        onAdd={() =>
+                          void addAll(
+                            missing,
+                            `${group.name} is in the ${place}.`,
                           )
                         }
                       />
