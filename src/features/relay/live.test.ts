@@ -402,6 +402,12 @@ it("uses independent explicit channel routes and self-p globals; equal interests
     since: expect.any(Number),
     limit: 1,
   });
+  // Community mention group heads ride the same global route.
+  expect(filtersOf(membershipRequest)).toContainEqual({
+    kinds: [39010],
+    since: expect.any(Number),
+    limit: 500,
+  });
   const before = h.first.sent.length;
   h.owner.update(["b", "a", "a"]);
   expect(h.first.sent).toHaveLength(before);

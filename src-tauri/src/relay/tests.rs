@@ -259,6 +259,8 @@ fn mention_group_commands_sign_only_the_broker_shape() {
         command(47002, "", &[&["manage", "owners"], prev]),
         command(47002, "", &[&["manage", "admins"], prev, d]),
         command(47003, "", &[d, prev]),
+        // Group state is relay-signed only.
+        command(39010, "", &[d, &["name", "On call"], &["version", "1"]]),
     ] {
         assert!(validate_event("https://relay.test", &rejected).is_err());
     }

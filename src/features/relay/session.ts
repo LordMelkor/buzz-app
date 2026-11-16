@@ -110,6 +110,8 @@ import { PRODUCT_FEEDBACK_KIND } from "./product-feedback";
 import { attemptEnded } from "./withdraw";
 import type { ReadTransport } from "./transport";
 import type { LiveGlobal, LiveSnapshot, LiveSubscription } from "./live";
+import { communityRequest } from "../communities/api";
+import { createMentionGroups } from "../communities/mention-groups";
 import {
   hasTag,
   type ReadFilter,
@@ -2401,6 +2403,34 @@ export function createRelaySession(
         writes?.local,
       ),
   );
+  // Community mention groups: one live directory per session, read fresh
+  // from the relay and kept current by the global live route.
+  const mentionGroups = createMentionGroups({
+    support:
+      transport?.scope && !options.cachedOnly
+        ? transport.mentionGroups
+        : undefined,
+    viewer: transport?.viewer ?? "",
+    relayAuthor: transport?.relayAuthor ?? "",
+    read: (filters, signal) =>
+      readVerified(filters, { signal, fresh: true }, false),
+    send: (body, signal) =>
+      communityRequest(transport?.scope ?? "", "mention-group", body, signal),
+    subscribeLive(listener) {
+      replayListeners.add(listener);
+      return () => replayListeners.delete(listener);
+    },
+    subscribeReconnect(listener) {
+      let connected = live.snapshot().status === "connected";
+      let reconnect = connected;
+      return live.subscribe(() => {
+        const now = live.snapshot().status === "connected";
+        if (now && !connected && reconnect) listener();
+        reconnect ||= now;
+        connected = now;
+      });
+    },
+  });
   const recoverable = (
     subscribe: (listener: () => void) => () => void,
     status: () => RecoveryStatus,
@@ -2431,6 +2461,7 @@ export function createRelaySession(
           // A ready catalog may be revalidating under the old credentials.
           () => void channelKit.capability.refresh({ after: true }),
         ),
+        mentionGroups.recovery,
         recoverable(
           soloPreferences.queries.subscribe,
           () => loadState(soloPreferences.queries.snapshot()),
@@ -2462,6 +2493,15 @@ export function createRelaySession(
   const session = Object.freeze({
     artifactIncremental: transport?.artifactIncremental,
     memberAdditions,
+    /** Community mention groups (NIP-MG): the live directory, and the
+     * viewer's put, delete and "Who can manage groups" commands. */
+    mentionGroups: Object.freeze({
+      supported: mentionGroups.supported,
+      directory: mentionGroups.directory,
+      put: mentionGroups.put,
+      remove: mentionGroups.remove,
+      setManage: mentionGroups.setManage,
+    }),
     presence,
     viewer: transport?.viewer,
     relayAuthor: transport?.relayAuthor,
@@ -4117,6 +4157,7 @@ export function createRelaySession(
       lifecycle.dispose();
       details.dispose();
       memberAdministration.dispose();
+      mentionGroups.dispose();
       stopInterests();
       stopHintGuard();
       stopWarmPreferences();

@@ -125,8 +125,42 @@ const MAX_NAME = 120;
 const MAX_CHANNELS = 32;
 // The relay bounds the signed size; this only keeps a template sane.
 const MAX_MEMBERS = 1000;
-/** Commands outlive no more than this before the relay calls them stale. */
-const MAX_AGE = 15 * 60;
+/** The relay takes a new command within this many seconds of its clock; an
+ * exact resend of an accepted command is answered at any age. */
+const MAX_SKEW = 120;
+
+/** The relay serves mention groups (NIP-11 `nip-mg` with a v1
+ * `mention_groups` object). `membership` is the predicate it enforces:
+ * `roster` relays admit roster members and owner-admitted agents; `open`
+ * relays admit every authenticated key. */
+export type MentionGroupSupport = Readonly<{
+  membership: "open" | "roster";
+  /** "Who can manage groups" before any setting command. */
+  defaultManage: "admins" | "everyone";
+}>;
+export function mentionGroupSupport(
+  nip11: unknown,
+): MentionGroupSupport | undefined {
+  const info = (nip11 ?? {}) as {
+    supported_extensions?: unknown;
+    mention_groups?: {
+      version?: unknown;
+      membership?: unknown;
+      default_manage?: unknown;
+    };
+  };
+  const groups = info.mention_groups;
+  return Array.isArray(info.supported_extensions) &&
+    info.supported_extensions.includes("nip-mg") &&
+    groups?.version === 1 &&
+    (groups.membership === "open" || groups.membership === "roster")
+    ? {
+        membership: groups.membership,
+        defaultManage:
+          groups.default_manage === "admins" ? "admins" : "everyone",
+      }
+    : undefined;
+}
 
 /** Trimmed one-line name of 1 to 120 characters, or undefined. */
 export function mentionGroupName(value: unknown): string | undefined {
@@ -139,7 +173,7 @@ export function mentionGroupName(value: unknown): string | undefined {
 
 /** Unsigned put, delete or set-manage command. `created_at` is part of the
  * request so a retry signs the same event (same ID) and the relay's receipt
- * answers it instead of applying it twice. */
+ * answers it instead of applying it twice, however old it is. */
 export function mentionGroupCommand(
   value: unknown,
   now = Math.floor(Date.now() / 1000),
@@ -149,8 +183,8 @@ export function mentionGroupCommand(
   if (
     typeof createdAt !== "number" ||
     !Number.isSafeInteger(createdAt) ||
-    createdAt > now + 60 ||
-    createdAt < now - MAX_AGE
+    createdAt < 1 ||
+    createdAt > now + MAX_SKEW
   )
     throw new Error("Invalid group change time");
   if (typeof prev !== "string" || !VERSION.test(prev))

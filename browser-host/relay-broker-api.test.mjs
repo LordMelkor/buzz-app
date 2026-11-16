@@ -3158,13 +3158,13 @@ test("mention group changes sign the relay's exact command kinds and reject malf
     const first = h.calls[0].body.id;
     expect((await post("mention-group", put)).status).toBe(200);
     expect(h.calls.at(-1).body.id).toBe(first);
-    answer = "conflict: mention group version is 3";
+    answer = "conflict: mention group version changed";
     const conflict = await post("mention-group", put);
     expect(conflict.status).toBe(409);
     expect((await conflict.json()).error).toBe(answer);
     const sent = h.calls.length;
     for (const change of [
-      { ...put, created_at: created_at - 3600 },
+      { ...put, created_at: created_at + 3600 },
       { ...put, created_at: undefined },
       { ...put, prev: "01" },
       { ...put, name: " On call" },

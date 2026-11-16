@@ -45,6 +45,27 @@ async function harness(info, identity = generateSecretKey()) {
   };
 }
 it.each([
+  [{}, undefined],
+  [{ supported_extensions: ["nip-mg"] }, undefined],
+  [
+    {
+      supported_extensions: ["nip-mg"],
+      mention_groups: { version: 1, membership: "open" },
+    },
+    { membership: "open", defaultManage: "everyone" },
+  ],
+])(
+  "carries a v1 NIP-MG advertisement to the browser transport: %j",
+  async (advertised, support) => {
+    const h = await harness(() => Response.json({ self, ...advertised }));
+    try {
+      expect((await h.connect()).mentionGroups).toEqual(support);
+    } finally {
+      await h.close();
+    }
+  },
+);
+it.each([
   [undefined, false],
   [null, false],
   [[], false],

@@ -12,6 +12,7 @@ import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { EventTemplate } from "nostr-tools";
 import { communityDestination, relayOrigin } from "../communities/destination";
+import { mentionGroupSupport } from "../communities/admin-protocol";
 import {
   audioDemuxer,
   isHeic,
@@ -460,6 +461,7 @@ export async function connectNativeTransport(
   const searchSort =
     Array.isArray(info.supported_extensions) &&
     info.supported_extensions.includes("buzz-search-sort");
+  const mentionGroups = mentionGroupSupport(info);
   const artifacts = info.artifacts as
     | { sync?: { version?: unknown } }
     | undefined;
@@ -960,6 +962,7 @@ export async function connectNativeTransport(
       nativeAttachmentUpload(origin, file, signal, progress),
     ...(channelIdentity ? { channelIdentity: true as const } : {}),
     ...(searchSort ? { searchSort: true as const } : {}),
+    ...(mentionGroups ? { mentionGroups } : {}),
     ...(artifactSync ? { artifactSync: true as const } : {}),
     verifiedProfiles: verifiedProfileAuthority(info),
     async readVerifiedProfileAuthority(signal) {

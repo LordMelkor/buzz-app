@@ -47,6 +47,7 @@ import {
 } from "./sidebar-preferences";
 import { createHostAdmission } from "./host-admission";
 import { relayOrigin } from "../communities/destination";
+import type { MentionGroupSupport } from "../communities/admin-protocol";
 import {
   admittedApiRequest,
   ApiPaused,
@@ -144,6 +145,8 @@ export interface ReadTransport {
   /** The relay advertises NIP-CL (`nip-cl` in NIP-11 `supported_extensions`):
    * it keeps channel labels and answers label lookups. */
   readonly channelIdentity?: true;
+  /** The relay serves community mention groups (NIP-MG). */
+  readonly mentionGroups?: MentionGroupSupport;
   /** The relay advertises `buzz-search-sort`: bridge search accepts
    * `search_sort: "newest"`. Older relays silently rank by relevance. */
   readonly searchSort?: true;
@@ -537,6 +540,7 @@ export async function connectBrokerTransport(
     channelKit?: boolean;
     channelIdentity?: boolean;
     searchSort?: boolean;
+    mentionGroups?: { membership?: unknown; defaultManage?: unknown };
     artifactSync?: boolean;
     sidebarPreferenceWrites?: boolean;
     sidebarSectionRemoval?: boolean;
@@ -873,6 +877,18 @@ export async function connectBrokerTransport(
       ? { channelIdentity: true as const }
       : {}),
     ...(session.searchSort === true ? { searchSort: true as const } : {}),
+    ...(session.mentionGroups?.membership === "open" ||
+    session.mentionGroups?.membership === "roster"
+      ? {
+          mentionGroups: {
+            membership: session.mentionGroups.membership,
+            defaultManage:
+              session.mentionGroups.defaultManage === "admins"
+                ? ("admins" as const)
+                : ("everyone" as const),
+          },
+        }
+      : {}),
     ...(session.artifactSync === true ? { artifactSync: true as const } : {}),
     ...(session.channelKit
       ? {

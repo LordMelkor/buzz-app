@@ -45,6 +45,7 @@ import {
   memberCommand,
   mentionGroupCommand,
   mentionGroupReason,
+  mentionGroupSupport,
 } from "../src/features/communities/admin-protocol.ts";
 import {
   leaveRefusal,
@@ -342,6 +343,8 @@ async function relayAuthority(fetch, relay) {
     artifactSupport:
       Array.isArray(nip11.supported_extensions) &&
       nip11.supported_extensions.includes("nip-ar"),
+    // NIP-MG: community mention groups and the membership rule they follow.
+    mentionGroups: mentionGroupSupport(nip11),
     // Bridge search accepts `search_sort: "newest"`.
     searchSort:
       Array.isArray(nip11.supported_extensions) &&
@@ -1700,6 +1703,7 @@ export function relayBrokerPlugin({
               sidebarMuteWrites: true,
               channelKit: true,
               channelIdentity: (await getAuthority(relay)).channelIdentity,
+              mentionGroups: (await getAuthority(relay)).mentionGroups,
               readState: true,
               sidebarPreferenceWrites: true,
               sidebarSectionRemoval: true,

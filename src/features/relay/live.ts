@@ -1364,6 +1364,12 @@ export function subscribeRelayTraffic(
                 since: route.since,
                 limit: 1,
               },
+              // NIP-MG group and setting heads; the directory checks the author.
+              {
+                kinds: [39010],
+                since: route.since,
+                limit: LIVE_REPLAY_LIMIT,
+              },
               {
                 kinds: [30078],
                 authors: [viewer],

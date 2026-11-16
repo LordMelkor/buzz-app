@@ -261,6 +261,44 @@ it.each([
     ).toBeUndefined();
   },
 );
+it.each([
+  [{}, undefined],
+  [{ supported_extensions: ["nip-mg"] }, undefined],
+  [
+    {
+      supported_extensions: ["nip-mg"],
+      mention_groups: { version: 2, membership: "open" },
+    },
+    undefined,
+  ],
+  [
+    {
+      supported_extensions: ["nip-mg"],
+      mention_groups: { version: 1, membership: "members" },
+    },
+    undefined,
+  ],
+  [{ mention_groups: { version: 1, membership: "open" } }, undefined],
+  [
+    {
+      supported_extensions: ["nip-mg"],
+      mention_groups: {
+        version: 1,
+        membership: "roster",
+        default_manage: "admins",
+      },
+    },
+    { membership: "roster", defaultManage: "admins" },
+  ],
+])(
+  "offers mention groups only with a v1 NIP-MG advertisement: %o",
+  async (advertised, support) => {
+    discovery = advertised;
+    expect((await connectNativeTransport(community)).mentionGroups).toEqual(
+      support,
+    );
+  },
+);
 it("publishes config artifacts straight to the relay, re-sending identical bytes and keeping typed refusals", async () => {
   discovery = { supported_extensions: ["nip-ar"] };
   const transport = await connectNativeTransport(community);

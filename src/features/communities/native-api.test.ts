@@ -213,16 +213,16 @@ it("resends the same signed group change, so a retry after a lost receipt is ans
 
 it.each([
   [
-    "conflict: mention group version is 3",
-    "conflict: mention group version is 3",
+    "conflict: mention group version changed",
+    "conflict: mention group version changed",
   ],
   [
     "duplicate: mention group name already exists",
     "duplicate: mention group name already exists",
   ],
   [
-    "restricted: only owners and admins manage groups",
-    "restricted: only owners and admins manage groups",
+    "restricted: community policy does not permit this mention group command",
+    "restricted: community policy does not permit this mention group command",
   ],
   ["database error: connection reset", "Community request failed (409)"],
 ])("keeps the relay's typed group answer %j", async (error, shown) => {
