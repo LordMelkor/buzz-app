@@ -9,7 +9,12 @@ import {
 } from "../relay/native";
 import { joinPolicy as readJoinPolicy } from "./join-policy";
 import { leaveRefusal, leaveRequestTemplate } from "./leave-protocol";
-import { adminReason, memberCommand } from "./admin-protocol";
+import {
+  adminReason,
+  memberCommand,
+  mentionGroupCommand,
+  mentionGroupReason,
+} from "./admin-protocol";
 import { readRelayLibrary } from "../agents/relay-library";
 import { eventDto } from "../relay/events";
 import { readApiFailure } from "../relay/http-admission";
@@ -215,6 +220,19 @@ export async function nativeCommunityRequest(
     );
     if (result.event_id !== event.id || typeof result.accepted !== "boolean")
       throw new Error("Member change could not be confirmed");
+    return result;
+  }
+  if (route === "mention-group") {
+    // The relay decides each change; its typed answers come back verbatim.
+    const event = await nativeRelaySigner(community).signEvent(
+      mentionGroupCommand(body),
+    );
+    const result = await readResponse(
+      await nativeRelayRequest(community, "/events", event, signal),
+      mentionGroupReason,
+    );
+    if (result.event_id !== event.id || typeof result.accepted !== "boolean")
+      throw new Error("Group change could not be confirmed");
     return result;
   }
   if (route === "leave") {

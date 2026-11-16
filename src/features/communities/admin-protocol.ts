@@ -106,3 +106,123 @@ export function claimReason(body: unknown): string | undefined {
     ? reason
     : undefined;
 }
+
+// Mention groups (relay NIP-MG): community-owned groups the relay stores and
+// signs as kind 39010. The relay decides authority from the community's
+// "who can manage groups" setting; this only bounds shape.
+export const MENTION_GROUP_KINDS = Object.freeze({
+  put: 47000,
+  remove: 47001,
+  manage: 47002,
+  state: 39010,
+});
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const VERSION = /^(?:0|[1-9][0-9]{0,18})$/;
+const KEY = /^[0-9a-f]{64}$/;
+const CHANNEL = /^[a-zA-Z0-9_-]{1,128}$/;
+const MAX_NAME = 120;
+const MAX_CHANNELS = 32;
+// The relay bounds the signed size; this only keeps a template sane.
+const MAX_MEMBERS = 1000;
+/** Commands outlive no more than this before the relay calls them stale. */
+const MAX_AGE = 15 * 60;
+
+/** Trimmed one-line name of 1 to 120 characters, or undefined. */
+export function mentionGroupName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const name = value.trim();
+  return name && [...name].length <= MAX_NAME && !/\p{Cc}/u.test(name)
+    ? name
+    : undefined;
+}
+
+/** Unsigned put, delete or set-manage command. `created_at` is part of the
+ * request so a retry signs the same event (same ID) and the relay's receipt
+ * answers it instead of applying it twice. */
+export function mentionGroupCommand(
+  value: unknown,
+  now = Math.floor(Date.now() / 1000),
+) {
+  const body = (value ?? {}) as Record<string, unknown>;
+  const { action, prev, created_at: createdAt } = body;
+  if (
+    typeof createdAt !== "number" ||
+    !Number.isSafeInteger(createdAt) ||
+    createdAt > now + 60 ||
+    createdAt < now - MAX_AGE
+  )
+    throw new Error("Invalid group change time");
+  if (typeof prev !== "string" || !VERSION.test(prev))
+    throw new Error("Invalid group version");
+  const base = { content: "", created_at: createdAt };
+  if (action === "manage") {
+    if (body.manage !== "admins" && body.manage !== "everyone")
+      throw new Error("Invalid group setting");
+    return {
+      ...base,
+      kind: MENTION_GROUP_KINDS.manage,
+      tags: [
+        ["manage", body.manage],
+        ["prev", prev],
+      ],
+    };
+  }
+  if (typeof body.id !== "string" || !UUID.test(body.id))
+    throw new Error("Invalid group");
+  if (action === "remove")
+    return {
+      ...base,
+      kind: MENTION_GROUP_KINDS.remove,
+      tags: [
+        ["d", body.id],
+        ["prev", prev],
+      ],
+    };
+  if (action !== "put") throw new Error("Invalid group change");
+  const name = mentionGroupName(body.name);
+  if (name === undefined || name !== body.name)
+    throw new Error("Invalid group name");
+  const members = body.members ?? [];
+  const channels = body.channels ?? [];
+  if (
+    !Array.isArray(members) ||
+    members.length > MAX_MEMBERS ||
+    !members.every((key) => typeof key === "string" && KEY.test(key)) ||
+    new Set(members).size !== members.length
+  )
+    throw new Error("Invalid group members");
+  if (
+    !Array.isArray(channels) ||
+    channels.length > MAX_CHANNELS ||
+    !channels.every((id) => typeof id === "string" && CHANNEL.test(id)) ||
+    new Set(channels).size !== channels.length
+  )
+    throw new Error("Invalid group channels");
+  return {
+    ...base,
+    kind: MENTION_GROUP_KINDS.put,
+    tags: [
+      ["d", body.id],
+      ["prev", prev],
+      ["name", name],
+      ...members.map((key) => ["p", key as string]),
+      ...channels.map((id) => ["channel", id as string]),
+    ],
+  };
+}
+
+/** The relay's typed mention group answers, kept verbatim so the caller can
+ * tell a version conflict from a taken name or a refusal. Anything else stays
+ * a generic failure. */
+export function mentionGroupReason(body: unknown): string | undefined {
+  const { error, message, reason } = (body ?? {}) as Record<string, unknown>;
+  const text = [error, message, reason].find(
+    (item): item is string => typeof item === "string",
+  );
+  return text &&
+    /^(?:conflict|duplicate|restricted|invalid|blocked): /.test(text) &&
+    text.length <= 300
+    ? text
+    : undefined;
+}

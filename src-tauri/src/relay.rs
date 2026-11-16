@@ -445,6 +445,10 @@ fn validate_event(community: &str, event: &EventTemplate) -> Result<()> {
         if !valid_member_command(event) {
             return Err("Invalid member change".into());
         }
+    } else if matches!(event.kind, 47000..=47002) {
+        if !valid_mention_group_command(event) {
+            return Err("Invalid group change".into());
+        }
     } else if !matches!(
         event.kind,
         0 | 7 | 9 | 1984 | 9000 | 9001 | 20001 | 30030 | 30177 | 30315 | 40003 | 42000 | 45010
@@ -465,6 +469,79 @@ fn valid_member_command(event: &EventTemplate) -> bool {
             (9030 | 9032, [p, r]) => target(p) && role(r),
             _ => false,
         }
+}
+
+/** Match the broker's mention group command shape (`mentionGroupCommand` in
+ * `src/features/communities/admin-protocol.ts`); the relay decides authority
+ * from the community's "who can manage groups" setting. */
+fn valid_mention_group_command(event: &EventTemplate) -> bool {
+    let tag = |tag: &[String], name: &str| tag.len() == 2 && tag[0] == name;
+    let uuid = |value: &str| {
+        let bytes = value.as_bytes();
+        bytes.len() == 36
+            && bytes.iter().enumerate().all(|(i, byte)| match i {
+                8 | 13 | 18 | 23 => *byte == b'-',
+                _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(byte),
+            })
+            && (b'1'..=b'8').contains(&bytes[14])
+            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+    };
+    let version = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 19
+            && value.bytes().all(|byte| byte.is_ascii_digit())
+            && (value == "0" || !value.starts_with('0'))
+    };
+    let name = |value: &str| {
+        value == value.trim()
+            && !value.is_empty()
+            && value.chars().count() <= 120
+            && !value.chars().any(|c| c.is_control())
+    };
+    let channel = |value: &str| {
+        (1..=128).contains(&value.len())
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    };
+    if !event.content.is_empty() {
+        return false;
+    }
+    let tags = event.tags.as_slice();
+    match event.kind {
+        47002 => matches!(tags, [m, p] if tag(m, "manage")
+            && (m[1] == "admins" || m[1] == "everyone")
+            && tag(p, "prev") && version(&p[1])),
+        47001 => matches!(tags, [d, p] if tag(d, "d") && uuid(&d[1])
+            && tag(p, "prev") && version(&p[1])),
+        47000 => {
+            let [d, p, n, rest @ ..] = tags else {
+                return false;
+            };
+            if !(tag(d, "d")
+                && uuid(&d[1])
+                && tag(p, "prev")
+                && version(&p[1])
+                && tag(n, "name")
+                && name(&n[1]))
+            {
+                return false;
+            }
+            let split = rest.iter().position(|t| !tag(t, "p")).unwrap_or(rest.len());
+            let (members, channels) = rest.split_at(split);
+            let distinct = |items: &[Vec<String>]| {
+                let mut seen = std::collections::HashSet::new();
+                items.iter().all(|t| seen.insert(t[1].as_str()))
+            };
+            members.len() <= 1000
+                && members.iter().all(|t| hex_key(&t[1]))
+                && distinct(members)
+                && channels.len() <= 32
+                && channels.iter().all(|t| tag(t, "channel") && channel(&t[1]))
+                && distinct(channels)
+        }
+        _ => false,
+    }
 }
 
 // Match the broker's purpose-bound Canvas admission, including legacy untagged retries.

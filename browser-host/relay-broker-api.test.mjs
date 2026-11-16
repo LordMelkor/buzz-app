@@ -3089,6 +3089,103 @@ test("member change receipts must match the signed command", async () => {
   }
 });
 
+test("mention group changes sign the relay's exact command kinds and reject malformed changes locally", async () => {
+  let answer;
+  const { h, post } = await communityAdmin((call) =>
+    answer
+      ? Response.json({ error: answer }, { status: 409 })
+      : Response.json({ accepted: true, event_id: call.body.id, message: "" }),
+  );
+  const id = "0659678f-fddb-40df-a285-35f6b41db019";
+  const person = "a".repeat(64);
+  const agent = "b".repeat(64);
+  const created_at = Math.floor(Date.now() / 1000);
+  const put = {
+    action: "put",
+    id,
+    prev: "0",
+    name: "On call",
+    members: [person, agent],
+    channels: ["general"],
+    created_at,
+  };
+  try {
+    for (const [change, kind, tags] of [
+      [
+        put,
+        47000,
+        [
+          ["d", id],
+          ["prev", "0"],
+          ["name", "On call"],
+          ["p", person],
+          ["p", agent],
+          ["channel", "general"],
+        ],
+      ],
+      [
+        { action: "remove", id, prev: "4", created_at },
+        47001,
+        [
+          ["d", id],
+          ["prev", "4"],
+        ],
+      ],
+      [
+        { action: "manage", manage: "admins", prev: "0", created_at },
+        47002,
+        [
+          ["manage", "admins"],
+          ["prev", "0"],
+        ],
+      ],
+    ]) {
+      const response = await post("mention-group", change);
+      expect(response.status).toBe(200);
+      const sent = h.calls.at(-1);
+      expect(sent.url).toBe(`${fixtureRelayUrl}/events`);
+      expect(verifyEvent(sent.body)).toBe(true);
+      expect(sent.body).toMatchObject({
+        kind,
+        tags,
+        content: "",
+        pubkey: h.event.pubkey,
+        created_at,
+      });
+    }
+    // A retry after an unknown outcome is the same event, so the relay's
+    // receipt answers it instead of applying the change twice.
+    const first = h.calls[0].body.id;
+    expect((await post("mention-group", put)).status).toBe(200);
+    expect(h.calls.at(-1).body.id).toBe(first);
+    answer = "conflict: mention group version is 3";
+    const conflict = await post("mention-group", put);
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json()).error).toBe(answer);
+    const sent = h.calls.length;
+    for (const change of [
+      { ...put, created_at: created_at - 3600 },
+      { ...put, created_at: undefined },
+      { ...put, prev: "01" },
+      { ...put, name: " On call" },
+      { ...put, name: "" },
+      { ...put, id: id.toUpperCase() },
+      { ...put, members: [person, person] },
+      { ...put, members: ["A".repeat(64)] },
+      { ...put, channels: ["a/b"] },
+      { ...put, action: "rename" },
+      { action: "manage", manage: "owners", prev: "0", created_at },
+      { kind: 47000, tags: [["d", id]], created_at },
+    ])
+      expect((await post("mention-group", change)).status).toBe(400);
+    // Unscoped requests name no community.
+    expect((await h.post("mention-group", put)).status).toBe(400);
+    expect(h.calls).toHaveLength(sent);
+  } finally {
+    await h.close();
+  }
+});
+
 test("leave requests sign the exact NIP-43 shape for the selected community only", async () => {
   const { h, post } = await communityAdmin((call) =>
     Response.json({ accepted: true, event_id: call.body.id, message: "" }),

@@ -43,6 +43,8 @@ import {
   claimReason,
   inviteRequest,
   memberCommand,
+  mentionGroupCommand,
+  mentionGroupReason,
 } from "../src/features/communities/admin-protocol.ts";
 import {
   leaveRefusal,
@@ -2467,6 +2469,7 @@ export function relayBrokerPlugin({
               "/api/relay/accept-policy",
               "/api/relay/invite",
               "/api/relay/member",
+              "/api/relay/mention-group",
               "/api/relay/leave",
               "/api/relay/gifs",
               "/api/relay/profile-search",
@@ -2778,19 +2781,21 @@ export function relayBrokerPlugin({
           const policy = route === "/api/relay/accept-policy";
           const invite = route === "/api/relay/invite";
           const member = route === "/api/relay/member";
+          const group = route === "/api/relay/mention-group";
           const leave = route === "/api/relay/leave";
           const gifs = route === "/api/relay/gifs";
           const profileSearch = route === "/api/relay/profile-search";
           // Only these routes may surface an exact, allowed relay refusal.
-          const refusal =
-            invite || member
+          const refusal = group
+            ? mentionGroupReason
+            : invite || member
               ? adminReason
               : claim
                 ? claimReason
                 : leave
                   ? leaveRefusal
                   : undefined;
-          if (invite || member || leave) {
+          if (invite || member || group || leave) {
             // Community-bound only; the relay remains the authority for roles.
             if (!scoped)
               return json(res, 400, { error: "Select a community first" });
@@ -2799,7 +2804,11 @@ export function relayBrokerPlugin({
               filters = invite
                 ? inviteRequest(filters)
                 : finalizeEvent(
-                    leave ? leaveRequestTemplate() : memberCommand(filters),
+                    leave
+                      ? leaveRequestTemplate()
+                      : group
+                        ? mentionGroupCommand(filters)
+                        : memberCommand(filters),
                     key,
                   );
             } catch (error) {
@@ -3142,6 +3151,7 @@ export function relayBrokerPlugin({
             !policy &&
             !invite &&
             !member &&
+            !group &&
             !leave &&
             !gifs &&
             !profileSearch &&
@@ -3228,7 +3238,7 @@ export function relayBrokerPlugin({
               ? gifSearchPath
               : profileSearch
                 ? "/profiles/search"
-                : profile || directMessage || member || leave
+                : profile || directMessage || member || group || leave
                   ? "/events"
                   : claim
                     ? "/api/invites/claim"
@@ -3392,7 +3402,7 @@ export function relayBrokerPlugin({
                 });
               }
             }
-            if (profile || member || leave) {
+            if (profile || member || group || leave) {
               const receipt = JSON.parse(text);
               if (
                 receipt.event_id !== filters.id ||
@@ -3403,7 +3413,9 @@ export function relayBrokerPlugin({
                     ? "Leave request could not be confirmed"
                     : member
                       ? "Member change could not be confirmed"
-                      : "Profile publication could not be confirmed",
+                      : group
+                        ? "Group change could not be confirmed"
+                        : "Profile publication could not be confirmed",
                 });
             }
             res.writeHead(200, {

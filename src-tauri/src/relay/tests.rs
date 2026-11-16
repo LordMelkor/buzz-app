@@ -198,6 +198,72 @@ fn member_commands_sign_only_the_broker_shape() {
     }
 }
 
+#[test]
+fn mention_group_commands_sign_only_the_broker_shape() {
+    let command = |kind: u16, content: &str, tags: &[&[&str]]| EventTemplate {
+        kind,
+        created_at: 1,
+        content: content.into(),
+        tags: tags
+            .iter()
+            .map(|tag| tag.iter().map(|value| value.to_string()).collect())
+            .collect(),
+    };
+    let id = "0659678f-fddb-40df-a285-35f6b41db019";
+    let key = "a".repeat(64);
+    let other = "b".repeat(64);
+    let d: &[&str] = &["d", id];
+    let prev: &[&str] = &["prev", "3"];
+    let name: &[&str] = &["name", "On call 🚨"];
+    let p: &[&str] = &["p", &key];
+    let q: &[&str] = &["p", &other];
+    let channel: &[&str] = &["channel", "5a906a8f-7c87-41dc-8df5-06ea23ed5362"];
+    for accepted in [
+        command(47000, "", &[d, &["prev", "0"], name]),
+        command(47000, "", &[d, prev, name, p, q, channel]),
+        command(47000, "", &[d, prev, name, channel]),
+        command(47001, "", &[d, prev]),
+        command(47002, "", &[&["manage", "admins"], &["prev", "0"]]),
+        command(47002, "", &[&["manage", "everyone"], prev]),
+    ] {
+        assert!(validate_event("https://relay.test", &accepted).is_ok());
+    }
+    for rejected in [
+        // Put needs its id, version and name first, in that order.
+        command(47000, "", &[d, prev]),
+        command(47000, "", &[prev, d, name]),
+        command(47000, "", &[d, prev, &["name", " padded"]]),
+        command(47000, "", &[d, prev, &["name", ""]]),
+        command(47000, "", &[d, prev, &["name", "two\nlines"]]),
+        command(47000, "", &[d, prev, &["name", &"x".repeat(121)]]),
+        command(47000, "", &[d, &["prev", "01"], name]),
+        command(47000, "", &[d, &["prev", "-1"], name]),
+        command(47000, "", &[&["d", "not-a-uuid"], prev, name]),
+        command(47000, "", &[&["d", &id.to_uppercase()], prev, name]),
+        // Members come before channels, once each, as lowercase keys.
+        command(47000, "", &[d, prev, name, channel, p]),
+        command(47000, "", &[d, prev, name, p, p]),
+        command(47000, "", &[d, prev, name, &["p", &key.to_uppercase()]]),
+        command(
+            47000,
+            "",
+            &[d, prev, name, &["p", &key, "wss://relay.test"]],
+        ),
+        command(47000, "", &[d, prev, name, channel, channel]),
+        command(47000, "", &[d, prev, name, &["channel", "a/b"]]),
+        command(47000, "", &[d, prev, name, &["h", "channel"]]),
+        command(47000, "note", &[d, prev, name]),
+        // Delete and the setting carry nothing else.
+        command(47001, "", &[d, prev, name]),
+        command(47001, "", &[d]),
+        command(47002, "", &[&["manage", "owners"], prev]),
+        command(47002, "", &[&["manage", "admins"], prev, d]),
+        command(47003, "", &[d, prev]),
+    ] {
+        assert!(validate_event("https://relay.test", &rejected).is_err());
+    }
+}
+
 fn fixture_server(response: String) -> (Url, std::thread::JoinHandle<(String, String)>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = Url::parse(&format!("http://{}/query", listener.local_addr().unwrap())).unwrap();

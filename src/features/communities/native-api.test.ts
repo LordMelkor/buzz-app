@@ -175,6 +175,67 @@ it.each([
   },
 );
 
+it("resends the same signed group change, so a retry after a lost receipt is answered, not applied twice", async () => {
+  const change = {
+    action: "put",
+    id: "0659678f-fddb-40df-a285-35f6b41db019",
+    prev: "2",
+    name: "On call",
+    members: ["2".repeat(64)],
+    channels: ["general"],
+    created_at: Math.floor(Date.now() / 1000),
+  };
+  respond = (_path, body) => ({
+    body: { accepted: true, event_id: (body as { id: string }).id },
+  });
+  await communityRequest(community, "mention-group", change);
+  await communityRequest(community, "mention-group", change);
+  expect(requests).toMatchObject([
+    {
+      path: "/events",
+      body: {
+        kind: 47000,
+        content: "",
+        tags: [
+          ["d", change.id],
+          ["prev", "2"],
+          ["name", "On call"],
+          ["p", "2".repeat(64)],
+          ["channel", "general"],
+        ],
+      },
+    },
+    { path: "/events" },
+  ]);
+  const [first, second] = requests.map((r) => (r.body as { id: string }).id);
+  expect(second).toBe(first);
+});
+
+it.each([
+  [
+    "conflict: mention group version is 3",
+    "conflict: mention group version is 3",
+  ],
+  [
+    "duplicate: mention group name already exists",
+    "duplicate: mention group name already exists",
+  ],
+  [
+    "restricted: only owners and admins manage groups",
+    "restricted: only owners and admins manage groups",
+  ],
+  ["database error: connection reset", "Community request failed (409)"],
+])("keeps the relay's typed group answer %j", async (error, shown) => {
+  respond = () => ({ status: 409, body: { error } });
+  const failure = await communityRequest(community, "mention-group", {
+    action: "remove",
+    id: "0659678f-fddb-40df-a285-35f6b41db019",
+    prev: "3",
+    created_at: Math.floor(Date.now() / 1000),
+  }).catch((reason: Error) => reason);
+  expect(failure).toEqual(new Error(shown));
+});
+
 it("mints only bounded invites on the captured community", async () => {
   respond = () => ({
     body: { code: "invite", url: `${community}/invite/invite` },
