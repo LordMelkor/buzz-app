@@ -161,6 +161,32 @@ empty state there. Try drafting in A, switching to B, then returning to A.
 Selected channels, drafts and reading offsets are partitioned by the canonical
 community origin and viewer; channel IDs alone are not sufficient keys.
 
+## Community mention groups
+
+A relay that advertises NIP-MG (`nip-mg` in `supported_extensions` with a
+version 1 `mention_groups` object) keeps the community's mention groups, like
+Slack user groups: each has a name, members and optional default channels, and
+everyone in the community sees the same groups. `session.mentionGroups` is the
+host capability. Its `directory` is a live snapshot of the relay-signed kind
+`39010` groups: it shows groups only after a complete paged read, takes the
+newest version of each group from live updates, reads again after every
+reconnect, and never empties on a failed read (`unavailable`, then **Retry**).
+On a `roster` community a group's members are its current roster members and
+owner-admitted agents, and a group waits while that membership is still being
+read, so nothing sends to a partial set.
+
+`put`, `remove` and `setManage` sign one command (kind `47000` put, `47001`
+delete, `47002` "Who can manage groups") with the group's current version as
+its precondition: the broker signs it in development, and the native host signs
+only those exact shapes and posts them to the relay's `/events`. The relay
+alone decides authority from the community's **Who can manage groups**
+setting (owners and admins, or everyone; NIP-11 `default_manage` applies until
+the first setting is saved). A retry resends the same signed command, so the
+relay answers it from its receipt rather than applying it twice. A stale
+version, a taken name and a refusal come back as distinct answers. When the
+relay advertises `max_members`, the directory exposes it as `maxMembers`, the
+most members a group may have; larger groups belong in a channel.
+
 ## Import from the previous desktop app
 
 After native startup, Buzz offers the previous desktop app's saved communities

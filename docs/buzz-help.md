@@ -1509,6 +1509,13 @@ confirmation. **Delete team** asks first; it doesn't delete the team's agents.
 Closing a team's editor with unsaved edits, by Escape, its Close or another
 tab, asks **Discard changes?** first; **Keep editing** keeps them.
 
+A community can also have mention groups, which everyone in the community
+shares. They appear in the `@` suggestions as **Group** with how many people
+and agents they hold, and selecting one mentions every member. In a channel,
+**Add people** lists matching groups; **Add group** adds the members who aren't
+in the channel yet. A group can have only as many members as the community
+allows; for a larger group, use a channel.
+
 ## Optional features and limits
 
 - Plugins can add features. **Settings → Plugins → Manage plugins** controls

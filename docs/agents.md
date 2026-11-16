@@ -1169,6 +1169,16 @@ limits; a person mentioned by several chips counts once. Selection never adds
 members: ordinary channels retain invite-on-send consent, DMs retain
 reference-only outsiders, and Solo chats add only the viewer's available agents.
 
+Community mention groups (see [Communities](communities.md#community-mention-groups))
+appear in both choosers as **Group** rows beside the saved teams and follow the
+same rules: one `@group` chip that notifies each current member, people and
+agents counted in the row, Space and typed names never select it, and a group
+that is empty, too large, changed or still loading its members stays disabled.
+When the directory cannot be read the chooser says so and offers **Retry
+groups**. In a channel's **Add people**, matching groups are listed with
+**Add group**, which adds only the members not yet in the channel and skips
+archived agents.
+
 The picker supports Up/Down navigation, Enter selection and Escape dismissal.
 
 `session.messages.send/reply` accepts up to 32 exact notification pubkeys and emits
