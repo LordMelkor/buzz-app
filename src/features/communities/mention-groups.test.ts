@@ -369,11 +369,12 @@ it("lets any member edit under Everyone, only stewards under admins, and only st
     canEdit: true,
     canManage: true,
   });
-  // A community with no steward lets any member change it.
+  // With no steward, any member may change the setting, but under admins
+  // nobody may edit groups until it is set back to Everyone (NIP-MG).
   const rosterless = harness([settings("admins", 2)]);
   await settle();
   expect(rosterless.snapshot()).toMatchObject({
-    canEdit: true,
+    canEdit: false,
     canManage: true,
   });
 });

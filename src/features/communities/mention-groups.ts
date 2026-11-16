@@ -303,8 +303,7 @@ export function projectDirectory(
     manage,
     settingVersion: (data.settings?.version ?? 0n).toString(),
     ...(role ? { role } : {}),
-    canEdit:
-      ready && viewerMember && (manage === "everyone" || manager || !steward),
+    canEdit: ready && viewerMember && (manage === "everyone" || manager),
     canManage: ready && viewerMember && (manager || !steward),
     ...("error" in state ? { error: state.error } : {}),
   };
