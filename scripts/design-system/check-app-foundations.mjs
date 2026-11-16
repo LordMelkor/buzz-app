@@ -76,7 +76,6 @@ const texGeometry = new Map([
       "font-size: 1.6em",
       "font-size: 1.25em",
       "font-size: 1.4em",
-      "font-size: 1em",
       "padding-inline-start: 2em",
     ]),
   ],

@@ -150,7 +150,7 @@ ${focus(".bzm-template")}
 
 /* Completion previews. */
 .bzm-suggestion { display: inline-flex; align-items: center; justify-content: center; min-width: 1.5rem; }
-.bzm-suggestion .katex { font-size: 1em; }
+.bzm-suggestion .katex { font-size: inherit; }
 
 @media (prefers-reduced-motion: reduce) { .bzm-button, .bzm-icon-button, .bzm-display-actions { transition: none; } }
 `;
