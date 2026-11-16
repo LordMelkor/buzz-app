@@ -290,6 +290,34 @@ it.each([
     },
     { membership: "roster", defaultManage: "admins" },
   ],
+  [
+    {
+      supported_extensions: ["nip-mg"],
+      mention_groups: { version: 1, membership: "open", max_members: 20 },
+    },
+    { membership: "open", defaultManage: "everyone", maxMembers: 20 },
+  ],
+  [
+    {
+      supported_extensions: ["nip-mg"],
+      mention_groups: { version: 1, membership: "open", max_members: 0 },
+    },
+    { membership: "open", defaultManage: "everyone" },
+  ],
+  [
+    {
+      supported_extensions: ["nip-mg"],
+      mention_groups: { version: 1, membership: "open", max_members: "20" },
+    },
+    { membership: "open", defaultManage: "everyone" },
+  ],
+  [
+    {
+      supported_extensions: ["nip-mg"],
+      mention_groups: { version: 1, membership: "open", max_members: 2.5 },
+    },
+    { membership: "open", defaultManage: "everyone" },
+  ],
 ])(
   "offers mention groups only with a v1 NIP-MG advertisement: %o",
   async (advertised, support) => {

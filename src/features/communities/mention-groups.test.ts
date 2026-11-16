@@ -80,6 +80,7 @@ function harness(
   stored: EventData[],
   options: {
     membership?: "open" | "roster";
+    maxMembers?: number;
     send?: (body: Record<string, unknown>) => Promise<unknown>;
     profiles?: EventData[];
   } = {},
@@ -95,6 +96,7 @@ function harness(
     support: {
       membership: options.membership ?? "open",
       defaultManage: "everyone",
+      ...(options.maxMembers ? { maxMembers: options.maxMembers } : {}),
     },
     viewer,
     relayAuthor: author,
@@ -305,6 +307,7 @@ it("on a roster relay offers only current members and owner-admitted agents", as
     ],
     {
       membership: "roster",
+      maxMembers: 20,
       profiles: [
         profile(admittedAgent, proof),
         // A forged proof names a member but is not signed by them.
@@ -328,6 +331,9 @@ it("on a roster relay offers only current members and owner-admitted agents", as
   // An open relay never filters.
   const open = harness([head(groupA, 1, "On call", [person, removed])]);
   await settle();
+  // The relay's advertised group size limit reaches the editor; none here.
+  expect(h.snapshot().maxMembers).toBe(20);
+  expect(open.snapshot().maxMembers).toBeUndefined();
   expect(open.snapshot().groups[0]?.members).toEqual([person, removed]);
 });
 

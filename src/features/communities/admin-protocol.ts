@@ -137,6 +137,8 @@ export type MentionGroupSupport = Readonly<{
   membership: "open" | "roster";
   /** "Who can manage groups" before any setting command. */
   defaultManage: "admins" | "everyone";
+  /** Most members a group may have, when the relay advertises a limit. */
+  maxMembers?: number;
 }>;
 export function mentionGroupSupport(
   nip11: unknown,
@@ -147,6 +149,7 @@ export function mentionGroupSupport(
       version?: unknown;
       membership?: unknown;
       default_manage?: unknown;
+      max_members?: unknown;
     };
   };
   const groups = info.mention_groups;
@@ -158,6 +161,10 @@ export function mentionGroupSupport(
         membership: groups.membership,
         defaultManage:
           groups.default_manage === "admins" ? "admins" : "everyone",
+        ...(Number.isSafeInteger(groups.max_members) &&
+        (groups.max_members as number) > 0
+          ? { maxMembers: groups.max_members as number }
+          : {}),
       }
     : undefined;
 }

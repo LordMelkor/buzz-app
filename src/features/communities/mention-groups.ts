@@ -238,6 +238,8 @@ export type MentionGroupDirectory = Readonly<{
   status: "unsupported" | "loading" | "unavailable" | "ready" | "reconciling";
   groups: readonly MentionGroupView[];
   membership?: MentionGroupSupport["membership"];
+  /** Most members a group may have, when the relay advertises a limit. */
+  maxMembers?: number;
   manage: ManageSetting;
   /** The setting's version, the `prev` for setManage. */
   settingVersion: string;
@@ -297,6 +299,7 @@ export function projectDirectory(
     status: state.status === "stale" ? "ready" : state.status,
     groups,
     ...(support ? { membership: support.membership } : {}),
+    ...(support?.maxMembers ? { maxMembers: support.maxMembers } : {}),
     manage,
     settingVersion: (data.settings?.version ?? 0n).toString(),
     ...(role ? { role } : {}),

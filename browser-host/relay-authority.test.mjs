@@ -54,6 +54,13 @@ it.each([
     },
     { membership: "open", defaultManage: "everyone" },
   ],
+  [
+    {
+      supported_extensions: ["nip-mg"],
+      mention_groups: { version: 1, membership: "roster", max_members: 20 },
+    },
+    { membership: "roster", defaultManage: "everyone", maxMembers: 20 },
+  ],
 ])(
   "carries a v1 NIP-MG advertisement to the browser transport: %j",
   async (advertised, support) => {

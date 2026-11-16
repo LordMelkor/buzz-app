@@ -540,7 +540,11 @@ export async function connectBrokerTransport(
     channelKit?: boolean;
     channelIdentity?: boolean;
     searchSort?: boolean;
-    mentionGroups?: { membership?: unknown; defaultManage?: unknown };
+    mentionGroups?: {
+      membership?: unknown;
+      defaultManage?: unknown;
+      maxMembers?: unknown;
+    };
     artifactSync?: boolean;
     sidebarPreferenceWrites?: boolean;
     sidebarSectionRemoval?: boolean;
@@ -886,6 +890,10 @@ export async function connectBrokerTransport(
               session.mentionGroups.defaultManage === "admins"
                 ? ("admins" as const)
                 : ("everyone" as const),
+            ...(Number.isSafeInteger(session.mentionGroups.maxMembers) &&
+            (session.mentionGroups.maxMembers as number) > 0
+              ? { maxMembers: session.mentionGroups.maxMembers as number }
+              : {}),
           },
         }
       : {}),
