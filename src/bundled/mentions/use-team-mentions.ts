@@ -338,7 +338,9 @@ export function useTeamMentions(
               : value.agents.length > 32
                 ? `${kind === "group" ? "Groups" : "Teams"} can mention at most 32 members.`
                 : recipients.length !== value.agents.length
-                  ? `A ${noun} member is unavailable. Edit the ${noun} or refresh choices.`
+                  ? kind === "group"
+                    ? "A group member can't be mentioned here."
+                    : "A team member is unavailable. Edit the team or refresh choices."
                   : undefined;
         const outside = recipients.filter(
           (person) => !eligible.get(person.pubkey)?.member,
