@@ -6,6 +6,7 @@ import { getEventHash } from "nostr-tools";
 import { authTagOwner } from "../agents/owner-attestation";
 import type { EventData, ReadFilter } from "../relay/events";
 import type { RecoverySource, RecoveryStatus } from "../relay/recovery";
+import { PROFILE_PAGE } from "../relay/profile-directory";
 import {
   MENTION_GROUP_KINDS,
   mentionGroupCommand,
@@ -266,10 +267,15 @@ export function projectDirectory(
   const roster = support?.membership === "roster";
   // The predicate the relay enforces: on an open relay every authenticated
   // key belongs; on a roster relay a roster entry or an owner-admitted agent.
+  // Without a roster nobody is known to belong, so nobody is notified.
   const member = (key: string): boolean | undefined =>
-    !roster || !data.roster || data.roster.roles.has(key)
+    !roster
       ? true
-      : admitted(key);
+      : data.roster === undefined
+        ? undefined
+        : data.roster === null
+          ? false
+          : data.roster.roles.has(key) || admitted(key);
   const viewerMember = member(viewer) === true;
   const ready = shown(state);
   const groups = ready
@@ -530,11 +536,18 @@ export function createMentionGroups(deps: MentionGroupDeps) {
     const generation = ownerGeneration;
     void (async () => {
       try {
-        const events = await deps.read(
-          [{ kinds: [0], authors: unknown, limit: unknown.length }],
-          lifetime.signal,
-        );
-        lifetime.signal.throwIfAborted();
+        // Batched like the profile directory, within a relay's authors limit.
+        const events: EventData[] = [];
+        for (let at = 0; at < unknown.length; at += PROFILE_PAGE) {
+          const authors = unknown.slice(at, at + PROFILE_PAGE);
+          events.push(
+            ...(await deps.read(
+              [{ kinds: [0], authors, limit: authors.length }],
+              lifetime.signal,
+            )),
+          );
+          lifetime.signal.throwIfAborted();
+        }
         if (generation !== ownerGeneration) return;
         for (const key of unknown) {
           const profile = events

@@ -173,7 +173,8 @@ newest version of each group from live updates, reads again after every
 reconnect, and never empties on a failed read (`unavailable`, then **Retry**).
 On a `roster` community a group's members are its current roster members and
 owner-admitted agents, and a group waits while that membership is still being
-read, so nothing sends to a partial set.
+read, so nothing sends to a partial set. If the relay publishes no roster,
+groups notify nobody.
 
 `put`, `remove` and `setManage` sign one command (kind `47000` put, `47001`
 delete, `47002` "Who can manage groups") with the group's current version as

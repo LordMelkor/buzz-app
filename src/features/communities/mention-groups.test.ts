@@ -387,6 +387,36 @@ it("rechecks an agent with no owner proof on reconnect", async () => {
   );
 });
 
+it("on a roster relay that publishes no roster, notifies nobody", async () => {
+  const h = harness([head(groupA, 1, "On call", [person, viewer])], {
+    membership: "roster",
+  });
+  await settle();
+  expect(h.snapshot()).toMatchObject({
+    status: "ready",
+    groups: [{ name: "On call", members: [], stored: [person, viewer] }],
+    canEdit: false,
+  });
+});
+
+it("looks up owner proofs in reads the relay's authors limit accepts", async () => {
+  const outsiders = Array.from(
+    { length: 501 },
+    (_, i) => `e${i.toString(16).padStart(63, "0")}`,
+  );
+  const h = harness(
+    [head(groupA, 1, "Everyone", outsiders), roster([[viewer, "member"]])],
+    { membership: "roster" },
+  );
+  await vi.waitFor(() => expect(h.snapshot().groups[0]?.members).toEqual([]));
+  const profileReads = h.reads
+    .flat()
+    .filter((filter) => filter.kinds?.includes(0));
+  expect(profileReads.map((filter) => filter.authors?.length)).toEqual([
+    500, 1,
+  ]);
+});
+
 it("lets any member edit under Everyone, only stewards under admins, and only stewards change the setting", async () => {
   const stewards = roster([
     [admin, "admin"],

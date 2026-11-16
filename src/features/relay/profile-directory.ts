@@ -78,7 +78,7 @@ export interface ProfileQueries {
 
 /** Authors per profile read, the reader's largest page. A page that fills it
  * may have left out authors who do have a profile. */
-const PROFILE_PAGE = 500;
+export const PROFILE_PAGE = 500;
 /** How long a released reservation holds the limit up. */
 const RELEASE_HOLD_MS = 30_000;
 
