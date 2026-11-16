@@ -2501,6 +2501,7 @@ export function createRelaySession(
       put: mentionGroups.put,
       remove: mentionGroups.remove,
       setManage: mentionGroups.setManage,
+      retry: mentionGroups.recovery.retry,
     }),
     presence,
     viewer: transport?.viewer,

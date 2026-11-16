@@ -51,6 +51,11 @@ export function teamBlocksSpace(
 }
 const subscribeNone = () => () => {};
 const snapshotNone = () => empty;
+const snapshotNoGroups = () => undefined;
+const sameKeys = (
+  a: readonly string[] | null | undefined,
+  b: readonly string[] | null | undefined,
+) => !!a && !!b && a.length === b.length && a.every((key, i) => key === b[i]);
 
 /** "1 person, 2 agents": what a team row says it mentions. */
 function teamCount(
@@ -68,7 +73,8 @@ function teamCount(
     .filter(Boolean)
     .join(", ");
 }
-/** Saved teams are shortcuts to exact individual recipients, never new identities. */
+/** Saved teams and community mention groups are shortcuts to exact individual
+ * recipients, never new identities. */
 export function useTeamMentions(
   session: ComposerSession,
   channelId: string,
@@ -94,6 +100,14 @@ export function useTeamMentions(
   useEffect(() => {
     if (open) kit?.ensure();
   }, [kit, open]);
+  // Community mention groups: the session's live directory, read only on a
+  // relay that serves them.
+  const groupSource = fullSession(session)?.mentionGroups;
+  const groupFeed = groupSource?.supported ? groupSource.directory : undefined;
+  const groupDirectory = useSyncExternalStore(
+    groupFeed?.subscribe ?? subscribeNone,
+    groupFeed?.snapshot ?? snapshotNoGroups,
+  );
   // readSaved is a live read at acceptance, not another subscribed store.
   const teams = useMemo(() => {
     // The service owns local persistence and confirmed synced copies. Neither
@@ -101,6 +115,7 @@ export function useTeamMentions(
     void snapshot;
     return [
       ...readSaved().map((team) => ({
+        kind: "team" as const,
         ready: true,
         value: {
           id: `saved:${team.id}`,
@@ -122,6 +137,7 @@ export function useTeamMentions(
         !entry.record.deleted && entry.record.value.type === "team"
           ? [
               {
+                kind: "team" as const,
                 value: entry.record.value,
                 ready: catalog.status === "ready",
                 current: () => {
@@ -141,8 +157,27 @@ export function useTeamMentions(
             ]
           : [],
       ),
+      // A group waits while its membership loads: never a partial set.
+      ...(groupDirectory?.groups ?? []).map((group) => ({
+        kind: "group" as const,
+        ready: group.members !== null,
+        value: {
+          id: `group:${group.id}`,
+          name: group.name,
+          agents: group.members ?? [],
+        },
+        current: () => {
+          const latest = groupFeed
+            ?.snapshot()
+            .groups.find((next) => next.id === group.id);
+          return (
+            latest?.version === group.version &&
+            sameKeys(latest.members, group.members)
+          );
+        },
+      })),
     ];
-  }, [readSaved, snapshot, catalog, kit]);
+  }, [readSaved, snapshot, catalog, kit, groupDirectory, groupFeed]);
   const hasTeams = open && teams.length > 0;
   useEffect(() => {
     if (!hasTeams) return;
@@ -288,21 +323,22 @@ export function useTeamMentions(
     const current = open && rows?.length ? candidates() : [];
     const eligible = new Map(current.map((c) => [c.recipient.pubkey, c]));
     const choices = (open ? (rows ?? []) : []).map(
-      ({ value, current, members }) => {
+      ({ kind, value, current, members }) => {
+        const noun = kind === "group" ? "group" : "team";
         const recipients = value.agents.flatMap((key) => {
           const person = eligible.get(key)?.recipient;
           return person ? [{ pubkey: person.pubkey, name: person.name }] : [];
         });
         const disabled = !current()
-          ? "Team changed or unavailable. Reopen to refresh."
+          ? `${kind === "group" ? "Group" : "Team"} changed or unavailable. Reopen to refresh.`
           : members.some((key) => !eligible.get(key)?.member)
-            ? "Channel membership changed. Reopen to review adding this team."
+            ? `Channel membership changed. Reopen to review adding this ${noun}.`
             : !value.agents.length
-              ? "This team has no members."
+              ? `This ${noun} has no members.`
               : value.agents.length > 32
-                ? "Teams can mention at most 32 members."
+                ? `${kind === "group" ? "Groups" : "Teams"} can mention at most 32 members.`
                 : recipients.length !== value.agents.length
-                  ? "A team member is unavailable. Edit the team or refresh choices."
+                  ? `A ${noun} member is unavailable. Edit the ${noun} or refresh choices.`
                   : undefined;
         const outside = recipients.filter(
           (person) => !eligible.get(person.pubkey)?.member,
@@ -324,7 +360,10 @@ export function useTeamMentions(
           disabled,
           detail:
             disabled ??
-            [`Saved team · ${teamCount(recipients, eligible)}`, consequence]
+            [
+              `${kind === "group" ? "Group" : "Saved team"} · ${teamCount(recipients, eligible)}`,
+              consequence,
+            ]
               .filter(Boolean)
               .join(" · "),
           canSelect: () => {
@@ -348,20 +387,35 @@ export function useTeamMentions(
     const names = [
       ...new Set([...teams, ...(rows ?? [])].map(({ value }) => value.name)),
     ];
+    const groupsFailed = open && groupDirectory?.status === "unavailable";
     return {
       choices,
       includeLegacy: hasTeams,
       names,
       blocksSpace: teamBlocksSpace(catalog, query, names),
-      readNames: () => readSaved().map((team) => team.name),
+      readNames: () => [
+        ...readSaved().map((team) => team.name),
+        ...(groupFeed?.snapshot().groups.map((group) => group.name) ?? []),
+      ],
       status:
         open && (catalog.status === "idle" || catalog.status === "loading")
           ? "Loading legacy teams…"
           : open && catalog.status === "error"
             ? "Could not load legacy teams. Retry to refresh."
-            : undefined,
-      canRetry: open && catalog.status === "error",
-      retry: () => void kit?.refresh(),
+            : open && groupDirectory?.status === "loading"
+              ? "Loading groups…"
+              : groupsFailed
+                ? "Could not load groups. Retry to refresh."
+                : undefined,
+      canRetry: (open && catalog.status === "error") || groupsFailed,
+      retryLabel:
+        open && catalog.status === "error"
+          ? "Retry legacy teams"
+          : "Retry groups",
+      retry: () => {
+        void kit?.refresh();
+        if (groupDirectory?.status === "unavailable") groupSource?.retry();
+      },
     };
   }, [
     session,
@@ -379,5 +433,8 @@ export function useTeamMentions(
     readSaved,
     owner,
     memberKeys,
+    groupDirectory,
+    groupFeed,
+    groupSource,
   ]);
 }

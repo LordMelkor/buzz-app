@@ -1548,3 +1548,166 @@ it("projects confirmed synced teams through the real service without colliding w
     await h.context.fiber.dispose();
   }
 });
+
+type GroupDirectory = ReturnType<
+  RelaySession["mentionGroups"]["directory"]["snapshot"]
+>;
+type GroupView = GroupDirectory["groups"][number];
+
+/** A community mention group directory on the fixture's session. */
+function withGroups(
+  h: ReturnType<typeof fixture>,
+  groups: readonly GroupView[],
+  status: GroupDirectory["status"] = "ready",
+) {
+  const directory = (next: readonly GroupView[], now = status) =>
+    ({
+      status: now,
+      groups: next,
+      membership: "open",
+      manage: "everyone",
+      settingVersion: "0",
+      canEdit: true,
+      canManage: true,
+    }) satisfies GroupDirectory;
+  let view: GroupDirectory = directory(groups);
+  const listeners = new Set<() => void>();
+  const retry = vi.fn();
+  Object.assign(h.session, {
+    mentionGroups: {
+      supported: true,
+      directory: {
+        snapshot: () => view,
+        subscribe(listener: () => void) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      retry,
+    },
+  });
+  return {
+    retry,
+    set(next: readonly GroupView[], now = status) {
+      act(() => {
+        view = directory(next, now);
+        for (const listener of listeners) listener();
+      });
+    },
+  };
+}
+const groupView = (
+  members: readonly string[] | null,
+  version = "1",
+  name = "Risk",
+): GroupView => ({
+  id: "6f1d6c1e-8a4b-4c55-9b0e-2f3a4b5c6d7e",
+  version,
+  name,
+  members,
+  stored: members ?? [],
+  channels: [],
+  command: "c".repeat(64),
+});
+const groupRow = (menu: ReturnType<typeof inline>) =>
+  menu
+    .result()
+    ?.items.find(
+      (i) => i.id === "team:group:6f1d6c1e-8a4b-4c55-9b0e-2f3a4b5c6d7e",
+    );
+
+it("a community group is one row that inserts one group chip and blocks Space", async () => {
+  const h = fixture({ count: 2, team: 1 });
+  const person = h.people[1];
+  if (!person) throw new Error("Fixture needs a person");
+  const groups = withGroups(h, [groupView([h.agent.pubkey, person.pubkey])]);
+  const menu = inline(h.session);
+  try {
+    await waitFor(() =>
+      expect(groupRow(menu)?.canSelect?.("Enter")).toBe(true),
+    );
+    expect(groupRow(menu)?.detail).toBe("Group · 1 person, 1 agent");
+    expect(groupRow(menu)?.edit).toEqual({
+      group: { name: "Risk", mentions: [h.agent, person] },
+    });
+    // Space after a name that a group continues never auto-selects the person.
+    menu.view.rerender(
+      <MentionCompletion
+        {...menu.props}
+        query={{ start: 0, end: 10, query: "Person 01" }}
+      />,
+    );
+    const personRow = () =>
+      menu.result()?.items.find((i) => i.id === person.pubkey);
+    await waitFor(() => expect(personRow()?.canSelect?.(" ")).toBe(true));
+    groups.set([
+      groupView([h.agent.pubkey, person.pubkey], "2", "Person 01 crew"),
+    ]);
+    await waitFor(() => expect(personRow()?.canSelect?.(" ")).toBe(false));
+    expect(personRow()?.canSelect?.("Enter")).toBe(true);
+  } finally {
+    menu.view.unmount();
+    h.library.dispose();
+  }
+});
+
+it("a group waits while its membership loads and is disabled once it has no members", async () => {
+  const h = fixture({ count: 2, team: 1 });
+  const groups = withGroups(h, [groupView(null)]);
+  const menu = inline(h.session);
+  try {
+    await waitFor(() => expect(menu.team()).toBeDefined());
+    expect(groupRow(menu)).toBeUndefined();
+    groups.set([groupView([], "2")]);
+    await waitFor(() =>
+      expect(groupRow(menu)?.disabled).toBe("This group has no members."),
+    );
+    expect(groupRow(menu)?.edit).toEqual({ text: "@Risk" });
+  } finally {
+    menu.view.unmount();
+    h.library.dispose();
+  }
+});
+
+it("a group that changes after its row shows can't be picked until the chooser reopens", async () => {
+  const h = fixture({ count: 2, team: 1 });
+  const person = h.people[1];
+  if (!person) throw new Error("Fixture needs a person");
+  const groups = withGroups(h, [groupView([h.agent.pubkey, person.pubkey])]);
+  const menu = inline(h.session);
+  try {
+    await waitFor(() =>
+      expect(groupRow(menu)?.canSelect?.("Enter")).toBe(true),
+    );
+    const shown = groupRow(menu);
+    // A member left the community: same version, fewer current members.
+    groups.set([groupView([h.agent.pubkey])]);
+    expect(shown?.canSelect?.("Enter")).toBe(false);
+    await waitFor(() =>
+      expect(groupRow(menu)?.disabled).toBe(
+        "Group changed or unavailable. Reopen to refresh.",
+      ),
+    );
+  } finally {
+    menu.view.unmount();
+    h.library.dispose();
+  }
+});
+
+it("a failed group directory says so and Retry rereads it", async () => {
+  const h = fixture({ count: 2, team: 1 });
+  const groups = withGroups(h, [], "unavailable");
+  const menu = inline(h.session);
+  try {
+    await waitFor(() =>
+      expect(menu.result()?.status).toBe(
+        "Could not load groups. Retry to refresh.",
+      ),
+    );
+    act(() => menu.result()?.retry?.());
+    expect(groups.retry).toHaveBeenCalledOnce();
+  } finally {
+    menu.view.unmount();
+    h.library.dispose();
+  }
+});
