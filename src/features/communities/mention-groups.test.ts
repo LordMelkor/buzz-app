@@ -10,6 +10,7 @@ const removed = "4".repeat(64);
 const agent = "5".repeat(64);
 const groupA = "0659678f-fddb-40df-a285-35f6b41db019";
 const groupB = "1b0e8c2a-3f4d-4c5e-9a6b-7c8d9e0f1a2b";
+const plainId = "00000000-0000-0000-0000-000000000001";
 let sequence = 0;
 const id = () => (++sequence).toString(16).padStart(64, "0");
 
@@ -130,7 +131,8 @@ function harness(
       });
     },
     async send(body) {
-      sent.push(body);
+      // A copy at dispatch, so a later change to the body would show.
+      sent.push(JSON.parse(JSON.stringify(body)));
       return (options.send?.(body) ?? {
         accepted: true,
         event_id: "x",
@@ -183,6 +185,9 @@ it("pages every head before showing groups, newest version per group, and keeps 
     head(groupA, 1, "Old name", [person]),
     head(groupA, 3, "On call", [person, admin]),
     head(groupB, 1, "Design", [person], [], 1003),
+    // Any canonical non-nil UUID is a group id, as on the relay.
+    head(plainId, 1, "Plain", [person], [], 1004),
+    head("00000000-0000-0000-0000-000000000000", 1, "Nil", [person], [], 1005),
     tombstone("2e9b7c3d-1a2b-4c3d-8e4f-5a6b7c8d9e0f", 2),
     // Malformed: one bad head is dropped and the rest stay.
     { ...head(groupB, 9, "", [person]), tags: [["d", groupB]] },
@@ -196,6 +201,7 @@ it("pages every head before showing groups, newest version per group, and keeps 
     groups: [
       { id: groupB, name: "Design", members: [person] },
       { id: groupA, name: "On call", version: "3", members: [person, admin] },
+      { id: plainId, name: "Plain" },
     ],
   });
   expect(h.owner.recovery.status()).toBe("settled");
@@ -337,6 +343,50 @@ it("on a roster relay offers only current members and owner-admitted agents", as
   expect(open.snapshot().groups[0]?.members).toEqual([person, removed]);
 });
 
+it("rechecks an agent with no owner proof on reconnect", async () => {
+  // NIP-OA test vector, as above: the owner is a roster member.
+  const owner =
+    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+  const later =
+    "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
+  const profiles: EventData[] = [];
+  const h = harness(
+    [
+      head(groupA, 1, "On call", [person, later]),
+      roster([
+        [person, "member"],
+        [owner, "member"],
+      ]),
+    ],
+    { membership: "roster", profiles },
+  );
+  await vi.waitFor(() =>
+    expect(h.snapshot().groups[0]?.members).toEqual([person]),
+  );
+  // The agent publishes its owner's proof after the first lookup.
+  profiles.push({
+    id: id(),
+    pubkey: later,
+    kind: 0,
+    created_at: 1,
+    content: "{}",
+    tags: [
+      [
+        "auth",
+        owner,
+        "kind=1&created_at<1713957000",
+        "8b7df2575caf0a108374f8471722b233c53f9ff827a8b0f91861966c3b9dd5cb2e189eae9f49d72187674c2f5bd244145e10ff86c9f257ffe65a1ee5f108b369",
+      ],
+    ],
+  });
+  h.reconnect();
+  // The old answer stands while the recheck runs; the group never waits.
+  expect(h.snapshot().groups[0]?.members).toEqual([person]);
+  await vi.waitFor(() =>
+    expect(h.snapshot().groups[0]?.members).toEqual([person, later]),
+  );
+});
+
 it("lets any member edit under Everyone, only stewards under admins, and only stewards change the setting", async () => {
   const stewards = roster([
     [admin, "admin"],
@@ -389,10 +439,13 @@ it("resends the same event after an unknown outcome and types each relay answer"
     prev: "0",
     name: "On call",
     members: [person],
-    channels: [],
+    channels: [] as string[],
   };
   const lost = await h.owner.put(input);
   expect(lost).toMatchObject({ outcome: "unknown" });
+  // The caller's later edits don't change the event a retry sends.
+  input.members.push(admin);
+  input.channels.push("general");
   answer = () => Promise.resolve({ accepted: true, event_id: lost.eventId });
   h.tick(30);
   const retried = await lost.retry?.();

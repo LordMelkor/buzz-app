@@ -483,8 +483,7 @@ fn valid_mention_group_command(event: &EventTemplate) -> bool {
                 8 | 13 | 18 | 23 => *byte == b'-',
                 _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(byte),
             })
-            && (b'1'..=b'8').contains(&bytes[14])
-            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+            && bytes.iter().any(|byte| !matches!(*byte, b'0' | b'-'))
     };
     let version = |value: &str| {
         !value.is_empty()

@@ -11,6 +11,7 @@ import {
   mentionGroupCommand,
   mentionGroupName,
   type MentionGroupSupport,
+  isMentionGroupId,
 } from "./admin-protocol";
 import { MEMBERSHIP_KIND, membersFromSnapshot, type Role } from "./roster";
 
@@ -90,8 +91,6 @@ export function reduceDirectory(
   }
 }
 
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const VERSION = /^(?:0|[1-9][0-9]{0,18})$/;
 const KEY = /^[0-9a-f]{64}$/;
 const ID = /^[0-9a-f]{64}$/;
@@ -118,7 +117,7 @@ export function parseState(
       : undefined;
   }
   const command = single(event, "command");
-  if (!UUID.test(d) || !command || !ID.test(command)) return undefined;
+  if (!isMentionGroupId(d) || !command || !ID.test(command)) return undefined;
   const deleted = event.tags.some(
     ([name, value]) => name === "deleted" && value === "true",
   );
@@ -412,6 +411,11 @@ export function createMentionGroups(deps: MentionGroupDeps) {
   // Owner-admitted agents outside the roster, by key: owner key or null.
   const owners = new Map<string, string | null>();
   const looking = new Set<string>();
+  // Every reconcile rechecks negative answers, so a key that later proves its
+  // owner is admitted; the old answer stands until then. A lookup from an
+  // earlier reconcile is dropped.
+  const recheck = new Set<string>();
+  let ownerGeneration = 0;
   let lookupFailed = false;
   const repaired = new Set<string>();
   let reading: Promise<void> | undefined;
@@ -446,6 +450,9 @@ export function createMentionGroups(deps: MentionGroupDeps) {
       again = true;
       return;
     }
+    ownerGeneration++;
+    looking.clear();
+    for (const [key, owner] of owners) if (owner === null) recheck.add(key);
     dispatch({ type: "read" });
     reading = (async () => {
       try {
@@ -513,10 +520,14 @@ export function createMentionGroups(deps: MentionGroupDeps) {
         [...state.data.heads.values()].flatMap((head) => head.members),
       ),
     ].filter(
-      (key) => !roster.roles.has(key) && !owners.has(key) && !looking.has(key),
+      (key) =>
+        !roster.roles.has(key) &&
+        (!owners.has(key) || recheck.has(key)) &&
+        !looking.has(key),
     );
     if (!unknown.length) return;
     for (const key of unknown) looking.add(key);
+    const generation = ownerGeneration;
     void (async () => {
       try {
         const events = await deps.read(
@@ -524,25 +535,28 @@ export function createMentionGroups(deps: MentionGroupDeps) {
           lifetime.signal,
         );
         lifetime.signal.throwIfAborted();
+        if (generation !== ownerGeneration) return;
         for (const key of unknown) {
           const profile = events
             .filter((event) => event.kind === 0 && event.pubkey === key)
             .sort(newest)[0];
           const [tag, ...extra] =
             profile?.tags.filter(([name]) => name === "auth") ?? [];
-          owners.set(
-            key,
+          const owner =
             tag && !extra.length
               ? ((await authTagOwner(key, tag)) ?? null)
-              : null,
-          );
+              : null;
+          if (generation !== ownerGeneration) return;
+          owners.set(key, owner);
+          recheck.delete(key);
         }
         lookupFailed = false;
       } catch {
-        if (lifetime.signal.aborted) return;
+        if (lifetime.signal.aborted || generation !== ownerGeneration) return;
         lookupFailed = true;
       } finally {
-        for (const key of unknown) looking.delete(key);
+        if (generation === ownerGeneration)
+          for (const key of unknown) looking.delete(key);
       }
       publish();
     })();
@@ -674,7 +688,15 @@ export function createMentionGroups(deps: MentionGroupDeps) {
       name: string;
       members: readonly string[];
       channels: readonly string[];
-    }) => command({ action: "put", ...input, created_at: now() }),
+    }) =>
+      // Copy the arrays so a later edit by the caller can't change a retry.
+      command({
+        action: "put",
+        ...input,
+        members: [...input.members],
+        channels: [...input.channels],
+        created_at: now(),
+      }),
     remove: (input: { id: string; prev: string }) =>
       command({ action: "remove", ...input, created_at: now() }),
     setManage: (input: { manage: ManageSetting; prev: string }) =>

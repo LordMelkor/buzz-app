@@ -116,8 +116,11 @@ export const MENTION_GROUP_KINDS = Object.freeze({
   manage: 47002,
   state: 39010,
 });
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** The relay's group id rule (NIP-MG): canonical lowercase UUID, not nil. */
+export const isMentionGroupId = (value: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+    value,
+  ) && value !== "00000000-0000-0000-0000-000000000000";
 const VERSION = /^(?:0|[1-9][0-9]{0,18})$/;
 const KEY = /^[0-9a-f]{64}$/;
 const CHANNEL = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -209,7 +212,7 @@ export function mentionGroupCommand(
       ],
     };
   }
-  if (typeof body.id !== "string" || !UUID.test(body.id))
+  if (typeof body.id !== "string" || !isMentionGroupId(body.id))
     throw new Error("Invalid group");
   if (action === "remove")
     return {

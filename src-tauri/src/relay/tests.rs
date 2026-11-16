@@ -225,6 +225,12 @@ fn mention_group_commands_sign_only_the_broker_shape() {
         command(47001, "", &[d, prev]),
         command(47002, "", &[&["manage", "admins"], &["prev", "0"]]),
         command(47002, "", &[&["manage", "everyone"], prev]),
+        // Any canonical non-nil UUID, as the relay accepts (NIP-MG).
+        command(
+            47001,
+            "",
+            &[&["d", "00000000-0000-0000-0000-000000000001"], prev],
+        ),
     ] {
         assert!(validate_event("https://relay.test", &accepted).is_ok());
     }
@@ -240,6 +246,11 @@ fn mention_group_commands_sign_only_the_broker_shape() {
         command(47000, "", &[d, &["prev", "-1"], name]),
         command(47000, "", &[&["d", "not-a-uuid"], prev, name]),
         command(47000, "", &[&["d", &id.to_uppercase()], prev, name]),
+        command(
+            47001,
+            "",
+            &[&["d", "00000000-0000-0000-0000-000000000000"], prev],
+        ),
         // Members come before channels, once each, as lowercase keys.
         command(47000, "", &[d, prev, name, channel, p]),
         command(47000, "", &[d, prev, name, p, p]),
