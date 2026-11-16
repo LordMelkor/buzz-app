@@ -1711,3 +1711,55 @@ it("a failed group directory says so and Retry rereads it", async () => {
     h.library.dispose();
   }
 });
+
+it("a group created during a pending Space directory read blocks its namesake", async () => {
+  const h = fixture();
+  const groups = withGroups(h, []);
+  let release!: (value: {
+    people: { pubkey: string; name: string }[];
+    hasMore: boolean;
+  }) => void;
+  const started = vi.fn();
+  vi.spyOn(h.session.directMessages, "people").mockImplementation(async () => {
+    started();
+    return new Promise((resolve) => {
+      release = resolve;
+    });
+  });
+  const model = {
+    pending: false,
+    channel: h.session.channels.list().channels[0],
+  } as ReturnType<typeof useMentionChoices>;
+  const hook = renderHook(() =>
+    useTeamMentions(h.session, "parent", false, "Review Crew", model),
+  );
+  const resolve = async (name: string, during: () => void) => {
+    started.mockClear();
+    const result = resolveSpaceMention(
+      h.session,
+      {
+        channelId: "parent",
+        selected: [],
+        teamNames: hook.result.current.readNames,
+      },
+      name,
+      new AbortController().signal,
+    );
+    await waitFor(() => expect(started).toHaveBeenCalledOnce());
+    during();
+    release({ people: [{ pubkey: "e".repeat(64), name }], hasMore: false });
+    return result;
+  };
+  try {
+    // Without a group the person resolves; a group saved mid-read blocks it.
+    expect(await resolve("Review Crew", () => {})).not.toBeNull();
+    expect(
+      await resolve("Design Crew", () =>
+        groups.set([groupView([h.agent.pubkey], "1", "Design Crew")]),
+      ),
+    ).toBeNull();
+  } finally {
+    hook.unmount();
+    h.library.dispose();
+  }
+});

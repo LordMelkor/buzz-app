@@ -2731,8 +2731,10 @@ it("adds a team's members not in the channel with one button", async () => {
 
 it("adds a community group's members not in the channel with one button", async () => {
   const t = await setup("stream", false, false, undefined, undefined, {
+    archivedAgent: true,
     mentionGroups: {
-      Reviewers: ({ person, viewer }) => [viewer, person],
+      // The archived agent is skipped, as the individual rows skip it.
+      Reviewers: ({ person, viewer }) => [viewer, person, "ab".repeat(32)],
       Everyone: ({ viewer }) => [viewer],
     },
   });

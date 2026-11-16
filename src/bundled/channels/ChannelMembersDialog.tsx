@@ -1634,7 +1634,11 @@ export function ChannelMembersDialog({
   const mentionGroups = (
     solo || !text ? [] : (groupDirectory?.groups ?? [])
   ).flatMap((group) => {
-    const missing = group.members?.filter((key) => !members.has(key)) ?? [];
+    // Members added in one turn share one batched write.
+    const missing =
+      group.members?.filter(
+        (key) => !members.has(key) && !agentUnavailable(session, key),
+      ) ?? [];
     return missing.length && matchPerson(group.name, query)
       ? [{ group, missing }]
       : [];
