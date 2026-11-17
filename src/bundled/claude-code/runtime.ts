@@ -91,6 +91,13 @@ import {
 } from "./transcript";
 import { sessionPrompts } from "../../features/agents/session-prompts";
 import { standaloneSessions } from "../../features/agents/standalone-sessions";
+import { ClaudeProcess } from "./claude";
+import { configuredMcp, MCP_NOTE, nativeMcpGate } from "./mcp";
+import type {
+  HarnessMcpAnswer,
+  HarnessMcpKit,
+  HarnessMcpServer,
+} from "../../features/agents/harness-mcp";
 
 /** The effort levels Claude lists, which a session can switch to between
  * turns. Claude runs `max` as `xhigh` in a stream-json session, so it is not
@@ -144,6 +151,7 @@ const CONVERSATION_READ_TIMEOUT_MS = 4_000;
 const CHAT = [9, 40002];
 
 type Entry = {
+  mcpChoice?: HarnessMcpAnswer;
   protected?: boolean;
   sessions: AgentSessions;
   config: Config;
@@ -198,6 +206,13 @@ const listing = (added: readonly AddedTool[]): Listing => ({
 const NOTES_WAIT_MS = 2_000;
 
 export class ClaudeRuntime {
+  mcp: HarnessMcpKit | undefined;
+  private readonly mcpRows = new Map<AgentKey, readonly HarnessMcpServer[]>();
+  private readonly inspections = new Map<
+    AbortController,
+    { agent: AgentKey; done: Promise<unknown> }
+  >();
+  private mcpWarm = 0;
   private disposed = false;
   private readonly confirmedRemote = new Set<AgentKey>();
   private readonly remote = new Map<
@@ -243,7 +258,10 @@ export class ClaudeRuntime {
   );
 
   constructor(
-    private readonly host: Pick<Host, "spawn" | "resolveDirectory">,
+    private readonly host: Pick<
+      Host,
+      "spawn" | "readFile" | "resolveDirectory"
+    >,
     /** What each agent's turns read of its community, while it can be read. */
     private readonly reads: (key: AgentKey) => AgentReads | undefined,
     /** The agent's `core` memory as the host keeps it (`Agents.core`). */
@@ -277,6 +295,116 @@ export class ClaudeRuntime {
   /** A failed turn's error as its report says it, such as where to fix
    * Claude's credentials. */
   explain: (error: string) => string = (error) => error;
+
+  private rememberMcp(agent: AgentKey, servers: readonly HarnessMcpServer[]) {
+    this.mcpRows.set(agent, [
+      ...new Map(
+        [...(this.mcpRows.get(agent) ?? []), ...servers].map((server) => [
+          server.name,
+          server,
+        ]),
+      ).values(),
+    ]);
+  }
+
+  async harnessMcp(agent: Agent) {
+    if (this.target || (await this.isRemote(agent.key))) return undefined;
+    if (agent.protection)
+      return {
+        tools: true,
+        note: "A protected agent loads no MCP server.",
+        servers: [],
+      };
+    const cwd = this.resolveConfig(agent.config).workspace;
+    const path = (await this.host.resolveDirectory?.(cwd)) ?? cwd;
+    return {
+      tools: true,
+      ...(this.mcp && this.host.spawn && { calls: true as const }),
+      note: MCP_NOTE,
+      servers: await configuredMcp(
+        this.host.readFile?.bind(this.host),
+        path,
+        this.mcpRows.get(agent.key),
+      ),
+    };
+  }
+  inspectMcp(
+    agent: Agent,
+    server: string,
+    signal = AbortSignal.timeout(15_000),
+  ) {
+    if (this.disposed || this.retirements.has(agent.key))
+      return Promise.reject(
+        new Error(this.disposed ? "Claude was stopped" : "Claude is retired"),
+      );
+    const abort = new AbortController();
+    const lifetime = AbortSignal.any([abort.signal, signal]);
+    // Register before configuration or spawning can yield to retirement.
+    const done = Promise.resolve()
+      .then(() => this.inspectTools(agent, server, lifetime))
+      .finally(() => this.inspections.delete(abort));
+    this.inspections.set(abort, { agent: agent.key, done });
+    return done;
+  }
+  private async inspectTools(
+    agent: Agent,
+    server: string,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const report = await this.harnessMcp(agent);
+    signal.throwIfAborted();
+    const selectedServer = report?.servers.find((row) => row.name === server);
+    if (agent.protection || !report || !selectedServer)
+      throw new Error("This agent cannot inspect that MCP server");
+    if (!selectedServer.default)
+      throw new Error(
+        "Enable this MCP server in Claude before inspecting its tools",
+      );
+    let process: ClaudeProcess | undefined;
+    const abort = () => void process?.kill().catch(() => undefined);
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      signal.throwIfAborted();
+      const cwd = this.resolveConfig(agent.config).workspace;
+      process = await ClaudeProcess.spawn(this.spawn, {
+        cwd,
+        mcp: {
+          choice: {},
+          servers: report.servers,
+          inspect: server,
+          started: () => {},
+        },
+      });
+      signal.throwIfAborted();
+      await process.initialize({
+        systemPrompt: "",
+        mcp: {
+          choice: {},
+          servers: report.servers,
+          inspect: server,
+          started: () => {},
+        },
+      });
+      signal.throwIfAborted();
+      const { servers } = await process.readMcp();
+      signal.throwIfAborted();
+      this.rememberMcp(agent.key, servers);
+      const selected = servers.find((row) => row.name === server);
+      if (selected?.state !== "connected")
+        throw new Error("The selected MCP server did not connect");
+      return selected.tools ?? [];
+    } finally {
+      signal.removeEventListener("abort", abort);
+      if (process) {
+        try {
+          await process.kill();
+        } finally {
+          await process.exited;
+        }
+      }
+    }
+  }
 
   private executionKey(agent: AgentKey, conversation: string) {
     const scope = this.reads(agent)?.scope;
@@ -470,14 +598,20 @@ export class ClaudeRuntime {
       retiring = (async () => {
         const entry = this.agents.get(pubkey);
         this.agents.delete(pubkey);
+        const inspections = [...this.inspections].filter(
+          ([, action]) => action.agent === pubkey,
+        );
+        for (const [abort] of inspections)
+          abort.abort(new Error("Claude is retired"));
         for (const pending of this.opening.values())
           if (pending.agent === pubkey)
             pending.abort.abort(new Error("Claude is retired"));
-        await Promise.allSettled(
-          [...this.opening.values()]
+        await Promise.allSettled([
+          ...inspections.map(([, action]) => action.done),
+          ...[...this.opening.values()]
             .filter((item) => item.agent === pubkey)
             .map((item) => item.ready),
-        );
+        ]);
         await entry?.sessions.shutdown();
         const cleaned = await Promise.allSettled(
           [...this.remote]
@@ -536,16 +670,29 @@ export class ClaudeRuntime {
     }
     for (const remote of this.remote.values())
       remote.runtime.sync(agents.filter((agent) => agent.key === remote.agent));
-    this.spare.warm(
-      ...agents
-        .filter(
-          (agent) =>
-            !agent.protection &&
-            !this.target &&
-            !(this.bound(agent.key) || this.confirmedRemote.has(agent.key)),
-        )
-        .map((agent) => where(this.resolveConfig(agent.config))),
+    const candidates = agents.filter(
+      (agent) =>
+        !agent.protection &&
+        !this.target &&
+        !(this.bound(agent.key) || this.confirmedRemote.has(agent.key)),
     );
+    if (!this.mcp)
+      this.spare.warm(
+        ...candidates.map((agent) => where(this.resolveConfig(agent.config))),
+      );
+    else {
+      const generation = ++this.mcpWarm;
+      void Promise.all(
+        candidates.map(async (agent) =>
+          (await this.mcp?.choice({ key: agent.key })) === undefined
+            ? where(this.resolveConfig(agent.config))
+            : undefined,
+        ),
+      ).then((places) => {
+        if (!this.disposed && generation === this.mcpWarm)
+          this.spare.warm(...places.filter((place) => place !== undefined));
+      });
+    }
     this.notify();
   }
 
@@ -935,6 +1082,9 @@ export class ClaudeRuntime {
 
   dispose() {
     this.disposed = true;
+    const inspections = [...this.inspections];
+    for (const [abort] of inspections)
+      abort.abort(new Error("Claude was stopped"));
     for (const pending of this.opening.values())
       pending.abort.abort(new Error("Claude was stopped"));
     for (const held of this.remote.values()) {
@@ -948,6 +1098,9 @@ export class ClaudeRuntime {
     this.spare.dispose();
     for (const entry of this.agents.values()) entry.sessions.dispose();
     this.agents.clear();
+    return Promise.allSettled(
+      inspections.map(([, action]) => action.done),
+    ).then(() => undefined);
   }
 
   async run(delivery: Delivery): Promise<void> {
@@ -1165,6 +1318,7 @@ export class ClaudeRuntime {
                   }),
           });
           delivered = entry.sessions.deliver(key, text, event.created_at, {
+            admitting: () => ({ trigger }),
             current: () => !interrupted && (!current || current()),
             ...(wake
               ? {
@@ -1332,7 +1486,9 @@ export class ClaudeRuntime {
     if (refused) return { ok: false, error: refused };
     // Its new process launches on the core memory read now.
     entry.memory = await this.core(agent.key);
-    const done = entry.sessions.runOnce(key, prompt, signal);
+    const done = entry.sessions.runOnce(key, prompt, signal, () => ({
+      trigger: delivery.trigger,
+    }));
     this.notify();
     return done.finally(() => this.notify());
   }
@@ -1660,6 +1816,12 @@ export class ClaudeRuntime {
           );
       },
       onChange: () => this.notify(),
+      prepare: async () => {
+        entry.mcpChoice =
+          !this.target && this.mcp && entry.handle
+            ? await this.mcp.choice(entry.handle)
+            : undefined;
+      },
       fingerprint: (key) =>
         JSON.stringify([
           key ? (entry.directories.get(key) ?? []) : [],
@@ -1674,6 +1836,7 @@ export class ClaudeRuntime {
           entry.memory,
           addedKey(this.added(agent)),
           this.credentials,
+          entry.mcpChoice,
         ]),
       launch: async (key) => {
         const { workspace, instructions, scope } = entry.config;
@@ -1700,9 +1863,42 @@ export class ClaudeRuntime {
         const directories = home ? [home, ...(shared ?? [])] : shared;
         const cwd = folder || workspace;
         const handle = entry.handle;
+        const choice =
+          !this.target && this.mcp && handle
+            ? await this.mcp.choice(handle)
+            : undefined;
+        entry.mcpChoice = choice;
+        const servers =
+          choice !== undefined && choice !== "none"
+            ? await configuredMcp(
+                this.host.readFile?.bind(this.host),
+                (await this.host.resolveDirectory?.(cwd)) ?? cwd,
+                this.mcpRows.get(agent),
+              )
+            : [];
         return {
           ...where(entry.config),
           cwd,
+          ...(choice !== undefined && this.mcp && handle
+            ? {
+                mcp: {
+                  choice,
+                  servers,
+                  ...nativeMcpGate(this.mcp, handle),
+                  started: (
+                    session: string,
+                    loaded: import("../../features/agents/harness-mcp").HarnessMcpLoaded,
+                    applied:
+                      | import("../../features/agents/harness-mcp").HarnessMcpChoice
+                      | "none",
+                    servers: readonly HarnessMcpServer[],
+                  ) => {
+                    this.rememberMcp(agent, servers);
+                    this.mcp?.started(handle, session, loaded, applied);
+                  },
+                },
+              }
+            : {}),
           ...(gate
             ? {
                 protection: {

@@ -61,3 +61,20 @@ A type declares `harnessMcp: { report(agent), inspect?(agent, server) }`, or `ha
 - The report and choices accept configured MCP extensions only. The built-in Summon/delegate platform extension stays excluded even if a choice names it. Goose children inherit MCP servers without forwarding their ordinary call or result events to the parent, so Buzz cannot gate them.
 - Permission requests have a 120-second hold budget and receive an explicit allow-once, reject-once or cancelled response. Native preallowed calls can skip that request, so completed results also feed the execution backstop. Native `never_allow` metadata remains local to the session: a failed result without an approval request is reported as rejected. Permission rejections and unavailable-tool responses are distinguished from errors after execution.
 - Inspection opens a separate process with only the selected native extension, lists its tools and stops the process on every exit path. It makes no model turn or tool call; Goose's provider may refresh its model catalog during setup.
+
+### Claude Code
+
+- Reports read names from the user's `.claude.json`, its entry for the agent's workspace, the workspace's `.mcp.json`, and metadata retained from that agent's sessions. Project servers that Claude has not approved are off by default. Servers from other sources appear after the agent's next session; reporting starts no server.
+- Controlled launches apply server denies and per-tool permission denies without changing native configuration. A changed choice replaces the conversation's process before its next turn; controlled sessions do not take an uncontrolled spare. With no control, ordinary launches keep their existing arguments and defaults.
+- Model discovery uses a temporary safe-mode process for every agent, including
+  without a control. It disables tools, native MCP, session persistence and
+  workspace instruction loading. It retains native model and effort defaults and
+  explicit agent model/effort choices; it does not send a model turn.
+- Read-back uses `mcp_status` for server metadata and `get_context_usage` for the admitted tools. The discovered catalog can still contain denied tools. Tool choices and core callbacks keep the catalog names (such as `search.docs`); native permission rules use Claude’s normalized names (such as `search_docs`). An admitted tool with no unique catalog identity stops the session before a turn. An unexpected server can already have started before read-back stops the session.
+- Native permission requests use `permissions.ask` and the stdio `can_use_tool` callback, with a 120-second hold budget. Denial or cancellation explicitly rejects the request. Results, including child-agent results and native preallowed calls, feed the execution backstop; native permission rejections and unavailable-tool responses are distinguished from errors after execution.
+- Inspection requires the selected server to be enabled in Claude's native
+  configuration, including native project approval, before starting a process.
+  It denies every other known server, checks for unexpected servers before
+  returning tools, and stops its process on success, error or cancellation. It
+  makes no model turn or tool call. Protected and helper launches keep strict MCP
+  configuration; execution targets keep their host's behavior.

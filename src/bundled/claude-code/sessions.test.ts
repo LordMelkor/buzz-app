@@ -323,13 +323,25 @@ it("continues a conversation in its own process, apart from others", async () =>
 
 it("steers a conversation that is still working instead of queueing", async () => {
   const { pool, claudes } = sessions({ hold: true });
-  const first = pool.deliver("c/root", "first", 1);
+  const admitted: [boolean, number][] = [];
+  const admitting = (steered: boolean) => {
+    admitted.push([steered, claudes()[0]?.prompts.length ?? 0]);
+    return undefined;
+  };
+  const first = pool.deliver("c/root", "first", 1, { admitting });
   await flush();
   const process = claudes()[0];
   if (!process) throw new Error("no process");
-  const second = pool.deliver("c/root", "plain", 2, { steer: "steer" });
+  const second = pool.deliver("c/root", "plain", 2, {
+    steer: "steer",
+    admitting,
+  });
   await flush();
   expect(process.prompts).toEqual(["first", "steer"]);
+  expect(admitted).toEqual([
+    [false, 0],
+    [true, 1],
+  ]);
   expect(pool.snapshot()).toEqual([{ key: "c/root", busy: true }]);
   process.finish();
   await expect(first).resolves.toEqual({ ok: true });
@@ -982,7 +994,22 @@ it("shares a temporary metadata lookup, releases its process, and refreshes afte
   const [first, second] = await Promise.all([pool.metadata(), pool.metadata()]);
   expect(first).toEqual(second);
   expect(first.model).toBe("claude-opus-5-5");
+  expect(first.effort).toBe("high");
   expect(claudes()).toHaveLength(1);
+  const probe = claudes()[0];
+  const args = probe?.options.args ?? [];
+  expect(args).toEqual(
+    expect.arrayContaining([
+      "--safe-mode",
+      "--strict-mcp-config",
+      "--no-session-persistence",
+    ]),
+  );
+  expect(args[args.indexOf("--tools") + 1]).toBe("");
+  expect(args[args.indexOf("--model") + 1]).toBe("opus");
+  expect(args).not.toContain("--setting-sources");
+  expect(probe?.options.agentCredential).toBe(false);
+  expect(probe?.prompts).toEqual([]);
   expect(live()).toHaveLength(0);
   await pool.metadata();
   expect(claudes()).toHaveLength(1);
@@ -1055,6 +1082,9 @@ it("drops a cancelled source delivery after process startup without stopping ano
   let current = true;
   const stale = pool.deliver("source", "cancelled wake", 1, {
     current: () => current,
+    admitting: () => {
+      throw new Error("A cancelled delivery must not be admitted");
+    },
   });
   await flush();
   current = false;

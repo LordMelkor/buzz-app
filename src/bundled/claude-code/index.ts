@@ -110,6 +110,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
   const runtime = new ClaudeRuntime(
     {
       ...(spawn ? { spawn: setup.auth.authorize(spawn, true) } : {}),
+      ...(readFile ? { readFile } : {}),
       ...(host.resolveDirectory
         ? { resolveDirectory: host.resolveDirectory.bind(host) }
         : {}),
@@ -140,6 +141,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
     (key) => agents.inspectExecution(key),
     (key) => !!agents.executionBinding(key),
   );
+  runtime.mcp = agents.harness.mcp;
   /** A Claude agent is running, so Buzz's copy is needed; unknown until the
    * agents have loaded. */
   let needed: boolean | undefined;
@@ -171,8 +173,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
       unsubscribe();
       unsubscribeDefaults();
       unsubscribeAuth();
-      runtime.dispose();
+      const stopped = runtime.dispose();
       setup.dispose();
+      return stopped;
     });
   }
 
@@ -212,6 +215,10 @@ export const apply: PluginModule["apply"] = (ctx) => {
     execution: true,
     conversationFolders: true,
     hooks: { events: CLAUDE_HOOK_EVENTS },
+    harnessMcp: {
+      report: (agent) => runtime.harnessMcp(agent),
+      inspect: (agent, server) => runtime.inspectMcp(agent, server),
+    },
     retire: (pubkey) => runtime.retire(pubkey),
     protection: true,
     title: "Claude",

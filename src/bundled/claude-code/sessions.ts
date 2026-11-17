@@ -53,6 +53,7 @@ export type SessionsOptions = Readonly<{
   /** Changes when a setting that a running process fixed has changed, for the
    * conversation `key` when given. */
   fingerprint(key?: string): string;
+  prepare?(key?: string): Promise<void>;
   now?(): number;
   newId?(): string;
   /** Told of each new session, never a resumed one, with the prompt it was
@@ -190,6 +191,7 @@ export class AgentSessions {
           throw new Error("Claude was stopped");
         const process = await ClaudeProcess.start(this.spawn, {
           cwd: launch.cwd,
+          discovery: true,
           ...(launch.protection
             ? { protection: launch.protection, discovery: true }
             : {}),
@@ -268,9 +270,11 @@ export class AgentSessions {
       acknowledged,
       superseded,
       activityScope,
+      admitting,
     }: DeliveryOptions,
     handed: () => void,
   ): Promise<Settled> {
+    if (this.options.prepare) await this.options.prepare(key);
     for (;;) {
       if (this.disposed)
         return { ok: false, error: "Claude was stopped", undelivered: true };
@@ -337,6 +341,7 @@ export class AgentSessions {
         ...(step ? { step } : {}),
         ...(acknowledged ? { acknowledged } : {}),
         ...(superseded ? { superseded } : {}),
+        ...(admitting ? { admitting } : {}),
       };
       const answering = this.answer(
         key,
@@ -437,6 +442,7 @@ export class AgentSessions {
     label: string,
     prompt: () => string | undefined | Promise<string | undefined>,
     signal?: AbortSignal,
+    admitting?: ActivityReceipt["admitting"],
   ): Promise<Settled> {
     if (this.disposed) return { ok: false, error: "Claude was stopped" };
     if (signal?.aborted) return { ok: false, error: message(signal.reason) };
@@ -467,7 +473,10 @@ export class AgentSessions {
       this.once.set(key, live);
       const text = await abortable(Promise.resolve(prompt()), signal);
       if (text === undefined || this.disposed) return { ok: true };
-      return await abortable(live.process.send(text), signal);
+      return await abortable(
+        live.process.send(text, admitting ? { admitting } : undefined),
+        signal,
+      );
     } catch (error) {
       if (signal?.aborted) return { ok: false, error: message(signal.reason) };
       console.warn("Claude could not start a one-off session", error);
@@ -589,7 +598,9 @@ export class AgentSessions {
     spawned?: (process: ClaudeProcess) => void,
   ) {
     const spare =
-      !launch.protection && (await this.options.spare?.take(launch));
+      !launch.protection &&
+      !launch.mcp &&
+      (await this.options.spare?.take(launch));
     if (spare)
       try {
         if (this.disposed) throw new Error("Claude was stopped");
