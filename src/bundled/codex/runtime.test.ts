@@ -7899,7 +7899,11 @@ describe("harness MCP choice", () => {
   });
 
   it("leaves a server chosen on to its own configuration, and trims chosen tools", async () => {
-    const kit = mcpKit({ alpha: true, beta: ["write"], gamma: false });
+    const kit = mcpKit({
+      alpha: true,
+      beta: { off: ["write"], known: ["read", "write"] },
+      gamma: false,
+    });
     const f = fixture(
       [],
       undefined,
@@ -7928,7 +7932,11 @@ describe("harness MCP choice", () => {
   });
 
   it("never sends a name the harness does not list", async () => {
-    const kit = mcpKit({ ghost: true, phantom: ["x"], alpha: true });
+    const kit = mcpKit({
+      ghost: true,
+      phantom: { off: ["x"], known: ["x"] },
+      alpha: true,
+    });
     const f = fixture(
       [],
       undefined,
@@ -7996,7 +8004,7 @@ describe("harness MCP choice", () => {
       {
         name: "alpha",
         runtimeStatus: "connected",
-        tools: { read: {}, write: {} },
+        tools: { read: { description: "Reads" }, write: {} },
       },
       { name: "beta", runtimeStatus: "disabled", tools: {} },
     ];
@@ -8018,7 +8026,13 @@ describe("harness MCP choice", () => {
     expect(started).toHaveBeenCalledWith(
       expect.objectContaining({ key: pubkey }),
       "thread-1",
-      [{ name: "alpha", tools: ["read", "write"] }],
+      [
+        {
+          name: "alpha",
+          state: "connected",
+          tools: [{ name: "read", description: "Reads" }, { name: "write" }],
+        },
+      ],
       { alpha: true, beta: false },
     );
   });
@@ -8100,7 +8114,10 @@ describe("harness MCP choice", () => {
   });
 
   it("starts the title thread with every listed server off, by name", async () => {
-    const kit = mcpKit({ alpha: true, beta: ["write"] });
+    const kit = mcpKit({
+      alpha: true,
+      beta: { off: ["write"], known: ["read", "write"] },
+    });
     const f = fixture(
       [],
       undefined,
@@ -8258,7 +8275,7 @@ describe("harness MCP choice", () => {
     expect(started).toHaveBeenCalledWith(
       expect.objectContaining({ key: pubkey }),
       "thread-1",
-      [{ name: "alpha", tools: [] }],
+      [{ name: "alpha", state: "connected", tools: [] }],
       // A name the choice leaves out is checked as off, Codex's default.
       { alpha: true, beta: false },
     );
@@ -8318,71 +8335,6 @@ describe("harness MCP report and inspect", () => {
     expect(await bare.runtime.harnessMcp(agentOf(bare))).not.toHaveProperty(
       "calls",
     );
-  });
-
-  it("adds the state and tools its last session's status showed", async () => {
-    const f = fixture(
-      [],
-      undefined,
-      false,
-      {},
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      mcpKit({ alpha: true }),
-    );
-    withServers(f, "alpha", "beta");
-    f.statusRows.rows = [
-      {
-        name: "alpha",
-        runtimeStatus: "connected",
-        tools: { read: { description: "Reads" }, write: {} },
-      },
-      { name: "beta", runtimeStatus: "disabled", tools: {} },
-    ];
-    await f.runtime.run(f.delivery("@Codex hello"));
-    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
-    const report = await f.runtime.harnessMcp(agentOf(f));
-    expect(report?.servers).toEqual([
-      {
-        name: "alpha",
-        default: false,
-        state: "connected",
-        tools: [{ name: "read", description: "Reads" }, { name: "write" }],
-      },
-      // Off in Buzz's thread is not off in the user's configuration.
-      { name: "beta", default: false },
-    ]);
-  });
-
-  it("forgets what a stopped agent's last session showed", async () => {
-    const f = fixture(
-      [],
-      undefined,
-      false,
-      {},
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      mcpKit({ alpha: true }),
-    );
-    withServers(f, "alpha");
-    f.statusRows.rows = [
-      { name: "alpha", runtimeStatus: "connected", tools: { read: {} } },
-    ];
-    await f.runtime.run(f.delivery("@Codex hello"));
-    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
-    await f.runtime.retire(pubkey);
-    const report = await f.runtime.harnessMcp(agentOf(f));
-    expect(report?.servers).toEqual([{ name: "alpha", default: false }]);
   });
 
   it("starts no thread to close when the harness refuses to start one", async () => {

@@ -423,8 +423,6 @@ export class CodexRuntime {
     { key: string; ready: Promise<Models> }
   >();
   private memoryReads = new MemoryReads();
-  /** Each agent's servers as its last thread's status showed them. */
-  private mcpRows = new Map<AgentKey, readonly McpRow[]>();
   /** Each chosen thread's own status, for naming the tools its hooks show. */
   private threadRows = new Map<string, readonly McpRow[]>();
   /** A failed turn's notice as the thread reads it, such as where to sign
@@ -965,39 +963,22 @@ export class CodexRuntime {
     const calls = hooks && !!this.hooks && this.server?.rpc === rpc;
     return { rpc, cwd, servers: config.mcp_servers ?? {}, calls };
   }
-  /** The agent's MCP servers by name, with the state and tools its last
-   * thread's status showed. An execution target reports and applies nothing. */
+  /** The agent's MCP servers by name, from its configuration. An execution
+   * target reports and applies nothing. */
   async harnessMcp(
     agent: Agent,
   ): Promise<Omit<HarnessMcpReport, "inspect"> | undefined> {
     if (await this.inspect?.(agent.key)) return undefined;
-    if (agent.protection)
-      return {
-        tools: true,
-        note: "A protected agent loads no MCP server.",
-        servers: [],
-      };
-    const rows = new Map(
-      this.mcpRows.get(agent.key)?.map((row) => [row.name, row]),
-    );
+    if (agent.protection) return { tools: true, servers: [] };
     const { servers, calls } = await this.mcpServers(agent);
     return {
       tools: true,
       ...(calls && { calls: true as const }),
-      servers: Object.entries(servers).map(([name, server]) => {
-        const row = rows.get(name);
-        const tools = row ? mcpTools(row) : [];
-        const state =
-          server.enabled === false
-            ? "disabled"
-            : MCP_STATES[row?.runtimeStatus as keyof typeof MCP_STATES];
-        return {
-          name,
-          default: false,
-          ...(state ? { state } : {}),
-          ...(tools.length ? { tools } : {}),
-        };
-      }),
+      servers: Object.entries(servers).map(([name, server]) => ({
+        name,
+        default: false,
+        ...(server.enabled === false && { state: "disabled" as const }),
+      })),
     };
   }
   /** Lists one server's tools on an ephemeral thread where every other server
@@ -1162,7 +1143,6 @@ export class CodexRuntime {
     this.inventories.delete(agent);
     this.inventoryReads.delete(agent);
     this.inventoryVersions.delete(agent);
-    this.mcpRows.delete(agent);
     const pending = [...this.opening.values()].filter(
       (opening) => opening.agent === agent,
     );
@@ -2952,15 +2932,15 @@ export class CodexRuntime {
     const silenced = Object.fromEntries(
       named.map(([name, server]) => [name, turnedOff(server)]),
     );
-    // A server chosen on has no entry, so `config.toml` applies; with a tool
-    // list it keeps its own disabled tools too. Nothing is ever forced on.
+    // A server chosen on has no entry, so `config.toml` applies; with `off`
+    // tools it keeps its own disabled tools too. Nothing is ever forced on.
     // Codex's default is off, so a name the choice leaves out is off.
     const picks = named.map(([name, server]) => {
       const picked = choice === "none" ? undefined : choice?.[name];
       return [
         name,
         server,
-        Array.isArray(picked) ? picked : picked === true,
+        typeof picked === "object" ? picked : picked === true,
       ] as const;
     });
     const mcp = Object.fromEntries(
@@ -2972,7 +2952,7 @@ export class CodexRuntime {
               name,
               {
                 disabled_tools: [
-                  ...new Set([...(server.disabled_tools ?? []), ...picked]),
+                  ...new Set([...(server.disabled_tools ?? []), ...picked.off]),
                 ],
               },
             ],
@@ -3060,8 +3040,7 @@ export class CodexRuntime {
     };
   }
   /** Shows the choice is in effect: what the thread's status lists as loaded
-   * is checked by the kit; a throw stops the session before any turn. Keeps
-   * the status as the agent's last-seen servers for its report. */
+   * is checked by the kit; a throw stops the session before any turn. */
   private async verifyMcp(
     rpc: AppServer,
     agent: Pick<AgentHandle, "key" | "protection">,
@@ -3083,7 +3062,6 @@ export class CodexRuntime {
         ),
       )
     ).flatMap(({ data }) => data);
-    this.mcpRows.set(agent.key, rows);
     this.threadRows.set(threadId, rows);
     this.mcp.started(
       agent,
@@ -3093,10 +3071,15 @@ export class CodexRuntime {
           ({ runtimeStatus }) =>
             runtimeStatus !== "disabled" && runtimeStatus !== "notStarted",
         )
-        .map((row) => ({
-          name: row.name,
-          tools: mcpTools(row).map((t) => t.name),
-        })),
+        .map((row) => {
+          const state =
+            MCP_STATES[row.runtimeStatus as keyof typeof MCP_STATES];
+          return {
+            name: row.name,
+            ...(state && { state }),
+            tools: mcpTools(row),
+          };
+        }),
       applied,
     );
   }

@@ -100,23 +100,27 @@ it("leaves the harness's default alone while no control or declaring plugin exis
   ).not.toThrow();
 });
 
-it("keeps only booleans and lists of tool names from a control's answer", async () => {
+it("keeps only booleans and lists of off and known tool names from a control's answer", async () => {
   const { mcp, install } = setup();
   const choose = vi.fn<HarnessMcpControl["choose"]>();
   await install({ choose });
   choose.mockReturnValue({
     alpha: true,
-    beta: ["write"],
+    beta: { off: ["write"], known: ["read", "write"] },
     gamma: "yes",
-    delta: [1],
+    delta: { off: [1], known: [] },
+    epsilon: { off: ["write"] },
+    zeta: ["write"],
     constructor: true,
   } as never);
   const choice = await mcp.kit.choice(handle);
   expect({ ...(choice as object) }).toEqual({
     alpha: true,
-    beta: ["write"],
+    beta: { off: ["write"], known: ["read", "write"] },
     gamma: false,
     delta: false,
+    epsilon: false,
+    zeta: false,
     constructor: true,
   });
   expect(Object.getPrototypeOf(choice)).toBeNull();
@@ -194,7 +198,11 @@ it("uses the control of a declaring plugin that finishes starting while a launch
 it("rejects a server or tool the choice turned off when the harness lists it", async () => {
   const { mcp, install } = setup();
   await install({
-    choose: () => ({ off: false, partial: ["write"], on: true }),
+    choose: () => ({
+      off: false,
+      partial: { off: ["write"], known: ["read", "write"] },
+      on: true,
+    }),
   });
   const choice = await mcp.kit.choice(handle);
   expect(() =>
@@ -202,8 +210,9 @@ it("rejects a server or tool the choice turned off when the harness lists it", a
       handle,
       "s1",
       [
-        { name: "on", tools: ["write"] },
-        { name: "partial", tools: ["read"] },
+        { name: "on", tools: [{ name: "write" }] },
+        // A tool the control did not know of is not judged.
+        { name: "partial", tools: [{ name: "read" }, { name: "new" }] },
       ],
       choice,
     ),
@@ -215,7 +224,7 @@ it("rejects a server or tool the choice turned off when the harness lists it", a
     mcp.kit.started(
       handle,
       "s3",
-      [{ name: "partial", tools: ["read", "write"] }],
+      [{ name: "partial", tools: [{ name: "read" }, { name: "write" }] }],
       choice,
     ),
   ).toThrow(/partial/);
@@ -250,6 +259,56 @@ it("checks each session against the answer it was given, not a later one", async
   expect(() =>
     mcp.kit.started(handle, "s3", loaded("constructor"), second),
   ).not.toThrow();
+});
+
+it("gives the control what a passing session loaded, and nothing else", async () => {
+  const { mcp, install, status, live } = setup();
+  const loadedBy = vi.fn<NonNullable<HarnessMcpControl["loaded"]>>();
+  await install({
+    choose: () => ({ alpha: { off: ["write"], known: ["read", "write"] } }),
+    loaded: loadedBy,
+  });
+  const choice = await mcp.kit.choice(handle);
+  const listing = [
+    {
+      name: "alpha",
+      state: "connected" as const,
+      tools: [{ name: "read", description: "Reads" }],
+    },
+  ];
+  mcp.kit.started(handle, "s1", listing, choice);
+  // It hears after the session goes on, not inside `started`.
+  expect(loadedBy).not.toHaveBeenCalled();
+  await Promise.resolve();
+  expect(loadedBy).toHaveBeenCalledExactlyOnceWith(agent, listing);
+  // A session that fails the check tells it nothing.
+  expect(() =>
+    mcp.kit.started(
+      handle,
+      "s2",
+      [{ name: "alpha", tools: [{ name: "write" }] }],
+      choice,
+    ),
+  ).toThrow(/alpha/);
+  // Its throw or rejection does not reach the session.
+  loadedBy.mockImplementationOnce(() => {
+    throw new Error("plugin bug");
+  });
+  expect(() => mcp.kit.started(handle, "s3", listing, choice)).not.toThrow();
+  loadedBy.mockImplementationOnce((() =>
+    Promise.reject(new Error("later"))) as never);
+  expect(() => mcp.kit.started(handle, "s4", listing, choice)).not.toThrow();
+  await Promise.resolve();
+  expect(loadedBy).toHaveBeenCalledTimes(3);
+  // A protected agent's session loads nothing and tells nothing.
+  live.agent = { ...agent, protection: { provider: "p" } } as never;
+  mcp.kit.started(handle, "s5", [], "none");
+  live.agent = agent;
+  // A control whose plugin stopped hears nothing.
+  status.change({ active: false });
+  mcp.kit.started(handle, "s6", listing, choice);
+  await Promise.resolve();
+  expect(loadedBy).toHaveBeenCalledTimes(3);
 });
 
 it("takes one control, needs the manifest key, and drops it with the plugin's scope", async () => {
@@ -391,20 +450,12 @@ it("leaves protection alone for a type that does not report MCP servers", () => 
   expect(mcp.require(undefined, agent)).toBeUndefined();
 });
 
-it("reports a type with no MCP client as loading none, and asks its protected agents no proof", async () => {
+it("gives a type with no MCP client no report, and asks its protected agents no proof", async () => {
   const { mcp, scope } = setup({ harnessMcp: { client: false } });
   await expect(mcp.report(scope(false), key)).rejects.toThrow(
     "Declare host.agentMcp",
   );
-  await expect(mcp.report(scope(), key)).resolves.toEqual({
-    client: false,
-    tools: false,
-    inspect: false,
-    servers: [],
-  });
-  await expect(
-    mcp.report(scope(), "unknown" as never),
-  ).resolves.toBeUndefined();
+  await expect(mcp.report(scope(), key)).resolves.toBeUndefined();
   await expect(mcp.inspect(scope(), key, "alpha")).rejects.toThrow(
     "cannot list",
   );
@@ -441,37 +492,24 @@ it("passes on calls only when the type says exactly true, and never for a protec
   }
 });
 
-it("reports a type's servers only to a plugin with the manifest key, with last-seen tools", async () => {
+it("reports a type's servers only to a plugin with the manifest key, and keeps nothing it lists", async () => {
   const inspect = vi.fn(async () => [{ name: "read", description: "Reads" }]);
+  const servers = [
+    { name: "alpha", default: false },
+    { name: "beta", default: false, state: "failed", reason: "No keyring" },
+  ] as const;
   const { mcp, scope } = setup({
-    harnessMcp: {
-      report: async () =>
-        report({
-          servers: [
-            { name: "alpha", default: false },
-            { name: "beta", default: false, tools: [{ name: "own" }] },
-          ],
-        }),
-      inspect,
-    },
+    harnessMcp: { report: async () => report({ servers }), inspect },
   });
   await expect(mcp.report(scope(false), key)).rejects.toThrow(
     "Declare host.agentMcp",
   );
   const before = await mcp.report(scope(), key);
-  expect(before).toMatchObject({ inspect: true, tools: true });
-  expect(before?.servers[0]).toEqual({ name: "alpha", default: false });
-  await mcp.inspect(scope(), key, "alpha");
-  await mcp.inspect(scope(), key, "beta");
-  const after = await mcp.report(scope(), key);
-  expect(after?.servers).toEqual([
-    {
-      name: "alpha",
-      default: false,
-      tools: [{ name: "read", description: "Reads" }],
-    },
-    { name: "beta", default: false, tools: [{ name: "own" }] },
+  expect(before).toEqual({ inspect: true, tools: true, servers });
+  await expect(mcp.inspect(scope(), key, "alpha")).resolves.toEqual([
+    { name: "read", description: "Reads" },
   ]);
+  await expect(mcp.report(scope(), key)).resolves.toEqual(before);
   await expect(
     mcp.report(scope(), "unknown" as never),
   ).resolves.toBeUndefined();
@@ -495,12 +533,6 @@ it("lists a type's tools only for a known server of an unprotected agent", async
   await expect(mcp.inspect(scope(), key, "beta")).rejects.toThrow(
     "did not connect",
   );
-  // A failed listing keeps nothing; the earlier one stays.
-  const after = await mcp.report(scope(), key);
-  expect(after?.servers.map(({ tools }) => tools?.length)).toEqual([
-    1,
-    undefined,
-  ]);
 });
 
 it("checks again after the report, before a server starts", async () => {

@@ -943,12 +943,12 @@ export type AgentType<Config = unknown> = {
    * `inspect` lists one server's tools in a session with no model turn and no
    * other server, and never calls a tool. Adapters read the choice through
    * `agents.harness.mcp`. `{ client: false }` says the harness has no MCP
-   * client: it loads no server, so core reports none and asks no proof. */
+   * client: it loads no server, so core gives no report and asks no proof. */
   harnessMcp?:
     | Readonly<{
         report(
           agent: Agent<Config>,
-        ): Promise<Omit<HarnessMcpReport, "inspect" | "client"> | undefined>;
+        ): Promise<Omit<HarnessMcpReport, "inspect"> | undefined>;
         inspect?(
           agent: Agent<Config>,
           server: string,
@@ -1444,9 +1444,8 @@ export type Agents = {
    * not report. Needs `host.agentMcp`. */
   harnessMcp(agent: AgentKey): Promise<HarnessMcpReport | undefined>;
   /** Lists one reported server's tools without a model turn or any other
-   * server, and keeps them as the agent's last-seen tools in `harnessMcp`.
-   * Rejects for protected agents and for names the report lacks. Needs
-   * `host.agentMcp`. */
+   * server. Core keeps nothing. Rejects for protected agents and for names
+   * the report lacks. Needs `host.agentMcp`. */
   inspectHarnessMcp(
     agent: AgentKey,
     server: string,
