@@ -610,6 +610,31 @@ it("drops a supplement removed while the menu is open, with its hold", async () 
     " ",
   );
 });
+it.each([
+  ["moves an untouched default to it", [], { mentions: [BOB] }],
+  ["keeps a row the user moved to", ["ArrowDown"], { mention: ENG_BOT }],
+])(
+  "for a late supplement with a lower order, %s",
+  async (_, keys, accepted) => {
+    const { replace, press, publishes } = mountSources([
+      people(),
+      groups(undefined),
+    ]);
+    await screen.findByRole("option", { name: /^Eng Bot$/ });
+    for (const key of keys) press(key);
+    act(() => {
+      publishes.get("groups")?.({ items: [groupRow] });
+    });
+    expect(listed()).toEqual(["Groups", "eng", "Mention", "Eng Bot"]);
+    press("Enter");
+    expect(replace).toHaveBeenCalledWith(
+      accepted,
+      expect.anything(),
+      expect.anything(),
+      "Enter",
+    );
+  },
+);
 it("keeps the winner's rows when a supplement's preview throws", async () => {
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
   function Broken(): never {

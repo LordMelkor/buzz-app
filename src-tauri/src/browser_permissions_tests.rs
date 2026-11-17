@@ -167,6 +167,7 @@ fn native_command_permissions_isolate_webviews() {
         "plugin_recover",
         "plugin_host_run_command",
         "plugin_host_request",
+        "plugin_host_relay_publish",
         "plugin_host_upload",
         "plugin_host_process_spawn",
         "plugin_host_process_write",

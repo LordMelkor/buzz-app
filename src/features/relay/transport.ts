@@ -197,6 +197,8 @@ export interface ReadTransport {
   readonly scope?: string;
   /** Relay HTTP base for display only, such as a workflow's webhook address. */
   readonly relayHttpUrl?: string;
+  /** The community's NIP-11 document, as the host fetched it to connect. */
+  readonly info?: Readonly<Record<string, unknown>>;
   /** Optional host-owned write capability, exposed to plugins only through the outbox. */
   readonly writer?: RelayWriter;
   /** The signed-in viewer whose channel roster is authoritative. */

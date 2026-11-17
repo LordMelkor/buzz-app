@@ -12,7 +12,10 @@ import { afterEach, expect, it } from "vitest";
 import { AgentsContext } from "../features/agents/react";
 import type { Agents } from "../features/agents/service";
 import type { PluginManifest } from "../plugins/api";
-import { PluginAccessReview } from "./PluginAccessReview";
+import {
+  PluginAccessReview,
+  pluginAccessIncreases,
+} from "./PluginAccessReview";
 
 afterEach(cleanup);
 
@@ -267,3 +270,89 @@ it.each([
     ).toBeVisible();
   },
 );
+
+const PURPOSES: Record<number, string> = {
+  47000: "Create or edit a group",
+  47001: "Delete a group",
+  47002: "Change who can manage groups",
+};
+const withKinds = (
+  kinds?: readonly number[],
+  purposes: Record<number, string> = PURPOSES,
+): PluginManifest => ({
+  id: "example.kinds",
+  name: "Kind publisher",
+  apiVersion: 1,
+  host: kinds
+    ? {
+        relayKinds: kinds.map((kind) => ({
+          kind,
+          purpose: purposes[kind] ?? "",
+        })),
+      }
+    : {},
+});
+
+it("shows what each declared relay kind does, sent as the viewer", () => {
+  render(<PluginAccessReview manifest={withKinds([47000, 47001])} />);
+  expect(
+    screen.getByRole("button", {
+      name: /Sign and send as you: Create or edit a group.*Buzz signs these events with your key/,
+    }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", {
+      name: /Sign and send as you: Delete a group/,
+    }),
+  ).toBeVisible();
+});
+
+it("lists an added relay kind as added and ignores their order", () => {
+  render(
+    <PluginAccessReview
+      manifest={withKinds([47001, 47000, 47002])}
+      previousManifest={withKinds([47000, 47001])}
+    />,
+  );
+  const added = within(
+    screen.getByRole("region", { name: "Added declarations" }),
+  );
+  expect(
+    added.getByRole("button", { name: /Change who can manage groups/ }),
+  ).toBeVisible();
+  expect(
+    added.queryByRole("button", { name: /Create or edit a group/ }),
+  ).toBeNull();
+});
+
+it("lists a reworded relay kind purpose as changed", () => {
+  render(
+    <PluginAccessReview
+      manifest={withKinds([47000], { 47000: "Create, edit or rename a group" })}
+      previousManifest={withKinds([47000])}
+    />,
+  );
+  expect(
+    within(
+      screen.getByRole("region", { name: "Changed declarations" }),
+    ).getByRole("button", {
+      name: /Create, edit or rename a group \(changed\)/,
+    }),
+  ).toBeVisible();
+});
+
+it("treats an added kind or a reworded purpose as an access increase, but not a reorder or removal", () => {
+  const before = withKinds([47000, 47001]);
+  expect(pluginAccessIncreases(withKinds([47000, 47001, 47002]), before)).toBe(
+    true,
+  );
+  expect(
+    pluginAccessIncreases(
+      withKinds([47000, 47001], { ...PURPOSES, 47001: "Delete any group" }),
+      before,
+    ),
+  ).toBe(true);
+  expect(pluginAccessIncreases(withKinds([47001, 47000]), before)).toBe(false);
+  expect(pluginAccessIncreases(withKinds([47000]), before)).toBe(false);
+  expect(pluginAccessIncreases(before, withKinds())).toBe(true);
+});

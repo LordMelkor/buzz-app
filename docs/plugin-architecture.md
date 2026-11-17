@@ -1903,7 +1903,8 @@ Plugins can separately declare host access in `manifest.json`:
 {
   "host": {
     "commands": [{ "id": "status", "program": "example-cli", "args": ["status"] }],
-    "networkOrigins": ["https://api.example.com"]
+    "networkOrigins": ["https://api.example.com"],
+    "relayKinds": [{ "kind": 47000, "purpose": "Create or edit a record" }]
   }
 }
 ```
@@ -2359,6 +2360,55 @@ apply unchanged. The saving plugin does not directly invoke core send. Standalon
 node readers still reject paths outside their configured root: managed membership
 does not widen that namespace. Offline native-file and app-owned-reader fixtures
 are composition evidence, not a single native WebView delivery test.
+
+### Signing and publishing declared event kinds
+
+`host.relayKinds` lists the event kinds a plugin may have Buzz sign as the
+viewer and publish to the selected community: at most 8 entries, each
+`{ kind, purpose }`. `kind` is a distinct integer from 1 to 65535. `purpose`
+says what those events do, in 1–120 bytes of text without control characters.
+The same list of reserved kinds is checked when the manifest is
+admitted and again on every publish, so a manifest naming a reserved kind is
+refused at install and no declared kind can reach one at runtime. It holds the
+kinds Buzz signs itself, the private-message kinds (4, 13, 14, 15, 1059 and the
+inbox relay list 10050) and NIP-46 signer messages (24133). Review shows one
+declaration per kind: "Sign and send as you:" and the plugin's purpose, with
+the kind number in its details. Adding a kind or rewording a purpose is an
+access increase; reordering is not.
+
+Desktop hosts provide two methods; on other hosts both reject.
+
+- `host.publish(template, { scope, generation?, signal? })` takes
+  `{kind, content, tags, created_at?}`. The kind must be in the plugin's own
+  grant. Native code reads the grant, signs, and sends once with the viewer's
+  relay authentication. It keeps a given `created_at` and the tag order, so the
+  same template is always the same event id, and the host applies no event-age
+  check of its own. Whether the relay answers an old repeated id from its
+  receipt is the relay's rule: many relays refuse events far from their clock
+  (Buzz's relay: `invalid:` beyond 15 minutes) unless the kind's handler
+  answers repeats first. It resolves
+  `{event_id, accepted, message}` with the relay's text as sent, at most 512
+  characters. A relay refusal, including its `duplicate:` and `conflict:` 409
+  texts and a `429` rate limit, is `accepted: false` with that text, never an
+  error. Anything else is
+  an unknown outcome and rejects: a failed transport, an unreadable answer, a
+  relay error status, cancelling with `signal` after the call was sent, or a
+  change of community, account or connection while it was pending. The host
+  never replays a publish; to settle an unknown outcome, send the same template
+  again or read the relay for its event id.
+- `host.relayInfo({ scope, generation?, signal? })` returns the selected
+  community's NIP-11 document as Buzz read it to connect, as a frozen copy. It
+  needs no grant and costs no extra relay read.
+
+Both calls are frozen to the community, viewer and connection named by `scope`
+(`RelaySnapshot.scope`, `origin:viewer`) and optional `generation`. If another
+community or account is selected, or the connection is not live, they reject
+before sending anything. There is no broker or web route. The page-side host
+checks the scope. Native code checks the grant, the reserved kinds and the
+signer, and takes the community from the page, as channel publishing does. Like
+the other declarations, the grant is a guardrail for trusted plugins, not a
+sandbox. The host adds no per-plugin rate limit; a relay's own limit answers as
+a `429` refusal.
 
 `host.upload` requires both `host.files` and the destination in `host.networkOrigins`.
 It sends a multipart archive to that origin and reads one absolute

@@ -2,6 +2,8 @@ import { Context } from "@deepseek-ai/cordis";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { HostService, type Host } from "./service";
+import { provideRelay } from "../relay/service";
+import type { ReadTransport } from "../relay/transport";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: vi.fn(),
@@ -1755,5 +1757,174 @@ it("stops a process after a failed streamed frame and rejects queued writes", as
   expect(invoke).toHaveBeenCalledWith(
     "plugin_host_process_kill",
     expect.objectContaining({ handle: 7 }),
+  );
+});
+
+const VIEWER = "ab".repeat(32);
+const ORIGIN = "https://relay.test";
+const INFO = { name: "Relay", self: "cd".repeat(32), limitation: { max: 3 } };
+const roots: Context[] = [];
+afterEach(async () => {
+  for (const root of roots.splice(0)) await root.fiber.dispose();
+});
+
+/** The real relay service, connected to a community that publishes `info`. */
+async function connectedPlugin(info: Record<string, unknown> | undefined) {
+  const root = new Context();
+  roots.push(root);
+  new HostService(root);
+  const connect = vi.fn(
+    async (): Promise<ReadTransport> => ({
+      viewer: VIEWER,
+      relayAuthor: "cd".repeat(32),
+      scope: ORIGIN,
+      media: () => undefined,
+      query: async () => [],
+      ...(info ? { info } : {}),
+    }),
+  );
+  const relay = provideRelay(root, connect);
+  await vi.waitFor(() => expect(relay.snapshot().status).toBe("ready"));
+  const plugin = root.extend({
+    pluginOwner: { id: "example.plugin", revision: "abc" },
+  });
+  return { plugin, relay, scope: relay.snapshot().scope ?? "" };
+}
+const template = {
+  kind: 47000,
+  content: "{}",
+  tags: [
+    ["z", "1"],
+    ["a", "2"],
+  ],
+  created_at: 1_600_000_000,
+};
+const receipt = { event_id: "ef".repeat(32), accepted: true, message: "" };
+
+it("signs and sends the template for the selected community and viewer, unchanged", async () => {
+  const { plugin, scope, relay } = await connectedPlugin(INFO);
+  vi.mocked(invoke).mockResolvedValue(receipt);
+  const { generation } = relay.snapshot();
+  expect(await plugin.host.publish?.(template, { scope, generation })).toEqual(
+    receipt,
+  );
+  expect(invoke).toHaveBeenCalledWith("plugin_host_relay_publish", {
+    id: "example.plugin",
+    revision: "abc",
+    community: ORIGIN,
+    viewer: VIEWER,
+    event: {
+      kind: 47000,
+      content: "{}",
+      tags: [
+        ["z", "1"],
+        ["a", "2"],
+      ],
+      created_at: 1_600_000_000,
+    },
+  });
+  const { created_at: _, ...undated } = template;
+  await plugin.host.publish?.(undated, { scope });
+  const sent = vi.mocked(invoke).mock.calls[1]?.[1] as {
+    event: { created_at: number };
+  };
+  expect(Math.abs(sent.event.created_at - Date.now() / 1000)).toBeLessThan(60);
+});
+
+it.each([
+  ["duplicate: that name is taken"],
+  ["conflict: expected revision abc"],
+])("hands the relay's refusal %s to the caller unchanged", async (message) => {
+  const { plugin, scope } = await connectedPlugin(INFO);
+  vi.mocked(invoke).mockResolvedValue({ ...receipt, accepted: false, message });
+  expect(await plugin.host.publish?.(template, { scope })).toEqual({
+    ...receipt,
+    accepted: false,
+    message,
+  });
+});
+
+it("surfaces a native refusal as an error, never as an accepted result", async () => {
+  const { plugin, scope } = await connectedPlugin(INFO);
+  vi.mocked(invoke).mockRejectedValue(
+    "This plugin did not declare that event kind",
+  );
+  await expect(plugin.host.publish?.(template, { scope })).rejects.toThrow(
+    "did not declare",
+  );
+});
+
+it("refuses a scope or generation that is not the selected connection", async () => {
+  const { plugin, scope, relay } = await connectedPlugin(INFO);
+  const { generation } = relay.snapshot();
+  for (const options of [
+    { scope: `https://other.test:${VIEWER}` },
+    { scope: `${ORIGIN}:${"cd".repeat(32)}` },
+    { scope, generation: generation + 1 },
+  ]) {
+    await expect(plugin.host.publish?.(template, options)).rejects.toThrow(
+      "not the one selected",
+    );
+    await expect(plugin.host.relayInfo?.(options)).rejects.toThrow(
+      "not the one selected",
+    );
+  }
+  expect(invoke).not.toHaveBeenCalled();
+});
+
+it("does not deliver a result as accepted once the session was replaced", async () => {
+  const { plugin, scope, relay } = await connectedPlugin(INFO);
+  let settle!: (value: unknown) => void;
+  vi.mocked(invoke).mockReturnValue(
+    new Promise((resolve) => (settle = resolve)),
+  );
+  const pending = plugin.host.publish?.(template, { scope });
+  const outcome = expect(pending).rejects.toThrow("outcome is unknown");
+  await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+  relay.disconnect();
+  relay.retry();
+  await vi.waitFor(() => expect(relay.snapshot().status).toBe("ready"));
+  settle(receipt);
+  await outcome;
+});
+
+it("treats cancellation after dispatch as an unknown outcome and before it as an abort", async () => {
+  const { plugin, scope } = await connectedPlugin(INFO);
+  const early = new AbortController();
+  early.abort();
+  await expect(
+    plugin.host.publish?.(template, { scope, signal: early.signal }),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect(invoke).not.toHaveBeenCalled();
+  let settle!: (value: unknown) => void;
+  vi.mocked(invoke).mockReturnValue(
+    new Promise((resolve) => (settle = resolve)),
+  );
+  const late = new AbortController();
+  const pending = plugin.host.publish?.(template, {
+    scope,
+    signal: late.signal,
+  });
+  const outcome = expect(pending).rejects.toThrow("outcome is unknown");
+  await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+  late.abort();
+  await outcome;
+  settle(receipt);
+});
+
+it("returns the connected community's own document, frozen, and nothing else", async () => {
+  const { plugin, scope } = await connectedPlugin(INFO);
+  const info = await plugin.host.relayInfo?.({ scope });
+  expect(info).toEqual(INFO);
+  expect(Object.isFrozen(info)).toBe(true);
+  expect(Object.isFrozen((info as typeof INFO).limitation)).toBe(true);
+  expect(info).not.toBe(INFO);
+  expect(invoke).not.toHaveBeenCalled();
+});
+
+it("has no document to return when the connection carried none", async () => {
+  const { plugin, scope } = await connectedPlugin(undefined);
+  await expect(plugin.host.relayInfo?.({ scope })).rejects.toThrow(
+    "unavailable",
   );
 });

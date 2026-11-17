@@ -25,6 +25,14 @@ const REFUSAL_ERRORS: Record<CommunityRefusal, string> = {
 const WAKE_TICK_MS = 5_000;
 const WAKE_GAP_MS = 15_000;
 
+/** Each connected session's NIP-11 document, read once while connecting. */
+const documents = new WeakMap<
+  RelaySession,
+  Readonly<Record<string, unknown>>
+>();
+/** The NIP-11 document `session`'s community answered when it connected. */
+export const relayDocument = (session: RelaySession) => documents.get(session);
+
 export type RelaySnapshot = Readonly<{
   status: "disconnected" | "connecting" | "ready" | "error";
   generation: number;
@@ -372,6 +380,7 @@ export function provideRelay(
             ),
           });
           await successor.restore();
+          if (transport.info) documents.set(successor.session, transport.info);
           if (
             disposed ||
             signal.aborted ||
