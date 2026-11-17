@@ -521,6 +521,7 @@ export async function connectNativeTransport(
   // Capabilities describe implemented host operations, not everything this key can sign.
   return {
     ...transport,
+    info,
     observeRefusal,
     ...(artifactIncrementalCapability(info)
       ? {

@@ -192,6 +192,17 @@ it("requires the relay self key, never its operator contact pubkey", async () =>
   );
 });
 
+it("keeps the community's NIP-11 document from connecting, without another read", async () => {
+  discovery = { name: "Example", supported_extensions: ["nip-cl"] };
+  const transport = await connectNativeTransport(community);
+  expect(transport.info).toEqual({
+    self: relay.pubkey,
+    name: "Example",
+    supported_extensions: ["nip-cl"],
+  });
+  expect(requests.filter(({ path }) => path === "/")).toHaveLength(1);
+});
+
 it("sends combined search operators through packaged native signed HTTP without a dev broker", async () => {
   const transport = await connectNativeTransport(community);
   const hit = message(viewer, "channel", "deploy matched", 1700000000);

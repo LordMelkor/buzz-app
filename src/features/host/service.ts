@@ -4,6 +4,8 @@ import type {} from "../../plugins/api";
 import { nativeIdentityEnabled } from "../identity/service";
 import type { SoloRegionBinding } from "../channel-navigation/solo-navigation-contract";
 import { repositoryFolders } from "../communities/repositories";
+import { relayDocument, type RelayData } from "../relay/service";
+import type { RelaySession } from "../relay/session";
 
 export type HostRequest = Readonly<{
   url: string;
@@ -40,6 +42,31 @@ export type HostByteUpload = Readonly<{
   contentType: string;
   /** At most 16 text fields, safe names, each value at most 8192 UTF-8 bytes. */
   fields?: Readonly<Record<string, string>>;
+}>;
+/** An event to sign as the viewer. `created_at` defaults to now; when given it
+ * is kept, with the tags in order, so the same template is the same event. */
+export type HostEventTemplate = Readonly<{
+  kind: number;
+  content: string;
+  tags: readonly (readonly string[])[];
+  created_at?: number;
+}>;
+/** The community a call is for, as `RelaySnapshot` names it. A call refuses
+ * when another community, account or connection is selected. */
+export type HostRelayScope = Readonly<{
+  /** `origin:viewer`, as `RelaySnapshot.scope`. */
+  scope: string;
+  /** `RelaySnapshot.generation`; omitted, any connection of that scope. */
+  generation?: number;
+  signal?: AbortSignal;
+}>;
+/** The relay's own answer, its OK or refusal text kept as sent (at most 512
+ * characters). `accepted: false` is a refusal; a rejection is an unknown
+ * outcome that a retry of the same template settles. */
+export type HostPublication = Readonly<{
+  event_id: string;
+  accepted: boolean;
+  message: string;
 }>;
 export type HostResponse = Readonly<{
   status: number;
@@ -239,6 +266,20 @@ export interface Host {
     binding: SoloRegionBinding,
     signal: AbortSignal,
   ) => Promise<readonly HostRepositoryFolder[]>;
+  /** Signs `template` as the viewer and publishes it to the selected community,
+   * for a plugin whose manifest declares its kind in `host.relayKinds`. Never
+   * a kind Buzz signs itself. Sent once, never replayed: resolve it by calling
+   * again with the same template, which the relay answers by event id. Desktop
+   * only. */
+  publish?: (
+    template: HostEventTemplate,
+    options: HostRelayScope,
+  ) => Promise<HostPublication>;
+  /** The selected community's NIP-11 document as Buzz read it to connect, a
+   * frozen copy. Needs no grant. Desktop only. */
+  relayInfo?: (
+    options: HostRelayScope,
+  ) => Promise<Readonly<Record<string, unknown>>>;
   request(input: HostRequest): Promise<HostResponse>;
   /** POST-only, desktop and compatible native host required. A repeated call
    * authority rejects with unknown outcome, never resubmits or caches success.
@@ -676,6 +717,57 @@ export class HostService extends Service implements Host {
     );
   }
 
+  async publish(
+    template: HostEventTemplate,
+    { scope, generation, signal }: HostRelayScope,
+  ): Promise<HostPublication> {
+    const owner = this.ctx.pluginOwner;
+    if (!owner || !isTauri())
+      throw new Error("Publishing requires an installed desktop plugin");
+    signal?.throwIfAborted();
+    const selected = selectedRelay(this.ctx, scope, generation);
+    const { kind, content, tags, created_at } = template;
+    const event = {
+      kind,
+      content,
+      tags: tags.map((tag) => [...tag]),
+      created_at: created_at ?? Math.floor(Date.now() / 1000),
+    };
+    // Dispatched: from here the relay may have the event, whatever follows.
+    const sent = invoke<HostPublication>("plugin_host_relay_publish", {
+      id: owner.id,
+      revision: owner.revision,
+      community: selected.origin,
+      viewer: selected.viewer,
+      event,
+    }).catch(rethrow);
+    let stop: (() => void) | undefined;
+    const cancelled = new Promise<never>((_, reject) => {
+      stop = () => reject(new Error(UNKNOWN_PUBLISH));
+      signal?.addEventListener("abort", stop, { once: true });
+    });
+    try {
+      const result = await Promise.race([sent, cancelled]);
+      if (!sameRelay(this.ctx, selected)) throw new Error(UNKNOWN_PUBLISH);
+      return result;
+    } finally {
+      if (stop) signal?.removeEventListener("abort", stop);
+    }
+  }
+
+  async relayInfo({
+    scope,
+    generation,
+    signal,
+  }: HostRelayScope): Promise<Readonly<Record<string, unknown>>> {
+    signal?.throwIfAborted();
+    const info = relayDocument(
+      selectedRelay(this.ctx, scope, generation).session,
+    );
+    if (!info) throw new Error("This community's information is unavailable");
+    return deepFreeze(structuredClone(info));
+  }
+
   async request(input: HostRequest): Promise<HostResponse> {
     const owner = this.ctx.pluginOwner;
     if (!owner || !isTauri())
@@ -877,6 +969,59 @@ export class HostService extends Service implements Host {
       upload: input,
     }).catch(rethrow);
   }
+}
+
+const UNKNOWN_PUBLISH =
+  "The publish was cut short after it was sent; its outcome is unknown. Publish the same template again to find out.";
+
+type SelectedRelay = Readonly<{
+  origin: string;
+  viewer: string;
+  scope: string;
+  generation: number;
+  session: RelaySession;
+}>;
+/** The one connected, live community `scope` and `generation` name. */
+function selectedRelay(
+  ctx: Context,
+  scope: string,
+  generation: number | undefined,
+): SelectedRelay {
+  const relay: RelayData | undefined = ctx.relay;
+  const snapshot = relay?.snapshot();
+  if (
+    snapshot?.status !== "ready" ||
+    snapshot.cached ||
+    !snapshot.origin ||
+    !snapshot.viewer ||
+    snapshot.scope !== scope ||
+    (generation !== undefined && snapshot.generation !== generation)
+  )
+    throw new Error("That community is not the one selected");
+  return {
+    origin: snapshot.origin,
+    viewer: snapshot.viewer,
+    scope,
+    generation: snapshot.generation,
+    session: snapshot.session,
+  };
+}
+/** Whether `selected` is still the connection in use. */
+function sameRelay(ctx: Context, selected: SelectedRelay) {
+  const now = ctx.relay?.snapshot();
+  return (
+    now?.status === "ready" &&
+    now.scope === selected.scope &&
+    now.generation === selected.generation &&
+    now.session === selected.session
+  );
+}
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
 }
 
 const UPLOAD_METADATA_LIMIT = 16 * 1024;
