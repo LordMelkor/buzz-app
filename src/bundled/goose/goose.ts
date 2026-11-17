@@ -1,6 +1,7 @@
 // goose on the shared ACP client: one `goose-acp` process, with goose's
 // extensions for the system prompt, steering, and per-turn provider and model
 // picks. Each session's Buzz tools reach goose over HTTP MCP, never a Buzz key.
+import { gooseHooks, type GooseHook } from "./hooks";
 import type { GooseMcp } from "./mcp";
 import { sessionTools } from "../../buzz-mcp/session-tools";
 import {
@@ -203,6 +204,7 @@ export const GooseProcess = {
       serve?: ServeMcp;
       protected?: boolean;
       mcp?: GooseMcp;
+      hook?: GooseHook;
       signal?: AbortSignal;
       onProcess?: (goose: AcpProcess) => void;
       agent?: Readonly<{ pubkey: string; relay: string }>;
@@ -210,7 +212,11 @@ export const GooseProcess = {
   ) => {
     const goose = await AcpProcess.start(
       spawn,
-      launch.mcp?.hooks(GOOSE) ?? GOOSE,
+      gooseHooks(
+        launch.mcp?.hooks(GOOSE) ?? GOOSE,
+        launch.protected ? undefined : launch.hook,
+        (session, input) => launch.mcp?.names(session, input) ?? {},
+      ),
       {
         ...launch,
         env: {

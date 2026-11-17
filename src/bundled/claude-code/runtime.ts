@@ -92,7 +92,7 @@ import {
 import { sessionPrompts } from "../../features/agents/session-prompts";
 import { standaloneSessions } from "../../features/agents/standalone-sessions";
 import { ClaudeProcess } from "./claude";
-import { configuredMcp, MCP_NOTE, nativeMcpGate } from "./mcp";
+import { configuredMcp, MCP_NOTE } from "./mcp";
 import type {
   HarnessMcpAnswer,
   HarnessMcpKit,
@@ -284,6 +284,7 @@ export class ClaudeRuntime {
       session: string,
       event: string,
       input: unknown,
+      turn?: import("./hooks").ClaudeTurn,
     ) => Promise<Record<string, unknown>> = async () => ({}),
     private readonly execution?: Agents["execution"],
     private readonly inspect?: Agents["inspectExecution"],
@@ -1884,7 +1885,6 @@ export class ClaudeRuntime {
                 mcp: {
                   choice,
                   servers,
-                  ...nativeMcpGate(this.mcp, handle),
                   started: (
                     session: string,
                     loaded: import("../../features/agents/harness-mcp").HarnessMcpLoaded,
@@ -1916,10 +1916,16 @@ export class ClaudeRuntime {
             : {}),
           ...(!this.target && directories ? { directories } : {}),
           ...(handle
-            ? { agent: { pubkey: handle.pubkey, relay: handle.relay } }
+            ? {
+                agent: {
+                  pubkey: handle.pubkey,
+                  relay: handle.relay,
+                  owner: handle.owner,
+                },
+              }
             : {}),
-          hook: (session, event, input) =>
-            this.hook(agent, session, event, input),
+          hook: (session, event, input, turn) =>
+            this.hook(agent, session, event, input, turn),
           tools: tools(cwd),
           systemPrompt: systemPrompt({
             scope,

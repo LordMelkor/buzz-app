@@ -121,12 +121,12 @@ export const apply: PluginModule["apply"] = (ctx) => {
     (raw, remote) => (remote ? config(raw) : providerDefaults.resolve(raw)),
     (agent) => agents.toolsFor(agent),
     repositoriesContext,
-    async (agent, session, event, input) => {
+    async (agent, session, event, input, turn) => {
       return ((await agents.dispatchHook(
         typeKey,
         event,
         input,
-        { agent, session },
+        { agent, session, ...(turn ? { turn } : {}) },
         {
           accepts: (output) =>
             !!output &&

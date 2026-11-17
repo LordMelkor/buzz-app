@@ -337,8 +337,6 @@ function applied({
         mcp: {
           choice: async () => undefined,
           started: vi.fn(),
-          call: async () => undefined,
-          ran: () => false,
         },
       },
       executionBinding: () => (remote ? { provider: "nexus/blox" } : undefined),

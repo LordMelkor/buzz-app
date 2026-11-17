@@ -204,6 +204,9 @@ function setup(
     getItem: (key: string) => data.get(key) ?? null,
     setItem: (key: string, value: string) => void data.set(key, value),
   } as Storage;
+  const hook = vi.fn<
+    NonNullable<ConstructorParameters<typeof GooseRuntime>[9]>
+  >(async () => ({}));
   const runtime = new GooseRuntime(
     host,
     () => relay,
@@ -215,6 +218,7 @@ function setup(
     localStore(storage),
     options.recommended,
     options.mcpKit,
+    hook,
   );
   const published: { kind: number; content: string; tags: string[][] }[] = [];
   const agent = {
@@ -258,6 +262,7 @@ function setup(
       prompt: async () => prompt,
     } as unknown as Parameters<GooseRuntime["runOnce"]>[0]);
   return {
+    hook,
     agent,
     core,
     deliver,
@@ -331,7 +336,6 @@ it("proves a protected Goose protocol session empty before admitting protection 
       },
     ],
     () => base,
-    () => false,
   );
   const guarded = mcp.require(base, running);
   if (!guarded) throw new Error("Expected guarded protection");
@@ -2761,17 +2765,6 @@ function provenanceKit() {
   return {
     choice: async () => ({ fixture: true }),
     started: () => {},
-    call: vi.fn(
-      async (
-        _agent: unknown,
-        _call: unknown,
-        options: { turn?: Pick<Delivery, "trigger"> },
-      ) => {
-        void options;
-        return undefined as string | undefined;
-      },
-    ),
-    ran: () => false,
   };
 }
 async function nativePermission(f: ReturnType<typeof setup>, id: string) {
@@ -2816,11 +2809,19 @@ it("keeps a queued owner message out of active unattended MCP provenance until i
     await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
     await f.deliver(message("2", "Owner next"), { model: "next-model" });
     await nativePermission(f, "before-next-prompt");
-    expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("plugin");
+    expect(
+      f.hook.mock.calls
+        .filter((call) => call[2] === "PermissionRequest")
+        .at(-1)?.[4]?.trigger.type,
+    ).toBe("plugin");
     f.goose()?.turns[0]?.finish();
     await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(2));
     await nativePermission(f, "after-next-prompt");
-    expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("mention");
+    expect(
+      f.hook.mock.calls
+        .filter((call) => call[2] === "PermissionRequest")
+        .at(-1)?.[4]?.trigger.type,
+    ).toBe("mention");
   } finally {
     f.runtime.dispose();
   }
@@ -2869,14 +2870,22 @@ it.each(["owner-first", "wake-first"] as const)(
       await boundary;
       // The native steer has been sent but cannot have replied. Its influence must already be tainted.
       await nativePermission(f, "during-held-steer");
-      expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("plugin");
+      expect(
+        f.hook.mock.calls
+          .filter((call) => call[2] === "PermissionRequest")
+          .at(-1)?.[4]?.trigger.type,
+      ).toBe("plugin");
       release();
       await steering;
       await vi.waitFor(() =>
         expect(f.goose()?.turns[0]?.steered).toHaveLength(1),
       );
       await nativePermission(f, "after-steer");
-      expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("plugin");
+      expect(
+        f.hook.mock.calls
+          .filter((call) => call[2] === "PermissionRequest")
+          .at(-1)?.[4]?.trigger.type,
+      ).toBe("plugin");
     } finally {
       release();
       f.runtime.dispose();
@@ -2912,7 +2921,11 @@ it("does not reuse an ended owner's provenance for a system compaction prompt", 
     );
     await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(2));
     await nativePermission(f, "compaction");
-    expect(kit.call.mock.calls.at(-1)?.[2].turn).toBeUndefined();
+    expect(
+      f.hook.mock.calls
+        .filter((call) => call[2] === "PermissionRequest")
+        .at(-1)?.[4],
+    ).toBeUndefined();
     const native = f.goose();
     const turn = native?.turns[1];
     if (!native || !turn) throw new Error("Compaction was not admitted");

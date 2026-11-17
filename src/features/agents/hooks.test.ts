@@ -1,6 +1,6 @@
 import { Context } from "@deepseek-ai/cordis";
 import { expect, it, vi } from "vitest";
-import { createAgentHooks } from "./hooks";
+import { conversationOf, createAgentHooks, directTrigger } from "./hooks";
 
 it("requires declared access and resolves active callbacks on every event", async () => {
   const root = new Context();
@@ -198,4 +198,38 @@ it("composes only the winning response with its registered plugin source", async
     ),
   ).resolves.toBeUndefined();
   expect(compose).not.toHaveBeenCalled();
+});
+
+it("calls a turn direct only for the owner's own message, and finds its conversation", () => {
+  const root = "e".repeat(64);
+  const message = {
+    type: "mention",
+    event: {
+      id: "m".repeat(64),
+      pubkey: "owner",
+      tags: [
+        ["h", "chan"],
+        ["e", root, "", "reply"],
+      ],
+    },
+  } as never;
+  const wake = {
+    type: "plugin",
+    plugin: "p",
+    channel: "c2",
+    root,
+    text: "",
+    id: "w",
+    at: 1,
+  } as never;
+  expect(directTrigger(message, "owner")).toBe(true);
+  expect(directTrigger(message, "someone else")).toBe(false);
+  expect(directTrigger(message, undefined)).toBe(false);
+  expect(directTrigger(wake, "owner")).toBe(false);
+  expect(conversationOf(message)).toEqual({
+    channel: "chan",
+    root,
+    message: "m".repeat(64),
+  });
+  expect(conversationOf(wake)).toEqual({ channel: "c2", root });
 });

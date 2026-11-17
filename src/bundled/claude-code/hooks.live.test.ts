@@ -1,16 +1,21 @@
 // @vitest-environment node
 import { createServer } from "node:http";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, access, rm } from "node:fs/promises";
+import { mkdtemp, access, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nativeHookOutput } from "../hook-output";
 import { ClaudeProcess } from "./claude";
 import { expect, it } from "vitest";
 
-it.skipIf(!process.env.CLAUDE_FACADE_BINARY).each(["deny", "throw"])(
-  "handles a real Claude SDK hook decision and recovers (%s)",
-  async (mode) => {
+it.skipIf(!process.env.CLAUDE_FACADE_BINARY).each([
+  { mode: "deny", native: false },
+  { mode: "throw", native: false },
+  { mode: "deny", native: true },
+  { mode: "throw", native: true },
+])(
+  "handles a real Claude SDK hook decision and recovers ($mode, native MCP=$native)",
+  async ({ mode, native }) => {
     const home = await mkdtemp(join(tmpdir(), "buzz-claude-hooks-")),
       marker = join(home, "executed");
 
@@ -19,6 +24,25 @@ it.skipIf(!process.env.CLAUDE_FACADE_BINARY).each(["deny", "throw"])(
     let toolHooks = 0;
     const controlResponses: { subtype: string; error?: string }[] = [];
     const observed: string[] = [];
+    const nativeInputs: { event: string; input: unknown }[] = [];
+    const fixture = join(home, "mcp.cjs");
+    if (native)
+      await writeFile(
+        fixture,
+        `
+      const { createInterface } = require("node:readline");
+      const { writeFileSync } = require("node:fs");
+      createInterface({ input: process.stdin }).on("line", line => {
+        const request = JSON.parse(line);
+        if (request.id === undefined) return;
+        let result = {};
+        if (request.method === "initialize") result = { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } };
+        if (request.method === "tools/list") result = { tools: [{ name: "write.marker", description: "Write the fixture marker", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }] };
+        if (request.method === "tools/call") { writeFileSync(request.params.arguments.path, "executed"); result = { content: [{ type: "text", text: "written" }] }; }
+        process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+      });
+    `,
+      );
     const server = createServer(async (req, res) => {
       let body = "";
       for await (const part of req) body += part;
@@ -49,11 +73,13 @@ it.skipIf(!process.env.CLAUDE_FACADE_BINARY).each(["deny", "throw"])(
         block = {
           type: "tool_use",
           id: `call_${modelCalls}`,
-          name: "Bash",
-          input: {
-            command: `touch ${modelCalls === 1 ? marker : `${marker}-recovery`}`,
-            description: "Fixture shell command",
-          },
+          name: native ? "mcp__alpha__write_marker" : "Bash",
+          input: native
+            ? { path: modelCalls === 1 ? marker : `${marker}-recovery` }
+            : {
+                command: `touch ${modelCalls === 1 ? marker : `${marker}-recovery`}`,
+                description: "Fixture shell command",
+              },
         };
       else block = { type: "text", text: "done" };
       const events: [string, Record<string, unknown>][] = [
@@ -147,15 +173,21 @@ it.skipIf(!process.env.CLAUDE_FACADE_BINARY).each(["deny", "throw"])(
           }
           env.ANTHROPIC_API_KEY = "fixture";
           env.ANTHROPIC_BASE_URL = baseUrl;
-          child = spawn(
-            process.env.CLAUDE_FACADE_BINARY ?? "",
-            [...(options?.args ?? [])],
-            {
-              cwd: home,
-              env,
-              stdio: ["pipe", "pipe", "pipe"],
-            },
-          );
+          const args = [...(options?.args ?? [])];
+          if (native) {
+            const at = args.indexOf("--mcp-config") + 1;
+            const config = JSON.parse(args[at] ?? "{}");
+            config.mcpServers.alpha = {
+              command: process.execPath,
+              args: [fixture],
+            };
+            args[at] = JSON.stringify(config);
+          }
+          child = spawn(process.env.CLAUDE_FACADE_BINARY ?? "", args, {
+            cwd: home,
+            env,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
           child.stdout.on("data", (d) => {
             options?.onStdout?.(d.toString());
           });
@@ -185,6 +217,15 @@ it.skipIf(!process.env.CLAUDE_FACADE_BINARY).each(["deny", "throw"])(
           cwd: home,
           systemPrompt: "This is a deterministic tool hook fixture.",
           model: "sonnet",
+          ...(native
+            ? {
+                mcp: {
+                  choice: { alpha: true },
+                  servers: [{ name: "alpha", default: true }],
+                  started: () => {},
+                },
+              }
+            : {}),
           tools: async (_session, message) => {
             const wire = message as { id?: number; method?: string };
             return {
@@ -202,8 +243,13 @@ it.skipIf(!process.env.CLAUDE_FACADE_BINARY).each(["deny", "throw"])(
                     : {},
             };
           },
-          hook: async (_session, name) => {
+          hook: async (_session, name, input) => {
             observed.push(name);
+            if (
+              native &&
+              ["PreToolUse", "PostToolUse", "PostToolUseFailure"].includes(name)
+            )
+              nativeInputs.push({ event: name, input });
             if (name === "PreToolUse" && ++toolHooks === 1 && mode === "throw")
               throw new Error("Fixture callback failed");
             return nativeHookOutput(
@@ -247,6 +293,24 @@ it.skipIf(!process.env.CLAUDE_FACADE_BINARY).each(["deny", "throw"])(
       }
       expect(outcome).toMatchObject({ ok: true });
       expect(observed).toContain("PreToolUse");
+      if (native) {
+        expect(nativeInputs).toContainEqual({
+          event: "PreToolUse",
+          input: expect.objectContaining({
+            tool_name: "mcp__alpha__write_marker",
+            mcp_server: "alpha",
+            mcp_tool: "write.marker",
+          }),
+        });
+        if (mode === "throw")
+          expect(nativeInputs).toContainEqual({
+            event: "PostToolUse",
+            input: expect.objectContaining({
+              mcp_server: "alpha",
+              mcp_tool: "write.marker",
+            }),
+          });
+      }
       expect(JSON.stringify(modelInputs)).toContain(
         "[Buzz plugin: fixture-policy] Fixture blocks the command",
       );

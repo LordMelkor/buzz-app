@@ -1,3 +1,4 @@
+import { GOOSE_HOOK_EVENTS } from "./hooks";
 import { repositoriesContext } from "../../features/communities/repositories";
 // goose agents: an agent type whose agents are goose on this computer, all in
 // one `goose-acp` process. Each conversation an agent is in is one ACP session
@@ -44,6 +45,38 @@ export const apply: PluginModule["apply"] = (ctx) => {
     agents.storage,
     recommended,
     agents.harness.mcp,
+    async (agent, session, event, input, turn) =>
+      ((await agents.dispatchHook(
+        typeKey,
+        event,
+        input,
+        { agent, session, ...(turn && { turn }) },
+        {
+          accepts: (output) => {
+            const value = output as
+              | { decision?: unknown; stop?: unknown }
+              | undefined;
+            return event === "PermissionRequest"
+              ? value?.decision === "allow" || value?.decision === "deny"
+              : typeof value?.stop === "string";
+          },
+          milliseconds: 25000,
+          compose: (output, pluginId) => {
+            const value = output as Record<string, unknown>;
+            return {
+              ...value,
+              ...Object.fromEntries(
+                ["reason", "stop"]
+                  .filter((key) => typeof value[key] === "string")
+                  .map((key) => [
+                    key,
+                    `[Buzz plugin: ${pluginId}] ${value[key]}`,
+                  ]),
+              ),
+            };
+          },
+        },
+      )) ?? {}) as Record<string, unknown>,
   );
   const desktop =
     host.spawn && host.resolveDirectory
@@ -115,6 +148,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
 
   agents.register<Config>({
     id: TYPE_ID,
+    hooks: { events: GOOSE_HOOK_EVENTS },
     harnessMcp: {
       report: (agent) => runtime.harnessMcp(agent),
       inspect: (agent, server) => runtime.inspectMcp(agent, server),

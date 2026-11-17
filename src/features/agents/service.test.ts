@@ -13,6 +13,7 @@ import { registerAttention } from "./attention-command";
 import { canMessageAgent, createAgentChoices, deletingAgent } from "./choices";
 import { createAgentLibrary } from "./library";
 import type { AttentionSource } from "./attention-sources";
+import type { AgentHookContext } from "./hooks";
 import { appClient } from "../../buzz-mcp/app-client";
 import type { AgentToolAuthority, AgentToolProof } from "./tool-operation";
 import { callAttentionTool } from "../../buzz-mcp/attention";
@@ -2159,19 +2160,25 @@ describe("a plugin's wake", () => {
     ).not.toThrow();
   });
 
-  it("tells the MCP control who started a turn only from the turn core delivered", async () => {
+  it("tells hook callbacks who started a turn only from the turn core delivered", async () => {
     const { service, run, plugin, ctx, native } = await setup();
     await service.create({ type: "example/echo", name: "Echo" });
     await held(native);
-    const asked = vi.fn(
-      (_seen: { direct: boolean; conversation?: unknown }) => undefined,
-    );
+    const seen = vi.fn((_input: unknown, _context: AgentHookContext) => ({}));
     const policy = ctx
-      .extend({ pluginOwner: { id: "mcp", revision: "one", agentMcp: true } })
-      .plugin((chooser) => {
-        chooser.agents.controlHarnessMcp({
-          choose: () => ({ alpha: true }),
-          call: asked,
+      .extend({
+        pluginOwner: {
+          id: "policy",
+          revision: "one",
+          agentHooks: ["example/hooked"],
+        },
+      })
+      .plugin((hooks) => {
+        hooks.agents.registerHook({
+          id: "watch",
+          harness: "example/hooked",
+          event: "BeforeTool",
+          run: seen,
         });
       });
     await policy.await();
@@ -2184,33 +2191,91 @@ describe("a plugin's wake", () => {
     try {
       await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
       const trigger = run.mock.calls[0]?.[0].trigger as Trigger;
-      const { mcp } = plugin.agents.harness;
-      mcp.started({ key: bot }, "s1", [], await mcp.choice({ key: bot }));
-      const ask = (id: string, turned: Trigger) =>
-        mcp.call(
-          { key: bot },
-          { session: "s1", id, server: "alpha", arguments: {} },
+      const dispatch = (turned?: Trigger) =>
+        plugin.agents.dispatchHook(
+          "example/hooked",
+          "BeforeTool",
+          {},
           {
-            hold: 1000,
-            signal: new AbortController().signal,
-            turn: { trigger: turned },
+            agent: bot,
+            session: "s1",
+            ...(turned && { turn: { trigger: turned } }),
           },
+          { accepts: () => false, milliseconds: 1000 },
         );
-      await ask("delivered", trigger);
-      await ask("copied", { ...trigger });
-      await ask("forged", {
+      await dispatch(trigger);
+      await dispatch({ ...trigger });
+      await dispatch({
         type: "mention",
         event: { pubkey: viewer, tags: [["h", channel]] },
       } as never);
-      expect(
-        asked.mock.calls.map(([seen]) => [seen.direct, seen.conversation]),
-      ).toEqual([
-        [false, { channel, root }],
-        [false, undefined],
-        [false, undefined],
+      await dispatch();
+      expect(seen.mock.calls.map(([, context]) => context)).toEqual([
+        {
+          agent: bot,
+          session: "s1",
+          direct: false,
+          conversation: { channel, root },
+        },
+        { agent: bot, session: "s1" },
+        { agent: bot, session: "s1" },
+        { agent: bot, session: "s1" },
       ]);
     } finally {
       finish();
+      await policy.dispose();
+    }
+  });
+
+  it("tells hook callbacks a turn the owner's own delivered mention started is direct", async () => {
+    const { service, run, plugin, ctx, emit } = await setup();
+    await service.create({ type: "example/echo", name: "Echo" });
+    await service.save(bot, { attentionEnabled: true });
+    const seen = vi.fn((_input: unknown, _context: AgentHookContext) => ({}));
+    const policy = ctx
+      .extend({
+        pluginOwner: {
+          id: "policy",
+          revision: "one",
+          agentHooks: ["example/hooked"],
+        },
+      })
+      .plugin((hooks) => {
+        hooks.agents.registerHook({
+          id: "watch",
+          harness: "example/hooked",
+          event: "BeforeTool",
+          run: seen,
+        });
+      });
+    await policy.await();
+    const mention = event("m", {
+      pubkey: viewer,
+      tags: [
+        ["h", channel],
+        ["p", bot],
+      ],
+    });
+    emit({ events: [mention], channelId: channel });
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+      const trigger = run.mock.calls[0]?.[0].trigger as Trigger;
+      await plugin.agents.dispatchHook(
+        "example/hooked",
+        "BeforeTool",
+        {},
+        { agent: bot, session: "s1", turn: { trigger } },
+        { accepts: () => false, milliseconds: 1000 },
+      );
+      expect(seen.mock.calls.map(([, context]) => context)).toEqual([
+        {
+          agent: bot,
+          session: "s1",
+          direct: true,
+          conversation: { channel, message: mention.id },
+        },
+      ]);
+    } finally {
       await policy.dispose();
     }
   });

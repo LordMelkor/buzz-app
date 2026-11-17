@@ -3,14 +3,8 @@ import {
   snapshotJSON,
   writeJSON,
 } from "../../features/agent-protection/json-stream";
-import { CLAUDE_HOOK_EVENTS, type ClaudeHook } from "./hooks";
-import {
-  mcpChoice,
-  mcpName,
-  mcpSettings,
-  type ClaudeMcp,
-  type ClaudeMcpTurn,
-} from "./mcp";
+import { CLAUDE_HOOK_EVENTS, type ClaudeHook, type ClaudeTurn } from "./hooks";
+import { mcpChoice, mcpName, mcpSettings, type ClaudeMcp } from "./mcp";
 import type { HarnessMcpServer } from "../../features/agents/harness-mcp";
 // One `claude` process driven over its stream-json protocol: the protocol the
 // Claude Agent SDK speaks to the same binary, so no Node runtime is needed. The
@@ -39,7 +33,7 @@ export type ActivityReceipt = Readonly<{
   acknowledged?: (input?: Readonly<{ steering?: true }>) => void;
   superseded?: () => void;
   /** Supplies the admitted origin before native writes, independently of replay acknowledgement. */
-  admitting?: (steered: boolean) => ClaudeMcpTurn | undefined;
+  admitting?: (steered: boolean) => ClaudeTurn | undefined;
 }>;
 
 export type Spawn = (
@@ -80,7 +74,7 @@ export type ClaudeLaunch = Readonly<{
   tools?: ToolServer;
   hook?: ClaudeHook;
   /** The agent it works for: the `buzz` it runs acts as that agent. */
-  agent?: Readonly<{ pubkey: string; relay: string }>;
+  agent?: Readonly<{ pubkey: string; relay: string; owner?: string }>;
 }>;
 
 /** Answers the in-process server's JSON-RPC for the conversation a process
@@ -150,7 +144,8 @@ export const ENV: Readonly<Record<string, string | null>> = {
 
 export class ClaudeProcess {
   private mcp: ClaudeMcp | undefined;
-  private mcpTurn: ClaudeMcpTurn | undefined;
+  private owner: string | undefined;
+  private hookTurn: ClaudeTurn | undefined;
   private mcpServers: readonly HarnessMcpServer[] = [];
   private mcpToolCatalog = new Map<string, readonly string[]>();
   private mcpToolNames = new Map<
@@ -158,11 +153,6 @@ export class ClaudeProcess {
     { server: string; tool: string } | null
   >();
   private readonly buzzMcpTools = new Set<string>();
-  private readonly unknownMcpCalls = new Map<string, string>();
-  private readonly mcpCalls = new Map<
-    string,
-    { session: string; id: string; server: string; tool?: string }
-  >();
   private protection: ClaudeProtection | undefined;
   private protectionLifetime = new AbortController();
   private protectedInstructions = "";
@@ -323,12 +313,7 @@ export class ClaudeProcess {
           ? ["--strict-mcp-config"]
           : []),
         ...(launch.mcp
-          ? [
-              "--permission-prompt-tool",
-              "stdio",
-              "--settings",
-              JSON.stringify(mcpSettings(launch.mcp)),
-            ]
+          ? ["--settings", JSON.stringify(mcpSettings(launch.mcp))]
           : []),
         ...(launch.discovery
           ? [
@@ -468,13 +453,16 @@ export class ClaudeProcess {
     if (launch.agent)
       // An inherited token that acts for nobody fails every `buzz` call, so a
       // process that cannot act as its agent is stopped, as other harnesses do.
-      await this.process.actAs?.(launch.agent).catch((error: unknown) => {
-        void this.kill();
-        throw error;
-      });
+      await this.process
+        .actAs?.({ pubkey: launch.agent.pubkey, relay: launch.agent.relay })
+        .catch((error: unknown) => {
+          void this.kill();
+          throw error;
+        });
     try {
       if (launch.tools) this.tools = launch.tools;
       this.mcp = launch.mcp;
+      this.owner = launch.agent?.owner;
       this.mcpServers = launch.mcp?.servers ?? [];
       this.hook = launch.protection ? undefined : launch.hook;
       const { written, answer } = this.request({
@@ -752,14 +740,14 @@ export class ClaudeProcess {
       });
     const steered = this.active;
     const admitted = activity.admitting?.(steered);
-    if (this.mcp) {
-      const prior = this.mcpTurn?.trigger;
-      if (
-        !steered ||
-        (prior?.type === "mention" && prior.event.pubkey === this.mcp.owner)
-      )
-        this.mcpTurn = admitted || undefined;
-    }
+    // Steering can reduce the turn's trust, never restore an owner's origin
+    // after work from another source joined the same native turn.
+    const prior = this.hookTurn?.trigger;
+    if (
+      !steered ||
+      (prior?.type === "mention" && prior.event.pubkey === this.owner)
+    )
+      this.hookTurn = admitted || undefined;
     // The model first: effort applies to whichever model runs.
     this.setModel(model !== undefined || !this.busy ? model : this.pickedModel);
     this.setEffort(effort !== undefined || !this.busy ? effort : this.effort);
@@ -912,7 +900,7 @@ export class ClaudeProcess {
   private settle(settled: Settled) {
     this.callEpoch++;
     this.pending = 0;
-    if (!this.active) this.mcpTurn = undefined;
+    if (!this.active) this.hookTurn = undefined;
     this.receipts.clear();
     this.activeReceipts.clear();
     this.lastError = undefined;
@@ -958,7 +946,6 @@ export class ClaudeProcess {
     }
     if (typeof message.session_id === "string" && message.session_id)
       this.sessionId = message.session_id;
-    if (this.mcp) this.recordMcp(message);
     if (message.type === "system" && message.subtype === "init") {
       this.began = true;
       // A picked model is not the session's own.
@@ -987,7 +974,7 @@ export class ClaudeProcess {
       if (!this.working) this.callEpoch++;
       // A turn of its own, such as a background task's, is new work.
       if (starts) {
-        this.mcpTurn = undefined;
+        this.hookTurn = undefined;
         this.renew();
       }
       if (!this.working && this.pending) this.done();
@@ -1083,73 +1070,31 @@ export class ClaudeProcess {
     const tool = tools?.length === 1 ? tools[0] : undefined;
     return tool === undefined ? undefined : { server, tool };
   }
-  private nativeCall(name: unknown, server?: unknown) {
+  private nativeCall(name: unknown) {
     if (typeof name !== "string" || !name.startsWith("mcp__")) return;
-    if (typeof server === "string")
-      return server !== TOOL_SERVER
-        ? this.catalogCall(name, server)
-        : undefined;
     const found = this.mcpToolNames.get(name);
     return found?.server !== TOOL_SERVER ? (found ?? undefined) : undefined;
   }
-  private externalMcp(name: unknown, server?: unknown) {
-    if (typeof name !== "string" || !name.startsWith("mcp__")) return false;
-    if (typeof server === "string")
-      return (
-        server !== TOOL_SERVER || !name.startsWith(`mcp__${TOOL_SERVER}__`)
-      );
-    const found = this.mcpToolNames.get(name);
-    return found === undefined
-      ? !this.buzzMcpTools.has(name)
-      : found?.server !== TOOL_SERVER;
-  }
-  private recordMcp(message: Message) {
-    const blocks = (message.message as Message | undefined)?.content;
-    if (!Array.isArray(blocks)) return;
-    for (const block of blocks) {
-      if (block?.type === "tool_use" && typeof block.id === "string") {
-        const native = this.nativeCall(block.name);
-        if (native)
-          this.mcpCalls.set(block.id, {
-            ...native,
-            session: this.sessionId ?? "initial",
-            id: block.id,
-          });
-        else if (this.externalMcp(block.name))
-          this.unknownMcpCalls.set(block.id, block.name);
-      }
-      if (block?.type === "tool_result") {
-        const call = this.mcpCalls.get(block.tool_use_id);
-        const unknown = this.unknownMcpCalls.get(block.tool_use_id);
-        this.unknownMcpCalls.delete(block.tool_use_id);
-        this.mcpCalls.delete(block.tool_use_id);
-        const meta = Array.isArray(message.tool_result_meta)
-          ? message.tool_result_meta.find(
-              (item) => item?.id === block.tool_use_id,
-            )
-          : undefined;
-        if (
-          !meta &&
-          block.is_error === true &&
-          block.content ===
-            `<tool_use_error>Error: No such tool available: ${unknown ?? (call && `mcp__${mcpName(call.server)}__${mcpName(call.tool ?? "")}`)}</tool_use_error>`
-        )
-          continue;
-        const rejected = meta?.permission_decision?.decision === "reject";
-        if (!call) {
-          if (unknown && !rejected) {
-            this.lastError =
-              "Claude ran an MCP tool whose server could not be verified";
-            void this.kill();
-          }
-          continue;
-        }
-        if (
-          this.mcp?.ran?.({ ...call, ...(rejected ? { rejected: true } : {}) })
-        )
-          void this.interrupt().catch(() => this.kill());
-      }
-    }
+  /** Raw MCP identity is metadata, never inferred from lossy name segments. */
+  private hookInput(event: string, input: unknown) {
+    if (!["PreToolUse", "PostToolUse", "PostToolUseFailure"].includes(event))
+      return input;
+    if (!input || typeof input !== "object" || Array.isArray(input))
+      return input;
+    const {
+      mcp_server: _server,
+      mcp_tool: _tool,
+      mcp_unresolved: _unresolved,
+      ...value
+    } = input as Message;
+    const native = this.nativeCall(value.tool_name);
+    return native
+      ? { ...value, mcp_server: native.server, mcp_tool: native.tool }
+      : typeof value.tool_name === "string" &&
+          value.tool_name.startsWith("mcp__") &&
+          !this.buzzMcpTools.has(value.tool_name)
+        ? { ...value, mcp_unresolved: true }
+        : value;
   }
   private done() {
     const error = this.lastError;
@@ -1202,7 +1147,10 @@ export class ClaudeProcess {
           | Message
           | undefined
       )?.result as Message | undefined;
-      if (this.mcp && Array.isArray(listed?.tools))
+      if (
+        (request.message as Message | undefined)?.method === "tools/list" &&
+        Array.isArray(listed?.tools)
+      )
         for (const tool of listed.tools)
           if (typeof tool?.name === "string")
             this.buzzMcpTools.add(`mcp__${TOOL_SERVER}__${tool.name}`);
@@ -1375,60 +1323,6 @@ export class ClaudeProcess {
       } finally {
         releaseHistory();
       }
-    } else if (
-      request.subtype === "can_use_tool" &&
-      this.mcp &&
-      this.externalMcp(
-        request.tool_name,
-        (request.mcp_server as Message | undefined)?.name,
-      )
-    ) {
-      const native = this.nativeCall(
-        request.tool_name,
-        (request.mcp_server as Message | undefined)?.name,
-      );
-      if (!native || typeof request.tool_use_id !== "string") {
-        response = success({
-          behavior: "deny",
-          message: "The native MCP tool could not be verified",
-        });
-        return this.write({ type: "control_response", response }).catch(
-          () => undefined,
-        );
-      }
-      if (!this.pending && !this.working) this.mcpTurn = undefined;
-      const signal = AbortSignal.any([
-        this.protectionLifetime.signal,
-        this.workLifetime.signal,
-      ]);
-      const call = {
-        ...native,
-        session: this.sessionId ?? "initial",
-        id: String(request.tool_use_id ?? id),
-        arguments: request.input,
-      };
-      this.mcpCalls.set(call.id, {
-        ...native,
-        session: call.session,
-        id: call.id,
-      });
-      this.unknownMcpCalls.delete(call.id);
-      let reason: string | undefined;
-      try {
-        reason = this.mcp.call
-          ? await (this.mcpTurn
-              ? this.mcp.call(call, signal, this.mcpTurn)
-              : this.mcp.call(call, signal))
-          : "The MCP control is unavailable";
-      } catch {
-        reason = "The MCP control failed";
-      }
-      if (signal.aborted) reason = "The MCP call was cancelled";
-      response = success(
-        reason !== undefined
-          ? { behavior: "deny", message: reason }
-          : { behavior: "allow", updatedInput: request.input ?? {} },
-      );
     } else if (request.subtype === "can_use_tool")
       response = success({
         behavior: this.protection ? "deny" : "allow",
@@ -1446,7 +1340,8 @@ export class ClaudeProcess {
             ? ((await this.hook?.(
                 this.sessionId ?? "",
                 event,
-                request.input,
+                this.hookInput(event, request.input),
+                this.hookTurn,
               )) ?? {})
             : request.callback_id === "final" && this.final(request.input)
               ? { continue: false }

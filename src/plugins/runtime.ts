@@ -1,9 +1,15 @@
 import type { Context, Fiber } from "@deepseek-ai/cordis";
-import type { PluginModule } from "./api";
+import type { PluginManifest, PluginModule } from "./api";
 import type { PluginInfo } from "./types";
 import { withTimeout } from "./timeout.ts";
 import { bundledOwner } from "./provenance";
-import type {} from "./status";
+import type { HostAccess } from "./status";
+
+/** Whether `manifest` asks for host `access`: true, or a list naming any. */
+export function declares(manifest: PluginManifest, access: HostAccess) {
+  const value = manifest.host?.[access];
+  return Array.isArray(value) ? value.length > 0 : !!value;
+}
 
 export type PluginState = {
   revision: string;
@@ -42,21 +48,21 @@ export class PluginRuntime {
     timeoutMs = 10_000,
     /** Whether the manager is still reading which plugins to run. */
     configuring = () => false,
-    /** Whether an enabled plugin that may choose harness MCP servers can't
-     * start, so it never reaches this adapter. */
-    blocked = () => false,
+    /** Whether an enabled plugin declaring this access can't start, so it
+     * never reaches the runtime. */
+    blocked: (access: HostAccess) => boolean = () => false,
   ) {
     this.root = root;
     this.load = load;
     root.provide("pluginStatus", {
       isActive: this.isActive,
       subscribe: this.subscribe,
-      agentMcpUnavailable: () =>
-        blocked() ||
+      unavailable: (access: HostAccess) =>
+        blocked(access) ||
         [...this.entries.values()].some(
           ({ plugin, cancelled }) =>
             !cancelled &&
-            plugin.manifest.host?.agentMcp &&
+            declares(plugin.manifest, access) &&
             !this.isActive(plugin.manifest.id, plugin.revision),
         ),
       settled: () =>

@@ -1,17 +1,12 @@
 import type {
   HarnessMcpAnswer,
-  HarnessMcpCall as Call,
   HarnessMcpChoice,
-  HarnessMcpKit,
   HarnessMcpLoaded,
   HarnessMcpServer,
 } from "../../features/agents/harness-mcp";
-import type { AgentHandle, Delivery } from "../../features/agents/service";
 import type { Host } from "../../features/host/service";
 
-export type ClaudeMcpTurn = Pick<Delivery, "trigger">;
 export type ClaudeMcp = Readonly<{
-  owner?: string;
   choice: HarnessMcpAnswer;
   servers: readonly HarnessMcpServer[];
   inspect?: string;
@@ -21,12 +16,6 @@ export type ClaudeMcp = Readonly<{
     applied: HarnessMcpChoice | "none",
     servers: readonly HarnessMcpServer[],
   ): void;
-  call?(
-    call: Call,
-    signal: AbortSignal,
-    turn?: ClaudeMcpTurn,
-  ): Promise<string | undefined>;
-  ran?(call: Omit<Call, "arguments"> & { rejected?: boolean }): boolean;
 }>;
 export const MCP_NOTE =
   "Servers from other sources appear after this agent’s next session.";
@@ -124,7 +113,6 @@ export function mcpSettings(mcp: ClaudeMcp) {
       ...(mcp.inspect ? [{ serverName: "buzz" }] : []),
     ],
     permissions: {
-      ask: choice === "none" ? [] : ["mcp__*"],
       deny:
         choice === "none"
           ? []
@@ -136,22 +124,5 @@ export function mcpSettings(mcp: ClaudeMcp) {
                 : [],
             ),
     },
-  };
-}
-
-/** The only gate-to-core binding; execution targets never receive it. */
-export function nativeMcpGate(
-  kit: HarnessMcpKit,
-  agent: AgentHandle,
-): Pick<ClaudeMcp, "call" | "ran" | "owner"> {
-  return {
-    owner: agent.owner,
-    call: (call, signal, context) =>
-      kit.call(agent, call, {
-        hold: 120_000,
-        signal,
-        ...(context ? { turn: context } : {}),
-      }),
-    ran: (call) => kit.ran(agent, call),
   };
 }

@@ -81,8 +81,10 @@ import {
   createAgentHooks,
   dispatchAgentHooks,
   type AgentHook,
-  type AgentHookContext,
   type AgentHookDispatchOptions,
+  type AgentHookRouting,
+  conversationOf,
+  directTrigger,
 } from "./hooks";
 import { ownerReads } from "./reads";
 import { createToolOperation, type AgentToolProvider } from "./tool-operation";
@@ -1440,12 +1442,14 @@ export type Agents = {
     agent: AgentKey,
     server: string,
   ): Promise<readonly HarnessMcpTool[]>;
-  /** Dispatches hooks for this plugin's agent types in contribution order. */
+  /** Dispatches hooks for this plugin's agent types in contribution order.
+   * With `turn`, callbacks also get `direct` and `conversation`, when core
+   * delivered that turn's trigger to the agent. */
   dispatchHook(
     harness: string,
     event: string,
     input: unknown,
-    context: AgentHookContext,
+    context: AgentHookRouting,
     options: AgentHookDispatchOptions,
   ): Promise<unknown>;
   /** Registers a deterministic source owned by this plugin. Attention controls
@@ -2118,7 +2122,7 @@ export class AgentsService extends Service implements Agents {
     harness: string,
     event: string,
     input: unknown,
-    context: AgentHookContext,
+    { agent, session, turn }: AgentHookRouting,
     options: AgentHookDispatchOptions,
   ) {
     const owner = this.ctx.pluginOwner;
@@ -2126,10 +2130,22 @@ export class AgentsService extends Service implements Agents {
       throw new Error(
         "Plugins can dispatch hooks only for their own agent types",
       );
+    // Only a turn core delivered to this agent says who started it.
+    const trigger =
+      turn && this.runners.delivered(agent, turn.trigger)
+        ? turn.trigger
+        : undefined;
+    const conversation = trigger && conversationOf(trigger);
+    const running = this.state.running.find((each) => each.key === agent);
     return dispatchAgentHooks(
       this.hookContributions.handlers(harness, event),
       input,
-      context,
+      {
+        agent,
+        session,
+        ...(trigger && { direct: directTrigger(trigger, running?.owner) }),
+        ...(conversation && { conversation }),
+      },
       options.accepts,
       options.milliseconds,
       options.compose,
@@ -3578,7 +3594,6 @@ export class AgentsService extends Service implements Agents {
     (key) => this.state.running.find((agent) => agent.key === key),
     () => this.types(),
     (agent) => this.protection.bind(agent),
-    (key, trigger) => this.runners.delivered(key, trigger),
   );
   private readonly harnessShared = harnessKit({
     relay: (key) => this.relay(key),

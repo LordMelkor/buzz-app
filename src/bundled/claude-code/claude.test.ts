@@ -1071,7 +1071,7 @@ describe("stepLabel", () => {
 
 it("dispatches SDK callbacks using the process session, independent of payload claims", async () => {
   const { spawn, processes } = fakeSpawn();
-  const hook = vi.fn(async () => ({
+  const hook = vi.fn<import("./hooks").ClaudeHook>(async () => ({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
@@ -1080,6 +1080,11 @@ it("dispatches SDK callbacks using the process session, independent of payload c
   const process = await ClaudeProcess.start(spawn, {
     ...launch,
     sessionId: "owned",
+    agent: {
+      pubkey: "a".repeat(64),
+      relay: "wss://relay.example",
+      owner: "b".repeat(64),
+    },
     tools: async () => ({}),
     hook,
   });
@@ -1095,10 +1100,15 @@ it("dispatches SDK callbacks using the process session, independent of payload c
     },
   });
   await flush();
-  expect(hook).toHaveBeenCalledWith("owned", "PreToolUse", {
-    session_id: "forged",
-    tool_name: "Bash",
-  });
+  expect(hook).toHaveBeenCalledWith(
+    "owned",
+    "PreToolUse",
+    {
+      session_id: "forged",
+      tool_name: "Bash",
+    },
+    undefined,
+  );
   expect(fake.received).toContainEqual({
     type: "control_response",
     response: {

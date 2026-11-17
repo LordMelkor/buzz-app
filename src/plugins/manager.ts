@@ -1,6 +1,6 @@
 import { createPluginStorage, type PluginStorage } from "./storage";
 import * as React from "react";
-import { PluginRuntime } from "./runtime";
+import { declares, PluginRuntime } from "./runtime";
 import type { Context } from "@deepseek-ai/cordis";
 import type { PluginManifest, PluginModule } from "./api";
 import { createModuleLoader } from "./modules";
@@ -87,14 +87,14 @@ export function createPluginManager(
     () =>
       configuration.status === "loading" ||
       (configuration.status === "recovery" && !configuration.canReset),
-    // A catalog error keeps it from starting, but it still controls MCP.
-    () =>
+    // A catalog error keeps it from starting, but its access still counts.
+    (access) =>
       configuration.status === "ready" &&
       configuration.catalog.plugins.some(
         (plugin) =>
           plugin.enabled &&
           !!plugin.error &&
-          !!plugin.manifest.host?.agentMcp &&
+          declares(plugin.manifest, access) &&
           !builtInIds.has(plugin.manifest.id),
       ),
   );

@@ -34,7 +34,7 @@ import {
   workflowOf,
 } from "../../features/agents/owner-attestation";
 import { type AgentKey, pubkeyOf } from "../../features/agents/membership";
-import { directTrigger } from "../../features/agents/harness-mcp";
+import { directTrigger } from "../../features/agents/hooks";
 import { sessionPrompts } from "../../features/agents/session-prompts";
 import { standaloneSessions } from "../../features/agents/standalone-sessions";
 import { localStore, type AgentStore } from "../../features/agents/store";

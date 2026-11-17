@@ -7,6 +7,8 @@
 // goose acts in Buzz with the in-process Buzz tools over loopback HTTP MCP,
 // signed by the agent's native-held key; the runtime only reports a turn that
 // fails.
+import type { GooseHook } from "./hooks";
+import type { AgentHookRouting } from "../../features/agents/hooks";
 import { GooseMcp } from "./mcp";
 import type { HarnessMcpKit } from "../../features/agents/harness-mcp";
 import type { Context } from "../../buzz-mcp/client";
@@ -140,7 +142,9 @@ export function sessionTitle(
 
 type Entry = {
   mcp?: GooseMcp;
-  mcpTurns: Map<
+  /** Native metadata/inspection processes, retained until their exit. */
+  inspections: Map<() => Promise<void>, Promise<unknown>>;
+  hookTurns: Map<
     string,
     { turn: Pick<Delivery, "trigger">; current(): boolean }
   >;
@@ -204,6 +208,13 @@ export class GooseRuntime {
     /** What agents on Recommended run on; found at the first such run. */
     private readonly recommended?: RecommendedRun,
     private readonly mcpKit?: HarnessMcpKit,
+    private readonly hook?: (
+      agent: string,
+      session: string,
+      event: Parameters<GooseHook>[1],
+      input: Record<string, unknown>,
+      turn?: AgentHookRouting["turn"],
+    ) => Promise<Record<string, unknown>>,
   ) {
     // Once found, agents on Recommended take it up.
     this.unfollow = recommended?.subscribe(() => this.sync(this.synced));
@@ -250,30 +261,44 @@ export class GooseRuntime {
       return mcp.inspect(process, cwd, server, entry.lifetime.signal);
     });
   }
-  private async nativeMcp<T>(
+  private nativeMcp<T>(
     entry: Entry,
     run: (process: GooseProcess, cwd: string) => Promise<T>,
   ) {
     const signal = entry.lifetime.signal;
-    signal.throwIfAborted();
     let process: GooseProcess | undefined;
-    const cancel = () => void process?.kill();
-    signal.addEventListener("abort", cancel, { once: true });
-    try {
-      const cwd = await this.desktop.resolveDirectory("~");
-      process = await GooseProcess.start(this.desktop.spawn, {
-        cwd,
-        signal,
-        onProcess: (p) => {
-          process = p;
-        },
-      });
-      signal.throwIfAborted();
-      return await run(process, cwd);
-    } finally {
-      signal.removeEventListener("abort", cancel);
-      await process?.stop(5_000);
-    }
+    const cancel = () => void process?.kill().catch(() => undefined);
+    const stop = async () => {
+      if (process) {
+        await process.kill();
+        await process.exited;
+      }
+      entry.inspections.delete(stop);
+    };
+    const done = Promise.resolve().then(async () => {
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        signal.throwIfAborted();
+        const cwd = await this.desktop.resolveDirectory("~");
+        signal.throwIfAborted();
+        // Keep ownership of a pending spawn through cancellation. The process
+        // callback stops a late spawn; cleanup still waits for its actual exit.
+        process = await GooseProcess.start(this.desktop.spawn, {
+          cwd,
+          onProcess: (p) => {
+            process = p;
+            if (signal.aborted) cancel();
+          },
+        });
+        signal.throwIfAborted();
+        return await run(process, cwd);
+      } finally {
+        signal.removeEventListener("abort", cancel);
+        await stop();
+      }
+    });
+    entry.inspections.set(stop, done);
+    return done;
   }
 
   /** What each of the agent's sessions started with. */
@@ -329,6 +354,18 @@ export class GooseRuntime {
         } catch (error) {
           failure = { error };
         }
+        const inspections = await Promise.allSettled(
+          [...(entry?.inspections ?? [])].map(async ([stop, done]) => {
+            await done.catch(() => undefined);
+            // A failed kill retains its owner so retirement can retry it.
+            if (entry?.inspections.has(stop)) await stop();
+          }),
+        );
+        const rejected = inspections.find(
+          (result) => result.status === "rejected",
+        );
+        if (rejected?.status === "rejected")
+          failure ??= { error: rejected.reason };
         try {
           await entry?.stopping;
           await entry?.worker?.shutdown();
@@ -616,7 +653,7 @@ export class GooseRuntime {
           );
           delivered = entry.sessions.deliver(key, text, shown, {
             admitting: (steered) => {
-              const prior = entry.mcpTurns.get(key);
+              const prior = entry.hookTurns.get(key);
               const direct = (turn: Pick<Delivery, "trigger">) =>
                 turn.trigger.type === "mention" &&
                 turn.trigger.event.pubkey === agent.owner;
@@ -627,7 +664,7 @@ export class GooseRuntime {
                 !direct({ trigger }) ||
                 (prior?.current() && direct(prior.turn))
               )
-                entry.mcpTurns.set(key, {
+                entry.hookTurns.set(key, {
                   turn: { trigger },
                   current: entry.sessions.current(key),
                 });
@@ -934,8 +971,10 @@ export class GooseRuntime {
       throw new Error("This agent’s previous native sessions have not retired");
     const existing = this.agents.get(agent);
     if (existing) return existing;
+    const hook = this.hook;
     const entry: Entry = {
       lifetime: new AbortController(),
+      inspections: new Map(),
       config: initial,
       team: "",
       sessions: undefined as unknown as AgentSessions,
@@ -948,20 +987,25 @@ export class GooseRuntime {
         undefined,
         () => entry.handle,
         () => entry.mcp,
+        hook &&
+          ((session, event, input) => {
+            const admitted = entry.hookTurns.get(session.conversation ?? "");
+            return hook(
+              agent,
+              session.id,
+              event,
+              input,
+              event !== "PromptSubmit" && admitted?.current()
+                ? admitted.turn
+                : undefined,
+            );
+          }),
       ),
       contexts: new Map(),
-      mcpTurns: new Map(),
+      hookTurns: new Map(),
       policies: new Map(),
     };
-    if (this.mcpKit)
-      entry.mcp = new GooseMcp(
-        this.mcpKit,
-        () => entry.handle,
-        (session) => {
-          const admitted = entry.mcpTurns.get(session.conversation ?? "");
-          return admitted?.current() ? admitted.turn : undefined;
-        },
-      );
+    if (this.mcpKit) entry.mcp = new GooseMcp(this.mcpKit, () => entry.handle);
     // Every session of the agent shares them, so they read the settings, the
     // handle and the conversation's place as they are when called.
     const tools: ToolServer = async (conversation, message, workSignal) => {

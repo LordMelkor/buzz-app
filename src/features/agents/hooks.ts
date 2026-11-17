@@ -1,12 +1,50 @@
 import { withTimeout } from "../../plugins/timeout";
 import type { Context } from "@deepseek-ai/cordis";
 import { createContributions } from "../../plugins/contributions";
+import { threadReference } from "../relay/thread-reference";
+import type { Delivery, Trigger } from "./service";
 
-/** Trusted routing supplied by the harness adapter, never by hook input. */
+/** Trusted routing supplied by the harness adapter, never by hook input.
+ * `direct` and `conversation` come from the turn the event belongs to, and
+ * only when core delivered that turn to the agent: absent, nothing says who
+ * started it. */
 export type AgentHookContext = Readonly<{
   agent: string;
   session: string;
+  /** The owner's own signed message started the turn, and every request the
+   * turn took since was one too. */
+  direct?: boolean;
+  /** Where the turn's trigger came from; `message`: the event that started it. */
+  conversation?: Readonly<{ channel: string; root?: string; message?: string }>;
 }>;
+/** What an adapter passes when it dispatches: the routing, and the turn it
+ * says the event belongs to, which core checks before plugins see it. */
+export type AgentHookRouting = Readonly<{
+  agent: string;
+  session: string;
+  turn?: Pick<Delivery, "trigger">;
+}>;
+
+/** Whether `trigger` is the owner's own signed message. A wake, a watch and an
+ * attested sibling's message are not. */
+export const directTrigger = (trigger: Trigger, owner: string | undefined) =>
+  trigger.type === "mention" && !!owner && trigger.event.pubkey === owner;
+/** The conversation a trigger came from, when it names one. */
+export function conversationOf(
+  trigger: Trigger,
+): AgentHookContext["conversation"] {
+  if ("channel" in trigger)
+    return {
+      channel: trigger.channel,
+      ...(trigger.root && { root: trigger.root }),
+    };
+  if (!("event" in trigger)) return undefined;
+  const channel = trigger.event.tags.find((tag) => tag[0] === "h")?.[1];
+  const root = threadReference(trigger.event)?.rootId;
+  return channel
+    ? { channel, ...(root && { root }), message: trigger.event.id }
+    : undefined;
+}
 /** Event names, input and output formats belong to the selected agent type. */
 export type AgentHook = Readonly<{
   id: string;

@@ -4,6 +4,7 @@ import type { Agent } from "../../features/agents/service";
 import type { Host } from "../../features/host/service";
 import { GooseProcess } from "./goose";
 import { native, transport } from "./mcp-testing";
+import type { GooseHook } from "./hooks";
 import { GooseMcp } from "./mcp";
 import { GooseRuntime, DEFAULT_CONFIG } from "./runtime";
 
@@ -18,15 +19,15 @@ async function setup(initial: HarnessMcpAnswer = { fixture: true }) {
   const kit = {
     choice: vi.fn(async () => choice),
     started: vi.fn(),
-    call: vi.fn(async () => undefined as string | undefined),
-    ran: vi.fn(() => false),
   };
+  const hook = vi.fn<GooseHook>(async () => ({}));
   const who = { key: "agent@example.org" };
   const mcp = new GooseMcp(kit, () => who);
   const goose = await GooseProcess.start(wire.spawn, {
     cwd: "/work",
     serve: wire.fake.serve,
     mcp,
+    hook,
   });
   const open = () =>
     goose.open({ cwd: "/work", systemPrompt: "", tools: async () => ({}) });
@@ -41,6 +42,7 @@ async function setup(initial: HarnessMcpAnswer = { fixture: true }) {
     ...wire,
     native: present(wire.fake.geese[0]),
     kit,
+    hook,
     who,
     goose,
     mcp,
@@ -138,7 +140,7 @@ describe("Goose native MCP sessions", () => {
     },
   );
 
-  it("reports preallow only from native permission metadata", async () => {
+  it("keeps the tool catalog independent of native approval preferences", async () => {
     const t = await setup();
     try {
       t.permission("write_marker", "always_allow");
@@ -151,7 +153,7 @@ describe("Goose native MCP sessions", () => {
       );
       expect(tools).toEqual([
         { name: "read_echo", description: "read_echo" },
-        { name: "write_marker", description: "write_marker", ungated: true },
+        { name: "write_marker", description: "write_marker" },
       ]);
       expect((await t.mcp.report(t.goose)).servers[0]?.tools).toEqual(tools);
       t.permission("write_marker", null);
@@ -171,63 +173,11 @@ describe("Goose native MCP sessions", () => {
     }
   });
 
-  it("carries preallow provenance from each session's own native readback", async () => {
-    const t = await setup();
-    try {
-      t.permission("write_marker", "always_allow");
-      const a = await t.open();
-      const first = await t.finish(a);
-      t.permission("write_marker", null);
-      const b = await t.open();
-      const second = await t.finish(b);
-      // A later inspection can update the report, but cannot preallow B retroactively.
-      t.permission("write_marker", "always_allow");
-      await t.mcp.inspect(
-        t.goose,
-        "/work",
-        "fixture",
-        new AbortController().signal,
-      );
-      for (const [session, id] of [
-        [a, "preallowed"],
-        [b, "unknown"],
-      ] as const) {
-        t.native.update(session.id, update(id));
-        t.native.update(session.id, {
-          sessionUpdate: "tool_call_update",
-          toolCallId: id,
-          status: "completed",
-        });
-      }
-      await vi.waitFor(() => expect(t.kit.ran).toHaveBeenCalledTimes(2));
-      expect(t.kit.ran).toHaveBeenNthCalledWith(1, t.who, {
-        session: a.id,
-        id: "preallowed",
-        server: "fixture",
-        tool: "write_marker",
-        ungated: true,
-      });
-      expect(t.kit.ran).toHaveBeenNthCalledWith(2, t.who, {
-        session: b.id,
-        id: "unknown",
-        server: "fixture",
-        tool: "write_marker",
-      });
-      present(t.native.turns[0]).finish();
-      present(t.native.turns[1]).finish();
-      await first.done;
-      await second.done;
-    } finally {
-      await t.goose.kill();
-    }
-  });
-
   it("reports metadata without a session or startup, and marks native disabled state", async () => {
     const t = await setup();
     try {
       expect(await t.mcp.report(t.goose)).toMatchObject({
         tools: true,
-        calls: true,
         servers: [
           { name: "fixture", default: false },
           { name: "other", default: false, state: "disabled" },
@@ -236,6 +186,7 @@ describe("Goose native MCP sessions", () => {
       expect(JSON.stringify(await t.mcp.report(t.goose))).not.toMatch(
         /fixture-secret|private-config|TOKEN/,
       );
+      expect(await t.mcp.report(t.goose)).not.toHaveProperty("calls");
       expect(t.native.opened).toEqual([]);
     } finally {
       await t.goose.kill();
@@ -434,52 +385,6 @@ describe("Goose native MCP sessions", () => {
     }
   });
 
-  it("keeps admitted tool provenance local when other sessions and inspection change the report", async () => {
-    const t = await setup();
-    try {
-      const a = await t.open();
-      const first = await t.finish(a);
-      t.choose({ fixture: ["write_marker"] });
-      const b = await t.open();
-      const second = await t.finish(b);
-      t.native.update(a.id, update("executed-error"));
-      t.native.update(a.id, {
-        sessionUpdate: "tool_call_update",
-        toolCallId: "executed-error",
-        status: "failed",
-        content: [{ text: "Fixture dependency not available" }],
-      });
-      await vi.waitFor(() => expect(t.kit.ran).toHaveBeenCalledOnce());
-      expect(t.kit.ran).toHaveBeenLastCalledWith(t.who, {
-        session: a.id,
-        id: "executed-error",
-        server: "fixture",
-        tool: "write_marker",
-      });
-      // Inspection restores the shared last-seen catalog to all tools, while B still admits only reads.
-      await t.mcp.inspect(
-        t.goose,
-        "/work",
-        "fixture",
-        new AbortController().signal,
-      );
-      t.native.update(b.id, update("unavailable"));
-      t.native.update(b.id, {
-        sessionUpdate: "tool_call_update",
-        toolCallId: "unavailable",
-        status: "failed",
-        content: [{ text: "Tool 'fixture__write_marker' is not available." }],
-      });
-      present(t.native.turns[1]).finish();
-      await second.done;
-      expect(t.kit.ran).toHaveBeenCalledOnce();
-      present(t.native.turns[0]).finish();
-      await first.done;
-    } finally {
-      await t.goose.kill();
-    }
-  });
-
   it("does not prompt when readback is rejected or an abort follows the check", async () => {
     for (const abort of [false, true]) {
       const t = await setup();
@@ -499,54 +404,70 @@ describe("Goose native MCP sessions", () => {
     }
   });
 
-  it.each([undefined, "Denied", "Approval timed out"])(
-    "answers native permission after gate returns %s",
-    async (reason) => {
+  it.each(["allow", "deny", "error", "missing-option"] as const)(
+    "routes native permission through an ordinary hook (%s)",
+    async (decision) => {
       const t = await setup();
       try {
-        t.kit.call.mockResolvedValue(reason);
+        t.hook.mockImplementation(async (_session, event) => {
+          if (event !== "PermissionRequest") return {};
+          if (decision === "error") throw new Error("Hook failed");
+          return {
+            decision: decision === "missing-option" ? "allow" : decision,
+            reason: "Fixture policy",
+          };
+        });
         const session = await t.open();
         const { done } = await t.finish(session);
-        const native = t.native;
-        native.update(session.id, update("call-1"));
-        expect(
-          (
-            await native.ask(
-              "session/request_permission",
-              ask(session.id, "call-1"),
-            )
-          ).result,
-        ).toEqual({
-          outcome: {
-            outcome: "selected",
-            optionId: reason ? "reject" : "once",
-          },
+        expect(t.hook).toHaveBeenCalledWith(session, "PromptSubmit", {
+          session_id: session.id,
         });
-        expect(t.kit.call).toHaveBeenCalledWith(
-          t.who,
-          {
-            session: session.id,
-            id: "call-1",
-            server: "fixture",
-            tool: "write_marker",
-            arguments: { fixture: true },
-          },
-          expect.objectContaining({ hold: 120_000, signal: session.signal }),
+        t.native.update(session.id, update("call-1"));
+        const response = await t.native.ask("session/request_permission", {
+          ...ask(session.id, "call-1"),
+          ...(decision === "missing-option" && { options: [] }),
+        });
+        expect(response.result).toEqual({
+          outcome:
+            decision === "error" || decision === "missing-option"
+              ? { outcome: "cancelled" }
+              : {
+                  outcome: "selected",
+                  optionId: decision === "allow" ? "once" : "reject",
+                },
+        });
+        expect(t.hook).toHaveBeenCalledWith(
+          session,
+          "PermissionRequest",
+          expect.objectContaining({
+            session_id: session.id,
+            tool_use_id: "call-1",
+            tool_name: "fixture__write_marker",
+            tool_input: { fixture: true },
+            mcp_server: "fixture",
+            mcp_tool: "write_marker",
+          }),
         );
-        native.update(session.id, {
+        t.native.update(session.id, {
           sessionUpdate: "tool_call_update",
           toolCallId: "call-1",
-          status: reason ? "failed" : "completed",
+          status: decision === "allow" ? "completed" : "failed",
+          rawOutput: { result: "fixture" },
         });
-        await vi.waitFor(() => expect(t.kit.ran).toHaveBeenCalled());
-        expect(t.kit.ran).toHaveBeenCalledWith(t.who, {
-          session: session.id,
-          id: "call-1",
-          server: "fixture",
-          tool: "write_marker",
-          ...(reason && { rejected: true }),
-        });
-        present(native.turns[0]).finish();
+        await vi.waitFor(() =>
+          expect(t.hook).toHaveBeenCalledWith(
+            session,
+            "ToolCall",
+            expect.objectContaining({
+              tool_use_id: "call-1",
+              mcp_server: "fixture",
+              mcp_tool: "write_marker",
+              permission_decision: decision === "allow" ? "allow" : "deny",
+              tool_response: { result: "fixture" },
+            }),
+          ),
+        );
+        present(t.native.turns[0]).finish();
         await done;
       } finally {
         await t.goose.kill();
@@ -554,185 +475,176 @@ describe("Goose native MCP sessions", () => {
     },
   );
 
-  it("denies a held permission after abort, and autoallows curated calls without gating", async () => {
+  it("cancels a permission held across an interrupt", async () => {
     const t = await setup();
+    let release!: (value: Record<string, unknown>) => void;
     try {
+      t.hook.mockImplementation(async (_session, event) =>
+        event === "PermissionRequest"
+          ? new Promise((resolve) => {
+              release = resolve;
+            })
+          : {},
+      );
       const session = await t.open();
       const { done } = await t.finish(session);
-      const native = t.native;
-      native.update(session.id, update("curated", "tree", null));
-      expect(
-        (
-          await native.ask(
-            "session/request_permission",
-            ask(session.id, "curated"),
-          )
-        ).result,
-      ).toEqual({ outcome: { outcome: "selected", optionId: "once" } });
-      expect(t.kit.call).not.toHaveBeenCalled();
-      let release!: () => void;
-      t.kit.call.mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            release = () => resolve(undefined);
-          }),
-      );
-      native.update(session.id, update("held"));
-      const permission = native.ask(
+      t.native.update(session.id, update("held"));
+      const permission = t.native.ask(
         "session/request_permission",
         ask(session.id, "held"),
       );
-      await vi.waitFor(() => expect(t.kit.call).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
       session.interrupt();
-      release();
+      release({ decision: "allow" });
       expect((await permission).result).toEqual({
-        outcome: { outcome: "selected", optionId: "reject" },
+        outcome: { outcome: "cancelled" },
       });
       await done;
     } finally {
+      release?.({});
       await t.goose.kill();
     }
   });
 
-  it("does not report an unadvertised unavailable result as execution", async () => {
+  it("observes preallowed calls and cancels only on a stop response", async () => {
     const t = await setup();
     try {
-      const session = await t.open();
-      const first = await t.finish(session);
-      present(t.native.turns[0]).finish();
-      await first.done;
-      t.choose({ fixture: ["write_marker"] });
-      const next = session.send("Filtered turn");
-      await vi.waitFor(() => expect(t.native.turns).toHaveLength(2));
-      const native = t.native;
-      native.update(session.id, update("filtered"));
-      native.update(session.id, {
-        sessionUpdate: "tool_call_update",
-        toolCallId: "filtered",
-        status: "failed",
-        content: [
-          {
-            type: "content",
-            content: {
-              type: "text",
-              text: "Tool 'fixture__write_marker' is not available.",
-            },
-          },
-        ],
-      });
-      present(native.turns[1]).finish();
-      await next;
-      expect(t.kit.call).not.toHaveBeenCalled();
-      expect(t.kit.ran).not.toHaveBeenCalled();
-    } finally {
-      await t.goose.kill();
-    }
-  });
-
-  it("reports a native never-allow result as rejected without asking", async () => {
-    const t = await setup();
-    try {
-      t.permission("write_marker", "never_allow");
+      t.permission("write_marker", "always_allow");
+      t.hook.mockResolvedValue({ decision: "deny" }); // observation is not permission
       const session = await t.open();
       const { done } = await t.finish(session);
-      t.native.update(session.id, update("native-denial"));
+      t.native.update(session.id, update("preallowed"));
       t.native.update(session.id, {
         sessionUpdate: "tool_call_update",
-        toolCallId: "native-denial",
-        status: "failed",
+        toolCallId: "preallowed",
+        status: "completed",
       });
-      await vi.waitFor(() => expect(t.kit.ran).toHaveBeenCalledOnce());
-      expect(t.kit.ran).toHaveBeenCalledWith(t.who, {
-        session: session.id,
-        id: "native-denial",
-        server: "fixture",
-        tool: "write_marker",
-        rejected: true,
-      });
-      expect(t.kit.call).not.toHaveBeenCalled();
-      present(t.native.turns[0]).finish();
+      await vi.waitFor(() =>
+        expect(t.hook).toHaveBeenCalledWith(
+          session,
+          "ToolCall",
+          expect.objectContaining({
+            tool_use_id: "preallowed",
+            status: "completed",
+            mcp_server: "fixture",
+          }),
+        ),
+      );
+      expect(t.native.cancelled).toEqual([]);
+      t.hook.mockResolvedValue({ stop: "Stop this turn" });
+      t.native.update(session.id, update("next", "tree", null));
+      await vi.waitFor(() => expect(t.native.cancelled).toContain(session.id));
+      expect(t.hook).toHaveBeenLastCalledWith(
+        session,
+        "ToolCall",
+        expect.not.objectContaining({ mcp_server: expect.anything() }),
+      );
       await done;
     } finally {
       await t.goose.kill();
     }
   });
-
-  it("checks preallowed native results, including real tool errors, and interrupts on violation", async () => {
+  it("waits for the permission reply before terminal observation and ignores stale stop replies", async () => {
     const t = await setup();
+    let answer!: (value: Record<string, unknown>) => void;
+    let stop!: (value: Record<string, unknown>) => void;
     try {
+      t.hook.mockImplementation(async (_session, event, input) => {
+        if (event === "PermissionRequest")
+          return new Promise((resolve) => {
+            answer = resolve;
+          });
+        if (event === "ToolCall" && input.status === "completed")
+          return new Promise((resolve) => {
+            stop = resolve;
+          });
+        return {};
+      });
       const session = await t.open();
-      const { done } = await t.finish(session);
-      const native = t.native;
-      native.update(session.id, update("real-error"));
-      native.update(session.id, {
+      const first = await t.finish(session);
+      t.native.update(session.id, update("held"));
+      const permission = t.native.ask(
+        "session/request_permission",
+        ask(session.id, "held"),
+      );
+      await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+      t.native.update(session.id, {
         sessionUpdate: "tool_call_update",
-        toolCallId: "real-error",
-        status: "failed",
-        content: [
-          {
-            text: "The user has declined to run this tool. DO NOT attempt to call this tool again. If there are no alternative methods to proceed, clearly explain the situation and STOP.",
-          },
-        ],
-      });
-      await vi.waitFor(() => expect(t.kit.ran).toHaveBeenCalled());
-      expect(t.kit.ran).toHaveBeenLastCalledWith(t.who, {
-        session: session.id,
-        id: "real-error",
-        server: "fixture",
-        tool: "write_marker",
-      });
-      t.kit.ran.mockReturnValue(true);
-      native.update(session.id, update("skipped-approval"));
-      native.update(session.id, {
-        sessionUpdate: "tool_call_update",
-        toolCallId: "skipped-approval",
+        toolCallId: "held",
         status: "completed",
       });
-      await vi.waitFor(() => expect(native.cancelled).toContain(session.id));
-      expect(t.kit.call).not.toHaveBeenCalled();
-      await done;
+      answer({ decision: "allow" });
+      await permission;
+      await vi.waitFor(() => expect(stop).toBeTypeOf("function"));
+      expect(t.hook).toHaveBeenLastCalledWith(
+        session,
+        "ToolCall",
+        expect.objectContaining({
+          permission_decision: "allow",
+          tool_use_id: "held",
+        }),
+      );
+      present(t.native.turns[0]).finish();
+      await first.done;
+      const next = session.send("Next turn");
+      await vi.waitFor(() => expect(t.native.turns).toHaveLength(2));
+      stop({ stop: "Old call" });
+      // A new observed call is the completion barrier after the old callback settles.
+      t.native.update(session.id, update("new-turn"));
+      await vi.waitFor(() =>
+        expect(t.hook).toHaveBeenLastCalledWith(
+          session,
+          "ToolCall",
+          expect.objectContaining({ tool_use_id: "new-turn" }),
+        ),
+      );
+      expect(t.native.cancelled).toEqual([]);
+      present(t.native.turns[1]).finish();
+      await next;
     } finally {
+      answer?.({});
+      stop?.({});
       await t.goose.kill();
     }
   });
 });
+
+function inspector(wire: ReturnType<typeof transport>, spawn = wire.spawn) {
+  const kit = { choice: async () => undefined, started: vi.fn() };
+  const host = {
+    spawn,
+    resolveDirectory: wire.fake.resolveDirectory,
+    readFile: vi.fn(),
+    serveMcp: wire.fake.serve,
+  } as unknown as Host;
+  const storage = {
+    getItem: () => null,
+    setItem: () => {},
+  } as unknown as Storage;
+  const runtime = new GooseRuntime(
+    host,
+    () => undefined,
+    async () => undefined,
+    storage,
+    () => [],
+    () => "",
+    undefined,
+    undefined,
+    kit,
+  );
+  const agent = {
+    key: "agent@example.org",
+    config: { ...DEFAULT_CONFIG, workspace: "/project/fixture" },
+  } as Agent;
+  return { runtime, agent };
+}
 
 describe("Goose tools-only lifecycle", () => {
   it.each(["listed", "error", "cancelled"] as const)(
     "stops an isolated inspection after %s",
     async (outcome) => {
       const wire = transport();
-      const kit = {
-        choice: async () => undefined,
-        started: vi.fn(),
-        call: vi.fn(),
-        ran: vi.fn(),
-      };
-      const host = {
-        spawn: wire.spawn,
-        resolveDirectory: wire.fake.resolveDirectory,
-        readFile: vi.fn(),
-        serveMcp: wire.fake.serve,
-      } as unknown as Host;
-      const storage = {
-        getItem: () => null,
-        setItem: () => {},
-      } as unknown as Storage;
-      const runtime = new GooseRuntime(
-        host,
-        () => undefined,
-        async () => undefined,
-        storage,
-        () => [],
-        () => "",
-        undefined,
-        undefined,
-        kit,
-      );
-      const agent = {
-        key: "agent@example.org",
-        config: { ...DEFAULT_CONFIG, workspace: "/project/fixture" },
-      } as Agent;
+      const { runtime, agent } = inspector(wire);
       let listed!: () => void;
       const started = new Promise<void>((resolve) => {
         listed = resolve;
@@ -763,4 +675,97 @@ describe("Goose tools-only lifecycle", () => {
       }
     },
   );
+  it.each(["spawn", "tools"] as const)(
+    "waits for a cancelled inspection's actual exit during retirement (%s)",
+    async (stage) => {
+      vi.useFakeTimers();
+      const wire = transport();
+      let requested!: () => void;
+      const stopped = new Promise<void>((resolve) => {
+        requested = resolve;
+      });
+      let spawned!: () => void;
+      const spawning = new Promise<void>((resolve) => {
+        spawned = resolve;
+      });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let listed!: () => void;
+      const listing = new Promise<void>((resolve) => {
+        listed = resolve;
+      });
+      wire.holdTools(listed);
+      const { runtime, agent } = inspector(wire, async (id, options) => {
+        const process = await wire.spawn(id, options);
+        spawned();
+        if (stage === "spawn") await held;
+        return {
+          ...process,
+          kill: async () => {
+            requested();
+          },
+        };
+      });
+      let retiring: Promise<void> | undefined;
+      const inspection = runtime.inspectMcp(agent, "fixture");
+      const rejected = inspection.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      let retired = false;
+      try {
+        await (stage === "spawn" ? spawning : listing);
+        retiring = runtime.retire(agent.key).then(() => {
+          retired = true;
+        });
+        // Passing the old stop timeout is not evidence that the process exited.
+        await vi.advanceTimersByTimeAsync(6_000);
+        expect(retired).toBe(false);
+        release();
+        await stopped;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(retired).toBe(false);
+        present(wire.fake.geese[0]).exit(null);
+        expect(await rejected).toBeInstanceOf(Error);
+        await retiring;
+        expect(retired).toBe(true);
+      } finally {
+        release();
+        wire.fake.geese[0]?.exit(null);
+        await inspection.catch(() => undefined);
+        await retiring;
+        runtime.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("retains a failed inspection cleanup for retirement to retry", async () => {
+    const wire = transport();
+    let fail = true;
+    const kill = vi.fn(async () => {
+      if (fail) throw new Error("Native stop failed");
+      present(wire.fake.geese[0]).exit(null);
+    });
+    const { runtime, agent } = inspector(wire, async (id, options) => ({
+      ...(await wire.spawn(id, options)),
+      kill,
+    }));
+    try {
+      await expect(runtime.inspectMcp(agent, "fixture")).rejects.toThrow(
+        "Native stop failed",
+      );
+      await expect(runtime.retire(agent.key)).rejects.toThrow(
+        "Native stop failed",
+      );
+      fail = false;
+      await runtime.retire(agent.key);
+      expect(kill).toHaveBeenCalledTimes(3);
+    } finally {
+      wire.fake.geese[0]?.exit(null);
+      runtime.dispose();
+    }
+  });
 });

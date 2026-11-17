@@ -36,11 +36,11 @@ export const valuesOf = (options: readonly ConfigValue[] = []): string[] =>
 export class AcpSession {
   /** Opt-in native controls; other ACP adapters keep their existing behavior. */
   controls?: Readonly<{
-    beforePrompt(signal: AbortSignal): Promise<void>;
-    permission(
+    beforePrompt?(signal: AbortSignal): Promise<void>;
+    permission?(
       params: Record<string, unknown>,
     ): Promise<Record<string, unknown>>;
-    update(update: Record<string, unknown>): void;
+    update?(update: Record<string, unknown>): void;
   }>;
   /** The conversation it serves. */
   conversation: string | undefined;
@@ -255,7 +255,7 @@ export class AcpSession {
 
   /** Called by the process with each `session/update` for this session. */
   update(update: Record<string, unknown>) {
-    this.controls?.update(update);
+    this.controls?.update?.(update);
     const kind = update.sessionUpdate;
     // A cancel before goose has the final message's result would save that
     // call as interrupted. goose reports a batch's results together, once
@@ -434,7 +434,7 @@ export class AcpSession {
         try {
           await this.beforeTurn?.();
           await this.select(model, effort);
-          if (this.controls)
+          if (this.controls?.beforePrompt)
             await this.controls
               .beforePrompt(this.signal)
               .catch(async (error) => {

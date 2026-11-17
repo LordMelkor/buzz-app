@@ -2,18 +2,16 @@
 // adapter; plugins receive only names, state and the tools a session listed.
 import type {
   HarnessMcpAnswer,
-  HarnessMcpCall as Call,
   HarnessMcpKit,
   HarnessMcpTool,
 } from "../../features/agents/harness-mcp";
-import type { AgentHandle, Delivery } from "../../features/agents/service";
+import type { AgentHandle } from "../../features/agents/service";
 import {
   type AcpProcess,
   REQUEST_TIMEOUT_MS,
 } from "../../features/agent-harness/acp/process";
 import type { AcpSession } from "../../features/agent-harness/acp/session";
 import type { AcpHooks } from "../../features/agent-harness/acp/types";
-import { allow } from "../../features/agent-harness/acp/steps";
 
 type Who = Pick<AgentHandle, "key" | "protection">;
 type Extension = {
@@ -35,24 +33,14 @@ const request = (
 ) => p.request(`_goose/unstable/${method}`, params, REQUEST_TIMEOUT_MS);
 const mcp = (e: { extension?: Extension }) =>
   e.extension?.type === "mcp" && e.extension.server?.name !== "buzz";
-const option = (params: Record<string, unknown>, kind: string) => {
-  const found = (
-    params.options as { kind: string; optionId: string }[] | undefined
-  )?.find((o) => o.kind === kind);
-  return found
-    ? { outcome: "selected", optionId: found.optionId }
-    : { outcome: "cancelled" };
-};
 
 export class GooseMcp {
   private catalog = new Map<string, readonly HarnessMcpTool[]>();
   private seen = new Map<string, readonly HarnessMcpTool[]>();
+  private sessions = new WeakMap<AcpSession, ReadonlyMap<string, Configured>>();
   constructor(
     private readonly kit: HarnessMcpKit,
     private readonly who: () => Who | undefined,
-    private readonly turn: (
-      session: AcpSession,
-    ) => Pick<Delivery, "trigger"> | undefined = () => undefined,
   ) {}
 
   private async configured(p: AcpProcess): Promise<Configured[]> {
@@ -136,10 +124,9 @@ export class GooseMcp {
     });
     return {
       tools: true,
-      calls: true as const,
       servers,
       note: [
-        "Tool inspection starts only the selected server, without a model turn. Goose may refresh its provider catalog. List tools before excluding individual tools. Native preallowed tools can skip approval; their results are checked afterward.",
+        "Tool inspection starts only the selected server, without a model turn. Goose may refresh its provider catalog. List tools before excluding individual tools. Native preallowed tools can skip permission hooks.",
         ...configured.flatMap((entry) =>
           entry.unavailable ? [entry.unavailable] : [],
         ),
@@ -188,7 +175,6 @@ export class GooseMcp {
     const own = tools.map((t) => ({
       name: t.name.startsWith(prefix) ? t.name.slice(prefix.length) : t.name,
       ...(typeof t.description === "string" && { description: t.description }),
-      ...(t.permission === "always_allow" && { ungated: true as const }),
     }));
     this.catalog.set(entry.name, [
       ...new Map(
@@ -199,17 +185,9 @@ export class GooseMcp {
       ).values(),
     ]);
     this.seen.set(entry.name, own);
-    const denied = new Set(
-      tools
-        .filter((tool) => tool.permission === "never_allow")
-        .map((tool) =>
-          tool.name.startsWith(prefix)
-            ? tool.name.slice(prefix.length)
-            : tool.name,
-        ),
-    );
-    return { tools: own, denied };
+    return { tools: own };
   }
+
   private selection(configured: Configured[], choice: HarnessMcpAnswer) {
     const selected: Configured[] = [];
     const applied: Record<string, boolean | readonly string[]> =
@@ -281,25 +259,6 @@ export class GooseMcp {
       sessionOpened: (p, session, meta) => {
         const opened = meta && initial.get(meta);
         let choice = opened?.choice;
-        const curated = new Set(
-          ((meta?.enabledExtensions as { type: string; name?: string }[]) ?? [])
-            .filter((e) => e.type !== "mcp")
-            .map((e) => e.name),
-        );
-        let native = new Map<
-          string,
-          Configured & {
-            tools: readonly { name: string; ungated?: true }[];
-            denied: ReadonlySet<string>;
-          }
-        >();
-        type Observed = {
-          call?: Call;
-          ungated?: true;
-          nativeDenied?: true;
-          phase: "observed" | "unavailable" | "held" | "allowed" | "denied";
-        };
-        const calls = new Map<string, Observed>();
         session.controls = {
           beforePrompt: async (signal) => {
             const agent = this.who();
@@ -349,7 +308,7 @@ export class GooseMcp {
             })) as {
               extensions: { extensionKey: string; extension: Extension }[];
             };
-            native = new Map();
+            const native = new Map<string, Configured>();
             const loaded = [];
             for (const entry of actual.extensions.filter(mcp)) {
               const known = configured.find(
@@ -358,8 +317,8 @@ export class GooseMcp {
               if (!known)
                 throw new Error("Goose loaded an unconfigured MCP server");
               const item = known;
-              const { tools, denied } = await this.tools(p, session.id, item);
-              native.set(item.key, { ...item, tools, denied });
+              const { tools } = await this.tools(p, session.id, item);
+              native.set(item.key, item);
               loaded.push({ name: item.name, tools: tools.map((t) => t.name) });
             }
             this.kit.started(
@@ -370,121 +329,28 @@ export class GooseMcp {
             );
             signal.throwIfAborted();
             choice = next;
-            calls.clear();
-          },
-          permission: async (params) => {
-            if (choice === undefined) return allow(params);
-            const signal = session.signal;
-            if (signal.aborted) return option(params, "reject_once");
-            const id = String(
-              (params.toolCall as { toolCallId?: unknown } | undefined)
-                ?.toolCallId,
-            );
-            const observed = calls.get(id);
-            if (observed && !observed.call) return option(params, "allow_once");
-            if (!observed?.call) return option(params, "reject_once");
-            if (observed.phase === "unavailable") {
-              observed.phase = "denied";
-              return option(params, "reject_once");
-            }
-            observed.phase = "held";
-            const agent = this.who();
-            const gate = this.kit;
-            let reason: string | undefined = "The MCP control is unavailable";
-            try {
-              if (agent) {
-                const turn = this.turn(session);
-                reason = await gate.call(agent, observed.call, {
-                  hold: 120_000,
-                  signal,
-                  ...(turn && { turn }),
-                });
-              }
-            } catch {
-              /* A failed gate must answer the pending native request with denial. */
-            }
-            observed.phase =
-              reason !== undefined || signal.aborted ? "denied" : "allowed";
-            return option(
-              params,
-              observed.phase === "allowed" ? "allow_once" : "reject_once",
-            );
-          },
-          update: (update) => {
-            if (choice === undefined) return;
-            const id = String(update.toolCallId);
-            if (update.sessionUpdate === "tool_call") {
-              const meta = update._meta as
-                | {
-                    goose?: {
-                      toolCall?: { extensionName?: string; toolName?: string };
-                    };
-                  }
-                | undefined;
-              const tool = meta?.goose?.toolCall;
-              const entry =
-                tool?.extensionName && native.get(tool.extensionName);
-              if (entry) {
-                const admitted = entry.tools.find(
-                  (t) => `${entry.key}__${t.name}` === tool?.toolName,
-                );
-                calls.set(id, {
-                  phase: admitted ? "observed" : "unavailable",
-                  ...(admitted?.ungated && { ungated: true }),
-                  ...(admitted &&
-                    entry.denied.has(admitted.name) && { nativeDenied: true }),
-                  call: {
-                    session: session.id,
-                    id,
-                    server: entry.name,
-                    ...(tool?.toolName?.startsWith(`${entry.key}__`) && {
-                      tool: tool.toolName.slice(entry.key.length + 2),
-                    }),
-                    arguments: update.rawInput,
-                  },
-                });
-              } else if (
-                tool?.toolName &&
-                (!tool.toolName.includes("__") ||
-                  tool.extensionName === "buzz" ||
-                  curated.has(tool.extensionName))
-              )
-                calls.set(id, { phase: "observed" });
-            }
-            if (
-              update.sessionUpdate !== "tool_call_update" ||
-              !["completed", "failed"].includes(String(update.status))
-            )
-              return;
-            const observed = calls.get(id);
-            calls.delete(id);
-            const agent = this.who();
-            const gate = this.kit;
-            if (!observed?.call || !agent) return;
-            // A forced call to a filtered tool has a failed result, but never ran.
-            if (
-              observed.phase === "unavailable" &&
-              update.status === "failed" &&
-              JSON.stringify(update.content ?? []).includes("not available")
-            )
-              return;
-            const { arguments: _arguments, ...call } = observed.call;
-            const rejected =
-              observed.phase === "denied" ||
-              (observed.phase === "observed" &&
-                observed.nativeDenied === true &&
-                update.status === "failed");
-            if (
-              gate.ran(agent, {
-                ...call,
-                ...(rejected && { rejected }),
-                ...(observed.ungated && { ungated: true }),
-              })
-            )
-              session.interrupt();
+            this.sessions.set(session, native);
           },
         };
+        base.sessionOpened?.(p, session, meta);
       },
     };
+  }
+
+  /** Resolve configured raw names from this session, never from model titles. */
+  names(session: AcpSession, input: Record<string, unknown>) {
+    const meta = input._meta as
+      | { goose?: { toolCall?: { extensionName?: string; toolName?: string } } }
+      | undefined;
+    const tool = meta?.goose?.toolCall;
+    const entry =
+      tool?.extensionName &&
+      this.sessions.get(session)?.get(tool.extensionName);
+    return entry && tool?.toolName?.startsWith(`${entry.key}__`)
+      ? {
+          mcp_server: entry.name,
+          mcp_tool: tool.toolName.slice(entry.key.length + 2),
+        }
+      : {};
   }
 }

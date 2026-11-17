@@ -523,7 +523,7 @@ export class AcpProcess {
     let reply: Wire;
     if (method === "session/request_permission") {
       const session = this.sessions.get(String(params.sessionId));
-      const outcome = session?.controls
+      const outcome = session?.controls?.permission
         ? await session.controls
             .permission(params)
             .catch(() => ({ outcome: "cancelled" }))

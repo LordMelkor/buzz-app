@@ -74,82 +74,89 @@ const settings = (): ClaudeMcp => ({
   started: vi.fn(),
 });
 
-it.each([undefined, { name: "alpha" }])(
-  "uses catalog names for sanitized tools with native server metadata %j",
-  async (mcp_server) => {
-    const f = native(["alpha"], ["search_docs"], {
-      alpha: ["search.docs"],
-    });
-    const started = vi.fn();
-    const call = vi.fn(async (_call: unknown) => "policy denied");
-    const ran = vi.fn((_call: unknown) => false);
+it.each([
+  {
+    label: "dotted tool names",
+    servers: ["alpha"],
+    catalog: { alpha: ["search.docs"] },
+    context: [{ name: "mcp__alpha__search_docs", serverName: "alpha" }],
+    name: "mcp__alpha__search_docs",
+    identity: { mcp_server: "alpha", mcp_tool: "search.docs" },
+  },
+  {
+    label: "overlapping server prefixes",
+    servers: ["alpha", "alpha__beta"],
+    catalog: { alpha__beta: ["write.marker"] },
+    context: [],
+    name: "mcp__alpha__beta__write_marker",
+    identity: { mcp_server: "alpha__beta", mcp_tool: "write.marker" },
+  },
+  {
+    label: "authoritative admitted server amid catalog collisions",
+    servers: ["alpha", "alpha__beta"],
+    catalog: { alpha: ["beta__read_echo"], alpha__beta: ["read_echo"] },
+    context: [
+      { name: "mcp__alpha__beta__read_echo", serverName: "alpha__beta" },
+    ],
+    name: "mcp__alpha__beta__read_echo",
+    identity: { mcp_server: "alpha__beta", mcp_tool: "read_echo" },
+  },
+])(
+  "projects raw MCP identity to native hooks: $label",
+  async ({ servers, catalog, context, name, identity }) => {
+    const f = native(servers, [], catalog, context);
+    const hook = vi.fn(async () => ({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+      },
+    }));
     const process = await ClaudeProcess.start(f.spawn, {
       cwd: "/work",
       systemPrompt: "",
-      mcp: {
-        ...settings(),
-        choice: { alpha: true },
-        servers: [{ name: "alpha", default: true }],
-        started,
-        call,
-        ran,
-      },
+      mcp: settings(),
+      hook,
     });
     const fake = f.processes[0];
-    expect(started).toHaveBeenCalledWith(
-      "initial",
-      [{ name: "alpha", tools: ["search.docs"] }],
-      { alpha: true },
-      [expect.objectContaining({ tools: [{ name: "search.docs" }] })],
-    );
-    fake?.emit({
-      type: "control_request",
-      request_id: "dotted",
-      request: {
-        subtype: "can_use_tool",
-        tool_name: "mcp__alpha__search_docs",
-        tool_use_id: "dotted",
-        ...(mcp_server ? { mcp_server } : {}),
-        input: {},
+    for (const event of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) {
+      fake?.emit({
+        type: "control_request",
+        request_id: event,
+        request: {
+          subtype: "hook_callback",
+          callback_id: `buzz:${event}`,
+          input: {
+            tool_name: name,
+            tool_input: { text: "fixture" },
+            mcp_server: "forged",
+            mcp_tool: "forged",
+          },
+        },
+      });
+      await flush();
+      expect(hook).toHaveBeenLastCalledWith(
+        "",
+        event,
+        {
+          tool_name: name,
+          tool_input: { text: "fixture" },
+          ...identity,
+        },
+        undefined,
+      );
+    }
+    expect(fake?.received).toContainEqual({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: "PreToolUse",
+        response: {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+          },
+        },
       },
-    });
-    await flush();
-    expect(call).toHaveBeenCalledWith(
-      {
-        session: "initial",
-        id: "dotted",
-        server: "alpha",
-        tool: "search.docs",
-        arguments: {},
-      },
-      expect.any(AbortSignal),
-    );
-    expect(
-      fake?.received.find(
-        (message) =>
-          (message.response as { request_id?: string })?.request_id ===
-          "dotted",
-      ),
-    ).toMatchObject({
-      response: { response: { behavior: "deny", message: "policy denied" } },
-    });
-    fake?.emit({
-      type: "user",
-      tool_result_meta: [
-        { id: "dotted", permission_decision: { decision: "reject" } },
-      ],
-      message: {
-        content: [
-          { type: "tool_result", tool_use_id: "dotted", content: "denied" },
-        ],
-      },
-    });
-    expect(ran).toHaveBeenCalledWith({
-      session: "initial",
-      id: "dotted",
-      server: "alpha",
-      tool: "search.docs",
-      rejected: true,
     });
     await process.kill();
   },
@@ -170,284 +177,116 @@ it("refuses admitted tool names that collide after native normalization", async 
   expect(f.processes[0]?.prompts).toEqual([]);
 });
 
-it("resolves preallowed child results by exact native tool identity despite overlapping server prefixes", async () => {
-  const f = native(["alpha", "alpha__beta"], [], {
-    alpha__beta: ["write.marker"],
-  });
-  const ran = vi.fn((_call: unknown) => false);
-  const process = await ClaudeProcess.start(f.spawn, {
-    cwd: "/work",
-    systemPrompt: "",
-    mcp: { ...settings(), ran },
-  });
-  const fake = f.processes[0];
-  fake?.emit({
-    type: "assistant",
-    parent_tool_use_id: "parent",
-    message: {
-      content: [
-        {
-          type: "tool_use",
-          id: "overlap",
-          name: "mcp__alpha__beta__write_marker",
-          input: {},
-        },
-      ],
-    },
-  });
-  fake?.emit({
-    type: "user",
-    parent_tool_use_id: "parent",
-    message: {
-      content: [
-        { type: "tool_result", tool_use_id: "overlap", content: "written" },
-      ],
-    },
-  });
-  expect(ran).toHaveBeenCalledWith({
-    session: "initial",
-    id: "overlap",
-    server: "alpha__beta",
-    tool: "write.marker",
-  });
-  await process.kill();
-});
-
-it("uses an admitted tool's authoritative context server when catalog full names collide", async () => {
-  const f = native(
-    ["alpha", "alpha__beta"],
-    [],
-    { alpha: ["beta__read_echo"], alpha__beta: ["read_echo"] },
-    [{ name: "mcp__alpha__beta__read_echo", serverName: "alpha__beta" }],
-  );
-  const ran = vi.fn((_call: unknown) => false);
-  const process = await ClaudeProcess.start(f.spawn, {
-    cwd: "/work",
-    systemPrompt: "",
-    mcp: { ...settings(), ran },
-  });
-  f.processes[0]?.emit({
-    type: "assistant",
-    message: {
-      content: [
-        {
-          type: "tool_use",
-          id: "context",
-          name: "mcp__alpha__beta__read_echo",
-          input: {},
-        },
-      ],
-    },
-  });
-  f.processes[0]?.emit({
-    type: "user",
-    message: {
-      content: [
-        { type: "tool_result", tool_use_id: "context", content: "done" },
-      ],
-    },
-  });
-  expect(ran).toHaveBeenCalledWith({
-    session: "initial",
-    id: "context",
-    server: "alpha__beta",
-    tool: "read_echo",
-  });
-  await process.kill();
-});
-
-it("denies unresolved or ambiguous external callbacks and preserves authoritative native server metadata", async () => {
-  const f = native(["alpha.beta", "alpha_beta"], [], {
-    alpha_beta: ["read.echo", "read_echo"],
-  });
-  const call = vi.fn(async (_call: unknown) => undefined);
-  const ran = vi.fn((_call: unknown) => false);
-  const process = await ClaudeProcess.start(f.spawn, {
-    cwd: "/work",
-    systemPrompt: "",
-    mcp: { ...settings(), call, ran },
-  });
-  const fake = f.processes[0];
-  for (const [id, tool_name, mcp_server] of [
-    ["unknown", "mcp__unknown__read", undefined],
-    ["ambiguous", "mcp__alpha_beta__read_echo", undefined],
-    ["tool-ambiguous", "mcp__alpha_beta__read_echo", { name: "alpha_beta" }],
-    ["malformed", "mcp__elsewhere__read", { name: "alpha.beta" }],
-    ["wrong-sdk-identity", "mcp__alpha_beta__read_echo", { name: "buzz" }],
-  ] as const)
+it.each([
+  "mcp__unknown__read",
+  "mcp__alpha_beta__read_echo",
+  "mcp__buzz__send",
+  "Bash",
+])(
+  "leaves unresolved, ambiguous and Buzz identities unnamed in hooks: %s",
+  async (name) => {
+    const f = native(
+      ["alpha.beta", "alpha_beta", "buzz"],
+      [],
+      {
+        "alpha.beta": ["read.echo"],
+        alpha_beta: ["read_echo"],
+        buzz: ["send"],
+      },
+      [],
+    );
+    const hook = vi.fn(async () => ({}));
+    const process = await ClaudeProcess.start(f.spawn, {
+      cwd: "/work",
+      systemPrompt: "",
+      mcp: settings(),
+      hook,
+    });
+    const fake = f.processes[0];
     fake?.emit({
       type: "control_request",
-      request_id: id,
+      request_id: "hook",
       request: {
-        subtype: "can_use_tool",
-        tool_name,
-        tool_use_id: id,
-        ...(mcp_server ? { mcp_server } : {}),
-        input: {},
+        subtype: "hook_callback",
+        callback_id: "buzz:PreToolUse",
+        input: { tool_name: name, mcp_server: "forged", mcp_tool: "forged" },
       },
     });
-  await flush();
-  expect(call).not.toHaveBeenCalled();
-  for (const id of [
-    "unknown",
-    "ambiguous",
-    "tool-ambiguous",
-    "malformed",
-    "wrong-sdk-identity",
-  ])
-    expect(
-      fake?.received.find(
-        (message) =>
-          (message.response as { request_id?: string })?.request_id === id,
-      ),
-    ).toMatchObject({ response: { response: { behavior: "deny" } } });
-  fake?.emit({
-    type: "control_request",
-    request_id: "identified",
-    request: {
-      subtype: "can_use_tool",
-      tool_name: "mcp__alpha_beta__read_echo",
-      tool_use_id: "identified",
-      mcp_server: { name: "alpha.beta" },
-      input: {},
-    },
-  });
-  await flush();
-  expect(call).toHaveBeenCalledWith(
-    {
-      session: "initial",
-      id: "identified",
-      server: "alpha.beta",
-      tool: "read_echo",
-      arguments: {},
-    },
-    expect.any(AbortSignal),
-  );
-  expect(
-    fake?.received.find(
-      (message) =>
-        (message.response as { request_id?: string })?.request_id ===
-        "identified",
-    ),
-  ).toMatchObject({ response: { response: { behavior: "allow" } } });
-  fake?.emit({
-    type: "user",
-    message: {
-      content: [
-        { type: "tool_result", tool_use_id: "identified", content: "done" },
-      ],
-    },
-  });
-  expect(ran).toHaveBeenCalledWith({
-    session: "initial",
-    id: "identified",
-    server: "alpha.beta",
-    tool: "read_echo",
-  });
-  await process.kill();
-});
+    await flush();
+    expect(hook).toHaveBeenCalledWith(
+      "",
+      "PreToolUse",
+      {
+        tool_name: name,
+        ...(name !== "mcp__buzz__send" && name !== "Bash"
+          ? { mcp_unresolved: true }
+          : {}),
+      },
+      undefined,
+    );
+    // Native hook policy belongs to plugins; an unresolved name does not kill the process.
+    expect(fake?.killed).toBe(false);
+    await process.kill();
+  },
+);
 
-it("stops unmatched observed executions rather than silently losing their backstop", async () => {
-  const f = native();
-  const ran = vi.fn((_call: unknown) => false);
+it("recognizes only SDK tools actually listed by the Buzz bridge without MCP control", async () => {
+  const f = fakeSpawn();
+  const hook = vi.fn(async () => ({}));
   const process = await ClaudeProcess.start(f.spawn, {
     cwd: "/work",
     systemPrompt: "",
-    mcp: { ...settings(), ran },
-  });
-  f.processes[0]?.emit({
-    type: "assistant",
-    message: {
-      content: [
-        {
-          type: "tool_use",
-          id: "unknown",
-          name: "mcp__new_server__write_marker",
-          input: {},
-        },
-      ],
-    },
-  });
-  f.processes[0]?.emit({
-    type: "user",
-    message: {
-      content: [
-        { type: "tool_result", tool_use_id: "unknown", content: "done" },
-      ],
-    },
-  });
-  await process.exited;
-  expect(f.processes[0]?.killed).toBe(true);
-  expect(ran).not.toHaveBeenCalled();
-});
-
-it("keeps exact curated Buzz SDK tools outside the external gate", async () => {
-  const f = native();
-  const call = vi.fn(async (_call: unknown) => undefined);
-  const ran = vi.fn((_call: unknown) => false);
-  const process = await ClaudeProcess.start(f.spawn, {
-    cwd: "/work",
-    systemPrompt: "",
-    tools: async (_session, message) => ({
+    sessionId: "owned",
+    hook,
+    tools: async (_conversation, message) => ({
       jsonrpc: "2.0",
-      id: (message as { id: string }).id,
+      id: (message as { id: number }).id,
       result: { tools: [{ name: "send" }] },
     }),
-    mcp: { ...settings(), call, ran },
   });
   const fake = f.processes[0];
   fake?.emit({
     type: "control_request",
-    request_id: "sdk-list",
+    request_id: "list",
     request: {
       subtype: "mcp_message",
       server_name: "buzz",
-      message: { jsonrpc: "2.0", id: "sdk-list", method: "tools/list" },
+      message: { jsonrpc: "2.0", id: 1, method: "tools/list" },
     },
   });
   await flush();
-  fake?.emit({
-    type: "control_request",
-    request_id: "sdk-call",
-    request: {
-      subtype: "can_use_tool",
-      tool_name: "mcp__buzz__send",
-      tool_use_id: "sdk-call",
-      input: {},
-    },
-  });
-  fake?.emit({
-    type: "assistant",
-    message: {
-      content: [
-        {
-          type: "tool_use",
-          id: "sdk-call",
-          name: "mcp__buzz__send",
-          input: {},
+  for (const event of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) {
+    for (const name of [
+      "mcp__buzz__send",
+      "mcp__buzz__unlisted",
+      "mcp__unknown__tool",
+    ]) {
+      fake?.emit({
+        type: "control_request",
+        request_id: `${event}-${name}`,
+        request: {
+          subtype: "hook_callback",
+          callback_id: `buzz:${event}`,
+          input: {
+            tool_name: name,
+            mcp_server: "forged",
+            mcp_tool: "forged",
+            mcp_unresolved: false,
+          },
         },
-      ],
-    },
-  });
-  fake?.emit({
-    type: "user",
-    message: {
-      content: [
-        { type: "tool_result", tool_use_id: "sdk-call", content: "sent" },
-      ],
-    },
-  });
-  await flush();
-  expect(call).not.toHaveBeenCalled();
-  expect(ran).not.toHaveBeenCalled();
-  expect(
-    fake?.received.find(
-      (message) =>
-        (message.response as { request_id?: string })?.request_id ===
-        "sdk-call",
-    ),
-  ).toMatchObject({ response: { response: { behavior: "allow" } } });
-  expect(fake?.killed).toBe(false);
+      });
+      await flush();
+      expect(hook).toHaveBeenLastCalledWith(
+        "owned",
+        event,
+        {
+          tool_name: name,
+          ...(name !== "mcp__buzz__send" ? { mcp_unresolved: true } : {}),
+        },
+        undefined,
+      );
+    }
+  }
   await process.kill();
 });
 
@@ -471,8 +310,6 @@ it("keeps a session-only server and its last tools in the report after a later s
   runtime.mcp = {
     choice: async () => choice,
     started: () => {},
-    call: async () => undefined,
-    ran: () => false,
   };
   const delivery = {
     agent: { ...agent } as unknown as AgentHandle,
@@ -793,7 +630,7 @@ it("verifies admitted tools rather than the catalog and retains every configured
   const args = f.processes[0]?.options.args ?? [];
   expect(JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}")).toEqual({
     deniedMcpServers: [{ serverName: "beta" }],
-    permissions: { ask: ["mcp__*"], deny: ["mcp__alpha__write_marker"] },
+    permissions: { deny: ["mcp__alpha__write_marker"] },
   });
   expect(f.processes[0]?.prompts).toEqual([]);
   await process.kill();
@@ -850,158 +687,35 @@ it("never prompts after core rejects readback, and strict-none keeps the SDK ser
   await process.kill();
 });
 
-it.each(["deny", "error", "abort"])(
-  "keeps child MCP permission calls closed on %s while builtins retain bypass",
-  async (mode) => {
-    const f = native();
-    let finish!: (reason: string | undefined) => void;
-    const call = vi.fn((_call: unknown, _signal: AbortSignal) =>
-      mode === "error"
-        ? Promise.reject(new Error("failed"))
-        : new Promise<string | undefined>((resolve) => {
-            finish = resolve;
-          }),
-    );
-    const process = await ClaudeProcess.start(f.spawn, {
-      cwd: "/work",
-      systemPrompt: "",
-      mcp: { ...settings(), call },
-    });
-    const fake = f.processes[0];
-    if (!fake) throw new Error("missing native process");
-    fake.hold = true;
-    const turn = process.send("fixture", { effort: "low" });
-    await flush();
-    expect(fake.prompts).toEqual(["fixture"]);
-    fake.emit({
+it("keeps ordinary permission fallback and tool exclusions without installing the old native gate", async () => {
+  const f = native();
+  const process = await ClaudeProcess.start(f.spawn, {
+    cwd: "/work",
+    systemPrompt: "",
+    mcp: settings(),
+  });
+  const fake = f.processes[0];
+  expect(fake?.options.args).not.toContain("--permission-prompt-tool");
+  for (const name of ["Bash", "mcp__alpha__read_echo", "mcp__unknown__read"]) {
+    fake?.emit({
       type: "control_request",
-      request_id: "child",
+      request_id: name,
       request: {
         subtype: "can_use_tool",
-        tool_name: "mcp__alpha__read_echo",
-        tool_use_id: "child-call",
-        agent_id: "child-agent",
-        mcp_server: { name: "alpha" },
+        tool_name: name,
         input: { text: "fixture" },
       },
     });
     await flush();
-    if (mode === "abort") await process.interrupt();
-    if (mode !== "error") finish(mode === "deny" ? "denied" : undefined);
-    await flush();
-    expect(call.mock.calls[0]?.[0]).toEqual({
-      session: "fresh",
-      id: "child-call",
-      server: "alpha",
-      tool: "read_echo",
-      arguments: { text: "fixture" },
-    });
-    expect(
-      fake.received.find(
-        (message) =>
-          (message.response as { request_id?: string })?.request_id === "child",
-      ),
-    ).toMatchObject({ response: { response: { behavior: "deny" } } });
-    fake.emit({
-      type: "control_request",
-      request_id: "builtin",
-      request: {
-        subtype: "can_use_tool",
-        tool_name: "Bash",
-        input: { command: "true" },
-      },
-    });
-    await flush();
-    expect(
-      fake.received.find(
-        (message) =>
-          (message.response as { request_id?: string })?.request_id ===
-          "builtin",
-      ),
-    ).toMatchObject({ response: { response: { behavior: "allow" } } });
-    expect(
-      fake.received
-        .filter(
-          (message) =>
-            (message.request as { subtype?: string })?.subtype ===
-            "apply_flag_settings",
-        )
-        .at(-1),
-    ).toMatchObject({
-      request: {
-        settings: {
-          permissions: { ask: ["mcp__*"], deny: ["mcp__alpha__write_marker"] },
-          effortLevel: "low",
-        },
-      },
-    });
-    fake.finish();
-    await turn;
-    await process.kill();
-  },
-);
-
-it("correlates child results, skips explicit native unavailable-tool results, and reports other errors as ran", async () => {
-  const f = native();
-  const ran = vi.fn((_call: unknown) => false);
-  const process = await ClaudeProcess.start(f.spawn, {
-    cwd: "/work",
-    systemPrompt: "",
-    mcp: { ...settings(), ran },
-  });
-  const fake = f.processes[0];
-  for (const [id, content, meta] of [
-    [
-      "unavailable",
-      "<tool_use_error>Error: No such tool available: mcp__alpha__write_marker</tool_use_error>",
-      undefined,
-    ],
-    ["denied", "Denied by native permission", { decision: "reject" }],
-    ["failed", "Tool failed after writing", undefined],
-  ] as const) {
-    fake?.emit({
-      type: "assistant",
-      parent_tool_use_id: "parent-agent",
-      agent_id: "child",
-      message: {
-        content: [
-          { type: "tool_use", id, name: "mcp__alpha__write_marker", input: {} },
-        ],
-      },
-    });
-    fake?.emit({
-      type: "user",
-      parent_tool_use_id: "parent-agent",
-      agent_id: "child",
-      ...(meta
-        ? { tool_result_meta: [{ id, permission_decision: meta }] }
-        : {}),
-      message: {
-        content: [
-          { type: "tool_result", tool_use_id: id, is_error: true, content },
-        ],
+    expect(fake?.received).toContainEqual({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: name,
+        response: { behavior: "allow", updatedInput: { text: "fixture" } },
       },
     });
   }
-  expect(ran.mock.calls).toEqual([
-    [
-      {
-        session: "initial",
-        id: "denied",
-        server: "alpha",
-        tool: "write_marker",
-        rejected: true,
-      },
-    ],
-    [
-      {
-        session: "initial",
-        id: "failed",
-        server: "alpha",
-        tool: "write_marker",
-      },
-    ],
-  ]);
   await process.kill();
 });
 

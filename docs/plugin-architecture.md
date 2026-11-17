@@ -944,9 +944,9 @@ which uploads of local files use. `direct` and `folder` reach plugins' tools
 in their call context: whether the owner's own message started the run, and
 the agent's working folder. Apart from `mcp`, the kit grants nothing
 `ctx.agents` and `ctx.host` do not already give the plugin. `mcp` lets the
-plugin that registered an agent's type ask core for that agent's MCP choice,
-report what a session loaded, and put the agent's native MCP calls to the call
-gate, only for its own agents running here ([harness MCP](harness-mcp.md)).
+plugin that registered an agent's type ask core for that agent's MCP choice
+and report what a session loaded, only for its own agents running here
+([harness MCP](harness-mcp.md)).
 
 A plugin, bundled or installed, can add a tab to the settings of agents
 running here or hosted, whatever their type, with

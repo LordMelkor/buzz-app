@@ -154,7 +154,7 @@ it("reports an enabled agent MCP plugin that is not running, until it runs or is
     },
     () => failing,
   );
-  const unavailable = () => root.pluginStatus.agentMcpUnavailable?.();
+  const unavailable = () => root.pluginStatus.unavailable?.("agentMcp");
   await vi.advanceTimersByTimeAsync(0);
   expect(plugins.snapshot().activation.example?.status).toBe("failed");
   expect(unavailable()).toBe(true);
@@ -176,13 +176,13 @@ it("reports an enabled agent MCP plugin that a catalog error keeps from starting
   plugin.error = "Its files are missing";
   const { root } = harness({ getCatalog: vi.fn(async () => catalog) });
   await vi.advanceTimersByTimeAsync(0);
-  expect(root.pluginStatus.agentMcpUnavailable?.()).toBe(true);
+  expect(root.pluginStatus.unavailable?.("agentMcp")).toBe(true);
   expect(root.pluginStatus.settled?.()).toBe(true);
 });
 it("does not report a plugin that does not declare agent MCP access", async () => {
   const { root } = harness({}, true);
   await vi.advanceTimersByTimeAsync(0);
-  expect(root.pluginStatus.agentMcpUnavailable?.()).toBe(false);
+  expect(root.pluginStatus.unavailable?.("agentMcp")).toBe(false);
 });
 it("keeps startup unsettled while a failed catalog read retries, but not in recovery the user must act on", async () => {
   const { root, pages } = harness({

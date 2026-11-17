@@ -1430,17 +1430,15 @@ available rather than silently discarding it.
   where you use them. Agents work in their **Workspace** folder (`~/.buzz` by
   default), so keep those servers out of that folder, the folders above it,
   and any Git repository it is in.
-- With a plugin that has MCP server access installed and enabled, you can choose
-  which of your harness's MCP servers an agent's sessions load, including ones
-  Buzz leaves off. The plugin cannot add or call servers, but it can see and
-  block each MCP tool call before it runs where the harness lets Buzz stop one
-  (Codex today). Protected agents load none. If that plugin is enabled but not
-  running, new sessions load none until it runs. Without such a plugin nothing
-  changes: each harness keeps its own default. Codex agents load none of your MCP servers, and Claude agents load
-  the ones in your Claude Code configuration.
-  For Claude, **Show tools** requires the server to be enabled in Claude's own
-  configuration, including project approval. Enable it there before inspecting
-  its tools. Model discovery starts no MCP servers.
+- With a plugin that has MCP server access installed and enabled, you can
+  choose which of your harness's MCP servers an agent's sessions load,
+  including ones Buzz leaves off. The plugin cannot add or call servers. A
+  plugin with agent hook access can also check each MCP tool call before it
+  runs where the harness's hooks see those calls (Codex and Claude Code).
+  Protected agents load none. If that plugin is enabled but not running, new
+  sessions load none until it runs. Without such a plugin nothing changes:
+  each harness keeps its own default. Codex agents load none of your MCP
+  servers, and Claude agents load the ones in your Claude Code configuration.
 - **Settings → Agent details → Previous versions** expands saved revisions for
   agents whose configuration syncs here. Settings and instructions appear together
   in one feed, newest first, with a label on each version. Versions are kept

@@ -167,10 +167,15 @@ it("carries Claude tools, hooks and Stop over guest stdio with guest authenticat
       expect.any(AbortSignal),
       expect.any(Function),
     );
-    expect(hook).toHaveBeenCalledWith("session-1", "PermissionRequest", {
-      session_id: "session-1",
-      tool_name: "Read",
-    });
+    expect(hook).toHaveBeenCalledWith(
+      "session-1",
+      "PermissionRequest",
+      {
+        session_id: "session-1",
+        tool_name: "Read",
+      },
+      undefined,
+    );
     await vi.waitFor(() => {
       expect(output.join("")).toContain("guest-file");
       expect(output.join("")).toContain("test decision");
