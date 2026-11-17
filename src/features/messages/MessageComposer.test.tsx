@@ -8021,6 +8021,22 @@ it.each([
   },
 );
 
+it("accepts an emoji with Tab in a list item without nesting it, then Tab nests", async () => {
+  const h = mountEmojiTypeahead();
+  await h.user.type(h.input(), "- one{Enter}:smil");
+  await screen.findByRole("option", { name: ":smile:" });
+  await h.user.keyboard("{Tab}");
+  expect(h.input()).toHaveValue("one\n😄 ");
+  expect(h.input().querySelector("ul ul")).toBeNull();
+  expect(h.input()).toHaveFocus();
+  await h.user.keyboard("{Tab}");
+  expect(h.input().querySelector("ul ul > li")).toHaveTextContent("😄");
+  await h.user.keyboard("{Shift>}{Tab}{/Shift}");
+  expect(h.input().querySelector("ul ul")).toBeNull();
+  expect(h.input().querySelectorAll("ul > li")).toHaveLength(2);
+  expect(h.input()).toHaveFocus();
+});
+
 it("types on after a custom shortcode as a separate word", async () => {
   const h = mountEmojiTypeahead();
   h.setEmoji([{ shortcode: "party", url: "https://emoji.test/party.png" }]);

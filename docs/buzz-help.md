@@ -585,6 +585,17 @@ and are asked to sign in again in Buzz.
   meanwhile get a divider above the first of them when you come back, before
   anything is marked read; older unread messages, or a read elsewhere on this
   device while you were away, leave that visit without one.
+- **Opening a thread** without choosing a reply starts at its first unread
+  reply, below a **New messages** divider that stays as you read. When the
+  unread reply is nested under another reply, the divider goes above that
+  reply's branch, whose count shows what is new. Buzz loads older replies until
+  it finds where unread replies begin. Opening the thread again, even in a tab
+  that is still open, finds the first unread reply again; switching tabs keeps
+  the divider. A thread with nothing unread opens at its latest reply, as
+  does one whose unread replies this device has not seen yet. An unread
+  channel thread selected in Activity opens the same way, though selecting it
+  marks it read. Opening a specific reply, such as a mention, opens at that
+  reply.
 - **Marking a channel read** keeps the cut from your click when retried. If a newer
   manual unread choice was saved in another window while it waited, the read fails
   rather than clearing that choice. Mark the channel read again to clear it.
@@ -625,16 +636,18 @@ and are asked to sign in again in Buzz.
   - If the sidebar says the community refused your account, **Try again**
     asks again, so it works once an admin has fixed your access. Buzz never
     asks again on its own.
-- **Finding channels**: search's **Channels** tab lists the community's open
-  channels you can join, with their member counts; typing also matches channels
-  you're in. Opening an unjoined channel shows a preview with **Join**. Private
+- **Finding channels**: typing in search matches channels you're in and the
+  community's open channels you can join, with their member counts. With
+  nothing typed, **Browse** beside the results lists your channels, direct
+  messages and chats by kind. Opening an unjoined channel shows a preview with
+  **Join**. Private
   channels appear only once someone adds you. Search reopens where you left it
   for a few minutes; Escape starts fresh next time.
 - **Jumping to unread**: opening search (⌘T or ⌘K; Ctrl elsewhere) with
-  nothing typed lists up to six of your other unread channels and DMs first,
+  nothing typed lists up to five of your other unread channels and DMs first,
   most recently active first, and selects the first, so Enter opens it, instead
   of reopening where you left it. A conversation unread only through thread
-  replies previews its newest unread reply and opens it in its thread. Muted
+  replies previews its newest unread reply and opens that thread. Muted
   conversations are left out. Turn this off with **Show unread first in
   search** in Settings → Appearance → Conversations.
 - **Activity** threads name their channel above the original message. Select that
@@ -654,6 +667,15 @@ and are asked to sign in again in Buzz.
   their avatar previews. The macOS Dock unread dot follows the rows: a muted channel
   lights it only for a mention of you or **Mark as unread**, and a muted DM still lights it.
   Muting does not mark messages or threads as read.
+- **Adding to a DM**: open the DM's access dialog and search for someone to
+  add. An agent joins right away and can read the DM's earlier messages. For a
+  person, choose **Include history** to add them to this DM with its earlier
+  messages, or **Start a new DM** to message the people in a new DM without the
+  earlier messages. Agents stay in the original DM and can be added later.
+  After Include history, messaging only the original people starts a new DM.
+  If the people you'd end up with already have a DM, Buzz opens that one
+  instead. A DM can include up to nine people; agents don't count. Removing
+  people from a DM isn't available.
 - **Hidden DMs**: **Close conversation** and **Hide conversation** take a DM out
   of the sidebar without leaving it. To find one again, start a **New message**
   to exactly the same people. Its earlier messages appear before you send,
@@ -687,8 +709,9 @@ and are asked to sign in again in Buzz.
     (`in:@me` is your own). A name that matches several conversations, or
     none, says so instead of searching.
   - `after:`, `before:`, `on:` a date (`YYYY-MM-DD`, `today`, `yesterday`), and
-    `during:` a day, month (`2026-10`, `october`), or year, in local time.
-    `after:` includes its day; `before:` does not.
+    `during:` a day, month (`2026-10`, `october`), or year, in local time, or a
+    rolling period ending today (`7d`, `4w`, `3m`, `1y`). `after:` includes its
+    day; `before:` does not.
   - `"exact phrase"` and `-word` match whole words, not word starts. Anything
     inside quotes, `from:` or `-` included, is part of the phrase.
   Other words with a colon, such as `has:link`, are searched as text. An
@@ -709,8 +732,27 @@ and are asked to sign in again in Buzz.
   it. With a dialog open, it searches that dialog. It doesn't find messages
   that haven't loaded or text in the message box; use ⌘F (**Search this
   conversation**) to search a conversation's full history.
+- **Search results** list the best match's group first: channels, people,
+  pages and messages are ordered by how well they match, each heading showing
+  a count and why it ranks there. Messages lead when the text reads like a
+  phrase. Each message shows the words around the match. A panel beside the
+  results previews the highlighted row: the message with the ones just before
+  and after it, or a channel's or person's latest messages. Tab and Shift+Tab,
+  or the group filter buttons above the results, show one group whole, as
+  does choosing a group's heading when it has more; Escape goes back. Groups
+  reorder as slower results arrive until you move the highlight; after that
+  they stay put and later groups join at the end. The panel and key hints hide
+  in narrow windows.
+- **Ask an agent**: start with `ask:` to write a question for your default
+  agent, or choose **Ask** under a long query. Enter opens New chat with the
+  question addressed to that agent; press Enter again to send it. If New chat
+  already has an unsent draft, Ask keeps it and offers **Replace it**, which
+  opens New chat with the question instead. Filters
+  such as `from:` and `in:`, typed or chosen, stay part of the question. With an empty query, search lists
+  your recent searches on this device.
 - **Channel, people, and message search** shows “Searching…” beside each section heading
-  if a lookup takes more than a second. You can open results already shown
+  if a lookup takes more than a second; in the combined results, “Still
+  searching messages…” appears at the end instead. You can open results already shown
   while the rest of the search finishes.
 - **Search while offline**: while a community is offline or still connecting,
   search finds and opens the conversations saved on this device, and a line
@@ -719,7 +761,7 @@ and are asked to sign in again in Buzz.
 - **Join** in a View only chat or channel adds you as a viewer, with a sidebar
   entry and normal unread tracking. Notifications follow your existing settings
   and mention/thread rules. You appear in People as **Viewing only**; you still
-  cannot post, react, or change Canvas or Todos. Reading without joining
+  cannot post, react, or change Canvas. Reading without joining
   stays available.
   Use **Leave chat** or **Leave channel** to remove your membership and sidebar
   entry. Joined viewers keep reading after a switch to Private until they leave
@@ -1008,7 +1050,7 @@ and are asked to sign in again in Buzz.
   closing the thread clears it. The original is also identified as current for
   assistive technology.
 - **Side panels stay with their conversation**: a tab or panel you open beside a
-  conversation, such as a thread, **Canvas**, a huddle, or Todos, stays open for
+  conversation, such as a thread, **Canvas**, or a huddle, stays open for
   that conversation when you go to another conversation or page and come back,
   until you close it. Reloading Buzz does not restore it. The Terminal drawer
   closes when you leave the conversation.
@@ -1093,6 +1135,13 @@ available rather than silently discarding it.
   offers the same edit. Model, workspace, and other runtime options depend on
   its type. Where offered, **Create agent** also lets people choose Thinking
   before the first config is saved; **Default** follows the provider's setting.
+  Claude and Codex list the explicit model separately even when it matches
+  **Default**. Choose the named model to pin that choice when defaults change;
+  choose **Default** to follow defaults again. It appears first, with the
+  current model or the settings it follows shown as supporting text. The closed
+  picker keeps a known model visible with a **Default** suffix; an unknown model
+  reads **Default** instead. Selecting a named
+  model's thinking level in the family menu also pins that model.
   Do not assume someone can edit another person's agent.
 - In the agent avatar picker, drag the avatar strip with a mouse or scroll it
   to browse more choices. Click an avatar to select it; keyboard users can Tab
@@ -1469,7 +1518,9 @@ available rather than silently discarding it.
   since the proposal.
   Agent reads also show saved model and thinking choices for supported local
   harnesses. They distinguish explicit choices, harness defaults, Recommended
-  policy and unavailable settings. They do not report an active turn's model.
+  policy and unavailable settings. For Codex and Claude, they also include
+  current defaults when Buzz can resolve them, with the source or a reason
+  they are unknown. They do not prove an active session's model.
 - Your agents can search messages (`search`) by words, person, channel or DM,
   and date, and link each message they cite. They search with their own access:
   channels they're in and open channels. They don't find messages in your
@@ -1489,7 +1540,9 @@ available rather than silently discarding it.
   once that turn is loaded. Working indicators describe current work,
   not a guarantee that an agent is available or that a message was delivered.
   Local work includes conversation wakes from plugins, watches, and timers.
-  These wakes have no message link of their own.
+  These wakes have no message link of their own. A plugin can cancel a pending
+  guarded wake when its work is no longer current. It cannot retract input
+  already handed to the agent.
   Expand grouped work updates to read each message; the collapsed excerpt names
   its speaker. Thread work appears inside its thread; the channel’s reply summary
   still shows when an agent is working there. While the activity under your

@@ -483,10 +483,14 @@ it("drops a resumed row its repair does not read again", async () => {
   const resume = await closed();
   // The relay omits a deleted row, and its deletion with it.
   const view = direct([root, first], { resume });
-  expect(view.view.snapshot().status).toBe("ready");
+  expect(view.view.snapshot()).toMatchObject({
+    status: "ready",
+    resumed: true,
+  });
   expect(replyIds(view)).toEqual([first.id, gone.id]);
   await view.view.refresh();
   expect(replyIds(view)).toEqual([first.id]);
+  expect(view.view.snapshot().resumed).toBeUndefined();
   // A repair that fails leaves nothing it could not confirm on screen.
   const failing = direct(new Error("offline"), { resume });
   expect(failing.view.snapshot().replies).toHaveLength(2);
@@ -494,6 +498,7 @@ it("drops a resumed row its repair does not read again", async () => {
   expect(failing.view.snapshot()).toMatchObject({
     status: "error",
     replies: [],
+    resumed: undefined,
   });
 });
 

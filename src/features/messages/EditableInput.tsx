@@ -504,6 +504,8 @@ export function EditableInput({
     sync(draft: MentionDraft, reset?: boolean): void;
     /** Applies the settles held through the composition that has just ended. */
     settleHeld(): void;
+    /** Nests the caret's list item, or outdents it; false outside a list. */
+    indent(outdent: boolean): boolean;
   } | null>(null);
 
   useLayoutEffect(() => {
@@ -2173,21 +2175,6 @@ export function EditableInput({
           // A caret key reported as a control character would be typed as that
           // character by the native path. Move the caret here instead.
           if (named !== event.key) return moveCaret(named, event);
-          if (
-            event.key === "Tab" &&
-            !event.altKey &&
-            !event.metaKey &&
-            !event.ctrlKey &&
-            editable()
-          ) {
-            const command = event.shiftKey ? liftListItem : sinkListItem;
-            if (
-              command(composerSchema.nodes.list_item)(editor.state, (tr) =>
-                editor.dispatch(closeHistory(tr)),
-              )
-            )
-              return true;
-          }
           if (event.key === "Backspace" || event.key === "Delete") {
             if (!editable()) return false;
             if (
@@ -2736,6 +2723,13 @@ export function EditableInput({
         for (const held of heldSettles.current.splice(0))
           held.resolve(held.apply());
       },
+      indent(outdent) {
+        if (!editable()) return false;
+        syncNativeSelection();
+        return (outdent ? liftListItem : sinkListItem)(
+          composerSchema.nodes.list_item,
+        )(editor.state, (tr) => editor.dispatch(closeHistory(tr)));
+      },
       sync(next, reset = false) {
         if (
           !reset &&
@@ -2893,6 +2887,16 @@ export function EditableInput({
             !event.shiftKey &&
             view.current &&
             openAnnotation.current?.(view.current.state.selection.head)
+          )
+            event.preventDefault();
+          // After the host, which claims Tab to accept a completion.
+          if (
+            !event.defaultPrevented &&
+            event.key === "Tab" &&
+            !event.altKey &&
+            !event.metaKey &&
+            !event.ctrlKey &&
+            api.current?.indent(event.shiftKey)
           )
             event.preventDefault();
           if (!event.defaultPrevented && event.key === "Enter") {

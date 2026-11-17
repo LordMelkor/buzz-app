@@ -19,7 +19,7 @@
 }
 
 /* Page rows reserve the channel list's scrollbar gutter (.channelList in
-   Channels.module.css), so they end in its column wherever scrollbars take
+   SidebarFrame.module.css), so they end in its column wherever scrollbars take
    space; the controls above keep the header's full width. The gutter needs a
    scroll container, and this one never overflows. It clips, so its padding
    holds row focus rings (2px wide, offset 2px, unscaled by Interface size),

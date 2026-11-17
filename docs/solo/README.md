@@ -413,7 +413,7 @@ remain owned by the original message. Navigation and access rules are unchanged.
 
 `src/bundled/channels/ChannelsPage.tsx` owns every conversation, including the
 Solo treatment (`SoloHeading`, the shared `ChannelMembersDialog`) and drafts; `SoloWorkspaces` and
-`features/channel-navigation/SoloInventory.tsx` own the Solo half of
+`bundled/channels/SoloInventory.tsx` own the Solo half of
 `app/shell/PrimarySidebar.tsx`. Drafting, settings, sharing and conversion live
 in `src/features/solo`; Solo workspaces use
 `src/features/relay/solo-preferences.ts` and the existing recipe capability.

@@ -1,18 +1,21 @@
-import { SoloDisclosure } from "./SoloDisclosure";
-import { RegionChannelGroup, RegionChannelGroups } from "./RegionChannelGroup";
+import { SoloDisclosure } from "../../features/channel-navigation/SoloDisclosure";
+import {
+  RegionChannelGroup,
+  RegionChannelGroups,
+} from "../../features/channel-navigation/RegionChannelGroup";
 import {
   WorkspaceCompositionContext,
   RegionWorkspace,
   RegionChats,
   RegionChatList,
   type ComposeWorkspaces,
-} from "./WorkspaceComposition";
+} from "../../features/channel-navigation/WorkspaceComposition";
 import {
   RegionDestinationContext,
   RegionCard,
   RegionConversation,
   RecoveryDestination,
-} from "./SoloDestination";
+} from "../../features/channel-navigation/SoloDestination";
 import {
   useEffectEvent,
   useLayoutEffect,
@@ -24,10 +27,10 @@ import {
 } from "react";
 import { OwnedContribution } from "../../plugins/OwnedContribution";
 import { NavigationSectionHeading } from "../../shared/design-system/ui/NavigationSection";
-import { SidebarSection } from "../../bundled/channels/SidebarSection";
-import styles from "../../bundled/channels/Channels.module.css";
-import { orderContributedSidebarSections } from "../../bundled/channels/sidebar-sections";
-import type { useSidebarView } from "../../bundled/channels/useSidebarView";
+import { SidebarSection } from "./SidebarSection";
+import styles from "./Channels.module.css";
+import { orderContributedSidebarSections } from "./sidebar-sections";
+import type { useSidebarView } from "./useSidebarView";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { Button } from "../../shared/design-system/ui/Button";
 import {
@@ -46,20 +49,20 @@ import {
   MenuGroup,
   MenuGroupLabel,
 } from "../../shared/design-system/ui/Menu";
-import type { Navigation } from "../navigation/controller";
-import type { OpenTarget } from "../navigation/targets";
-import { relayPartition } from "../relay/partition";
-import type { RelaySession } from "../relay/session";
-import { useSoloNavigation } from "./solo-navigation-react";
+import type { Navigation } from "../../features/navigation/controller";
+import type { OpenTarget } from "../../features/navigation/targets";
+import { relayPartition } from "../../features/relay/partition";
+import type { RelaySession } from "../../features/relay/session";
+import { useSoloNavigation } from "../../features/channel-navigation/solo-navigation-react";
 import {
   soloNavigationFor,
   type SoloNavigationService,
-} from "./solo-navigation";
-import type { SoloRegion } from "./solo-navigation-model";
+} from "../../features/channel-navigation/solo-navigation";
+import type { SoloRegion } from "../../features/channel-navigation/solo-navigation-model";
 import type {
   SoloRegionAction,
   SoloRegionProps,
-} from "./solo-navigation-contract";
+} from "../../features/channel-navigation/solo-navigation-contract";
 
 export function SoloRegions({
   session,

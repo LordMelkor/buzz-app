@@ -137,12 +137,7 @@ it.each([
     const [first] = list().getAllByRole("button", { name: /^Open / });
     if (!first) throw new Error("Missing fixture row");
     fireEvent.click(first);
-    await waitFor(() =>
-      expect(
-        reader().querySelector(`[data-message-id="${h.reply.id}"]`),
-      ).toHaveFocus(),
-    );
-    (await screen.findByRole("textbox")).focus();
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveFocus());
     if (dialog) {
       // The dialog is portalled outside the tab that owns it.
       fireEvent.click(
@@ -2468,11 +2463,7 @@ it("under Unread only, marking a neighbor read keeps the open conversation and i
   act(() => {
     editor.insertText("Keep this unread-only draft");
   });
-  await waitFor(() =>
-    expect(
-      reader().querySelector(`[data-message-id="${h.reply.id}"]`),
-    ).toHaveFocus(),
-  );
+  await waitFor(() => expect(editor).toHaveFocus());
   await waitFor(() =>
     expect(screen.getByRole("list", { name: "Activity" })).toHaveAttribute(
       "aria-busy",
@@ -4235,7 +4226,7 @@ it("Retry with a ready roster waits for both evidence reads before retrying sync
   );
 });
 
-it("opens a thread row in a side tab beside Inbox, at its exact message", async () => {
+it("opens an unread thread row in a side tab beside Inbox, at its first unread reply behind a line its read keeps", async () => {
   const h = fixture();
   render(h.view);
   await waitFor(() => expect(rows()).toHaveLength(2));
@@ -4261,6 +4252,31 @@ it("opens a thread row in a side tab beside Inbox, at its exact message", async 
   );
   expect(thread).toHaveAttribute("data-selected");
   expect(h.open).not.toHaveBeenCalled();
+  await waitFor(() =>
+    expect(
+      within(thread).queryByRole("img", { name: "Unread" }),
+    ).not.toBeInTheDocument(),
+  );
+  const line = within(tab).getByRole("separator", { name: "New messages" });
+  expect(
+    line.compareDocumentPosition(
+      tab.querySelector(`[data-message-id="${h.reply.id}"]`) as Node,
+    ) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  // Returning to Activity restores the read thread without its line.
+  cleanup();
+  render(h.view);
+  const restored = await screen.findByRole("region", {
+    name: "Conversation in Design",
+  });
+  await waitFor(() =>
+    expect(
+      restored.querySelector(`[data-message-id="${h.reply.id}"]`),
+    ).toBeInTheDocument(),
+  );
+  expect(
+    within(restored).queryByRole("separator", { name: "New messages" }),
+  ).toBeNull();
 });
 
 it("replaces the tab the previous row opened", async () => {
@@ -4943,11 +4959,7 @@ it.each([
     if (!thread || !mention) throw new Error("Missing fixture rows");
     fireEvent.click(within(thread).getByRole("button", { name: /^Open / }));
     const editor = await screen.findByRole("textbox");
-    await waitFor(() =>
-      expect(
-        reader().querySelector(`[data-message-id="${h.reply.id}"]`),
-      ).toHaveFocus(),
-    );
+    await waitFor(() => expect(editor).toHaveFocus());
     const list = screen.getByRole("list", { name: "Activity" });
     await waitFor(() => expect(list).toHaveAttribute("aria-busy", "false"));
     if (outcome === "fails") h.failSave();

@@ -1849,6 +1849,25 @@ export const test = base.extend({
             (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id),
           )
           .slice(0, filter.limit);
+      // Search's person preview: their latest messages in any conversation.
+      if (
+        filter.authors?.length &&
+        !filter["#h"] &&
+        filter.search === undefined &&
+        filter.kinds?.includes(9)
+      )
+        return [...histories.entries()]
+          .filter(([key]) => key.startsWith(`${community}/`))
+          .flatMap(([, events]) => events)
+          .filter(
+            (event) =>
+              filter.kinds.includes(event.kind) &&
+              filter.authors.includes(event.pubkey),
+          )
+          .toSorted(
+            (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id),
+          )
+          .slice(0, filter.limit);
       const channel = filter["#h"]?.[0];
       const history = histories.get(`${community}/${channel}`);
       if (!history)

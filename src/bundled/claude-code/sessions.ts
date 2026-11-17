@@ -268,6 +268,7 @@ export class AgentSessions {
       admit,
       step,
       acknowledged,
+      accepted,
       superseded,
       activityScope,
       admitting,
@@ -340,6 +341,7 @@ export class AgentSessions {
         ...(activityScope ? { activityScope } : {}),
         ...(step ? { step } : {}),
         ...(acknowledged ? { acknowledged } : {}),
+        ...(accepted ? { accepted } : {}),
         ...(superseded ? { superseded } : {}),
         ...(admitting ? { admitting } : {}),
       };

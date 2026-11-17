@@ -65,6 +65,7 @@ export class AcpSession {
     refresh?: ActivityReceipt["refresh"];
     waiter?: Waiter;
     delivered?: () => void;
+    accepted?: () => void;
   }[] = [];
   /** The model the running turn runs on; empty is its provider's default. */
   private model = "";
@@ -184,6 +185,7 @@ export class AcpSession {
       this.queue.push({
         text,
         ...(activity.delivered ? { delivered: activity.delivered } : {}),
+        ...(activity.accepted ? { accepted: activity.accepted } : {}),
         ...(activity.current ? { current: activity.current } : {}),
         ...(activity.refresh ? { refresh: activity.refresh } : {}),
         waiter,
@@ -335,6 +337,7 @@ export class AcpSession {
       const { steering } = this.acp.hooks;
       if (runId && steering) {
         try {
+          activity.accepted?.();
           await steering.steer(this.acp, this.id, runId, text);
           if (live()) {
             activity.delivered?.();
@@ -354,6 +357,7 @@ export class AcpSession {
         this.queue.splice(next < 0 ? this.queue.length : next, 0, {
           text,
           ...(activity.delivered ? { delivered: activity.delivered } : {}),
+          ...(activity.accepted ? { accepted: activity.accepted } : {}),
           ...(activity.current ? { current: activity.current } : {}),
           ...(activity.refresh ? { refresh: activity.refresh } : {}),
           waiter,
@@ -417,6 +421,7 @@ export class AcpSession {
           refresh,
           waiter,
           delivered,
+          accepted,
         } = this.queue.shift() ?? {
           text: "",
         };
@@ -454,6 +459,7 @@ export class AcpSession {
             if (waiter) this.discard(waiter);
             continue;
           }
+          accepted?.();
           delivered?.();
           sent = true;
           if (waiter) this.sent(waiter);

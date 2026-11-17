@@ -49,6 +49,9 @@ export type ThreadSnapshot = Readonly<{
   /** Exact navigation target, folded independently of bounded thread traversal. */
   target?: ChannelMessage | undefined;
   targetStatus?: "loading" | "ready" | "unavailable" | "error" | undefined;
+  /** Rows include a closed view's resumed rows, until this view's first
+   * refresh settles either way. */
+  resumed?: true | undefined;
 }>;
 /** What a closed ordinary thread last showed. A view opened from it shows
  * these rows at once, as display only: they are never evidence, and the
@@ -414,6 +417,7 @@ export function createThreadView({
       ...patch,
       root: nextRoot,
       replies,
+      resumed: shown ? true : undefined,
       ...(exact ? { target, targetStatus } : {}),
     });
   }

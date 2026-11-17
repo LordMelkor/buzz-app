@@ -1,8 +1,8 @@
-import { useSoloRowActivation } from "./useSoloRowActivation";
+import { useSoloRowActivation } from "../../features/channel-navigation/useSoloRowActivation";
 import { useIsPresent } from "motion/react";
-import type { ComposeWorkspaces } from "./WorkspaceComposition";
-import { useSoloNavigation } from "./solo-navigation-react";
-import { soloNavigationFor } from "./solo-navigation";
+import type { ComposeWorkspaces } from "../../features/channel-navigation/WorkspaceComposition";
+import { useSoloNavigation } from "../../features/channel-navigation/solo-navigation-react";
+import { soloNavigationFor } from "../../features/channel-navigation/solo-navigation";
 import {
   useCallback,
   useLayoutEffect,
@@ -14,39 +14,42 @@ import {
   type RefObject,
   type ReactNode,
 } from "react";
-import { useChannelNavigation } from "./ChannelNavigationState";
-import { eligibleSolo } from "../solo/labels";
+import { useChannelNavigation } from "../../features/channel-navigation/ChannelNavigationState";
+import { eligibleSolo } from "../../features/solo/labels";
 import {
   conversationTarget,
   soloDraft,
   soloDraftTarget,
   resumeSoloDraftTarget,
-} from "./routes";
-import { hasSoloDraft, useSoloDraftProjects } from "../solo/draft-projects";
-import { ChannelActivityPopover } from "../../bundled/channels/ChannelActivityPopover";
-import { useWorkingAgents } from "../../bundled/channels/useWorkingAgents";
-import { WorkingAgentsBadge } from "../../bundled/channels/WorkingAgentsBadge";
-import { UnreadBadge } from "../../bundled/channels/UnreadBadge";
-import { useUnreadChannelIds } from "../../bundled/channels/useSidebarFilters";
+} from "../../features/channel-navigation/routes";
 import {
-  SoloWorkspaces,
-  type ChatListItem,
-} from "../../bundled/channels/SoloWorkspaces";
+  hasSoloDraft,
+  useSoloDraftProjects,
+} from "../../features/solo/draft-projects";
+import { ChannelActivityPopover } from "./ChannelActivityPopover";
+import { useWorkingAgents } from "./useWorkingAgents";
+import { WorkingAgentsBadge } from "./WorkingAgentsBadge";
+import { UnreadBadge } from "./UnreadBadge";
+import { useUnreadChannelIds } from "./useSidebarFilters";
+import { SoloWorkspaces, type ChatListItem } from "./SoloWorkspaces";
 import {
   soloSharedMarkId,
   useSharedWithPeople,
   useSoloOwner,
-} from "../../bundled/channels/ChatSharedMark";
-import { useChannelList } from "../relay/react";
-import type { RelaySession } from "../relay/session";
-import type { ChannelSummary } from "../relay/contracts";
-import { useRecoveryOwns } from "../relay/RecoveryNotice";
-import { rosterRecovering } from "../relay/live-recovery";
-import type { Navigation } from "../navigation/controller";
-import type { OpenTarget } from "../navigation/targets";
-import { buzzLinkTarget } from "../navigation/buzz-links";
-import { resetNewChatProject, soloDraftInput } from "../solo/SoloDraft";
-import { NewWorkspace } from "../solo/NewWorkspace";
+} from "./ChatSharedMark";
+import { useChannelList } from "../../features/relay/react";
+import type { RelaySession } from "../../features/relay/session";
+import type { ChannelSummary } from "../../features/relay/contracts";
+import { useRecoveryOwns } from "../../features/relay/RecoveryNotice";
+import { rosterRecovering } from "../../features/relay/live-recovery";
+import type { Navigation } from "../../features/navigation/controller";
+import type { OpenTarget } from "../../features/navigation/targets";
+import { buzzLinkTarget } from "../../features/navigation/buzz-links";
+import {
+  resetNewChatProject,
+  soloDraftInput,
+} from "../../features/solo/SoloDraft";
+import { NewWorkspace } from "../../features/solo/NewWorkspace";
 import { InlineHeader } from "../../shared/design-system/ui/Header";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import {
@@ -63,14 +66,14 @@ import {
   PlusIcon,
 } from "../../shared/design-system/icons";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
-import type { ContributionReader } from "../conversation/contracts";
-import type { ChatIcon, ChatMenu } from "../conversation/service";
+import type { ContributionReader } from "../../features/conversation/contracts";
+import type { ChatIcon, ChatMenu } from "../../features/conversation/service";
 import type {
   RegisteredSidebarRows,
   SidebarRows,
-} from "./sidebar-rows-service";
-import channelStyles from "../../bundled/channels/Channels.module.css";
-import styles from "../../bundled/channels/SoloWorkspaces.module.css";
+} from "../../features/channel-navigation/sidebar-rows-service";
+import channelStyles from "./Channels.module.css";
+import styles from "./SoloWorkspaces.module.css";
 
 const noSubscription = () => () => {};
 const emptyRows: readonly RegisteredSidebarRows[] = [];

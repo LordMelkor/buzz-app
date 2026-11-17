@@ -1,3 +1,6 @@
+import { AcpProcess } from "../agent-harness/acp/process";
+import { GOOSE } from "../../bundled/goose/goose";
+import { fakeSpawn } from "../../bundled/goose/goose-testing";
 import { UnattestedProfile } from "../relay/identity-archives";
 import { createSoloPreferences } from "../relay/solo-preferences";
 import type { ChannelKit } from "../channel-templates/capability";
@@ -15,6 +18,9 @@ import { createAgentLibrary } from "./library";
 import type { AttentionSource } from "./attention-sources";
 import type { AgentHookContext } from "./hooks";
 import { appClient } from "../../buzz-mcp/app-client";
+import { ClaudeDefaults } from "../../bundled/claude-code/defaults";
+import { CodexProvider } from "../../bundled/codex/tabs";
+import type { AgentModelSettingsContext } from "./model-settings";
 import type { AgentToolAuthority, AgentToolProof } from "./tool-operation";
 import { callAttentionTool } from "../../buzz-mcp/attention";
 import { callSessionTool } from "../../buzz-mcp/session-tools";
@@ -64,6 +70,7 @@ import { huddleDescription } from "../huddle/lifecycle";
 import type { AgentIdentity } from "./native";
 import {
   type Agent,
+  type Agents,
   type AgentHandle,
   type AgentSession,
   AgentsService,
@@ -215,6 +222,7 @@ async function setup({
     | Pick<NonNullable<AgentType<Config>["sessionControls"]>, "state" | "run">
     | undefined,
   resumes = false,
+  supportsGuardedWake = undefined as AgentType<Config>["supportsGuardedWake"],
   /** Settings the type syncs across devices. */
   syncedSettings = undefined as AgentType<Config>["syncedSettings"],
   protection = undefined as true | undefined,
@@ -286,6 +294,7 @@ async function setup({
   const run =
     vi.fn<(delivery: Delivery<Config>) => void | Promise<void>>(answer);
   const type: AgentType<Config> = {
+    ...(supportsGuardedWake ? { supportsGuardedWake } : {}),
     id: typeId,
     title: "Echo",
     timeoutMs,
@@ -2369,27 +2378,40 @@ describe("a plugin's wake", () => {
       ]);
   });
 
-  it("throws outside a plugin, without text or a well-formed root, or for an agent this copy does not run", async () => {
-    const { service, plugin, native } = await setup();
-    await service.create({ type: "example/echo", name: "Echo" });
-    await held(native);
-    expect(() => service.wake(bot, { channel, text: "hi" })).toThrow(
-      /Only a plugin/,
-    );
-    expect(() => plugin.agents.wake(bot, { channel, text: " " })).toThrow(
-      /needs a channel and text/,
-    );
-    for (const bad of ["", "note1abc", "r".repeat(63), ` ${"a".repeat(64)}`])
+  it.each([false, true])(
+    "throws synchronously on invalid wake arguments (guarded: %s)",
+    async (guarded) => {
+      const { service, plugin, native } = await setup();
+      await service.create({ type: "example/echo", name: "Echo" });
+      await held(native);
+      const send = (
+        key: Parameters<Agents["wake"]>[0],
+        wake: Parameters<Agents["wake"]>[1],
+      ) =>
+        guarded
+          ? plugin.agents.wake(key, wake, { current: () => true })
+          : plugin.agents.wake(key, wake);
       expect(() =>
-        plugin.agents.wake(bot, { channel, root: bad, text: "hi" }),
-      ).toThrow(/64-hex event id/);
-    expect(() =>
-      plugin.agents.wake(bot, { channel, root, topLevel: true, text: "hi" }),
-    ).toThrow(/not both/);
-    expect(() => plugin.agents.wake(sibling, { channel, text: "hi" })).toThrow(
-      /does not run that agent/,
-    );
-  });
+        guarded
+          ? service.wake(bot, { channel, text: "hi" }, { current: () => true })
+          : service.wake(bot, { channel, text: "hi" }),
+      ).toThrow(/Only a plugin/);
+      expect(() => send(bot, { channel, text: " " })).toThrow(
+        /needs a channel and text/,
+      );
+      for (const bad of ["", "note1abc", "r".repeat(63), ` ${"a".repeat(64)}`])
+        expect(() => send(bot, { channel, root: bad, text: "hi" })).toThrow(
+          /64-hex event id/,
+        );
+      expect(() =>
+        send(bot, { channel, root, topLevel: true, text: "hi" }),
+      ).toThrow(/not both/);
+      if (!guarded)
+        expect(() => send(sibling, { channel, text: "hi" })).toThrow(
+          /does not run that agent/,
+        );
+    },
+  );
 
   it("comes from the agent itself through its run's handle, marked from where", async () => {
     const { service, run, plugin, native } = await setup();
@@ -2433,6 +2455,333 @@ describe("a plugin's wake", () => {
     await service.remove(bot);
     await settle();
     expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("guarded plugin wakes", () => {
+  const wake = { channel, root: "e".repeat(64), text: "Check current work" };
+  it("refuses unsupported guarded wakes before run and preserves ordinary wakes", async () => {
+    const f = await setup();
+    try {
+      await f.service.create({ type: "example/echo", name: "Echo" });
+      await expect(
+        f.plugin.agents.wake(bot, wake, { current: () => true }),
+      ).resolves.toEqual({ status: "dropped", reason: "refused" });
+      expect(f.run).not.toHaveBeenCalled();
+      const entered = runnerGate();
+      f.run.mockImplementationOnce(() => entered.resolve());
+      expect(f.plugin.agents.wake(bot, wake)).toBeUndefined();
+      await entered.promise;
+      expect(f.run).toHaveBeenCalledOnce();
+    } finally {
+      await f.ctx.fiber.dispose();
+    }
+  });
+
+  it("uses guarded delivery only after strict capability detection, without probe wakes", async () => {
+    const f = await setup({ supportsGuardedWake: true });
+    const oldWake = vi.fn();
+    const sendIfSupported = (agents: {
+      supportsGuardedWake?: unknown;
+      wake: Agents["wake"];
+    }) => {
+      if (agents.supportsGuardedWake === true)
+        return agents.wake(bot, wake, { current: () => false });
+      return undefined;
+    };
+    try {
+      await f.service.create({ type: "example/echo", name: "Echo" });
+      for (const flag of [undefined, false, "true", 1])
+        expect(
+          sendIfSupported({ supportsGuardedWake: flag, wake: oldWake }),
+        ).toBeUndefined();
+      expect(oldWake).not.toHaveBeenCalled();
+      await expect(sendIfSupported(f.plugin.agents)).resolves.toEqual({
+        status: "dropped",
+        reason: "stale",
+      });
+      expect(f.run).not.toHaveBeenCalled();
+      // @ts-expect-error malformed JavaScript callers still get a synchronous error
+      expect(() => f.plugin.agents.wake(bot, wake, {})).toThrow(
+        "current predicate",
+      );
+      expect(() =>
+        f.plugin.agents.wake(bot, wake, {
+          current: () => true,
+          // @ts-expect-error invalid caller signal
+          signal: {},
+        }),
+      ).toThrow();
+    } finally {
+      await f.ctx.fiber.dispose();
+    }
+  });
+
+  it("preserves void calls and synchronous queue errors while guarded calls return refused", async () => {
+    const f = await setup({ supportsGuardedWake: true });
+    const gate = runnerGate();
+    const started = runnerGate();
+    try {
+      await f.service.create({ type: "example/echo", name: "Echo" });
+      f.run.mockImplementationOnce(async () => {
+        started.resolve();
+        await gate.promise;
+      });
+      expect(f.plugin.agents.wake(bot, wake)).toBeUndefined();
+      await started.promise;
+      for (let i = 0; i < 32; i++)
+        expect(f.plugin.agents.wake(bot, wake)).toBeUndefined();
+      expect(() => f.plugin.agents.wake(bot, wake)).toThrow("busy");
+      await expect(
+        f.plugin.agents.wake(bot, wake, { current: () => true }),
+      ).resolves.toEqual({ status: "dropped", reason: "refused" });
+      expect(f.run).toHaveBeenCalledOnce();
+    } finally {
+      gate.resolve();
+      await f.ctx.fiber.dispose();
+    }
+  });
+
+  it.each(["aborted", "stale", "guard-error"] as const)(
+    "drops %s before queue admission",
+    async (reason) => {
+      const f = await setup({ supportsGuardedWake: true });
+      try {
+        await f.service.create({ type: "example/echo", name: "Echo" });
+        const signal = reason === "aborted" ? AbortSignal.abort() : undefined;
+        const current = () => {
+          if (reason === "guard-error")
+            throw new Error("Cannot read current state");
+          return reason !== "stale";
+        };
+        await expect(
+          f.plugin.agents.wake(bot, wake, {
+            ...(signal ? { signal } : {}),
+            current,
+          }),
+        ).resolves.toEqual({ status: "dropped", reason });
+        expect(f.run).not.toHaveBeenCalled();
+      } finally {
+        await f.ctx.fiber.dispose();
+      }
+    },
+  );
+
+  it.each([
+    "stale",
+    "aborted",
+    "guard-error",
+    "removed",
+    "disposed",
+    "membership",
+    "access",
+    "session",
+  ] as const)("drops a wake invalidated by %s while queued", async (change) => {
+    const f = await setup({ supportsGuardedWake: true });
+    const gate = runnerGate();
+    const started = runnerGate();
+    let caller!: Context;
+    const scope = f.plugin.plugin((ctx) => {
+      caller = ctx;
+    });
+    await scope.await();
+    try {
+      await f.service.create({ type: "example/echo", name: "Echo" });
+      f.run.mockImplementationOnce(async () => {
+        started.resolve();
+        await gate.promise;
+      });
+      f.plugin.agents.wake(bot, { ...wake, text: "Hold the lane" });
+      await started.promise;
+      let valid = true;
+      const abort = new AbortController();
+      const result = caller.agents.wake(bot, wake, {
+        signal: abort.signal,
+        current: () => {
+          if (!valid && change === "guard-error")
+            throw new Error("State unavailable");
+          return valid;
+        },
+      });
+      if (change === "aborted") abort.abort();
+      else if (change === "removed") await f.service.remove(bot);
+      else if (change === "disposed") await scope.dispose();
+      else if (change === "session") {
+        f.reconnecting();
+        f.recover();
+      } else if (change === "membership" || change === "access") {
+        const list = f.session.channels.list();
+        vi.spyOn(f.session.channels, "list").mockReturnValue({
+          ...list,
+          channels: list.channels.map((row) =>
+            row.id === channel
+              ? {
+                  ...row,
+                  visibility: "private",
+                  members: (row.members ?? []).filter(
+                    (key) => key !== (change === "membership" ? bot : viewer),
+                  ),
+                }
+              : row,
+          ),
+        });
+      } else valid = false;
+      gate.resolve();
+      await expect(result).resolves.toEqual({
+        status: "dropped",
+        reason:
+          change === "stale" || change === "aborted" || change === "guard-error"
+            ? change
+            : "unavailable",
+      });
+      expect(f.run).toHaveBeenCalledOnce();
+    } finally {
+      gate.resolve();
+      await f.ctx.fiber.dispose();
+    }
+  });
+
+  it("checks again after harness queue waits and resolves at handoff, before completion", async () => {
+    const f = await setup({ supportsGuardedWake: true });
+    const gate = runnerGate();
+    const entered = runnerGate<Delivery<Config>>();
+    let valid = true;
+    try {
+      await f.service.create({ type: "example/echo", name: "Echo" });
+      f.run.mockImplementationOnce((delivery) => {
+        entered.resolve(delivery);
+        delivery.workingUntil(gate.promise);
+        return gate.promise;
+      });
+      const dropped = f.plugin.agents.wake(bot, wake, {
+        current: () => valid,
+      });
+      const delivery = await entered.promise;
+      valid = false;
+      expect(delivery.current()).toBe(false);
+      await expect(dropped).resolves.toEqual({
+        status: "dropped",
+        reason: "stale",
+      });
+      gate.resolve();
+      const completed = runnerGate();
+      const abort = new AbortController();
+      f.run.mockImplementationOnce((next) => {
+        expect(next.current()).toBe(true);
+        next.accepted?.();
+        next.workingUntil(completed.promise);
+      });
+      const delivered = f.plugin.agents.wake(bot, wake, {
+        signal: abort.signal,
+        current: () => true,
+      });
+      try {
+        await expect(delivered).resolves.toEqual({ status: "delivered" });
+        abort.abort();
+        const accepted = f.run.mock.calls[1]?.[0];
+        expect(accepted?.current()).toBe(false);
+        expect(accepted?.trigger).toMatchObject({
+          type: "plugin",
+          plugin: "example",
+          text: wake.text,
+        });
+        accepted?.accepted?.();
+        await expect(delivered).resolves.toEqual({ status: "delivered" });
+      } finally {
+        completed.resolve();
+      }
+    } finally {
+      gate.resolve();
+      await f.ctx.fiber.dispose();
+    }
+  });
+
+  it.each(["stale", "stop", "delivered"] as const)(
+    "settles %s through the public API, host queue and real ACP delivery queue",
+    async (change) => {
+      const f = await setup({ supportsGuardedWake: true });
+      const transport = fakeSpawn({ hold: true });
+      const acp = await AcpProcess.start(transport.spawn, GOOSE, {
+        cwd: "/work",
+        serve: transport.serve,
+      });
+      const session = await acp.open({
+        cwd: "/work",
+        systemPrompt: "",
+        choice: () => ({ provider: "", model: "" }),
+      });
+      const gate = runnerGate();
+      const waiting = runnerGate();
+      session.beforeTurn = async () => {
+        waiting.resolve();
+        await gate.promise;
+      };
+      let valid = true;
+      try {
+        await f.service.create({ type: "example/echo", name: "Echo" });
+        f.run.mockImplementation((delivery) => {
+          delivery.workingUntil(
+            session.send(wake.text, {
+              current: delivery.current,
+              ...(delivery.accepted ? { accepted: delivery.accepted } : {}),
+              ...(delivery.acknowledged
+                ? { acknowledged: delivery.acknowledged }
+                : {}),
+              ...(delivery.step ? { step: delivery.step } : {}),
+            }),
+          );
+        });
+        const result = f.plugin.agents.wake(bot, wake, {
+          current: () => valid,
+        });
+        let settled = false;
+        void result?.then(() => {
+          settled = true;
+        });
+        await waiting.promise;
+        expect(settled).toBe(false);
+        expect(transport.geese[0]?.turns).toEqual([]);
+        if (change === "stale") valid = false;
+        if (change === "stop") await session.interrupt();
+        gate.resolve();
+        await expect(result).resolves.toEqual(
+          change === "delivered"
+            ? { status: "delivered" }
+            : {
+                status: "dropped",
+                reason: change === "stale" ? "stale" : "refused",
+              },
+        );
+        expect(transport.geese[0]?.turns).toHaveLength(
+          change === "delivered" ? 1 : 0,
+        );
+        transport.geese[0]?.turns[0]?.finish();
+        await session.idle();
+      } finally {
+        gate.resolve();
+        await acp.kill();
+        await f.ctx.fiber.dispose();
+      }
+    },
+  );
+
+  it("returns refused when a harness ignores a wake without accepting it", async () => {
+    const f = await setup({ supportsGuardedWake: true });
+    try {
+      await f.service.create({ type: "example/echo", name: "Echo" });
+      expect(() => f.service.wake(bot, wake, { current: () => true })).toThrow(
+        "Only a plugin",
+      );
+      await expect(
+        f.plugin.agents.wake(sibling, wake, { current: () => true }),
+      ).resolves.toEqual({ status: "dropped", reason: "unavailable" });
+      f.run.mockImplementationOnce(({ ignored }) => ignored?.());
+      await expect(
+        f.plugin.agents.wake(bot, wake, { current: () => true }),
+      ).resolves.toEqual({ status: "dropped", reason: "refused" });
+    } finally {
+      await f.ctx.fiber.dispose();
+    }
   });
 });
 
@@ -15268,13 +15617,12 @@ it("changes instructions in place and discards a dismissed change draft", async 
 
 it("reads model selections through MCP by name and in lists without exposing config", async () => {
   const f = await setup();
+  const defaults = new ClaudeDefaults(memoryStorage());
   f.plugin.agents.register({
     ...f.type,
     id: "models",
-    readModelSettings: () => ({
-      model: { source: "configured", value: "model-a" },
-      effort: { source: "default" },
-    }),
+    readModelSettings: (config, context) =>
+      defaults.readModelSettings(config, context),
   });
   await f.service.create({ type: "example/echo", name: "Reader" });
   await f.service.create({ type: "example/models", name: "Model" });
@@ -15289,24 +15637,83 @@ it("reads model selections through MCP by name and in lists without exposing con
   const read = async (agent?: string) =>
     JSON.parse((await callTool(client, {}, "agent_read", { agent })) as string);
   try {
-    const expected = {
-      pubkey: sibling,
-      name: "Model",
-      type: "example/models",
-      instructions: "secret config",
-      synced: false,
-      modelSettings: {
-        model: { source: "configured", value: "model-a" },
-        effort: { source: "default" },
-      },
-    };
-    expect(await read("Model")).toEqual(expected);
-    expect(await read(sibling)).toEqual(expected);
-    expect(await read()).toContainEqual(expected);
+    for (const model of ["model-a", "model-b"]) {
+      await defaults.save({ model, effort: "high" });
+      const expected = {
+        pubkey: sibling,
+        name: "Model",
+        type: "example/models",
+        instructions: "secret config",
+        synced: false,
+        modelSettings: {
+          model: {
+            source: "default",
+            resolved: { value: model, source: "device" },
+          },
+          effort: {
+            source: "default",
+            resolved: { value: "high", source: "device" },
+          },
+        },
+      };
+      expect(await read("Model")).toEqual(expected);
+      expect(await read(sibling)).toEqual(expected);
+      expect(await read()).toContainEqual(expected);
+      const membership = f.service.find(sibling);
+      if (!membership) throw new Error("Missing local agent");
+      expect(await f.plugin.agents.readModelSettings?.(membership.key)).toEqual(
+        expected.modelSettings,
+      );
+    }
     expect(await read("Reader")).toMatchObject({
       modelSettings: { unavailable: expect.any(String) },
     });
   } finally {
+    await f.ctx.fiber.dispose();
+  }
+});
+
+it("reads execution placement from saved state before projecting native defaults", async () => {
+  const storage = memoryStorage();
+  const f = await setup({ storage });
+  const defaults = new ClaudeDefaults(memoryStorage());
+  await defaults.save({ model: "local-model", effort: "high" });
+  f.plugin.agents.register({
+    ...f.type,
+    id: "models",
+    execution: true,
+    readModelSettings: (config, context) =>
+      defaults.readModelSettings(config, context),
+  });
+  await f.service.create({ type: "example/models", name: "Model" });
+  const agent = f.service.find(bot);
+  if (!agent) throw new Error("Missing local agent");
+  const key = `buzz.agent.execution.v1:${agent.key}`;
+  // The synchronous copy can lag another writer; inspect the saved binding.
+  const get = storage.get;
+  const cached = vi
+    .spyOn(storage, "get")
+    .mockImplementation((entry) => (entry === key ? null : get(entry)));
+  try {
+    await storage.set(key, JSON.stringify({ provider: "example/remote" }));
+    expect(await f.service.readModelSettings(agent.key)).toEqual({
+      model: { source: "default", resolved: { unavailable: "remote" } },
+      effort: { source: "default", resolved: { unavailable: "remote" } },
+    });
+    await storage.set(key, "invalid");
+    expect(await f.service.readModelSettings(agent.key)).toEqual({
+      model: {
+        source: "default",
+        resolved: { unavailable: "execution-unavailable" },
+      },
+      effort: {
+        source: "default",
+        resolved: { unavailable: "execution-unavailable" },
+      },
+    });
+  } finally {
+    cached.mockRestore();
+    await storage.set(key, null);
     await f.ctx.fiber.dispose();
   }
 });
@@ -15337,7 +15744,7 @@ it("does not infer another device's model settings from its local type", async (
   }
 });
 
-it("reads confirmed synced model settings and refuses stale local choices", async () => {
+it("reads confirmed synced model settings and preserves execution's effort refusal", async () => {
   const subject: Subject = {
     owner: viewer,
     community: "https://relay.example.test",
@@ -15349,19 +15756,59 @@ it("reads confirmed synced model settings and refuses stale local choices", asyn
     binding: (agent) =>
       agent.pubkey === sibling ? { settings: { mode: "synced", subject } } : {},
   });
-  const project = vi.fn(({ reply }: Config) => ({
-    model: { source: "configured" as const, value: reply },
-    effort: { source: "default" as const },
-  }));
+  const provider = new CodexProvider(async (_id, options) => {
+    let exit!: (code: number | null) => void;
+    const exited = new Promise<number | null>((resolve) => {
+      exit = resolve;
+    });
+    return {
+      exited,
+      end: async () => {
+        exit(0);
+      },
+      kill: async () => {
+        exit(null);
+      },
+      write: async (line) => {
+        const wire = JSON.parse(line);
+        if (wire.id === undefined) return;
+        const result =
+          wire.method === "account/read"
+            ? { requiresOpenaiAuth: false }
+            : wire.method === "model/list"
+              ? {
+                  data: [
+                    {
+                      model: "synced-model",
+                      displayName: "Synced model",
+                      description: "",
+                      isDefault: true,
+                      defaultReasoningEffort: "medium",
+                      supportedReasoningEfforts: [
+                        { reasoningEffort: "medium", description: "" },
+                      ],
+                    },
+                  ],
+                  nextCursor: null,
+                }
+              : {};
+        options?.onStdout?.(`${JSON.stringify({ id: wire.id, result })}\n`);
+      },
+    };
+  }, memoryStorage());
+  await provider.check();
+  const project = vi.fn((config: Config, context?: AgentModelSettingsContext) =>
+    provider.readModelSettings(config, context),
+  );
   f.plugin.agents.register({
     ...f.type,
     id: "models",
     readModelSettings: project,
     syncedSettings: {
-      schema: { model: "string" },
+      schema: { model: "string", effort: "string" },
       withSynced: (config, settings) => ({
         ...config,
-        reply: settings.model ?? "",
+        ...settings,
       }),
     },
   });
@@ -15370,8 +15817,14 @@ it("reads confirmed synced model settings and refuses stale local choices", asyn
   await vi.waitFor(() => expect(f.plugin.agents.handle(bot)).toBeDefined());
   const handle = f.plugin.agents.handle(bot);
   if (!handle?.readAgents) throw new Error("Missing read handle");
+  const client = appClient(handle, {
+    read: vi.fn(),
+    memories: async () => ({ entries: [], partial: false }),
+  });
+  const read = async (agent?: string) =>
+    JSON.parse((await callTool(client, {}, "agent_read", { agent })) as string);
   try {
-    expect(await handle.readAgents(sibling)).toMatchObject({
+    expect(await read(sibling)).toMatchObject({
       modelSettings: { unavailable: "Its synced config could not be read" },
     });
     expect(project).not.toHaveBeenCalled();
@@ -15393,20 +15846,128 @@ it("reads confirmed synced model settings and refuses stale local choices", asyn
           generateSecretKey(),
         ) as RelayEvent,
       });
-    revise({ model: "synced-model" });
-    expect(await handle.readAgents(sibling)).toMatchObject({
-      modelSettings: {
-        model: { source: "configured", value: "synced-model" },
-      },
-    });
+    for (const effort of ["xhigh", "medium"]) {
+      revise({ model: "synced-model", effort });
+      const expected = {
+        model: {
+          source: "configured",
+          value: "synced-model",
+          resolved: { value: "synced-model", source: "configured" },
+        },
+        effort: {
+          source: "configured",
+          value: effort,
+          resolved:
+            effort === "xhigh"
+              ? { unavailable: "unsupported" }
+              : { value: "medium", source: "configured" },
+        },
+      };
+      expect(await read("Model")).toMatchObject({ modelSettings: expected });
+      expect(await read()).toContainEqual(
+        expect.objectContaining({ pubkey: sibling, modelSettings: expected }),
+      );
+      const agent = f.service.find(sibling);
+      if (!agent) throw new Error("Missing local agent");
+      expect(await f.plugin.agents.readModelSettings?.(agent.key)).toEqual(
+        expected,
+      );
+    }
     revise({ model: { secret: "invalid config" } });
-    expect(await handle.readAgents(sibling)).toMatchObject({
+    expect(await read(sibling)).toMatchObject({
       modelSettings: { unavailable: "Its synced config could not be read" },
     });
   } finally {
+    provider.dispose();
     await f.ctx.fiber.dispose();
   }
 });
+
+it.each(["edit", "delete"])(
+  "keeps instruction text and revision together when %s arrives during placement inspection",
+  async (change) => {
+    const subject: Subject = {
+      owner: viewer,
+      community: "https://relay.example.test",
+      subject: sibling,
+      channel: "9b353519-f4fe-4757-aef4-bec6cc0ae54c",
+      type: "buzz.agent.instructions",
+    };
+    const storage = memoryStorage();
+    const f = await setup({
+      storage,
+      binding: (agent) =>
+        agent.pubkey === sibling
+          ? { instructions: { mode: "synced", subject } }
+          : {},
+    });
+    f.plugin.agents.register<Config & { instructions?: string }>({
+      ...f.type,
+      id: "placed",
+      execution: true,
+      carry: ({ instructions }) => ({ instructions: instructions ?? "" }),
+    });
+    await f.service.create({ type: "example/echo", name: "Reader" });
+    await f.service.create({ type: "example/placed", name: "Placed" });
+    await vi.waitFor(() => expect(f.plugin.agents.handle(bot)).toBeDefined());
+    const handle = f.plugin.agents.handle(bot);
+    const agent = f.service.find(sibling);
+    if (!handle?.readAgents || !agent) throw new Error("Missing read agent");
+    const store = internals(f.service).configStore;
+    const revise = (text: string, op = "create") => {
+      const event = finalizeEvent(
+        {
+          kind: 45010,
+          created_at: 1,
+          content: JSON.stringify({ version: 1, text }),
+          tags: [["op", op]],
+        },
+        generateSecretKey(),
+      ) as RelayEvent;
+      store.applyRead(subject, store.capture(subject), { kind: "head", event });
+      return event.id;
+    };
+    const revision = revise("Before");
+    const entered = runnerGate();
+    const release = runnerGate();
+    const read = storage.read;
+    const held = vi.spyOn(storage, "read").mockImplementation(async (key) => {
+      if (key === `buzz.agent.execution.v1:${agent.key}`) {
+        entered.resolve();
+        await release.promise;
+      }
+      return read(key);
+    });
+    const pending = handle.readAgents("Placed");
+    try {
+      await entered.promise;
+      const next = revise("After", change === "delete" ? "delete" : "edit");
+      release.resolve();
+      const result = await pending;
+      expect(result).toMatchObject({
+        instructions: "Before",
+        synced: true,
+      });
+      expect(
+        result,
+        "Instruction revision must match captured text",
+      ).toMatchObject({ revision });
+      const current = (await handle.readAgents()) as unknown[];
+      expect(current).toContainEqual(
+        expect.objectContaining(
+          change === "delete"
+            ? { pubkey: sibling, unavailable: expect.any(String) }
+            : { pubkey: sibling, instructions: "After", revision: next },
+        ),
+      );
+    } finally {
+      release.resolve();
+      await pending;
+      held.mockRestore();
+      await f.ctx.fiber.dispose();
+    }
+  },
+);
 
 it("reads synced instructions it can't use as unavailable, not empty", async () => {
   const subject: Subject = {

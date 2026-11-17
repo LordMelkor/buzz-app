@@ -44,6 +44,10 @@ export const PULL_RETAIN_MS = 15 * 60_000;
 export const FEEDBACK_READ = 100;
 /** Characters of each feedback body kept. */
 export const BODY_CHARS = 1_000;
+/** Pull requests asked of GitHub in one request. Their checks are costly to
+ * gather: a few dozen in one can outlast GitHub's own deadline, which then
+ * answers with a gateway error rather than with any of them. */
+export const PULLS_PER_READ = 10;
 
 /** What a reader wants of a pull request. Every level has its state:
  * - `state`: its title, draft, merged or closed, checks and conflicts, as
@@ -474,11 +478,43 @@ type Asked = Readonly<{
   listed: readonly string[];
 }>;
 
-/** All of `urls`, canonical pull request and issue URLs, in one GitHub
- * request, and the text of feedback not yet held in another: each one's
- * state, or an error for one GitHub could not read, as is an issue's URL
- * that numbers a pull request. Throws when it answered for none. */
+/** All of `urls`, canonical pull request and issue URLs, in requests of
+ * PULLS_PER_READ at most, and the text of feedback not yet held in another:
+ * each one's state, or an error for one GitHub could not read, as is an
+ * issue's URL that numbers a pull request, or one whose request failed.
+ * Throws when it answered for none. */
 async function readStates(
+  gh: GitHubCli,
+  urls: readonly string[],
+  asks: (url: string) => Asked,
+  signal: AbortSignal,
+): Promise<(PullState | Error)[]> {
+  const pages: (readonly string[])[] = [];
+  for (let at = 0; at < urls.length; at += PULLS_PER_READ)
+    pages.push(urls.slice(at, at + PULLS_PER_READ));
+  const read = await Promise.allSettled(
+    pages.map((page) => readPage(gh, page, asks, signal)),
+  );
+  const [first] = read;
+  if (
+    first?.status === "rejected" &&
+    read.every((page) => page.status === "rejected")
+  )
+    throw first.reason;
+  const states = pages.flatMap((page, i) => {
+    const result = read[i];
+    if (result?.status === "fulfilled") return result.value;
+    const reason: unknown = result?.reason;
+    return page.map(() =>
+      reason instanceof Error ? reason : new Error(String(reason)),
+    );
+  });
+  await readText(gh, urls, states, asks, signal);
+  return states;
+}
+
+/** One request of `readStates`. */
+async function readPage(
   gh: GitHubCli,
   urls: readonly string[],
   asks: (url: string) => Asked,
@@ -547,7 +583,6 @@ async function readStates(
         }),
     };
   });
-  await readText(gh, urls, states, asks, signal);
   return states;
 }
 

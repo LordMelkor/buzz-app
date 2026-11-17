@@ -1,7 +1,7 @@
 // FOUNDATION: Target-based panel contributions, independent of page layout.
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type { ComponentType } from "react";
-import type { ChannelSummary } from "../relay/contracts";
+import type { Attachment, ChannelSummary } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
 import { usePanelTabTitle } from "./PanelWorkspace";
 import {
@@ -16,6 +16,8 @@ export type PanelContext = Readonly<{
   channelId: string;
   /** Thread root of the message the panel was opened from, when there is one. */
   rootId?: string;
+  /** Open an image or video in the host conversation viewer. False when retired. */
+  openMedia?(messageId: string, attachment: Attachment): boolean;
   canOpen(target: string): boolean;
   /**
    * Open a target through the host. A tab replaces itself; a channel drawer or
@@ -59,6 +61,8 @@ export type PanelProps = {
 export type Panel = Readonly<{
   id: string;
   title: string;
+  /** Optional decorative icon for channel tabs. */
+  tabIcon?: ComponentType;
   matches: (url: string) => boolean;
   /** Claim strength when several panels match a target; see `MatchOrder`. */
   order?: MatchOrder | undefined;

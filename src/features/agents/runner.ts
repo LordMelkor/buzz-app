@@ -26,6 +26,7 @@ import type {
   AgentHandoff,
   RegisteredAgentType,
   Trigger,
+  Agents,
 } from "./service";
 import type { LocalAgentActivity, WorkOutcome } from "./local-activity";
 import type { MentionRefusal } from "./owner-attestation";
@@ -202,6 +203,8 @@ async function pickFor(
   }
 }
 
+type WakeOutcome = Awaited<ReturnType<Agents["wake"]>>;
+type WakeDropReason = Extract<WakeOutcome, { status: "dropped" }>["reason"];
 type Job = {
   work?: ReturnType<LocalAgentActivity["begin"]>;
   trigger: Trigger;
@@ -212,6 +215,11 @@ type Job = {
    * then does not run it. */
   matched?: { object: AttentionObject; epoch: number };
   sourceCurrent?: () => boolean;
+  guardedWake?: {
+    current(): boolean;
+    accepted(): void;
+    drop(reason?: WakeDropReason): void;
+  };
 };
 type WatchTrigger = Extract<Trigger, { type: "watch" }>;
 type CatchUpTrigger = Extract<Trigger, { type: "catch-up" }>;
@@ -824,6 +832,82 @@ export class AgentRunners {
       throw new Error("This copy of Buzz does not run that agent");
     if (!this.enqueue(runner, { trigger, channelId: trigger.channel }))
       throw new Error("The agent is busy and could not take this wake");
+  }
+  wakeGuarded(
+    key: AgentKey,
+    trigger: PluginTrigger,
+    options: Parameters<Agents["wake"]>[2],
+    available: () => boolean,
+    lifetime: AbortSignal,
+  ): Promise<WakeOutcome> {
+    const runner = this.runners.get(key);
+    if (!runner || !this.runs(key) || !this.host.ready(key))
+      return Promise.resolve({ status: "dropped", reason: "unavailable" });
+    if (runner.type?.supportsGuardedWake !== true)
+      return Promise.resolve({ status: "dropped", reason: "refused" });
+    const controller = runner.controller.signal;
+    return new Promise((resolve) => {
+      let outcome: WakeOutcome | undefined;
+      const signals = [
+        controller,
+        lifetime,
+        ...(options.signal ? [options.signal] : []),
+      ];
+      const finish = (result: WakeOutcome) => {
+        if (outcome) return;
+        outcome = result;
+        for (const signal of signals)
+          signal.removeEventListener("abort", cancel);
+        if (result.status === "dropped") {
+          const index = runner.queues.mention.indexOf(job);
+          if (index >= 0) runner.queues.mention.splice(index, 1);
+          job.work?.remove();
+        }
+        resolve(result);
+      };
+      const drop = (reason: WakeDropReason = "refused") =>
+        finish({ status: "dropped", reason });
+      const current = () => {
+        if (outcome?.status === "dropped") return false;
+        if (controller.aborted || lifetime.aborted || !available()) {
+          drop("unavailable");
+          return false;
+        }
+        if (options.signal?.aborted) {
+          drop("aborted");
+          return false;
+        }
+        try {
+          const valid = options.current() === true;
+          if (controller.aborted || lifetime.aborted || !available())
+            drop("unavailable");
+          else if (options.signal?.aborted) drop("aborted");
+          else if (valid) return true;
+          else drop("stale");
+        } catch {
+          drop("guard-error");
+        }
+        return false;
+      };
+      const job: Job = {
+        trigger,
+        channelId: trigger.channel,
+        guardedWake: {
+          current,
+          accepted: () => finish({ status: "delivered" }),
+          drop,
+        },
+      };
+      const cancel = () => {
+        // An active harness owns its last guard and transport handoff. Let it
+        // settle that race; only work still in this queue can be removed here.
+        if (runner.queues.mention.includes(job)) current();
+      };
+      for (const signal of signals)
+        signal.addEventListener("abort", cancel, { once: true });
+      if (!current()) return;
+      if (!this.enqueue(runner, job)) drop();
+    });
   }
   wakeSource(
     key: AgentKey,
@@ -2323,6 +2407,7 @@ export class AgentRunners {
    * queued wakes nothing, even if it now matches again. */
   private current(runner: Runner, agent: Agent, job: Job): Job | undefined {
     const { trigger } = job;
+    if (job.guardedWake && !job.guardedWake.current()) return undefined;
     if (job.sourceCurrent && !job.sourceCurrent()) return undefined;
     if (trigger.type === "source" && job.matched) {
       const { object, epoch } = job.matched;
@@ -2382,6 +2467,7 @@ export class AgentRunners {
   /** Whether `job`, already started, should still run: the rule `current()`
    * applies to a queued job, asked again for work a type queued itself. */
   private stillCurrent(runner: Runner, job: Job) {
+    if (job.guardedWake && !job.guardedWake.current()) return false;
     const agent = this.host.agent(runner.key);
     if (!agent) return false;
     const { trigger } = job;
@@ -2526,6 +2612,8 @@ export class AgentRunners {
     const resumed = runner.queues.mention.flatMap(({ trigger }) =>
       trigger.type === "mention" && trigger.resumed ? [trigger.event.id] : [],
     );
+    for (const job of [...runner.queues.mention])
+      job.guardedWake?.drop("unavailable");
     runner.queues.mention.length = 0;
     if (forget && resumed.length) this.unmark(runner.key, resumed);
   }
@@ -2584,7 +2672,7 @@ export class AgentRunners {
         ...(soloChat && conversationName ? { conversationName } : {}),
       },
       // A resumed mention must not reuse its resume marker on retry.
-      addressed(trigger)
+      addressed(trigger) && !job.guardedWake
         ? () =>
             void this.enqueue(runner, {
               trigger:
@@ -2804,6 +2892,7 @@ export class AgentRunners {
         ...pick,
         ...(team ? { team } : {}),
         signal,
+        ...(job.guardedWake ? { accepted: job.guardedWake.accepted } : {}),
         workingUntil: working.hold,
         ...(job.work
           ? {
@@ -2835,7 +2924,10 @@ export class AgentRunners {
             this.host.member(agent, wakeAnchor(destination)) === true),
       });
       const runOnce = type.runOnce?.bind(type);
-      if (addressed(trigger)) return invoke(delivery);
+      if (addressed(trigger)) {
+        if (job.guardedWake && !delivery.current()) return;
+        return invoke(delivery);
+      }
       if (anchor) {
         if (!delivery.current()) return;
         if (anchor.root) {
@@ -2883,6 +2975,8 @@ export class AgentRunners {
     });
     void working.settled
       .then(async () => {
+        job.guardedWake?.current();
+        job.guardedWake?.drop();
         this.sourceJobs.delete(job);
         if (
           lifetime.aborted ||
