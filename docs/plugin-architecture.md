@@ -3162,7 +3162,13 @@ Providers receive immutable observation/range evidence and `publish(result)`—n
 DOM, focus or replacement commands. Results contain stable IDs, labels, optional
 detail/decorative previews, an optional `agent` flag (marked and announced only
 for the bundled mention and channel providers) and either text, an exact `{ pubkey, name }` mention,
-or a `mentions` array of up to 32 such recipients. Batch edit primitives are
+or a `mentions` array of up to 32 such recipients. A `mentions` edit may add
+`label` and `href` together: one `@label` chip that notifies each mention and is
+sent as the Markdown link `[@label](href)`, where `href` is a `buzz://` link Buzz
+opens that a Markdown link holds unchanged (percent-encode spaces and
+parentheses). In code it inserts only the text `@label`, and in a message edit only the
+link, since edits add no recipients. Removing every recipient leaves the link.
+Batch edit primitives are
 copied and frozen before display, and accepted as a single editor transaction.
 The host copies edit/query primitives and caps publications at 50 choices. A
 publication returns its own withdrawal disposer (or `false` after revocation).

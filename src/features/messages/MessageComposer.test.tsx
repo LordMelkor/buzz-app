@@ -7631,7 +7631,7 @@ it("qualifies both namesakes retroactively without changing source and removes q
   expect(h.messages.send).toHaveBeenCalledWith(
     "channel",
     "@Honey @Honey  ",
-    [first.pubkey, first.pubkey],
+    [first.pubkey],
     [],
   );
 });
@@ -8181,9 +8181,15 @@ it("rejects overlong and over-limit tool edits without changing accepted intent"
   expect(h.input()).toHaveValue("x".repeat(15999));
   expect(screen.getByRole("alert")).toHaveTextContent("too long");
   h.fill("");
+  const people = Array.from({ length: 32 }, (_, i) => ({
+    pubkey: i.toString(16).padStart(64, "0"),
+    name: `P${i}`,
+  }));
   act(() => {
-    for (let i = 0; i < 32; i++)
-      expect(h.commands().insertMention(first)).toBe(true);
+    for (const person of people)
+      expect(h.commands().insertMention(person)).toBe(true);
+    // Someone already mentioned adds no recipient.
+    expect(h.commands().insertMention(people[7] ?? first)).toBe(true);
   });
   const before = h.input().value;
   act(() => {
@@ -8728,9 +8734,9 @@ it.each([undefined, "root"])(
     h.submit();
     expect(h.input()).toHaveValue("@Honey @Honey @Honey hello");
     h.submit();
+    // Two chips for one person notify once.
     expect(send.mock.calls.at(-1)?.[threadRootId ? 3 : 2]).toEqual([
       first.pubkey,
-      second.pubkey,
       second.pubkey,
     ]);
     expect(h.input()).toHaveValue("@Honey ");
@@ -12606,6 +12612,109 @@ it("batch insertion rejects an unavailable member atomically and does not send o
   expect(h.messages.send).not.toHaveBeenCalled();
   expect(screen.getByRole("alert")).toHaveTextContent("no longer available");
 });
+const crewHref =
+  "buzz://plugin?id=com.example.mention-groups&page=group&route.id=g1&route.label=Crew";
+const crewLink = `[@Crew](${crewHref})`;
+/** The provider publishes one row whose edit is a labelled, linked group. */
+function offerCrew(
+  h: ReturnType<typeof mount>,
+  mentions: readonly MentionRecipient[],
+) {
+  act(() => {
+    h.completionRequests.at(-1)?.({
+      items: [
+        {
+          id: "crew",
+          label: "Crew",
+          edit: { mentions, label: "Crew", href: crewHref },
+        },
+      ],
+    });
+  });
+}
+it("a labelled mentions edit is one chip, sent as its link with each member once", async () => {
+  const h = mount();
+  h.fill("!Crew");
+  offerCrew(h, [first, second, first]);
+  await h.user.keyboard("{Enter}");
+  expect(h.input()).toHaveValue(`${crewLink} `);
+  expect(
+    // The namesakes' names say which key each one is.
+    screen.getByRole("img", {
+      name: "Link @Crew, 2 recipients: Honey · rcaj, Honey · 04hu",
+    }),
+  ).toHaveTextContent("@Crew · 2");
+  // A member also mentioned alone is still one recipient.
+  act(() => void h.commands().insertMention(first));
+  h.submit();
+  await waitFor(() => expect(h.messages.send).toHaveBeenCalled());
+  // The link, then the member named alone, qualified: a namesake is tagged.
+  expect(h.messages.send.mock.calls[0]?.[1]).toContain(
+    `${crewLink} @Honey (${first.pubkey})`,
+  );
+  expect(h.messages.send.mock.calls[0]?.[2]).toEqual([
+    first.pubkey,
+    second.pubkey,
+  ]);
+});
+it("a labelled mentions edit inside Markdown code is only its name", async () => {
+  const h = mount();
+  h.fill("!`Crew`");
+  offerCrew(h, [first, second]);
+  await h.user.keyboard("{Enter}");
+  expect(h.input()).toHaveValue("@Crew ");
+  expect(h.commands().recipients).toEqual([]);
+});
+it("a labelled mentions edit while editing a sent message adds only the link", async () => {
+  const h = mount({}, undefined, first.pubkey);
+  h.setRows([editableMessage()]);
+  fireEvent.keyDown(h.input(), { key: "ArrowUp" });
+  h.fill("!Crew");
+  offerCrew(h, [first, second]);
+  await h.user.keyboard("{Enter}");
+  expect(h.input()).toHaveValue(`${crewLink} `);
+  expect(h.commands().recipients).toEqual([]);
+  h.submit();
+  expect(h.messages.edit.mock.calls[0]?.[1]).toBe(`${crewLink} `);
+  expect(h.messages.send).not.toHaveBeenCalled();
+});
+it("a labelled mentions edit with an unavailable member adds nothing", async () => {
+  const h = mount({ inviteAgents: true });
+  h.fill("!Crew");
+  offerCrew(h, [first, { pubkey: "c".repeat(64), name: "Missing" }]);
+  await h.user.keyboard("{Enter}");
+  expect(h.input()).toHaveValue("!Crew");
+  expect(screen.getByRole("alert")).toHaveTextContent("no longer available");
+});
+it("a person in a chip and also mentioned alone is one reference outside a DM", async () => {
+  const h = mount();
+  const list = {
+    status: "ready",
+    channels: [
+      {
+        id: "channel",
+        channelType: "dm",
+        members: ["d".repeat(64), second.pubkey],
+        participants: [second.pubkey],
+      },
+    ],
+  };
+  Object.assign(h.session, {
+    channels: { list: () => list, subscribeList: () => () => {} },
+    memberAdditions: { add: vi.fn() },
+    outbox: { ...h.session.outbox, supports: () => true },
+  });
+  h.fill("!Crew");
+  offerCrew(h, [first, second]);
+  await h.user.keyboard("{Enter}");
+  act(() => void h.commands().insertMention(first));
+  fireEvent.submit(screen.getByRole("form"));
+  await act(async () => {});
+  expect(h.messages.send).toHaveBeenCalledOnce();
+  expect(h.messages.send.mock.calls[0]?.[2]).toEqual([second.pubkey]);
+  // Once, though two spans name her: the relay takes at most 32 references.
+  expect(h.messages.send.mock.calls[0]?.at(-1)).toEqual([first.pubkey]);
+});
 it.each(["disabled", "retarget", "unmount"])(
   "revokes batch commands after %s",
   (transition) => {
@@ -13710,6 +13819,16 @@ it("while a typed tag decides, a Solo menu toggle edits the tags, not a hidden l
   expect(sendingTo("Ada")).toBeInTheDocument();
 });
 
+it("after a Solo group chip, each picked tag joins the leading tags in order", async () => {
+  const { h, ada, bea } = mountSoloAgents({ main: first.pubkey });
+  h.fill("!Crew");
+  offerCrew(h, [ada, bea]);
+  await h.user.keyboard("{Enter}");
+  act(() => void h.commands().insertText("hello"));
+  act(() => void h.commands().insertMention(ada));
+  act(() => void h.commands().insertMention(bea));
+  expect(h.input()).toHaveValue(`${crewLink} @Ada @Bea hello`);
+});
 it("while a typed tag decides, a Solo team pick replaces the tags", () => {
   const { h, ada, bea, sendingTo } = mountSoloAgents({ main: first.pubkey });
   act(() => {
@@ -16669,7 +16788,10 @@ it.each([
       act(() => {
         h.input().insertText(
           "",
-          Array.from({ length: 32 }, () => second),
+          Array.from({ length: 32 }, (_, i) => ({
+            pubkey: i.toString(16).padStart(64, "0"),
+            name: `P${i}`,
+          })),
         );
       }),
     alert:

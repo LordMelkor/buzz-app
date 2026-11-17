@@ -85,14 +85,17 @@ function qualifyNamesakes(doc: EditorNode): EditorNode {
     composerSchema.marks.recipient.isInSet(node?.marks ?? [])?.attrs;
   const keys = new Map<string, Set<string>>();
   doc.descendants((node) => {
-    const found = person(node);
+    // A chip for several people tags each of them, so they are namesakes too.
+    const members: readonly { pubkey: string; name: string }[] =
+      node.attrs.group?.members ?? [];
     // Mobile readers match names case-insensitively, so case-only namesakes
     // collide too; each occurrence keeps its own spelling.
-    if (found)
-      keys.set(
-        found.name.toLowerCase(),
-        (keys.get(found.name.toLowerCase()) ?? new Set()).add(found.pubkey),
-      );
+    for (const found of [person(node), ...members])
+      if (found)
+        keys.set(
+          found.name.toLowerCase(),
+          (keys.get(found.name.toLowerCase()) ?? new Set()).add(found.pubkey),
+        );
   });
   if (![...keys.values()].some((set) => set.size > 1)) return doc;
   const { code, link } = composerSchema.marks;

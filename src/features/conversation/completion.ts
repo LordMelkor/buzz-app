@@ -1,5 +1,6 @@
 import type { MentionRecipient } from "../messages/mention-draft";
 import { composerToken, type ComposerToken } from "../messages/composer-token";
+import { composerResource } from "../messages/composer-document";
 import type { Contribution } from "../../plugins/contributions";
 import { isBundledContribution } from "../../plugins/provenance";
 import type {
@@ -12,6 +13,7 @@ import type {
   CompletionSuggestion,
 } from "./contracts";
 import { chosenWorkspace } from "./workspace-completion";
+import { parseBuzzLink } from "../navigation/buzz-links";
 
 /** Host-internal edits, outside the plugin contract: a semantic chip is
  * accepted only from a provider a bundled plugin registered. */
@@ -151,7 +153,15 @@ export function completionResult(
             !/^[0-9a-f]{64}$/.test(person.pubkey) ||
             typeof person.name !== "string" ||
             !person.name.trim(),
-        )
+        ) ||
+        // A label and its link come together, or not at all, and the link
+        // must be one the composer can insert as `[@label](href)`.
+        ((edit.label !== undefined || edit.href !== undefined) &&
+          (typeof edit.label !== "string" ||
+            !edit.label.trim() ||
+            typeof edit.href !== "string" ||
+            !parseBuzzLink(edit.href) ||
+            !composerResource({ uri: edit.href, label: `@${edit.label}` })))
       )
         continue;
     } else if ("mention" in edit) {
@@ -200,6 +210,9 @@ export function completionResult(
                           }),
                         ),
                       ),
+                      ...(edit.label !== undefined
+                        ? { label: edit.label, href: edit.href }
+                        : {}),
                     }
                   : "mention" in edit
                     ? { mention: Object.freeze({ ...edit.mention }) }

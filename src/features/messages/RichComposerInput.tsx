@@ -19,6 +19,7 @@ import { useReferenceDirectory } from "./ReferenceText";
 import {
   readComposerSnapshot,
   composerMarkdownContext,
+  groupLink,
 } from "./composer-document";
 import { messageLinkParts } from "./message-link-parts";
 import { parseBuzzLink } from "../navigation/buzz-links";
@@ -101,6 +102,32 @@ const TokenChip = memo(function TokenChip({
             }
           : undefined
       }
+      interactive={false}
+    />
+  );
+});
+
+/** One chip `@label` for several people: the link it is sent as, with the
+ * people it notifies counted beside it and named in its accessible name. */
+const GroupChip = memo(function GroupChip({
+  uri,
+  label,
+  names,
+  count,
+}: {
+  uri: string;
+  label: string;
+  names: string;
+  count: number;
+}) {
+  return (
+    <InlineChip
+      address={{ kind: "link", id: uri }}
+      face={{ label, loading: false, resolved: true }}
+      qualifier={{
+        text: `· ${count}`,
+        accessibleLabel: `${count} ${count === 1 ? "recipient" : "recipients"}: ${names}`,
+      }}
       interactive={false}
     />
   );
@@ -315,8 +342,21 @@ export function RichComposerInput({
           ...(mention ? { mention } : {}),
         });
     };
-    for (const recipient of draft.recipients)
+    // A group's members share its link; the first claims it for the chip.
+    const groups = new Map<number, { label: string; names: string[] }>();
+    for (const recipient of draft.recipients) {
+      if (recipient.label !== undefined) {
+        const name = labels.get(recipient.pubkey) ?? recipient.name;
+        const group = groups.get(recipient.start);
+        if (group) group.names.push(name);
+        else
+          groups.set(recipient.start, {
+            label: recipient.label,
+            names: [name],
+          });
+      }
       add(recipient.start, recipient.end, recipient.pubkey);
+    }
     // Identity links are display references, not new notification recipients.
     // Keep their exact source token so editing surrounding prose preserves it.
     const profileLinks = new Map<number, { pubkey: string; label: string }>();
@@ -380,6 +420,23 @@ export function RichComposerInput({
         const preview = gifPreviews.get(start);
         if (preview && preview.end === end && !mention)
           return { start, end, editAsText: false, content: preview.content };
+        const group = mention ? groups.get(start) : undefined;
+        const link =
+          group && groupLink(group.label, draft.text.slice(start, end));
+        if (group && link)
+          return {
+            start,
+            end,
+            editAsText: false,
+            content: (
+              <GroupChip
+                uri={link.uri}
+                label={link.label}
+                names={group.names.join(", ")}
+                count={group.names.length}
+              />
+            ),
+          };
         const profile = mention ? undefined : profileLinks.get(start);
         const identity = mention ?? profile?.pubkey;
         const label = profile?.label ?? draft.text.slice(start + 1, end);

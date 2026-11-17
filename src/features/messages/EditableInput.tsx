@@ -47,6 +47,9 @@ import {
   composerResource,
   brokenResources,
   resourceBlockingMarks,
+  composerGroup,
+  tokenRecipients,
+  type ComposerGroup,
 } from "./composer-document";
 import { scanMarkdown } from "../relay/message-content";
 import type {
@@ -94,6 +97,8 @@ import {
   pastedFiles,
 } from "./composer-clipboard";
 import {
+  distinctRecipients,
+  MAX_RECIPIENTS,
   mentionBoundary,
   mentionDraft,
   type MentionDraft,
@@ -479,6 +484,8 @@ export function EditableInput({
         key: string;
         source: string;
         resource: ComposerResource | null;
+        /** A link that mentions people draws the host's chip for them. */
+        group: boolean;
         semantic: ComposerToken | null;
         pending: PendingChip | null;
         position(): number | undefined;
@@ -708,12 +715,11 @@ export function EditableInput({
               {
                 source: safe.text.slice(item.start, item.end),
                 editAsText: !!item.editAsText,
-                recipient:
-                  safe.recipients.find(
-                    (recipient) =>
-                      recipient.start === item.start &&
-                      recipient.end === item.end,
-                  ) ?? null,
+                ...tokenRecipients(
+                  safe.recipients,
+                  safe.text.slice(item.start, item.end),
+                  item,
+                ),
               },
               null,
               state.doc.resolve(from).marks(),
@@ -935,7 +941,8 @@ export function EditableInput({
       );
       if (
         Array.isArray(recipient) &&
-        projectComposerDocument(tr.doc).draft.recipients.length > 32
+        distinctRecipients(projectComposerDocument(tr.doc).draft.recipients) >
+          MAX_RECIPIENTS
       )
         return false;
       if (
@@ -1096,11 +1103,29 @@ export function EditableInput({
         return true;
       const added = recipients.filter((person) => !existing.has(person.pubkey));
       const tr = closeHistory(editor.state.tr);
-      for (const person of [...source.draft.recipients].reverse()) {
-        if (requested.has(person.pubkey)) continue;
-        const end =
-          person.end + (source.draft.text[person.end] === " " ? 1 : 0);
-        tr.delete(source.position(person.start), source.position(end, -1));
+      // A group's members share its link: the link keeps the members still
+      // requested, and stays a plain link without them.
+      const spans = new Map<number, typeof source.draft.recipients>();
+      for (const person of source.draft.recipients)
+        spans.set(person.start, [...(spans.get(person.start) ?? []), person]);
+      for (const [start, people] of [...spans].reverse()) {
+        const span = people[0];
+        if (!span || people.every((person) => requested.has(person.pubkey)))
+          continue;
+        const token = source.tokens.find((item) => item.start === start);
+        const group =
+          token &&
+          composerGroup(token.node.attrs.group, token.node.attrs.source);
+        if (token && group) {
+          const members = group.members.filter((m) => requested.has(m.pubkey));
+          tr.setNodeMarkup(token.from, undefined, {
+            ...token.node.attrs,
+            group: members.length ? { label: group.label, members } : null,
+          });
+          continue;
+        }
+        const end = span.end + (source.draft.text[span.end] === " " ? 1 : 0);
+        tr.delete(source.position(start), source.position(end, -1));
       }
       if (added.length) {
         const at = Selection.atStart(tr.doc).from;
@@ -1125,7 +1150,7 @@ export function EditableInput({
       }
       const next = projectComposerDocument(tr.doc).draft;
       if (
-        next.recipients.length > 32 ||
+        distinctRecipients(next.recipients) > MAX_RECIPIENTS ||
         composerMarkdown(next).length > current.current.maxLength
       )
         return false;
@@ -1335,13 +1360,27 @@ export function EditableInput({
       editor.focus();
       return true;
     };
-    /** True, or the reason shown by the host. The link must survive its context. */
-    const insertResource = (value: ComposerResource): true | string => {
+    /** True, or the reason shown by the host. The link must survive its
+     * context. It replaces `range` (draft offsets) or the selection; with a
+     * `group`, the link is one chip that mentions each member. */
+    const insertResource = (
+      value: ComposerResource,
+      range?: { start: number; end: number },
+      group?: ComposerGroup,
+    ): true | string => {
       if (!editable() || composing.current || editor.composing)
         return "The message can't be edited right now";
       const resource = composerResource(value);
-      if (!resource) return "This link can't be added";
-      const { from, to, $from } = editor.state.selection;
+      if (!resource || (group && !composerGroup(group, resource.source)))
+        return "This link can't be added";
+      const source = projection();
+      const from = range
+        ? source.position(range.start)
+        : editor.state.selection.from;
+      const to = range
+        ? source.position(range.end, -1)
+        : editor.state.selection.to;
+      const $from = editor.state.doc.resolve(from);
       const stored = editor.state.storedMarks ?? $from.marks();
       const { code } = composerSchema.marks;
       if (
@@ -1353,7 +1392,6 @@ export function EditableInput({
       const marks = $from.parent.type
         .allowedMarks(stored)
         .filter((mark) => !resourceBlockingMarks().includes(mark.type));
-      const source = projection();
       // Markdown links cannot nest: never split or break an existing link.
       const { doc } = editor.state;
       const start = source.source(from),
@@ -1381,7 +1419,11 @@ export function EditableInput({
         Fragment.fromArray([
           ...(gap ? [composerSchema.text(" ", marks)] : []),
           composerSchema.nodes.token.create(
-            { source: resource.source, resource: resource.resource },
+            {
+              source: resource.source,
+              resource: resource.resource,
+              ...(group ? { group } : {}),
+            },
             null,
             marks,
           ),
@@ -1394,6 +1436,8 @@ export function EditableInput({
       const next = projectComposerDocument(tr.doc);
       if (next.tokens.filter((token) => token.node.attrs.resource).length > 32)
         return "Add at most 32 links to one message";
+      if (group && distinctRecipients(next.draft.recipients) > MAX_RECIPIENTS)
+        return "Choose at most 32 recipients";
       if (composerMarkdown(next.draft).length > current.current.maxLength)
         return "Message is too long to add this link";
       if (brokenResources(tr.doc, next).length)
@@ -1681,7 +1725,7 @@ export function EditableInput({
       if (!accept) return;
       const { tokens, draft } = projection();
       const tr = editor.state.tr;
-      let count = draft.recipients.length;
+      const counted = new Set(draft.recipients.map((item) => item.pubkey));
       // Later tokens first: earlier positions stay valid, and each boundary
       // check sees the text that now follows the token.
       for (const token of [...tokens].reverse()) {
@@ -1695,7 +1739,7 @@ export function EditableInput({
         const identity = identityLink(token.node.attrs.source);
         if (
           !identity ||
-          count >= 32 ||
+          (!counted.has(identity.pubkey) && counted.size >= MAX_RECIPIENTS) ||
           !mentionBoundary(
             projectComposerDocument(tr.doc).draft.text,
             token.end,
@@ -1713,7 +1757,7 @@ export function EditableInput({
             token.node.marks,
           ),
         );
-        count++;
+        counted.add(recipient.pubkey);
       }
       if (tr.docChanged) editor.dispatch(tr);
     };
@@ -2020,6 +2064,7 @@ export function EditableInput({
               key: `token-${++tokenHosts}`,
               source: node.attrs.source,
               resource: node.attrs.resource,
+              group: !!composerGroup(node.attrs.group, node.attrs.source),
               semantic: composerToken(node.attrs.semantic) ?? null,
               pending: node.attrs.pending,
               position: getPos,
@@ -2581,6 +2626,18 @@ export function EditableInput({
                 ...node.attrs,
                 recipient: null,
               });
+            // A group drops the member; without members it is a plain link.
+            const group =
+              node.type.name === "token"
+                ? composerGroup(node.attrs.group, node.attrs.source)
+                : null;
+            if (group?.members.some((m) => m.pubkey === pubkey)) {
+              const members = group.members.filter((m) => m.pubkey !== pubkey);
+              tr.setNodeMarkup(pos, undefined, {
+                ...node.attrs,
+                group: members.length ? { label: group.label, members } : null,
+              });
+            }
             const mark = composerSchema.marks.recipient.isInSet(node.marks);
             if (mark?.attrs.pubkey === pubkey)
               tr.removeMark(pos, pos + node.nodeSize, mark);
@@ -2971,7 +3028,7 @@ export function EditableInput({
               }}
               interactive={false}
             />
-          ) : host.resource ? (
+          ) : host.resource && !(host.group && decoration) ? (
             <>
               <span className="sr-only">Resource: </span>
               <span className={styles.resource}>{host.resource.label}</span>

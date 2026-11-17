@@ -188,6 +188,37 @@ it("copies and freezes batch recipients without allowing malformed or oversized 
     ).toEqual([]);
   }
 });
+it("keeps a label with its link, and drops either alone or a link Buzz won't open", () => {
+  const mentions = [{ pubkey: "a".repeat(64), name: "Carl" }];
+  const href =
+    "buzz://plugin?id=com.example.mention-groups&page=group&route.id=g1&route.label=crew";
+  const edit = (extra: object) =>
+    completionResult({
+      items: [
+        {
+          id: "crew",
+          label: "crew",
+          edit: { mentions, ...extra } as unknown as CompletionEdit,
+        },
+      ],
+    }).items[0]?.edit;
+  expect(edit({ label: "crew", href })).toEqual({
+    mentions,
+    label: "crew",
+    href,
+  });
+  for (const extra of [
+    { label: "crew" },
+    { href },
+    { label: " ", href },
+    { label: "crew", href: ` ${href}` },
+    // Buzz opens these, but a Markdown link can't hold them as written.
+    { label: "crew", href: `${href} team` },
+    { label: "crew", href: `${href})` },
+    { label: "crew", href: "https://example.com/crew" },
+  ])
+    expect(edit(extra)).toBeUndefined();
+});
 it("keeps a host workspace edit and drops a provider's look-alike", () => {
   const host = workspaceEdit("design");
   const result = completionResult({

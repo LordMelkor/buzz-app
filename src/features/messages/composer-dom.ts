@@ -1,5 +1,6 @@
 import type { MentionDraft, MentionRecipient } from "./mention-draft";
 import type { ComposerResource } from "../conversation/contracts";
+import type { ComposerGroup } from "./composer-document";
 import type { ComposerToken } from "./composer-token";
 import type { AnnotationMark } from "./composer-annotations";
 import type { AnnotationObservation } from "../conversation/contracts";
@@ -139,8 +140,13 @@ export type ComposerInputElement = HTMLDivElement & {
     id: string,
     remainder: string,
   ): boolean | Promise<boolean>;
-  /** Host-owned inline link atom at the caret; a string is the rejection reason. */
-  insertResource(resource: ComposerResource): true | string;
+  /** Host-owned inline link atom at the caret, or over `range`; with `group`,
+   * one chip that mentions each member. A string is the rejection reason. */
+  insertResource(
+    resource: ComposerResource,
+    range?: { start: number; end: number },
+    group?: ComposerGroup,
+  ): true | string;
   /** A semantic chip over the open query, one undo step. */
   insertToken(
     token: ComposerToken,

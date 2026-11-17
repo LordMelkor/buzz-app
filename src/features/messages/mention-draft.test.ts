@@ -252,3 +252,49 @@ it("sends chips of different keys sharing a name as `@Name (<hex>)`, others bare
     ),
   ).toBe(`@Honey (${"a".repeat(64)}) \`@Honey\``);
 });
+const groupLink = (label: string) =>
+  `[@${label}](buzz://plugin?id=com.example.mention-groups&page=group&route.id=g1&route.label=${label})`;
+it("keeps a group's members only on the exact link of its label", () => {
+  const link = groupLink("crew");
+  const crew = (label: string, text = `${link} hi`, end = link.length) =>
+    mentionDraft({
+      text,
+      recipients: [
+        { ...first, label, start: 0, end },
+        { ...second, label, start: 0, end },
+      ],
+    });
+  expect(crew("crew").recipients).toEqual([
+    { ...first, label: "crew", start: 0, end: link.length },
+    { ...second, label: "crew", start: 0, end: link.length },
+  ]);
+  // A label its link does not show, or the label as plain text, is prose.
+  expect(crew("team").recipients).toEqual([]);
+  expect(crew("crew", "@crew hi", 5).recipients).toEqual([]);
+  // The group's span is removed once, so prose after it still counts.
+  expect(addressingOnly(crew("crew", `${link} `))).toBe(true);
+  expect(addressingOnly(crew("crew"))).toBe(false);
+});
+it("the recipient cap counts distinct people, keeping each one's spans", () => {
+  const people = Array.from({ length: 33 }, (_, i) => ({
+    pubkey: i.toString(16).padStart(64, "0"),
+    name: "x",
+  }));
+  const link = groupLink("all");
+  const restored = mentionDraft({
+    text: `${link} @x`,
+    recipients: [
+      ...people.map((person) => ({
+        ...person,
+        label: "all",
+        start: 0,
+        end: link.length,
+      })),
+      { ...people[0], start: link.length + 1, end: link.length + 3 },
+    ],
+  }).recipients;
+  expect(new Set(restored.map((item) => item.pubkey)).size).toBe(32);
+  expect(
+    restored.filter((item) => item.pubkey === people[0]?.pubkey),
+  ).toHaveLength(2);
+});

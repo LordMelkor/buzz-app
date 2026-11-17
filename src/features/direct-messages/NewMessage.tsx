@@ -403,7 +403,7 @@ export function NewMessage({
         const messageId = session.messages.send(
           id,
           content,
-          draft.recipients.map((person) => person.pubkey),
+          [...new Set(draft.recipients.map((person) => person.pubkey))],
           uploaded,
           {
             key: recoveryKey,

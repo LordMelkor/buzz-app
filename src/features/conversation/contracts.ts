@@ -392,6 +392,20 @@ export type CompletionEdit =
     }>
   | Readonly<{
       mentions: readonly Readonly<{ pubkey: string; name: string }>[];
+      label?: never;
+      href?: never;
+      text?: never;
+      mention?: never;
+      pending?: never;
+    }>
+  /** One chip `@label` that notifies each of `mentions`, sent as the Markdown
+   * link `[@label](href)`; `href` must be a link Buzz opens (`buzz://`) that a
+   * Markdown link holds unchanged. In code only the text `@label` goes in; a
+   * message edit inserts the link alone. */
+  | Readonly<{
+      mentions: readonly Readonly<{ pubkey: string; name: string }>[];
+      label: string;
+      href: string;
       text?: never;
       mention?: never;
       pending?: never;
