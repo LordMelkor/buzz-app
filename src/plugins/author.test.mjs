@@ -33,7 +33,7 @@ test("generated author package exposes shared messages, captured-read Undo, host
       join(dir, "consumer.ts"),
       `
 import { createElement } from "react";
-import type { Context, DocumentEditorProps, DocumentEditorHandle, DocumentEditorSelection, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops, PluginUi, Seen } from "@buzz/author";
+import type { Context, DocumentEditorProps, DocumentEditorHandle, DocumentEditorSelection, ChannelMembersDialogProps, ChannelGeneralAccessProps, GeneralAccessPolicy, MemberChange, Delivery, HarnessConversation, McpHandler, StandaloneTurn, TurnResult, DecisionResult, Host, HostRequestOnceOptions, AddedTool, AddedToolContext, AddedToolReply, BuzzClient, Media, HostByteUpload, HostByteRequest, HostByteResponse, HostSavedBytes, PluginManifest, NamingPolicy, PagePreviewProps, PageSidebarProps, SidebarSectionContribution, SidebarSections, SidebarRowContribution, SidebarRows, ReadMutationResult, UnreadCapability, Backdrops, PluginUi, Seen, Notices } from "@buzz/author";
 export const manifest: PluginManifest = {
   id: "example.plugin", name: "Example", apiVersion: 1,
   host: {
@@ -222,6 +222,11 @@ export function apply(ctx: Context) {
   backdrops?.register({ id: "glow", component: () => null });
   // @ts-expect-error A backdrop must be a React component.
   backdrops?.register({ id: "bad-glow", component: "div" });
+  const notices: Notices | undefined = ctx.reflect.get("notices");
+  const picked: Promise<string | undefined> | undefined = notices?.show({ title: "Allow?", actions: [{ id: "yes", label: "Allow", prominent: true }] }, { signal: new AbortController().signal });
+  void picked;
+  // @ts-expect-error A notice needs a title.
+  void notices?.show({ description: "No title" });
   const sidebar: SidebarSections | undefined = ctx.reflect.get("sidebarSections");
   sidebar?.register(section);
   // @ts-expect-error Sidebar contribution versions are explicit.

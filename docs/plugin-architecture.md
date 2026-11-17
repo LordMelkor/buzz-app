@@ -1122,11 +1122,15 @@ lowercase and cannot be a Buzz tool's. The tool is removed when its plugin's
 scope ends, so safe mode removes installed plugins' tools.
 
 `call(client, context, args)` can read `client.signal`, a host-owned
-`AbortSignal` captured for that call. Native Claude, Codex and Goose cancel it on
-Stop. Goose captures the current ACP work burst: steers share its signal, and
+`AbortSignal` captured for that call. Native Claude, Codex, Goose and Pi cancel it on
+Stop. Claude and Codex also cancel it when the turn that made the call ends,
+whether it finished or failed. A Codex watch or timer run doesn't: its calls
+aren't cancelled when the run ends. Goose captures the current ACP work burst: steers share its signal, and
 Stop, eligible final-message settlement, normal completion, failure or session close abort
 it. Calls before a Goose session starts work or while idle receive an aborted
-signal; agent retirement also aborts captured calls. Keep that exact signal across waits. Pass it to work that supports
+signal; agent retirement also aborts captured calls. An external MCP connection cancels it when the app sends
+`notifications/cancelled` for that call, or when the connection closes. A
+harness built on `ctx.agents.harness` gives none. Keep that exact signal across waits. Pass it to work that supports
 cancellation, then call `signal.throwIfAborted()` before an external write.
 A new turn does not restore a canceled call. The supplied client also checks
 cancellation before it publishes. Stop cannot undo a write already sent.
@@ -1921,6 +1925,78 @@ controls), `.shell-side-dock` (the app dock), `.shell-center-capsule` (centered 
 flow while `.shell-header` has `data-compact-pages`), `.shell-body`, and the
 outermost `.panel` elements inside it (nested panels are content). On macOS the
 native window controls sit in the header's leading inset, outside these roles.
+
+### Shell notices
+
+A plugin can show a notice in the app's notice stack, on whatever page the
+person is on, with `ctx.reflect.get("notices")`. It is `undefined` on older
+hosts. It needs no manifest grant, since a notice is only UI. Do not list it
+in `inject`: `apply` would then never run on a host without it.
+
+`show(content, { signal })` takes a `title`, an optional `description`, and at
+most three `actions`, each `{ id, label, prominent? }` with its own `id`. It
+resolves once the notice closes: with the `id` of the action the person
+picked, or `undefined` when they dismissed it (its Dismiss button, Escape or a
+sideways swipe), `signal` aborted or the plugin's scope ended. To take a
+notice down, abort its `signal`. A signal that has already aborted shows
+nothing. It rejects a notice with an empty title, more than three actions,
+two actions with one `id`, or an action without a label.
+
+The host owns placement, stacking, the Dismiss button and naming the plugin:
+below the words it shows "From" and the name in the plugin's manifest. The
+buttons keep the order of `actions`. Each is a default button, and
+`prominent` makes one the prominent button, so mark one at most. The title and
+description have no length limit, and the host neither cuts nor rejects long
+text: it wraps, breaking long words anywhere, and the notice stack scrolls
+once it is taller than its bound (at most 40% of the window's height), so the
+buttons stay reachable. The plugin owns everything it says and what each
+action means. Name the agent and the action in the title.
+
+A tool can ask the owner before it runs. Pass the call's `client.signal`, so
+the notice goes away when the call is cancelled, which includes the end of its
+turn where the harness cancels calls then (see `client.signal` above). Proceed only
+on an allow `id`: Dismiss, Escape and an aborted signal all resolve
+`undefined`. Keep any policy, such as Always allow, in the plugin:
+
+```js
+ctx.agents.addTool({
+  name: "notes_clear",
+  description: "Clear this plugin's saved notes, once the owner allows it.",
+  inputSchema: { type: "object" },
+  async call(client) {
+    const always = "example.notes.always-clear";
+    if (localStorage.getItem(always) !== "yes") {
+      const notices = ctx.reflect.get("notices");
+      if (!notices) throw new Error("This Buzz can't ask the owner first");
+      const agent = ctx.agents
+        .snapshot()
+        .running.find((item) => item.key === client.key);
+      const answer = await notices.show(
+        {
+          title: `Let ${agent?.name ?? "your agent"} clear your notes?`,
+          actions: [
+            { id: "once", label: "Allow once", prominent: true },
+            { id: "always", label: "Always allow" },
+            { id: "deny", label: "Deny" },
+          ],
+        },
+        { signal: client.signal },
+      );
+      client.signal?.throwIfAborted();
+      if (answer !== "once" && answer !== "always")
+        throw new Error("The owner did not allow this");
+      if (answer === "always") localStorage.setItem(always, "yes");
+    }
+    localStorage.removeItem("example.notes");
+    return "Cleared the notes";
+  },
+});
+```
+
+A throw is a tool error for the agent, so Deny and Dismiss both refuse the
+call. The plugin decides how many asks may wait, whether Always allow also
+answers the others waiting, and where the owner can take Always allow back,
+such as its Settings card.
 
 ### Discovery metadata
 

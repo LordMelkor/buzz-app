@@ -445,6 +445,7 @@ Sign in, Cancel, and Sign out at narrow widths with enlarged text.
 | Settings card/destination | Settings navigation, content column, contribution lifetime/error boundary | Content Header/grouping and controls; registration title is navigation metadata, not rendered content hierarchy |
 | Channel launcher or menu contribution | Placement, surrounding header/menu, target selection | The supported launcher/item only; preserve host action sizing and lifecycle |
 | Message/link/attachment renderer | Surrounding message and navigation contracts | Content inside that boundary; no duplicate author/actions or nested interactive target where the contract forbids it |
+| Notice (`ctx.notices`) | Placement in the toast stack on every page, the info ToastNotice, its buttons and Dismiss, and the plugin's name | The title, an optional description and up to three actions, and what each answer means; anything but an allow is a refusal |
 
 Source plugins can import the shared components directly. External plugins must
 use the actual supported author contract and exposed CSS roles; source paths are
@@ -1524,6 +1525,11 @@ keeps only the fade.
 ToastProvider mounts one headless [Sonner](https://sonner.emilkowal.ski) Toaster
 in the host, portaled outside the app layout to the top right. Features and
 plugins use the shared Toast API, never their own Toaster or direct Sonner calls.
+Installed plugins reach the stack through `ctx.notices`
+([shell notices](../../../docs/plugin-architecture.md#shell-notices)): they
+supply the words and up to three actions, and the host draws them as an info
+ToastNotice that the person can always dismiss, with the plugin's name in
+`text-caption` below the words.
 Toast cards reuse `floating-surface`, including its `--shadow-panel` elevation; the
 scrollable viewport leaves room for the shadow and keyboard focus.
 Buzz owns the floating surface, semantic colors, type roles, Button and IconButton;
@@ -1546,12 +1552,15 @@ Sonner is the toast behavior owner; other matching controls use Base UI. ToastNo
 owns its state and recovery: unmounting the source removes its notification,
 without reporting user dismissal. Gate notices from hidden Settings sections
 explicitly; portals do not inherit a hidden ancestor. Keep form errors and
-blocked-page recovery inline. Relay connection recovery is the exception: it
+blocked-page recovery inline. Relay connection recovery is one exception: it
 retries on its own, so after a 30-second quiet delay it shows one buttonless
 notice in the toast stack on every page, and other surfaces do not repeat it.
-A community's refusal of the account is the other exception: it affects every
+A community's refusal of the account is another exception: it affects every
 page, so its one notice stays in the toast stack with the actions that
-fixes it, and pages it leaves empty only say why.
+fixes it, and pages it leaves empty only say why. A plugin's notice is the
+third: it asks the person about work that waits on their answer, wherever they
+are. It belongs to the plugin's request: the plugin takes it down when the
+request ends, and it closes when the plugin stops.
 Channel LiveStatus keeps failures that recovery does not retry in the
 conversation flow immediately above the composer, with bounded overflow, so Send
 and companion-panel controls remain usable. Its retry policy and diagnostics

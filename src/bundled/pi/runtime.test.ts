@@ -1362,6 +1362,42 @@ it("lists the tools plugins add, and runs them for Pi", async () => {
   });
 });
 
+it("gives a plugin's tool its call's signal, so a stopped call stops waiting", async () => {
+  const started = deferred();
+  const wait: AddedTool = {
+    name: "lookup_wait",
+    description: "Waits until its call ends",
+    inputSchema: { type: "object" },
+    call: (client) =>
+      new Promise((_, reject) => {
+        const { signal } = client;
+        started.resolve();
+        if (!signal) return reject(new Error("no signal"));
+        signal.addEventListener("abort", () => reject(signal.reason));
+      }),
+  };
+  const f = setup({}, [wait]);
+  await f.deliver({ type: "mention", event: reply("2", "@Pi look") }).run;
+  const stop = new AbortController();
+  const result = f.runtime.tool(
+    {
+      agent: self,
+      conversation: CONVERSATION,
+      context: { channel, root: root.id },
+      name: "lookup_wait",
+      arguments: {},
+    },
+    stop.signal,
+  );
+  await started.promise;
+  stop.abort(new Error("Stopped"));
+  await expect(result).resolves.toEqual({
+    content: [{ type: "text", text: "Stopped" }],
+    isError: true,
+  });
+  await f.runtime.dispose();
+});
+
 it("reports a turn Pi left unanswered to the owner, in its thread", async () => {
   const { deliver, settled, published } = setup({
     wait: () => ({

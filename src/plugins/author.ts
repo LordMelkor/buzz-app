@@ -32,6 +32,7 @@ export type {
 } from "../features/pages/service";
 export type { Seen } from "../features/seen/service";
 export type { Backdrop, Backdrops } from "../features/backdrops/service";
+export type { Notices } from "../features/notices/service";
 export type { SubjectLift } from "../features/messages/subject-lift";
 export type {
   PluginButtonProps,

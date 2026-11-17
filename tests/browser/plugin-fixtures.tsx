@@ -142,6 +142,30 @@ export const fixturePlugins: readonly BundledPlugin[] = [
   soloRegionFixture,
   {
     manifest: {
+      id: "fixture.notices",
+      name: "Notice fixture",
+      apiVersion: 1,
+    },
+    enabledByDefault: false,
+    module: {
+      apply(ctx) {
+        const notices = ctx.reflect.get("notices");
+        void notices
+          ?.show({
+            title: "Let Fixture delete a.txt?",
+            actions: [
+              { id: "once", label: "Allow once", prominent: true },
+              { id: "deny", label: "Deny" },
+            ],
+          })
+          .then((answer) =>
+            notices.show({ title: `Answered ${answer ?? "nothing"}` }),
+          );
+      },
+    },
+  },
+  {
+    manifest: {
       id: "fixture.backdrops",
       name: "Backdrop fixture",
       apiVersion: 1,
