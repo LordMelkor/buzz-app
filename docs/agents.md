@@ -154,6 +154,22 @@ without them), whether they sync and the current instructions revision. A
 hosted agent or one on another device gives its synced instructions when the
 owner can read them here (read only, never creating or moving its config),
 and otherwise `unavailable` saying why.
+
+Each named or listed agent also has `modelSettings`. Codex, Claude Code, goose
+and Pi expose `model` and `effort`; goose and Pi also expose `provider`.
+Each field has a `source`: `configured` includes the saved string `value`,
+`default` inherits the type's defaults, and `recommended` follows
+Buzz's Recommended policy. Defaults and recommendations have no `value`: this
+read does not discover models, resolve aliases, inspect harness files or start
+a process. A type can inherit device preferences before the harness default.
+These are saved agent selections, not proof of an active turn's
+model or effort. Per-conversation choices can differ.
+An invalid field has `source: "unavailable"`. A type without this read contract,
+an unreadable synced config, or an agent hosted elsewhere has
+`modelSettings: { unavailable: "…" }`, even when its instructions are readable.
+The type owns the projection through `AgentType.readModelSettings`; the service
+does not expose its config or infer settings from the type's name or summary.
+
 `team_read` returns the teams Your teams shows in that community, by id or
 exact name, or all of them: name, instructions, members, whether the team syncs
 and its revision. `team_update` submits an unsaved draft of a team's new name

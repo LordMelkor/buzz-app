@@ -15266,6 +15266,148 @@ it("changes instructions in place and discards a dismissed change draft", async 
   expect(native.setType).not.toHaveBeenCalled();
 });
 
+it("reads model selections through MCP by name and in lists without exposing config", async () => {
+  const f = await setup();
+  f.plugin.agents.register({
+    ...f.type,
+    id: "models",
+    readModelSettings: () => ({
+      model: { source: "configured", value: "model-a" },
+      effort: { source: "default" },
+    }),
+  });
+  await f.service.create({ type: "example/echo", name: "Reader" });
+  await f.service.create({ type: "example/models", name: "Model" });
+  await f.service.save(sibling, { config: { reply: "secret config" } });
+  await vi.waitFor(() => expect(f.plugin.agents.handle(bot)).toBeDefined());
+  const handle = f.plugin.agents.handle(bot);
+  if (!handle?.readAgents) throw new Error("Missing read handle");
+  const client = appClient(handle, {
+    read: vi.fn(),
+    memories: async () => ({ entries: [], partial: false }),
+  });
+  const read = async (agent?: string) =>
+    JSON.parse((await callTool(client, {}, "agent_read", { agent })) as string);
+  try {
+    const expected = {
+      pubkey: sibling,
+      name: "Model",
+      type: "example/models",
+      instructions: "secret config",
+      synced: false,
+      modelSettings: {
+        model: { source: "configured", value: "model-a" },
+        effort: { source: "default" },
+      },
+    };
+    expect(await read("Model")).toEqual(expected);
+    expect(await read(sibling)).toEqual(expected);
+    expect(await read()).toContainEqual(expected);
+    expect(await read("Reader")).toMatchObject({
+      modelSettings: { unavailable: expect.any(String) },
+    });
+  } finally {
+    await f.ctx.fiber.dispose();
+  }
+});
+
+it("does not infer another device's model settings from its local type", async () => {
+  const f = await setup({ listed: [record(sibling)] });
+  await f.service.create({ type: "example/echo", name: "Reader" });
+  await vi.waitFor(() => expect(f.plugin.agents.handle(bot)).toBeDefined());
+  const handle = f.plugin.agents.handle(bot);
+  if (!handle?.readAgents) throw new Error("Missing read handle");
+  try {
+    expect(await handle.readAgents(sibling)).toMatchObject({
+      pubkey: sibling,
+      modelSettings: {
+        unavailable: "Its model settings are on another device",
+      },
+    });
+    expect(await handle.readAgents()).toContainEqual(
+      expect.objectContaining({
+        pubkey: sibling,
+        modelSettings: {
+          unavailable: "Its model settings are on another device",
+        },
+      }),
+    );
+  } finally {
+    await f.ctx.fiber.dispose();
+  }
+});
+
+it("reads confirmed synced model settings and refuses stale local choices", async () => {
+  const subject: Subject = {
+    owner: viewer,
+    community: "https://relay.example.test",
+    subject: sibling,
+    channel: "9b353519-f4fe-4757-aef4-bec6cc0ae54c",
+    type: "buzz.agent.settings",
+  };
+  const f = await setup({
+    binding: (agent) =>
+      agent.pubkey === sibling ? { settings: { mode: "synced", subject } } : {},
+  });
+  const project = vi.fn(({ reply }: Config) => ({
+    model: { source: "configured" as const, value: reply },
+    effort: { source: "default" as const },
+  }));
+  f.plugin.agents.register({
+    ...f.type,
+    id: "models",
+    readModelSettings: project,
+    syncedSettings: {
+      schema: { model: "string" },
+      withSynced: (config, settings) => ({
+        ...config,
+        reply: settings.model ?? "",
+      }),
+    },
+  });
+  await f.service.create({ type: "example/echo", name: "Reader" });
+  await f.service.create({ type: "example/models", name: "Model" });
+  await vi.waitFor(() => expect(f.plugin.agents.handle(bot)).toBeDefined());
+  const handle = f.plugin.agents.handle(bot);
+  if (!handle?.readAgents) throw new Error("Missing read handle");
+  try {
+    expect(await handle.readAgents(sibling)).toMatchObject({
+      modelSettings: { unavailable: "Its synced config could not be read" },
+    });
+    expect(project).not.toHaveBeenCalled();
+    const store = internals(f.service).configStore;
+    const revise = (settings: object) =>
+      store.applyRead(subject, store.capture(subject), {
+        kind: "head",
+        event: finalizeEvent(
+          {
+            kind: 45010,
+            created_at: 1,
+            content: JSON.stringify({
+              version: 1,
+              agentType: "example/models",
+              settings,
+            }),
+            tags: [["op", "create"]],
+          },
+          generateSecretKey(),
+        ) as RelayEvent,
+      });
+    revise({ model: "synced-model" });
+    expect(await handle.readAgents(sibling)).toMatchObject({
+      modelSettings: {
+        model: { source: "configured", value: "synced-model" },
+      },
+    });
+    revise({ model: { secret: "invalid config" } });
+    expect(await handle.readAgents(sibling)).toMatchObject({
+      modelSettings: { unavailable: "Its synced config could not be read" },
+    });
+  } finally {
+    await f.ctx.fiber.dispose();
+  }
+});
+
 it("reads synced instructions it can't use as unavailable, not empty", async () => {
   const subject: Subject = {
     owner: viewer,
@@ -15300,6 +15442,7 @@ it("reads synced instructions it can't use as unavailable, not empty", async () 
     pubkey: bot,
     name: "Echo",
     type: "example/echo",
+    modelSettings: { unavailable: expect.any(String) },
     unavailable: expect.any(String),
   });
   head(JSON.stringify({ version: 1 }), "create", "No instructions text");
@@ -15338,6 +15481,7 @@ it("reads the owner's agents and teams, and saves only a reviewed team draft", a
       pubkey: hostedKey,
       name: "Sky",
       type: "example/cloud",
+      modelSettings: { unavailable: "Its provider keeps its model settings" },
       unavailable: "Its provider keeps its config",
     },
   ]);
@@ -15371,6 +15515,7 @@ it("reads the owner's agents and teams, and saves only a reviewed team draft", a
       pubkey: hostedKey,
       name: "Sky",
       type: "example/cloud",
+      modelSettings: { unavailable: "Its provider keeps its model settings" },
       instructions: "Fly.",
       revision: "r1",
       synced: true,

@@ -549,9 +549,8 @@ are checksum-pinned. The workflow verifies the app executable in the extracted d
 and the app executable and launch shim in the extracted AppImage after repacking.
 Compatibility guards fail rather than silently omitting a fix.
 AppImage still relies on host desktop/media libraries; this is not a promise of
-universal distro compatibility. The Linux job uses no shared build caches. The
-Windows and macOS Rust caches are saved only by builds from `main`; stable and beta
-tag builds restore them and never save.
+universal distro compatibility. The macOS, Windows and Linux Rust caches are saved
+only by builds from `main`; stable and beta tag builds restore them and never save.
 
 ### Acceptance still required
 

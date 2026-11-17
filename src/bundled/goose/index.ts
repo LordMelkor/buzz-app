@@ -16,9 +16,11 @@ import {
 } from "./runtime";
 import {
   type RecommendedCandidate,
+  onRecommended,
   recommendedRun,
 } from "../../features/agents/recommended";
 import { gooseRun } from "./run";
+import { readModelSettings } from "../../features/agents/model-settings";
 import { explainTurn, GooseSetup, REVIEW_REFUSED } from "./setup";
 import { createTabs } from "./tabs";
 import { GooseHistory } from "./transcript";
@@ -160,6 +162,11 @@ export const apply: PluginModule["apply"] = (ctx) => {
     description:
       "goose on this computer, with any provider goose supports. Each thread it is mentioned in is one continuing session.",
     defaults: () => ({ config: DEFAULT_CONFIG }),
+    readModelSettings: (saved) =>
+      readModelSettings(config(saved), {
+        provider: true,
+        recommended: onRecommended(saved),
+      }),
     importShared: (source) =>
       source.runtime === "goose" || source.runtime === "goose-ai"
         ? {

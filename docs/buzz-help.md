@@ -397,13 +397,23 @@ and are asked to sign in again in Buzz.
 - Plugins can add actions to this toolbar. A link to an active plugin panel
   opens that panel in the conversation. If the plugin is removed, its actions
   and panel links become unavailable.
-- **Forward message** in a message's menu sends its link to one person in the
-  current community, with an optional note. Buzz sends it in your direct
-  message with them, starting one if needed, and you stay where you are;
-  select the confirmation notice while it's showing to open the forwarded
-  message in that DM. The link previews the original message; the
-  recipient still needs access to its conversation. Forwarding is unavailable
-  when the connection cannot start DMs or the message has no link yet.
+- **Forward message** in a message's menu sends a readable copy to a person,
+  several people (a group DM), or one channel in the current community, with an
+  optional note. Only channels you can post in appear. You stay where you are;
+  select the confirmation notice to open the sent message.
+  The **Forwarded** card includes the original author, time, text and attachments.
+  Recipients can read the copy without access to the original conversation.
+  Private sources have a sharing notice before sending. Their names are shown
+  only to viewers who can access them; others see **Private conversation**.
+  **View original** appears when the original can be opened. Long copies expand
+  inline with **Show full message**. Later edits or deletion of the original do
+  not change the copy. Forwarded attribution is supplied by the sender, not
+  cryptographic proof. Mentions inside the copy retain their labels but do not
+  notify again. The dialog’s optional note is plain text; its mentions do not notify.
+  Messages exceeding the forwarding size limit, or containing a local file
+  without sharable attachment metadata (including custom emoji), show an
+  explanation before sending. Forward is disabled; **Copy link** is available
+  in the dialog. A link still requires access to the original conversation.
 - Select text in a message, such as by double-clicking a word, and choose
   **Quote** (or press Q) to add it to the end of that conversation's draft as a
   quote, ready for your reply below it. A selection in a thread quotes into the
@@ -1457,6 +1467,9 @@ available rather than silently discarding it.
   (`team_update`). A proposal opens a review: nothing changes until you save
   it, members never change this way, and Save is refused if the team changed
   since the proposal.
+  Agent reads also show saved model and thinking choices for supported local
+  harnesses. They distinguish explicit choices, harness defaults, Recommended
+  policy and unavailable settings. They do not report an active turn's model.
 - Your agents can search messages (`search`) by words, person, channel or DM,
   and date, and link each message they cite. They search with their own access:
   channels they're in and open channels. They don't find messages in your

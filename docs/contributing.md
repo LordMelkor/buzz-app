@@ -815,7 +815,7 @@ the complete correctness suite still runs with `pnpm test` / `just scan`:
   It also runs all [perf scenarios](performance.md) once in Chromium, and the
   broker's 100,000-channel scale check in `browser-host/relay-broker-live.test.mjs`
   alone, with `BUZZ_BROKER_SCALE` set; the JavaScript shards skip that test.
-- **Browser journeys:** twenty-seven runners (nine Chromium and eighteen WebKit
+- **Browser journeys:** twenty-nine runners (eleven Chromium and eighteen WebKit
   file-level shards), each with two workers. They start alongside measurements on separate
   runners; `CI required` still requires both lanes. A separate required Ubuntu
   job builds the native plugin-manager fixture once with Hermit's pinned Cargo.

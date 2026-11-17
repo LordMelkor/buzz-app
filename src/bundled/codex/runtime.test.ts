@@ -2373,33 +2373,32 @@ it("runs a mid-turn pick that differs from the running turn as the next turn ins
     f.publish.mock.calls.map(([event]) => (event as EventData).content),
   ).toEqual(["FIRST", "SECOND", "THIRD"]);
 });
-it("keeps a plain follow-up behind a queued differing pick instead of steering past it", async () => {
+it("steers plain follow-ups behind a queued differing pick into that turn once it starts", async () => {
   const f = fixture();
+  const steers = () => f.sent.filter((wire) => wire.method === "turn/steer");
   await f.runtime.run(f.delivery("first"));
   await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
   await f.runtime.run({ ...f.delivery("deeper"), model: "deep-model" });
+  // Steering "plain" now would run it before "deeper", so it waits to join it.
   await f.runtime.run(f.delivery("plain"));
-  await f.complete(0, "FIRST");
-  await vi.waitFor(() => expect(f.starts()).toHaveLength(2));
-  // "plain" is still queued while "deeper" runs, so this cannot steer either.
-  await f.runtime.run(f.delivery("later"));
   await new Promise((resolve) => setTimeout(resolve, 0));
-  await f.complete(1, "SECOND");
-  await vi.waitFor(() => expect(f.starts()).toHaveLength(3));
-  await f.complete(2, "THIRD");
-  await vi.waitFor(() => expect(f.starts()).toHaveLength(4));
-  expect(f.sent.filter((wire) => wire.method === "turn/steer")).toHaveLength(0);
-  const input = (index: number) => JSON.stringify(f.starts()[index]?.params);
-  expect(input(1)).toContain("deeper");
-  expect(input(1)).toContain('"model":"deep-model"');
-  expect(input(2)).toContain("plain");
-  expect(input(2)).toContain('"model":"test-model"');
-  expect(input(3)).toContain("later");
-  f.complete(3, "FOURTH");
-  await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(4));
+  expect(steers()).toHaveLength(0);
+  await f.complete(0, "FIRST");
+  await vi.waitFor(() => expect(steers()).toHaveLength(1));
+  await f.runtime.run(f.delivery("later"));
+  await vi.waitFor(() => expect(steers()).toHaveLength(2));
+  expect(f.starts()).toHaveLength(2);
+  expect(JSON.stringify(f.starts()[1]?.params)).toContain("deeper");
+  expect(JSON.stringify(f.starts()[1]?.params)).toContain(
+    '"model":"deep-model"',
+  );
+  expect(JSON.stringify(steers()[0]?.params)).toContain("plain");
+  expect(JSON.stringify(steers()[1]?.params)).toContain("later");
+  f.complete(1, "SECOND");
+  await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(2));
   expect(
     f.publish.mock.calls.map(([event]) => (event as EventData).content),
-  ).toEqual(["FIRST", "SECOND", "THIRD", "FOURTH"]);
+  ).toEqual(["FIRST", "SECOND"]);
 });
 it("steers a mid-turn message whose pick matches the running turn, or has none", async () => {
   const f = fixture();
@@ -2695,6 +2694,87 @@ it("refuses to stop a request queued behind a finished turn that is still cleani
   ).toHaveLength(0);
   f.complete(1, "SECOND");
   await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(2));
+});
+
+it("takes messages that arrive behind a queued turn into it once it starts", async () => {
+  const f = fixture();
+  await f.runtime.run(f.delivery("first"));
+  await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+  const cleanup = deferred<void>();
+  f.held.set("thread/unsubscribe", cleanup.promise);
+  await f.complete(0, "FIRST");
+  await vi.waitFor(() =>
+    expect(f.sent.some((wire) => wire.method === "thread/unsubscribe")).toBe(
+      true,
+    ),
+  );
+  // "missed" arrives as the turn ends, so it queues; the rest wait behind it.
+  await f.runtime.run(f.delivery("missed"));
+  await f.runtime.run(f.delivery("then"));
+  await f.runtime.run(f.delivery("last"));
+  cleanup.resolve();
+  await vi.waitFor(() =>
+    expect(f.sent.filter((wire) => wire.method === "turn/steer")).toHaveLength(
+      2,
+    ),
+  );
+  expect(f.starts()).toHaveLength(2);
+  expect(inputText(f.starts()[1])).toContain("missed");
+  const steered = f.sent
+    .filter((wire) => wire.method === "turn/steer")
+    .map((wire) => JSON.stringify(wire.params));
+  expect(steered[0]).toContain("then");
+  expect(steered[1]).toContain("last");
+  f.complete(1, "SECOND");
+  await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(2));
+  expect(f.starts()).toHaveLength(2);
+});
+
+it("takes messages behind one that missed the ending turn into its turn", async () => {
+  const f = fixture();
+  await f.runtime.run(f.delivery("first"));
+  await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+  const cleanup = deferred<void>();
+  f.held.set("thread/unsubscribe", cleanup.promise);
+  await f.complete(0, "FIRST");
+  // All three were already behind the turn that ended, so "missed" starts
+  // the next one and the others join it.
+  await Promise.all(
+    ["missed", "then", "last"].map((text) => f.runtime.run(f.delivery(text))),
+  );
+  cleanup.resolve();
+  await vi.waitFor(() =>
+    expect(f.sent.filter((wire) => wire.method === "turn/steer")).toHaveLength(
+      2,
+    ),
+  );
+  expect(f.starts()).toHaveLength(2);
+  expect(inputText(f.starts()[1])).toContain("missed");
+  const steered = f.sent
+    .filter((wire) => wire.method === "turn/steer")
+    .map((wire) => JSON.stringify(wire.params));
+  expect(steered[0]).toContain("then");
+  expect(steered[1]).toContain("last");
+});
+
+it("starts a turn for a message that joined a turn that failed to start", async () => {
+  const f = fixture();
+  await f.runtime.run(f.delivery("first"));
+  await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+  const cleanup = deferred<void>();
+  f.held.set("thread/unsubscribe", cleanup.promise);
+  await f.complete(0, "FIRST");
+  await f.runtime.run(f.delivery("missed"));
+  await f.runtime.run(f.delivery("then"));
+  f.failures.set("turn/start", "model busy");
+  cleanup.resolve();
+  await vi.waitFor(() => expect(f.starts()).toHaveLength(3));
+  expect(inputText(f.starts()[1])).toContain("missed");
+  expect(inputText(f.starts()[2])).toContain("then");
+  expect(f.sent.some((wire) => wire.method === "turn/steer")).toBe(false);
+  expect(
+    f.publish.mock.calls.map(([event]) => (event as EventData).content),
+  ).not.toContainEqual(expect.stringContaining("Steering was not accepted"));
 });
 
 it("sends one interrupt for stops pressed together, and settles each with it", async () => {

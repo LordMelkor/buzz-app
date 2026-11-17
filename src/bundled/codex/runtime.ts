@@ -217,10 +217,21 @@ type Once = {
   /** Settles once the turn has ended and let go of its thread. */
   released: Promise<void>;
 };
+/** A queued turn that later messages join once it starts. */
+type Next = {
+  began: Promise<Active | undefined>;
+  begin: (active?: Active) => void;
+};
 type Lane = {
   tail: Promise<void>;
   /** Turns waiting on `tail` to start; steering past them would reorder. */
   queued: number;
+  /** The latest of them. */
+  next?: Next;
+  /** Messages behind a turn, each steered or queued in arrival order. */
+  steering: Promise<void>;
+  /** How many of them are still being placed. */
+  behind: number;
   active?: Active;
   voice?: { loaded: Loaded; signal: AbortSignal };
 };
@@ -1698,7 +1709,12 @@ export class CodexRuntime {
     const { channelId } = seat.conversation;
     const key = JSON.stringify([channelId, "channel"]);
     const entry = this.entry(agent.key, reads.scope);
-    const lane = entry.lanes.get(key) ?? { tail: entry.after, queued: 0 };
+    const lane = entry.lanes.get(key) ?? {
+      tail: entry.after,
+      queued: 0,
+      steering: Promise.resolve(),
+      behind: 0,
+    };
     if (lane.voice)
       throw new Error("This conversation already has a voice seat");
     entry.lanes.set(key, lane);
@@ -2076,18 +2092,22 @@ export class CodexRuntime {
         const text = textOf(request.event, agent.name);
         let lane = entry.lanes.get(key);
         if (!lane) {
-          lane = { tail: entry.after, queued: 0 };
+          lane = {
+            tail: entry.after,
+            queued: 0,
+            steering: Promise.resolve(),
+            behind: 0,
+          };
           entry.lanes.set(key, lane);
         }
-        if (lane.active) {
-          const active = lane.active;
+        if (lane.active || lane.queued || lane.behind) {
+          const current = lane;
           let queued = false;
           const queue = () => {
             queued = true;
-            this.start(request, text, key, lane, entry);
+            this.start(request, text, key, current, entry);
           };
-          // Startup and history reads stay ordered without holding Agents delivery.
-          const accepted = active.steering.then(async () => {
+          const steer = async (active: Active) => {
             try {
               await active.ready;
               if (entry.abort.signal.aborted) {
@@ -2096,14 +2116,14 @@ export class CodexRuntime {
               }
               // Steering cannot carry a model or effort pick, so a
               // differing pick waits for this turn and runs as the next one.
-              // Everything after it queues too until the lane drains: steering
-              // would run later messages first. A turn keeps the posting policy
-              // it was admitted with, so a request under the other policy waits
-              // for it too. A turn the owner stopped takes nothing more.
+              // Messages after it join that turn instead: steering would run
+              // them first. A turn keeps the posting policy it was admitted
+              // with, so a request under the other policy waits for it too. A
+              // turn the owner stopped takes nothing more.
               if (
                 active.finished ||
                 active.stopped ||
-                lane.queued ||
+                current.queued ||
                 request.conversation.topLevel !==
                   active.reply.conversation.topLevel ||
                 (request.model && request.model !== active.model) ||
@@ -2149,8 +2169,12 @@ export class CodexRuntime {
                 request.failActivity("Codex was stopped");
                 return;
               }
-              // A completion racing the request means this is the next ordinary turn.
-              if (message(error) === "no active turn to steer") {
+              // A completion racing the request, or a turn that never
+              // started, means this is the next ordinary turn.
+              if (
+                !active.turnId ||
+                message(error) === "no active turn to steer"
+              ) {
                 queue();
                 return;
               }
@@ -2169,8 +2193,27 @@ export class CodexRuntime {
             } finally {
               if (!queued) entry.waiting.delete(request);
             }
-          });
-          active.steering = accepted.catch((error) =>
+          };
+          current.behind++;
+          // Startup and history reads stay ordered without holding Agents delivery.
+          const accepted = current.steering
+            .then(async () => {
+              // Behind a queued turn, a message joins it once it starts, so a
+              // backlog clears in one turn rather than one turn per message.
+              const active = current.queued
+                ? await current.next?.began
+                : current.active;
+              if (!active) return queue();
+              const steered = steer(active);
+              // The turn ends only once what it may take in is placed.
+              active.steering = Promise.all([
+                active.steering,
+                steered.catch(() => {}),
+              ]).then(() => {});
+              await steered;
+            })
+            .finally(() => current.behind--);
+          current.steering = accepted.catch((error) =>
             console.error("Codex steering failed", error),
           );
           return;
@@ -2475,12 +2518,21 @@ export class CodexRuntime {
   ) {
     const current = lane;
     current.queued++;
+    let began!: (active?: Active) => void;
+    const next: Next = {
+      began: new Promise((resolve) => (began = resolve)),
+      begin: (active) => {
+        next.begin = () => {};
+        current.queued--;
+        began(active);
+      },
+    };
+    current.next = next;
     const job = lane.tail
       .catch(() => undefined)
       .then(async () => {
         // A server-started voice turn can arrive after this job was queued.
         while (current.active) await current.active.released;
-        current.queued--;
         entry.waiting.delete(request);
         if (entry.abort.signal.aborted) {
           request.failActivity("Codex was stopped");
@@ -2492,12 +2544,14 @@ export class CodexRuntime {
         }
         try {
           await entry.after;
-          await this.execute(request, text, key, current, entry);
+          await this.execute(request, text, key, current, entry, next);
         } catch (error) {
           request.failActivity(message(error));
           throw error;
         }
-      });
+      })
+      // Messages that joined a turn that never began queue on their own.
+      .finally(() => next.begin());
     lane.tail = job;
     this.status(request.agent.key, key, "Starting");
     // Agents can deliver follow-ups and other conversations immediately.
@@ -3250,6 +3304,7 @@ export class CodexRuntime {
     key: string,
     lane: Lane,
     entry: Entry,
+    next?: Next,
   ) {
     const { adopted } = request;
     let ready!: () => void;
@@ -3286,6 +3341,7 @@ export class CodexRuntime {
     };
     void active.ready.catch(() => undefined);
     lane.active = active;
+    next?.begin(active);
     const { settings, agent } = request;
     const native = (_: string, item: Item) => this.native(active, item);
     const followed = follow(

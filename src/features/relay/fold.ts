@@ -1,3 +1,4 @@
+import { readForward } from "./forwarded-message";
 import { workflowOwner } from "./workflow-attribution";
 import type { CustomEmoji } from "./emoji";
 import { validatedBlurhash } from "./blurhash";
@@ -432,6 +433,7 @@ export function foldMessages(
         ? reply.pubkey
         : author;
     });
+    const forward = readForward({ ...event, content });
     rows.push(
       Object.freeze({
         id: event.id,
@@ -459,6 +461,7 @@ export function foldMessages(
         createdAt: event.created_at,
         createdAtMs: eventMs(event),
         content: projected.content,
+        ...(forward ? { forward } : {}),
         ...(projected.content !== content ? { sourceContent: content } : {}),
         ...(event.kind === 40002 ? { agentEnvelope: true as const } : {}),
         ...(agentAudience(event) ? { audience: "agents" as const } : {}),

@@ -2751,10 +2751,17 @@ export function createRelaySession(
       ...createMessages(
         writes?.outbox,
         transport?.viewer,
-        (id) =>
-          local().find((item) => item.event.id === id)?.event ??
-          recent.peek(id)?.event ??
-          retainedEvent(id),
+        (id) => {
+          const outgoing = local().find((item) => item.event.id === id);
+          // The optimistic projection is unsigned even after publication. Use
+          // its admitted signed record when an operation needs source evidence.
+          return (
+            outgoing?.signed ??
+            recent.peek(id)?.event ??
+            retainedEvent(id) ??
+            outgoing?.event
+          );
+        },
         emoji.tags,
         validateMentions,
         (id, owner) =>

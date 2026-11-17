@@ -13,7 +13,15 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useLayoutEffect } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { type ReactNode, useEffect } from "react";
 import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
@@ -28,7 +36,9 @@ import type {
   RegisteredAgentType,
 } from "../../features/agents/service";
 import {
+  croppedAvatar,
   emojiAvatar,
+  emojiAvatarScale,
   uploadAvatar,
 } from "../../features/profiles/avatar-upload";
 import { AgentCreateDialog } from "./AgentCreateDialog";
@@ -43,6 +53,7 @@ vi.mock("../../features/profiles/avatar-upload", async (actual) => ({
   uploadAvatar: vi.fn(),
   emojiAvatar: vi.fn(),
   paintEmojiAvatar: vi.fn(),
+  croppedAvatar: vi.fn(),
 }));
 
 // Exercise our selection callback without emoji-mart's browser-only observers.
@@ -70,6 +81,14 @@ vi.mock("motion/react", async (actual) => ({
 }));
 
 afterEach(cleanup);
+// jsdom decodes no images; each upload is a decoded square.
+vi.spyOn(HTMLImageElement.prototype, "naturalWidth", "get").mockReturnValue(
+  100,
+);
+vi.spyOn(HTMLImageElement.prototype, "naturalHeight", "get").mockReturnValue(
+  100,
+);
+HTMLImageElement.prototype.decode = () => Promise.resolve();
 // jsdom has no object URLs; an upload previews its file through one.
 beforeEach(() => {
   vi.stubGlobal(
@@ -79,10 +98,13 @@ beforeEach(() => {
       revokeObjectURL: vi.fn(),
     }),
   );
+  // jsdom has no pointer capture; dragging the emoji captures the pointer.
+  Element.prototype.setPointerCapture = () => {};
 });
 // jsdom lacks both; tests that need them install stubs, removed here along
 // with stubbed frames and media queries.
 afterEach(() => {
+  Reflect.deleteProperty(Element.prototype, "setPointerCapture");
   Reflect.deleteProperty(Element.prototype, "scrollIntoView");
   Reflect.deleteProperty(Element.prototype, "animate");
   vi.unstubAllGlobals();
@@ -380,12 +402,18 @@ it("creates with a custom emoji on a chosen background", async () => {
     within(
       within(dialog).getByRole("group", { name: "Avatar background" }),
     ).getAllByRole("button"),
-  ).toHaveLength(20);
+  ).toHaveLength(21);
   await user.click(
     within(dialog).getByRole("button", { name: "Use #0090FF background" }),
   );
   await user.click(createButton());
-  expect(emojiAvatar).toHaveBeenCalledExactlyOnceWith("🤖", "#0090FF");
+  expect(emojiAvatar).toHaveBeenCalledExactlyOnceWith(
+    "🤖",
+    "#0090FF",
+    emojiAvatarScale,
+    0,
+    0,
+  );
   await waitFor(() =>
     expect(uploadAvatar).toHaveBeenCalledWith(
       file,
@@ -540,6 +568,235 @@ it("moves the hidden-scrollbar avatar dock with a vertical mouse wheel", () => {
   slot.dispatchEvent(up);
   expect(up.defaultPrevented).toBe(false);
   expect(scrollBy).toHaveBeenCalledOnce();
+});
+
+it("pans and zooms an uploaded image, then saves the framed crop", async () => {
+  const cropped = new File(["crop"], "avatar.png", { type: "image/png" });
+  vi.mocked(croppedAvatar).mockResolvedValueOnce(cropped);
+  vi.mocked(uploadAvatar)
+    .mockResolvedValueOnce("https://images.example/original.png")
+    .mockResolvedValueOnce("https://images.example/cropped.png");
+  const { agents, dialog, user } = setup(
+    [echo],
+    undefined,
+    "https://a.example",
+  );
+  await user.type(within(dialog).getByLabelText("Name"), "Nova");
+  fireEvent.change(within(dialog).getByLabelText("Upload an image"), {
+    target: {
+      files: [new File(["image"], "image.png", { type: "image/png" })],
+    },
+  });
+  const frame = await within(dialog).findByRole("application", {
+    name: "Image position",
+  });
+  // The preview shows once its image loads.
+  fireEvent.load(within(frame).getByAltText("Avatar preview"));
+  fireEvent.change(within(dialog).getByRole("slider", { name: "Zoom" }), {
+    target: { value: "2" },
+  });
+  fireEvent.keyDown(frame, { key: "ArrowRight" });
+  fireEvent.keyDown(frame, { key: "ArrowUp" });
+  await user.click(createButton());
+  await waitFor(() =>
+    expect(agents.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        picture: "https://images.example/cropped.png",
+      }),
+    ),
+  );
+  expect(croppedAvatar).toHaveBeenCalledExactlyOnceWith(
+    within(frame).getByRole("img", { name: "Avatar preview" }),
+    { zoom: 2, x: 0.02, y: -0.02 },
+  );
+  expect(uploadAvatar).toHaveBeenLastCalledWith(
+    cropped,
+    "https://a.example",
+    expect.any(AbortSignal),
+  );
+});
+
+it("cancels a framed save when the dialog closes while the image decodes", async () => {
+  vi.mocked(uploadAvatar).mockResolvedValueOnce(
+    "https://images.example/original.png",
+  );
+  const { agents, dialog, user } = setup(
+    [echo],
+    undefined,
+    "https://a.example",
+  );
+  await user.type(within(dialog).getByLabelText("Name"), "Nova");
+  fireEvent.change(within(dialog).getByLabelText("Upload an image"), {
+    target: {
+      files: [new File(["image"], "image.png", { type: "image/png" })],
+    },
+  });
+  await within(dialog).findByRole("application", { name: "Image position" });
+  fireEvent.change(within(dialog).getByRole("slider", { name: "Zoom" }), {
+    target: { value: "2" },
+  });
+  let decoded = () => {};
+  vi.spyOn(HTMLImageElement.prototype, "decode").mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      decoded = resolve;
+    }),
+  );
+  const painted = vi.mocked(croppedAvatar).mock.calls.length;
+  await user.click(createButton());
+  cleanup();
+  await act(async () => decoded());
+  expect(vi.mocked(croppedAvatar).mock.calls).toHaveLength(painted);
+  expect(agents.create).not.toHaveBeenCalled();
+});
+
+it("keeps a framed save from falling back to the original when the image fails to decode", async () => {
+  vi.mocked(uploadAvatar).mockResolvedValueOnce(
+    "https://images.example/original.png",
+  );
+  const { agents, dialog, user } = setup(
+    [echo],
+    undefined,
+    "https://a.example",
+  );
+  await user.type(within(dialog).getByLabelText("Name"), "Nova");
+  fireEvent.change(within(dialog).getByLabelText("Upload an image"), {
+    target: {
+      files: [new File(["image"], "image.png", { type: "image/png" })],
+    },
+  });
+  await within(dialog).findByRole("application", { name: "Image position" });
+  fireEvent.change(within(dialog).getByRole("slider", { name: "Zoom" }), {
+    target: { value: "2" },
+  });
+  // The frame's image no longer decodes, so it has no size.
+  const width = vi
+    .spyOn(HTMLImageElement.prototype, "naturalWidth", "get")
+    .mockReturnValue(0);
+  onTestFinished(() => void width.mockReturnValue(100));
+  vi.spyOn(HTMLImageElement.prototype, "decode").mockRejectedValueOnce(
+    new Error("EncodingError"),
+  );
+  await user.click(createButton());
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+    "Couldn't frame the image. Try again.",
+  );
+  expect(agents.create).not.toHaveBeenCalled();
+});
+
+it("moves focus from Zoom to the image frame on a mouse press", async () => {
+  vi.mocked(uploadAvatar).mockResolvedValueOnce(
+    "https://images.example/original.png",
+  );
+  const { dialog, user } = setup([echo], undefined, "https://a.example");
+  await user.type(within(dialog).getByLabelText("Name"), "Nova");
+  fireEvent.change(within(dialog).getByLabelText("Upload an image"), {
+    target: {
+      files: [new File(["image"], "image.png", { type: "image/png" })],
+    },
+  });
+  const frame = await within(dialog).findByRole("application", {
+    name: "Image position",
+  });
+  within(dialog).getByRole("slider", { name: "Zoom" }).focus();
+  fireEvent.pointerDown(frame, { pointerType: "mouse", pointerId: 1 });
+  expect(frame).toHaveFocus();
+});
+
+it("offers no framing for an upload this browser can't decode", async () => {
+  vi.mocked(uploadAvatar).mockResolvedValueOnce(
+    "https://images.example/converted.png",
+  );
+  vi.spyOn(HTMLImageElement.prototype, "decode").mockRejectedValueOnce(
+    new Error("EncodingError"),
+  );
+  const { dialog, user } = setup([echo], undefined, "https://a.example");
+  await user.type(within(dialog).getByLabelText("Name"), "Nova");
+  fireEvent.change(within(dialog).getByLabelText("Upload an image"), {
+    target: {
+      files: [new File(["heic"], "image.heic", { type: "image/heic" })],
+    },
+  });
+  await within(dialog).findByRole("img", { name: "Selected avatar" });
+  expect(
+    within(dialog).queryByRole("application", { name: "Image position" }),
+  ).toBeNull();
+  expect(within(dialog).queryByRole("slider", { name: "Zoom" })).toBeNull();
+});
+
+it("keeps the framed image when its replacement fails to upload", async () => {
+  const cropped = new File(["crop"], "avatar.png", { type: "image/png" });
+  vi.mocked(croppedAvatar).mockResolvedValueOnce(cropped);
+  vi.mocked(uploadAvatar)
+    .mockResolvedValueOnce("https://images.example/original.png")
+    .mockRejectedValueOnce(new Error("Upload failed"))
+    .mockResolvedValueOnce("https://images.example/cropped.png");
+  const { agents, dialog, user } = setup(
+    [echo],
+    undefined,
+    "https://a.example",
+  );
+  await user.type(within(dialog).getByLabelText("Name"), "Nova");
+  const choose = (name: string) =>
+    fireEvent.change(within(dialog).getByLabelText("Upload an image"), {
+      target: { files: [new File(["image"], name, { type: "image/png" })] },
+    });
+  choose("first.png");
+  await within(dialog).findByRole("application", { name: "Image position" });
+  fireEvent.change(within(dialog).getByRole("slider", { name: "Zoom" }), {
+    target: { value: "2" },
+  });
+  choose("second.png");
+  await within(dialog).findByText("Upload failed");
+  await user.click(createButton());
+  await waitFor(() =>
+    expect(agents.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        picture: "https://images.example/cropped.png",
+      }),
+    ),
+  );
+  expect(croppedAvatar).toHaveBeenCalledExactlyOnceWith(
+    expect.any(HTMLImageElement),
+    { zoom: 2, x: 0, y: 0 },
+  );
+});
+
+it.each([
+  ["an unadjusted image", "image/png", "image", true],
+  ["a GIF, keeping its animation", "image/gif", "GIF89a", false],
+])("saves %s as uploaded", async (_, type, bytes, croppable) => {
+  vi.mocked(croppedAvatar).mockClear();
+  vi.mocked(uploadAvatar).mockResolvedValueOnce(
+    "https://images.example/original",
+  );
+  const { agents, dialog, user } = setup(
+    [echo],
+    undefined,
+    "https://a.example",
+  );
+  await user.type(within(dialog).getByLabelText("Name"), "Nova");
+  fireEvent.change(within(dialog).getByLabelText("Upload an image"), {
+    target: { files: [new File([bytes], "image", { type })] },
+  });
+  await within(dialog).findByRole(croppable ? "application" : "img", {
+    name: croppable ? "Image position" : "Selected avatar",
+  });
+  expect(!!within(dialog).queryByRole("slider", { name: "Zoom" })).toBe(
+    croppable,
+  );
+  // A square at 100% has nowhere to move.
+  if (croppable)
+    fireEvent.keyDown(
+      within(dialog).getByRole("application", { name: "Image position" }),
+      { key: "ArrowRight" },
+    );
+  await user.click(createButton());
+  await waitFor(() =>
+    expect(agents.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ picture: "https://images.example/original" }),
+    ),
+  );
+  expect(croppedAvatar).not.toHaveBeenCalled();
 });
 
 it("keeps every bundled avatar available after switching from an uploaded image", async () => {

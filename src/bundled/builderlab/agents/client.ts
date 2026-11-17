@@ -37,6 +37,24 @@ export type RemoteAgent = Readonly<{
     | "unknown";
 }>;
 
+/** One of a remote agent's conversations, as Builderlab stores it. */
+export type AgentSession = Readonly<{
+  sessionId: string;
+  channelId: string;
+  /** Absent when the whole channel shares one session. */
+  threadRootId?: string;
+  updatedAt: number;
+}>;
+/** Sessions read at most, the most the server returns in one page. */
+const SESSION_LIMIT = 50;
+const communityHost = (community: string) => {
+  try {
+    return new URL(community).host;
+  } catch {
+    throw new Error(`The agent's community is not a URL: ${community}`);
+  }
+};
+
 export type RemoteAgentModel = Readonly<{
   id: string;
   displayName: string;
@@ -214,7 +232,12 @@ export function createAgentClient(
     }
   }
   function readRequest(
-    path: "get-model-catalog" | "list-agents" | "get-agent-turn-status",
+    path:
+      | "get-model-catalog"
+      | "list-agents"
+      | "get-agent-turn-status"
+      | "list-agent-sessions"
+      | "get-agent-session-messages",
     body: unknown,
     signal: AbortSignal,
   ) {
@@ -408,6 +431,69 @@ export function createAgentClient(
         statuses.set(taskId, outcome);
       }
       return statuses;
+    },
+    /** One page of the agent's conversation sessions, most recently active
+     * first; `more` when older ones remain. With `place`, only the session of
+     * that conversation: its thread's, else its channel's. */
+    async sessions(
+      agentId: string,
+      signal: AbortSignal,
+      place?: Readonly<{
+        community: string;
+        channelId: string;
+        threadRootId?: string | undefined;
+      }>,
+    ) {
+      const result = await readRequest(
+        "list-agent-sessions",
+        {
+          agent_id: agentId,
+          limit: SESSION_LIMIT,
+          ...(place && {
+            // Beekeeper keys conversations by the community's host.
+            community: communityHost(place.community),
+            channel_id: place.channelId,
+            ...(place.threadRootId && {
+              thread_root_event_id: place.threadRootId,
+            }),
+          }),
+        },
+        signal,
+      );
+      const rows = result.sessions ?? [];
+      if (!Array.isArray(rows))
+        throw new Error("Builderlab returned an invalid session list.");
+      const sessions = rows.map((row): AgentSession => {
+        const updatedAt = managementTimestamp(row?.updated_at);
+        if (
+          typeof row?.session_id !== "string" ||
+          !row.session_id ||
+          typeof row.channel_id !== "string" ||
+          !row.channel_id
+        )
+          throw new Error("Builderlab returned an invalid session list.");
+        return {
+          sessionId: row.session_id,
+          channelId: row.channel_id,
+          ...(typeof row.thread_root_event_id === "string" &&
+          row.thread_root_event_id
+            ? { threadRootId: row.thread_root_event_id }
+            : {}),
+          updatedAt: updatedAt ?? 0,
+        };
+      });
+      return {
+        sessions,
+        more: typeof result.next_cursor === "string" && !!result.next_cursor,
+      };
+    },
+    /** A listed session's stored messages and turns, as Builderlab sent them. */
+    sessionMessages(sessionId: string, signal: AbortSignal) {
+      return readRequest(
+        "get-agent-session-messages",
+        { session_id: sessionId },
+        signal,
+      );
     },
     link,
     activate,

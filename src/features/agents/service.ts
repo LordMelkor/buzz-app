@@ -1,4 +1,5 @@
 import { followUpQueue } from "../messages/follow-up-queue";
+import type { AgentModelSettings } from "./model-settings";
 import {
   createSessionAdmissions,
   type AgentSessionRouter,
@@ -984,6 +985,9 @@ export type AgentType<Config = unknown> = {
   /** What of `config` another type may adopt when the agent changes type.
    * Without it, all of its settings stay behind. */
   carry?(config: Config): Carry;
+  /** Safe saved model selections for agent_read. No discovery, I/O or
+   * active-session claims. Without it these settings are unavailable. */
+  readModelSettings?(config: Config): AgentModelSettings;
   /** Describes harness settings for a type-change preview. Rendered labels
    * never determine migration behavior. */
   describeMigration?(config: Config): readonly AgentMigrationSetting[];
@@ -1276,7 +1280,12 @@ export type AgentUpdateRequest = AgentUpdate &
  * its synced instructions when the owner can read them here, and otherwise
  * has `unavailable` instead, saying why. */
 export type AgentReadout = Readonly<
-  { pubkey: string; name: string; type: string } & (
+  {
+    pubkey: string;
+    name: string;
+    type: string;
+    modelSettings: AgentModelSettings | Readonly<{ unavailable: string }>;
+  } & (
     | { instructions: string | null; synced: boolean; revision?: string }
     | { unavailable: string }
   )
@@ -2638,6 +2647,12 @@ export class AgentsService extends Service implements Agents {
             pubkey: item.pubkey,
             name: item.name,
             type: item.type,
+            modelSettings: {
+              unavailable:
+                item.place === "hosted"
+                  ? "Its provider keeps its model settings"
+                  : "Its model settings are on another device",
+            },
           };
           return read
             ? { ...base, ...read, synced: true }
@@ -4165,6 +4180,11 @@ export class AgentsService extends Service implements Agents {
       pubkey: identity.pubkey,
       name: identity.name,
       type: identity.type,
+      modelSettings: editor?.problem
+        ? { unavailable: "Its synced config could not be read" }
+        : kind?.readModelSettings
+          ? kind.readModelSettings(config)
+          : { unavailable: "Its type does not expose model settings here" },
     };
     // Synced instructions that are deleted, invalid or unreadable are not
     // empty ones.
