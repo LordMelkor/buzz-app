@@ -1,9 +1,21 @@
 //! `host.relayKinds`: event kinds a plugin may sign as the viewer and publish.
 //! The reserved list is the one place that says which kinds Buzz keeps for its
-//! own signing paths; admission and every publish both ask it.
+//! own signing or as private; admission and every publish both ask it.
+use serde::{Deserialize, Serialize};
 
 /// Most kinds one plugin may declare.
 pub const MAX_RELAY_KINDS: usize = 8;
+/// Longest purpose, in UTF-8 bytes.
+const MAX_PURPOSE_BYTES: usize = 120;
+
+/// One kind a plugin may sign as the viewer, with the plugin's own words for
+/// what those events do. The install screen shows the purpose beside the kind.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RelayKind {
+    pub kind: u16,
+    pub purpose: String,
+}
 
 /// Kinds Buzz signs for its own purposes. The sources are
 /// the native writer's set (`nativeWriteKinds`, `WORKFLOW_KINDS`), the
@@ -45,16 +57,24 @@ pub fn reserved_relay_kind(kind: u16) -> bool {
             .any(|(first, last)| (*first..=*last).contains(&kind))
 }
 
-pub(crate) fn validate(kinds: &[u16]) -> Result<(), String> {
+pub(crate) fn validate(kinds: &[RelayKind]) -> Result<(), String> {
     if kinds.len() > MAX_RELAY_KINDS {
         return Err(format!(
             "At most {MAX_RELAY_KINDS} relay kinds may be declared"
         ));
     }
     let mut seen = std::collections::HashSet::new();
-    for kind in kinds {
+    for RelayKind { kind, purpose } in kinds {
         if *kind == 0 || reserved_relay_kind(*kind) || !seen.insert(kind) {
             return Err("Invalid relay kind declaration".into());
+        }
+        if purpose.trim().is_empty()
+            || purpose.len() > MAX_PURPOSE_BYTES
+            || purpose.chars().any(char::is_control)
+        {
+            return Err(format!(
+                "A relay kind's purpose must contain 1–{MAX_PURPOSE_BYTES} bytes of text without control characters"
+            ));
         }
     }
     Ok(())
@@ -63,6 +83,16 @@ pub(crate) fn validate(kinds: &[u16]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn declared(kinds: &[u16]) -> Vec<RelayKind> {
+        kinds
+            .iter()
+            .map(|&kind| RelayKind {
+                kind,
+                purpose: "Example".into(),
+            })
+            .collect()
+    }
 
     /// The integer literals of the first `[...]` after `marker` in `source`.
     fn literals(source: &str, marker: &str) -> Vec<u16> {
@@ -103,20 +133,40 @@ mod tests {
     #[test]
     fn no_grant_may_include_a_private_message_or_signer_kind() {
         for kind in [4, 13, 14, 15, 1059, 10050, 24133] {
-            assert!(validate(&[47000, kind]).is_err(), "{kind}");
+            assert!(validate(&declared(&[47000, kind])).is_err(), "{kind}");
         }
     }
 
     #[test]
     fn a_declaration_has_at_most_eight_distinct_unreserved_kinds() {
         assert!(validate(&[]).is_ok());
-        assert!(validate(&[47000, 47001]).is_ok());
-        assert!(validate(&[47000, 47001, 47002, 47003, 47004, 47005, 47006, 47007]).is_ok());
-        assert!(
-            validate(&[47000, 47001, 47002, 47003, 47004, 47005, 47006, 47007, 47008]).is_err()
-        );
-        assert!(validate(&[47000, 47000]).is_err());
-        assert!(validate(&[0]).is_err());
-        assert!(validate(&[47000, 9000]).is_err());
+        assert!(validate(&declared(&[47000, 47001])).is_ok());
+        assert!(validate(&declared(&[
+            47000, 47001, 47002, 47003, 47004, 47005, 47006, 47007
+        ]))
+        .is_ok());
+        assert!(validate(&declared(&[
+            47000, 47001, 47002, 47003, 47004, 47005, 47006, 47007, 47008
+        ]))
+        .is_err());
+        assert!(validate(&declared(&[47000, 47000])).is_err());
+        assert!(validate(&declared(&[0])).is_err());
+        assert!(validate(&declared(&[47000, 9000])).is_err());
+    }
+
+    #[test]
+    fn each_kind_says_in_one_line_of_text_what_it_is_for() {
+        let with = |purpose: &str| {
+            validate(&[RelayKind {
+                kind: 47000,
+                purpose: purpose.into(),
+            }])
+        };
+        assert!(with("Create or edit a group").is_ok());
+        assert!(with(&"a".repeat(MAX_PURPOSE_BYTES)).is_ok());
+        let long = "a".repeat(MAX_PURPOSE_BYTES + 1);
+        for purpose in ["", "   ", "Two\nlines", "A\ttab", long.as_str()] {
+            assert!(with(purpose).is_err(), "{purpose:?}");
+        }
     }
 }

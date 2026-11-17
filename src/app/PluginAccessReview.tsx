@@ -105,15 +105,22 @@ function hostDeclarations(
       icon: GlobeIcon,
       details: <code className={styles.sourcePath}>{origin}</code>,
     })),
-    ...(manifest.host?.relayKinds ?? []).map((kind) => ({
+    ...(manifest.host?.relayKinds ?? []).map(({ kind, purpose }) => ({
       key: `relayKind:${kind}`,
-      signature: `Relay event kind: ${kind}`,
+      signature: `Relay event kind: ${kind} · purpose: ${JSON.stringify(purpose)}`,
       title: "Relay event kind:",
       name: `Relay event kind ${kind}`,
-      label: `Publish events of kind ${kind} as you`,
-      hint: "Buzz signs these events with your key and sends them to your community for the plugin.",
+      label: `Sign and send as you: ${purpose}`,
+      hint: "The plugin wrote this purpose. Buzz signs these events with your key and sends them to your community as you.",
       icon: GlobeIcon,
-      details: <code className={styles.sourcePath}>{kind}</code>,
+      details: (
+        <>
+          <code className={styles.sourcePath}>{kind}</code>
+          <p className="mb-0 mt-2">
+            Purpose, as the plugin describes it: {purpose}
+          </p>
+        </>
+      ),
     })),
     ...(manifest.host?.publicImages
       ? [

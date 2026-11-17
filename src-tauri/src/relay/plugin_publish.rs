@@ -19,7 +19,11 @@ pub(crate) struct Publication {
 }
 
 fn admit(grants: &HostGrants, event: &EventTemplate) -> Result<()> {
-    if !grants.relay_kinds.contains(&event.kind) {
+    if !grants
+        .relay_kinds
+        .iter()
+        .any(|declared| declared.kind == event.kind)
+    {
         return Err("This plugin did not declare that event kind".into());
     }
     if reserved_relay_kind(event.kind) {
@@ -127,7 +131,13 @@ mod tests {
 
     fn grants(kinds: &[u16]) -> HostGrants {
         HostGrants {
-            relay_kinds: kinds.to_vec(),
+            relay_kinds: kinds
+                .iter()
+                .map(|&kind| buzzodz_plugins::RelayKind {
+                    kind,
+                    purpose: "Example".into(),
+                })
+                .collect(),
             ..Default::default()
         }
     }

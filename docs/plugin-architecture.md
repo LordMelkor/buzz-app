@@ -1904,7 +1904,7 @@ Plugins can separately declare host access in `manifest.json`:
   "host": {
     "commands": [{ "id": "status", "program": "example-cli", "args": ["status"] }],
     "networkOrigins": ["https://api.example.com"],
-    "relayKinds": [47000]
+    "relayKinds": [{ "kind": 47000, "purpose": "Create or edit a record" }]
   }
 }
 ```
@@ -2364,13 +2364,17 @@ are composition evidence, not a single native WebView delivery test.
 ### Signing and publishing declared event kinds
 
 `host.relayKinds` lists the event kinds a plugin may have Buzz sign as the
-viewer and publish to the selected community: distinct integers from 1 to 65535,
-at most 8. The same list of reserved kinds is checked when the manifest is
+viewer and publish to the selected community: at most 8 entries, each
+`{ kind, purpose }`. `kind` is a distinct integer from 1 to 65535. `purpose`
+says what those events do, in 1–120 bytes of text without control characters.
+The same list of reserved kinds is checked when the manifest is
 admitted and again on every publish, so a manifest naming a reserved kind is
 refused at install and no declared kind can reach one at runtime. It holds the
 kinds Buzz signs itself, the private-message kinds (4, 13, 14, 15, 1059 and the
-inbox relay list 10050) and NIP-46 signer messages (24133). Review shows one declaration per kind; adding a kind is an access
-increase, reordering is not.
+inbox relay list 10050) and NIP-46 signer messages (24133). Review shows one
+declaration per kind: "Sign and send as you:" and the plugin's purpose, with
+the kind number in its details. Adding a kind or rewording a purpose is an
+access increase; reordering is not.
 
 Desktop hosts provide two methods; on other hosts both reject.
 

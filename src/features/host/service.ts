@@ -269,7 +269,7 @@ export interface Host {
   ) => Promise<readonly HostRepositoryFolder[]>;
   /** Signs `template` as the viewer and publishes it to the selected community,
    * for a plugin whose manifest declares its kind in `host.relayKinds`. Never
-   * a kind Buzz signs itself. Sent once, never replayed: resolve it by calling
+   * a kind Buzz reserves. Sent once, never replayed: resolve it by calling
    * again with the same template, which the relay answers by event id. Desktop
    * only. */
   publish?: (

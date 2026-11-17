@@ -18,7 +18,7 @@ pub mod imports;
 pub mod managed;
 mod migrate_agent_flag;
 mod relay_kinds;
-pub use relay_kinds::{reserved_relay_kind, MAX_RELAY_KINDS};
+pub use relay_kinds::{reserved_relay_kind, RelayKind, MAX_RELAY_KINDS};
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const LIMIT: u64 = 8 * 1024 * 1024;
@@ -76,9 +76,10 @@ pub struct HostGrants {
     #[serde(default)]
     pub network_origins: Vec<String>,
     /// Event kinds the plugin may sign as the viewer and publish with
-    /// `host.publish`; never a reserved kind (see `reserved_relay_kind`).
+    /// `host.publish`, each with its purpose; never a reserved kind (see
+    /// `reserved_relay_kind`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub relay_kinds: Vec<u16>,
+    pub relay_kinds: Vec<RelayKind>,
     /// Programs the plugin may start as long-lived processes. Unlike a command,
     /// a process takes stdin and the caller appends its own arguments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1722,7 +1723,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::{
         artifact_from_text, bundled_manifests, enabled_by_default, validate_candidate_path,
-        Manager, Manifest, Release, MAX_HOST_COMMAND_OUTPUT_BYTES,
+        Manager, Manifest, RelayKind, Release, MAX_HOST_COMMAND_OUTPUT_BYTES,
     };
     use std::collections::BTreeMap;
     use std::fs;
@@ -2466,21 +2467,51 @@ mod tests {
 
     #[test]
     fn manifests_declare_up_to_eight_unreserved_relay_kinds() {
-        let with = |kinds: serde_json::Value| {
+        let raw = |kinds: serde_json::Value| {
             let manifest = serde_json::json!({
                 "id": "example.page", "name": "Example", "apiVersion": 1,
                 "host": { "relayKinds": kinds }
             });
             artifact_from_text(&manifest.to_string(), "export const x = 1".into())
         };
-        let packed = with(serde_json::json!([47000, 47001])).unwrap();
+        let with = |kinds: serde_json::Value| {
+            let entries = kinds.as_array().unwrap().iter();
+            raw(entries
+                .map(|kind| serde_json::json!({ "kind": kind, "purpose": "Example" }))
+                .collect())
+        };
+        let packed = raw(serde_json::json!([
+            { "kind": 47000, "purpose": "Create or edit a group" },
+            { "kind": 47001, "purpose": "Delete a group" }
+        ]))
+        .unwrap();
         let packed: crate::Artifact = serde_json::from_slice(&packed).unwrap();
-        assert_eq!(packed.manifest.host.unwrap().relay_kinds, [47000, 47001]);
+        assert_eq!(
+            packed.manifest.host.unwrap().relay_kinds,
+            [
+                RelayKind {
+                    kind: 47000,
+                    purpose: "Create or edit a group".into()
+                },
+                RelayKind {
+                    kind: 47001,
+                    purpose: "Delete a group".into()
+                },
+            ]
+        );
         assert!(with(serde_json::json!([1, 65535])).is_ok());
         assert!(with(serde_json::json!([
             47000, 47001, 47002, 47003, 47004, 47005, 47006, 47007
         ]))
         .is_ok());
+        for invalid in [
+            serde_json::json!([47000]),
+            serde_json::json!([{ "kind": 47000 }]),
+            serde_json::json!([{ "kind": 47000, "purpose": "" }]),
+            serde_json::json!([{ "kind": 47000, "purpose": "Example", "label": "Example" }]),
+        ] {
+            assert!(raw(invalid.clone()).is_err(), "{invalid}");
+        }
         for invalid in [
             serde_json::json!([47000, 47001, 47002, 47003, 47004, 47005, 47006, 47007, 47008]),
             serde_json::json!([0]),
