@@ -310,26 +310,22 @@ test("the app runtime exposes ready bundled pages and removes them on disable", 
         .snapshot()
         .some((panel) => panel.pluginId === "buzz.agent-activity"),
     );
-    assert.equal(services.conversation.accessories.snapshot().length, 2);
-    assert.deepEqual(
+    // Other default plugins add accessories too; these are Agent Activity's.
+    const activityAccessories = () =>
       services.conversation.accessories
         .snapshot()
-        .map(({ id, placement }) => [id, placement]),
+        .filter(({ pluginId }) => pluginId === "buzz.agent-activity");
+    assert.deepEqual(
+      activityAccessories().map(({ id, placement }) => [id, placement]),
       [
         ["activity", "response"],
         ["typing-presentation", undefined],
       ],
     );
-    assert.equal(
-      services.conversation.accessories.snapshot()[0].pluginId,
-      "buzz.agent-activity",
-    );
     await services.plugins.change("disable", "buzz.agent-activity");
-    assert.equal(services.conversation.accessories.snapshot().length, 0);
+    assert.equal(activityAccessories().length, 0);
     await services.plugins.change("enable", "buzz.agent-activity");
-    await vi.waitFor(() =>
-      assert.equal(services.conversation.accessories.snapshot().length, 2),
-    );
+    await vi.waitFor(() => assert.equal(activityAccessories().length, 2));
 
     await services.plugins.change("enable", "buzz.bestie");
     await vi.waitFor(() =>

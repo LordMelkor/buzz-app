@@ -472,6 +472,10 @@ pub fn bundled_manifests() -> Vec<Manifest> {
             "../../../src/bundled/agent-activity/manifest.json"
         ))
         .expect("agent activity manifest"),
+        serde_json::from_str(include_str!(
+            "../../../src/bundled/team-follow-ups/manifest.json"
+        ))
+        .expect("team follow-ups manifest"),
         serde_json::from_str(include_str!("../../../src/bundled/terminal/manifest.json"))
             .expect("terminal manifest"),
         serde_json::from_str(include_str!("../../../src/bundled/profiles/manifest.json"))
@@ -554,6 +558,7 @@ fn enabled_by_default(id: &str) -> bool {
             | "buzz.mermaid"
             | "buzz.identity-naming"
             | "buzz.agent-activity"
+            | "buzz.team-follow-ups"
             | "buzz.terminal"
             | "buzz.profiles"
             | "buzz.links"

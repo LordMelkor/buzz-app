@@ -38,10 +38,17 @@ import {
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useEffect, useLayoutEffect } from "react";
+import {
+  type ComponentType,
+  useEffect,
+  useLayoutEffect,
+  useState,
+} from "react";
 import { createRecovery } from "../relay/recovery";
 import type { Contribution } from "../../plugins/contributions";
 import type {
+  ComposerAccessory,
+  ComposerAccessoryProps,
   ComposerCompletion,
   ComposerCompletionProps,
   ComposerTool,
@@ -17166,4 +17173,172 @@ it("shows an annotator's marks in the composer and retires them with the destina
   await waitFor(() =>
     expect(h.input().querySelector('[aria-invalid="spelling"]')).toBeNull(),
   );
+});
+
+it("lets a send gate keep or refuse a message the composer would publish, and publishes when a gate throws", async () => {
+  const kept: unknown[] = [];
+  let hold: (message: unknown) => boolean | { refuse: string } = (message) => {
+    kept.push(message);
+    return true;
+  };
+  const gate = {
+    id: "gate",
+    key: "test/gate",
+    pluginId: "test",
+    revision: "1",
+    hold: (message: never) => hold(message),
+  };
+  const empty: [] = [];
+  const gates = [gate];
+  const none = { snapshot: () => empty, subscribe: () => () => {} };
+  const h = mount();
+  h.retarget({
+    extensions: {
+      tools: none,
+      inline: none,
+      completions: none,
+      sendGates: { snapshot: () => gates, subscribe: () => () => {} },
+    },
+  });
+  h.fill("Hold me");
+  h.submit();
+  await waitFor(() => expect(h.input()).toHaveValue(""));
+  expect(h.messages.send).not.toHaveBeenCalled();
+  expect(kept).toEqual([
+    {
+      channelId: "channel",
+      text: "Hold me",
+      recipients: [],
+      references: [],
+      attachments: [],
+      picks: {},
+    },
+  ]);
+
+  // A refusal sends nothing and keeps the draft, with the gate's reason.
+  hold = () => ({ refuse: "The queue is full." });
+  h.fill("Refuse me");
+  h.submit();
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "The queue is full.",
+  );
+  expect(h.input()).toHaveValue("Refuse me");
+  expect(h.messages.send).not.toHaveBeenCalled();
+
+  hold = () => {
+    throw new Error("Gate failed");
+  };
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  h.fill("Send me");
+  h.submit();
+  await waitFor(() => expect(h.messages.send).toHaveBeenCalledOnce());
+  expect(h.messages.send).toHaveBeenCalledWith("channel", "Send me", [], []);
+});
+
+/** A composer with one composer-placed accessory, as a plugin registers it. */
+function mountAccessory(component: ComponentType<ComposerAccessoryProps>) {
+  const empty: [] = [];
+  const none = { snapshot: () => empty, subscribe: () => () => {} };
+  const accessories: readonly Contribution<ComposerAccessory>[] = [
+    {
+      id: "fixture",
+      key: "test/fixture",
+      pluginId: "test",
+      revision: "1",
+      title: "Fixture",
+      component,
+    },
+  ];
+  const h = mount();
+  h.retarget({
+    extensions: {
+      tools: none,
+      inline: none,
+      completions: none,
+      accessories: { snapshot: () => accessories, subscribe: () => () => {} },
+    },
+  });
+  return h;
+}
+
+it("returns focus to the composer when a focused accessory control goes away", () => {
+  function Accessory({ onFocusedRemoval }: ComposerAccessoryProps) {
+    const [shown, setShown] = useState(true);
+    useLayoutEffect(() => {
+      if (!shown) onFocusedRemoval?.();
+    }, [shown, onFocusedRemoval]);
+    return shown ? (
+      <button type="button" onClick={() => setShown(false)}>
+        Dismiss
+      </button>
+    ) : null;
+  }
+  const h = mountAccessory(Accessory);
+  const dismiss = screen.getByRole("button", { name: "Dismiss" });
+  act(() => dismiss.focus());
+  fireEvent.click(dismiss);
+  expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+  expect(h.input()).toHaveFocus();
+});
+
+it("opens an accessory's draft as an edit with its chips, and settles each edit once", async () => {
+  let editDraft: ComposerAccessoryProps["editDraft"];
+  function Accessory(props: ComposerAccessoryProps) {
+    useLayoutEffect(() => {
+      editDraft = props.editDraft;
+    });
+    return null;
+  }
+  const h = mountAccessory(Accessory);
+  h.fill("My draft");
+  let fail = true;
+  const save = vi.fn(async (_content: string) => {
+    if (fail) throw new Error("Changed elsewhere.");
+  });
+  const cancel = vi.fn();
+  const open = (content: string) => {
+    let opened: boolean | undefined;
+    act(() => {
+      opened = editDraft?.({ content, save, cancel });
+    });
+    return opened;
+  };
+  const content = `Ask [Honey](${profileTarget(first.pubkey)}) to rebase`;
+  expect(open(content)).toBe(true);
+  expect(screen.getByText("Editing message")).toBeVisible();
+  expect(h.input()).toHaveValue(content);
+  expect(h.input().querySelector("[data-source]")).not.toBeNull();
+
+  // A failed save keeps the edit open with its reason.
+  h.fill("Ask Honey to merge");
+  h.submit();
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Changed elsewhere.",
+  );
+  expect(screen.getByText("Editing message")).toBeVisible();
+  fail = false;
+  h.submit();
+  await waitFor(() =>
+    expect(screen.queryByText("Editing message")).not.toBeInTheDocument(),
+  );
+  expect(save).toHaveBeenLastCalledWith("Ask Honey to merge");
+  expect(h.input()).toHaveValue("My draft");
+  expect(h.input()).toHaveFocus();
+  expect(cancel).not.toHaveBeenCalled();
+
+  expect(open("Second")).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+  expect(h.input()).toHaveValue("My draft");
+  expect(cancel).toHaveBeenCalledOnce();
+
+  expect(open("Third")).toBe(true);
+  // One edit at a time, as for a sent message.
+  expect(open("Fourth")).toBe(false);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Finish or cancel your current edit first.",
+  );
+  h.unmount();
+  expect(cancel).toHaveBeenCalledTimes(2);
+  expect(save).toHaveBeenCalledTimes(2);
+  expect(h.messages.send).not.toHaveBeenCalled();
 });

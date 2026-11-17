@@ -9,7 +9,7 @@ import type { RelaySession } from "../relay/session";
 
 afterEach(cleanup);
 
-it("revokes navigation after contribution removal, replacement and composer unmount", () => {
+it("revokes navigation and draft edits after contribution removal, replacement and composer unmount", () => {
   let commands!: ComposerAccessoryProps;
   function Accessory(props: ComposerAccessoryProps) {
     useLayoutEffect(() => {
@@ -40,6 +40,8 @@ it("revokes navigation after contribution removal, replacement and composer unmo
     });
   const open = vi.fn(() => true);
   const canOpen = vi.fn(() => true);
+  const editDraft = vi.fn(() => true);
+  const draft = { content: "Draft", save() {}, cancel() {} };
   const view = render(
     <ComposerAccessories
       registry={registry}
@@ -48,16 +50,19 @@ it("revokes navigation after contribution removal, replacement and composer unmo
       channelId="channel"
       open={open}
       canOpen={canOpen}
+      editDraft={editDraft}
     />,
     { reactStrictMode: true },
   );
   const original = commands;
   expect(original.open("target")).toBe(true);
   expect(original.canOpen("target")).toBe(true);
+  expect(original.editDraft?.(draft)).toBe(true);
   entries = [];
   // Registry invalidation must reject saved commands even before React commits.
   expect(original.open("target")).toBe(false);
   expect(original.canOpen("target")).toBe(false);
+  expect(original.editDraft?.(draft)).toBe(false);
   publish();
   entries = [entry];
   publish();
@@ -73,9 +78,11 @@ it("revokes navigation after contribution removal, replacement and composer unmo
   view.unmount();
   expect(replacement.open("target")).toBe(false);
   expect(replacement.canOpen("target")).toBe(false);
+  expect(replacement.editDraft?.(draft)).toBe(false);
   expect(listeners.size).toBe(0);
   expect(open).toHaveBeenCalledTimes(3);
   expect(canOpen).toHaveBeenCalledTimes(1);
+  expect(editDraft).toHaveBeenCalledOnce();
 });
 
 it.each(["message", "response"] as const)(

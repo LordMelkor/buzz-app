@@ -319,6 +319,26 @@ it("registers identity marks and withdraws them with their plugin", async () => 
   );
 });
 
+it("registers a send gate with only an id and hold, and withdraws it with its plugin", async () => {
+  const h = harness({
+    inject: ["conversation"],
+    apply(ctx) {
+      expect(() =>
+        ctx.conversation.registerSendGate({ id: "gate" } as never),
+      ).toThrow("id and hold function");
+      ctx.conversation.registerSendGate({ id: "gate", hold: () => false });
+    },
+  });
+  h.runtime.reconcile([h.plugin]);
+  await vi.waitFor(() =>
+    expect(h.service.sendGates.snapshot()).toHaveLength(1),
+  );
+  h.runtime.reconcile([]);
+  await vi.waitFor(() =>
+    expect(h.service.sendGates.snapshot()).toHaveLength(0),
+  );
+});
+
 it("rejects an attachment renderer order that is neither a number nor a function", async () => {
   const h = harness({
     inject: ["conversation"],

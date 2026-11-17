@@ -74,11 +74,12 @@ function OwnedAccessory({
     current.current = props;
   });
   const canOpenThread = !!props.openThread;
+  const canEditDraft = !!props.editDraft;
   const [commands, setCommands] =
     useState<
       Pick<
         ComposerAccessoryProps,
-        "canOpen" | "open" | "openThread" | "onFocusedRemoval"
+        "canOpen" | "open" | "openThread" | "onFocusedRemoval" | "editDraft"
       >
     >();
   useLayoutEffect(() => {
@@ -97,11 +98,14 @@ function OwnedAccessory({
       openThread: canOpenThread
         ? () => active() && (current.current.openThread?.() ?? false)
         : undefined,
+      editDraft: canEditDraft
+        ? (draft) => active() && (current.current.editDraft?.(draft) ?? false)
+        : undefined,
     });
     return () => {
       live = false;
     };
-  }, [entry, registry, props.session, canOpenThread]);
+  }, [entry, registry, props.session, canOpenThread, canEditDraft]);
   const Accessory = entry.component;
   return commands ? (
     <Accessory {...props} {...commands} />

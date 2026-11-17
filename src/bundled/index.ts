@@ -25,6 +25,8 @@ import feedbackManifest from "./feedback/manifest.json";
 import * as feedback from "./feedback";
 import activityManifest from "./agent-activity/manifest.json";
 import * as activity from "./agent-activity";
+import teamFollowUpsManifest from "./team-follow-ups/manifest.json";
+import * as teamFollowUps from "./team-follow-ups";
 import terminalManifest from "./terminal/manifest.json";
 import * as terminal from "./terminal";
 import profilesManifest from "./profiles/manifest.json";
@@ -159,6 +161,11 @@ export const bundledPlugins: readonly BundledPlugin[] = [
   {
     manifest: { ...activityManifest, apiVersion: 1 },
     module: activity,
+    enabledByDefault: true,
+  },
+  {
+    manifest: { ...teamFollowUpsManifest, apiVersion: 1 },
+    module: teamFollowUps,
     enabledByDefault: true,
   },
   {

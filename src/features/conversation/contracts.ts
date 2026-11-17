@@ -5,6 +5,7 @@ import type { VoiceRecording } from "../relay/voice-media";
 import type { Attachment, ChannelMessage } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
 import type { ComposerSession } from "../messages/composer-session";
+import type { OutgoingMessage } from "../messages/outgoing-message";
 
 /**
  * Opens a target, such as a plugin panel URL, where the conversation host
@@ -220,6 +221,21 @@ export type ComposerAccessoryProps = Readonly<{
   openThread?: (() => boolean) | undefined;
   /** Return keyboard focus to a stable host control when a focused accessory retires. */
   onFocusedRemoval?: (() => void) | undefined;
+  /** Composer placement only. Opens `content`, Markdown, in this composer's
+   * editor the way it edits a saved message, mentions, links and chips
+   * included. Save calls `save` with the edited Markdown: the edit closes when
+   * it returns, and stays open with the error when it throws or rejects.
+   * Otherwise `cancel` runs once when the edit closes. False when it can't
+   * start an edit now, such as during another edit, which the composer says. */
+  editDraft?:
+    | ((
+        draft: Readonly<{
+          content: string;
+          save(content: string): void | Promise<void>;
+          cancel(): void;
+        }>,
+      ) => boolean)
+    | undefined;
   /** Presentation only; the host re-resolves targets. No editor or access grant. */
   canOpen(target: string): boolean;
   /** False after contribution removal or the originating composer retires.
@@ -303,7 +319,24 @@ export type ConversationExtensions = Readonly<{
   linkPreviews?: ContributionReader<LinkPreviewRenderer>;
   codeBlocks?: ContributionReader<CodeBlockRenderer>;
   annotators?: ContributionReader<ComposerAnnotator>;
+  sendGates?: ContributionReader<SendGate>;
 }>;
+/** Decides whether a message a conversation composer is about to
+ * publish goes out now. The host asks gates in contribution-key order, after
+ * the composer's own prompts and uploads; the first answer other than false
+ * decides. `hold` must answer at once: true keeps the message, so the host
+ * clears the draft as sent and forgets the message (save it first, then
+ * publish it later with `publish`). `{ refuse }` sends nothing: the draft
+ * stays as it is and the composer shows `refuse` as its send error. False or
+ * a throw lets the host publish it now. */
+export type SendGate = Readonly<{
+  id: string;
+  hold(
+    message: OutgoingMessage,
+    session: RelaySession,
+  ): boolean | Readonly<{ refuse: string }>;
+}>;
+export type { OutgoingMessage };
 
 /** One document revision of the draft an annotator may mark: the projected text
  * completion providers observe, without the selection. `prose` lists its

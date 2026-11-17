@@ -50,7 +50,11 @@ import {
   composerMarkdownContext,
   markdownRanges,
 } from "./composer-document";
-import { useMessageEdit, lastEditableMessage } from "./useMessageEdit";
+import {
+  useMessageEdit,
+  lastEditableMessage,
+  type DraftMessageEdit,
+} from "./useMessageEdit";
 import { editMentionText } from "./message-edit";
 import type { ChannelMessage } from "../relay/contracts";
 import { useListedChannel } from "../relay/listed-channel";
@@ -159,6 +163,7 @@ import { AgentsContext, useSessionState } from "../agents/react";
 import { ComposerModels, type DraftPicks } from "./ComposerModels";
 import type { MentionPicks } from "../relay/messages";
 import type {
+  ComposerAccessoryProps,
   ConversationExtensions,
   CompletionPending,
   CompletionQuery,
@@ -195,6 +200,7 @@ import { avatarMedia } from "../../shared/avatar-source";
 import { followUpBehaviorPreference } from "./follow-up-preference";
 import { followUpQueue } from "./follow-up-queue";
 import { followUpMessage } from "./follow-up-message";
+import { heldBySendGate } from "./outgoing-message";
 import { QueuedFollowUps } from "./QueuedFollowUps";
 
 const noChannels: ReturnType<ComposerSession["channels"]["list"]> = {
@@ -1711,20 +1717,39 @@ function Composer({
     caret.current = next.text.length;
     setError(undefined);
   });
-  const startQueuedEdit = (id: string) => {
-    if (
-      !host ||
-      !permitted.current ||
-      editingDisabled ||
-      submission ||
-      !input.current
-    )
-      return;
+  /** The editor when a draft edit can start now; otherwise shows why. */
+  const draftEditInput = () => {
+    const field = input.current;
+    if (!permitted.current || editingDisabled || submission || !field) return;
     if (editing.target) {
       setError("Finish or cancel your current edit first.");
-      input.current.focus();
+      field.focus();
       return;
     }
+    return field;
+  };
+  /** Opens a draft that isn't a sent message, such as a queued follow-up. */
+  const startDraftEdit = (
+    field: ComposerInputElement,
+    draft: DraftMessageEdit,
+  ) => {
+    completion.invalidate();
+    beforeEdit.current = {
+      value: valueRef.current,
+      restore: field.checkpoint(),
+    };
+    const body = editing.startDraft(draft);
+    const next = stageChatCards(mentionDraft(body), channels());
+    valueRef.current = next;
+    updateDraft(next);
+    field.reset(next);
+    setLinkEdit(null);
+    caret.current = next.text.length;
+    setError(undefined);
+  };
+  const startQueuedEdit = (id: string) => {
+    const field = host && draftEditInput();
+    if (!host || !field) return;
     try {
       const queue = followUpQueue(host);
       const entry = queue
@@ -1733,27 +1758,35 @@ function Composer({
       if (!entry?.message)
         throw new Error("This queued message is no longer available to edit.");
       const lease = queue.edit(id);
-      completion.invalidate();
-      beforeEdit.current = {
-        value: valueRef.current,
-        restore: input.current.checkpoint(),
-      };
-      const body = editing.startDraft({
+      startDraftEdit(field, {
         id,
         content: entry.text,
         saveDraft: lease.save,
         cancelDraft: lease.cancel,
       });
-      const next = stageChatCards(mentionDraft(body), channels());
-      valueRef.current = next;
-      updateDraft(next);
-      input.current.reset(next);
-      setLinkEdit(null);
-      caret.current = next.text.length;
-      setError(undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
+  };
+  // The edit closes more than once (close, then unmount), so an accessory's
+  // edit settles once: a returned save, or one cancel.
+  const editAccessoryDraft: ComposerAccessoryProps["editDraft"] = (draft) => {
+    const field = draftEditInput();
+    if (!field) return false;
+    let open = true;
+    startDraftEdit(field, {
+      id: crypto.randomUUID(),
+      content: draft.content,
+      async saveDraft(body) {
+        await draft.save(body);
+        open = false;
+      },
+      cancelDraft() {
+        if (open) draft.cancel();
+        open = false;
+      },
+    });
+    return true;
   };
   useEffect(() => {
     if (!editScope) return;
@@ -3117,8 +3150,35 @@ function Composer({
             profiles,
             knownAgentPubkeys(profiles, session.agentChoices.snapshot()),
           )
-        )
+        ) {
+          // Solo's own queue declined it; a plugin's send gate may keep or
+          // refuse it. A refusal keeps the draft and shows its reason.
+          const gate =
+            host &&
+            heldBySendGate(
+              extensions?.sendGates,
+              {
+                channelId,
+                ...(threadRootId ? { threadRootId } : {}),
+                ...(threadRootId && replyParentId
+                  ? { parentId: replyParentId }
+                  : {}),
+                text: content,
+                recipients,
+                references,
+                attachments: uploaded,
+                picks: sentPicks,
+                ...(threadRootId && mediaTargetUrl
+                  ? { mediaTarget: mediaTargetUrl }
+                  : {}),
+                ...(tokens.length ? { tokens } : {}),
+              },
+              host,
+            );
+          if (gate === true) return undefined;
+          if (gate) throw new Error(gate.refuse);
           return publishNow(uploaded, session);
+        }
         const message = {
           channelId,
           text: content,
@@ -3352,6 +3412,8 @@ function Composer({
           threadRootId={threadRootId}
           canOpen={(target) => canOpenLink?.(target) ?? false}
           open={(target) => onOpenLink?.(target) ?? false}
+          onFocusedRemoval={() => input.current?.focus()}
+          editDraft={editAccessoryDraft}
         />
       )}
     </div>

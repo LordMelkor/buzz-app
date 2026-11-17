@@ -1,0 +1,10 @@
+{
+  "id": "buzz.team-follow-ups",
+  "name": "Team follow-ups",
+  "apiVersion": 1,
+  "description": "Queue a message to a busy agent in a team channel until it finishes its turn.",
+  "discovery": {
+    "category": "agent-tools",
+    "tags": ["messaging", "coding-agents"]
+  }
+}

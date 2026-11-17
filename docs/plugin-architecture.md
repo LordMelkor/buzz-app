@@ -1541,10 +1541,18 @@ Builderlab.
 ### Composer accessories
 
 `ctx.conversation.registerAccessory({ id, title, order?, component })` contributes
-read-only contextual UI above the shared composer. The host passes
-`{ session, scope, channelId, threadRootId?, canOpen, open }`: no editor commands,
-new socket, or implied access grant. Channels supplies target resolution and panel
-placement; other composer consumers can omit navigation and return unavailable.
+contextual UI above the shared composer. The host passes
+`{ session, scope, channelId, threadRootId?, canOpen, open, onFocusedRemoval?,
+editDraft? }`: no other editor commands, new socket, or implied access grant. A
+conversation composer passes `onFocusedRemoval()`, which returns focus to its
+editor when a focused accessory control goes away, and
+`editDraft({ content, save, cancel })`, which opens Markdown in its editor the
+way it edits a saved message, mentions, links and chips included. Save calls
+`save(markdown)`: the edit closes when it returns and stays open with the error
+when it throws. Otherwise `cancel` runs once when the edit closes. It returns
+false when an edit can't start now, such as during another edit. Channels
+supplies target resolution and panel placement; other composer consumers can
+omit navigation and return unavailable.
 The shared renderer owns deterministic order, error isolation and command
 revocation on removal/unmount. Composer destination keys fence session/channel/
 thread changes. The accessory remains usable on read-only connections.
@@ -3343,6 +3351,45 @@ The jsdom suites cover the contract with an annotator registered through the
 real runtime. Native WebKit right-click selection and context-menu behavior,
 screen reader announcement of `aria-invalid`, and IME composition in the
 desktop app are not exercised there.
+
+### Send gates
+
+`ctx.conversation.registerSendGate({ id, hold })` lets a plugin take a
+message that a conversation composer is about to publish, for example to hold it
+until an agent is free. The host asks gates after its prompts, uploads and
+Solo's own queue, and only for a message it would otherwise publish now. `hold`
+gets the `OutgoingMessage` (channel, thread, text, recipients as sent,
+references, uploaded attachments, model picks and chips) and the session, and
+answers at once:
+
+- `true` keeps the message. The host clears the draft as sent and forgets the
+  message. Save it before you return `true`: the plugin owns it from then on.
+- `{ refuse: reason }` sends nothing. The draft stays as it is, and the
+  composer shows `reason` where it shows a send error. A message whose
+  attachments were uploading in the background comes back to the composer
+  with `reason` in its failure notice.
+- `false`, or a throw, lets the host publish it now as before.
+
+Gates are asked in contribution-key order; the first answer other than `false`
+decides. A disabled or reloaded plugin's gate stops being asked, and the host
+never publishes or drops what a gate kept. Decide what a held message does after
+a reload yourself; Team follow-ups shows it paused with **Send**.
+
+`ctx.conversation.publish(session, message)` publishes a kept message as the
+composer would have, chips included, and returns its event id. It holds no
+state: call it when your rule says the message should go, after your own
+checks that the channel and recipients are still available.
+
+```ts
+import type { Context } from "@buzz/author";
+export const inject = ["conversation"];
+export function apply(ctx: Context) {
+  ctx.conversation.registerSendGate({
+    id: "example",
+    hold: () => false,
+  });
+}
+```
 
 ## Desktop browser
 

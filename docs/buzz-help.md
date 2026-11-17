@@ -1091,6 +1091,29 @@ again. Remove is unavailable once delivery owns the message; use its delivery
 recovery controls instead. A save or recovery error keeps the draft or queued row
 available rather than silently discarding it.
 
+## Team channel follow-ups
+
+With **Follow-up behavior** set to **Queue** in **Settings > Appearance**, the
+bundled **Team follow-ups** plugin holds a message to a working agent in a team
+channel until that agent finishes, then sends it. A top-level message is held
+only when it tags agents alone and at least one of them is working, typing or
+still starting on your last message there. Messages that tag people, tag only
+idle agents, or reply in a thread send at once. Each agent's messages go out in
+order, and one agent's queue never holds another's.
+
+A held message stays on this device; teammates can't see it until it's sent. It
+shows above the composer: the up-arrow sends it now, the pencil edits its text
+in the message composer, and the X removes it. Save changes or cancel to return
+to your previous draft; attachments and recipients stay with the held message.
+Up to 50 messages can be held for each
+account and community; at 50, a message that would wait stays in the composer,
+which says the queue is full. If its chat or a tagged agent is no longer
+available when it's due, it stays with the reason and waits for you. After a
+restart, when the plugin reloads, or when the window that held it closes, it
+shows **Saved before restart. Send when ready.** A message another open window
+holds shows **Queued in another window.** Turning the plugin off keeps held
+messages; turn it on again to send or remove them.
+
 ## Choosing and customizing agents
 
 - An optional plugin can attach context to a native session. Follow-ups and
@@ -1572,7 +1595,7 @@ available rather than silently discarding it.
   restarting Buzz.
 - Any agent running on this device can read and change some Buzz settings
   here when you ask it to: appearance mode, interface size, accent color,
-  vibe level, where new threads open, Solo follow-up behavior, automatic
+  vibe level, where new threads open, follow-up behavior, automatic
   spelling correction (Mac only) and remembering mentioned agents. It can
   also change your Bestie (see **Make my bestie**). There is no switch to turn
   on. A change shows as not saved when it is active but could not be saved on
