@@ -3389,6 +3389,56 @@ The service goes away when the GitHub plugin is turned off, so take it with
 `ctx.inject(["githubPulls"], (child) => …)` rather than a top-level `inject`, which
 would keep the plugin from starting without it.
 
+## Isolated frame
+
+A plugin can show a whole HTML document, its own scripts included, the way a
+browser would, without giving the document any of Buzz's access. The desktop
+app on macOS and Linux serves one fixed page, and `ctx.host.frameUrl` is its
+URL (`buzz-frame://localhost/`). The page holds no state and knows nothing
+about the documents written into it.
+
+1. Create `<iframe sandbox="allow-scripts" src="…">` with that URL. The
+   `sandbox` attribute is required, without `allow-same-origin`, and the
+   iframe gets no `allow` attribute; the policy below says why.
+2. Wait for a `message` event whose `source` is the frame's `contentWindow` and
+   whose `data` is `{ type: "buzz-frame:ready" }`. Listen before you add the
+   frame to the page.
+3. Post `{ type: "buzz-frame:write", html }` to the frame with target origin
+   `"*"`. The page replaces itself with `html` through
+   `document.open()`/`write()`/`close()`. It writes once; to show another
+   document, or the same one with different access, create a new frame.
+
+Once written, the frame's messages come from the document itself, which can
+post anything, `buzz-frame:ready` included; trust none of them.
+
+The page's response policy is
+`sandbox allow-scripts; default-src https: data: blob: 'unsafe-inline' 'unsafe-eval'; object-src 'none'`.
+The `sandbox` directive gives the written document an opaque origin, so it
+cannot reach the app's storage or DOM, and the page writes nothing unless its
+origin is opaque. The directive covers this page's documents only. A document
+can move its own frame to one of the app's pages, which the app's policy
+allows, and only the iframe's `sandbox` attribute keeps that page sandboxed.
+The document cannot call native commands: its IPC requests carry
+`Origin: null`, and the app's IPC key runs in the main frame only. A
+`Permissions-Policy` header denies the camera, microphone, location and screen
+capture where the engine applies it. WebKit may not apply it. There, what
+denies devices is the iframe having no `allow` attribute, so never add one: the
+app grants its window's microphone requests without a prompt of its own. The
+rest of the policy is the most the document may load. To narrow it, put a
+`<meta http-equiv="Content-Security-Policy">` first in the document's `head`
+(for example `connect-src 'none'` and no `https:` sources to keep it offline);
+a written policy can only remove access. Links and anchors are the plugin's to
+handle: the app's own policy keeps the frame from navigating to the web, so a
+plugin that wants links to open adds a script that posts clicks to its
+component.
+
+`frameUrl` is undefined on the web, on Windows and on desktop builds older
+than the frame; show another view there. Windows has no frame because Tauri
+serves custom schemes there as `http://<scheme>.localhost`, which its IPC
+accepts as the app, and WebView2 adds the app's scripts, the IPC invoke key
+among them, to every frame. On macOS and Linux those scripts run in the main
+frame only.
+
 ## Decisions
 
 The host composes one `DecisionsService` in `app/services.ts`. Plugins, bundled

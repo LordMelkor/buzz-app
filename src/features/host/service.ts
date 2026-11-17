@@ -1,4 +1,4 @@
-import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import { Channel, convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type {} from "../../plugins/api";
 import { nativeIdentityEnabled } from "../identity/service";
@@ -279,6 +279,11 @@ export interface Host {
     agentPubkey: string,
     signal?: AbortSignal,
   ) => Promise<NipOaAuthorization>;
+  /** The isolated frame's URL, which a plugin can fill with an HTML document
+   * that runs its own scripts without reaching Buzz; see "Isolated frame" in
+   * docs/plugin-architecture.md. macOS and Linux desktop only; undefined on
+   * Windows and older builds. */
+  readonly frameUrl?: string | undefined;
 }
 
 declare module "@deepseek-ai/cordis" {
@@ -363,6 +368,14 @@ const callContexts = new WeakMap<
 export class HostService extends Service implements Host {
   constructor(context: Context) {
     super(context, "host");
+  }
+
+  get frameUrl() {
+    if (!isTauri()) return undefined;
+    // Windows serves custom schemes as `http://<scheme>.localhost`, where
+    // native code does not register the frame.
+    const url = convertFileSrc("", "buzz-frame");
+    return url.startsWith("buzz-frame:") ? url : undefined;
   }
 
   prepareRemoteAgentAuthorization(agentPubkey: string, signal?: AbortSignal) {

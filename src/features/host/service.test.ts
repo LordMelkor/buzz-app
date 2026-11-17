@@ -1,11 +1,12 @@
 import { Context } from "@deepseek-ai/cordis";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { HostService, type Host } from "./service";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: vi.fn(),
   invoke: vi.fn(),
+  convertFileSrc: vi.fn(),
   Channel: class {
     constructor(public onmessage: (event: unknown) => void) {}
   },
@@ -174,6 +175,27 @@ it("uses the calling plugin identity and preserves bounded command output", asyn
     commandId: "status",
   });
 });
+
+it.each([
+  {
+    platform: "macOS and Linux",
+    url: "buzz-frame://localhost/",
+    frameUrl: "buzz-frame://localhost/",
+  },
+  {
+    platform: "Windows",
+    url: "http://buzz-frame.localhost/",
+    frameUrl: undefined,
+  },
+])(
+  "offers the isolated frame only as a custom scheme ($platform)",
+  ({ url, frameUrl }) => {
+    vi.mocked(convertFileSrc).mockReturnValue(url);
+    expect(pluginContext().plugin.host.frameUrl).toBe(frameUrl);
+    vi.mocked(isTauri).mockReturnValue(false);
+    expect(pluginContext().plugin.host.frameUrl).toBeUndefined();
+  },
+);
 
 it("keeps native command failures and browser calls nullable", async () => {
   const { root, plugin } = pluginContext();
