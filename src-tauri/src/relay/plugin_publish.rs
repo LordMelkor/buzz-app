@@ -9,7 +9,7 @@ use buzzodz_plugins::{reserved_relay_kind, HostGrants};
 /// Longest relay text handed back, in characters.
 const MESSAGE_CHARS: usize = 512;
 /// Statuses in which the relay refuses the event itself, with its own words.
-const REFUSALS: [u16; 7] = [400, 401, 403, 404, 409, 413, 422];
+const REFUSALS: [u16; 8] = [400, 401, 403, 404, 409, 413, 422, 429];
 
 #[derive(Serialize)]
 pub(crate) struct Publication {
@@ -84,7 +84,7 @@ pub(super) async fn publish(
     if signed["pubkey"] != viewer {
         return Err("Your identity changed. Try again.".into());
     }
-    // No age check: the relay answers a repeated id from its receipt.
+    // No host age check: whether an old event is accepted is the relay's answer.
     let response = send(
         host,
         fi,
@@ -304,6 +304,11 @@ mod tests {
                 "restricted: members only",
             ),
             (
+                "429 Too Many Requests",
+                r#"{"error":"rate-limited: slow down"}"#,
+                "rate-limited: slow down",
+            ),
+            (
                 "422 Unprocessable Entity",
                 "not json",
                 "Relay rejected the event (422)",
@@ -400,7 +405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_same_template_is_the_same_event_even_when_hours_old() {
+    async fn the_same_template_is_sent_as_the_same_event_even_when_hours_old() {
         let host = IdentityHost::fixture();
         let viewer = host.viewer().await.unwrap();
         let old = 1_700_000_000;

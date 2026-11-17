@@ -62,7 +62,8 @@ export type HostRelayScope = Readonly<{
 }>;
 /** The relay's own answer, its OK or refusal text kept as sent (at most 512
  * characters). `accepted: false` is a refusal; a rejection is an unknown
- * outcome that a retry of the same template settles. */
+ * outcome. Sending the same template again sends the same event id; whether
+ * the relay answers it from its receipt, at any age, is up to the relay. */
 export type HostPublication = Readonly<{
   event_id: string;
   accepted: boolean;

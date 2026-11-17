@@ -2371,21 +2371,26 @@ reserved kind is refused at install and no declared kind can reach one at
 runtime. Review shows one declaration per kind; adding a kind is an access
 increase, reordering is not.
 
-Desktop hosts expose two optional methods; check `typeof` before use.
+Desktop hosts provide two methods; on other hosts both reject.
 
 - `host.publish(template, { scope, generation?, signal? })` takes
   `{kind, content, tags, created_at?}`. The kind must be in the plugin's own
   grant. Native code reads the grant, signs, and sends once with the viewer's
   relay authentication. It keeps a given `created_at` and the tag order, so the
-  same template is always the same event id, and it applies no event-age check:
-  a retry long after the first try is the same event. It resolves
+  same template is always the same event id, and the host applies no event-age
+  check of its own. Whether the relay answers an old repeated id from its
+  receipt is the relay's rule: many relays refuse events far from their clock
+  (Buzz's relay: `invalid:` beyond 15 minutes) unless the kind's handler
+  answers repeats first. It resolves
   `{event_id, accepted, message}` with the relay's text as sent, at most 512
   characters. A relay refusal, including its `duplicate:` and `conflict:` 409
-  texts, is `accepted: false` with that text, never an error. Anything else is
+  texts and a `429` rate limit, is `accepted: false` with that text, never an
+  error. Anything else is
   an unknown outcome and rejects: a failed transport, an unreadable answer, a
   relay error status, cancelling with `signal` after the call was sent, or a
   change of community, account or connection while it was pending. The host
-  never replays a publish; call again with the same template to settle it.
+  never replays a publish; to settle an unknown outcome, send the same template
+  again or read the relay for its event id.
 - `host.relayInfo({ scope, generation?, signal? })` returns the selected
   community's NIP-11 document as Buzz read it to connect, as a frozen copy. It
   needs no grant and costs no extra relay read.
