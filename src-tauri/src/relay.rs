@@ -39,6 +39,8 @@ mod upload_spool;
 pub(crate) use upload_spool::Spools;
 mod media_stream;
 pub(crate) use media_stream::{media_stream_base, MediaStream};
+mod plugin_publish;
+pub(crate) use plugin_publish::plugin_host_relay_publish;
 mod project_git;
 pub(crate) use project_git::{relay_project_git, relay_project_git_cancel};
 type Result<T> = std::result::Result<T, String>;

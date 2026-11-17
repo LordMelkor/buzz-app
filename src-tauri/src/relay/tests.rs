@@ -198,7 +198,7 @@ fn member_commands_sign_only_the_broker_shape() {
     }
 }
 
-fn fixture_server(response: String) -> (Url, std::thread::JoinHandle<(String, String)>) {
+pub(super) fn fixture_server(response: String) -> (Url, std::thread::JoinHandle<(String, String)>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = Url::parse(&format!("http://{}/query", listener.local_addr().unwrap())).unwrap();
     let task = std::thread::spawn(move || {

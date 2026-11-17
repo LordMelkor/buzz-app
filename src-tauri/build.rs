@@ -181,6 +181,7 @@ fn main() {
             "plugin_host_run_command",
             "plugin_host_call_context",
             "plugin_host_request",
+            "plugin_host_relay_publish",
             "plugin_host_request_bytes",
             "plugin_host_read_page",
             "plugin_host_upload_bytes_once",
