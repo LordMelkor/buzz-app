@@ -172,7 +172,13 @@ test("the app runtime exposes ready bundled pages and removes them on disable", 
         .map((card) => card.pluginId)
         .sort(),
       // A build without NIP-FI or the development broker has no Builderlab.
-      ["buzz.channels", "buzz.emoji", "buzz.github", "buzz.pairing"],
+      [
+        "buzz.activity-alerts",
+        "buzz.channels",
+        "buzz.emoji",
+        "buzz.github",
+        "buzz.pairing",
+      ],
     );
     // The device-local template library remains reachable without a selected community.
     assert.equal(
@@ -234,7 +240,13 @@ test("the app runtime exposes ready bundled pages and removes them on disable", 
         .map((card) => card.pluginId)
         .sort(),
       // A build without NIP-FI or the development broker has no Builderlab.
-      ["buzz.channels", "buzz.emoji", "buzz.github", "buzz.pairing"],
+      [
+        "buzz.activity-alerts",
+        "buzz.channels",
+        "buzz.emoji",
+        "buzz.github",
+        "buzz.pairing",
+      ],
     );
 
     await vi.waitFor(() =>
@@ -291,9 +303,10 @@ test("the app runtime exposes ready bundled pages and removes them on disable", 
 
     const { npubEncode } = await import("nostr-tools/nip19");
     const profileTarget = `nostr:${npubEncode("ab".repeat(32))}`;
+    // Activity alerts specializes the Profiles panel, and only while Profiles is on.
     assert.equal(
       services.panels.resolve(profileTarget)?.pluginId,
-      "buzz.profiles",
+      "buzz.activity-alerts",
     );
     await services.plugins.change("disable", "buzz.profiles");
     assert.equal(services.panels.resolve(profileTarget), undefined);
@@ -301,7 +314,7 @@ test("the app runtime exposes ready bundled pages and removes them on disable", 
     await vi.waitFor(() =>
       assert.equal(
         services.panels.resolve(profileTarget)?.pluginId,
-        "buzz.profiles",
+        "buzz.activity-alerts",
       ),
     );
 

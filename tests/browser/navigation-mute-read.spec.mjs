@@ -53,6 +53,7 @@ test("channel menu mute/read persist without selecting the row; failed mute rema
   await expect(menu.getByRole("menuitem")).toHaveText([
     "Move channel",
     "Mute",
+    "Notify for all activity",
     "Mark as read",
     "Copy link",
   ]);
@@ -278,6 +279,7 @@ test("channel menu mute/read persist without selecting the row; failed mute rema
   await expect(menu.getByRole("menuitem")).toHaveText([
     "Move channel",
     "Mute",
+    "Notify for all activity",
     "Mark as unread",
     "Copy link",
   ]);

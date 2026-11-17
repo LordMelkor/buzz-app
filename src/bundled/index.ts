@@ -54,6 +54,8 @@ import inboxManifest from "./inbox/manifest.json";
 import * as inbox from "./inbox";
 import focusManifest from "./focus/manifest.json";
 import * as focus from "./focus";
+import activityAlertsManifest from "./activity-alerts/manifest.json";
+import * as activityAlerts from "./activity-alerts";
 import remindersManifest from "./reminders/manifest.json";
 import * as reminders from "./reminders";
 import reposManifest from "./repos/manifest.json";
@@ -210,6 +212,11 @@ export const bundledPlugins: readonly BundledPlugin[] = [
     manifest: { ...focusManifest, apiVersion: 1 },
     module: focus,
     enabledByDefault: false,
+  },
+  {
+    manifest: { ...activityAlertsManifest, apiVersion: 1 },
+    module: activityAlerts,
+    enabledByDefault: true,
   },
   {
     manifest: { ...reposManifest, apiVersion: 1 },

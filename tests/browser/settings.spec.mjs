@@ -614,6 +614,7 @@ confirmedPresence(
       for (const name of [
         "Local settings",
         "Custom emoji",
+        "Activity alerts",
         "Mobile app",
         "Leave or remove",
         "Identity",
@@ -686,6 +687,7 @@ confirmedPresence(
       for (const name of [
         "Local settings",
         "Custom emoji",
+        "Activity alerts",
         "Mobile app",
         "Leave or remove",
         "Identity",

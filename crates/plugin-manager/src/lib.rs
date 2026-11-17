@@ -539,6 +539,10 @@ pub fn bundled_manifests() -> Vec<Manifest> {
         serde_json::from_str(include_str!("../../../src/bundled/focus/manifest.json"))
             .expect("focus manifest"),
         serde_json::from_str(include_str!(
+            "../../../src/bundled/activity-alerts/manifest.json"
+        ))
+        .expect("activity alerts manifest"),
+        serde_json::from_str(include_str!(
             "../../../src/bundled/changesets/manifest.json"
         ))
         .expect("changesets manifest"),
@@ -574,6 +578,7 @@ fn enabled_by_default(id: &str) -> bool {
             | "buzz.relay-staff"
             | "buzz.typesafe"
             | "buzz.plugin-development"
+            | "buzz.activity-alerts"
     )
 }
 /// Bundled ids that older profiles may still hold as installed plugins.

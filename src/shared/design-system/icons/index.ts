@@ -139,6 +139,8 @@ import TablerAtIcon from "@tabler/icons-react/dist/esm/icons/IconAt.mjs";
 export const AtIcon = defineIcon("tabler", TablerAtIcon);
 import TablerBellIcon from "@tabler/icons-react/dist/esm/icons/IconBell.mjs";
 export const BellIcon = defineIcon("tabler", TablerBellIcon);
+import TablerBellRingingIcon from "@tabler/icons-react/dist/esm/icons/IconBellRinging.mjs";
+export const BellRingingIcon = defineIcon("tabler", TablerBellRingingIcon);
 import TablerBellSlashIcon from "@tabler/icons-react/dist/esm/icons/IconBellOff.mjs";
 export const BellSlashIcon = defineIcon("tabler", TablerBellSlashIcon);
 import TablerCaretDownIcon from "@tabler/icons-react/dist/esm/icons/IconChevronDown.mjs";

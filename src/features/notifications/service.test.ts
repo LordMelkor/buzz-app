@@ -228,6 +228,46 @@ it("installed plugins share the host policy and stale producer handles are rejec
   t.clicks[0]?.();
   expect(t.navigation.navigation.snapshot().entry.target).toEqual(target);
 });
+it("a plugin alert's eligibility is asked again until delivery", async () => {
+  const t = setup();
+  let producer: ReturnType<Notifications["register"]> | undefined;
+  t.install({
+    inject: ["notifications"],
+    apply(ctx) {
+      producer = ctx.notifications.register({ id: "posts", label: "Posts" });
+    },
+  });
+  await vi.waitFor(() => expect(producer).toBeDefined());
+  // Held while permission is undecided, then dropped once no longer eligible.
+  t.permission("default");
+  let eligible: boolean | "wait" = true;
+  const held = { sourceKey: "held", target, eligible: () => eligible };
+  expect(await producer?.submit(held)).toBe(true);
+  await flush();
+  eligible = false;
+  t.permission("granted");
+  await t.service.refreshPermission();
+  await flush();
+  expect(t.platform.show).not.toHaveBeenCalled();
+  // "wait" holds it until a re-check finds it eligible; a throw drops only it.
+  eligible = "wait";
+  expect(await producer?.submit({ ...held, sourceKey: "waiting" })).toBe(true);
+  expect(
+    await producer?.submit({
+      sourceKey: "broken",
+      target,
+      eligible() {
+        throw new Error("plugin bug");
+      },
+    }),
+  ).toBe(true);
+  await flush();
+  expect(t.platform.show).not.toHaveBeenCalled();
+  eligible = true;
+  t.service.revalidate();
+  await flush();
+  expect(t.platform.show).toHaveBeenCalledTimes(1);
+});
 it("plugin gates silence alerts until removed or the plugin is disabled", async () => {
   const t = setup();
   let gate: Notifications["gate"] | undefined;

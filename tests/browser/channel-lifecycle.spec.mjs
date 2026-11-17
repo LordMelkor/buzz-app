@@ -61,6 +61,7 @@ test("archive confirmation returns focus on cancel and retains the conversation 
   await expect(menu.getByRole("menuitem")).toHaveText([
     "Move channel",
     "Mute",
+    "Notify for all activity",
     "Mark as unread",
     "Copy link",
     "Archive channel",

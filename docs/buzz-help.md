@@ -676,6 +676,31 @@ and are asked to sign in again in Buzz.
   If the people you'd end up with already have a DM, Buzz opens that one
   instead. A DM can include up to nine people; agents don't count. Removing
   people from a DM isn't available.
+- **Activity alerts** (a built-in plugin, on by default) notifies you about more
+  than mentions and your own conversations:
+  - **People on your list**: turn on **Notify me when they post** on someone's
+    profile, or search for them in **Settings → Activity alerts** and choose
+    **Add**. Their posts in channels you're in then notify you. Turning the
+    switch off, **Remove** or **Clear list** stops it.
+  - **All activity**: choose **Notify for all activity** from a channel's menu,
+    beside **Mute**, to be notified about every post and reply by someone else
+    in it. **Stop notifying for all activity**, or **Turn off** under
+    **Channels with all activity** in **Settings → Activity alerts**, goes back
+    to the default.
+  - Mute wins: while all activity is off, a muted channel's menu item reads
+    **Notify for all activity when unmuted**. A post that mentions you, or
+    replies in your conversation, alerts once, as before. Any other post by a
+    listed person alerts as
+    **People on your list**, also in an all-activity channel, and their reply
+    there alerts as **Channels with all activity**. **Unfollow
+    thread** doesn't silence replies in an all-activity channel. Nothing alerts
+    once it's read, or for your own posts, and the conversation you're viewing
+    stays quiet unless **Notify while viewing** is on.
+  - **Settings → Notifications → Notify me about** has a switch for each kind,
+    **Activity alerts: People on your list** and **Activity alerts: Channels
+    with all activity**. Switching one off silences that kind without clearing
+    its list. Both lists are saved on this device: people per account,
+    channels per community and account.
 - **Hidden DMs**: **Close conversation** and **Hide conversation** take a DM out
   of the sidebar without leaving it. To find one again, start a **New message**
   to exactly the same people. Its earlier messages appear before you send,

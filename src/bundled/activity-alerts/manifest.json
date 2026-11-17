@@ -1,0 +1,7 @@
+{
+  "id": "buzz.activity-alerts",
+  "name": "Activity alerts",
+  "apiVersion": 1,
+  "description": "Get notified when chosen people post, or about all activity in chosen channels.",
+  "discovery": { "category": "productivity", "tags": ["people"] }
+}

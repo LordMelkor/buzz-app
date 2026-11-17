@@ -24,12 +24,16 @@ export type NotificationCategoryDescriptor = Readonly<{
   id: string;
   label: string;
 }>;
+export type NotificationEligibility = boolean | "wait";
 export type NotificationInput = Readonly<{
   sourceKey: string;
   target: OpenTarget;
   /** Optional display text; the host flattens and bounds it before the OS sees it. */
   title?: string;
   body?: string;
+  /** Asked again at each host re-check until delivery, as for built-in
+   * alerts: false (or a throw) drops the alert, "wait" holds it. */
+  eligible?: () => NotificationEligibility;
 }>;
 /** Narrows which targets may alert: banners, sounds and the Dock unread dot. */
 export type NotificationGate = Readonly<{
@@ -44,13 +48,15 @@ export interface Notifications {
   /** While registered, only targets every gate allows may alert. Returns a
    * remover; disabling the plugin removes it too. */
   gate(gate: NotificationGate): () => void;
+  /** The owner's Notify while viewing choice, for an `eligible` check about
+   * a conversation the owner may have on screen. Changing it re-asks. */
+  notifyWhileViewing(): boolean;
 }
 declare module "@deepseek-ai/cordis" {
   interface Context {
     notifications: Notifications;
   }
 }
-export type NotificationEligibility = boolean | "wait";
 type Candidate = {
   category: string;
   target: OpenTarget;
@@ -173,6 +179,7 @@ export class NotificationsService extends Service implements Notifications {
     void this.refreshPermission();
   }
   snapshot = () => this.state;
+  notifyWhileViewing = () => this.state.preferences.notifyWhileViewing;
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => {
@@ -342,13 +349,24 @@ export class NotificationsService extends Service implements Notifications {
           )
         )
           return Promise.reject(new Error("Invalid notification text"));
+        const eligible = input?.eligible;
+        if (eligible !== undefined && typeof eligible !== "function")
+          return Promise.reject(new Error("Invalid notification eligibility"));
         const text = pluginNotificationText(input, current.label);
         return this.admit(
           current.key,
           current.label,
           input,
           () => !disposed && entry() === current,
-          undefined,
+          // A throwing check drops only its own alert.
+          eligible &&
+            (() => {
+              try {
+                return eligible();
+              } catch {
+                return false;
+              }
+            }),
           () => text,
         );
       },
