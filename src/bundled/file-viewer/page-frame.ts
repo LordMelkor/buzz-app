@@ -21,29 +21,6 @@ const BASE_STYLE =
   ":root{color-scheme:light;background:Canvas;color:CanvasText}" +
   "[data-mdv-link]{cursor:pointer}a[data-mdv-link]:not([href]){color:LinkText;text-decoration:underline}";
 
-/** A source expression for the frame's img-src: an http(s) image's own URL
- * (its origin when the path has a character the policy can't hold), or a
- * scheme (`buzz-media:`). Anything else can't be written into the policy. */
-export function cspSource(url: string): string | undefined {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return undefined;
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-    return /^[a-z][a-z0-9+.-]*:$/i.test(parsed.protocol)
-      ? parsed.protocol
-      : undefined;
-  if (!/^[a-z][a-z0-9+.-]*:\/\/[a-z0-9.-]+(?::\d{1,5})?$/i.test(parsed.origin))
-    return undefined;
-  // No `&`, `;`, `,`, quote or space: the policy sits in an attribute, and
-  // `;` and `,` end a directive.
-  return /^\/[\w\-.~!$'()*+=:@%/]*$/.test(parsed.pathname)
-    ? parsed.origin + parsed.pathname
-    : parsed.origin;
-}
-
 /** Where the frame's policy goes, or -1 when the page isn't the shape
  * `parsePage` promises: then nothing would put the policy first, or it holds
  * a tag the policy can't stop, so it isn't drawn. */
@@ -59,12 +36,8 @@ function markerAt(page: PageDocument): number {
 export const isDrawablePage = (page: PageDocument) => markerAt(page) >= 0;
 
 /** The frame's srcdoc: the page with its policy and base styles where the
- * marker is, or null when it can't be drawn safely. `sources` are the
- * img-src expressions: blob: and each image the page shows. */
-export function pageFrameHtml(
-  page: PageDocument,
-  sources: readonly string[],
-): string | null {
+ * marker is, or null when it can't be drawn safely. */
+export function pageFrameHtml(page: PageDocument): string | null {
   const at = markerAt(page);
   if (at < 0) return null;
   const policy = [
@@ -73,7 +46,9 @@ export function pageFrameHtml(
     "script-src 'none'",
     "object-src 'none'",
     "style-src 'unsafe-inline'",
-    `img-src ${sources.join(" ")}`,
+    // Pictures in the page and community images both come in as blobs the
+    // viewer made, so the page can't reach any other address.
+    "img-src blob:",
     "font-src data:",
     "form-action 'none'",
     "base-uri 'none'",

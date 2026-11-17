@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import {
-  cspSource,
   isDrawablePage,
   pageElement,
   pageFrameHtml,
@@ -10,7 +9,7 @@ import {
 import { PAGE_HEAD_MARKER as M, type PageDocument } from "./page-types";
 
 const POLICY =
-  "default-src 'none'; script-src 'none'; object-src 'none'; style-src 'unsafe-inline'; img-src blob: buzz-media:; font-src data:; form-action 'none'; base-uri 'none'";
+  "default-src 'none'; script-src 'none'; object-src 'none'; style-src 'unsafe-inline'; img-src blob:; font-src data:; form-action 'none'; base-uri 'none'";
 const pageHtml = (body: string, head = "") =>
   `<!DOCTYPE html><html lang="en"><head>${M}${head}</head><body>${body}</body></html>`;
 const pageOf = (html: string): PageDocument => ({
@@ -21,32 +20,12 @@ const pageOf = (html: string): PageDocument => ({
 });
 
 describe("the frame's policy", () => {
-  it("names an image's own URL, or its scheme, and nothing that could widen the policy", () => {
-    expect(cspSource("https://cdn.example.org:8443/a.png?x=1#y")).toBe(
-      "https://cdn.example.org:8443/a.png",
-    );
-    expect(cspSource("http://buzz-media.localhost/abc")).toBe(
-      "http://buzz-media.localhost/abc",
-    );
-    // `;` ends a directive, and `&semi;` would decode to one: the path widens to the origin.
-    expect(cspSource("https://cdn.example.org/a;script-src%20*")).toBe(
-      "https://cdn.example.org",
-    );
-    expect(cspSource("https://cdn.example.org/a&semi;b,c")).toBe(
-      "https://cdn.example.org",
-    );
-    expect(cspSource("buzz-media://localhost/abc")).toBe("buzz-media:");
-    expect(cspSource("https://[::1]/a.png")).toBeUndefined();
-    expect(cspSource("https://a.example.org;script-src *")).toBeUndefined();
-    expect(cspSource("not a url")).toBeUndefined();
-  });
-
   it("goes first in the head, in place of the marker, and only there", () => {
     const html = pageHtml(
       "<p>Hi</p>",
       `<style>p::after{content:"${M}"}</style>`,
     );
-    const framed = pageFrameHtml(pageOf(html), ["blob:", "buzz-media:"]);
+    const framed = pageFrameHtml(pageOf(html));
     expect(
       framed?.startsWith(
         `<!DOCTYPE html><html lang="en"><head><meta http-equiv="Content-Security-Policy" content="${POLICY}"><meta name="referrer" content="no-referrer"><style>`,
@@ -92,7 +71,7 @@ describe("the frame's policy", () => {
     ],
   ])("isn't drawn with %s", (_name, html) => {
     expect(isDrawablePage(pageOf(html))).toBe(false);
-    expect(pageFrameHtml(pageOf(html), ["blob:"])).toBeNull();
+    expect(pageFrameHtml(pageOf(html))).toBeNull();
   });
 
   it("is drawn with the parser's charset and the words meta or noscript in its text", () => {

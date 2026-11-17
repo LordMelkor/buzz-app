@@ -37,6 +37,10 @@ beforeEach(() => {
   let made = 0;
   URL.createObjectURL = vi.fn(() => `blob:file-${++made}`);
   URL.revokeObjectURL = vi.fn();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(new Blob(["png"], { type: "image/png" }))),
+  );
 });
 afterEach(() => {
   cleanup();
@@ -143,8 +147,8 @@ it("draws an HTML file in a sandboxed frame that runs no script", async () => {
   const policy = new DOMParser()
     .parseFromString(node.srcdoc, "text/html")
     .head.firstElementChild?.getAttribute("content");
-  // Only pictures in the page and community media: no other site.
-  expect(policy).toContain("img-src blob: buzz-media:;");
+  // Pictures in the page and community media both come in as blobs.
+  expect(policy).toContain("img-src blob:;");
   expect(policy).toContain("script-src 'none'");
   expect(node.srcdoc).not.toContain("alert(1)");
   expect(tab("Page")).toHaveAttribute("aria-selected", "true");
@@ -160,7 +164,10 @@ it("sets community and embedded images, and leaves other sites' as alt text", as
   // The frame's nodes are another document's: read their attributes.
   const src = (alt: string) => image(doc, alt)?.getAttribute("src");
   await waitFor(() => expect(src("inside")).toBe("blob:file-1"));
-  expect(src("chart")).toBe(media(SHARED));
+  // Community media comes in as a blob the viewer fetched, never as its address.
+  await waitFor(() => expect(src("chart")).toBe("blob:file-2"));
+  expect(fetch).toHaveBeenCalledWith(media(SHARED), expect.anything());
+  expect(fetch).toHaveBeenCalledTimes(1);
   expect(src("remote")).toBeNull();
 });
 

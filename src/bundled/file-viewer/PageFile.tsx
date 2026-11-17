@@ -21,7 +21,6 @@ import { useMediaUrls } from "./media-urls";
 import type { MediaRef, OutlineItem } from "./office-types";
 import { parsePage } from "./page";
 import {
-  cspSource,
   documentUrl,
   isDrawablePage,
   pageElement,
@@ -217,20 +216,49 @@ function currentSection(
 const isMediaRef = (src: string): src is MediaRef =>
   src.startsWith("mdv-media:");
 
-/** A community image's source, absolute so the frame's policy can name it,
- * or none when the policy can't. */
-function framedSource(
-  src: string,
+const NO_IMAGES: ReadonlyMap<number, string> = new Map();
+
+/** Community images by their number in the page, fetched by the viewer and
+ * given to the frame as blob URLs, so the frame's policy names no media
+ * address. All are revoked when the page closes. */
+function useCommunityImages(
+  images: readonly string[],
   media: MediaSource | undefined,
-): string | undefined {
-  const source = media?.(src);
-  if (!source) return undefined;
-  try {
-    const url = new URL(source, document.baseURI).href;
-    return cspSource(url) ? url : undefined;
-  } catch {
-    return undefined;
-  }
+): ReadonlyMap<number, string> {
+  const [urls, setUrls] = useState(NO_IMAGES);
+  useEffect(() => {
+    const controller = new AbortController();
+    const made: string[] = [];
+    setUrls(NO_IMAGES);
+    // One fetch per address, however many times the page shows it.
+    const uses = new Map<string, number[]>();
+    images.forEach((src, n) => {
+      const source = isMediaRef(src) ? undefined : media?.(src);
+      if (source) uses.set(source, [...(uses.get(source) ?? []), n]);
+    });
+    for (const [source, numbers] of uses) {
+      fetch(source, { signal: controller.signal })
+        .then((response) => (response.ok ? response.blob() : null))
+        .then(
+          (blob) => {
+            if (!blob || controller.signal.aborted) return;
+            const url = URL.createObjectURL(blob);
+            made.push(url);
+            setUrls((current) => {
+              const next = new Map(current);
+              for (const n of numbers) next.set(n, url);
+              return next;
+            });
+          },
+          () => {},
+        );
+    }
+    return () => {
+      controller.abort();
+      for (const url of made) URL.revokeObjectURL(url);
+    };
+  }, [images, media]);
+  return urls;
 }
 
 /** Opens a page's link as the viewer's own links open: a `#` link in the
@@ -284,21 +312,8 @@ function PageFrame({
   onAway(): void;
 }) {
   const urls = useMediaUrls(page.media);
-  const sources = useMemo(
-    () =>
-      page.images.map((src) =>
-        isMediaRef(src) ? undefined : framedSource(src, media),
-      ),
-    [page, media],
-  );
-  const html = useMemo(() => {
-    const allowed = new Set(["blob:"]);
-    for (const source of sources) {
-      const expression = source && cspSource(source);
-      if (expression) allowed.add(expression);
-    }
-    return pageFrameHtml(page, [...allowed]);
-  }, [page, sources]);
+  const images = useCommunityImages(page.images, media);
+  const html = useMemo(() => pageFrameHtml(page), [page]);
   // The frame's document and the srcdoc it loaded. Until a new srcdoc loads,
   // the old document is on its way out: not wired.
   const [loaded, setLoaded] = useState<{ doc: Document; html: string } | null>(
@@ -313,7 +328,7 @@ function PageFrame({
         source: (n) => {
           const src = page.images[n];
           if (src === undefined) return undefined;
-          return isMediaRef(src) ? urls.get(src) : sources[n];
+          return isMediaRef(src) ? urls.get(src) : images.get(n);
         },
         follow: (n) => {
           const href = page.links[n];
@@ -325,7 +340,7 @@ function PageFrame({
       // A page the viewer can't wire shows as its source, as one that leaves does.
       onAway();
     }
-  }, [doc, frame, page, sources, urls, openLink, onAway]);
+  }, [doc, frame, page, images, urls, openLink, onAway]);
   if (html === null) return null;
   return (
     <iframe
