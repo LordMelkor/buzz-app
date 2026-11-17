@@ -5,7 +5,7 @@
 /// Most kinds one plugin may declare.
 pub const MAX_RELAY_KINDS: usize = 8;
 
-/// Kinds Buzz signs, reads or enforces for its own purposes. The sources are
+/// Kinds Buzz signs for its own purposes. The sources are
 /// the native writer's set (`nativeWriteKinds`, `WORKFLOW_KINDS`), the
 /// packaged-relay signer's allow-list (`validate_event` in `relay.rs`), the
 /// purpose-bound signers (auth proofs, DM, reminders, read state, sidebar,
@@ -28,9 +28,18 @@ const RESERVED_RANGES: &[(u16, u16)] = &[
     (48100, 48103),
 ];
 
-/// Whether Buzz keeps `kind` for its own signing, so no grant may include it.
+/// Private messages and remote signing: NIP-04 kind 4, NIP-17 kinds 14 and 15
+/// and its inbox relay list 10050, NIP-59 seal 13 and gift wrap 1059, and
+/// NIP-46 signer messages 24133. No plugin may send a private message as the
+/// viewer, move where the viewer's private messages arrive, or speak for their
+/// signer.
+const PRIVATE: &[u16] = &[4, 13, 14, 15, 1059, 10050, 24133];
+
+/// Whether Buzz keeps `kind` for its own signing or as private, so no grant may
+/// include it.
 pub fn reserved_relay_kind(kind: u16) -> bool {
     RESERVED.contains(&kind)
+        || PRIVATE.contains(&kind)
         || RESERVED_RANGES
             .iter()
             .any(|(first, last)| (*first..=*last).contains(&kind))
@@ -88,6 +97,13 @@ mod tests {
         }
         for kind in [1, 47000, 47001, 65535] {
             assert!(!reserved_relay_kind(kind), "{kind}");
+        }
+    }
+
+    #[test]
+    fn no_grant_may_include_a_private_message_or_signer_kind() {
+        for kind in [4, 13, 14, 15, 1059, 10050, 24133] {
+            assert!(validate(&[47000, kind]).is_err(), "{kind}");
         }
     }
 

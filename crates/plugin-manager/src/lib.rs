@@ -76,7 +76,7 @@ pub struct HostGrants {
     #[serde(default)]
     pub network_origins: Vec<String>,
     /// Event kinds the plugin may sign as the viewer and publish with
-    /// `host.publish`; never one Buzz keeps for its own signing.
+    /// `host.publish`; never a reserved kind (see `reserved_relay_kind`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relay_kinds: Vec<u16>,
     /// Programs the plugin may start as long-lived processes. Unlike a command,

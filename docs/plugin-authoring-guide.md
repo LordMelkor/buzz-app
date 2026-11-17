@@ -198,7 +198,7 @@ presence before offering sharing when supporting those hosts.
 
 ## Host access (`manifest.host`)
 
-Everything beyond the services above must be declared in `manifest.json`; the owner reviews it at install. Undeclared commands, origins, processes and file access are refused by the host. Limits: at most 16 each of `commands`, `processes`, `networkOrigins`, `agentHooks`; at most 8 `relayKinds` (event kinds 1–65535 for `host.publish`, never one Buzz signs itself). Program names are bare names (`[A-Za-z0-9._-]`, at most 80 bytes, no paths), at most 16 args of 1024 bytes each.
+Everything beyond the services above must be declared in `manifest.json`; the owner reviews it at install. Undeclared commands, origins, processes and file access are refused by the host. Limits: at most 16 each of `commands`, `processes`, `networkOrigins`, `agentHooks`; at most 8 `relayKinds` (event kinds 1–65535 for `host.publish`, never one Buzz signs itself, a private-message kind (4, 13, 14, 15, 1059, 10050) or NIP-46's 24133). Program names are bare names (`[A-Za-z0-9._-]`, at most 80 bytes, no paths), at most 16 args of 1024 bytes each.
 
 ```json
 {

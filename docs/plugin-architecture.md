@@ -2365,10 +2365,11 @@ are composition evidence, not a single native WebView delivery test.
 
 `host.relayKinds` lists the event kinds a plugin may have Buzz sign as the
 viewer and publish to the selected community: distinct integers from 1 to 65535,
-at most 8. The same list of reserved kinds, those Buzz signs itself, is checked
-when the manifest is admitted and again on every publish, so a manifest naming a
-reserved kind is refused at install and no declared kind can reach one at
-runtime. Review shows one declaration per kind; adding a kind is an access
+at most 8. The same list of reserved kinds is checked when the manifest is
+admitted and again on every publish, so a manifest naming a reserved kind is
+refused at install and no declared kind can reach one at runtime. It holds the
+kinds Buzz signs itself, the private-message kinds (4, 13, 14, 15, 1059 and the
+inbox relay list 10050) and NIP-46 signer messages (24133). Review shows one declaration per kind; adding a kind is an access
 increase, reordering is not.
 
 Desktop hosts provide two methods; on other hosts both reject.
