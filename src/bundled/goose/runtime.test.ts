@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
+import { createHarnessMcp } from "../../features/agents/harness-mcp";
+import { localStore } from "../../features/agents/store";
+import type { HarnessMcpKit } from "../../features/agents/harness-mcp";
+import { transport as mcpTransport } from "./mcp-testing";
 import type { AddedTool } from "../../buzz-mcp/session-tools";
 import {
   type RecommendedRun,
@@ -76,6 +81,7 @@ function setup(
     solo?: Set<string>;
     added?: readonly AddedTool[];
     hold?: boolean;
+    mcpKit?: HarnessMcpKit;
     reply?: string;
     thread?: readonly EventData[];
     scope?: "thread" | "channel";
@@ -206,8 +212,9 @@ function setup(
     // Each given to the agent, so none without one.
     (agent) => (agent === undefined ? [] : (options.added ?? [])),
     options.repositories,
-    undefined,
+    localStore(storage),
     options.recommended,
+    options.mcpKit,
   );
   const published: { kind: number; content: string; tags: string[][] }[] = [];
   const agent = {
@@ -269,6 +276,116 @@ function setup(
     },
   };
 }
+
+it("reports no native MCP servers for a protected agent without spawning Goose", async () => {
+  const wire = mcpTransport();
+  const f = setup({ mcpKit: provenanceKit(), wrap: wire.wrap });
+  const agent = {
+    ...f.agent,
+    config: DEFAULT_CONFIG,
+    protection: { provider: "fixture", policy: {} },
+  } as unknown as Agent;
+  try {
+    expect(await f.runtime.harnessMcp(agent)).toMatchObject({
+      tools: true,
+      servers: [],
+    });
+    await expect(f.runtime.inspectMcp(agent, "fixture")).rejects.toThrow(
+      "A protected agent loads no MCP server",
+    );
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.fake.processes).toEqual([]);
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it("proves a protected Goose protocol session empty before admitting protection checks", async () => {
+  // Protocol integration only: fakeSpawn advertises security hooks; this does
+  // not establish support in the packaged Goose executable.
+  const wire = mcpTransport();
+  const held = gated("_goose/unstable/session/extensions/list");
+  const root = new Context();
+  const base = {
+    ...protection("policy", () => f),
+    check: vi.fn<AgentProtection["check"]>().mockResolvedValue(),
+    checkEvidence: vi
+      .fn<AgentProtection["checkEvidence"]>()
+      .mockResolvedValue(),
+    spawn: (options: Parameters<AgentProtection["spawn"]>[0]) =>
+      held.wrap(wire.wrap(f.fake.spawn))("goose", options),
+  };
+  const running = {
+    key: self,
+    type: "buzz.goose/goose",
+    protection: { provider: "fixture", policy: {} },
+  } as Agent;
+  const mcp = createHarnessMcp(
+    () => ({}) as Context["pluginStatus"],
+    (key) => (key === self ? running : undefined),
+    () => [
+      {
+        key: running.type,
+        pluginId: "buzz.goose",
+        harnessMcp: { report: async () => undefined },
+      },
+    ],
+    () => base,
+    () => false,
+  );
+  const guarded = mcp.require(base, running);
+  if (!guarded) throw new Error("Expected guarded protection");
+  const f = setup({
+    hold: true,
+    protection: guarded,
+    mcpKit: mcp.kitFor(
+      root.extend({
+        pluginOwner: { id: "buzz.goose", revision: "1" },
+      } as never),
+    ),
+  });
+  const signal = new AbortController().signal;
+  const action = {
+    kind: "context",
+    session: "session-1",
+    content: {},
+  } as const;
+  const evidence = {} as Parameters<AgentProtection["checkEvidence"]>[1];
+  try {
+    await expect(guarded.check(action, signal)).rejects.toThrow("not shown");
+    await f.deliver(message("1", "Protected protocol turn"));
+    // Both the pre-update listing and final readback precede the real kit's
+    // proof. Neither a new session nor an outstanding read grants admission.
+    for (let readback = 0; readback < 2; readback++) {
+      await vi.waitFor(() => expect(held.waiting()).toEqual(["session-1"]));
+      await expect(guarded.check(action, signal)).rejects.toThrow("not shown");
+      await expect(
+        guarded.checkEvidence(action, evidence, signal),
+      ).rejects.toThrow("not shown");
+      expect(base.check).not.toHaveBeenCalled();
+      expect(base.checkEvidence).not.toHaveBeenCalled();
+      expect(f.goose()).toBeUndefined();
+      held.release();
+    }
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+    await guarded.check(action, signal);
+    await guarded.checkEvidence(action, evidence, signal);
+    expect(base.check).toHaveBeenCalledExactlyOnceWith(action, signal);
+    expect(base.checkEvidence).toHaveBeenCalledExactlyOnceWith(
+      action,
+      evidence,
+      signal,
+    );
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(wire.requests.some((r) => r.method.endsWith("extensions/add"))).toBe(
+      false,
+    );
+    f.goose()?.turns[0]?.finish();
+  } finally {
+    held.release();
+    f.runtime.dispose();
+  }
+});
 
 it("reads a protected Goose file under containment and reviews the captured text before sending", async () => {
   const check = vi.fn<AgentProtection["check"]>().mockResolvedValue();
@@ -2637,4 +2754,175 @@ it("runs an agent on Recommended on the current candidate", () => {
   // With none offered it runs on goose's own default.
   expect(running(saved, null)).toEqual(saved);
   expect(running(DEFAULT_CONFIG, candidate)).toEqual(DEFAULT_CONFIG);
+});
+
+/** Reads the provenance delivered to core through the actual native permission path. */
+function provenanceKit() {
+  return {
+    choice: async () => ({ fixture: true }),
+    started: () => {},
+    call: vi.fn(
+      async (
+        _agent: unknown,
+        _call: unknown,
+        options: { turn?: Pick<Delivery, "trigger"> },
+      ) => {
+        void options;
+        return undefined as string | undefined;
+      },
+    ),
+    ran: () => false,
+  };
+}
+async function nativePermission(f: ReturnType<typeof setup>, id: string) {
+  const native = f.goose();
+  const sessionId = native?.turns.at(-1)?.sessionId;
+  if (!native || !sessionId)
+    throw new Error("Native fixture did not admit a turn");
+  native.update(sessionId, {
+    sessionUpdate: "tool_call",
+    toolCallId: id,
+    rawInput: {},
+    _meta: {
+      goose: {
+        toolCall: {
+          extensionName: "fixture",
+          toolName: "fixture__write_marker",
+        },
+      },
+    },
+  });
+  await native.ask("session/request_permission", {
+    sessionId,
+    toolCall: { toolCallId: id },
+    options: [
+      { kind: "allow_once", optionId: "once" },
+      { kind: "reject_once", optionId: "reject" },
+    ],
+  });
+}
+
+it("keeps a queued owner message out of active unattended MCP provenance until its own prompt", async () => {
+  const wire = mcpTransport();
+  const kit = provenanceKit();
+  const f = setup({
+    hold: true,
+    scope: "channel",
+    wrap: wire.wrap,
+    mcpKit: kit,
+  });
+  try {
+    await f.run(pluginWake("root"));
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+    await f.deliver(message("2", "Owner next"), { model: "next-model" });
+    await nativePermission(f, "before-next-prompt");
+    expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("plugin");
+    f.goose()?.turns[0]?.finish();
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(2));
+    await nativePermission(f, "after-next-prompt");
+    expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("mention");
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it.each(["owner-first", "wake-first"] as const)(
+  "taints mixed steering before its native reply (%s)",
+  async (order) => {
+    const wire = mcpTransport();
+    const kit = provenanceKit();
+    let reached!: () => void;
+    let release!: () => void;
+    const boundary = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = setup({
+      hold: true,
+      scope: "channel",
+      mcpKit: kit,
+      wrap: (spawn) =>
+        wire.wrap(async (id, options) => {
+          const process = await spawn(id, options);
+          return {
+            ...process,
+            write: async (data) => {
+              if (JSON.parse(data).method === "_goose/unstable/session/steer") {
+                reached();
+                await held;
+              }
+              return process.write(data);
+            },
+          };
+        }),
+    });
+    try {
+      if (order === "owner-first") await f.deliver(message("1", "Owner start"));
+      else await f.run(pluginWake("root"));
+      await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+      const steering =
+        order === "owner-first"
+          ? f.run(pluginWake("root"))
+          : f.deliver(message("2", "Owner steer"));
+      await boundary;
+      // The native steer has been sent but cannot have replied. Its influence must already be tainted.
+      await nativePermission(f, "during-held-steer");
+      expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("plugin");
+      release();
+      await steering;
+      await vi.waitFor(() =>
+        expect(f.goose()?.turns[0]?.steered).toHaveLength(1),
+      );
+      await nativePermission(f, "after-steer");
+      expect(kit.call.mock.calls.at(-1)?.[2].turn?.trigger.type).toBe("plugin");
+    } finally {
+      release();
+      f.runtime.dispose();
+    }
+  },
+);
+
+it("does not reuse an ended owner's provenance for a system compaction prompt", async () => {
+  const wire = mcpTransport();
+  const kit = provenanceKit();
+  const f = setup({
+    hold: true,
+    scope: "channel",
+    wrap: wire.wrap,
+    mcpKit: kit,
+  });
+  try {
+    await f.deliver(message("1", "Owner start"));
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+    f.goose()?.turns[0]?.finish();
+    await vi.waitFor(() =>
+      expect(
+        f.runtime.sessionState(
+          { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent,
+          { channelId: channel },
+        ),
+      ).toBe("idle"),
+    );
+    const compact = f.runtime.session(
+      { ...f.agent, config: DEFAULT_CONFIG } as unknown as Agent,
+      { channelId: channel },
+      "compact",
+    );
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(2));
+    await nativePermission(f, "compaction");
+    expect(kit.call.mock.calls.at(-1)?.[2].turn).toBeUndefined();
+    const native = f.goose();
+    const turn = native?.turns[1];
+    if (!native || !turn) throw new Error("Compaction was not admitted");
+    native.update(turn.sessionId, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "Compaction complete" },
+    });
+    turn.finish();
+    await compact;
+  } finally {
+    f.runtime.dispose();
+  }
 });
